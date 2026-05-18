@@ -1,0 +1,6 @@
+name: VestaSync
+version: ${version}
+main: com.vesta.loader.platform.BukkitEntrypoint
+api-version: "1.13"
+authors: [Vesta]
+description: Client-server modpack synchronization for Vesta Launcher

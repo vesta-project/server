@@ -1,0 +1,18 @@
+{
+    "schemaVersion": 1,
+    "id": "vesta-sync",
+    "version": "${version}",
+    "name": "Vesta Server Sync",
+    "description": "Client-server modpack synchronization for Vesta Launcher",
+    "authors": ["Vesta"],
+    "contact": {},
+    "license": "LGPL-3.0",
+    "environment": "*",
+    "entrypoints": {
+        "main": ["com.vesta.loader.platform.FabricEntrypoint"]
+    },
+    "depends": {
+        "fabricloader": ">=0.16.10",
+        "minecraft": ">=${minecraft}"
+    }
+}

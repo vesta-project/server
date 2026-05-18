@@ -1,0 +1,24 @@
+modLoader = "javafml"
+loaderVersion = "[2,)"
+license = "LGPL-3.0"
+
+[[mods]]
+modId = "vesta-sync"
+version = "${version}"
+displayName = "Vesta Server Sync"
+displayURL = ""
+logoFile = ""
+authors = "Vesta"
+description = "Client-server modpack synchronization for Vesta Launcher"
+
+[[dependencies.vesta-sync]]
+modId = "minecraft"
+type = "required"
+versionRange = "[${minecraft},)"
+
+[[dependencies.vesta-sync]]
+modId = "neoforge"
+type = "required"
+versionRange = "[${minecraft},)"
+ordering = "NONE"
+side = "BOTH"

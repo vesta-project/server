@@ -1,0 +1,57 @@
+plugins {
+    java
+}
+
+val modId: String = rootProject.property("mod.id") as String
+val modVersion: String = rootProject.property("mod.version") as String
+val mcVersion: String = project.property("deps.minecraft") as String
+
+version = "$modVersion+$mcVersion-paper"
+base.archivesName = modId
+
+repositories {
+    mavenCentral()
+    maven("https://repo.papermc.io/repository/maven-public/") { name = "Paper" }
+}
+
+dependencies {
+    val paperApi = if (stonecutter.eval(stonecutter.current.version, ">=26")) {
+        "$mcVersion.build.+"
+    } else {
+        "$mcVersion-R0.1-SNAPSHOT"
+    }
+    compileOnly("io.papermc.paper:paper-api:$paperApi")
+    implementation(project(":core"))
+}
+
+tasks {
+    processResources {
+        exclude("**/fabric.mod.json", "**/quilt.mod.json", "**/neoforge.mods.toml", "**/plugin.yml")
+        filesMatching("paper-plugin.yml") {
+            expand(
+                "version" to modVersion,
+                "minecraft" to mcVersion
+            )
+        }
+    }
+
+    jar {
+        archiveFileName.set("$modId-$modVersion+$mcVersion-paper.jar")
+        from(configurations.runtimeClasspath.get().filter { it.name.startsWith("vesta-") }.map { zipTree(it) })
+    }
+}
+
+java {
+    withSourcesJar()
+    if (stonecutter.eval(stonecutter.current.version, ">=26")) {
+        toolchain.languageVersion.set(JavaLanguageVersion.of(25))
+    } else {
+        val javaCompat = if (stonecutter.eval(stonecutter.current.version, ">=1.20.5")) {
+            JavaVersion.VERSION_21
+        } else {
+            JavaVersion.VERSION_17
+        }
+        sourceCompatibility = javaCompat
+        targetCompatibility = javaCompat
+    }
+}
