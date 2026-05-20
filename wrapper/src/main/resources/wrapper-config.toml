@@ -1,0 +1,19 @@
+[server]
+tcp-port = 9091
+http-port = 9090
+file-store = "vesta-files"
+
+[modpack]
+name = "Vesta Demo Pack"
+version = "1.0.0"
+minecraft-version = "1.21.4"
+
+[modpack.modloader]
+type = "fabric"
+version = "0.18.4"
+
+[modpack.server]
+host = "localhost"
+port = 25565
+description = "A Vesta-powered Minecraft server"
+is-required = false

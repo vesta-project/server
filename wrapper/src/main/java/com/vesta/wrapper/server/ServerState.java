@@ -1,25 +1,16 @@
 package com.vesta.wrapper.server;
 
-import com.vesta.sync.manifest.ServerModpackManifest;
-import com.vesta.sync.manifest.ModloaderInfo;
-import com.vesta.sync.manifest.ModpackMode;
+import com.vesta.sync.manifest.*;
+import com.vesta.wrapper.config.WrapperConfig;
 
 public final class ServerState {
 
     private final ServerModpackManifest manifest;
     private volatile String currentVersion;
 
-    public ServerState() {
-        this.currentVersion = "1.0.0";
-        this.manifest = new ServerModpackManifest();
-        manifest.mode = ModpackMode.CUSTOM;
-        manifest.name = "Demo Server Pack";
-        manifest.version = currentVersion;
-        manifest.minecraftVersion = "1.21.4";
-        ModloaderInfo ml = new ModloaderInfo();
-        ml.type = "fabric";
-        ml.version = "0.18.4";
-        manifest.modloader = ml;
+    public ServerState(WrapperConfig config) {
+        this.currentVersion = config.modpackVersion;
+        this.manifest = buildManifest(config);
     }
 
     public String getCurrentVersion() {
@@ -33,5 +24,29 @@ public final class ServerState {
 
     public ServerModpackManifest getManifest() {
         return manifest;
+    }
+
+    private static ServerModpackManifest buildManifest(WrapperConfig config) {
+        ServerModpackManifest m = new ServerModpackManifest();
+        m.mode = ModpackMode.CUSTOM;
+        m.name = config.modpackName;
+        m.version = config.modpackVersion;
+        m.minecraftVersion = config.minecraftVersion;
+
+        ModloaderInfo ml = new ModloaderInfo();
+        ml.type = config.modloaderType;
+        ml.version = config.modloaderVersion;
+        m.modloader = ml;
+
+        if (config.serverHost != null && !config.serverHost.isBlank()) {
+            ServerInfo si = new ServerInfo();
+            si.host = config.serverHost;
+            si.port = config.serverPort;
+            si.description = config.serverDescription;
+            si.isRequired = config.serverRequired;
+            m.serverInfo = si;
+        }
+
+        return m;
     }
 }

@@ -1,6 +1,7 @@
 package com.vesta.wrapper;
 
-import com.vesta.sync.VestaSync;
+import com.vesta.wrapper.config.ConfigLoader;
+import com.vesta.wrapper.config.WrapperConfig;
 import com.vesta.wrapper.server.FileStore;
 import com.vesta.wrapper.server.TcpSyncServer;
 import com.vesta.wrapper.server.VestaHttpServer;
@@ -8,27 +9,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
-import java.nio.file.Paths;
 
 public class VestaWrapper {
 
     private static final Logger log = LoggerFactory.getLogger(VestaWrapper.class);
 
     public static void main(String[] args) {
-        int tcpPort = VestaSync.DEFAULT_TCP_PORT;
-        int httpPort = VestaSync.DEFAULT_HTTP_PORT;
-        Path fileStore = Paths.get("vesta-files");
-
+        Path configFile = Path.of("wrapper-config.toml");
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
-                case "--tcp-port":
-                    tcpPort = Integer.parseInt(args[++i]);
-                    break;
-                case "--http-port":
-                    httpPort = Integer.parseInt(args[++i]);
-                    break;
-                case "--file-store":
-                    fileStore = Paths.get(args[++i]);
+                case "--config":
+                case "-c":
+                    configFile = Path.of(args[++i]);
                     break;
                 case "--help":
                 case "-h":
@@ -37,29 +29,33 @@ public class VestaWrapper {
             }
         }
 
-        log.info("Vesta Wrapper v{} starting...", VestaSync.API_VERSION);
+        WrapperConfig config = ConfigLoader.load(configFile);
+        log.info("Vesta Wrapper — {}", config.modpackName);
+        log.info("  Version {} for Minecraft {} ({} {})",
+                config.modpackVersion, config.minecraftVersion,
+                config.modloaderType, config.modloaderVersion);
 
         FileStore store;
         try {
-            store = new FileStore(fileStore);
-            log.info("File store at {}", store.getRoot());
+            store = new FileStore(config.fileStoreDir);
+            log.info("  File store at {}", store.getRoot());
         } catch (Exception e) {
-            log.error("Failed to create file store: {}", fileStore, e);
+            log.error("Failed to create file store: {}", config.fileStoreDir, e);
             System.exit(1);
             return;
         }
 
-        TcpSyncServer tcpServer = new TcpSyncServer(tcpPort);
+        TcpSyncServer tcpServer = new TcpSyncServer(config);
         Thread tcpThread = new Thread(tcpServer, "vesta-tcp-server");
         tcpThread.setDaemon(false);
         tcpThread.start();
-        log.info("TCP sync server on port {}", tcpPort);
+        log.info("  TCP sync on :{}", config.tcpPort);
 
-        VestaHttpServer httpServer = new VestaHttpServer(httpPort,
+        VestaHttpServer httpServer = new VestaHttpServer(config.httpPort,
                 tcpServer.getServerState(), store);
         try {
             httpServer.start();
-            log.info("HTTP REST API on port {}", httpPort);
+            log.info("  HTTP REST on :{}", config.httpPort);
         } catch (Exception e) {
             log.error("Failed to start HTTP server", e);
             tcpServer.stop();
@@ -78,9 +74,10 @@ public class VestaWrapper {
     private static void printUsage() {
         System.out.println("Vesta Server Sync Wrapper");
         System.out.println("Usage: vesta-wrapper [options]");
-        System.out.println("  --tcp-port <port>    TCP sync port (default: " + VestaSync.DEFAULT_TCP_PORT + ")");
-        System.out.println("  --http-port <port>   HTTP API port (default: " + VestaSync.DEFAULT_HTTP_PORT + ")");
-        System.out.println("  --file-store <path>  File store directory (default: vesta-files)");
+        System.out.println("  --config, -c <file>  Config file (default: wrapper-config.toml)");
         System.out.println("  --help, -h           Show this help");
+        System.out.println();
+        System.out.println("All runtime options are configured in the config file.");
+        System.out.println("See wrapper-config.toml for available settings.");
     }
 }

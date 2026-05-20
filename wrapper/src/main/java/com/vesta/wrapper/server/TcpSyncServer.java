@@ -1,6 +1,7 @@
 package com.vesta.wrapper.server;
 
 import com.vesta.sync.VestaSync;
+import com.vesta.wrapper.config.WrapperConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -23,14 +24,10 @@ public final class TcpSyncServer implements Runnable {
     private volatile boolean running = true;
     private ServerSocket serverSocket;
 
-    public TcpSyncServer() {
-        this(VestaSync.DEFAULT_TCP_PORT);
-    }
-
-    public TcpSyncServer(int port) {
-        this.port = port;
+    public TcpSyncServer(WrapperConfig config) {
+        this.port = config.tcpPort;
         this.sessionManager = new SessionManager();
-        this.serverState = new ServerState();
+        this.serverState = new ServerState(config);
         this.router = new MessageRouter(sessionManager, serverState);
         this.workers = Executors.newCachedThreadPool(r -> {
             Thread t = new Thread(r, "vesta-tcp-worker");
