@@ -31,6 +31,17 @@ dependencies {
     include(project(":core"))
 }
 
+sourceSets {
+    main {
+        java {
+            exclude("com/vesta/loader/platform/BukkitEntrypoint.java")
+            exclude("com/vesta/loader/platform/NeoForgeEntrypoint.java")
+            exclude("com/vesta/loader/platform/PaperEntrypoint.java")
+            exclude("com/vesta/loader/platform/QuiltEntrypoint.java")
+        }
+    }
+}
+
 tasks {
     processResources {
         exclude("**/quilt.mod.json", "**/neoforge.mods.toml", "**/plugin.yml", "**/paper-plugin.yml")

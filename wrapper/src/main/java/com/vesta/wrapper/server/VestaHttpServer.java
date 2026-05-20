@@ -5,6 +5,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.FieldNamingPolicy;
 import com.vesta.sync.VestaSync;
+import com.vesta.sync.FileStore;
 import com.vesta.sync.manifest.ServerModpackManifest;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;

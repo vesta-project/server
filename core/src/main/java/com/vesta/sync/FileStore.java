@@ -1,4 +1,4 @@
-package com.vesta.wrapper.server;
+package com.vesta.sync;
 
 import com.vesta.sync.hashing.FileHasher;
 import com.vesta.sync.util.PathSanitizer;

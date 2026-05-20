@@ -1,8 +1,8 @@
 package com.vesta.wrapper;
 
+import com.vesta.sync.FileStore;
 import com.vesta.wrapper.config.ConfigLoader;
 import com.vesta.wrapper.config.WrapperConfig;
-import com.vesta.wrapper.server.FileStore;
 import com.vesta.wrapper.server.TcpSyncServer;
 import com.vesta.wrapper.server.VestaHttpServer;
 import org.slf4j.Logger;
