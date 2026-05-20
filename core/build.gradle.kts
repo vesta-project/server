@@ -12,6 +12,7 @@ dependencies {
     implementation("org.slf4j:slf4j-api:2.0.16")
 
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 tasks.test {
