@@ -11,9 +11,72 @@ pluginManagement {
     }
 }
 
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+    dependencies {
+        classpath("org.tomlj:tomlj:1.1.1")
+    }
+}
+
+import org.tomlj.Toml
+import org.tomlj.TomlTable
+import java.io.File
+
 plugins {
     id("org.gradle.toolchains.foojay-resolver-convention") version "0.9.0"
     id("dev.kikugie.stonecutter") version "0.7"
+}
+
+data class ReleaseLine(
+    val id: String,
+    val compileMc: String,
+    val buildscript: String,
+    val gradleProperties: String,
+)
+
+fun loadReleaseMatrix(matrixFile: File): List<ReleaseLine> {
+    val result = Toml.parse(matrixFile.toPath())
+    result.errors().forEach { error ->
+        throw IllegalStateException("Invalid ${matrixFile.name}: $error")
+    }
+    val releases = result.getArray("release")
+        ?: throw IllegalStateException("versions-matrix.toml must contain [[release]] entries")
+    return releases.toList().map { entry ->
+        val release = entry as TomlTable
+        val id = release.getString("id") ?: error("release.id")
+        val compileMc = release.getString("compile_mc") ?: error("release.compile_mc")
+        val buildscript = release.getString("buildscript") ?: error("release.buildscript")
+        val mcRangeMin = release.getString("mc_range_min") ?: error("release.mc_range_min")
+        val mcRangeMax = release.getString("mc_range_max")
+        val loader = release.getString("loader") ?: error("release.loader")
+        val neoforge = release.getString("neoforge")
+        val fabricRange = if (mcRangeMax != null) ">=$mcRangeMin <=$mcRangeMax" else ">=$mcRangeMin"
+        val neoforgeRange = if (mcRangeMax != null) "[$mcRangeMin,$mcRangeMax]" else "[$mcRangeMin,)"
+        val props = buildString {
+            appendLine("deps.minecraft=$compileMc")
+            neoforge?.let { appendLine("deps.neoforge=$it") }
+            appendLine("release.id=$id")
+            appendLine("release.loader=$loader")
+            appendLine("mc.range.min=$mcRangeMin")
+            mcRangeMax?.let { appendLine("mc.range.max=$it") }
+            appendLine("mc.range.fabric=$fabricRange")
+            appendLine("mc.range.quilt=$fabricRange")
+            appendLine("mc.range.neoforge=$neoforgeRange")
+        }
+        ReleaseLine(id, compileMc, buildscript, props)
+    }
+}
+
+fun materializeVersionDirs(rootDir: File, releases: List<ReleaseLine>) {
+    val versionsRoot = File(rootDir, "versions")
+    versionsRoot.mkdirs()
+    releases.forEach { release ->
+        val versionDir = File(versionsRoot, release.id)
+        versionDir.mkdirs()
+        File(versionDir, "gradle.properties").writeText(release.gradleProperties)
+    }
 }
 
 rootProject.name = "vesta-server-sync"
@@ -21,26 +84,14 @@ rootProject.name = "vesta-server-sync"
 include(":core")
 include(":wrapper")
 
+val releaseLines = loadReleaseMatrix(file("versions-matrix.toml"))
+materializeVersionDirs(rootDir, releaseLines)
+
 stonecutter {
     create(rootProject) {
-        fun match(version: String, vararg loaders: String) = loaders
-            .forEach { vers("$version-$it", version).buildscript = "build.$it.gradle.kts" }
-
-        match("1.21.4", "fabric", "quilt", "neoforge", "paper")
-        match("1.21.1", "fabric", "quilt", "neoforge", "paper")
-        match("1.20.6", "fabric", "quilt", "neoforge", "paper")
-        match("1.20.4", "fabric", "quilt", "bukkit")
-        match("1.20.1", "fabric", "quilt", "bukkit")
-
-        // MC 26.x uses unobfuscated jar, new Fabric Loom plugin (net.fabricmc.fabric-loom)
-        vers("26.1.2-fabric", "26.1.2").buildscript = "build.fabric26.gradle.kts"
-        vers("26.1.1-fabric", "26.1.1").buildscript = "build.fabric26.gradle.kts"
-        vers("26.1-fabric", "26.1").buildscript = "build.fabric26.gradle.kts"
-
-        match("26.1.2", "neoforge", "paper")
-        match("26.1.1", "neoforge", "paper")
-        match("26.1", "neoforge", "paper")
-
-        vcsVersion = "1.21.4-fabric"
+        releaseLines.forEach { release ->
+            vers(release.id, release.compileMc).buildscript = release.buildscript
+        }
+        vcsVersion = "fabric-1.21"
     }
 }

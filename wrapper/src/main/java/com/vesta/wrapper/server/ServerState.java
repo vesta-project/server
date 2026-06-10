@@ -1,52 +1,77 @@
 package com.vesta.wrapper.server;
 
-import com.vesta.sync.manifest.*;
+import com.vesta.sync.FileStore;
+import com.vesta.sync.manifest.ModloaderInfo;
+import com.vesta.sync.manifest.ModpackState;
+import com.vesta.sync.manifest.ServerInfo;
+import com.vesta.sync.manifest.ServerModpackManifest;
+import com.vesta.sync.sync.SyncCheckResult;
 import com.vesta.wrapper.config.WrapperConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.Map;
 
 public final class ServerState {
 
-    private final ServerModpackManifest manifest;
-    private volatile String currentVersion;
+    private static final Logger log = LoggerFactory.getLogger(ServerState.class);
 
-    public ServerState(WrapperConfig config) {
-        this.currentVersion = config.modpackVersion;
-        this.manifest = buildManifest(config);
+    private final ModpackState modpackState;
+    private final String modpackDescription;
+
+    public ServerState(WrapperConfig config, FileStore store) {
+        this.modpackDescription = config.modpackDescription;
+        ModloaderInfo modloader = new ModloaderInfo();
+        modloader.type = config.modloaderType;
+        modloader.version = config.modloaderVersion;
+
+        ServerInfo serverInfo = null;
+        if (config.serverHost != null && !config.serverHost.isBlank()) {
+            serverInfo = new ServerInfo();
+            serverInfo.host = config.serverHost;
+            serverInfo.port = config.serverPort;
+            serverInfo.description = config.serverDescription;
+            serverInfo.isRequired = config.serverRequired;
+        }
+
+        try {
+            this.modpackState = ModpackState.fromScan(
+                    config.scanRoot,
+                    config.scanPaths,
+                    store,
+                    config.modpackName,
+                    config.modpackVersion,
+                    config.minecraftVersion,
+                    modloader,
+                    serverInfo
+            );
+            log.info("Loaded modpack manifest: {} files ({} mods, {} overrides)",
+                    modpackState.getManifest().mods.size() + modpackState.getManifest().overrides.size(),
+                    modpackState.getManifest().mods.size(),
+                    modpackState.getManifest().overrides.size());
+        } catch (Exception e) {
+            log.error("Failed to scan modpack from {}: {}", config.scanRoot, e.getMessage(), e);
+            throw new IllegalStateException("Failed to build modpack manifest", e);
+        }
     }
 
     public String getCurrentVersion() {
-        return currentVersion;
+        return modpackState.getCurrentVersion();
     }
 
     public void setCurrentVersion(String version) {
-        this.currentVersion = version;
-        this.manifest.version = version;
+        modpackState.setCurrentVersion(version);
     }
 
     public ServerModpackManifest getManifest() {
-        return manifest;
+        return modpackState.getManifest();
     }
 
-    private static ServerModpackManifest buildManifest(WrapperConfig config) {
-        ServerModpackManifest m = new ServerModpackManifest();
-        m.mode = ModpackMode.CUSTOM;
-        m.name = config.modpackName;
-        m.version = config.modpackVersion;
-        m.minecraftVersion = config.minecraftVersion;
+    public SyncCheckResult syncCheck(String clientVersion, Map<String, String> installedHashes) {
+        return modpackState.syncCheck(clientVersion, installedHashes);
+    }
 
-        ModloaderInfo ml = new ModloaderInfo();
-        ml.type = config.modloaderType;
-        ml.version = config.modloaderVersion;
-        m.modloader = ml;
-
-        if (config.serverHost != null && !config.serverHost.isBlank()) {
-            ServerInfo si = new ServerInfo();
-            si.host = config.serverHost;
-            si.port = config.serverPort;
-            si.description = config.serverDescription;
-            si.isRequired = config.serverRequired;
-            m.serverInfo = si;
-        }
-
-        return m;
+    public String getModpackDescription() {
+        return modpackDescription;
     }
 }

@@ -11,8 +11,26 @@ public class VestaMod {
         ModLog.info("{} v{} initializing...", MOD_NAME, SyncStatus.PROTOCOL_VERSION);
     }
 
-    public void onServerStart(Path dataDir, String mcVersion, String loaderType, String host, int port) {
-        VestaSyncManager.get().initialize(dataDir, mcVersion, loaderType, host, port);
+    public void onServerStart(
+            Path serverRoot,
+            String modpackName,
+            String modpackVersion,
+            String mcVersion,
+            String loaderType,
+            String loaderVersion,
+            String host,
+            int port
+    ) {
+        VestaSyncManager.get().initialize(
+                serverRoot,
+                modpackName,
+                modpackVersion,
+                mcVersion,
+                loaderType,
+                loaderVersion,
+                host,
+                port
+        );
     }
 
     public void onServerStop() {

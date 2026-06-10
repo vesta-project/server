@@ -4,35 +4,35 @@
 
 Client-server sync for Minecraft. Players enter their server IP into the Vesta launcher, and the app automatically knows what files are needed to join.
 
-Two deployment modes:
-- **Wrapper** — standalone sidecar process, runs 24/7, provides HTTP file serving + TCP console/control
-- **Mod/Plugin** — in-game mod/plugin that enforces access control at player join time
+Two deployment modes (wrapper-first):
+- **Wrapper** (primary) — standalone sidecar process, runs 24/7, MC-agnostic HTTP file serving + TCP sync
+- **Mod/Plugin** (optional) — in-game fallback when wrapper is absent; future auth and join control
 
 ## Project Layout
 
 ```
 V:\server\
-├── settings.gradle.kts          # Root: stonecutter create() + core/wrapper includes
-├── stonecutter.gradle.kts       # Active version, loader constants, shared plugins
+├── settings.gradle.kts          # Stonecutter release lines from versions-matrix.toml
+├── versions-matrix.toml         # Tiered mod release lines (single source of truth)
+├── stonecutter.gradle.kts       # Active release line, loader constants
 ├── build.gradle.kts             # Minimal — just java plugin
-├── gradle.properties            # Shared properties
+├── gradle.properties            # Shared mod + loader dependency pins
 ├── gradlew / gradlew.bat
 ├── gradle\wrapper\
 │
 ├── build.fabric.gradle.kts      # Split buildscript: Fabric (fabric-loom, ≤1.21.x)
-├── build.fabric26.gradle.kts    # Split buildscript: Fabric 26.x (net.fabricmc.fabric-loom, unobfuscated)
-├── build.quilt.gradle.kts       # Split buildscript: Quilt (org.quiltmc.loom)
-├── build.neoforge.gradle.kts    # Split buildscript: NeoForge (neoforge moddev)
-├── build.bukkit.gradle.kts      # Split buildscript: Bukkit (spigot-api)
-├── build.paper.gradle.kts       # Split buildscript: Paper (paper-api)
+├── build.fabric26.gradle.kts    # Split buildscript: Fabric 26.x (unobfuscated)
+├── build.quilt.gradle.kts       # Split buildscript: Quilt
+├── build.neoforge.gradle.kts    # Split buildscript: NeoForge
+├── build.bukkit.gradle.kts      # Split buildscript: Bukkit
+├── build.paper.gradle.kts       # Split buildscript: Paper
 │
-├── versions\                    # Per-version per-loader gradle.properties
-│   ├── 1.21.4-fabric\gradle.properties
-│   └── ...
+├── versions\                    # Generated at Gradle sync (gitignored properties)
+│   └── {release-id}\            # e.g. fabric-1.21
 │
-├── buildSrc\                    # Convention plugins
-│   └── src\main\kotlin\
-│       └── vesta-core.gradle.kts
+├── buildSrc\                    # Convention plugins (vesta-core)
+│
+├── docs\PUBLISHING.md           # Wrapper vs mod build targets
 │
 ├── core\                        # MC-agnostic library (Java 8 bytecode target)
 │   ├── build.gradle.kts
@@ -53,12 +53,11 @@ V:\server\
 │       ├── auth\                # TokenStore, AccessControl
 │       └── tcp\                 # TcpControlServer (future)
 │
-└── loader\                      # Single source tree, compiled per-loader
-    └── src\main\java\com\vesta\loader\
-        ├── VestaMod.java        # Common init
-        ├── ManifestGenerator.java
-        ├── JoinValidator.java
-        ├── FileServer.java
+└── src\                         # Single mod source tree, compiled per release line
+    └── main\java\com\vesta\loader\
+        ├── VestaMod.java
+        ├── VestaSyncManager.java
+        ├── server\ModHttpServer.java
         └── platform\            # Loader-specific entrypoints
             ├── FabricEntrypoint.java
             ├── QuiltEntrypoint.java
@@ -66,6 +65,14 @@ V:\server\
             ├── BukkitEntrypoint.java
             └── PaperEntrypoint.java
 ```
+
+## Build versioning (wrapper-first + tiered mods)
+
+- **Wrapper** has no MC version matrix — one build serves all servers.
+- **Mod** ships **release lines** (~12 JARs), not per-patch builds. Each line covers an MC generation (e.g. `fabric-1.21` supports 1.21.1–1.21.4).
+- Release lines are defined in [`versions-matrix.toml`](../versions-matrix.toml). Gradle sync generates `versions/{id}/gradle.properties` (gitignored).
+- JARs are named `vesta-sync-{version}+{release-id}.jar` and declare MC ranges in mod metadata.
+- See [`docs/PUBLISHING.md`](PUBLISHING.md) for build commands.
 
 ## Technology
 
@@ -80,16 +87,22 @@ V:\server\
 | Token hashing | BCrypt |
 | JSON | Gson |
 
-## Supported Loaders
+## Supported Loaders (release lines)
 
-| Loader | Build plugin | MC versions |
+| Release line | Loader | Supported MC range |
 |---|---|---|
-| Fabric (legacy) | fabric-loom | 1.20.1, 1.20.4, 1.20.6, 1.21.1, 1.21.4 |
-| Fabric (26.x) | net.fabricmc.fabric-loom (unobfuscated) | 26.1, 26.1.1, 26.1.2 |
-| Quilt | org.quiltmc.loom | 1.20.1, 1.20.4, 1.20.6, 1.21.1, 1.21.4 |
-| NeoForge | net.neoforged.moddev | 1.20.6, 1.21.1, 1.21.4, 26.1, 26.1.1, 26.1.2 |
-| Bukkit | java-library + spigot-api | 1.20.1, 1.20.4 |
-| Paper | java-library + paper-api | 1.20.6, 1.21.1, 1.21.4, 26.1, 26.1.1, 26.1.2 |
+| `fabric-1.20` | Fabric | 1.20.1 – 1.20.4 |
+| `fabric-1.21` | Fabric | 1.21.1 – 1.21.4 |
+| `fabric-26` | Fabric (26.x) | 26.1+ |
+| `quilt-1.20` | Quilt | 1.20.1 – 1.20.4 |
+| `quilt-1.21` | Quilt | 1.21.1 – 1.21.4 |
+| `neoforge-1.20` | NeoForge | 1.20.6 |
+| `neoforge-1.21` | NeoForge | 1.21.1 – 1.21.4 |
+| `neoforge-26` | NeoForge | 26.1+ |
+| `bukkit-1.20` | Bukkit | 1.20.1 – 1.20.4 |
+| `paper-1.20` | Paper | 1.20.6 |
+| `paper-1.21` | Paper | 1.21.1 – 1.21.4 |
+| `paper-26` | Paper | 26.1+ |
 
 Forge deferred due to MDK complexity.
 
@@ -97,8 +110,9 @@ Forge deferred due to MDK complexity.
 
 ### Modpack Discovery (REST — no auth required)
 
-- `GET /vesta/manifest.json` → modpack metadata
-- `GET /vesta/files/{sha256}` → file binary
+- `GET /api/v1/modpack/info` → modpack metadata
+- `GET /api/v1/modpack/manifest` → full manifest
+- `GET /api/v1/files/{sha256}` → file binary
 - Server listens on `:9090` (default)
 - Hash-based file addressing prevents path traversal
 

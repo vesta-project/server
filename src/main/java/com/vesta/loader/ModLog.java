@@ -7,19 +7,19 @@ public final class ModLog {
 
     static final Logger log = LoggerFactory.getLogger("VestaSync");
 
-    static void info(String msg, Object... args) {
+    public static void info(String msg, Object... args) {
         log.info(msg, args);
     }
 
-    static void warn(String msg, Object... args) {
+    public static void warn(String msg, Object... args) {
         log.warn(msg, args);
     }
 
-    static void error(String msg, Throwable t) {
+    public static void error(String msg, Throwable t) {
         log.error(msg, t);
     }
 
-    static void error(String msg) {
+    public static void error(String msg) {
         log.error(msg);
     }
 

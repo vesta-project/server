@@ -6,10 +6,10 @@ plugins {
     id("net.neoforged.moddev") version "2.0.141" apply false
 }
 
-stonecutter active "1.21.4-fabric"
+stonecutter active "fabric-1.21"
 
 stonecutter parameters {
     val meta = node.metadata
-    constants.match(meta.project.substringAfterLast('-'), "fabric", "quilt", "neoforge", "bukkit", "paper")
+    constants.match(meta.project.substringBefore('-'), "fabric", "quilt", "neoforge", "bukkit", "paper")
     filters.include("**/*.fsh", "**/*.vsh")
 }

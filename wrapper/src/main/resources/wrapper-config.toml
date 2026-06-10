@@ -1,10 +1,18 @@
 [server]
-tcp-port = 9091
+tcp-port = 9090
 http-port = 9090
 file-store = "vesta-files"
+scan-root = "."
+scan-paths = ["mods", "config"]
+
+[server.public]
+scheme = "http"
+host = "localhost"
+port = 9090
 
 [modpack]
 name = "Vesta Demo Pack"
+description = "A demo modpack served by the Vesta sync server."
 version = "1.0.0"
 minecraft-version = "1.21.4"
 

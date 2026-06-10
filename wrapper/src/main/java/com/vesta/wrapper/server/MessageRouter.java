@@ -1,6 +1,8 @@
 package com.vesta.wrapper.server;
 
 import com.vesta.sync.protocol.*;
+import com.vesta.sync.util.PublicEndpoint;
+import com.vesta.wrapper.config.WrapperConfig;
 import com.vesta.wrapper.server.handlers.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,14 +19,21 @@ public final class MessageRouter {
     private final SessionManager sessionManager;
     private final ServerState serverState;
 
-    public MessageRouter(SessionManager sessionManager, ServerState serverState) {
+    public MessageRouter(SessionManager sessionManager, ServerState serverState, WrapperConfig config) {
         this.sessionManager = sessionManager;
         this.serverState = serverState;
+
+        PublicEndpoint endpoint = new PublicEndpoint(
+                config.publicScheme,
+                config.publicHost,
+                config.effectivePublicPort()
+        );
+
         handlers.put(Handshake.class, new HandshakeHandler(sessionManager));
         handlers.put(SyncCheck.class, new SyncCheckHandler(serverState));
         handlers.put(Heartbeat.class, new HeartbeatHandler(sessionManager));
         handlers.put(Disconnect.class, new DisconnectHandler(sessionManager));
-        handlers.put(FileRequest.class, new FileRequestHandler());
+        handlers.put(FileRequest.class, new FileRequestHandler(endpoint));
     }
 
     public void dispatch(ClientConnection client, Object message) {

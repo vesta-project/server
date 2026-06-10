@@ -5,15 +5,17 @@ plugins {
 val modId: String = rootProject.property("mod.id") as String
 val modVersion: String = rootProject.property("mod.version") as String
 val mcVersion: String = project.property("deps.minecraft") as String
+val releaseId: String = project.property("release.id") as String
+val mcRangeFabric: String = project.property("mc.range.fabric") as String
 val fabricLoader: String = rootProject.property("deps.fabric-loader") as String
 
-version = "$modVersion+$mcVersion-fabric"
+version = "$modVersion+$releaseId"
 base.archivesName = modId
 
 loom {
     runs {
         named("client") {
-            configName = "Fabric $mcVersion Client"
+            configName = "Fabric $releaseId Client"
         }
     }
 }
@@ -49,13 +51,13 @@ tasks {
         filesMatching("fabric.mod.json") {
             expand(
                 "version" to modVersion,
-                "minecraft" to mcVersion
+                "mc_range_fabric" to mcRangeFabric,
             )
         }
     }
 
     remapJar {
-        archiveFileName.set("$modId-$modVersion+$mcVersion-fabric.jar")
+        archiveFileName.set("$modId-$modVersion+$releaseId.jar")
     }
 }
 

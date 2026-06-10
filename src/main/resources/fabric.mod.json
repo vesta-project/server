@@ -9,10 +9,11 @@
     "license": "LGPL-3.0",
     "environment": "*",
     "entrypoints": {
-        "main": ["com.vesta.loader.platform.FabricEntrypoint"]
+        "main": ["com.vesta.loader.platform.FabricEntrypoint"],
+    "server": ["com.vesta.loader.platform.FabricEntrypoint"]
     },
     "depends": {
         "fabricloader": ">=0.16.10",
-        "minecraft": ">=${minecraft}"
+        "minecraft": "${mc_range_fabric}"
     }
 }

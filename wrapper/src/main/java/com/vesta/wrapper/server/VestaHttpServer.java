@@ -7,6 +7,7 @@ import com.google.gson.FieldNamingPolicy;
 import com.vesta.sync.VestaSync;
 import com.vesta.sync.FileStore;
 import com.vesta.sync.manifest.ServerModpackManifest;
+import com.vesta.sync.sync.SyncCheckResult;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.io.Content;
@@ -40,12 +41,15 @@ public final class VestaHttpServer {
     private final ServerState serverState;
     private final FileStore fileStore;
 
-    public VestaHttpServer(int port, ServerState serverState, FileStore fileStore) {
+    public VestaHttpServer(int port, ServerState serverState, FileStore fileStore, boolean bindLocalOnly) {
         this.serverState = serverState;
         this.fileStore = fileStore;
         this.jetty = new Server();
         ServerConnector connector = new ServerConnector(jetty);
         connector.setPort(port);
+        if (bindLocalOnly) {
+            connector.setHost("127.0.0.1");
+        }
         jetty.addConnector(connector);
         jetty.setHandler(new Handler.Abstract() {
             @Override
@@ -56,8 +60,12 @@ public final class VestaHttpServer {
         });
     }
 
+    public VestaHttpServer(int port, ServerState serverState, FileStore fileStore) {
+        this(port, serverState, fileStore, false);
+    }
+
     public VestaHttpServer(ServerState serverState, FileStore fileStore) {
-        this(VestaSync.DEFAULT_HTTP_PORT, serverState, fileStore);
+        this(VestaSync.DEFAULT_HTTP_PORT, serverState, fileStore, false);
     }
 
     public void start() throws Exception {
@@ -113,6 +121,10 @@ public final class VestaHttpServer {
         Map<String, Object> info = new LinkedHashMap<>();
         info.put("name", manifest.name);
         info.put("version", manifest.version);
+        String description = serverState.getModpackDescription();
+        if (description != null && !description.trim().isEmpty()) {
+            info.put("description", description.trim());
+        }
         info.put("mode", manifest.mode);
         info.put("source", "server");
         info.put("minecraft_version", manifest.minecraftVersion);
@@ -162,15 +174,27 @@ public final class VestaHttpServer {
         String body = readBody(request);
         JsonObject req = GSON.fromJson(body, JsonObject.class);
         String clientVersion = req.has("current_version") ? req.get("current_version").getAsString() : "";
-        String latestVersion = serverState.getCurrentVersion();
-        boolean needsUpdate = !latestVersion.equals(clientVersion);
 
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("needs_update", needsUpdate);
-        if (needsUpdate) {
-            result.put("new_version", latestVersion);
+        Map<String, String> installedHashes = new LinkedHashMap<>();
+        if (req.has("installed_hashes") && req.get("installed_hashes").isJsonObject()) {
+            JsonObject hashes = req.getAsJsonObject("installed_hashes");
+            for (String key : hashes.keySet()) {
+                installedHashes.put(key, hashes.get(key).getAsString());
+            }
         }
-        json(response, callback, result);
+
+        SyncCheckResult result = serverState.syncCheck(clientVersion, installedHashes);
+
+        Map<String, Object> responseBody = new LinkedHashMap<>();
+        responseBody.put("needs_update", result.needsUpdate);
+        if (result.needsUpdate) {
+            responseBody.put("new_version", result.newVersion);
+            responseBody.put("actions", result.actions);
+            if (result.manifest != null) {
+                responseBody.put("manifest", result.manifest);
+            }
+        }
+        json(response, callback, responseBody);
     }
 
     private void handleFileDownload(Request request, Response response, Callback callback) throws Exception {
@@ -202,23 +226,7 @@ public final class VestaHttpServer {
     }
 
     private String readBody(Request request) throws Exception {
-        StringBuilder sb = new StringBuilder();
-        while (true) {
-            Content.Chunk chunk = request.read();
-            if (chunk == null) break;
-            if (Content.Chunk.isFailure(chunk)) {
-                chunk.release();
-                throw new java.io.IOException("Failed to read request body");
-            }
-            java.nio.ByteBuffer buf = chunk.getByteBuffer();
-            if (buf != null && buf.hasRemaining()) {
-                byte[] bytes = new byte[buf.remaining()];
-                buf.get(bytes);
-                sb.append(new String(bytes, StandardCharsets.UTF_8));
-            }
-            chunk.release();
-        }
-        return sb.toString();
+        return Content.Source.asString(request);
     }
 
     private long totalSize(ServerModpackManifest manifest) {

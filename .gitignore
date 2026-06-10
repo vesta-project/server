@@ -1,4 +1,7 @@
 build/
+versions/**/gradle.properties
+versions/**/.eclipse/
+versions/**/build/
 .gradle/
 *.class
 *.jar

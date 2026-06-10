@@ -15,15 +15,17 @@ public final class ClientConnection implements Runnable {
 
     private final String id;
     private final Socket socket;
+    private final java.io.InputStream inputStream;
     private final MessageRouter router;
     private final AtomicLong seq = new AtomicLong(0);
     private volatile Session session;
     private volatile boolean running = true;
     private volatile long lastActivity;
 
-    public ClientConnection(Socket socket, MessageRouter router) {
+    public ClientConnection(Socket socket, java.io.InputStream inputStream, MessageRouter router) {
         this.id = socket.getInetAddress().getHostAddress() + ":" + socket.getPort();
         this.socket = socket;
+        this.inputStream = inputStream;
         this.router = router;
         this.lastActivity = System.currentTimeMillis();
     }
@@ -68,7 +70,7 @@ public final class ClientConnection implements Runnable {
             while (running && !socket.isClosed()) {
                 Object message;
                 try {
-                    message = TcpMessageCodec.decode(socket.getInputStream());
+                    message = TcpMessageCodec.decode(inputStream);
                 } catch (IOException e) {
                     if (running) {
                         log.debug("Connection read error for {}: {}", id, e.getMessage());

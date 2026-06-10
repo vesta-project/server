@@ -1,0 +1,111 @@
+# Tiered mod release lines — one JAR per loader per MC generation.
+# Wrapper (:wrapper) is MC-agnostic and not listed here.
+# See docs/ARCHITECTURE.md and docs/PUBLISHING.md.
+
+[[release]]
+id = "fabric-1.20"
+loader = "fabric"
+compile_mc = "1.20.1"
+mc_range_min = "1.20.1"
+mc_range_max = "1.20.4"
+buildscript = "build.fabric.gradle.kts"
+java = 17
+
+[[release]]
+id = "fabric-1.21"
+loader = "fabric"
+compile_mc = "1.21.1"
+mc_range_min = "1.21.1"
+mc_range_max = "1.21.4"
+buildscript = "build.fabric.gradle.kts"
+java = 21
+
+[[release]]
+id = "fabric-26"
+loader = "fabric"
+compile_mc = "26.1.2"
+mc_range_min = "26.1"
+buildscript = "build.fabric26.gradle.kts"
+java = 25
+
+[[release]]
+id = "quilt-1.20"
+loader = "quilt"
+compile_mc = "1.20.1"
+mc_range_min = "1.20.1"
+mc_range_max = "1.20.4"
+buildscript = "build.quilt.gradle.kts"
+java = 17
+
+[[release]]
+id = "quilt-1.21"
+loader = "quilt"
+compile_mc = "1.21.1"
+mc_range_min = "1.21.1"
+mc_range_max = "1.21.4"
+buildscript = "build.quilt.gradle.kts"
+java = 21
+
+[[release]]
+id = "neoforge-1.20"
+loader = "neoforge"
+compile_mc = "1.20.6"
+mc_range_min = "1.20.6"
+mc_range_max = "1.20.6"
+neoforge = "20.6.0"
+buildscript = "build.neoforge.gradle.kts"
+java = 21
+
+[[release]]
+id = "neoforge-1.21"
+loader = "neoforge"
+compile_mc = "1.21.1"
+mc_range_min = "1.21.1"
+mc_range_max = "1.21.4"
+neoforge = "21.1.0"
+buildscript = "build.neoforge.gradle.kts"
+java = 21
+
+[[release]]
+id = "neoforge-26"
+loader = "neoforge"
+compile_mc = "26.1.2"
+mc_range_min = "26.1"
+neoforge = "26.1.2.59-beta"
+buildscript = "build.neoforge.gradle.kts"
+java = 25
+
+[[release]]
+id = "bukkit-1.20"
+loader = "bukkit"
+compile_mc = "1.20.1"
+mc_range_min = "1.20.1"
+mc_range_max = "1.20.4"
+buildscript = "build.bukkit.gradle.kts"
+java = 17
+
+[[release]]
+id = "paper-1.20"
+loader = "paper"
+compile_mc = "1.20.6"
+mc_range_min = "1.20.6"
+mc_range_max = "1.20.6"
+buildscript = "build.paper.gradle.kts"
+java = 21
+
+[[release]]
+id = "paper-1.21"
+loader = "paper"
+compile_mc = "1.21.1"
+mc_range_min = "1.21.1"
+mc_range_max = "1.21.4"
+buildscript = "build.paper.gradle.kts"
+java = 21
+
+[[release]]
+id = "paper-26"
+loader = "paper"
+compile_mc = "26.1.2"
+mc_range_min = "26.1"
+buildscript = "build.paper.gradle.kts"
+java = 25

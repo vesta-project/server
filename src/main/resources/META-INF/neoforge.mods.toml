@@ -14,11 +14,11 @@ description = "Client-server modpack synchronization for Vesta Launcher"
 [[dependencies.vesta-sync]]
 modId = "minecraft"
 type = "required"
-versionRange = "[${minecraft},)"
+versionRange = "${mc_range_neoforge}"
 
 [[dependencies.vesta-sync]]
 modId = "neoforge"
 type = "required"
-versionRange = "[${minecraft},)"
+versionRange = "[0,)"
 ordering = "NONE"
 side = "BOTH"

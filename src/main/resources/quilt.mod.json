@@ -21,7 +21,7 @@
             },
             {
                 "id": "minecraft",
-                "versions": ">=${minecraft}"
+                "versions": "${mc_range_quilt}"
             }
         ]
     }

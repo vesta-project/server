@@ -5,15 +5,17 @@ plugins {
 val modId: String = rootProject.property("mod.id") as String
 val modVersion: String = rootProject.property("mod.version") as String
 val mcVersion: String = project.property("deps.minecraft") as String
+val releaseId: String = project.property("release.id") as String
+val mcRangeQuilt: String = project.property("mc.range.quilt") as String
 val quiltLoader: String = rootProject.property("deps.quilt-loader") as String
 
-version = "$modVersion+$mcVersion-quilt"
+version = "$modVersion+$releaseId"
 base.archivesName = modId
 
 loom {
     runs {
         named("client") {
-            configName = "Quilt $mcVersion Client"
+            configName = "Quilt $releaseId Client"
         }
     }
 }
@@ -49,13 +51,13 @@ tasks {
         filesMatching("quilt.mod.json") {
             expand(
                 "version" to modVersion,
-                "minecraft" to mcVersion
+                "mc_range_quilt" to mcRangeQuilt,
             )
         }
     }
 
     remapJar {
-        archiveFileName.set("$modId-$modVersion+$mcVersion-quilt.jar")
+        archiveFileName.set("$modId-$modVersion+$releaseId.jar")
     }
 }
 

@@ -45,17 +45,24 @@ public class VestaWrapper {
             return;
         }
 
-        TcpSyncServer tcpServer = new TcpSyncServer(config);
+        TcpSyncServer tcpServer = new TcpSyncServer(config, store);
         Thread tcpThread = new Thread(tcpServer, "vesta-tcp-server");
         tcpThread.setDaemon(false);
         tcpThread.start();
         log.info("  TCP sync on :{}", config.tcpPort);
 
-        VestaHttpServer httpServer = new VestaHttpServer(config.httpPort,
-                tcpServer.getServerState(), store);
+        boolean multiplexed = (config.tcpPort == config.httpPort);
+        int actualHttpPort = multiplexed ? (config.httpPort + 100) : config.httpPort;
+
+        VestaHttpServer httpServer = new VestaHttpServer(actualHttpPort,
+                tcpServer.getServerState(), store, multiplexed);
         try {
             httpServer.start();
-            log.info("  HTTP REST on :{}", config.httpPort);
+            if (multiplexed) {
+                log.info("  HTTP REST internally on :{} (Multiplexed on public port :{})", actualHttpPort, config.httpPort);
+            } else {
+                log.info("  HTTP REST on :{}", config.httpPort);
+            }
         } catch (Exception e) {
             log.error("Failed to start HTTP server", e);
             tcpServer.stop();

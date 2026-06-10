@@ -22,7 +22,16 @@ public final class VestaSyncManager {
         return INSTANCE;
     }
 
-    public void initialize(Path dataDir, String mcVersion, String loaderType, String host, int mcPort) {
+    public void initialize(
+            Path serverRoot,
+            String modpackName,
+            String modpackVersion,
+            String mcVersion,
+            String loaderType,
+            String loaderVersion,
+            String host,
+            int mcPort
+    ) {
         wrapperDetected = checkWrapper();
         if (wrapperDetected) {
             ModLog.info("Wrapper detected, skipping embedded HTTP server");
@@ -30,12 +39,26 @@ public final class VestaSyncManager {
         }
 
         try {
-            FileStore store = new FileStore(dataDir.resolve("vesta-store"));
+            Path storeDir = serverRoot.resolve("vesta-store");
+            FileStore store = new FileStore(storeDir);
             ModLog.info("File store at {}", store.getRoot());
 
-            httpServer = new ModHttpServer(VestaSync.DEFAULT_HTTP_PORT, store, mcVersion, loaderType, host, mcPort);
+            httpServer = new ModHttpServer(
+                    VestaSync.DEFAULT_HTTP_PORT,
+                    store,
+                    serverRoot,
+                    modpackName,
+                    modpackVersion,
+                    mcVersion,
+                    loaderType,
+                    loaderVersion,
+                    host,
+                    mcPort
+            );
             httpServer.start();
             ModLog.info("Mod HTTP server on :{}", VestaSync.DEFAULT_HTTP_PORT);
+
+            Runtime.getRuntime().addShutdownHook(new Thread(this::shutdown, "vesta-sync-shutdown"));
         } catch (Exception e) {
             ModLog.error("Failed to start mod HTTP server", e);
         }

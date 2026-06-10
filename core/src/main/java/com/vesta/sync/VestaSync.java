@@ -10,7 +10,7 @@ public final class VestaSync {
     public static final String API_FILES = "/api/v1/files/";
 
     public static final int DEFAULT_HTTP_PORT = 9090;
-    public static final int DEFAULT_TCP_PORT = 9091;
+    public static final int DEFAULT_TCP_PORT = 9090;
 
     public static final int PROTOCOL_VERSION = 1;
     public static final int FRAME_LENGTH_BYTES = 4;

@@ -5,8 +5,10 @@ plugins {
 val modId: String = rootProject.property("mod.id") as String
 val modVersion: String = rootProject.property("mod.version") as String
 val mcVersion: String = project.property("deps.minecraft") as String
+val releaseId: String = project.property("release.id") as String
+val mcRangeNeoForge: String = project.property("mc.range.neoforge") as String
 
-version = "$modVersion+$mcVersion-neoforge"
+version = "$modVersion+$releaseId"
 base.archivesName = modId
 
 neoForge {
@@ -53,13 +55,13 @@ tasks {
         filesMatching("META-INF/neoforge.mods.toml") {
             expand(
                 "version" to modVersion,
-                "minecraft" to mcVersion
+                "mc_range_neoforge" to mcRangeNeoForge,
             )
         }
     }
 
     jar {
-        archiveFileName.set("$modId-$modVersion+$mcVersion-neoforge.jar")
+        archiveFileName.set("$modId-$modVersion+$releaseId.jar")
     }
 }
 
