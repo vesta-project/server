@@ -2,19 +2,24 @@ package com.vesta.loader;
 
 import com.vesta.sync.FileStore;
 import com.vesta.sync.VestaSync;
+import com.vesta.loader.ipc.ControlIpcClient;
 import com.vesta.loader.server.ModHttpServer;
+import com.vesta.sync.auth.LinkCodeService;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.file.Path;
+import java.util.UUID;
 
 public final class VestaSyncManager {
 
     private static final VestaSyncManager INSTANCE = new VestaSyncManager();
 
     private ModHttpServer httpServer;
+    private ControlIpcClient controlClient;
     private boolean wrapperDetected;
+    private final LinkCodeService localLinkCodes = new LinkCodeService(300);
 
     private VestaSyncManager() {}
 
@@ -34,7 +39,8 @@ public final class VestaSyncManager {
     ) {
         wrapperDetected = checkWrapper();
         if (wrapperDetected) {
-            ModLog.info("Wrapper detected, skipping embedded HTTP server");
+            ModLog.info("Wrapper detected — skipping embedded HTTP; starting control IPC client");
+            startControlClient();
             return;
         }
 
@@ -64,9 +70,38 @@ public final class VestaSyncManager {
         }
     }
 
+    private void startControlClient() {
+        controlClient = new ControlIpcClient((uuid, permission) -> {
+            // Default deny until a loader wires real LuckPerms/Vault. Still answers IPC.
+            if ("vesta.ping".equals(permission)) {
+                return true;
+            }
+            Boolean online = PermissionBridge.check(uuid, permission);
+            return online != null && online;
+        });
+        Thread t = new Thread(controlClient, "vesta-control-client");
+        t.setDaemon(true);
+        t.start();
+        Runtime.getRuntime().addShutdownHook(new Thread(this::shutdown, "vesta-sync-shutdown"));
+    }
+
+    /**
+     * Create an in-game link code and notify the wrapper over IPC.
+     */
+    public String createLinkCode(UUID playerUuid) {
+        String code = localLinkCodes.createCode(playerUuid);
+        if (controlClient != null) {
+            controlClient.sendLinkCode(code, playerUuid);
+        }
+        return code;
+    }
+
     public void shutdown() {
         if (httpServer != null) {
             httpServer.stop();
+        }
+        if (controlClient != null) {
+            controlClient.stop();
         }
     }
 
@@ -76,10 +111,16 @@ public final class VestaSyncManager {
 
     private static boolean checkWrapper() {
         try (Socket s = new Socket()) {
-            s.connect(new InetSocketAddress("127.0.0.1", VestaSync.DEFAULT_HTTP_PORT), 500);
+            s.connect(new InetSocketAddress("127.0.0.1", VestaSync.DEFAULT_CONTROL_PORT), 500);
             return true;
         } catch (IOException e) {
-            return false;
+            // Fall back: anything listening on sync port still counts as wrapper for HTTP skip
+            try (Socket s2 = new Socket()) {
+                s2.connect(new InetSocketAddress("127.0.0.1", VestaSync.DEFAULT_HTTP_PORT), 500);
+                return true;
+            } catch (IOException e2) {
+                return false;
+            }
         }
     }
 }
