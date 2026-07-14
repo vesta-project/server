@@ -85,6 +85,7 @@ public class VestaWrapper {
                 log.info("  HTTP REST on :{}", config.httpPort);
             }
             log.info("  Control IPC on 127.0.0.1:{}", config.controlPort > 0 ? config.controlPort : VestaSync.DEFAULT_CONTROL_PORT);
+            log.info("  Devtools UI: http://localhost:{}/devtools", config.httpPort);
         } catch (Exception e) {
             log.error("Failed to start HTTP server", e);
             tcpServer.stop();

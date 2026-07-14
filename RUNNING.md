@@ -68,6 +68,16 @@ HTTP REST internally on :9190 (Multiplexed on public port :9090)
 
 ## 4. Try it
 
+### Browser devtools UI
+
+With the wrapper running, open:
+
+```
+http://localhost:9090/devtools
+```
+
+Use it to view status/info/manifest, obtain a bearer token (password or link code), run sync-check, and upload/remove a test file.
+
 ### PowerShell smoke test
 
 With the wrapper running:

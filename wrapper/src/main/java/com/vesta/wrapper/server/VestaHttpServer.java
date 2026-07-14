@@ -94,8 +94,18 @@ public final class VestaHttpServer {
 
     private void handleRequest(Request request, Response response, Callback callback) throws Exception {
         String path = request.getHttpURI().getPath();
+        applyCors(request, response);
 
         try {
+            if (HttpMethod.OPTIONS.is(request.getMethod())) {
+                response.setStatus(204);
+                response.write(true, ByteBuffer.allocate(0), callback);
+                return;
+            }
+            if ("/devtools".equals(path) || "/devtools/".equals(path) || "/".equals(path)) {
+                serveDevtools(response, callback);
+                return;
+            }
             switch (path) {
                 case VestaSync.API_MODPACK_INFO -> {
                     response.setStatus(200);
@@ -411,6 +421,32 @@ public final class VestaHttpServer {
         byte[] bytes = GSON.toJson(obj).getBytes(StandardCharsets.UTF_8);
         response.getHeaders().put(HttpHeader.CONTENT_TYPE, "application/json");
         response.write(true, ByteBuffer.wrap(bytes), callback);
+    }
+
+    private void applyCors(Request request, Response response) {
+        String origin = request.getHeaders().get(HttpHeader.ORIGIN);
+        response.getHeaders().put(HttpHeader.ACCESS_CONTROL_ALLOW_ORIGIN, origin != null ? origin : "*");
+        response.getHeaders().put(HttpHeader.ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, DELETE, OPTIONS");
+        response.getHeaders().put(HttpHeader.ACCESS_CONTROL_ALLOW_HEADERS, "Authorization, Content-Type, " + VestaSync.SESSION_HEADER);
+        response.getHeaders().put(HttpHeader.ACCESS_CONTROL_MAX_AGE, "86400");
+        if (origin != null) {
+            response.getHeaders().put(HttpHeader.VARY, "Origin");
+        }
+    }
+
+    private void serveDevtools(Response response, Callback callback) throws Exception {
+        try (var in = VestaHttpServer.class.getResourceAsStream("/devtools/index.html")) {
+            if (in == null) {
+                response.setStatus(404);
+                json(response, callback, Map.of("error", "devtools page missing"));
+                return;
+            }
+            byte[] bytes = in.readAllBytes();
+            response.setStatus(200);
+            response.getHeaders().put(HttpHeader.CONTENT_TYPE, "text/html; charset=utf-8");
+            response.getHeaders().put(HttpHeader.CACHE_CONTROL, "no-store");
+            response.write(true, ByteBuffer.wrap(bytes), callback);
+        }
     }
 
     private String readBody(Request request) throws Exception {
