@@ -10,5 +10,7 @@ public final class Handshake {
     public String ts;
     public String version;
     public String clientId;
+    public String authToken = "";
+    public String password = "";
     public List<String> capabilities = Collections.emptyList();
 }
