@@ -8,6 +8,8 @@ Two deployment modes (wrapper-first):
 - **Wrapper** (primary) — standalone sidecar process, runs 24/7, MC-agnostic HTTP file serving + TCP sync
 - **Mod/Plugin** (optional) — in-game fallback when wrapper is absent; future auth and join control
 
+Product decisions, auth/IPC roadmap, postponed launcher UI, and test gates: **[`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md)**.
+
 ## Project Layout
 
 ```
