@@ -5,22 +5,45 @@ import com.vesta.sync.manifest.ModloaderInfo;
 import com.vesta.sync.manifest.ModpackState;
 import com.vesta.sync.manifest.ServerInfo;
 import com.vesta.sync.manifest.ServerModpackManifest;
+import com.vesta.sync.protocol.PushUpdateAvailable;
 import com.vesta.sync.sync.SyncCheckResult;
 import com.vesta.wrapper.config.WrapperConfig;
+import com.vesta.wrapper.content.ContentInstaller;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 
 public final class ServerState {
 
     private static final Logger log = LoggerFactory.getLogger(ServerState.class);
 
-    private final ModpackState modpackState;
+    private final WrapperConfig config;
+    private final FileStore store;
+    private final ContentInstaller installer;
     private final String modpackDescription;
+    private final List<Consumer<PushUpdateAvailable>> pushListeners = new CopyOnWriteArrayList<>();
+
+    private volatile ModpackState modpackState;
+    private volatile Instant updatedAt;
 
     public ServerState(WrapperConfig config, FileStore store) {
+        this.config = config;
+        this.store = store;
+        this.installer = new ContentInstaller(config.scanRoot, store);
         this.modpackDescription = config.modpackDescription;
+        this.updatedAt = Instant.now();
+        rescan();
+    }
+
+    public synchronized void rescan() {
         ModloaderInfo modloader = new ModloaderInfo();
         modloader.type = config.modloaderType;
         modloader.version = config.modloaderVersion;
@@ -35,6 +58,7 @@ public final class ServerState {
         }
 
         try {
+            String previous = modpackState != null ? modpackState.getCurrentVersion() : null;
             this.modpackState = ModpackState.fromScan(
                     config.scanRoot,
                     config.scanPaths,
@@ -45,14 +69,59 @@ public final class ServerState {
                     modloader,
                     serverInfo
             );
+            this.updatedAt = Instant.now();
             log.info("Loaded modpack manifest: {} files ({} mods, {} overrides)",
                     modpackState.getManifest().mods.size() + modpackState.getManifest().overrides.size(),
                     modpackState.getManifest().mods.size(),
                     modpackState.getManifest().overrides.size());
+            if (previous != null) {
+                notifyPush(previous);
+            }
         } catch (Exception e) {
             log.error("Failed to scan modpack from {}: {}", config.scanRoot, e.getMessage(), e);
-            throw new IllegalStateException("Failed to build modpack manifest", e);
+            if (modpackState == null) {
+                throw new IllegalStateException("Failed to build modpack manifest", e);
+            }
         }
+    }
+
+    public ContentInstaller.Result install(String relativePath, InputStream data) throws IOException {
+        ContentInstaller.Result result = installer.install(relativePath, data);
+        rescan();
+        return result;
+    }
+
+    public boolean remove(String relativePath) throws IOException {
+        boolean deleted = installer.remove(relativePath);
+        if (deleted) {
+            rescan();
+        }
+        return deleted;
+    }
+
+    public void addPushListener(Consumer<PushUpdateAvailable> listener) {
+        pushListeners.add(listener);
+    }
+
+    private void notifyPush(String previousVersion) {
+        PushUpdateAvailable push = new PushUpdateAvailable();
+        push.ts = updatedAt.toString();
+        push.session = "";
+        push.seq = 0;
+        push.newVersion = getCurrentVersion();
+        push.changelog = "Manifest rescanned";
+        push.requiresRestart = true;
+        for (Consumer<PushUpdateAvailable> listener : pushListeners) {
+            try {
+                listener.accept(push);
+            } catch (Exception e) {
+                log.warn("Push listener failed: {}", e.getMessage());
+            }
+        }
+    }
+
+    public Instant getUpdatedAt() {
+        return updatedAt;
     }
 
     public String getCurrentVersion() {
@@ -73,5 +142,14 @@ public final class ServerState {
 
     public String getModpackDescription() {
         return modpackDescription;
+    }
+
+    public List<Map<String, String>> listVersions() {
+        List<Map<String, String>> versions = new ArrayList<>();
+        versions.add(Map.of(
+                "version", getCurrentVersion(),
+                "published_at", updatedAt.toString()
+        ));
+        return versions;
     }
 }

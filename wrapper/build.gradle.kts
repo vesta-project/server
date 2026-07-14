@@ -31,4 +31,11 @@ dependencies {
     implementation("org.bouncycastle:bcprov-jdk18on:1.79")
     implementation("at.favre.lib:bcrypt:0.10.2")
     implementation("com.moandjiezana.toml:toml4j:0.7.2")
+
+    testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }

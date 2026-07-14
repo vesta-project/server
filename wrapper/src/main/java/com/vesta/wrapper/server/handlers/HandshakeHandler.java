@@ -1,9 +1,13 @@
 package com.vesta.wrapper.server.handlers;
 
+import com.vesta.sync.VestaSync;
+import com.vesta.sync.auth.AuthGate;
+import com.vesta.sync.auth.BearerTokenStore;
+import com.vesta.sync.auth.TokenService;
 import com.vesta.sync.protocol.Handshake;
 import com.vesta.sync.protocol.HandshakeResponse;
 import com.vesta.sync.protocol.TcpMessageCodec;
-import com.vesta.sync.VestaSync;
+import com.vesta.wrapper.auth.AuthService;
 import com.vesta.wrapper.server.ClientConnection;
 import com.vesta.wrapper.server.Session;
 import com.vesta.wrapper.server.SessionManager;
@@ -11,14 +15,17 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.Optional;
 
 public final class HandshakeHandler implements com.vesta.wrapper.server.MessageRouter.MessageHandler {
 
     private static final Logger log = LoggerFactory.getLogger(HandshakeHandler.class);
     private final SessionManager sessionManager;
+    private final AuthService auth;
 
-    public HandshakeHandler(SessionManager sessionManager) {
+    public HandshakeHandler(SessionManager sessionManager, AuthService auth) {
         this.sessionManager = sessionManager;
+        this.auth = auth;
     }
 
     @Override
@@ -26,18 +33,64 @@ public final class HandshakeHandler implements com.vesta.wrapper.server.MessageR
         Handshake hs = (Handshake) message;
         log.info("Handshake from client {} (version: {}, caps: {})", hs.clientId, hs.version, hs.capabilities);
 
-        Session session = sessionManager.create();
-        client.setSession(session);
-
         HandshakeResponse response = new HandshakeResponse();
         response.seq = hs.seq;
         response.ts = TcpMessageCodec.now();
-        response.session = session.id;
-        response.status = "ok";
         response.serverVersion = VestaSync.API_VERSION;
         response.sessionTtlSeconds = 90;
 
+        if (!auth.isOpen()) {
+            boolean ok = false;
+            if (hs.authToken != null && !hs.authToken.isBlank()) {
+                Optional<BearerTokenStore.Record> rec = auth.validateBearer(hs.authToken);
+                ok = rec.isPresent();
+                if (ok) {
+                    Session session = sessionManager.create();
+                    session.bearerTokenHash = TokenService.hashToken(AuthGate.extractBearer(hs.authToken));
+                    session.role = rec.get().role;
+                    client.setSession(session);
+                    response.session = session.id;
+                    response.status = "ok";
+                    client.send(response);
+                    log.info("Handshake OK (bearer), session: {}", session.id);
+                    return;
+                }
+            }
+            if (hs.password != null && !hs.password.isBlank()) {
+                Optional<String> issued = auth.login(hs.password);
+                if (issued.isPresent()) {
+                    Session session = sessionManager.create();
+                    session.bearerTokenHash = TokenService.hashToken(issued.get());
+                    session.role = "operator";
+                    client.setSession(session);
+                    response.session = session.id;
+                    response.status = "ok";
+                    // Clients that need the bearer for HTTP can request /api/v1/auth/token separately.
+                    client.send(response);
+                    log.info("Handshake OK (password), session: {}", session.id);
+                    return;
+                }
+                response.status = "error";
+                response.errorMessage = "invalid password";
+                response.session = "";
+                client.send(response);
+                log.warn("Handshake rejected for {}: invalid password", hs.clientId);
+                return;
+            }
+            response.status = "error";
+            response.errorMessage = "authentication required";
+            response.session = "";
+            client.send(response);
+            log.warn("Handshake rejected for {}: missing credentials", hs.clientId);
+            return;
+        }
+
+        Session session = sessionManager.create();
+        session.role = "anonymous";
+        client.setSession(session);
+        response.session = session.id;
+        response.status = "ok";
         client.send(response);
-        log.info("Handshake OK, session: {}", session.id);
+        log.info("Handshake OK (open), session: {}", session.id);
     }
 }

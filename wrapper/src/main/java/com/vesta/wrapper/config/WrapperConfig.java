@@ -1,5 +1,7 @@
 package com.vesta.wrapper.config;
 
+import com.vesta.sync.auth.SecurityMode;
+
 import java.nio.file.Path;
 import java.util.List;
 
@@ -23,6 +25,10 @@ public final class WrapperConfig {
     public final int serverPort;
     public final String serverDescription;
     public final boolean serverRequired;
+    public final SecurityMode securityMode;
+    public final String securityPassword;
+    public final long tokenTtlSeconds;
+    public final int controlPort;
 
     private WrapperConfig(Builder b) {
         this.tcpPort = b.tcpPort;
@@ -43,6 +49,10 @@ public final class WrapperConfig {
         this.serverPort = b.serverPort;
         this.serverDescription = b.serverDescription;
         this.serverRequired = b.serverRequired;
+        this.securityMode = b.securityMode;
+        this.securityPassword = b.securityPassword;
+        this.tokenTtlSeconds = b.tokenTtlSeconds;
+        this.controlPort = b.controlPort;
     }
 
     public int effectivePublicPort() {
@@ -68,6 +78,10 @@ public final class WrapperConfig {
         int serverPort = 25565;
         String serverDescription = "";
         boolean serverRequired = false;
+        SecurityMode securityMode = SecurityMode.OPEN;
+        String securityPassword = "";
+        long tokenTtlSeconds = 86_400L;
+        int controlPort = 9091;
 
         public Builder tcpPort(int v) { tcpPort = v; return this; }
         public Builder httpPort(int v) { httpPort = v; return this; }
@@ -87,6 +101,10 @@ public final class WrapperConfig {
         public Builder serverPort(int v) { serverPort = v; return this; }
         public Builder serverDescription(String v) { serverDescription = v; return this; }
         public Builder serverRequired(boolean v) { serverRequired = v; return this; }
+        public Builder securityMode(SecurityMode v) { securityMode = v; return this; }
+        public Builder securityPassword(String v) { securityPassword = v; return this; }
+        public Builder tokenTtlSeconds(long v) { tokenTtlSeconds = v; return this; }
+        public Builder controlPort(int v) { controlPort = v; return this; }
 
         public WrapperConfig build() {
             return new WrapperConfig(this);

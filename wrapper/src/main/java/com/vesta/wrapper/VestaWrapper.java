@@ -1,8 +1,12 @@
 package com.vesta.wrapper;
 
 import com.vesta.sync.FileStore;
+import com.vesta.sync.VestaSync;
+import com.vesta.sync.auth.LinkCodeService;
+import com.vesta.wrapper.auth.AuthService;
 import com.vesta.wrapper.config.ConfigLoader;
 import com.vesta.wrapper.config.WrapperConfig;
+import com.vesta.wrapper.ipc.ControlIpcServer;
 import com.vesta.wrapper.server.TcpSyncServer;
 import com.vesta.wrapper.server.VestaHttpServer;
 import org.slf4j.Logger;
@@ -35,6 +39,16 @@ public class VestaWrapper {
                 config.modpackVersion, config.minecraftVersion,
                 config.modloaderType, config.modloaderVersion);
 
+        AuthService auth = new AuthService(config);
+        LinkCodeService linkCodes = new LinkCodeService(300);
+        ControlIpcServer controlIpc = new ControlIpcServer(
+                config.controlPort > 0 ? config.controlPort : VestaSync.DEFAULT_CONTROL_PORT,
+                linkCodes
+        );
+        Thread controlThread = new Thread(controlIpc, "vesta-control-ipc");
+        controlThread.setDaemon(true);
+        controlThread.start();
+
         FileStore store;
         try {
             store = new FileStore(config.fileStoreDir);
@@ -45,7 +59,7 @@ public class VestaWrapper {
             return;
         }
 
-        TcpSyncServer tcpServer = new TcpSyncServer(config, store);
+        TcpSyncServer tcpServer = new TcpSyncServer(config, store, auth);
         Thread tcpThread = new Thread(tcpServer, "vesta-tcp-server");
         tcpThread.setDaemon(false);
         tcpThread.start();
@@ -54,8 +68,15 @@ public class VestaWrapper {
         boolean multiplexed = (config.tcpPort == config.httpPort);
         int actualHttpPort = multiplexed ? (config.httpPort + 100) : config.httpPort;
 
-        VestaHttpServer httpServer = new VestaHttpServer(actualHttpPort,
-                tcpServer.getServerState(), store, multiplexed);
+        VestaHttpServer httpServer = new VestaHttpServer(
+                actualHttpPort,
+                tcpServer.getServerState(),
+                store,
+                auth,
+                linkCodes,
+                controlIpc,
+                multiplexed
+        );
         try {
             httpServer.start();
             if (multiplexed) {
@@ -63,9 +84,11 @@ public class VestaWrapper {
             } else {
                 log.info("  HTTP REST on :{}", config.httpPort);
             }
+            log.info("  Control IPC on 127.0.0.1:{}", config.controlPort > 0 ? config.controlPort : VestaSync.DEFAULT_CONTROL_PORT);
         } catch (Exception e) {
             log.error("Failed to start HTTP server", e);
             tcpServer.stop();
+            controlIpc.stop();
             System.exit(1);
         }
 
@@ -73,6 +96,7 @@ public class VestaWrapper {
             log.info("Shutting down...");
             try { httpServer.stop(); } catch (Exception ignored) {}
             tcpServer.stop();
+            controlIpc.stop();
         }));
 
         log.info("Ready. Press Ctrl+C to stop.");

@@ -84,13 +84,6 @@ public final class ClientConnection implements Runnable {
 
                 touch();
                 router.dispatch(this, message);
-
-                // validate session on non-handshake messages
-                if (session == null && !(message instanceof com.vesta.sync.protocol.Handshake)) {
-                    log.warn("Message without session from {}: {}", id, message.getClass().getSimpleName());
-                    close();
-                    return;
-                }
             }
         } catch (Exception e) {
             log.error("Unexpected error on connection {}: {}", id, e.getMessage(), e);

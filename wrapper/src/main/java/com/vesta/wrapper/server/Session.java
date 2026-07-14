@@ -7,6 +7,8 @@ public final class Session {
     public final long createdAt;
     public volatile long lastSeen;
     public volatile String currentVersion;
+    public volatile String bearerTokenHash;
+    public volatile String role;
 
     public Session() {
         this.id = UUID.randomUUID().toString();

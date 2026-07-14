@@ -2,6 +2,7 @@ package com.vesta.wrapper.server;
 
 import com.vesta.sync.FileStore;
 import com.vesta.sync.VestaSync;
+import com.vesta.wrapper.auth.AuthService;
 import com.vesta.wrapper.config.WrapperConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,26 +25,34 @@ public final class TcpSyncServer implements Runnable {
     private final SessionManager sessionManager;
     private final ServerState serverState;
     private final MessageRouter router;
+    private final AuthService auth;
     private final ExecutorService workers;
     private volatile boolean running = true;
     private ServerSocket serverSocket;
 
-    public TcpSyncServer(WrapperConfig config, FileStore fileStore) {
+    public TcpSyncServer(WrapperConfig config, FileStore fileStore, AuthService auth) {
         this.port = config.tcpPort;
         this.multiplexed = (config.tcpPort == config.httpPort);
         this.localHttpPort = config.httpPort + 100;
         this.sessionManager = new SessionManager();
         this.serverState = new ServerState(config, fileStore);
-        this.router = new MessageRouter(sessionManager, serverState, config);
+        this.auth = auth;
+        this.router = new MessageRouter(sessionManager, serverState, config, auth);
         this.workers = Executors.newCachedThreadPool(r -> {
             Thread t = new Thread(r, "vesta-tcp-worker");
             t.setDaemon(true);
             return t;
         });
+        this.serverState.addPushListener(push ->
+                log.info("Push update available: {} — {}", push.newVersion, push.changelog));
     }
 
     public ServerState getServerState() {
         return serverState;
+    }
+
+    public AuthService getAuth() {
+        return auth;
     }
 
     @Override

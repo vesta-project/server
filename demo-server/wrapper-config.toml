@@ -25,3 +25,9 @@ host = "localhost"
 port = 25565
 description = "A Vesta-powered Minecraft server"
 is-required = false
+
+[security]
+mode = "open"
+password = ""
+token-ttl-seconds = 86400
+control-port = 9091

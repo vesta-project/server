@@ -1,6 +1,7 @@
 package com.vesta.wrapper.config;
 
 import com.moandjiezana.toml.Toml;
+import com.vesta.sync.auth.SecurityMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -53,6 +54,12 @@ public final class ConfigLoader {
             b.serverPort(toml.getLong("modpack.server.port", (long) b.serverPort).intValue());
             b.serverDescription(toml.getString("modpack.server.description", b.serverDescription));
             b.serverRequired(toml.getBoolean("modpack.server.is-required", b.serverRequired));
+
+            String mode = toml.getString("security.mode", "open");
+            b.securityMode(SecurityMode.parse(mode));
+            b.securityPassword(toml.getString("security.password", b.securityPassword));
+            b.tokenTtlSeconds(toml.getLong("security.token-ttl-seconds", b.tokenTtlSeconds));
+            b.controlPort(toml.getLong("security.control-port", (long) b.controlPort).intValue());
 
             log.info("Loaded config from {}", file);
         } catch (Exception e) {
