@@ -6,7 +6,8 @@ package com.vesta.sync.auth;
 public enum SecurityMode {
     OPEN,
     PASSWORD,
-    LINKED;
+    LINKED,
+    WHITELIST;
 
     public static SecurityMode parse(String raw) {
         if (raw == null || raw.trim().isEmpty()) {
@@ -19,6 +20,9 @@ public enum SecurityMode {
         if ("linked".equals(value)) {
             return LINKED;
         }
+        if ("whitelist".equals(value)) {
+            return WHITELIST;
+        }
         if ("open".equals(value) || "none".equals(value)) {
             return OPEN;
         }
@@ -26,6 +30,6 @@ public enum SecurityMode {
     }
 
     public boolean requiresCredential() {
-        return this == PASSWORD || this == LINKED;
+        return this == PASSWORD || this == LINKED || this == WHITELIST;
     }
 }

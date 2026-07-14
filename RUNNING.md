@@ -15,6 +15,13 @@ From `V:\server`:
 .\gradlew.bat :core:test :wrapper:installDist
 ```
 
+Or install into an existing server (requires backup ack):
+
+```powershell
+.\install-wrapper.ps1 -ServerRoot "V:\path\to\mc-server" -BackupAck
+```
+
+
 The wrapper is the primary product. Optional tiered mod JARs are documented in [`docs/PUBLISHING.md`](docs/PUBLISHING.md). Product roadmap (auth, remote install, launcher plans, tests): [`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md).
 
 ## 2. Prepare a test server layout
@@ -119,6 +126,5 @@ When TCP and HTTP share port 9090, clients must send a **`0x00` byte** before ea
 
 ## Notes
 
-- **File store**: Scanned files are copied into `vesta-files/` (content-addressable by SHA-256).
-- **Version bumps**: Change `modpack.version` in config when you update mods; clients compare this string plus file hashes.
-- **Mod fallback**: If the wrapper is not running, the in-game mod serves the same HTTP API from the server JVM (no TCP). The mod detects the wrapper on `127.0.0.1:9090` and defers when present.
+- **Files**: Scanned from `mods/` and `config/` directly (no `vesta-files` duplicate). Known MR/CF entries go in `.vesta-known.json`.
+- **Private files**: Listed at `/api/v1/private/files` when authenticated and permitted.

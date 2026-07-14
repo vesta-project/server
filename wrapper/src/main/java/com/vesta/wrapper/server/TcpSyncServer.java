@@ -1,6 +1,5 @@
 package com.vesta.wrapper.server;
 
-import com.vesta.sync.FileStore;
 import com.vesta.sync.VestaSync;
 import com.vesta.wrapper.auth.AuthService;
 import com.vesta.wrapper.config.WrapperConfig;
@@ -30,12 +29,12 @@ public final class TcpSyncServer implements Runnable {
     private volatile boolean running = true;
     private ServerSocket serverSocket;
 
-    public TcpSyncServer(WrapperConfig config, FileStore fileStore, AuthService auth) {
+    public TcpSyncServer(WrapperConfig config, AuthService auth) {
         this.port = config.tcpPort;
         this.multiplexed = (config.tcpPort == config.httpPort);
         this.localHttpPort = config.httpPort + 100;
         this.sessionManager = new SessionManager();
-        this.serverState = new ServerState(config, fileStore);
+        this.serverState = new ServerState(config);
         this.auth = auth;
         this.router = new MessageRouter(sessionManager, serverState, config, auth);
         this.workers = Executors.newCachedThreadPool(r -> {

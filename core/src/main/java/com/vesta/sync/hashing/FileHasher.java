@@ -10,11 +10,20 @@ import java.security.NoSuchAlgorithmException;
 public final class FileHasher {
 
     private static final String SHA256 = "SHA-256";
+    private static final String SHA1 = "SHA-1";
     private static final int BUFFER_SIZE = 8192;
 
+    public static String sha1(Path file) throws IOException {
+        return digestFile(file, SHA1);
+    }
+
     public static String sha256(Path file) throws IOException {
+        return digestFile(file, SHA256);
+    }
+
+    private static String digestFile(Path file, String algorithm) throws IOException {
         try {
-            MessageDigest md = MessageDigest.getInstance(SHA256);
+            MessageDigest md = MessageDigest.getInstance(algorithm);
             byte[] buf = new byte[BUFFER_SIZE];
             try (InputStream in = Files.newInputStream(file)) {
                 int read;
@@ -24,7 +33,7 @@ public final class FileHasher {
             }
             return bytesToHex(md.digest());
         } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("SHA-256 not available", e);
+            throw new RuntimeException(algorithm + " not available", e);
         }
     }
 

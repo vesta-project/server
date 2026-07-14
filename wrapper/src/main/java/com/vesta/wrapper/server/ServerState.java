@@ -1,8 +1,9 @@
 package com.vesta.wrapper.server;
 
-import com.vesta.sync.FileStore;
+import com.vesta.sync.manifest.KnownSourceRegistry;
 import com.vesta.sync.manifest.ModloaderInfo;
 import com.vesta.sync.manifest.ModpackState;
+import com.vesta.sync.manifest.PrivateFileEntry;
 import com.vesta.sync.manifest.ServerInfo;
 import com.vesta.sync.manifest.ServerModpackManifest;
 import com.vesta.sync.protocol.PushUpdateAvailable;
@@ -26,7 +27,6 @@ public final class ServerState {
     private static final Logger log = LoggerFactory.getLogger(ServerState.class);
 
     private final WrapperConfig config;
-    private final FileStore store;
     private final ContentInstaller installer;
     private final String modpackDescription;
     private final List<Consumer<PushUpdateAvailable>> pushListeners = new CopyOnWriteArrayList<>();
@@ -34,10 +34,9 @@ public final class ServerState {
     private volatile ModpackState modpackState;
     private volatile Instant updatedAt;
 
-    public ServerState(WrapperConfig config, FileStore store) {
+    public ServerState(WrapperConfig config) {
         this.config = config;
-        this.store = store;
-        this.installer = new ContentInstaller(config.scanRoot, store);
+        this.installer = new ContentInstaller(config.scanRoot);
         this.modpackDescription = config.modpackDescription;
         this.updatedAt = Instant.now();
         rescan();
@@ -59,10 +58,13 @@ public final class ServerState {
 
         try {
             String previous = modpackState != null ? modpackState.getCurrentVersion() : null;
+            KnownSourceRegistry known = KnownSourceRegistry.load(config.scanRoot);
             this.modpackState = ModpackState.fromScan(
                     config.scanRoot,
                     config.scanPaths,
-                    store,
+                    known,
+                    config.unresolvedPolicy,
+                    config.privatePaths,
                     config.modpackName,
                     config.modpackVersion,
                     config.minecraftVersion,
@@ -70,10 +72,10 @@ public final class ServerState {
                     serverInfo
             );
             this.updatedAt = Instant.now();
-            log.info("Loaded modpack manifest: {} files ({} mods, {} overrides)",
-                    modpackState.getManifest().mods.size() + modpackState.getManifest().overrides.size(),
-                    modpackState.getManifest().mods.size(),
-                    modpackState.getManifest().overrides.size());
+            ServerModpackManifest m = modpackState.getManifest();
+            log.info("Loaded modpack manifest: {} public files ({} private)",
+                    m.mods.size() + m.overrides.size(),
+                    modpackState.getPrivateFiles().size());
             if (previous != null) {
                 notifyPush(previous);
             }
@@ -83,6 +85,10 @@ public final class ServerState {
                 throw new IllegalStateException("Failed to build modpack manifest", e);
             }
         }
+    }
+
+    public ContentInstaller installer() {
+        return installer;
     }
 
     public ContentInstaller.Result install(String relativePath, InputStream data) throws IOException {
@@ -97,6 +103,10 @@ public final class ServerState {
             rescan();
         }
         return deleted;
+    }
+
+    public List<PrivateFileEntry> getPrivateFiles() {
+        return modpackState.getPrivateFiles();
     }
 
     public void addPushListener(Consumer<PushUpdateAvailable> listener) {

@@ -1,18 +1,21 @@
 package com.vesta.wrapper;
 
-import com.vesta.sync.FileStore;
 import com.vesta.sync.VestaSync;
+import com.vesta.sync.auth.CapabilityEngine;
 import com.vesta.sync.auth.LinkCodeService;
+import com.vesta.sync.perm.PermissionChecker;
 import com.vesta.wrapper.auth.AuthService;
 import com.vesta.wrapper.config.ConfigLoader;
 import com.vesta.wrapper.config.WrapperConfig;
 import com.vesta.wrapper.ipc.ControlIpcServer;
+import com.vesta.wrapper.security.WhitelistService;
 import com.vesta.wrapper.server.TcpSyncServer;
 import com.vesta.wrapper.server.VestaHttpServer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
+import java.util.UUID;
 
 public class VestaWrapper {
 
@@ -49,21 +52,20 @@ public class VestaWrapper {
         controlThread.setDaemon(true);
         controlThread.start();
 
-        FileStore store;
-        try {
-            store = new FileStore(config.fileStoreDir);
-            log.info("  File store at {}", store.getRoot());
-        } catch (Exception e) {
-            log.error("Failed to create file store: {}", config.fileStoreDir, e);
-            System.exit(1);
-            return;
-        }
+        WhitelistService whitelist = new WhitelistService(config.scanRoot);
 
-        TcpSyncServer tcpServer = new TcpSyncServer(config, store, auth);
+        TcpSyncServer tcpServer = new TcpSyncServer(config, auth);
         Thread tcpThread = new Thread(tcpServer, "vesta-tcp-server");
         tcpThread.setDaemon(false);
         tcpThread.start();
         log.info("  TCP sync on :{}", config.tcpPort);
+
+        CapabilityEngine capabilities = new CapabilityEngine(
+                config.capabilities,
+                controlIpc,
+                whitelist::isWhitelisted,
+                uuid -> isOp(controlIpc, uuid)
+        );
 
         boolean multiplexed = (config.tcpPort == config.httpPort);
         int actualHttpPort = multiplexed ? (config.httpPort + 100) : config.httpPort;
@@ -71,10 +73,10 @@ public class VestaWrapper {
         VestaHttpServer httpServer = new VestaHttpServer(
                 actualHttpPort,
                 tcpServer.getServerState(),
-                store,
                 auth,
                 linkCodes,
-                controlIpc,
+                capabilities,
+                whitelist,
                 multiplexed
         );
         try {
@@ -101,6 +103,10 @@ public class VestaWrapper {
         }));
 
         log.info("Ready. Press Ctrl+C to stop.");
+    }
+
+    private static boolean isOp(PermissionChecker permissions, UUID uuid) {
+        return permissions.check(uuid, "vesta.op") == PermissionChecker.Result.ALLOW;
     }
 
     private static void printUsage() {

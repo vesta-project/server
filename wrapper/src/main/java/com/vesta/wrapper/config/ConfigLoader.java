@@ -1,13 +1,20 @@
 package com.vesta.wrapper.config;
 
 import com.moandjiezana.toml.Toml;
+import com.vesta.sync.auth.CapabilityLevel;
+import com.vesta.sync.auth.SecurityCapabilities;
 import com.vesta.sync.auth.SecurityMode;
+import com.vesta.sync.manifest.UnresolvedPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 
 public final class ConfigLoader {
 
@@ -26,9 +33,6 @@ public final class ConfigLoader {
 
             b.tcpPort(toml.getLong("server.tcp-port", (long) b.tcpPort).intValue());
             b.httpPort(toml.getLong("server.http-port", (long) b.httpPort).intValue());
-
-            var store = toml.getString("server.file-store");
-            if (store != null) b.fileStoreDir(Path.of(store));
 
             var scanRoot = toml.getString("server.scan-root");
             if (scanRoot != null) b.scanRoot(Path.of(scanRoot));
@@ -61,12 +65,50 @@ public final class ConfigLoader {
             b.tokenTtlSeconds(toml.getLong("security.token-ttl-seconds", b.tokenTtlSeconds));
             b.controlPort(toml.getLong("security.control-port", (long) b.controlPort).intValue());
 
+            String unresolved = toml.getString("modpack.unresolved-policy", "server");
+            b.unresolvedPolicy(UnresolvedPolicy.parse(unresolved));
+
+            List<String> privatePaths = toml.getList("security.private-paths");
+            if (privatePaths != null) {
+                b.privatePaths(privatePaths);
+            }
+
+            Set<UUID> adminUuids = parseUuidList(toml.getList("security.admin-uuids"));
+            b.adminUuids(adminUuids);
+
+            Toml caps = toml.getTable("security.capabilities");
+            if (caps != null) {
+                b.capabilities(new SecurityCapabilities(
+                        CapabilityLevel.parse(caps.getString("public_modpack"), CapabilityLevel.OPEN),
+                        CapabilityLevel.parse(caps.getString("private_resources"), CapabilityLevel.DENY),
+                        CapabilityLevel.parse(caps.getString("manage_content"), CapabilityLevel.PERM_OR_PASSWORD),
+                        adminUuids,
+                        toml.getString("security.permissions.install", "vesta.mods.install"),
+                        toml.getString("security.permissions.private_read", "vesta.files.private"),
+                        toml.getBoolean("security.op-grants-manage", true),
+                        privatePaths != null ? privatePaths : List.of()
+                ));
+            }
+
             log.info("Loaded config from {}", file);
         } catch (Exception e) {
             log.error("Failed to parse config: {}, using defaults", e.getMessage());
         }
 
         return b.build();
+    }
+
+    private static Set<UUID> parseUuidList(List<String> raw) {
+        Set<UUID> set = new HashSet<>();
+        if (raw == null) {
+            return set;
+        }
+        for (String s : raw) {
+            if (s != null && !s.trim().isEmpty()) {
+                set.add(UUID.fromString(s.trim()));
+            }
+        }
+        return set;
     }
 
     private ConfigLoader() {}

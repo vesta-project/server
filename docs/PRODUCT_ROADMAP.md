@@ -51,16 +51,14 @@ flowchart TB
 
 ### Missing / flawed today
 
-- Mod is a no-op when wrapper is up — no `/vesta link`, no permission bridge, no join validation.
-- Auth, TLS, upload, push updates, version history: documented / deps present, not implemented.
-- Manifest built once at startup; timestamps hardcoded.
-- TCP session UUID not validated against message `session` field; effectively open with no warning.
-- Dual stores (`vesta-files` vs `vesta-store`); mod metadata hardcoded.
-- Launcher: no server entity, no instance↔server link, platform enum is Modrinth/CurseForge only.
+- Launcher install-from-server still partial (resolve + private list APIs exist; full instance apply UI pending).
+- MSA one-shot auth and capability matrix implemented on wrapper; launcher auth commands added.
+- Known vs private split implemented; dual blob cache removed for wrapper scans.
+- **Installer scripts** added (`install-wrapper.ps1` / `.sh`); app wizard still pending.
 
 ### Aspirational
 
-Hybrid auth, local control IPC, remote install, linked UUID + LuckPerms, first-class servers in launcher (post-cleanup), management APIs on backend, UI phased.
+Hybrid auth with layered capabilities, MR/CF-known public modpack + private unknown tree, first-class servers in launcher (post-cleanup), management APIs on backend, UI phased.
 
 ---
 
@@ -95,53 +93,79 @@ Operators may choose one. Prefer both for remote admin + RBAC.
 
 ---
 
-## 4. Security modes and identity
+## 4. Security modes, identity, and content split
 
 ### Locked decisions
 
 | Topic | Decision |
 |-------|----------|
-| Permission authority | **Hybrid**: in-game perms via mod when present; wrapper-only password / UUID bind / invite / **open + warning** when not |
+| Permission authority | **Hybrid**: in-game perms via mod when present; configurable capability matrix for all non-open modes |
 | Identity key | Linked **Minecraft UUID**; Vesta issues its **own** bearer tokens after link |
-| Microsoft sessions | **Never** use raw Microsoft/Minecraft session tokens as server auth over the wire |
-| Linking | Multi-path (see below) |
+| Microsoft sessions | **One-shot bootstrap only** (`POST /api/v1/auth/msa`); token discarded after profile lookup; ongoing API uses Vesta bearer only |
+| Linking | Multi-path: MSA bootstrap, password, `/vesta link`, launcher link redeem |
+| Public modpack | **Known** files (MR/CF via `.vesta-known.json` sidecar) on public manifest; clients prefer platform CDN |
+| Private resources | **Unknown** files + configured `security.private-paths`; served from live disk via authenticated `/api/v1/private/files` |
+| Blob cache | **No** `vesta-files` mirror on wrapper scan — single copy under `mods/`/`config/` |
+
+### Content model (known vs private)
+
+```mermaid
+flowchart LR
+  scan[Scan scan-root] --> known{In .vesta-known.json as modrinth/curseforge?}
+  known -->|yes| pub[Public manifest]
+  known -->|no| pol{unresolved-policy}
+  pol -->|server default| pubServer[Public with source.type=server]
+  pol -->|private| priv[Private index + API]
+  extra[security.private-paths] --> priv
+```
+
+Classification is enriched by the **launcher** when seeding (SHA1 → Modrinth, CF fingerprint → CurseForge). Wrapper reads `.vesta-known.json` on rescan.
 
 ### Security modes
 
-| Mode | Trust established by | Warning |
-|------|----------------------|---------|
-| `open` | Anyone who can reach the port | **Required** — wrapper log + launcher UI |
-| `password` / invite token | Shared secret in config | Soft warn if weak/shared |
-| `linked` | Vesta bearer bound to UUID | — |
-| `linked` + in-game perms | Bearer + IPC permission check | Deny if mod offline for perm-gated ops |
+| Mode | Public modpack | Private resources | Manage |
+|------|----------------|-------------------|--------|
+| `open` | Anyone | Denied (default) | Denied (default) |
+| `password` | Auth bearer | Linked UUID (+ optional whitelist) | Password and/or in-game perm / admin list |
+| `linked` | Auth bearer | Linked UUID | In-game perm / admin list |
+| `whitelist` | Linked + whitelist | Linked + whitelist | Elevated (perm / admin / password per config) |
 
-### Linking paths (all supported)
+### Capability matrix (`security.capabilities`)
 
-1. **Open** — no link (warn).
-2. **Password / invite** — wrapper-only; first successful auth may bind claimed UUID.
-3. **Launcher-initiated code** — code shown on console/admin; confirm in-game (mod) or by admin paste.
-4. **In-game `/vesta link` (or `/auth`)** — player online → short-lived code → redeem in launcher (proves control of that UUID).
+```toml
+[security.capabilities]
+public_modpack = "open"          # open | auth | linked | whitelist
+private_resources = "linked"     # deny | linked | whitelist
+manage_content = "perm_or_password"  # deny | password | admin_list | perm | perm_or_password
 
-After successful link, launcher stores a **Vesta-issued bearer** (refresh/rotate as designed later). UUID is what LuckPerms and plugins already understand.
+[security.permissions]
+install = "vesta.mods.install"
+private_read = "vesta.files.private"
+
+security.admin-uuids = ["..."]
+security.op-grants-manage = true
+```
+
+In-game perms apply in **all non-open modes** when the bearer has a bound UUID (except open). Password elevates manage when configured.
+
+### Linking paths
+
+1. **MSA one-shot** — launcher sends MC access token once; wrapper verifies via Mojang profile API; issues linked bearer.
+2. **Password** — shared secret → operator bearer (link UUID separately via MSA or `/vesta link`).
+3. **In-game `/vesta link`** — code → redeem in launcher.
+4. **Open** — warn only; no private access by default.
 
 ```mermaid
 sequenceDiagram
   participant L as Launcher
   participant W as Wrapper
   participant M as Mod
-  participant P as LuckPerms
-  L->>W: Connect open or password
-  alt In-game link
-    M->>L: Code via player command
-    L->>W: Redeem code + bind UUID
-  end
-  W-->>L: Vesta bearer token
-  L->>W: Install mod with bearer
-  W->>M: IPC permission-check UUID
-  M->>P: hasPermission
-  P-->>M: allow/deny
-  M-->>W: result
-  W->>W: Write jar to mods/
+  L->>W: POST /auth/msa or /auth/link
+  W-->>L: Vesta bearer + uuid
+  L->>W: GET /modpack/manifest with bearer
+  L->>W: GET /private/files when allowed
+  W->>M: IPC permission_check
+  M-->>W: allow/deny
 ```
 
 ---
@@ -226,6 +250,94 @@ UI can lag; backend should aim to cover these capabilities over phases.
 
 ---
 
+## 8b. Operator setup, installers, and “seed the server” UX
+
+**Status:** Product direction captured here; **not implemented** yet. Backend phases 1–5 exist; this is the missing **day-0 install** story.
+
+### Goals
+
+- A **good first-run installer** for the wrapper (Windows + Linux scripts at minimum; maybe a small bootstrap JAR/`installDist` zip).
+- **Existing Minecraft servers** are first-class: point at an existing root (`mods/`, `config/`, worlds untouched by default), do not assume greenfield.
+- **Backup warning** before any write that could affect the live tree (installer, first remote install, bulk modpack apply).
+- Prefer **Vesta app–guided setup** for most operators; keep a scripted/headless path for pros and CI.
+
+### Proposed flow (app-first, script fallback)
+
+```mermaid
+flowchart LR
+  A[Operator opens Vesta app] --> B[Add Server / Setup sync]
+  B --> C{Existing MC server folder?}
+  C -->|Yes| D[Pick folder + backup warning]
+  C -->|No| E[Create layout or link empty host]
+  D --> F[Install / place wrapper + write config]
+  E --> F
+  F --> G[Choose security mode]
+  G --> H[Optional: install modpack onto server]
+  H --> I[Start wrapper → clients can sync]
+```
+
+| Step | App (preferred) | Script / CLI |
+|------|-----------------|--------------|
+| Discover / pick server root | Folder picker | `--server-root` |
+| Backup warning | Modal: “Back up `mods/` / `config/` (and worlds if touching them) before continuing” — must acknowledge | Printed WARNING + `--i-have-a-backup` flag |
+| Place wrapper | Download/copy `wrapper` dist into server or sidecar dir | `install-wrapper.ps1` / `.sh` |
+| Write `wrapper-config.toml` | Form: name, MC version, security mode, scan paths | Template + flags |
+| Optional Vesta **mod/plugin** | Offer install into `mods/` / `plugins/` for IPC + `/vesta link` | Same, optional |
+| **Install a modpack onto the server** | UI: pick Modrinth/CF/local pack → write jars/configs into server tree via wrapper APIs or local apply | Optional; script can call same APIs |
+| Start | “Start sync” / service helper | `wrapper.bat` / systemd unit later |
+
+### Existing servers — rules
+
+1. **Non-destructive by default:** installer only adds wrapper binary, config, and start script. It does **not** delete worlds or wipe `mods/` unless the operator explicitly chooses a modpack apply.
+2. **Scan what is already there:** first run builds a manifest from existing `mods/` + `config/` so clients can join the *current* pack.
+3. **Modpack apply is a separate, louder action:** “Replace / merge server content with this pack” with backup ack + diff preview when UI exists.
+4. **Sidecar vs in-tree:** support both “wrapper lives inside the server folder” and “wrapper lives beside it with `scan-root` pointing at the server.”
+
+### Install script / bootstrap deliverables (new backend/ops phase)
+
+| Artifact | Purpose |
+|----------|---------|
+| `install-wrapper.ps1` / `install-wrapper.sh` | Detect/create layout, copy dist, write config, **backup warning** — **implemented** |
+| Optional `vesta-wrapper` zip from CI | Self-contained `installDist` + scripts |
+| App “Setup Server Sync” wizard | Same steps with UI; may shell out to installer or embed logic |
+| Docs in RUNNING / PUBLISHING | One-pager: existing server vs new; open vs password |
+
+Add as **Phase 8 (ops/setup)** after hardening, or pull earlier if day-0 friction blocks testing — prefer **Phase 5.5 / parallel** once remote install APIs are stable so the app can call them during “install modpack onto server.”
+
+### App: install a modpack *for the server*
+
+Distinct from “client instance installs from server”:
+
+| Direction | Meaning |
+|-----------|---------|
+| **Client ← Server** (sync) | Launcher pulls files the wrapper already serves |
+| **Server ← Pack** (seed / manage) | Operator uses the app to push a Modrinth/CF/local modpack *onto* the Minecraft server (remote upload / apply), then clients sync that |
+
+Seed UI depends on remote install APIs (already sketched) + platform download in the launcher. Gate behind auth and backup ack.
+
+### Open decisions (lock in grilling)
+
+1. **Must setup go through the app?** Recommendation: **app-preferred, not exclusive** — scripts remain for headless/dedicated hosts; app is the happy path and can refuse advanced ops until a server entity exists.
+2. **Where does the wrapper binary live by default?** In-server vs `%LOCALAPPDATA%`/sidecar with `scan-root`.
+3. **Service install** (Windows service / systemd) in v1 or later?
+
+---
+
+## 8c. Storage model (post split)
+
+| Path | Role |
+|------|------|
+| `mods/`, `config/` (scan-root) | **Live** server tree — single on-disk copy |
+| `.vesta-known.json` | Sidecar mapping paths → MR/CF `FileSource` (launcher-written) |
+| `security.private-paths` | Extra trees indexed as private-only |
+| ~~`vesta-files/`~~ | **Removed** from wrapper scan path — no duplicate blob cache |
+
+Public downloads: known files use platform CDN URLs in manifest; `source.type=server` files use `GET /api/v1/files/{sha256}` served from live path. Private files use `GET /api/v1/private/files/{path}`.
+
+Mod-only HTTP fallback may still use a local store until aligned — wrapper is canonical.
+
+---
+
 ## 9. Advanced ideas (backlog)
 
 - User-scoped manifests (beta testers see different packs).
@@ -247,9 +359,11 @@ UI can lag; backend should aim to cover these capabilities over phases.
 | Stale perms if we used files | Wrong allow/deny | Loopback IPC + fail closed when mod down |
 | Live write + no rescan | Clients see old manifest | Rescan after every install/remove |
 | Session not validated | Protocol holes | Validate bearer/session on mutating APIs |
-| Dual file stores | Operator confusion | Unify on wrapper store when both present |
+| Dual file stores | Operator confusion | Removed wrapper blob cache; single live tree + optional mod fallback cleanup |
 | “Full management UI” scope creep | Never ships | Backend hooks yes; UI phases; deep ops last |
 | Launcher branch churn | Lost work / conflicts | No reset; postpone features; experiment on `server-import` |
+| No day-0 installer | Operators can’t adopt wrapper | Phase 5.5 scripts + app-first setup (§8b); backup warning required |
+| Seed pack wipes existing server | Data loss | Existing-server mode; backup ack; merge vs replace explicit |
 
 ---
 
@@ -265,10 +379,16 @@ Each phase **includes tests** (§12). Do not mark a phase done without them.
 | **3** | Link codes (`/vesta link` + redeem); UUID bind storage |
 | **4** | Remote install/remove + **live rescan**; unauthorized reject |
 | **5** | Push notify + real version listing/history (as needed) |
+| **A** | **Known/private split**: `.vesta-known.json`, unresolved policy, private API, no wrapper blob duplicate |
+| **B** | **MSA one-shot auth**, capability engine, layered gates on all non-open modes |
+| **C** | Whitelist + admin UUID list + OP/LP bridge + tests |
+| **D** | Launcher: auth commands, token store, private fetch, manifest resolve |
+| **E** | `install-wrapper.ps1` / `.sh` for existing servers + backup ack |
 | **6** | Process/console/player list hooks (if wrapper manages process) |
 | **7** | TLS/TOFU, rate limits, audit (hardening) |
+| **8** | App: seed server from modpack + setup wizard UX |
 
-Launcher phases follow architecture cleanup and at least backend phases 1–4.
+Launcher phases follow architecture cleanup and at least backend phases 1–4; **setup wizard / seed-server UI** after 5.5 APIs + home server entity.
 
 ---
 

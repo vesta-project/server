@@ -11,6 +11,8 @@ public final class VestaSync {
 
     public static final String API_AUTH_TOKEN = "/api/v1/auth/token";
     public static final String API_AUTH_LINK = "/api/v1/auth/link";
+    public static final String API_AUTH_MSA = "/api/v1/auth/msa";
+    public static final String API_PRIVATE_FILES = "/api/v1/private/files";
     public static final String API_FILES_UPLOAD = "/api/v1/files/upload";
     public static final String API_CONTENT_REMOVE = "/api/v1/content/remove";
     public static final String API_STATUS = "/api/v1/status";

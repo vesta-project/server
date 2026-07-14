@@ -1,7 +1,6 @@
 [server]
 tcp-port = 9090
 http-port = 9090
-file-store = "vesta-files"
 scan-root = "."
 scan-paths = ["mods", "config"]
 
@@ -15,6 +14,7 @@ name = "Vesta Demo Pack"
 description = "A demo modpack served by the Vesta sync server."
 version = "1.0.0"
 minecraft-version = "1.21.4"
+unresolved-policy = "server"
 
 [modpack.modloader]
 type = "fabric"
@@ -31,3 +31,8 @@ mode = "open"
 password = ""
 token-ttl-seconds = 86400
 control-port = 9091
+
+[security.capabilities]
+public_modpack = "open"
+private_resources = "deny"
+manage_content = "perm_or_password"

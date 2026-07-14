@@ -1,15 +1,22 @@
 package com.vesta.wrapper.config;
 
+import com.vesta.sync.auth.CapabilityLevel;
+import com.vesta.sync.auth.SecurityCapabilities;
 import com.vesta.sync.auth.SecurityMode;
+import com.vesta.sync.manifest.UnresolvedPolicy;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 
 public final class WrapperConfig {
 
     public final int tcpPort;
     public final int httpPort;
-    public final Path fileStoreDir;
     public final Path scanRoot;
     public final List<String> scanPaths;
     public final String publicScheme;
@@ -29,11 +36,14 @@ public final class WrapperConfig {
     public final String securityPassword;
     public final long tokenTtlSeconds;
     public final int controlPort;
+    public final UnresolvedPolicy unresolvedPolicy;
+    public final SecurityCapabilities capabilities;
+    public final Set<UUID> adminUuids;
+    public final List<String> privatePaths;
 
     private WrapperConfig(Builder b) {
         this.tcpPort = b.tcpPort;
         this.httpPort = b.httpPort;
-        this.fileStoreDir = b.fileStoreDir;
         this.scanRoot = b.scanRoot;
         this.scanPaths = b.scanPaths;
         this.publicScheme = b.publicScheme;
@@ -53,6 +63,31 @@ public final class WrapperConfig {
         this.securityPassword = b.securityPassword;
         this.tokenTtlSeconds = b.tokenTtlSeconds;
         this.controlPort = b.controlPort;
+        this.unresolvedPolicy = b.unresolvedPolicy;
+        this.adminUuids = Collections.unmodifiableSet(new HashSet<>(b.adminUuids));
+        this.privatePaths = Collections.unmodifiableList(new ArrayList<>(b.privatePaths));
+        this.capabilities = b.capabilities != null ? b.capabilities : defaultCapabilities(b.securityMode, b.adminUuids, b.privatePaths);
+    }
+
+    private static SecurityCapabilities defaultCapabilities(
+            SecurityMode mode,
+            Set<UUID> adminUuids,
+            List<String> privatePaths
+    ) {
+        CapabilityLevel publicLevel = mode == SecurityMode.OPEN ? CapabilityLevel.OPEN : CapabilityLevel.AUTH;
+        CapabilityLevel privateLevel = mode == SecurityMode.OPEN
+                ? CapabilityLevel.DENY
+                : (mode == SecurityMode.WHITELIST ? CapabilityLevel.WHITELIST : CapabilityLevel.LINKED);
+        return new SecurityCapabilities(
+                publicLevel,
+                privateLevel,
+                CapabilityLevel.PERM_OR_PASSWORD,
+                adminUuids,
+                "vesta.mods.install",
+                "vesta.files.private",
+                true,
+                privatePaths
+        );
     }
 
     public int effectivePublicPort() {
@@ -62,7 +97,6 @@ public final class WrapperConfig {
     public static class Builder {
         int tcpPort = 9090;
         int httpPort = 9090;
-        Path fileStoreDir = Path.of("vesta-files");
         Path scanRoot = Path.of(".");
         List<String> scanPaths = List.of("mods", "config");
         String publicScheme = "http";
@@ -82,10 +116,13 @@ public final class WrapperConfig {
         String securityPassword = "";
         long tokenTtlSeconds = 86_400L;
         int controlPort = 9091;
+        UnresolvedPolicy unresolvedPolicy = UnresolvedPolicy.SERVER;
+        SecurityCapabilities capabilities;
+        Set<UUID> adminUuids = new HashSet<>();
+        List<String> privatePaths = new ArrayList<>();
 
         public Builder tcpPort(int v) { tcpPort = v; return this; }
         public Builder httpPort(int v) { httpPort = v; return this; }
-        public Builder fileStoreDir(Path v) { fileStoreDir = v; return this; }
         public Builder scanRoot(Path v) { scanRoot = v; return this; }
         public Builder scanPaths(List<String> v) { scanPaths = v; return this; }
         public Builder publicScheme(String v) { publicScheme = v; return this; }
@@ -105,6 +142,10 @@ public final class WrapperConfig {
         public Builder securityPassword(String v) { securityPassword = v; return this; }
         public Builder tokenTtlSeconds(long v) { tokenTtlSeconds = v; return this; }
         public Builder controlPort(int v) { controlPort = v; return this; }
+        public Builder unresolvedPolicy(UnresolvedPolicy v) { unresolvedPolicy = v; return this; }
+        public Builder capabilities(SecurityCapabilities v) { capabilities = v; return this; }
+        public Builder adminUuids(Set<UUID> v) { adminUuids = new HashSet<>(v); return this; }
+        public Builder privatePaths(List<String> v) { privatePaths = new ArrayList<>(v); return this; }
 
         public WrapperConfig build() {
             return new WrapperConfig(this);

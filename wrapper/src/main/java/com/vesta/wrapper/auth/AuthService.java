@@ -74,4 +74,9 @@ public final class AuthService {
     public String issueLinkedToken(UUID uuid) {
         return store.issue("linked", uuid);
     }
+
+    public String issueMsaToken(UUID uuid, String name) {
+        log.info("Issued MSA-linked bearer for {} ({})", name, uuid);
+        return store.issue("linked", uuid);
+    }
 }

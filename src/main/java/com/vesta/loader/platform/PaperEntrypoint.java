@@ -46,6 +46,20 @@ public class PaperEntrypoint extends JavaPlugin {
             Bukkit.getPort()
         );
 
+        com.vesta.loader.PermissionBridge.setDelegate((uuid, permission) -> {
+            org.bukkit.OfflinePlayer player = Bukkit.getOfflinePlayer(uuid);
+            if ("vesta.ping".equals(permission)) {
+                return true;
+            }
+            if ("vesta.op".equals(permission)) {
+                return player.isOp();
+            }
+            if (player.isOp() && permission.startsWith("vesta.")) {
+                return true;
+            }
+            return player.hasPermission(permission);
+        });
+
         var cmd = getCommand("vesta");
         if (cmd != null) {
             cmd.setExecutor((sender, command, label, args) -> {

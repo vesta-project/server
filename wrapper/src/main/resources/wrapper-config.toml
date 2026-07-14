@@ -1,7 +1,6 @@
 [server]
 tcp-port = 9090
 http-port = 9090
-file-store = "vesta-files"
 scan-root = "."
 scan-paths = ["mods", "config"]
 
@@ -15,6 +14,8 @@ name = "Vesta Demo Pack"
 description = "A demo modpack served by the Vesta sync server."
 version = "1.0.0"
 minecraft-version = "1.21.4"
+# server = list on public manifest | private = unknown files are private-only
+unresolved-policy = "server"
 
 [modpack.modloader]
 type = "fabric"
@@ -26,9 +27,22 @@ port = 25565
 description = "A Vesta-powered Minecraft server"
 is-required = false
 
-# open | password | linked — open logs a loud warning at startup
+# open | password | linked | whitelist
 [security]
 mode = "open"
 password = ""
 token-ttl-seconds = 86400
 control-port = 9091
+op-grants-manage = true
+private-paths = []
+
+[security.capabilities]
+public_modpack = "open"
+private_resources = "deny"
+manage_content = "perm_or_password"
+
+[security.permissions]
+install = "vesta.mods.install"
+private_read = "vesta.files.private"
+
+# security.admin-uuids = ["00000000-0000-0000-0000-000000000001"]

@@ -1,33 +1,41 @@
 package com.vesta.sync.manifest;
 
-import com.vesta.sync.FileStore;
 import com.vesta.sync.sync.SyncCheckResult;
 import com.vesta.sync.sync.SyncCheckService;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
 public final class ModpackState {
 
     private final ServerModpackManifest manifest;
+    private final List<PrivateFileEntry> privateFiles;
 
-    public ModpackState(ServerModpackManifest manifest) {
+    public ModpackState(ServerModpackManifest manifest, List<PrivateFileEntry> privateFiles) {
         this.manifest = manifest;
+        this.privateFiles = privateFiles != null
+                ? Collections.unmodifiableList(new ArrayList<>(privateFiles))
+                : Collections.emptyList();
     }
 
     public static ModpackState fromScan(
             Path scanRoot,
             List<String> scanPaths,
-            FileStore store,
+            KnownSourceRegistry known,
+            UnresolvedPolicy unresolvedPolicy,
+            List<String> extraPrivatePaths,
             String name,
             String version,
             String minecraftVersion,
             ModloaderInfo modloader,
             ServerInfo serverInfo
     ) throws IOException {
-        ManifestBuilder.ScanResult scan = ManifestBuilder.scan(scanRoot, scanPaths, store);
+        ManifestBuilder.ScanResult scan = ManifestBuilder.scan(
+                scanRoot, scanPaths, known, unresolvedPolicy, extraPrivatePaths);
 
         ServerModpackManifest manifest = new ServerModpackManifest();
         manifest.mode = ModpackMode.CUSTOM;
@@ -38,11 +46,15 @@ public final class ModpackState {
         manifest.mods = scan.mods;
         manifest.overrides = scan.overrides;
         manifest.serverInfo = serverInfo;
-        return new ModpackState(manifest);
+        return new ModpackState(manifest, scan.privateFiles);
     }
 
     public ServerModpackManifest getManifest() {
         return manifest;
+    }
+
+    public List<PrivateFileEntry> getPrivateFiles() {
+        return privateFiles;
     }
 
     public String getCurrentVersion() {

@@ -1,6 +1,5 @@
 package com.vesta.sync.manifest;
 
-import com.vesta.sync.FileStore;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -9,7 +8,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -28,9 +28,12 @@ class ManifestBuilderTest {
         Files.write(modsDir.resolve("test-mod.jar"), "mod-content".getBytes(StandardCharsets.UTF_8));
         Files.write(configDir.resolve("options.json"), "{\"enabled\":true}".getBytes(StandardCharsets.UTF_8));
 
-        FileStore store = new FileStore(tempDir.resolve("store"));
         ManifestBuilder.ScanResult result = ManifestBuilder.scan(
-                tempDir, Arrays.asList("mods", "config"), store);
+                tempDir,
+                Arrays.asList("mods", "config"),
+                KnownSourceRegistry.empty(),
+                UnresolvedPolicy.SERVER,
+                Collections.emptyList());
 
         assertEquals(1, result.mods.size());
         assertEquals(1, result.overrides.size());
@@ -38,14 +41,16 @@ class ManifestBuilderTest {
         assertEquals("config/options.json", result.overrides.get(0).path);
         assertNotNull(result.mods.get(0).sha256);
         assertEquals("server", result.mods.get(0).source.type);
-        assertTrue(store.exists(result.mods.get(0).sha256));
     }
 
     @Test
     void scanSkipsMissingDirectories() throws Exception {
-        FileStore store = new FileStore(tempDir.resolve("store"));
         ManifestBuilder.ScanResult result = ManifestBuilder.scan(
-                tempDir, Arrays.asList("mods", "config"), store);
+                tempDir,
+                Arrays.asList("mods", "config"),
+                KnownSourceRegistry.empty(),
+                UnresolvedPolicy.SERVER,
+                Collections.emptyList());
         assertTrue(result.mods.isEmpty());
         assertTrue(result.overrides.isEmpty());
     }
@@ -57,11 +62,58 @@ class ManifestBuilderTest {
         Files.write(modsDir.resolve(".hidden.jar"), "hidden".getBytes(StandardCharsets.UTF_8));
         Files.write(modsDir.resolve("visible.jar"), "visible".getBytes(StandardCharsets.UTF_8));
 
-        FileStore store = new FileStore(tempDir.resolve("store"));
         ManifestBuilder.ScanResult result = ManifestBuilder.scan(
-                tempDir, Collections.singletonList("mods"), store);
+                tempDir,
+                Collections.singletonList("mods"),
+                KnownSourceRegistry.empty(),
+                UnresolvedPolicy.SERVER,
+                Collections.emptyList());
 
         assertEquals(1, result.mods.size());
         assertEquals("mods/visible.jar", result.mods.get(0).path);
+    }
+
+    @Test
+    void knownPlatformStaysPublic() throws Exception {
+        Path modsDir = tempDir.resolve("mods");
+        Files.createDirectories(modsDir);
+        Files.write(modsDir.resolve("known.jar"), "known".getBytes(StandardCharsets.UTF_8));
+
+        FileSource src = new FileSource();
+        src.type = "modrinth";
+        src.platform = "modrinth";
+        src.projectId = "abc";
+        src.versionId = "1";
+        Map<String, FileSource> map = new HashMap<>();
+        map.put("mods/known.jar", src);
+
+        ManifestBuilder.ScanResult result = ManifestBuilder.scan(
+                tempDir,
+                Collections.singletonList("mods"),
+                new KnownSourceRegistry(map),
+                UnresolvedPolicy.PRIVATE,
+                Collections.emptyList());
+
+        assertEquals(1, result.mods.size());
+        assertEquals("modrinth", result.mods.get(0).source.type);
+        assertTrue(result.privateFiles.isEmpty());
+    }
+
+    @Test
+    void unresolvedPrivatePolicy() throws Exception {
+        Path modsDir = tempDir.resolve("mods");
+        Files.createDirectories(modsDir);
+        Files.write(modsDir.resolve("manual.jar"), "manual".getBytes(StandardCharsets.UTF_8));
+
+        ManifestBuilder.ScanResult result = ManifestBuilder.scan(
+                tempDir,
+                Collections.singletonList("mods"),
+                KnownSourceRegistry.empty(),
+                UnresolvedPolicy.PRIVATE,
+                Collections.emptyList());
+
+        assertTrue(result.mods.isEmpty());
+        assertEquals(1, result.privateFiles.size());
+        assertEquals("mods/manual.jar", result.privateFiles.get(0).path);
     }
 }

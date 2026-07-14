@@ -4,16 +4,19 @@ import com.google.gson.FieldNamingPolicy;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
-import com.vesta.sync.FileStore;
 import com.vesta.sync.VestaSync;
 import com.vesta.sync.auth.AuthGate;
+import com.vesta.sync.auth.BearerTokenStore;
+import com.vesta.sync.auth.CapabilityEngine;
 import com.vesta.sync.auth.LinkCodeService;
-import com.vesta.sync.auth.SecurityMode;
+import com.vesta.sync.auth.MsaProfileVerifier;
+import com.vesta.sync.manifest.ManifestFile;
+import com.vesta.sync.manifest.PrivateFileEntry;
 import com.vesta.sync.manifest.ServerModpackManifest;
-import com.vesta.sync.perm.PermissionChecker;
 import com.vesta.sync.sync.SyncCheckResult;
 import com.vesta.wrapper.auth.AuthService;
 import com.vesta.wrapper.content.ContentInstaller;
+import com.vesta.wrapper.security.WhitelistService;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.io.Content;
@@ -27,12 +30,16 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.net.URLDecoder;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -44,28 +51,29 @@ public final class VestaHttpServer {
             .setFieldNamingPolicy(FieldNamingPolicy.LOWER_CASE_WITH_UNDERSCORES)
             .setPrettyPrinting()
             .create();
+    private static final MsaProfileVerifier MSA = new MsaProfileVerifier();
 
     private final Server jetty;
     private final ServerState serverState;
-    private final FileStore fileStore;
     private final AuthService auth;
     private final LinkCodeService linkCodes;
-    private final PermissionChecker permissions;
+    private final CapabilityEngine capabilities;
+    private final WhitelistService whitelist;
 
     public VestaHttpServer(
             int port,
             ServerState serverState,
-            FileStore fileStore,
             AuthService auth,
             LinkCodeService linkCodes,
-            PermissionChecker permissions,
+            CapabilityEngine capabilities,
+            WhitelistService whitelist,
             boolean bindLocalOnly
     ) {
         this.serverState = serverState;
-        this.fileStore = fileStore;
         this.auth = auth;
         this.linkCodes = linkCodes;
-        this.permissions = permissions;
+        this.capabilities = capabilities;
+        this.whitelist = whitelist;
         this.jetty = new Server();
         ServerConnector connector = new ServerConnector(jetty);
         connector.setPort(port);
@@ -108,22 +116,25 @@ public final class VestaHttpServer {
             }
             switch (path) {
                 case VestaSync.API_MODPACK_INFO -> {
+                    if (!requireCapability(request, response, callback, CapabilityEngine.Action.PUBLIC_MODPACK)) return;
                     response.setStatus(200);
                     handleModpackInfo(response, callback);
                     return;
                 }
                 case VestaSync.API_MANIFEST -> {
+                    if (!requireCapability(request, response, callback, CapabilityEngine.Action.PUBLIC_MODPACK)) return;
                     response.setStatus(200);
                     handleModpackManifest(response, callback);
                     return;
                 }
                 case VestaSync.API_MODPACK_VERSIONS -> {
+                    if (!requireCapability(request, response, callback, CapabilityEngine.Action.PUBLIC_MODPACK)) return;
                     response.setStatus(200);
                     handleModpackVersions(response, callback);
                     return;
                 }
                 case VestaSync.API_SYNC_CHECK -> {
-                    if (!requireAuth(request, response, callback)) return;
+                    if (!requireCapability(request, response, callback, CapabilityEngine.Action.PUBLIC_MODPACK)) return;
                     handleSyncCheck(request, response, callback);
                     return;
                 }
@@ -135,15 +146,17 @@ public final class VestaHttpServer {
                     handleAuthLink(request, response, callback);
                     return;
                 }
+                case VestaSync.API_AUTH_MSA -> {
+                    handleAuthMsa(request, response, callback);
+                    return;
+                }
                 case VestaSync.API_FILES_UPLOAD -> {
-                    if (!requireAuth(request, response, callback)) return;
-                    if (!requireManagePermission(request, response, callback)) return;
+                    if (!requireCapability(request, response, callback, CapabilityEngine.Action.MANAGE_CONTENT)) return;
                     handleUpload(request, response, callback);
                     return;
                 }
                 case VestaSync.API_CONTENT_REMOVE -> {
-                    if (!requireAuth(request, response, callback)) return;
-                    if (!requireManagePermission(request, response, callback)) return;
+                    if (!requireCapability(request, response, callback, CapabilityEngine.Action.MANAGE_CONTENT)) return;
                     handleRemove(request, response, callback);
                     return;
                 }
@@ -152,13 +165,24 @@ public final class VestaHttpServer {
                     handleStatus(response, callback);
                     return;
                 }
+                case VestaSync.API_PRIVATE_FILES -> {
+                    if (!requireCapability(request, response, callback, CapabilityEngine.Action.PRIVATE_RESOURCES)) return;
+                    handlePrivateList(response, callback);
+                    return;
+                }
                 default -> {
                     if (path.startsWith(VestaSync.API_FILES)) {
-                        if (!requireAuth(request, response, callback)) return;
+                        if (!requireCapability(request, response, callback, CapabilityEngine.Action.PUBLIC_MODPACK)) return;
                         handleFileDownload(request, response, callback);
                         return;
                     }
+                    if (path.startsWith(VestaSync.API_PRIVATE_FILES + "/")) {
+                        if (!requireCapability(request, response, callback, CapabilityEngine.Action.PRIVATE_RESOURCES)) return;
+                        handlePrivateDownload(request, response, callback);
+                        return;
+                    }
                     if (path.startsWith(VestaSync.API_MODPACK_VERSIONS + "/") && path.endsWith("/manifest")) {
+                        if (!requireCapability(request, response, callback, CapabilityEngine.Action.PUBLIC_MODPACK)) return;
                         handleVersionManifest(request, response, callback);
                         return;
                     }
@@ -173,42 +197,44 @@ public final class VestaHttpServer {
         }
     }
 
-    private boolean requireAuth(Request request, Response response, Callback callback) {
+    private CapabilityEngine.AuthContext authContext(Request request) {
         String header = request.getHeaders().get(VestaSync.AUTH_HEADER);
-        AuthGate.Outcome outcome = auth.gate().requireBearer(header);
-        if (outcome == AuthGate.Outcome.ALLOW) {
-            return true;
-        }
-        response.setStatus(401);
-        json(response, callback, Map.of(
-                "error", outcome == AuthGate.Outcome.DENY_MISSING ? "authentication required" : "invalid token"
-        ));
-        return false;
+        Optional<BearerTokenStore.Record> rec = auth.validateBearer(header);
+        boolean authenticated = auth.isOpen() || rec.isPresent();
+        boolean passwordAuth = rec.isPresent() && "operator".equals(rec.get().role);
+        UUID uuid = rec.map(r -> r.boundUuid).orElse(null);
+        String role = rec.map(r -> r.role).orElse(null);
+        return new CapabilityEngine.AuthContext(auth.mode(), authenticated, passwordAuth, uuid, role);
     }
 
-    private boolean requireManagePermission(Request request, Response response, Callback callback) {
-        if (auth.mode() != SecurityMode.LINKED) {
+    private boolean requireCapability(
+            Request request,
+            Response response,
+            Callback callback,
+            CapabilityEngine.Action action
+    ) {
+        CapabilityEngine.Decision d = capabilities.check(action, authContext(request));
+        if (d == CapabilityEngine.Decision.ALLOW) {
             return true;
         }
-        Optional<com.vesta.sync.auth.BearerTokenStore.Record> rec =
-                auth.validateBearer(request.getHeaders().get(VestaSync.AUTH_HEADER));
-        if (rec.isEmpty() || rec.get().boundUuid == null) {
-            response.setStatus(403);
-            json(response, callback, Map.of("error", "linked uuid required"));
-            return false;
+        switch (d) {
+            case DENY_AUTH:
+                response.setStatus(401);
+                json(response, callback, Map.of("error", "authentication required"));
+                return false;
+            case DENY_WHITELIST:
+                response.setStatus(403);
+                json(response, callback, Map.of("error", "not whitelisted"));
+                return false;
+            case DENY_PERM_UNAVAILABLE:
+                response.setStatus(403);
+                json(response, callback, Map.of("error", "mod offline — permission check unavailable"));
+                return false;
+            default:
+                response.setStatus(403);
+                json(response, callback, Map.of("error", "permission denied"));
+                return false;
         }
-        PermissionChecker.Result result = permissions.check(rec.get().boundUuid, "vesta.mods.install");
-        if (result == PermissionChecker.Result.ALLOW) {
-            return true;
-        }
-        response.setStatus(403);
-        json(response, callback, Map.of(
-                "error",
-                result == PermissionChecker.Result.UNAVAILABLE
-                        ? "mod offline — permission check unavailable"
-                        : "permission denied"
-        ));
-        return false;
     }
 
     private void handleAuthToken(Request request, Response response, Callback callback) throws Exception {
@@ -233,6 +259,35 @@ public final class VestaHttpServer {
         }
         response.setStatus(200);
         json(response, callback, Map.of("token", token.get(), "token_type", "Bearer"));
+    }
+
+    private void handleAuthMsa(Request request, Response response, Callback callback) throws Exception {
+        if (!HttpMethod.POST.is(request.getMethod())) {
+            response.setStatus(405);
+            json(response, callback, Map.of("error", "method not allowed"));
+            return;
+        }
+        if (auth.isOpen()) {
+            response.setStatus(400);
+            json(response, callback, Map.of("error", "MSA auth not used in open mode"));
+            return;
+        }
+        JsonObject body = GSON.fromJson(readBody(request), JsonObject.class);
+        String accessToken = body != null && body.has("access_token") ? body.get("access_token").getAsString() : "";
+        Optional<MsaProfileVerifier.Profile> profile = MSA.verify(accessToken);
+        if (profile.isEmpty()) {
+            response.setStatus(401);
+            json(response, callback, Map.of("error", "invalid minecraft access token"));
+            return;
+        }
+        String token = auth.issueMsaToken(profile.get().uuid, profile.get().name);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("token", token);
+        out.put("token_type", "Bearer");
+        out.put("uuid", profile.get().uuid.toString());
+        out.put("name", profile.get().name);
+        response.setStatus(200);
+        json(response, callback, out);
     }
 
     private void handleAuthLink(Request request, Response response, Callback callback) throws Exception {
@@ -275,9 +330,9 @@ public final class VestaHttpServer {
         byte[] data = Base64.getDecoder().decode(b64);
         ContentInstaller.Result result = serverState.install(path, new ByteArrayInputStream(data));
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("path", result.path());
-        out.put("sha256", result.sha256());
-        out.put("size", result.size());
+        out.put("path", result.path);
+        out.put("sha256", result.sha256);
+        out.put("size", result.size);
         out.put("version", serverState.getCurrentVersion());
         response.setStatus(200);
         json(response, callback, out);
@@ -301,19 +356,57 @@ public final class VestaHttpServer {
         json(response, callback, Map.of("removed", deleted, "version", serverState.getCurrentVersion()));
     }
 
+    private void handlePrivateList(Response response, Callback callback) {
+        List<Map<String, Object>> files = new ArrayList<>();
+        for (PrivateFileEntry e : serverState.getPrivateFiles()) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("path", e.path);
+            row.put("sha256", e.sha256);
+            row.put("size", e.size);
+            files.add(row);
+        }
+        json(response, callback, Map.of("files", files));
+    }
+
+    private void handlePrivateDownload(Request request, Response response, Callback callback) throws Exception {
+        String rel = request.getHttpURI().getPath().substring(VestaSync.API_PRIVATE_FILES.length());
+        if (rel.startsWith("/")) {
+            rel = rel.substring(1);
+        }
+        rel = URLDecoder.decode(rel, StandardCharsets.UTF_8);
+        if (rel.isEmpty()) {
+            response.setStatus(400);
+            json(response, callback, Map.of("error", "path required"));
+            return;
+        }
+        boolean allowed = false;
+        for (PrivateFileEntry e : serverState.getPrivateFiles()) {
+            if (e.path.equals(rel)) {
+                allowed = true;
+                break;
+            }
+        }
+        if (!allowed) {
+            response.setStatus(404);
+            json(response, callback, Map.of("error", "private file not found"));
+            return;
+        }
+        Optional<Path> live = serverState.installer().resolveLivePath(rel);
+        if (live.isEmpty()) {
+            response.setStatus(404);
+            json(response, callback, Map.of("error", "file missing on disk"));
+            return;
+        }
+        serveFile(response, callback, live.get());
+    }
+
     private void handleStatus(Response response, Callback callback) {
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("security_mode", auth.mode().name().toLowerCase());
         status.put("modpack_version", serverState.getCurrentVersion());
         status.put("updated_at", serverState.getUpdatedAt().toString());
-        status.put("mod_connected", permissions instanceof PermissionChecker.Unavailable
-                ? false
-                : !(permissions.check(new UUID(0, 0), "vesta.ping") == PermissionChecker.Result.UNAVAILABLE
-                    && auth.mode() == SecurityMode.LINKED));
-        // Prefer explicit ControlIpcServer if passed as PermissionChecker
-        if (permissions instanceof com.vesta.wrapper.ipc.ControlIpcServer ipc) {
-            status.put("mod_connected", ipc.isModConnected());
-        }
+        status.put("private_file_count", serverState.getPrivateFiles().size());
+        status.put("whitelist_count", whitelist.all().size());
         json(response, callback, status);
     }
 
@@ -404,13 +497,20 @@ public final class VestaHttpServer {
             return;
         }
 
-        if (!fileStore.exists(sha256)) {
+        ServerModpackManifest manifest = serverState.getManifest();
+        List<ManifestFile> all = new ArrayList<>(manifest.mods);
+        all.addAll(manifest.overrides);
+        Optional<Path> live = serverState.installer().resolveByHash(
+                sha256, serverState.getPrivateFiles(), all);
+        if (live.isEmpty()) {
             response.setStatus(404);
             json(response, callback, Map.of("error", "file not found"));
             return;
         }
+        serveFile(response, callback, live.get());
+    }
 
-        Path file = fileStore.get(sha256);
+    private void serveFile(Response response, Callback callback, Path file) throws Exception {
         response.getHeaders().put(HttpHeader.CONTENT_TYPE, "application/octet-stream");
         response.getHeaders().put(HttpHeader.CONTENT_LENGTH, String.valueOf(Files.size(file)));
         response.setStatus(200);
@@ -435,7 +535,7 @@ public final class VestaHttpServer {
     }
 
     private void serveDevtools(Response response, Callback callback) throws Exception {
-        try (var in = VestaHttpServer.class.getResourceAsStream("/devtools/index.html")) {
+        try (InputStream in = VestaHttpServer.class.getResourceAsStream("/devtools/index.html")) {
             if (in == null) {
                 response.setStatus(404);
                 json(response, callback, Map.of("error", "devtools page missing"));
@@ -455,8 +555,8 @@ public final class VestaHttpServer {
 
     private long totalSize(ServerModpackManifest manifest) {
         long total = 0;
-        for (var m : manifest.mods) total += m.size;
-        for (var o : manifest.overrides) total += o.size;
+        for (ManifestFile m : manifest.mods) total += m.size;
+        for (ManifestFile o : manifest.overrides) total += o.size;
         return total;
     }
 }
