@@ -115,6 +115,10 @@ public final class ServerState {
         pushListeners.add(listener);
     }
 
+    public void removePushListener(Consumer<PushUpdateAvailable> listener) {
+        pushListeners.remove(listener);
+    }
+
     private void notifyPush(String previousVersion) {
         PushUpdateAvailable push = new PushUpdateAvailable();
         push.ts = updatedAt.toString();

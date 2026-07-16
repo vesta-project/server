@@ -3,6 +3,7 @@ package com.vesta.wrapper.server;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.vesta.sync.auth.RealtimeTicketService;
+import com.vesta.sync.protocol.PushUpdateAvailable;
 import org.eclipse.jetty.websocket.api.Callback;
 import org.eclipse.jetty.websocket.api.Session;
 import org.eclipse.jetty.websocket.api.StatusCode;
@@ -19,6 +20,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 @WebSocket
 public final class VestaRealtimeSocket {
@@ -28,8 +30,9 @@ public final class VestaRealtimeSocket {
     private final UUID serverUuid;
     private final RealtimeTicketService tickets;
     private final ServerState serverState;
+    private final Consumer<PushUpdateAvailable> pushListener;
     private Session session;
-    private RealtimeTicketService.Ticket principal;
+    private volatile RealtimeTicketService.Ticket principal;
     private long rateWindowStarted = System.currentTimeMillis();
     private int rateWindowMessages;
 
@@ -41,6 +44,7 @@ public final class VestaRealtimeSocket {
         this.serverUuid = serverUuid;
         this.tickets = tickets;
         this.serverState = serverState;
+        this.pushListener = this::onPackUpdate;
     }
 
     @OnWebSocketOpen
@@ -79,6 +83,7 @@ public final class VestaRealtimeSocket {
                 return;
             }
             principal = consumed.get();
+            serverState.addPushListener(pushListener);
             send(Map.of(
                     "type", "ready",
                     "server_id", serverUuid.toString(),
@@ -112,6 +117,7 @@ public final class VestaRealtimeSocket {
 
     @OnWebSocketClose
     public void onClose(int statusCode, String reason) {
+        serverState.removePushListener(pushListener);
         session = null;
         principal = null;
     }
@@ -130,6 +136,20 @@ public final class VestaRealtimeSocket {
             rateWindowMessages = 0;
         }
         return ++rateWindowMessages <= MAX_MESSAGES_PER_WINDOW;
+    }
+
+    private void onPackUpdate(PushUpdateAvailable ignored) {
+        RealtimeTicketService.Ticket current = principal;
+        if (current == null || !current.capabilities.contains("pack_updates")) {
+            return;
+        }
+        Map<String, Object> event = new LinkedHashMap<>();
+        event.put("type", "pack_update");
+        event.put("revision", serverState.getCurrentRevision());
+        event.put("minimum_revision", serverState.getMinimumRevision());
+        event.put("display_version", serverState.getCurrentVersion());
+        event.put("updated_at", serverState.getUpdatedAt().toString());
+        send(event);
     }
 
     private void send(Object value) {
