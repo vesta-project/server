@@ -2,8 +2,11 @@ package com.vesta.wrapper.server;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import com.vesta.sync.auth.BearerTokenStore;
+import com.vesta.sync.auth.CapabilityEngine;
 import com.vesta.sync.auth.RealtimeTicketService;
 import com.vesta.sync.protocol.PushUpdateAvailable;
+import com.vesta.wrapper.auth.AuthService;
 import org.eclipse.jetty.websocket.api.Callback;
 import org.eclipse.jetty.websocket.api.Session;
 import org.eclipse.jetty.websocket.api.StatusCode;
@@ -30,6 +33,8 @@ public final class VestaRealtimeSocket {
     private final UUID serverUuid;
     private final RealtimeTicketService tickets;
     private final ServerState serverState;
+    private final AuthService auth;
+    private final CapabilityEngine capabilities;
     private final Consumer<PushUpdateAvailable> pushListener;
     private Session session;
     private volatile RealtimeTicketService.Ticket principal;
@@ -39,11 +44,15 @@ public final class VestaRealtimeSocket {
     public VestaRealtimeSocket(
             UUID serverUuid,
             RealtimeTicketService tickets,
-            ServerState serverState
+            ServerState serverState,
+            AuthService auth,
+            CapabilityEngine capabilities
     ) {
         this.serverUuid = serverUuid;
         this.tickets = tickets;
         this.serverState = serverState;
+        this.auth = auth;
+        this.capabilities = capabilities;
         this.pushListener = this::onPackUpdate;
     }
 
@@ -100,6 +109,9 @@ public final class VestaRealtimeSocket {
             close(StatusCode.POLICY_VIOLATION, "session expired");
             return;
         }
+        if (!hasCurrentAccess()) {
+            return;
+        }
         if ("ping".equals(type)) {
             send(Map.of("type", "pong", "at", Instant.now().toString()));
         } else if ("status".equals(type)) {
@@ -136,6 +148,42 @@ public final class VestaRealtimeSocket {
             rateWindowMessages = 0;
         }
         return ++rateWindowMessages <= MAX_MESSAGES_PER_WINDOW;
+    }
+
+    private boolean hasCurrentAccess() {
+        RealtimeTicketService.Ticket current = principal;
+        Optional<BearerTokenStore.Record> bearer = auth.store().validateHash(current.bearerTokenHash);
+        if (bearer.isEmpty()
+                || !current.accountUuid.equals(bearer.get().boundUuid)
+                || !current.role.equals(bearer.get().role)) {
+            accessChanged("credential revoked or expired");
+            return false;
+        }
+        CapabilityEngine.AuthContext context = new CapabilityEngine.AuthContext(
+                auth.mode(),
+                true,
+                "operator".equals(current.role),
+                current.accountUuid,
+                current.role
+        );
+        CapabilityEngine.Decision decision = capabilities.check(
+                CapabilityEngine.Action.PUBLIC_MODPACK,
+                context
+        );
+        if (decision != CapabilityEngine.Decision.ALLOW) {
+            accessChanged(decision.name().toLowerCase());
+            return false;
+        }
+        return true;
+    }
+
+    private void accessChanged(String reason) {
+        send(Map.of(
+                "type", "access_changed",
+                "access_state", "access_required",
+                "reason", reason
+        ));
+        close(StatusCode.POLICY_VIOLATION, "access changed");
     }
 
     private void onPackUpdate(PushUpdateAvailable ignored) {

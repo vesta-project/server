@@ -61,6 +61,21 @@ public final class BearerTokenStore {
         return Optional.of(record);
     }
 
+    /** Revalidate an already authenticated session without retaining its raw bearer. */
+    public Optional<Record> validateHash(String tokenHash) {
+        if (tokenHash == null || tokenHash.trim().isEmpty()) {
+            return Optional.empty();
+        }
+        Record record = byHash.get(tokenHash);
+        if (record == null || record.isExpired()) {
+            if (record != null) {
+                byHash.remove(tokenHash, record);
+            }
+            return Optional.empty();
+        }
+        return Optional.of(record);
+    }
+
     public void revoke(String rawToken) {
         if (rawToken == null || rawToken.trim().isEmpty()) {
             return;

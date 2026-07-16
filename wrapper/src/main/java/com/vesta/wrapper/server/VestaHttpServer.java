@@ -131,7 +131,13 @@ public final class VestaHttpServer {
                     callback.succeeded();
                     return null;
                 }
-                return new VestaRealtimeSocket(config.serverId, realtimeTickets, serverState);
+                return new VestaRealtimeSocket(
+                        config.serverId,
+                        realtimeTickets,
+                        serverState,
+                        auth,
+                        capabilities
+                );
             });
         });
         realtimeHandler.setHandler(httpHandler);

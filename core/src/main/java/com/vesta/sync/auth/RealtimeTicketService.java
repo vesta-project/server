@@ -15,15 +15,18 @@ public final class RealtimeTicketService {
     public static final class Ticket {
         public final UUID serverUuid;
         public final UUID accountUuid;
+        public final String bearerTokenHash;
         public final String role;
         public final Set<String> capabilities;
         public final Instant ticketExpiresAt;
         public final Instant sessionExpiresAt;
 
-        private Ticket(UUID serverUuid, UUID accountUuid, String role, Set<String> capabilities,
+        private Ticket(UUID serverUuid, UUID accountUuid, String bearerTokenHash,
+                       String role, Set<String> capabilities,
                        Instant ticketExpiresAt, Instant sessionExpiresAt) {
             this.serverUuid = serverUuid;
             this.accountUuid = accountUuid;
+            this.bearerTokenHash = bearerTokenHash;
             this.role = role;
             this.capabilities = Collections.unmodifiableSet(new HashSet<>(capabilities));
             this.ticketExpiresAt = ticketExpiresAt;
@@ -57,6 +60,7 @@ public final class RealtimeTicketService {
         tickets.put(TokenService.hashToken(raw), new Ticket(
                 serverUuid,
                 bearer.boundUuid,
+                bearer.tokenHash,
                 bearer.role,
                 capabilities == null ? Collections.emptySet() : capabilities,
                 expiresAt,
