@@ -30,6 +30,7 @@ dependencies {
     implementation("org.eclipse.jetty.websocket:jetty-websocket-jetty-server:12.0.16")
     implementation("ch.qos.logback:logback-classic:1.5.15")
     implementation("org.bouncycastle:bcprov-jdk18on:1.79")
+    implementation("org.bouncycastle:bcpkix-jdk18on:1.79")
     implementation("at.favre.lib:bcrypt:0.10.2")
     implementation("com.moandjiezana.toml:toml4j:0.7.2")
 

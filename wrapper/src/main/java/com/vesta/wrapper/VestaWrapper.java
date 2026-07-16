@@ -12,6 +12,7 @@ import com.vesta.wrapper.config.ConfigLoader;
 import com.vesta.wrapper.config.WrapperConfig;
 import com.vesta.wrapper.ipc.ControlIpcServer;
 import com.vesta.wrapper.security.WhitelistService;
+import com.vesta.wrapper.security.TlsMaterial;
 import com.vesta.wrapper.server.TcpSyncServer;
 import com.vesta.wrapper.server.VestaHttpServer;
 import org.slf4j.Logger;
@@ -45,6 +46,18 @@ public class VestaWrapper {
         log.info("  Version {} for Minecraft {} ({} {})",
                 config.modpackVersion, config.minecraftVersion,
                 config.modloaderType, config.modloaderVersion);
+        if (config.tlsEnabled && config.tcpPort == config.httpPort) {
+            log.error("TLS requires separate ports. Keep HTTPS on :{} and move raw TCP compatibility to another port.", config.httpPort);
+            return;
+        }
+        if (config.tlsEnabled) {
+            try {
+                TlsMaterial.ensure(config);
+            } catch (Exception error) {
+                log.error("Could not prepare the HTTPS identity", error);
+                return;
+            }
+        }
 
         AuthService auth = new AuthService(config);
         LinkCodeService linkCodes = new LinkCodeService(300);
@@ -83,7 +96,7 @@ public class VestaWrapper {
                 uuid -> isOp(controlIpc, uuid)
         );
 
-        boolean multiplexed = (config.tcpPort == config.httpPort);
+        boolean multiplexed = !config.tlsEnabled && (config.tcpPort == config.httpPort);
         int actualHttpPort = multiplexed ? (config.httpPort + 100) : config.httpPort;
 
         VestaHttpServer httpServer = new VestaHttpServer(
@@ -103,10 +116,10 @@ public class VestaWrapper {
             if (multiplexed) {
                 log.info("  HTTP REST internally on :{} (Multiplexed on public port :{})", actualHttpPort, config.httpPort);
             } else {
-                log.info("  HTTP REST on :{}", config.httpPort);
+                log.info("  {} REST/WSS on :{}", config.tlsEnabled ? "HTTPS" : "HTTP (local only)", config.httpPort);
             }
             log.info("  Control IPC on 127.0.0.1:{}", config.controlPort > 0 ? config.controlPort : VestaSync.DEFAULT_CONTROL_PORT);
-            log.info("  Devtools UI: http://localhost:{}/devtools", config.httpPort);
+            log.info("  Devtools UI: {}://localhost:{}/devtools", config.tlsEnabled ? "https" : "http", config.httpPort);
         } catch (Exception e) {
             log.error("Failed to start HTTP server", e);
             tcpServer.stop();

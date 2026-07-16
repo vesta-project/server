@@ -33,6 +33,19 @@ public final class ConfigLoader {
 
             b.tcpPort(toml.getLong("server.tcp-port", (long) b.tcpPort).intValue());
             b.httpPort(toml.getLong("server.http-port", (long) b.httpPort).intValue());
+            b.tlsEnabled(toml.getBoolean("server.tls.enabled", b.tlsEnabled));
+            String keyStore = toml.getString("server.tls.keystore");
+            if (keyStore != null && !keyStore.isBlank()) {
+                b.tlsKeyStore(Path.of(keyStore));
+            }
+            b.tlsKeyStorePassword(toml.getString(
+                    "server.tls.keystore-password",
+                    b.tlsKeyStorePassword
+            ));
+            b.tlsAutoGenerate(toml.getBoolean(
+                    "server.tls.auto-generate",
+                    b.tlsAutoGenerate
+            ));
 
             var scanRoot = toml.getString("server.scan-root");
             if (scanRoot != null) b.scanRoot(Path.of(scanRoot));

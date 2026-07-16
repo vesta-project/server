@@ -22,13 +22,19 @@ import com.vesta.wrapper.content.ContentInstaller;
 import com.vesta.wrapper.security.WhitelistService;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
+import org.eclipse.jetty.http.HttpVersion;
 import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.server.Handler;
+import org.eclipse.jetty.server.HttpConfiguration;
+import org.eclipse.jetty.server.HttpConnectionFactory;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
+import org.eclipse.jetty.server.SecureRequestCustomizer;
+import org.eclipse.jetty.server.SslConnectionFactory;
 import org.eclipse.jetty.util.Callback;
+import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.eclipse.jetty.websocket.server.ServerWebSocketContainer;
 import org.eclipse.jetty.websocket.server.WebSocketUpgradeHandler;
 import org.slf4j.Logger;
@@ -90,9 +96,23 @@ public final class VestaHttpServer {
         this.minecraftChallenges = minecraftChallenges;
         this.realtimeTickets = realtimeTickets;
         this.jetty = new Server();
-        ServerConnector connector = new ServerConnector(jetty);
+        ServerConnector connector;
+        if (config.tlsEnabled) {
+            SslContextFactory.Server tls = new SslContextFactory.Server();
+            tls.setKeyStorePath(config.tlsKeyStore.toAbsolutePath().normalize().toString());
+            tls.setKeyStorePassword(config.tlsKeyStorePassword);
+            HttpConfiguration https = new HttpConfiguration();
+            https.addCustomizer(new SecureRequestCustomizer());
+            connector = new ServerConnector(
+                    jetty,
+                    new SslConnectionFactory(tls, HttpVersion.HTTP_1_1.asString()),
+                    new HttpConnectionFactory(https)
+            );
+        } else {
+            connector = new ServerConnector(jetty);
+        }
         connector.setPort(port);
-        if (bindLocalOnly) {
+        if (bindLocalOnly || !config.tlsEnabled) {
             connector.setHost("127.0.0.1");
         }
         jetty.addConnector(connector);
@@ -120,7 +140,9 @@ public final class VestaHttpServer {
 
     public void start() throws Exception {
         jetty.start();
-        log.info("HTTP REST API listening on port {}", ((ServerConnector) jetty.getConnectors()[0]).getPort());
+        log.info("{} REST API listening on port {}",
+                config.tlsEnabled ? "HTTPS" : "HTTP",
+                ((ServerConnector) jetty.getConnectors()[0]).getPort());
     }
 
     public void stop() throws Exception {

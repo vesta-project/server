@@ -1,13 +1,19 @@
 [server]
-tcp-port = 9090
+tcp-port = 9092
 http-port = 9090
 scan-root = "."
 scan-paths = ["mods", "config"]
 
 [server.public]
-scheme = "http"
+scheme = "https"
 host = "localhost"
 port = 9090
+
+[server.tls]
+enabled = true
+auto-generate = true
+keystore = ".vesta/tls.p12"
+keystore-password = "vesta-generated"
 
 [modpack]
 name = "Vesta Demo Pack"

@@ -18,6 +18,10 @@ public final class WrapperConfig {
 
     public final int tcpPort;
     public final int httpPort;
+    public final boolean tlsEnabled;
+    public final Path tlsKeyStore;
+    public final String tlsKeyStorePassword;
+    public final boolean tlsAutoGenerate;
     public final Path scanRoot;
     public final List<String> scanPaths;
     public final String publicScheme;
@@ -53,6 +57,12 @@ public final class WrapperConfig {
         this.tcpPort = b.tcpPort;
         this.httpPort = b.httpPort;
         this.scanRoot = b.scanRoot;
+        this.tlsEnabled = b.tlsEnabled;
+        this.tlsKeyStore = b.tlsKeyStore != null
+                ? b.tlsKeyStore
+                : b.scanRoot.resolve(".vesta").resolve("tls.p12");
+        this.tlsKeyStorePassword = b.tlsKeyStorePassword;
+        this.tlsAutoGenerate = b.tlsAutoGenerate;
         this.scanPaths = b.scanPaths;
         this.publicScheme = b.publicScheme;
         this.publicHost = b.publicHost;
@@ -118,11 +128,15 @@ public final class WrapperConfig {
     }
 
     public static class Builder {
-        int tcpPort = 9090;
+        int tcpPort = 9092;
         int httpPort = 9090;
+        boolean tlsEnabled = true;
+        Path tlsKeyStore;
+        String tlsKeyStorePassword = "vesta-generated";
+        boolean tlsAutoGenerate = true;
         Path scanRoot = Path.of(".");
         List<String> scanPaths = List.of("mods", "config");
-        String publicScheme = "http";
+        String publicScheme = "https";
         String publicHost = "localhost";
         int publicPort = 0;
         UUID serverId;
@@ -153,6 +167,10 @@ public final class WrapperConfig {
 
         public Builder tcpPort(int v) { tcpPort = v; return this; }
         public Builder httpPort(int v) { httpPort = v; return this; }
+        public Builder tlsEnabled(boolean v) { tlsEnabled = v; return this; }
+        public Builder tlsKeyStore(Path v) { tlsKeyStore = v; return this; }
+        public Builder tlsKeyStorePassword(String v) { tlsKeyStorePassword = v; return this; }
+        public Builder tlsAutoGenerate(boolean v) { tlsAutoGenerate = v; return this; }
         public Builder scanRoot(Path v) { scanRoot = v; return this; }
         public Builder scanPaths(List<String> v) { scanPaths = v; return this; }
         public Builder publicScheme(String v) { publicScheme = v; return this; }

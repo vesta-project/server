@@ -48,6 +48,10 @@ scan-paths = ["mods", "config"]
 host = "localhost"       # hostname clients use to download files
 port = 9090
 
+[server.tls]
+enabled = true            # HTTPS/WSS on the Vesta port
+auto-generate = true      # creates .vesta/tls.p12 on first start
+
 [modpack]
 version = "1.0.0"        # bump when you change files
 ```
@@ -69,8 +73,8 @@ You should see logs like:
 
 ```
 Manifest scan complete: N mods, M overrides
-Vesta Server listening on port 9090 (Multiplexed: true)
-HTTP REST internally on :9190 (Multiplexed on public port :9090)
+Vesta Server listening on port 9092 (Multiplexed: false)
+HTTPS REST/WSS on :9090
 ```
 
 ## 4. Try it
@@ -80,7 +84,7 @@ HTTP REST internally on :9190 (Multiplexed on public port :9090)
 With the wrapper running, open:
 
 ```
-http://localhost:9090/devtools
+https://localhost:9090/devtools
 ```
 
 Use it to view status/info/manifest, obtain a bearer token (password or link code), run sync-check, and upload/remove a test file.
@@ -98,20 +102,20 @@ cd V:\server
 
 ```powershell
 # Modpack metadata
-Invoke-RestMethod http://localhost:9090/api/v1/modpack/info
+Invoke-RestMethod https://localhost:9090/api/v1/modpack/info
 
 # Full manifest (includes file hashes)
-Invoke-RestMethod http://localhost:9090/api/v1/modpack/manifest
+Invoke-RestMethod https://localhost:9090/api/v1/modpack/manifest
 
 # Sync check
 $body = @{
   current_version = "0.9.0"
   installed_hashes = @{}
 } | ConvertTo-Json
-Invoke-RestMethod -Method POST -Uri http://localhost:9090/api/v1/sync/check -Body $body -ContentType "application/json"
+Invoke-RestMethod -Method POST -Uri https://localhost:9090/api/v1/sync/check -Body $body -ContentType "application/json"
 
 # Download a file by SHA-256 (from manifest)
-Invoke-WebRequest http://localhost:9090/api/v1/files/<sha256hex> -OutFile downloaded.bin
+Invoke-WebRequest https://localhost:9090/api/v1/files/<sha256hex> -OutFile downloaded.bin
 ```
 
 ### TCP protocol

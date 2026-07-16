@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.InetSocketAddress;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -57,7 +58,8 @@ public final class TcpSyncServer implements Runnable {
     @Override
     public void run() {
         try {
-            serverSocket = new ServerSocket(port);
+            serverSocket = new ServerSocket();
+            serverSocket.bind(new InetSocketAddress(multiplexed ? "127.0.0.1" : "0.0.0.0", port));
             log.info("Vesta Server listening on port {} (Multiplexed: {})", port, multiplexed);
             while (running) {
                 try {
