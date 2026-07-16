@@ -13,3 +13,9 @@ stonecutter parameters {
     constants.match(meta.project.substringBefore('-'), "fabric", "quilt", "neoforge", "bukkit", "paper")
     filters.include("**/*.fsh", "**/*.vsh")
 }
+
+tasks.register("testServerConnections") {
+    group = "verification"
+    description = "Runs the deterministic Vesta core and wrapper communication suites."
+    dependsOn(":core:test", ":wrapper:test")
+}

@@ -156,6 +156,11 @@ public final class VestaHttpServer {
         log.info("HTTP REST API stopped");
     }
 
+    /** Returns the active listener port, including an ephemeral port selected from port 0. */
+    public int boundPort() {
+        return ((ServerConnector) jetty.getConnectors()[0]).getLocalPort();
+    }
+
     private void handleRequest(Request request, Response response, Callback callback) throws Exception {
         String path = request.getHttpURI().getPath();
         applyCors(request, response);

@@ -2,6 +2,8 @@ package com.vesta.sync.auth;
 
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -51,6 +53,33 @@ class BearerTokenStoreTest {
         String raw = store.issue("operator", null);
         store.revoke(raw);
         assertFalse(store.validate(raw).isPresent());
+    }
+
+    @Test
+    void expiresAndPurgesUsingTheConfiguredClock() {
+        MutableClock clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        BearerTokenStore store = new BearerTokenStore(10, clock);
+        String raw = store.issue("linked", UUID.randomUUID());
+        String hash = TokenService.hashToken(raw);
+
+        assertTrue(store.validateHash(hash).isPresent());
+        clock.advance(Duration.ofSeconds(10));
+
+        assertFalse(store.validate(raw).isPresent());
+        assertFalse(store.validateHash(hash).isPresent());
+        assertEquals(0, store.size());
+    }
+
+    @Test
+    void revokeAlsoInvalidatesHashBasedRealtimeChecks() {
+        BearerTokenStore store = new BearerTokenStore(3600);
+        String raw = store.issue("linked", UUID.randomUUID());
+        String hash = TokenService.hashToken(raw);
+        assertTrue(store.validateHash(hash).isPresent());
+
+        store.revoke(raw);
+
+        assertFalse(store.validateHash(hash).isPresent());
     }
 }
 

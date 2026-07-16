@@ -1,5 +1,6 @@
 package com.vesta.sync.auth;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
@@ -27,21 +28,31 @@ public final class BearerTokenStore {
         }
 
         public boolean isExpired() {
-            return Instant.now().isAfter(expiresAt);
+            return !Instant.now().isBefore(expiresAt);
+        }
+
+        boolean isExpired(Instant now) {
+            return !now.isBefore(expiresAt);
         }
     }
 
     private final ConcurrentHashMap<String, Record> byHash = new ConcurrentHashMap<>();
     private final long ttlSeconds;
+    private final Clock clock;
 
     public BearerTokenStore(long ttlSeconds) {
+        this(ttlSeconds, Clock.systemUTC());
+    }
+
+    BearerTokenStore(long ttlSeconds, Clock clock) {
         this.ttlSeconds = ttlSeconds;
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     public String issue(String role, UUID boundUuid) {
         String raw = TokenService.issueOpaqueToken();
         String hash = TokenService.hashToken(raw);
-        Instant now = Instant.now();
+        Instant now = clock.instant();
         byHash.put(hash, new Record(hash, role, boundUuid, now, now.plusSeconds(ttlSeconds)));
         return raw;
     }
@@ -52,7 +63,7 @@ public final class BearerTokenStore {
         }
         String hash = TokenService.hashToken(rawToken);
         Record record = byHash.get(hash);
-        if (record == null || record.isExpired()) {
+        if (record == null || record.isExpired(clock.instant())) {
             if (record != null) {
                 byHash.remove(hash, record);
             }
@@ -67,7 +78,7 @@ public final class BearerTokenStore {
             return Optional.empty();
         }
         Record record = byHash.get(tokenHash);
-        if (record == null || record.isExpired()) {
+        if (record == null || record.isExpired(clock.instant())) {
             if (record != null) {
                 byHash.remove(tokenHash, record);
             }
@@ -88,7 +99,8 @@ public final class BearerTokenStore {
     }
 
     public void purgeExpired() {
-        byHash.entrySet().removeIf(e -> e.getValue().isExpired());
+        Instant now = clock.instant();
+        byHash.entrySet().removeIf(e -> e.getValue().isExpired(now));
     }
 
     @Override

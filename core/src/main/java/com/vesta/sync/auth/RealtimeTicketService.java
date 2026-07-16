@@ -1,5 +1,6 @@
 package com.vesta.sync.auth;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collections;
@@ -46,9 +47,15 @@ public final class RealtimeTicketService {
 
     private final ConcurrentHashMap<String, Ticket> tickets = new ConcurrentHashMap<>();
     private final Duration ttl;
+    private final Clock clock;
 
     public RealtimeTicketService(Duration ttl) {
+        this(ttl, Clock.systemUTC());
+    }
+
+    RealtimeTicketService(Duration ttl, Clock clock) {
         this.ttl = ttl;
+        this.clock = java.util.Objects.requireNonNull(clock, "clock");
     }
 
     public Issued issue(UUID serverUuid, BearerTokenStore.Record bearer, Set<String> capabilities) {
@@ -56,7 +63,7 @@ public final class RealtimeTicketService {
             throw new IllegalArgumentException("server and bearer are required");
         }
         String raw = TokenService.issueOpaqueToken();
-        Instant expiresAt = Instant.now().plus(ttl);
+        Instant expiresAt = clock.instant().plus(ttl);
         tickets.put(TokenService.hashToken(raw), new Ticket(
                 serverUuid,
                 bearer.boundUuid,
@@ -76,7 +83,7 @@ public final class RealtimeTicketService {
             return Optional.empty();
         }
         Ticket ticket = tickets.remove(TokenService.hashToken(raw.trim()));
-        Instant now = Instant.now();
+        Instant now = clock.instant();
         if (ticket == null
                 || !serverUuid.equals(ticket.serverUuid)
                 || !now.isBefore(ticket.ticketExpiresAt)
@@ -87,7 +94,7 @@ public final class RealtimeTicketService {
     }
 
     public void purgeExpired() {
-        Instant now = Instant.now();
+        Instant now = clock.instant();
         tickets.entrySet().removeIf(entry -> !now.isBefore(entry.getValue().ticketExpiresAt));
     }
 
