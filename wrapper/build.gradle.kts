@@ -27,6 +27,7 @@ dependencies {
     implementation(project(":core"))
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("org.eclipse.jetty:jetty-server:12.0.16")
+    implementation("org.eclipse.jetty.websocket:jetty-websocket-jetty-server:12.0.16")
     implementation("ch.qos.logback:logback-classic:1.5.15")
     implementation("org.bouncycastle:bcprov-jdk18on:1.79")
     implementation("at.favre.lib:bcrypt:0.10.2")

@@ -5,6 +5,7 @@ import com.vesta.sync.auth.CapabilityEngine;
 import com.vesta.sync.auth.LinkCodeService;
 import com.vesta.sync.auth.MinecraftSessionChallengeService;
 import com.vesta.sync.auth.MsaProfileVerifier;
+import com.vesta.sync.auth.RealtimeTicketService;
 import com.vesta.sync.perm.PermissionChecker;
 import com.vesta.wrapper.auth.AuthService;
 import com.vesta.wrapper.config.ConfigLoader;
@@ -58,6 +59,7 @@ public class VestaWrapper {
                                         profile.name
                                 ))
                 );
+        RealtimeTicketService realtimeTickets = new RealtimeTicketService(Duration.ofSeconds(30));
         ControlIpcServer controlIpc = new ControlIpcServer(
                 config.controlPort > 0 ? config.controlPort : VestaSync.DEFAULT_CONTROL_PORT,
                 linkCodes
@@ -93,6 +95,7 @@ public class VestaWrapper {
                 capabilities,
                 whitelist,
                 minecraftChallenges,
+                realtimeTickets,
                 multiplexed
         );
         try {

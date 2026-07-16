@@ -11,6 +11,7 @@ import com.vesta.sync.auth.CapabilityLevel;
 import com.vesta.sync.auth.CapabilityEngine;
 import com.vesta.sync.auth.LinkCodeService;
 import com.vesta.sync.auth.MinecraftSessionChallengeService;
+import com.vesta.sync.auth.RealtimeTicketService;
 import com.vesta.sync.manifest.ManifestFile;
 import com.vesta.sync.manifest.PrivateFileEntry;
 import com.vesta.sync.manifest.ServerModpackManifest;
@@ -28,6 +29,8 @@ import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.util.Callback;
+import org.eclipse.jetty.websocket.server.ServerWebSocketContainer;
+import org.eclipse.jetty.websocket.server.WebSocketUpgradeHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,9 +45,12 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.time.Duration;
 
 public final class VestaHttpServer {
 
@@ -61,6 +67,7 @@ public final class VestaHttpServer {
     private final CapabilityEngine capabilities;
     private final WhitelistService whitelist;
     private final MinecraftSessionChallengeService minecraftChallenges;
+    private final RealtimeTicketService realtimeTickets;
 
     public VestaHttpServer(
             int port,
@@ -71,6 +78,7 @@ public final class VestaHttpServer {
             CapabilityEngine capabilities,
             WhitelistService whitelist,
             MinecraftSessionChallengeService minecraftChallenges,
+            RealtimeTicketService realtimeTickets,
             boolean bindLocalOnly
     ) {
         this.serverState = serverState;
@@ -80,6 +88,7 @@ public final class VestaHttpServer {
         this.capabilities = capabilities;
         this.whitelist = whitelist;
         this.minecraftChallenges = minecraftChallenges;
+        this.realtimeTickets = realtimeTickets;
         this.jetty = new Server();
         ServerConnector connector = new ServerConnector(jetty);
         connector.setPort(port);
@@ -87,13 +96,26 @@ public final class VestaHttpServer {
             connector.setHost("127.0.0.1");
         }
         jetty.addConnector(connector);
-        jetty.setHandler(new Handler.Abstract() {
+        Handler httpHandler = new Handler.Abstract() {
             @Override
             public boolean handle(Request request, Response response, Callback callback) throws Exception {
                 handleRequest(request, response, callback);
                 return true;
             }
+        };
+        WebSocketUpgradeHandler realtimeHandler = WebSocketUpgradeHandler.from(jetty, container -> {
+            configureRealtime(container);
+            container.addMapping(VestaSync.API_REALTIME, (request, response, callback) -> {
+                if (!isAllowedRealtimeOrigin(request.getHeaders().get(HttpHeader.ORIGIN))) {
+                    response.setStatus(403);
+                    callback.succeeded();
+                    return null;
+                }
+                return new VestaRealtimeSocket(config.serverId, realtimeTickets, serverState);
+            });
         });
+        realtimeHandler.setHandler(httpHandler);
+        jetty.setHandler(realtimeHandler);
     }
 
     public void start() throws Exception {
@@ -167,6 +189,10 @@ public final class VestaHttpServer {
                 }
                 case VestaSync.API_AUTH_MSA -> {
                     handleAuthMsa(request, response, callback);
+                    return;
+                }
+                case VestaSync.API_REALTIME_TICKET -> {
+                    handleRealtimeTicket(request, response, callback);
                     return;
                 }
                 case VestaSync.API_FILES_UPLOAD -> {
@@ -285,6 +311,51 @@ public final class VestaHttpServer {
         json(response, callback, Map.of(
                 "error", "direct minecraft token auth was removed; use the session challenge"
         ));
+    }
+
+    private void handleRealtimeTicket(
+            Request request,
+            Response response,
+            Callback callback
+    ) {
+        if (!HttpMethod.POST.is(request.getMethod())) {
+            response.setStatus(405);
+            json(response, callback, Map.of("error", "method not allowed"));
+            return;
+        }
+        if (!requireCapability(
+                request,
+                response,
+                callback,
+                CapabilityEngine.Action.PUBLIC_MODPACK
+        )) {
+            return;
+        }
+        Optional<BearerTokenStore.Record> bearer = auth.validateBearer(
+                request.getHeaders().get(VestaSync.AUTH_HEADER)
+        );
+        if (bearer.isEmpty()) {
+            response.setStatus(401);
+            json(response, callback, Map.of("error", "authentication required"));
+            return;
+        }
+        if (bearer.get().boundUuid == null) {
+            response.setStatus(403);
+            json(response, callback, Map.of(
+                    "error", "realtime requires an account-linked credential"
+            ));
+            return;
+        }
+        RealtimeTicketService.Issued issued = realtimeTickets.issue(
+                config.serverId,
+                bearer.get(),
+                Set.of("server_status", "pack_updates", "access_changes")
+        );
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("ticket", issued.value);
+        body.put("expires_at", issued.expiresAt.toString());
+        response.setStatus(200);
+        json(response, callback, body);
     }
 
     private void handleMinecraftChallenge(
@@ -680,6 +751,26 @@ public final class VestaHttpServer {
         response.getHeaders().put(HttpHeader.CONTENT_LENGTH, String.valueOf(Files.size(file)));
         response.setStatus(200);
         response.write(true, ByteBuffer.wrap(Files.readAllBytes(file)), callback);
+    }
+
+    private static void configureRealtime(ServerWebSocketContainer container) {
+        container.setIdleTimeout(Duration.ofSeconds(45));
+        container.setMaxTextMessageSize(64 * 1024);
+        container.setMaxBinaryMessageSize(64 * 1024);
+        container.setMaxFrameSize(64 * 1024);
+    }
+
+    private static boolean isAllowedRealtimeOrigin(String origin) {
+        if (origin == null || origin.trim().isEmpty()) {
+            return true;
+        }
+        String normalized = origin.trim().toLowerCase(Locale.ROOT);
+        if (normalized.equals("tauri://localhost")
+                || normalized.equals("http://tauri.localhost")
+                || normalized.equals("https://tauri.localhost")) {
+            return true;
+        }
+        return normalized.matches("https?://(localhost|127\\.0\\.0\\.1|\\[::1\\])(?::[0-9]+)?");
     }
 
     private void json(Response response, Callback callback, Object obj) {
