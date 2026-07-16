@@ -75,8 +75,13 @@ public final class AuthService {
         return store.issue("linked", uuid);
     }
 
-    public String issueMsaToken(UUID uuid, String name) {
-        log.info("Issued MSA-linked bearer for {} ({})", name, uuid);
+    public String issueMinecraftToken(UUID uuid, String name) {
+        log.info("Issued Minecraft-session bearer for {} ({})", name, uuid);
         return store.issue("linked", uuid);
+    }
+
+    /** Compatibility alias for pre-challenge callers. */
+    public String issueMsaToken(UUID uuid, String name) {
+        return issueMinecraftToken(uuid, name);
     }
 }

@@ -3,6 +3,8 @@ package com.vesta.wrapper;
 import com.vesta.sync.VestaSync;
 import com.vesta.sync.auth.CapabilityEngine;
 import com.vesta.sync.auth.LinkCodeService;
+import com.vesta.sync.auth.MinecraftSessionChallengeService;
+import com.vesta.sync.auth.MsaProfileVerifier;
 import com.vesta.sync.perm.PermissionChecker;
 import com.vesta.wrapper.auth.AuthService;
 import com.vesta.wrapper.config.ConfigLoader;
@@ -15,6 +17,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.UUID;
 
 public class VestaWrapper {
@@ -44,6 +47,17 @@ public class VestaWrapper {
 
         AuthService auth = new AuthService(config);
         LinkCodeService linkCodes = new LinkCodeService(300);
+        MsaProfileVerifier sessionVerifier = new MsaProfileVerifier();
+        MinecraftSessionChallengeService minecraftChallenges =
+                new MinecraftSessionChallengeService(
+                        Duration.ofSeconds(60),
+                        (username, serverId) -> sessionVerifier
+                                .verifyJoined(username, serverId)
+                                .map(profile -> new MinecraftSessionChallengeService.VerifiedProfile(
+                                        profile.uuid,
+                                        profile.name
+                                ))
+                );
         ControlIpcServer controlIpc = new ControlIpcServer(
                 config.controlPort > 0 ? config.controlPort : VestaSync.DEFAULT_CONTROL_PORT,
                 linkCodes
@@ -73,10 +87,12 @@ public class VestaWrapper {
         VestaHttpServer httpServer = new VestaHttpServer(
                 actualHttpPort,
                 tcpServer.getServerState(),
+                config,
                 auth,
                 linkCodes,
                 capabilities,
                 whitelist,
+                minecraftChallenges,
                 multiplexed
         );
         try {

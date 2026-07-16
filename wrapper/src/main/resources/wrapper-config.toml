@@ -9,10 +9,19 @@ scheme = "http"
 host = "localhost"
 port = 9090
 
+[server.identity]
+# id = "replace-with-a-stable-uuid"
+name = "Vesta Server"
+banner-url = ""
+
 [modpack]
 name = "Vesta Demo Pack"
 description = "A demo modpack served by the Vesta sync server."
 version = "1.0.0"
+revision = 1
+minimum-revision = 1
+recommended-memory-min-mb = 4096
+recommended-memory-max-mb = 8192
 minecraft-version = "1.21.4"
 # server = list on public manifest | private = unknown files are private-only
 unresolved-policy = "server"

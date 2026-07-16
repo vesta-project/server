@@ -46,9 +46,35 @@ public final class ConfigLoader {
             b.publicHost(toml.getString("server.public.host", b.publicHost));
             b.publicPort(toml.getLong("server.public.port", (long) b.publicPort).intValue());
 
+            String configuredServerId = toml.getString("server.identity.id");
+            if (configuredServerId != null && !configuredServerId.isBlank()) {
+                b.serverId(UUID.fromString(configuredServerId.trim()));
+            }
+            b.serverDisplayName(toml.getString(
+                    "server.identity.name",
+                    b.serverDisplayName
+            ));
+            b.serverBannerUrl(toml.getString(
+                    "server.identity.banner-url",
+                    b.serverBannerUrl
+            ));
+
             b.modpackName(toml.getString("modpack.name", b.modpackName));
             b.modpackDescription(toml.getString("modpack.description", b.modpackDescription));
             b.modpackVersion(toml.getString("modpack.version", b.modpackVersion));
+            b.modpackRevision(toml.getLong("modpack.revision", b.modpackRevision));
+            b.minimumRevision(toml.getLong(
+                    "modpack.minimum-revision",
+                    b.minimumRevision
+            ));
+            b.recommendedMemoryMinMb(toml.getLong(
+                    "modpack.recommended-memory-min-mb",
+                    (long) b.recommendedMemoryMinMb
+            ).intValue());
+            b.recommendedMemoryMaxMb(toml.getLong(
+                    "modpack.recommended-memory-max-mb",
+                    (long) b.recommendedMemoryMaxMb
+            ).intValue());
             b.minecraftVersion(toml.getString("modpack.minecraft-version", b.minecraftVersion));
 
             b.modloaderType(toml.getString("modpack.modloader.type", b.modloaderType));

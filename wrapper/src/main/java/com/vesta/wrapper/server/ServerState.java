@@ -73,6 +73,8 @@ public final class ServerState {
             );
             this.updatedAt = Instant.now();
             ServerModpackManifest m = modpackState.getManifest();
+            m.revision = config.modpackRevision;
+            m.minimumRevision = config.minimumRevision;
             log.info("Loaded modpack manifest: {} public files ({} private)",
                     m.mods.size() + m.overrides.size(),
                     modpackState.getPrivateFiles().size());
@@ -136,6 +138,14 @@ public final class ServerState {
 
     public String getCurrentVersion() {
         return modpackState.getCurrentVersion();
+    }
+
+    public long getCurrentRevision() {
+        return config.modpackRevision;
+    }
+
+    public long getMinimumRevision() {
+        return config.minimumRevision;
     }
 
     public void setCurrentVersion(String version) {

@@ -7,14 +7,16 @@ import com.google.gson.JsonObject;
 import com.vesta.sync.VestaSync;
 import com.vesta.sync.auth.AuthGate;
 import com.vesta.sync.auth.BearerTokenStore;
+import com.vesta.sync.auth.CapabilityLevel;
 import com.vesta.sync.auth.CapabilityEngine;
 import com.vesta.sync.auth.LinkCodeService;
-import com.vesta.sync.auth.MsaProfileVerifier;
+import com.vesta.sync.auth.MinecraftSessionChallengeService;
 import com.vesta.sync.manifest.ManifestFile;
 import com.vesta.sync.manifest.PrivateFileEntry;
 import com.vesta.sync.manifest.ServerModpackManifest;
 import com.vesta.sync.sync.SyncCheckResult;
 import com.vesta.wrapper.auth.AuthService;
+import com.vesta.wrapper.config.WrapperConfig;
 import com.vesta.wrapper.content.ContentInstaller;
 import com.vesta.wrapper.security.WhitelistService;
 import org.eclipse.jetty.http.HttpHeader;
@@ -51,29 +53,33 @@ public final class VestaHttpServer {
             .setFieldNamingPolicy(FieldNamingPolicy.LOWER_CASE_WITH_UNDERSCORES)
             .setPrettyPrinting()
             .create();
-    private static final MsaProfileVerifier MSA = new MsaProfileVerifier();
-
     private final Server jetty;
     private final ServerState serverState;
+    private final WrapperConfig config;
     private final AuthService auth;
     private final LinkCodeService linkCodes;
     private final CapabilityEngine capabilities;
     private final WhitelistService whitelist;
+    private final MinecraftSessionChallengeService minecraftChallenges;
 
     public VestaHttpServer(
             int port,
             ServerState serverState,
+            WrapperConfig config,
             AuthService auth,
             LinkCodeService linkCodes,
             CapabilityEngine capabilities,
             WhitelistService whitelist,
+            MinecraftSessionChallengeService minecraftChallenges,
             boolean bindLocalOnly
     ) {
         this.serverState = serverState;
+        this.config = config;
         this.auth = auth;
         this.linkCodes = linkCodes;
         this.capabilities = capabilities;
         this.whitelist = whitelist;
+        this.minecraftChallenges = minecraftChallenges;
         this.jetty = new Server();
         ServerConnector connector = new ServerConnector(jetty);
         connector.setPort(port);
@@ -115,6 +121,11 @@ public final class VestaHttpServer {
                 return;
             }
             switch (path) {
+                case VestaSync.API_SERVER_DESCRIPTOR -> {
+                    response.setStatus(200);
+                    handleServerDescriptor(response, callback);
+                    return;
+                }
                 case VestaSync.API_MODPACK_INFO -> {
                     if (!requireCapability(request, response, callback, CapabilityEngine.Action.PUBLIC_MODPACK)) return;
                     response.setStatus(200);
@@ -144,6 +155,14 @@ public final class VestaHttpServer {
                 }
                 case VestaSync.API_AUTH_LINK -> {
                     handleAuthLink(request, response, callback);
+                    return;
+                }
+                case VestaSync.API_AUTH_MINECRAFT_CHALLENGE -> {
+                    handleMinecraftChallenge(request, response, callback);
+                    return;
+                }
+                case VestaSync.API_AUTH_MINECRAFT_COMPLETE -> {
+                    handleMinecraftComplete(request, response, callback);
                     return;
                 }
                 case VestaSync.API_AUTH_MSA -> {
@@ -262,30 +281,95 @@ public final class VestaHttpServer {
     }
 
     private void handleAuthMsa(Request request, Response response, Callback callback) throws Exception {
+        response.setStatus(410);
+        json(response, callback, Map.of(
+                "error", "direct minecraft token auth was removed; use the session challenge"
+        ));
+    }
+
+    private void handleMinecraftChallenge(
+            Request request,
+            Response response,
+            Callback callback
+    ) throws Exception {
         if (!HttpMethod.POST.is(request.getMethod())) {
             response.setStatus(405);
             json(response, callback, Map.of("error", "method not allowed"));
             return;
         }
-        if (auth.isOpen()) {
+        JsonObject body = GSON.fromJson(readBody(request), JsonObject.class);
+        String rawUuid = body != null && body.has("profile_uuid")
+                ? body.get("profile_uuid").getAsString()
+                : "";
+        String profileName = body != null && body.has("profile_name")
+                ? body.get("profile_name").getAsString()
+                : "";
+        try {
+            UUID profileUuid = parseUuid(rawUuid);
+            var issued = minecraftChallenges.issue(
+                    config.serverId,
+                    profileUuid,
+                    profileName
+            );
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("challenge_id", issued.challengeId());
+            out.put("server_id", issued.serverId());
+            out.put("expires_at", issued.expiresAt().toString());
+            out.put("vesta_server_id", config.serverId.toString());
+            response.setStatus(200);
+            json(response, callback, out);
+        } catch (IllegalArgumentException e) {
             response.setStatus(400);
-            json(response, callback, Map.of("error", "MSA auth not used in open mode"));
+            json(response, callback, Map.of("error", e.getMessage()));
+        }
+    }
+
+    private void handleMinecraftComplete(
+            Request request,
+            Response response,
+            Callback callback
+    ) throws Exception {
+        if (!HttpMethod.POST.is(request.getMethod())) {
+            response.setStatus(405);
+            json(response, callback, Map.of("error", "method not allowed"));
             return;
         }
         JsonObject body = GSON.fromJson(readBody(request), JsonObject.class);
-        String accessToken = body != null && body.has("access_token") ? body.get("access_token").getAsString() : "";
-        Optional<MsaProfileVerifier.Profile> profile = MSA.verify(accessToken);
-        if (profile.isEmpty()) {
+        String challengeId = body != null && body.has("challenge_id")
+                ? body.get("challenge_id").getAsString()
+                : "";
+        Optional<MinecraftSessionChallengeService.VerifiedProfile> verified =
+                minecraftChallenges.complete(config.serverId, challengeId);
+        if (verified.isEmpty()) {
             response.setStatus(401);
-            json(response, callback, Map.of("error", "invalid minecraft access token"));
+            json(response, callback, Map.of("error", "invalid, expired, or unverified challenge"));
             return;
         }
-        String token = auth.issueMsaToken(profile.get().uuid, profile.get().name);
+
+        var profile = verified.get();
+        CapabilityEngine.AuthContext context = new CapabilityEngine.AuthContext(
+                auth.mode(),
+                true,
+                false,
+                profile.uuid(),
+                "linked"
+        );
+        CapabilityEngine.Decision decision = capabilities.check(
+                CapabilityEngine.Action.PUBLIC_MODPACK,
+                context
+        );
+        if (decision != CapabilityEngine.Decision.ALLOW) {
+            response.setStatus(403);
+            json(response, callback, Map.of("error", "profile does not have pack access"));
+            return;
+        }
+
+        String token = auth.issueMinecraftToken(profile.uuid(), profile.name());
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("token", token);
         out.put("token_type", "Bearer");
-        out.put("uuid", profile.get().uuid.toString());
-        out.put("name", profile.get().name);
+        out.put("uuid", profile.uuid().toString());
+        out.put("name", profile.name());
         response.setStatus(200);
         json(response, callback, out);
     }
@@ -410,11 +494,82 @@ public final class VestaHttpServer {
         json(response, callback, status);
     }
 
+    private void handleServerDescriptor(Response response, Callback callback) {
+        ServerModpackManifest manifest = serverState.getManifest();
+        Map<String, Object> minecraft = new LinkedHashMap<>();
+        minecraft.put("host", config.serverHost);
+        minecraft.put("port", config.serverPort);
+        if (config.serverDescription != null && !config.serverDescription.isBlank()) {
+            minecraft.put("description", config.serverDescription.trim());
+        }
+
+        Map<String, Object> memory = new LinkedHashMap<>();
+        if (config.recommendedMemoryMinMb > 0) {
+            memory.put("minimum_mb", config.recommendedMemoryMinMb);
+        }
+        if (config.recommendedMemoryMaxMb > 0) {
+            memory.put("maximum_mb", config.recommendedMemoryMaxMb);
+        }
+
+        Map<String, Object> modloader = new LinkedHashMap<>();
+        modloader.put("type", manifest.modloader.type);
+        modloader.put("version", manifest.modloader.version);
+
+        Map<String, Object> pack = new LinkedHashMap<>();
+        pack.put("id", config.serverId + ":pack");
+        pack.put("name", manifest.name);
+        pack.put("description", config.modpackDescription);
+        pack.put("display_version", manifest.version);
+        pack.put("current_revision", serverState.getCurrentRevision());
+        pack.put("minimum_revision", serverState.getMinimumRevision());
+        pack.put("minecraft_version", manifest.minecraftVersion);
+        pack.put("modloader", modloader);
+        pack.put("file_count", manifest.mods.size() + manifest.overrides.size());
+        pack.put("total_size_bytes", totalSize(manifest));
+        pack.put("access_requires_auth",
+                config.capabilities.publicModpack != CapabilityLevel.OPEN);
+        if (!memory.isEmpty()) {
+            pack.put("memory", memory);
+        }
+
+        List<String> authMethods = new ArrayList<>();
+        if (auth.isOpen()) {
+            authMethods.add("open");
+        } else {
+            authMethods.add("minecraft");
+            authMethods.add("link");
+            if (config.securityPassword != null && !config.securityPassword.isBlank()) {
+                authMethods.add("password");
+            }
+        }
+
+        Map<String, Object> descriptor = new LinkedHashMap<>();
+        descriptor.put("server_id", config.serverId.toString());
+        descriptor.put("protocol_version", VestaSync.API_VERSION);
+        descriptor.put("capabilities", List.of(
+                "server_descriptor",
+                "modpack_sync",
+                "minecraft_challenge",
+                "realtime_ticket"
+        ));
+        descriptor.put("name", config.serverDisplayName);
+        if (config.serverBannerUrl != null && !config.serverBannerUrl.isBlank()) {
+            descriptor.put("banner_url", config.serverBannerUrl.trim());
+        }
+        descriptor.put("minecraft", minecraft);
+        descriptor.put("pack", pack);
+        descriptor.put("auth_methods", authMethods);
+        descriptor.put("updated_at", serverState.getUpdatedAt().toString());
+        json(response, callback, descriptor);
+    }
+
     private void handleModpackInfo(Response response, Callback callback) {
         ServerModpackManifest manifest = serverState.getManifest();
         Map<String, Object> info = new LinkedHashMap<>();
         info.put("name", manifest.name);
         info.put("version", manifest.version);
+        info.put("current_revision", serverState.getCurrentRevision());
+        info.put("minimum_revision", serverState.getMinimumRevision());
         String description = serverState.getModpackDescription();
         if (description != null && !description.trim().isEmpty()) {
             info.put("description", description.trim());
@@ -430,6 +585,16 @@ public final class VestaHttpServer {
         info.put("total_size_bytes", totalSize(manifest));
         info.put("updated_at", serverState.getUpdatedAt().toString());
         info.put("security_mode", auth.mode().name().toLowerCase());
+        if (config.recommendedMemoryMinMb > 0 || config.recommendedMemoryMaxMb > 0) {
+            Map<String, Integer> memory = new LinkedHashMap<>();
+            if (config.recommendedMemoryMinMb > 0) {
+                memory.put("minimum_mb", config.recommendedMemoryMinMb);
+            }
+            if (config.recommendedMemoryMaxMb > 0) {
+                memory.put("maximum_mb", config.recommendedMemoryMaxMb);
+            }
+            info.put("memory", memory);
+        }
         json(response, callback, info);
     }
 
@@ -551,6 +716,20 @@ public final class VestaHttpServer {
 
     private String readBody(Request request) throws Exception {
         return Content.Source.asString(request);
+    }
+
+    private static UUID parseUuid(String raw) {
+        String compact = raw == null ? "" : raw.trim().replace("-", "");
+        if (compact.length() != 32) {
+            throw new IllegalArgumentException("invalid minecraft profile UUID");
+        }
+        return UUID.fromString(
+                compact.substring(0, 8) + "-"
+                        + compact.substring(8, 12) + "-"
+                        + compact.substring(12, 16) + "-"
+                        + compact.substring(16, 20) + "-"
+                        + compact.substring(20)
+        );
     }
 
     private long totalSize(ServerModpackManifest manifest) {

@@ -8,6 +8,8 @@ public final class ServerModpackManifest {
     public ModpackMode mode;
     public String name;
     public String version;
+    public long revision;
+    public long minimumRevision;
     public String minecraftVersion;
     public ModloaderInfo modloader;
     public List<ManifestFile> mods = Collections.emptyList();

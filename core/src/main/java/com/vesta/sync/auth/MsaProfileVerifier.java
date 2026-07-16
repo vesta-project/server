@@ -9,6 +9,7 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 import java.util.UUID;
@@ -20,6 +21,8 @@ public final class MsaProfileVerifier {
 
     private static final Logger log = LoggerFactory.getLogger(MsaProfileVerifier.class);
     private static final String PROFILE_URL = "https://api.minecraftservices.com/minecraft/profile";
+    private static final String HAS_JOINED_URL =
+            "https://sessionserver.mojang.com/session/minecraft/hasJoined";
 
     public static final class Profile {
         public final UUID uuid;
@@ -64,6 +67,52 @@ public final class MsaProfileVerifier {
             return Optional.of(new Profile(uuid, name));
         } catch (Exception e) {
             log.warn("MSA profile verification failed: {}", e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Verifies the result of a launcher-to-Mojang join call. No Minecraft
+     * access token is sent to this service or to the Vesta wrapper.
+     */
+    public Optional<Profile> verifyJoined(String username, String serverId) {
+        if (username == null || username.trim().isEmpty()
+                || serverId == null || serverId.trim().isEmpty()) {
+            return Optional.empty();
+        }
+        try {
+            String query = "?username="
+                    + URLEncoder.encode(username.trim(), StandardCharsets.UTF_8.name())
+                    + "&serverId="
+                    + URLEncoder.encode(serverId.trim(), StandardCharsets.UTF_8.name());
+            HttpURLConnection conn = (HttpURLConnection) new URL(HAS_JOINED_URL + query)
+                    .openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(10_000);
+            conn.setReadTimeout(10_000);
+            int code = conn.getResponseCode();
+            if (code != 200) {
+                log.debug("Mojang hasJoined returned HTTP {}", code);
+                return Optional.empty();
+            }
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    sb.append(line);
+                }
+            }
+            JsonObject json = JsonParser.parseString(sb.toString()).getAsJsonObject();
+            if (!json.has("id") || !json.has("name")) {
+                return Optional.empty();
+            }
+            return Optional.of(new Profile(
+                    parseUuid(json.get("id").getAsString().replace("-", "")),
+                    json.get("name").getAsString()
+            ));
+        } catch (Exception e) {
+            log.warn("Mojang session verification failed: {}", e.getMessage());
             return Optional.empty();
         }
     }
