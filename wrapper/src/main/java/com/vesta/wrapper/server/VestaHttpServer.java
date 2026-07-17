@@ -630,6 +630,13 @@ public final class VestaHttpServer {
         pack.put("modloader", modloader);
         pack.put("file_count", manifest.mods.size() + manifest.overrides.size());
         pack.put("total_size_bytes", totalSize(manifest));
+        if (manifest.mode == com.vesta.sync.manifest.ModpackMode.PLATFORM) {
+            Map<String, Object> platform = new LinkedHashMap<>();
+            platform.put("source", manifest.source);
+            platform.put("project_id", manifest.modpackId);
+            platform.put("version_id", manifest.versionId);
+            pack.put("platform", platform);
+        }
         pack.put("access_requires_auth",
                 config.capabilities.publicModpack != CapabilityLevel.OPEN);
         if (!memory.isEmpty()) {
@@ -679,6 +686,11 @@ public final class VestaHttpServer {
             info.put("description", description.trim());
         }
         info.put("mode", manifest.mode);
+        if (manifest.mode == com.vesta.sync.manifest.ModpackMode.PLATFORM) {
+            info.put("source", manifest.source);
+            info.put("modpack_id", manifest.modpackId);
+            info.put("version_id", manifest.versionId);
+        }
         info.put("source", "server");
         info.put("minecraft_version", manifest.minecraftVersion);
         Map<String, String> ml = new LinkedHashMap<>();

@@ -56,6 +56,43 @@ auto-generate = true      # creates .vesta/tls.p12 on first start
 version = "1.0.0"        # bump when you change files
 ```
 
+### Reference an existing platform pack
+
+To make Vesta coordinate an existing Modrinth pack instead of hosting its files,
+add the exact project and version IDs:
+
+```toml
+[modpack.platform]
+source = "modrinth"
+project-id = "your-project-id"
+version-id = "your-version-id"
+download-url = ""        # Modrinth is resolved automatically
+```
+
+For CurseForge, set `source = "curseforge"` and provide a direct pack archive
+in `download-url`. The launcher can install that archive while retaining the
+Vesta server link and revision policy.
+
+Leave `source` empty to use the normal scanned `mods/` and `config/` mode.
+
+### Start Minecraft with the wrapper
+
+The wrapper can optionally own the Minecraft server process:
+
+```toml
+[minecraft]
+auto-start = true
+launch-jar = "fabric-server-launch.jar"
+working-directory = "."
+java-command = "java"
+jvm-args = ["-Xms2G", "-Xmx6G"]
+server-args = ["nogui"]
+```
+
+Paths are resolved from `working-directory`. When the wrapper shuts down, it
+also stops the Minecraft process. Keep `auto-start = false` when another panel
+or service manager owns the server process.
+
 ## 3. Start the wrapper
 
 ```powershell

@@ -26,11 +26,27 @@ unresolved-policy = "server"
 type = "fabric"
 version = "0.18.4"
 
+# Leave source empty to serve the demo files below. To test a referenced pack,
+# set source/project-id/version-id (Modrinth resolves the archive automatically).
+[modpack.platform]
+source = ""
+project-id = ""
+version-id = ""
+download-url = ""
+
 [modpack.server]
 host = "localhost"
 port = 25565
 description = "A Vesta-powered Minecraft server"
 is-required = false
+
+[minecraft]
+auto-start = false
+launch-jar = "server.jar"
+working-directory = "."
+java-command = "java"
+jvm-args = ["-Xms1G", "-Xmx2G"]
+server-args = ["nogui"]
 
 [security]
 mode = "open"

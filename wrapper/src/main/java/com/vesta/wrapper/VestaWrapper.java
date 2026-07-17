@@ -11,6 +11,7 @@ import com.vesta.wrapper.auth.AuthService;
 import com.vesta.wrapper.config.ConfigLoader;
 import com.vesta.wrapper.config.WrapperConfig;
 import com.vesta.wrapper.ipc.ControlIpcServer;
+import com.vesta.wrapper.runtime.MinecraftServerProcess;
 import com.vesta.wrapper.security.WhitelistService;
 import com.vesta.wrapper.security.TlsMaterial;
 import com.vesta.wrapper.server.TcpSyncServer;
@@ -42,6 +43,7 @@ public class VestaWrapper {
         }
 
         WrapperConfig config = ConfigLoader.load(configFile);
+        MinecraftServerProcess minecraftServer = new MinecraftServerProcess(config);
         log.info("Vesta Wrapper — {}", config.modpackName);
         log.info("  Version {} for Minecraft {} ({} {})",
                 config.modpackVersion, config.minecraftVersion,
@@ -120,8 +122,10 @@ public class VestaWrapper {
             }
             log.info("  Control IPC on 127.0.0.1:{}", config.controlPort > 0 ? config.controlPort : VestaSync.DEFAULT_CONTROL_PORT);
             log.info("  Devtools UI: {}://localhost:{}/devtools", config.tlsEnabled ? "https" : "http", config.httpPort);
+            minecraftServer.startIfConfigured();
         } catch (Exception e) {
-            log.error("Failed to start HTTP server", e);
+            log.error("Failed to start Vesta or the configured Minecraft server", e);
+            try { httpServer.stop(); } catch (Exception ignored) {}
             tcpServer.stop();
             controlIpc.stop();
             System.exit(1);
@@ -132,6 +136,7 @@ public class VestaWrapper {
             try { httpServer.stop(); } catch (Exception ignored) {}
             tcpServer.stop();
             controlIpc.stop();
+            minecraftServer.stop();
         }));
 
         log.info("Ready. Press Ctrl+C to stop.");

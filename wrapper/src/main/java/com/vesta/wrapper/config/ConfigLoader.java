@@ -75,6 +75,22 @@ public final class ConfigLoader {
             b.modpackName(toml.getString("modpack.name", b.modpackName));
             b.modpackDescription(toml.getString("modpack.description", b.modpackDescription));
             b.modpackVersion(toml.getString("modpack.version", b.modpackVersion));
+            b.modpackPlatformSource(toml.getString(
+                    "modpack.platform.source",
+                    b.modpackPlatformSource
+            ).trim().toLowerCase());
+            b.modpackPlatformProjectId(toml.getString(
+                    "modpack.platform.project-id",
+                    b.modpackPlatformProjectId
+            ).trim());
+            b.modpackPlatformVersionId(toml.getString(
+                    "modpack.platform.version-id",
+                    b.modpackPlatformVersionId
+            ).trim());
+            b.modpackPlatformDownloadUrl(toml.getString(
+                    "modpack.platform.download-url",
+                    b.modpackPlatformDownloadUrl
+            ).trim());
             b.modpackRevision(toml.getLong("modpack.revision", b.modpackRevision));
             b.minimumRevision(toml.getLong(
                     "modpack.minimum-revision",
@@ -97,6 +113,27 @@ public final class ConfigLoader {
             b.serverPort(toml.getLong("modpack.server.port", (long) b.serverPort).intValue());
             b.serverDescription(toml.getString("modpack.server.description", b.serverDescription));
             b.serverRequired(toml.getBoolean("modpack.server.is-required", b.serverRequired));
+
+            b.minecraftAutoStart(toml.getBoolean(
+                    "minecraft.auto-start",
+                    b.minecraftAutoStart
+            ));
+            b.minecraftJavaCommand(toml.getString(
+                    "minecraft.java-command",
+                    b.minecraftJavaCommand
+            ));
+            List<String> jvmArgs = toml.getList("minecraft.jvm-args");
+            if (jvmArgs != null) b.minecraftJvmArgs(jvmArgs);
+            List<String> serverArgs = toml.getList("minecraft.server-args");
+            if (serverArgs != null) b.minecraftServerArgs(serverArgs);
+            String workingDirectory = toml.getString("minecraft.working-directory");
+            if (workingDirectory != null && !workingDirectory.isBlank()) {
+                b.minecraftWorkingDirectory(Path.of(workingDirectory));
+            }
+            String launchJar = toml.getString("minecraft.launch-jar");
+            if (launchJar != null && !launchJar.isBlank()) {
+                b.minecraftLaunchJar(Path.of(launchJar));
+            }
 
             String mode = toml.getString("security.mode", "open");
             b.securityMode(SecurityMode.parse(mode));

@@ -36,11 +36,29 @@ unresolved-policy = "server"
 type = "fabric"
 version = "0.18.4"
 
+# Optional: reference a complete Modrinth or CurseForge pack instead of scanning files.
+# Leave source empty for the normal custom/scanned pack mode.
+[modpack.platform]
+source = ""
+project-id = ""
+version-id = ""
+# Required for providers that cannot be resolved publicly by version ID.
+download-url = ""
+
 [modpack.server]
 host = "localhost"
 port = 25565
 description = "A Vesta-powered Minecraft server"
 is-required = false
+
+# Optional: let the wrapper start and stop the Minecraft server process.
+[minecraft]
+auto-start = false
+launch-jar = "server.jar"
+working-directory = "."
+java-command = "java"
+jvm-args = ["-Xms2G", "-Xmx4G"]
+server-args = ["nogui"]
 
 # open | password | linked | whitelist
 [security]

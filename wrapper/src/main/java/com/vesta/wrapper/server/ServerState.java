@@ -58,26 +58,57 @@ public final class ServerState {
 
         try {
             String previous = modpackState != null ? modpackState.getCurrentVersion() : null;
-            KnownSourceRegistry known = KnownSourceRegistry.load(config.scanRoot);
-            this.modpackState = ModpackState.fromScan(
-                    config.scanRoot,
-                    config.scanPaths,
-                    known,
-                    config.unresolvedPolicy,
-                    config.privatePaths,
-                    config.modpackName,
-                    config.modpackVersion,
-                    config.minecraftVersion,
-                    modloader,
-                    serverInfo
-            );
+            if (!config.modpackPlatformSource.isBlank()) {
+                if (!config.modpackPlatformSource.equals("modrinth")
+                        && !config.modpackPlatformSource.equals("curseforge")) {
+                    throw new IllegalArgumentException(
+                            "Platform pack source must be modrinth or curseforge"
+                    );
+                }
+                if (config.modpackPlatformProjectId.isBlank()
+                        || config.modpackPlatformVersionId.isBlank()) {
+                    throw new IllegalArgumentException(
+                            "Platform packs require project-id and version-id"
+                    );
+                }
+                this.modpackState = ModpackState.fromPlatform(
+                        config.modpackPlatformSource,
+                        config.modpackPlatformProjectId,
+                        config.modpackPlatformVersionId,
+                        config.modpackPlatformDownloadUrl,
+                        config.modpackName,
+                        config.modpackVersion,
+                        config.minecraftVersion,
+                        modloader,
+                        serverInfo
+                );
+            } else {
+                KnownSourceRegistry known = KnownSourceRegistry.load(config.scanRoot);
+                this.modpackState = ModpackState.fromScan(
+                        config.scanRoot,
+                        config.scanPaths,
+                        known,
+                        config.unresolvedPolicy,
+                        config.privatePaths,
+                        config.modpackName,
+                        config.modpackVersion,
+                        config.minecraftVersion,
+                        modloader,
+                        serverInfo
+                );
+            }
             this.updatedAt = Instant.now();
             ServerModpackManifest m = modpackState.getManifest();
             m.revision = config.modpackRevision;
             m.minimumRevision = config.minimumRevision;
-            log.info("Loaded modpack manifest: {} public files ({} private)",
-                    m.mods.size() + m.overrides.size(),
-                    modpackState.getPrivateFiles().size());
+            if (m.mode == com.vesta.sync.manifest.ModpackMode.PLATFORM) {
+                log.info("Loaded {} platform pack reference: {} @ {}",
+                        m.source, m.modpackId, m.versionId);
+            } else {
+                log.info("Loaded modpack manifest: {} public files ({} private)",
+                        m.mods.size() + m.overrides.size(),
+                        modpackState.getPrivateFiles().size());
+            }
             if (previous != null) {
                 notifyPush(previous);
             }

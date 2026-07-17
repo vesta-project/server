@@ -6,6 +6,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -65,5 +66,47 @@ class ConfigLoaderSecurityTest {
         assertEquals(7L, config.minimumRevision);
         assertEquals(4096, config.recommendedMemoryMinMb);
         assertEquals(8192, config.recommendedMemoryMaxMb);
+    }
+
+    @Test
+    void loadsPlatformPackReference() throws Exception {
+        Path file = temp.resolve("wrapper-config.toml");
+        Files.writeString(file, """
+                [modpack.platform]
+                source = "modrinth"
+                project-id = "AANobbMI"
+                version-id = "example-version"
+                download-url = "https://cdn.example.test/pack.mrpack"
+                """);
+
+        WrapperConfig config = ConfigLoader.load(file);
+        assertEquals("modrinth", config.modpackPlatformSource);
+        assertEquals("AANobbMI", config.modpackPlatformProjectId);
+        assertEquals("example-version", config.modpackPlatformVersionId);
+        assertEquals(
+                "https://cdn.example.test/pack.mrpack",
+                config.modpackPlatformDownloadUrl
+        );
+    }
+
+    @Test
+    void loadsMinecraftLaunchConfiguration() throws Exception {
+        Path file = temp.resolve("wrapper-config.toml");
+        Files.writeString(file, """
+                [minecraft]
+                auto-start = true
+                launch-jar = "fabric-server.jar"
+                working-directory = "%s"
+                java-command = "custom-java"
+                jvm-args = ["-Xms1G", "-Xmx3G"]
+                server-args = ["nogui", "--demo"]
+                """.formatted(temp.toString().replace("\\", "/")));
+
+        WrapperConfig config = ConfigLoader.load(file);
+        assertTrue(config.minecraftAutoStart);
+        assertEquals("custom-java", config.minecraftJavaCommand);
+        assertEquals(List.of("-Xms1G", "-Xmx3G"), config.minecraftJvmArgs);
+        assertEquals(List.of("nogui", "--demo"), config.minecraftServerArgs);
+        assertEquals(temp.resolve("fabric-server.jar"), config.minecraftLaunchJar);
     }
 }

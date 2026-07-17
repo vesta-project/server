@@ -49,6 +49,31 @@ public final class ModpackState {
         return new ModpackState(manifest, scan.privateFiles);
     }
 
+    public static ModpackState fromPlatform(
+            String source,
+            String projectId,
+            String versionId,
+            String downloadUrl,
+            String name,
+            String version,
+            String minecraftVersion,
+            ModloaderInfo modloader,
+            ServerInfo serverInfo
+    ) {
+        ServerModpackManifest manifest = new ServerModpackManifest();
+        manifest.mode = ModpackMode.PLATFORM;
+        manifest.source = source;
+        manifest.modpackId = projectId;
+        manifest.versionId = versionId;
+        manifest.downloadUrl = downloadUrl;
+        manifest.name = name;
+        manifest.version = version;
+        manifest.minecraftVersion = minecraftVersion;
+        manifest.modloader = modloader;
+        manifest.serverInfo = serverInfo;
+        return new ModpackState(manifest, Collections.emptyList());
+    }
+
     public ServerModpackManifest getManifest() {
         return manifest;
     }

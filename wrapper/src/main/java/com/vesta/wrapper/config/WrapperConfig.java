@@ -33,6 +33,10 @@ public final class WrapperConfig {
     public final String modpackName;
     public final String modpackDescription;
     public final String modpackVersion;
+    public final String modpackPlatformSource;
+    public final String modpackPlatformProjectId;
+    public final String modpackPlatformVersionId;
+    public final String modpackPlatformDownloadUrl;
     public final long modpackRevision;
     public final long minimumRevision;
     public final int recommendedMemoryMinMb;
@@ -52,6 +56,12 @@ public final class WrapperConfig {
     public final SecurityCapabilities capabilities;
     public final Set<UUID> adminUuids;
     public final List<String> privatePaths;
+    public final boolean minecraftAutoStart;
+    public final String minecraftJavaCommand;
+    public final List<String> minecraftJvmArgs;
+    public final List<String> minecraftServerArgs;
+    public final Path minecraftWorkingDirectory;
+    public final Path minecraftLaunchJar;
 
     private WrapperConfig(Builder b) {
         this.tcpPort = b.tcpPort;
@@ -78,6 +88,10 @@ public final class WrapperConfig {
         this.modpackName = b.modpackName;
         this.modpackDescription = b.modpackDescription;
         this.modpackVersion = b.modpackVersion;
+        this.modpackPlatformSource = b.modpackPlatformSource;
+        this.modpackPlatformProjectId = b.modpackPlatformProjectId;
+        this.modpackPlatformVersionId = b.modpackPlatformVersionId;
+        this.modpackPlatformDownloadUrl = b.modpackPlatformDownloadUrl;
         this.modpackRevision = Math.max(1L, b.modpackRevision);
         this.minimumRevision = Math.max(1L, Math.min(this.modpackRevision, b.minimumRevision));
         this.recommendedMemoryMinMb = Math.max(0, b.recommendedMemoryMinMb);
@@ -100,6 +114,18 @@ public final class WrapperConfig {
         this.adminUuids = Collections.unmodifiableSet(new HashSet<>(b.adminUuids));
         this.privatePaths = Collections.unmodifiableList(new ArrayList<>(b.privatePaths));
         this.capabilities = b.capabilities != null ? b.capabilities : defaultCapabilities(b.securityMode, b.adminUuids, b.privatePaths);
+        this.minecraftAutoStart = b.minecraftAutoStart;
+        this.minecraftJavaCommand = b.minecraftJavaCommand;
+        this.minecraftJvmArgs = Collections.unmodifiableList(new ArrayList<>(b.minecraftJvmArgs));
+        this.minecraftServerArgs = Collections.unmodifiableList(new ArrayList<>(b.minecraftServerArgs));
+        this.minecraftWorkingDirectory = b.minecraftWorkingDirectory != null
+                ? b.minecraftWorkingDirectory.toAbsolutePath().normalize()
+                : b.scanRoot.toAbsolutePath().normalize();
+        this.minecraftLaunchJar = b.minecraftLaunchJar == null
+                ? null
+                : (b.minecraftLaunchJar.isAbsolute()
+                    ? b.minecraftLaunchJar.normalize()
+                    : this.minecraftWorkingDirectory.resolve(b.minecraftLaunchJar).normalize());
     }
 
     private static SecurityCapabilities defaultCapabilities(
@@ -145,6 +171,10 @@ public final class WrapperConfig {
         String modpackName = "Server Modpack";
         String modpackDescription = "";
         String modpackVersion = "1.0.0";
+        String modpackPlatformSource = "";
+        String modpackPlatformProjectId = "";
+        String modpackPlatformVersionId = "";
+        String modpackPlatformDownloadUrl = "";
         long modpackRevision = 1L;
         long minimumRevision = 1L;
         int recommendedMemoryMinMb = 0;
@@ -164,6 +194,12 @@ public final class WrapperConfig {
         SecurityCapabilities capabilities;
         Set<UUID> adminUuids = new HashSet<>();
         List<String> privatePaths = new ArrayList<>();
+        boolean minecraftAutoStart = false;
+        String minecraftJavaCommand = "java";
+        List<String> minecraftJvmArgs = new ArrayList<>();
+        List<String> minecraftServerArgs = new ArrayList<>(List.of("nogui"));
+        Path minecraftWorkingDirectory;
+        Path minecraftLaunchJar;
 
         public Builder tcpPort(int v) { tcpPort = v; return this; }
         public Builder httpPort(int v) { httpPort = v; return this; }
@@ -182,6 +218,10 @@ public final class WrapperConfig {
         public Builder modpackName(String v) { modpackName = v; return this; }
         public Builder modpackDescription(String v) { modpackDescription = v; return this; }
         public Builder modpackVersion(String v) { modpackVersion = v; return this; }
+        public Builder modpackPlatformSource(String v) { modpackPlatformSource = v; return this; }
+        public Builder modpackPlatformProjectId(String v) { modpackPlatformProjectId = v; return this; }
+        public Builder modpackPlatformVersionId(String v) { modpackPlatformVersionId = v; return this; }
+        public Builder modpackPlatformDownloadUrl(String v) { modpackPlatformDownloadUrl = v; return this; }
         public Builder modpackRevision(long v) { modpackRevision = v; return this; }
         public Builder minimumRevision(long v) { minimumRevision = v; return this; }
         public Builder recommendedMemoryMinMb(int v) { recommendedMemoryMinMb = v; return this; }
@@ -201,6 +241,12 @@ public final class WrapperConfig {
         public Builder capabilities(SecurityCapabilities v) { capabilities = v; return this; }
         public Builder adminUuids(Set<UUID> v) { adminUuids = new HashSet<>(v); return this; }
         public Builder privatePaths(List<String> v) { privatePaths = new ArrayList<>(v); return this; }
+        public Builder minecraftAutoStart(boolean v) { minecraftAutoStart = v; return this; }
+        public Builder minecraftJavaCommand(String v) { minecraftJavaCommand = v; return this; }
+        public Builder minecraftJvmArgs(List<String> v) { minecraftJvmArgs = new ArrayList<>(v); return this; }
+        public Builder minecraftServerArgs(List<String> v) { minecraftServerArgs = new ArrayList<>(v); return this; }
+        public Builder minecraftWorkingDirectory(Path v) { minecraftWorkingDirectory = v; return this; }
+        public Builder minecraftLaunchJar(Path v) { minecraftLaunchJar = v; return this; }
 
         public WrapperConfig build() {
             return new WrapperConfig(this);
