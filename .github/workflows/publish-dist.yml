@@ -1,0 +1,58 @@
+name: Publish dist branch
+
+on:
+  push:
+    branches: [main, server-connections-mvp]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish-dist:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Package dist artifacts
+        run: |
+          chmod +x ./scripts/package-dist.sh ./scripts/install.sh ./gradlew
+          ./scripts/package-dist.sh build/dist
+
+      - name: Publish to dist branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          WORK="$(mktemp -d)"
+          git clone --depth 1 --branch dist \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$WORK" \
+            || {
+              mkdir -p "$WORK"
+              git -C "$WORK" init
+              git -C "$WORK" checkout -b dist
+              git -C "$WORK" remote add origin \
+                "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            }
+
+          # Replace contents with packaged artifacts (orphan-style update).
+          find "$WORK" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          cp -a build/dist/. "$WORK/"
+          git -C "$WORK" add -A
+          if git -C "$WORK" diff --cached --quiet; then
+            echo "No dist changes to publish"
+            exit 0
+          fi
+          git -C "$WORK" commit -m "chore(dist): publish wrapper $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git -C "$WORK" push -u origin dist --force

@@ -55,4 +55,8 @@ Each JAR declares a supported MC **range** in mod metadata (e.g. 1.21.1–1.21.4
 
 1. `:core:test` — always
 2. `:wrapper:installDist` — every release
-3. Mod `:build` — when `src/` or `versions-matrix.toml` changes, or on tagged releases
+3. `scripts/package-dist.*` / `packageDist` — publish `dist` branch (see [`INSTALLER.md`](INSTALLER.md))
+4. Mod `:build` — when `src/` or `versions-matrix.toml` changes, or on tagged releases
+
+Connector mod/plugin JARs (when published) belong on **GitHub Releases**, not the
+`dist` branch. The one-liner installer never auto-installs them.

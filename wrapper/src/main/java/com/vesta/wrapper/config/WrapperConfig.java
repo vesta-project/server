@@ -66,6 +66,11 @@ public final class WrapperConfig {
     public final List<String> minecraftServerArgs;
     public final Path minecraftWorkingDirectory;
     public final Path minecraftLaunchJar;
+    /**
+     * Reserved for a future panel/launcher updater. Installers never auto-install
+     * the connector JAR; default remains false.
+     */
+    public final boolean connectorAutoUpdate;
 
     private WrapperConfig(Builder b) {
         this.tcpPort = b.tcpPort;
@@ -133,6 +138,7 @@ public final class WrapperConfig {
                 : (b.minecraftLaunchJar.isAbsolute()
                     ? b.minecraftLaunchJar.normalize()
                     : this.minecraftWorkingDirectory.resolve(b.minecraftLaunchJar).normalize());
+        this.connectorAutoUpdate = b.connectorAutoUpdate;
     }
 
     private static AccessControlConfig defaultAccess(
@@ -218,6 +224,7 @@ public final class WrapperConfig {
         List<String> minecraftServerArgs = new ArrayList<>(List.of("nogui"));
         Path minecraftWorkingDirectory;
         Path minecraftLaunchJar;
+        boolean connectorAutoUpdate = false;
 
         public Builder tcpPort(int v) { tcpPort = v; return this; }
         public Builder httpPort(int v) { httpPort = v; return this; }
@@ -266,6 +273,7 @@ public final class WrapperConfig {
         public Builder minecraftServerArgs(List<String> v) { minecraftServerArgs = new ArrayList<>(v); return this; }
         public Builder minecraftWorkingDirectory(Path v) { minecraftWorkingDirectory = v; return this; }
         public Builder minecraftLaunchJar(Path v) { minecraftLaunchJar = v; return this; }
+        public Builder connectorAutoUpdate(boolean v) { connectorAutoUpdate = v; return this; }
 
         public WrapperConfig build() {
             return new WrapperConfig(this);

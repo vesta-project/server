@@ -155,6 +155,11 @@ public final class ConfigLoader {
                 b.minecraftLaunchJar(Path.of(launchJar));
             }
 
+            b.connectorAutoUpdate(toml.getBoolean(
+                    "connector.auto-update",
+                    b.connectorAutoUpdate
+            ));
+
             String mode = toml.getString("security.mode", "open");
             b.securityMode(SecurityMode.parse(mode));
             b.securityPassword(toml.getString("security.password", b.securityPassword));

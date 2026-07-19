@@ -54,6 +54,9 @@ java-command = "java"
 jvm-args = ["-Xms1G", "-Xmx2G"]
 server-args = ["nogui"]
 
+[connector]
+auto-update = false
+
 [security]
 mode = "open"
 password = ""

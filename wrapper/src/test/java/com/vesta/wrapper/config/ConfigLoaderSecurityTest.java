@@ -183,6 +183,23 @@ class ConfigLoaderSecurityTest {
     }
 
     @Test
+    void loadsConnectorAutoUpdateFlag() throws Exception {
+        Path file = temp.resolve("wrapper-config.toml");
+        Files.writeString(file, """
+                [connector]
+                auto-update = true
+                """);
+        WrapperConfig config = ConfigLoader.load(file);
+        assertTrue(config.connectorAutoUpdate);
+    }
+
+    @Test
+    void connectorAutoUpdateDefaultsFalse() {
+        WrapperConfig config = ConfigLoader.load(temp.resolve("missing.toml"));
+        assertFalse(config.connectorAutoUpdate);
+    }
+
+    @Test
     void loadsMinecraftLaunchConfiguration() throws Exception {
         Path file = temp.resolve("wrapper-config.toml");
         Files.writeString(file, """

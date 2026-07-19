@@ -2,27 +2,53 @@
 
 The wrapper scans `mods/` and `config/` from a server directory, builds a manifest, and serves sync over **one public port** (default **9090**) with TCP + HTTP multiplexed.
 
+## Quick install (recommended)
+
+One-liners download the latest wrapper from the GitHub `dist` branch, scaffold
+dirs, write config, optionally register a service, and coach port forwarding.
+They **do not** install the Vesta connector mod/plugin (vanilla-safe).
+
+Linux / macOS:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/vesta-project/server/dist/install.sh)
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/vesta-project/server/dist/install.ps1 | iex
+```
+
+Details, flags, and `dist` layout: [`docs/INSTALLER.md`](docs/INSTALLER.md).
+
 ## Prerequisites
 
 - **JDK 17+** (JDK 21 recommended for Gradle)
-- A Minecraft server directory (or any folder with `mods/` and `config/`)
+- A Minecraft server directory (or any folder — the installer can create one)
 
-## 1. Build
+## 1. Build (developers)
 
-From `V:\server`:
+From the repo root:
 
 ```powershell
 .\gradlew.bat :core:test :wrapper:installDist
 ```
 
-Or install into an existing server (requires backup ack):
+Package one-liner artifacts locally:
+
+```powershell
+.\scripts\package-dist.ps1
+```
+
+Or install a locally built wrapper into an existing server (requires backup ack):
 
 ```powershell
 .\install-wrapper.ps1 -ServerRoot "V:\path\to\mc-server" -BackupAck
 ```
 
 
-The wrapper is the primary product. Optional tiered mod JARs are documented in [`docs/PUBLISHING.md`](docs/PUBLISHING.md). Product roadmap (auth, remote install, launcher plans, tests): [`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md).
+The wrapper is the primary product. Optional tiered mod JARs are documented in [`docs/PUBLISHING.md`](docs/PUBLISHING.md). Product roadmap (auth, remote install, launcher plans, tests): [`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md). The in-game connector is **optional** and never auto-installed by the one-liner — see `[connector]` in `wrapper-config.toml`.
 
 ## 2. Prepare a test server layout
 
@@ -34,6 +60,7 @@ your-server/
 │   └── some-mod.jar
 ├── config/
 │   └── some-config.json
+├── plugins/              # optional; unused on vanilla
 └── wrapper-config.toml   # optional — copy from wrapper resources
 ```
 
@@ -54,6 +81,9 @@ auto-generate = true      # creates .vesta/tls.p12 on first start
 
 [modpack]
 version = "1.0.0"        # bump when you change files
+
+[connector]
+auto-update = false      # reserved; leave false unless you opt in later
 ```
 
 ### Choose a pack source
