@@ -7,7 +7,7 @@ import com.google.gson.JsonObject;
 import com.vesta.sync.VestaSync;
 import com.vesta.sync.auth.AuthGate;
 import com.vesta.sync.auth.BearerTokenStore;
-import com.vesta.sync.auth.CapabilityLevel;
+import com.vesta.sync.auth.AccessCapability;
 import com.vesta.sync.auth.CapabilityEngine;
 import com.vesta.sync.auth.LinkCodeService;
 import com.vesta.sync.auth.MinecraftSessionChallengeService;
@@ -180,7 +180,7 @@ public final class VestaHttpServer {
             switch (path) {
                 case VestaSync.API_SERVER_DESCRIPTOR -> {
                     response.setStatus(200);
-                    handleServerDescriptor(response, callback);
+                    handleServerDescriptor(request, response, callback);
                     return;
                 }
                 case VestaSync.API_MODPACK_INFO -> {
@@ -605,7 +605,7 @@ public final class VestaHttpServer {
         json(response, callback, status);
     }
 
-    private void handleServerDescriptor(Response response, Callback callback) {
+    private void handleServerDescriptor(Request request, Response response, Callback callback) {
         ServerModpackManifest manifest = serverState.getManifest();
         Map<String, Object> minecraft = new LinkedHashMap<>();
         minecraft.put("host", config.serverHost);
@@ -625,6 +625,9 @@ public final class VestaHttpServer {
         Map<String, Object> modloader = new LinkedHashMap<>();
         modloader.put("type", manifest.modloader.type);
         modloader.put("version", manifest.modloader.version);
+
+        CapabilityEngine.AuthContext accessCtx = authContext(request);
+        int effectiveLevel = capabilities.effectiveLevel(accessCtx);
 
         Map<String, Object> pack = new LinkedHashMap<>();
         pack.put("id", config.serverId + ":pack");
@@ -658,8 +661,12 @@ public final class VestaHttpServer {
             pack.put("archive", archive);
             pack.put("total_size_bytes", manifest.archiveSize);
         }
-        pack.put("access_requires_auth",
-                config.capabilities.publicModpack != CapabilityLevel.OPEN);
+        pack.put("access_requires_auth", config.capabilities.access.accessRequiresAuth);
+        pack.put("minimum_access_level", capabilities.minimumLevelFor(AccessCapability.PACK_FETCH));
+        if (accessCtx.authenticated || accessCtx.boundUuid != null || accessCtx.passwordAuthenticated) {
+            pack.put("effective_level", effectiveLevel);
+            pack.put("effective_capabilities", new ArrayList<>(capabilities.capabilities(accessCtx)));
+        }
         if (!memory.isEmpty()) {
             pack.put("memory", memory);
         }

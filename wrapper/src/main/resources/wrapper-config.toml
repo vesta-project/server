@@ -75,16 +75,46 @@ mode = "open"
 password = ""
 token-ttl-seconds = 86400
 control-port = 9091
-op-grants-manage = true
 private-paths = []
 
-[security.capabilities]
-public_modpack = "open"
-private_resources = "deny"
-manage_content = "perm_or_password"
+# Baseline Vesta levels (0–4) for identity classes. Effective level is the max of
+# applicable baselines, Minecraft OP level from ops.json (1:1), [security.people],
+# and [security.perm-nodes]. Levels need not be cumulative; these defaults are.
+anonymous-level = 1
+authenticated-level = 1
+password-level = 4
+linked-level = 1
+whitelist-level = 3
 
-[security.permissions]
-install = "vesta.mods.install"
-private_read = "vesta.files.private"
+# Valid capabilities:
+#   stats.read, pack.fetch, console.read, files.read,
+#   console.execute, files.write, settings.manage, content.manage
+[security.levels]
+"0" = ["stats.read"]
+"1" = ["stats.read", "pack.fetch"]
+"2" = ["stats.read", "pack.fetch", "console.read"]
+"3" = ["stats.read", "pack.fetch", "console.read", "files.read"]
+"4" = [
+  "stats.read",
+  "pack.fetch",
+  "console.read",
+  "files.read",
+  "console.execute",
+  "files.write",
+  "settings.manage",
+  "content.manage",
+]
 
-# security.admin-uuids = ["00000000-0000-0000-0000-000000000001"]
+# UUID → level grants (in addition to OP / baselines)
+[security.people]
+# "00000000-0000-0000-0000-000000000001" = 4
+
+# LuckPerms / plugin permission node → level grants (checked via control IPC)
+[security.perm-nodes]
+"vesta.level.maintainer" = 3
+"vesta.level.admin" = 4
+"vesta.mods.install" = 4
+"vesta.files.private" = 3
+
+# Shorthand: listed UUIDs receive level 4 (merged into security.people)
+# admin-uuids = ["00000000-0000-0000-0000-000000000001"]

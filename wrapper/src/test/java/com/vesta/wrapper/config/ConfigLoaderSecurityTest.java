@@ -131,6 +131,60 @@ class ConfigLoaderSecurityTest {
     }
 
     @Test
+    void loadsAccessLevelsAndPeople() throws Exception {
+        UUID admin = UUID.fromString("00000000-0000-0000-0000-000000000099");
+        Path file = temp.resolve("wrapper-config.toml");
+        Files.writeString(file, """
+                [security]
+                mode = "linked"
+                anonymous-level = 0
+                authenticated-level = 1
+                password-level = 4
+                linked-level = 1
+                whitelist-level = 3
+
+                [security.levels]
+                "0" = ["stats.read"]
+                "1" = ["stats.read", "pack.fetch"]
+                "2" = ["stats.read", "pack.fetch", "console.read"]
+                "3" = ["stats.read", "pack.fetch", "console.read", "files.read"]
+                "4" = ["stats.read", "pack.fetch", "console.read", "files.read", "content.manage"]
+
+                [security.people]
+                "%s" = 4
+
+                [security.perm-nodes]
+                "vesta.level.admin" = 4
+                """.formatted(admin));
+
+        WrapperConfig config = ConfigLoader.load(file);
+        assertEquals(0, config.capabilities.access.anonymousBaseline);
+        assertEquals(4, config.capabilities.access.passwordBaseline);
+        assertEquals(Integer.valueOf(4), config.capabilities.access.people.get(admin));
+        assertEquals(Integer.valueOf(4), config.capabilities.access.permNodes.get("vesta.level.admin"));
+        assertTrue(config.capabilities.access.capabilitiesFor(4).contains("content.manage"));
+        assertTrue(config.capabilities.access.accessRequiresAuth);
+    }
+
+    @Test
+    void loadsLegacyCapabilitiesTable() throws Exception {
+        Path file = temp.resolve("wrapper-config.toml");
+        Files.writeString(file, """
+                [security]
+                mode = "open"
+
+                [security.capabilities]
+                public_modpack = "open"
+                private_resources = "deny"
+                manage_content = "perm_or_password"
+                """);
+
+        WrapperConfig config = ConfigLoader.load(file);
+        assertFalse(config.capabilities.access.accessRequiresAuth);
+        assertEquals(1, config.capabilities.access.anonymousBaseline);
+    }
+
+    @Test
     void loadsMinecraftLaunchConfiguration() throws Exception {
         Path file = temp.resolve("wrapper-config.toml");
         Files.writeString(file, """

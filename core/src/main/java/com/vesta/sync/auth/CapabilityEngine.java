@@ -2,19 +2,31 @@ package com.vesta.sync.auth;
 
 import com.vesta.sync.perm.PermissionChecker;
 
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Predicate;
 
 /**
- * Evaluates configured capability levels for an authenticated principal.
+ * Resolves an effective access level (0–4) and checks named capabilities.
+ *
+ * <p>Effective level is the maximum of anonymous/auth baselines, Minecraft OP
+ * level (read directly from ops.json), UUID people grants, and configured
+ * permission-node grants.
  */
 public final class CapabilityEngine {
 
+    /** @deprecated Prefer {@link AccessCapability} string names. Kept for call-site migration. */
     public enum Action {
-        PUBLIC_MODPACK,
-        PRIVATE_RESOURCES,
-        MANAGE_CONTENT
+        PUBLIC_MODPACK(AccessCapability.PACK_FETCH),
+        PRIVATE_RESOURCES(AccessCapability.FILES_READ),
+        MANAGE_CONTENT(AccessCapability.CONTENT_MANAGE);
+
+        public final String capability;
+
+        Action(String capability) {
+            this.capability = capability;
+        }
     }
 
     public enum Decision {
@@ -47,91 +59,144 @@ public final class CapabilityEngine {
         }
     }
 
-    private final SecurityCapabilities caps;
+    private final AccessControlConfig config;
     private final PermissionChecker permissions;
     private final Predicate<UUID> whitelist;
-    private final Predicate<UUID> isOp;
+    private final OpsLevelProvider opsLevels;
 
     public CapabilityEngine(
-            SecurityCapabilities caps,
+            AccessControlConfig config,
             PermissionChecker permissions,
             Predicate<UUID> whitelist,
-            Predicate<UUID> isOp
+            OpsLevelProvider opsLevels
     ) {
-        this.caps = caps;
+        this.config = config != null ? config : AccessControlConfig.defaults();
         this.permissions = permissions;
-        this.whitelist = whitelist != null ? whitelist : uuid -> false;
-        this.isOp = isOp != null ? isOp : uuid -> false;
+        this.whitelist = whitelist != null ? whitelist : new Predicate<UUID>() {
+            @Override
+            public boolean test(UUID uuid) {
+                return false;
+            }
+        };
+        this.opsLevels = opsLevels != null ? opsLevels : new OpsLevelProvider.None();
+    }
+
+    public CapabilityEngine(
+            SecurityCapabilities capabilities,
+            PermissionChecker permissions,
+            Predicate<UUID> whitelist,
+            OpsLevelProvider opsLevels
+    ) {
+        this(capabilities != null ? capabilities.access : null, permissions, whitelist, opsLevels);
+    }
+
+    public AccessControlConfig config() {
+        return config;
     }
 
     public Decision check(Action action, AuthContext ctx) {
-        CapabilityLevel level = levelFor(action);
-        if (level == CapabilityLevel.DENY) {
-            return Decision.DENY;
-        }
-        if (level == CapabilityLevel.OPEN || ctx.mode == SecurityMode.OPEN) {
-            return action == Action.PRIVATE_RESOURCES ? Decision.DENY : Decision.ALLOW;
-        }
-        switch (level) {
-            case AUTH:
-                return ctx.authenticated ? Decision.ALLOW : Decision.DENY_AUTH;
-            case LINKED:
-                return ctx.boundUuid != null ? Decision.ALLOW : Decision.DENY_AUTH;
-            case WHITELIST:
-                if (ctx.boundUuid == null) {
-                    return Decision.DENY_AUTH;
-                }
-                return whitelist.test(ctx.boundUuid) ? Decision.ALLOW : Decision.DENY_WHITELIST;
-            case PASSWORD:
-                return ctx.passwordAuthenticated ? Decision.ALLOW : Decision.DENY_AUTH;
-            case ADMIN_LIST:
-                if (ctx.boundUuid != null && caps.adminUuids.contains(ctx.boundUuid)) {
-                    return Decision.ALLOW;
-                }
-                return Decision.DENY;
-            case PERM:
-                return checkPerm(action, ctx, false);
-            case PERM_OR_PASSWORD:
-                if (ctx.passwordAuthenticated) {
-                    return Decision.ALLOW;
-                }
-                return checkPerm(action, ctx, false);
-            default:
-                return Decision.DENY;
-        }
+        return check(action.capability, ctx);
     }
 
-    private CapabilityLevel levelFor(Action action) {
-        switch (action) {
-            case PUBLIC_MODPACK: return caps.publicModpack;
-            case PRIVATE_RESOURCES: return caps.privateResources;
-            case MANAGE_CONTENT: return caps.manageContent;
-            default: return CapabilityLevel.DENY;
-        }
-    }
-
-    private Decision checkPerm(Action action, AuthContext ctx, boolean allowPasswordFallback) {
-        if (allowPasswordFallback && ctx.passwordAuthenticated) {
+    public Decision check(String capability, AuthContext ctx) {
+        String required = AccessCapability.requireValid(capability);
+        int level = effectiveLevel(ctx);
+        if (config.capabilitiesFor(level).contains(required)) {
             return Decision.ALLOW;
         }
-        if (ctx.boundUuid == null) {
+        if (!ctx.authenticated && couldAuthenticateFor(required, ctx)) {
             return Decision.DENY_AUTH;
         }
-        if (caps.opGrantsManage && isOp.test(ctx.boundUuid) && action == Action.MANAGE_CONTENT) {
-            return Decision.ALLOW;
-        }
-        String node = action == Action.PRIVATE_RESOURCES ? caps.permPrivateRead : caps.permInstall;
-        PermissionChecker.Result r = permissions.check(ctx.boundUuid, node);
-        if (r == PermissionChecker.Result.ALLOW) {
-            return Decision.ALLOW;
-        }
-        if (r == PermissionChecker.Result.UNAVAILABLE) {
-            return Decision.DENY_PERM_UNAVAILABLE;
+        if (ctx.boundUuid != null
+                && ctx.mode == SecurityMode.WHITELIST
+                && !whitelist.test(ctx.boundUuid)
+                && config.capabilitiesFor(config.whitelistBaseline).contains(required)) {
+            return Decision.DENY_WHITELIST;
         }
         return Decision.DENY;
     }
 
+    public int effectiveLevel(AuthContext ctx) {
+        int level = config.anonymousBaseline;
+        if (ctx.mode == SecurityMode.OPEN) {
+            level = Math.max(level, config.authenticatedBaseline);
+        }
+        if (ctx.authenticated) {
+            level = Math.max(level, config.authenticatedBaseline);
+        }
+        if (ctx.passwordAuthenticated) {
+            level = Math.max(level, config.passwordBaseline);
+        }
+        if (ctx.boundUuid != null) {
+            level = Math.max(level, config.linkedBaseline);
+            if (ctx.mode == SecurityMode.WHITELIST && whitelist.test(ctx.boundUuid)) {
+                level = Math.max(level, config.whitelistBaseline);
+            }
+            Integer person = config.people.get(ctx.boundUuid);
+            if (person != null) {
+                level = Math.max(level, person.intValue());
+            }
+            level = Math.max(level, opsLevels.level(ctx.boundUuid));
+            for (Map.Entry<String, Integer> entry : config.permNodes.entrySet()) {
+                PermissionChecker.Result result = permissions.check(ctx.boundUuid, entry.getKey());
+                if (result == PermissionChecker.Result.ALLOW) {
+                    level = Math.max(level, entry.getValue().intValue());
+                }
+            }
+        }
+        if (level < 0) {
+            return 0;
+        }
+        if (level > 4) {
+            return 4;
+        }
+        return level;
+    }
+
+    public Set<String> capabilities(AuthContext ctx) {
+        return config.capabilitiesFor(effectiveLevel(ctx));
+    }
+
+    public int minimumLevelFor(String capability) {
+        String required = AccessCapability.requireValid(capability);
+        for (int level = 0; level <= 4; level++) {
+            if (config.capabilitiesFor(level).contains(required)) {
+                return level;
+            }
+        }
+        return 5;
+    }
+
     public String permissionNode(Action action) {
-        return action == Action.PRIVATE_RESOURCES ? caps.permPrivateRead : caps.permInstall;
+        if (action == Action.PRIVATE_RESOURCES) {
+            return firstNodeFor(AccessCapability.FILES_READ, "vesta.files.private");
+        }
+        if (action == Action.MANAGE_CONTENT) {
+            return firstNodeFor(AccessCapability.CONTENT_MANAGE, "vesta.mods.install");
+        }
+        return firstNodeFor(AccessCapability.PACK_FETCH, "vesta.mods.install");
+    }
+
+    private String firstNodeFor(String capability, String fallback) {
+        int needed = minimumLevelFor(capability);
+        for (Map.Entry<String, Integer> entry : config.permNodes.entrySet()) {
+            if (entry.getValue().intValue() >= needed) {
+                return entry.getKey();
+            }
+        }
+        return fallback;
+    }
+
+    private boolean couldAuthenticateFor(String capability, AuthContext ctx) {
+        if (config.capabilitiesFor(config.authenticatedBaseline).contains(capability)) {
+            return true;
+        }
+        if (config.capabilitiesFor(config.passwordBaseline).contains(capability)) {
+            return true;
+        }
+        if (config.capabilitiesFor(config.linkedBaseline).contains(capability)) {
+            return true;
+        }
+        return !config.people.isEmpty() || !config.permNodes.isEmpty();
     }
 }

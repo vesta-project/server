@@ -59,8 +59,28 @@ mode = "open"
 password = ""
 token-ttl-seconds = 86400
 control-port = 9091
+anonymous-level = 1
+authenticated-level = 1
+password-level = 4
+linked-level = 1
+whitelist-level = 3
 
-[security.capabilities]
-public_modpack = "open"
-private_resources = "deny"
-manage_content = "perm_or_password"
+[security.levels]
+"0" = ["stats.read"]
+"1" = ["stats.read", "pack.fetch"]
+"2" = ["stats.read", "pack.fetch", "console.read"]
+"3" = ["stats.read", "pack.fetch", "console.read", "files.read"]
+"4" = [
+  "stats.read",
+  "pack.fetch",
+  "console.read",
+  "files.read",
+  "console.execute",
+  "files.write",
+  "settings.manage",
+  "content.manage",
+]
+
+[security.perm-nodes]
+"vesta.level.maintainer" = 3
+"vesta.level.admin" = 4

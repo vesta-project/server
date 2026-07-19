@@ -82,7 +82,7 @@ class VestaHttpServerCommunicationTest {
                 config.capabilities,
                 new PermissionChecker.AllowAll(),
                 whitelist::isWhitelisted,
-                uuid -> false
+                new com.vesta.sync.auth.OpsLevelProvider.None()
         );
         MinecraftSessionChallengeService challenges = new MinecraftSessionChallengeService(
                 Duration.ofSeconds(30),

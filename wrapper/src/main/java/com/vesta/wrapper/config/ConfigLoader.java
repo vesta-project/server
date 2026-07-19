@@ -1,6 +1,8 @@
 package com.vesta.wrapper.config;
 
 import com.moandjiezana.toml.Toml;
+import com.vesta.sync.auth.AccessCapability;
+import com.vesta.sync.auth.AccessControlConfig;
 import com.vesta.sync.auth.CapabilityLevel;
 import com.vesta.sync.auth.SecurityCapabilities;
 import com.vesta.sync.auth.SecurityMode;
@@ -12,8 +14,13 @@ import org.slf4j.LoggerFactory;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -165,9 +172,33 @@ public final class ConfigLoader {
             Set<UUID> adminUuids = parseUuidList(toml.getList("security.admin-uuids"));
             b.adminUuids(adminUuids);
 
+            Toml securityTable = toml.getTable("security");
+            Toml levelsTable = toml.getTable("security.levels");
+            Toml peopleTable = toml.getTable("security.people");
+            Toml permNodesTable = toml.getTable("security.perm-nodes");
             Toml caps = toml.getTable("security.capabilities");
-            if (caps != null) {
-                b.capabilities(new SecurityCapabilities(
+            Map<String, Object> securityMap = securityTable != null
+                    ? securityTable.toMap()
+                    : Collections.<String, Object>emptyMap();
+            boolean hasAccessLevels = levelsTable != null
+                    || peopleTable != null
+                    || permNodesTable != null
+                    || securityMap.containsKey("anonymous-level")
+                    || securityMap.containsKey("authenticated-level")
+                    || securityMap.containsKey("password-level")
+                    || securityMap.containsKey("linked-level")
+                    || securityMap.containsKey("whitelist-level");
+            if (hasAccessLevels) {
+                b.capabilities(new SecurityCapabilities(loadAccessControl(
+                        toml,
+                        levelsTable,
+                        peopleTable,
+                        permNodesTable,
+                        adminUuids,
+                        privatePaths
+                )));
+            } else if (caps != null) {
+                b.capabilities(SecurityCapabilities.fromLegacy(
                         CapabilityLevel.parse(caps.getString("public_modpack"), CapabilityLevel.OPEN),
                         CapabilityLevel.parse(caps.getString("private_resources"), CapabilityLevel.DENY),
                         CapabilityLevel.parse(caps.getString("manage_content"), CapabilityLevel.PERM_OR_PASSWORD),
@@ -175,7 +206,7 @@ public final class ConfigLoader {
                         toml.getString("security.permissions.install", "vesta.mods.install"),
                         toml.getString("security.permissions.private_read", "vesta.files.private"),
                         toml.getBoolean("security.op-grants-manage", true),
-                        privatePaths != null ? privatePaths : List.of()
+                        privatePaths != null ? privatePaths : Collections.<String>emptyList()
                 ));
             }
 
@@ -185,6 +216,112 @@ public final class ConfigLoader {
         }
 
         return b.build();
+    }
+
+    private static AccessControlConfig loadAccessControl(
+            Toml toml,
+            Toml levelsTable,
+            Toml peopleTable,
+            Toml permNodesTable,
+            Set<UUID> adminUuids,
+            List<String> privatePaths
+    ) {
+        AccessControlConfig defaults = AccessControlConfig.defaults();
+        Map<Integer, Set<String>> levels = new HashMap<Integer, Set<String>>(defaults.levels);
+        if (levelsTable != null) {
+            for (int i = 0; i <= 4; i++) {
+                List<String> caps = levelCapabilityList(levelsTable, i);
+                if (caps != null) {
+                    Set<String> normalized = new LinkedHashSet<String>();
+                    for (String cap : caps) {
+                        normalized.add(AccessCapability.requireValid(cap));
+                    }
+                    levels.put(Integer.valueOf(i), normalized);
+                }
+            }
+        }
+
+        Map<UUID, Integer> people = new LinkedHashMap<UUID, Integer>();
+        if (adminUuids != null) {
+            for (UUID uuid : adminUuids) {
+                people.put(uuid, Integer.valueOf(4));
+            }
+        }
+        if (peopleTable != null) {
+            Map<String, Object> values = peopleTable.toMap();
+            for (Map.Entry<String, Object> entry : values.entrySet()) {
+                UUID uuid = UUID.fromString(entry.getKey().trim());
+                people.put(uuid, Integer.valueOf(asInt(entry.getValue(), 4)));
+            }
+        }
+
+        Map<String, Integer> permNodes = new LinkedHashMap<String, Integer>();
+        if (permNodesTable != null) {
+            Map<String, Object> values = permNodesTable.toMap();
+            for (Map.Entry<String, Object> entry : values.entrySet()) {
+                String node = entry.getKey().trim();
+                if (!node.isEmpty()) {
+                    permNodes.put(node, Integer.valueOf(asInt(entry.getValue(), 4)));
+                }
+            }
+        } else {
+            // Preserve legacy permission keys when only baselines/levels were customized.
+            String install = toml.getString("security.permissions.install", "");
+            String privateRead = toml.getString("security.permissions.private_read", "");
+            if (install != null && !install.trim().isEmpty()) {
+                permNodes.put(install.trim(), Integer.valueOf(4));
+            }
+            if (privateRead != null && !privateRead.trim().isEmpty()) {
+                permNodes.put(privateRead.trim(), Integer.valueOf(3));
+            }
+        }
+
+        return new AccessControlConfig(
+                levels,
+                toml.getLong("security.anonymous-level", (long) defaults.anonymousBaseline).intValue(),
+                toml.getLong("security.authenticated-level", (long) defaults.authenticatedBaseline).intValue(),
+                toml.getLong("security.password-level", (long) defaults.passwordBaseline).intValue(),
+                toml.getLong("security.linked-level", (long) defaults.linkedBaseline).intValue(),
+                toml.getLong("security.whitelist-level", (long) defaults.whitelistBaseline).intValue(),
+                people,
+                permNodes,
+                privatePaths != null ? privatePaths : Collections.<String>emptyList()
+        );
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<String> levelCapabilityList(Toml levelsTable, int level) {
+        Object value = levelsTable.toMap().get(String.valueOf(level));
+        if (value == null) {
+            value = levelsTable.toMap().get(Long.valueOf(level));
+        }
+        if (value == null) {
+            value = levelsTable.toMap().get(Integer.valueOf(level));
+        }
+        if (value instanceof List) {
+            List<String> out = new ArrayList<String>();
+            for (Object item : (List<Object>) value) {
+                if (item != null) {
+                    out.add(String.valueOf(item));
+                }
+            }
+            return out;
+        }
+        return null;
+    }
+
+    private static int asInt(Object value, int fallback) {
+        if (value instanceof Number) {
+            return ((Number) value).intValue();
+        }
+        if (value instanceof String) {
+            try {
+                return Integer.parseInt(((String) value).trim());
+            } catch (NumberFormatException ignored) {
+                return fallback;
+            }
+        }
+        return fallback;
     }
 
     private static Set<UUID> parseUuidList(List<String> raw) {

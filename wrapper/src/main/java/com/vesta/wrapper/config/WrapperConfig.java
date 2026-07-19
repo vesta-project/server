@@ -1,6 +1,6 @@
 package com.vesta.wrapper.config;
 
-import com.vesta.sync.auth.CapabilityLevel;
+import com.vesta.sync.auth.AccessControlConfig;
 import com.vesta.sync.auth.SecurityCapabilities;
 import com.vesta.sync.auth.SecurityMode;
 import com.vesta.sync.manifest.PackSource;
@@ -118,7 +118,9 @@ public final class WrapperConfig {
         this.unresolvedPolicy = b.unresolvedPolicy;
         this.adminUuids = Collections.unmodifiableSet(new HashSet<>(b.adminUuids));
         this.privatePaths = Collections.unmodifiableList(new ArrayList<>(b.privatePaths));
-        this.capabilities = b.capabilities != null ? b.capabilities : defaultCapabilities(b.securityMode, b.adminUuids, b.privatePaths);
+        this.capabilities = b.capabilities != null
+                ? b.capabilities
+                : new SecurityCapabilities(defaultAccess(b.securityMode, b.adminUuids, b.privatePaths));
         this.minecraftAutoStart = b.minecraftAutoStart;
         this.minecraftJavaCommand = b.minecraftJavaCommand;
         this.minecraftJvmArgs = Collections.unmodifiableList(new ArrayList<>(b.minecraftJvmArgs));
@@ -133,23 +135,33 @@ public final class WrapperConfig {
                     : this.minecraftWorkingDirectory.resolve(b.minecraftLaunchJar).normalize());
     }
 
-    private static SecurityCapabilities defaultCapabilities(
+    private static AccessControlConfig defaultAccess(
             SecurityMode mode,
             Set<UUID> adminUuids,
             List<String> privatePaths
     ) {
-        CapabilityLevel publicLevel = mode == SecurityMode.OPEN ? CapabilityLevel.OPEN : CapabilityLevel.AUTH;
-        CapabilityLevel privateLevel = mode == SecurityMode.OPEN
-                ? CapabilityLevel.DENY
-                : (mode == SecurityMode.WHITELIST ? CapabilityLevel.WHITELIST : CapabilityLevel.LINKED);
-        return new SecurityCapabilities(
-                publicLevel,
-                privateLevel,
-                CapabilityLevel.PERM_OR_PASSWORD,
-                adminUuids,
-                "vesta.mods.install",
-                "vesta.files.private",
-                true,
+        AccessControlConfig base = AccessControlConfig.defaults();
+        int anonymous = mode == SecurityMode.OPEN ? 1 : 0;
+        java.util.Map<UUID, Integer> people = new java.util.LinkedHashMap<UUID, Integer>();
+        if (adminUuids != null) {
+            for (UUID uuid : adminUuids) {
+                people.put(uuid, Integer.valueOf(4));
+            }
+        }
+        java.util.Map<String, Integer> nodes = new java.util.LinkedHashMap<String, Integer>();
+        nodes.put("vesta.level.maintainer", Integer.valueOf(3));
+        nodes.put("vesta.level.admin", Integer.valueOf(4));
+        nodes.put("vesta.mods.install", Integer.valueOf(4));
+        nodes.put("vesta.files.private", Integer.valueOf(3));
+        return new AccessControlConfig(
+                base.levels,
+                anonymous,
+                1,  // authenticated
+                4,  // password operators
+                1,  // linked
+                3,  // whitelist
+                people,
+                nodes,
                 privatePaths
         );
     }

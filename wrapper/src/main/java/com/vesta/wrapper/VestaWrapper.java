@@ -5,8 +5,8 @@ import com.vesta.sync.auth.CapabilityEngine;
 import com.vesta.sync.auth.LinkCodeService;
 import com.vesta.sync.auth.MinecraftSessionChallengeService;
 import com.vesta.sync.auth.MsaProfileVerifier;
+import com.vesta.sync.auth.OpsJsonReader;
 import com.vesta.sync.auth.RealtimeTicketService;
-import com.vesta.sync.perm.PermissionChecker;
 import com.vesta.wrapper.auth.AuthService;
 import com.vesta.wrapper.config.ConfigLoader;
 import com.vesta.wrapper.config.WrapperConfig;
@@ -21,7 +21,6 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.UUID;
 
 public class VestaWrapper {
 
@@ -95,7 +94,7 @@ public class VestaWrapper {
                 config.capabilities,
                 controlIpc,
                 whitelist::isWhitelisted,
-                uuid -> isOp(controlIpc, uuid)
+                new OpsJsonReader(config.scanRoot)
         );
 
         boolean multiplexed = !config.tlsEnabled && (config.tcpPort == config.httpPort);
@@ -140,10 +139,6 @@ public class VestaWrapper {
         }));
 
         log.info("Ready. Press Ctrl+C to stop.");
-    }
-
-    private static boolean isOp(PermissionChecker permissions, UUID uuid) {
-        return permissions.check(uuid, "vesta.op") == PermissionChecker.Result.ALLOW;
     }
 
     private static void printUsage() {
