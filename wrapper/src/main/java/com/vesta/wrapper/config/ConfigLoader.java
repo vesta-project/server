@@ -248,10 +248,29 @@ public final class ConfigLoader {
             }
         }
         if (peopleTable != null) {
+            // Prefer [[security.people]] entries: { uuid = "...", level = 4 }
+            List<Toml> personRows = peopleTable.getTables("entry");
+            if (personRows != null) {
+                for (Toml row : personRows) {
+                    String raw = row.getString("uuid");
+                    if (raw != null && !raw.trim().isEmpty()) {
+                        people.put(UUID.fromString(raw.trim()), Integer.valueOf(
+                                row.getLong("level", 4L).intValue()
+                        ));
+                    }
+                }
+            }
             Map<String, Object> values = peopleTable.toMap();
             for (Map.Entry<String, Object> entry : values.entrySet()) {
-                UUID uuid = UUID.fromString(entry.getKey().trim());
-                people.put(uuid, Integer.valueOf(asInt(entry.getValue(), 4)));
+                String key = unwrapTomlKey(entry.getKey());
+                if (key.isEmpty() || "entry".equals(key)) {
+                    continue;
+                }
+                try {
+                    people.put(UUID.fromString(key), Integer.valueOf(asInt(entry.getValue(), 4)));
+                } catch (IllegalArgumentException ignored) {
+                    // Skip non-UUID keys (comments / nested tables).
+                }
             }
         }
 
@@ -259,7 +278,7 @@ public final class ConfigLoader {
         if (permNodesTable != null) {
             Map<String, Object> values = permNodesTable.toMap();
             for (Map.Entry<String, Object> entry : values.entrySet()) {
-                String node = entry.getKey().trim();
+                String node = unwrapTomlKey(entry.getKey());
                 if (!node.isEmpty()) {
                     permNodes.put(node, Integer.valueOf(asInt(entry.getValue(), 4)));
                 }
@@ -291,12 +310,24 @@ public final class ConfigLoader {
 
     @SuppressWarnings("unchecked")
     private static List<String> levelCapabilityList(Toml levelsTable, int level) {
-        Object value = levelsTable.toMap().get(String.valueOf(level));
+        Map<String, Object> map = levelsTable.toMap();
+        Object value = map.get(String.valueOf(level));
         if (value == null) {
-            value = levelsTable.toMap().get(Long.valueOf(level));
+            value = map.get("\"" + level + "\"");
         }
         if (value == null) {
-            value = levelsTable.toMap().get(Integer.valueOf(level));
+            value = map.get(Long.valueOf(level));
+        }
+        if (value == null) {
+            value = map.get(Integer.valueOf(level));
+        }
+        if (value == null) {
+            for (Map.Entry<String, Object> entry : map.entrySet()) {
+                if (unwrapTomlKey(entry.getKey()).equals(String.valueOf(level))) {
+                    value = entry.getValue();
+                    break;
+                }
+            }
         }
         if (value instanceof List) {
             List<String> out = new ArrayList<String>();
@@ -308,6 +339,17 @@ public final class ConfigLoader {
             return out;
         }
         return null;
+    }
+
+    private static String unwrapTomlKey(String key) {
+        if (key == null) {
+            return "";
+        }
+        String value = key.trim();
+        if (value.length() >= 2 && value.charAt(0) == '"' && value.charAt(value.length() - 1) == '"') {
+            return value.substring(1, value.length() - 1);
+        }
+        return value;
     }
 
     private static int asInt(Object value, int fallback) {

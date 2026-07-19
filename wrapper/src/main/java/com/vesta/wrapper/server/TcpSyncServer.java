@@ -15,6 +15,13 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * Legacy plaintext TCP sync transport.
+ *
+ * <p><strong>Compatibility-only.</strong> New clients should use HTTPS REST and
+ * WSS realtime. This path remains for older sync clients and is intentionally
+ * not part of the retired-auth cleanup.
+ */
 public final class TcpSyncServer implements Runnable {
 
     private static final Logger log = LoggerFactory.getLogger(TcpSyncServer.class);

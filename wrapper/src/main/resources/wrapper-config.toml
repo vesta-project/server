@@ -105,8 +105,9 @@ whitelist-level = 3
   "content.manage",
 ]
 
-# UUID → level grants (in addition to OP / baselines)
-[security.people]
+# UUID → level grants (in addition to OP / baselines).
+# Prefer admin-uuids for level-4 shorthand, or map form:
+# [security.people]
 # "00000000-0000-0000-0000-000000000001" = 4
 
 # LuckPerms / plugin permission node → level grants (checked via control IPC)

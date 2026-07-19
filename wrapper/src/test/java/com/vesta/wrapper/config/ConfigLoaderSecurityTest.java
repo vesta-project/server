@@ -142,6 +142,7 @@ class ConfigLoaderSecurityTest {
                 password-level = 4
                 linked-level = 1
                 whitelist-level = 3
+                admin-uuids = ["%s"]
 
                 [security.levels]
                 "0" = ["stats.read"]
@@ -149,9 +150,6 @@ class ConfigLoaderSecurityTest {
                 "2" = ["stats.read", "pack.fetch", "console.read"]
                 "3" = ["stats.read", "pack.fetch", "console.read", "files.read"]
                 "4" = ["stats.read", "pack.fetch", "console.read", "files.read", "content.manage"]
-
-                [security.people]
-                "%s" = 4
 
                 [security.perm-nodes]
                 "vesta.level.admin" = 4

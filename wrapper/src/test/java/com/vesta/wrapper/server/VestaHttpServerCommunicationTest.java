@@ -177,7 +177,6 @@ class VestaHttpServerCommunicationTest {
 
         assertEquals(401, post(
                 VestaSync.API_AUTH_MINECRAFT_COMPLETE, complete, null).statusCode());
-        assertEquals(410, post(VestaSync.API_AUTH_MSA, new JsonObject(), null).statusCode());
     }
 
     @Test

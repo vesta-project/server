@@ -15,12 +15,13 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * One-shot Minecraft profile lookup. Token is never stored.
+ * Verifies launcher→Mojang join results via {@code hasJoined}.
+ *
+ * <p>Minecraft access tokens never pass through Vesta.
  */
 public final class MsaProfileVerifier {
 
     private static final Logger log = LoggerFactory.getLogger(MsaProfileVerifier.class);
-    private static final String PROFILE_URL = "https://api.minecraftservices.com/minecraft/profile";
     private static final String HAS_JOINED_URL =
             "https://sessionserver.mojang.com/session/minecraft/hasJoined";
 
@@ -31,43 +32,6 @@ public final class MsaProfileVerifier {
         public Profile(UUID uuid, String name) {
             this.uuid = uuid;
             this.name = name;
-        }
-    }
-
-    public Optional<Profile> verify(String accessToken) {
-        if (accessToken == null || accessToken.trim().isEmpty()) {
-            return Optional.empty();
-        }
-        try {
-            HttpURLConnection conn = (HttpURLConnection) new URL(PROFILE_URL).openConnection();
-            conn.setRequestMethod("GET");
-            conn.setRequestProperty("Authorization", "Bearer " + accessToken.trim());
-            conn.setConnectTimeout(10_000);
-            conn.setReadTimeout(10_000);
-            int code = conn.getResponseCode();
-            if (code != 200) {
-                log.debug("MSA profile returned HTTP {}", code);
-                return Optional.empty();
-            }
-            StringBuilder sb = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    sb.append(line);
-                }
-            }
-            JsonObject json = new JsonParser().parse(sb.toString()).getAsJsonObject();
-            if (!json.has("id")) {
-                return Optional.empty();
-            }
-            String id = json.get("id").getAsString().replace("-", "");
-            UUID uuid = parseUuid(id);
-            String name = json.has("name") ? json.get("name").getAsString() : "";
-            return Optional.of(new Profile(uuid, name));
-        } catch (Exception e) {
-            log.warn("MSA profile verification failed: {}", e.getMessage());
-            return Optional.empty();
         }
     }
 
@@ -103,7 +67,7 @@ public final class MsaProfileVerifier {
                     sb.append(line);
                 }
             }
-            JsonObject json = JsonParser.parseString(sb.toString()).getAsJsonObject();
+            JsonObject json = new JsonParser().parse(sb.toString()).getAsJsonObject();
             if (!json.has("id") || !json.has("name")) {
                 return Optional.empty();
             }

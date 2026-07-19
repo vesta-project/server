@@ -227,10 +227,6 @@ public final class VestaHttpServer {
                     handleMinecraftComplete(request, response, callback);
                     return;
                 }
-                case VestaSync.API_AUTH_MSA -> {
-                    handleAuthMsa(request, response, callback);
-                    return;
-                }
                 case VestaSync.API_REALTIME_TICKET -> {
                     handleRealtimeTicket(request, response, callback);
                     return;
@@ -344,13 +340,6 @@ public final class VestaHttpServer {
         }
         response.setStatus(200);
         json(response, callback, Map.of("token", token.get(), "token_type", "Bearer"));
-    }
-
-    private void handleAuthMsa(Request request, Response response, Callback callback) throws Exception {
-        response.setStatus(410);
-        json(response, callback, Map.of(
-                "error", "direct minecraft token auth was removed; use the session challenge"
-        ));
     }
 
     private void handleRealtimeTicket(

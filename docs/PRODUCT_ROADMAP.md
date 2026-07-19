@@ -52,7 +52,7 @@ flowchart TB
 ### Missing / flawed today
 
 - Launcher install-from-server still partial (resolve + private list APIs exist; full instance apply UI pending).
-- MSA one-shot auth and capability matrix implemented on wrapper; launcher auth commands added.
+- Minecraft session-challenge auth and capability levels implemented on wrapper; launcher auth commands added.
 - Known vs private split implemented; dual blob cache removed for wrapper scans.
 - **Installer scripts** added (`install-wrapper.ps1` / `.sh`); app wizard still pending.
 
@@ -101,7 +101,7 @@ Operators may choose one. Prefer both for remote admin + RBAC.
 |-------|----------|
 | Permission authority | **Hybrid**: in-game perms via mod when present; configurable capability matrix for all non-open modes |
 | Identity key | Linked **Minecraft UUID**; Vesta issues its **own** bearer tokens after link |
-| Microsoft sessions | **One-shot bootstrap only** (`POST /api/v1/auth/msa`); token discarded after profile lookup; ongoing API uses Vesta bearer only |
+| Microsoft sessions | **Session challenge only** (`POST /api/v1/auth/minecraft/challenge` + complete via Mojang {@code join}/{@code hasJoined}); Minecraft access tokens never pass through Vesta; ongoing API uses Vesta bearer only |
 | Linking | Multi-path: MSA bootstrap, password, `/vesta link`, launcher link redeem |
 | Public modpack | **Known** files (MR/CF via `.vesta-known.json` sidecar) on public manifest; clients prefer platform CDN |
 | Private resources | **Unknown** files + configured `security.private-paths`; served from live disk via authenticated `/api/v1/private/files` |
@@ -130,28 +130,19 @@ Classification is enriched by the **launcher** when seeding (SHA1 → Modrinth, 
 | `linked` | Auth bearer | Linked UUID | In-game perm / admin list |
 | `whitelist` | Linked + whitelist | Linked + whitelist | Elevated (perm / admin / password per config) |
 
-### Capability matrix (`security.capabilities`)
+### Access levels (`[security.levels]`)
 
-```toml
-[security.capabilities]
-public_modpack = "open"          # open | auth | linked | whitelist
-private_resources = "linked"     # deny | linked | whitelist
-manage_content = "perm_or_password"  # deny | password | admin_list | perm | perm_or_password
-
-[security.permissions]
-install = "vesta.mods.install"
-private_read = "vesta.files.private"
-
-security.admin-uuids = ["..."]
-security.op-grants-manage = true
-```
-
-In-game perms apply in **all non-open modes** when the bearer has a bound UUID (except open). Password elevates manage when configured.
+Levels 0–4 grant named capabilities (`stats.read`, `pack.fetch`, `console.read`,
+`files.read`, `console.execute`, `files.write`, `settings.manage`, `content.manage`).
+Effective level is the max of identity baselines, Minecraft OP level from `ops.json`
+(1:1), `[security.people]`, and `[security.perm-nodes]`. See bundled
+`wrapper-config.toml` for the full commented defaults. Legacy
+`[security.capabilities]` tables are still accepted and mapped into levels.
 
 ### Linking paths
 
-1. **MSA one-shot** — launcher sends MC access token once; wrapper verifies via Mojang profile API; issues linked bearer.
-2. **Password** — shared secret → operator bearer (link UUID separately via MSA or `/vesta link`).
+1. **Minecraft session challenge** — launcher joins a short-lived Mojang serverId; wrapper verifies via {@code hasJoined} and issues a linked bearer.
+2. **Password** — shared secret → operator bearer (link UUID separately via session challenge or `/vesta link`).
 3. **In-game `/vesta link`** — code → redeem in launcher.
 4. **Open** — warn only; no private access by default.
 
@@ -160,7 +151,8 @@ sequenceDiagram
   participant L as Launcher
   participant W as Wrapper
   participant M as Mod
-  L->>W: POST /auth/msa or /auth/link
+  L->>W: POST /auth/minecraft/challenge
+  L->>W: POST /auth/minecraft/complete
   W-->>L: Vesta bearer + uuid
   L->>W: GET /modpack/manifest with bearer
   L->>W: GET /private/files when allowed
@@ -380,7 +372,7 @@ Each phase **includes tests** (§12). Do not mark a phase done without them.
 | **4** | Remote install/remove + **live rescan**; unauthorized reject |
 | **5** | Push notify + real version listing/history (as needed) |
 | **A** | **Known/private split**: `.vesta-known.json`, unresolved policy, private API, no wrapper blob duplicate |
-| **B** | **MSA one-shot auth**, capability engine, layered gates on all non-open modes |
+| **B** | **Minecraft session-challenge auth**, capability engine / access levels, layered gates on all non-open modes |
 | **C** | Whitelist + admin UUID list + OP/LP bridge + tests |
 | **D** | Launcher: auth commands, token store, private fetch, manifest resolve |
 | **E** | `install-wrapper.ps1` / `.sh` for existing servers + backup ack |
