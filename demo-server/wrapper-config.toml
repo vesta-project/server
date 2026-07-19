@@ -20,19 +20,25 @@ name = "Vesta Demo Pack"
 description = "A demo modpack served by the Vesta sync server."
 version = "1.0.0"
 minecraft-version = "1.21.4"
+# self-hosted | modrinth | curseforge | archive
+source = "self-hosted"
 unresolved-policy = "server"
 
 [modpack.modloader]
 type = "fabric"
 version = "0.18.4"
 
-# Leave source empty to serve the demo files below. To test a referenced pack,
-# set source/project-id/version-id (Modrinth resolves the archive automatically).
+# For source = "modrinth" or "curseforge", set project-id and version-id.
+# Modrinth resolves the archive automatically; CurseForge can also be resolved
+# by the launcher. download-url remains an optional override.
 [modpack.platform]
-source = ""
 project-id = ""
 version-id = ""
 download-url = ""
+
+# For source = "archive", point at a local .zip/.mrpack under the server root.
+[modpack.archive]
+path = ""
 
 [modpack.server]
 host = "localhost"

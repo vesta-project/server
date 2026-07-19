@@ -15,6 +15,16 @@ public final class ServerModpackManifest {
     public String versionId;
     @SerializedName("download_url")
     public String downloadUrl;
+    /** Relative path of a locally hosted archive under the server root. */
+    @SerializedName("archive_path")
+    public String archivePath;
+    @SerializedName("archive_sha256")
+    public String archiveSha256;
+    @SerializedName("archive_size")
+    public long archiveSize;
+    /** {@code mrpack} or {@code zip} when {@link #mode} is {@link ModpackMode#ARCHIVE}. */
+    @SerializedName("archive_format")
+    public String archiveFormat;
     public String name;
     public String version;
     public long revision;

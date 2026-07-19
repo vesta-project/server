@@ -32,4 +32,29 @@ class ModpackStatePlatformTest {
         assertTrue(manifest.mods.isEmpty());
         assertTrue(manifest.overrides.isEmpty());
     }
+
+    @Test
+    void selfHostedScanAdvertisesSelfHostedSource(@org.junit.jupiter.api.io.TempDir java.nio.file.Path root)
+            throws Exception {
+        java.nio.file.Files.createDirectories(root.resolve("mods"));
+        ModloaderInfo loader = new ModloaderInfo();
+        loader.type = "fabric";
+        loader.version = "0.16.0";
+
+        ModpackState state = ModpackState.fromScan(
+                root,
+                java.util.Collections.singletonList("mods"),
+                KnownSourceRegistry.load(root),
+                UnresolvedPolicy.SERVER,
+                java.util.Collections.<String>emptyList(),
+                "Pack",
+                "1.0.0",
+                "1.21.1",
+                loader,
+                null
+        );
+
+        assertEquals(ModpackMode.CUSTOM, state.getManifest().mode);
+        assertEquals("self-hosted", state.getManifest().source);
+    }
 }

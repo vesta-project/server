@@ -29,6 +29,12 @@ minimum-revision = 1
 recommended-memory-min-mb = 4096
 recommended-memory-max-mb = 8192
 minecraft-version = "1.21.4"
+# Valid sources:
+#   "self-hosted" — scan live mods/config and publish hashed files (and later a Vesta pack)
+#   "modrinth"    — reference a Modrinth project/version (launcher resolves the archive)
+#   "curseforge"  — reference a CurseForge modpack/file ID (launcher resolves the archive)
+#   "archive"     — host a local .zip/.mrpack as one authenticated blob (not extracted)
+source = "self-hosted"
 # server = list on public manifest | private = unknown files are private-only
 unresolved-policy = "server"
 
@@ -36,14 +42,17 @@ unresolved-policy = "server"
 type = "fabric"
 version = "0.18.4"
 
-# Optional: reference a complete Modrinth or CurseForge pack instead of scanning files.
-# Leave source empty for the normal custom/scanned pack mode.
+# Used when source = "modrinth" or "curseforge".
+# CurseForge version-id is the file ID. download-url is an optional override.
 [modpack.platform]
-source = ""
 project-id = ""
 version-id = ""
-# Required for providers that cannot be resolved publicly by version ID.
 download-url = ""
+
+# Used only when source = "archive". Path is relative to scan-root (or absolute).
+# The wrapper serves this file as-is — it does not unpack or re-host its contents.
+[modpack.archive]
+path = ""
 
 [modpack.server]
 host = "localhost"

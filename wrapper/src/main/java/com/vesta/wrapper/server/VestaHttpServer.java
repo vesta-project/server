@@ -12,7 +12,9 @@ import com.vesta.sync.auth.CapabilityEngine;
 import com.vesta.sync.auth.LinkCodeService;
 import com.vesta.sync.auth.MinecraftSessionChallengeService;
 import com.vesta.sync.auth.RealtimeTicketService;
+import com.vesta.sync.manifest.LocalArchivePack;
 import com.vesta.sync.manifest.ManifestFile;
+import com.vesta.sync.manifest.ModpackMode;
 import com.vesta.sync.manifest.PrivateFileEntry;
 import com.vesta.sync.manifest.ServerModpackManifest;
 import com.vesta.sync.sync.SyncCheckResult;
@@ -191,6 +193,11 @@ public final class VestaHttpServer {
                     if (!requireCapability(request, response, callback, CapabilityEngine.Action.PUBLIC_MODPACK)) return;
                     response.setStatus(200);
                     handleModpackManifest(response, callback);
+                    return;
+                }
+                case VestaSync.API_MODPACK_ARCHIVE -> {
+                    if (!requireCapability(request, response, callback, CapabilityEngine.Action.PUBLIC_MODPACK)) return;
+                    handleModpackArchive(response, callback);
                     return;
                 }
                 case VestaSync.API_MODPACK_VERSIONS -> {
@@ -630,12 +637,26 @@ public final class VestaHttpServer {
         pack.put("modloader", modloader);
         pack.put("file_count", manifest.mods.size() + manifest.overrides.size());
         pack.put("total_size_bytes", totalSize(manifest));
-        if (manifest.mode == com.vesta.sync.manifest.ModpackMode.PLATFORM) {
+        pack.put("source", manifest.source != null ? manifest.source : config.modpackSource.wireName());
+        pack.put("mode", modeWireName(manifest.mode));
+        if (manifest.mode == ModpackMode.PLATFORM) {
             Map<String, Object> platform = new LinkedHashMap<>();
             platform.put("source", manifest.source);
             platform.put("project_id", manifest.modpackId);
             platform.put("version_id", manifest.versionId);
+            if (manifest.downloadUrl != null && !manifest.downloadUrl.isBlank()) {
+                platform.put("download_url", manifest.downloadUrl);
+            }
             pack.put("platform", platform);
+        } else if (manifest.mode == ModpackMode.ARCHIVE) {
+            Map<String, Object> archive = new LinkedHashMap<>();
+            archive.put("path", manifest.archivePath);
+            archive.put("sha256", manifest.archiveSha256);
+            archive.put("size", manifest.archiveSize);
+            archive.put("format", manifest.archiveFormat);
+            archive.put("download_url", manifest.downloadUrl);
+            pack.put("archive", archive);
+            pack.put("total_size_bytes", manifest.archiveSize);
         }
         pack.put("access_requires_auth",
                 config.capabilities.publicModpack != CapabilityLevel.OPEN);
@@ -685,20 +706,31 @@ public final class VestaHttpServer {
         if (description != null && !description.trim().isEmpty()) {
             info.put("description", description.trim());
         }
-        info.put("mode", manifest.mode);
-        if (manifest.mode == com.vesta.sync.manifest.ModpackMode.PLATFORM) {
-            info.put("source", manifest.source);
+        info.put("mode", modeWireName(manifest.mode));
+        info.put("source", manifest.source != null ? manifest.source : config.modpackSource.wireName());
+        if (manifest.mode == ModpackMode.PLATFORM) {
             info.put("modpack_id", manifest.modpackId);
             info.put("version_id", manifest.versionId);
+            if (manifest.downloadUrl != null && !manifest.downloadUrl.isBlank()) {
+                info.put("download_url", manifest.downloadUrl);
+            }
+        } else if (manifest.mode == ModpackMode.ARCHIVE) {
+            info.put("download_url", manifest.downloadUrl);
+            info.put("archive_path", manifest.archivePath);
+            info.put("archive_sha256", manifest.archiveSha256);
+            info.put("archive_size", manifest.archiveSize);
+            info.put("archive_format", manifest.archiveFormat);
         }
-        info.put("source", "server");
         info.put("minecraft_version", manifest.minecraftVersion);
         Map<String, String> ml = new LinkedHashMap<>();
         ml.put("type", manifest.modloader.type);
         ml.put("version", manifest.modloader.version);
         info.put("modloader", ml);
         info.put("file_count", manifest.mods.size() + manifest.overrides.size());
-        info.put("total_size_bytes", totalSize(manifest));
+        info.put(
+                "total_size_bytes",
+                manifest.mode == ModpackMode.ARCHIVE ? manifest.archiveSize : totalSize(manifest)
+        );
         info.put("updated_at", serverState.getUpdatedAt().toString());
         info.put("security_mode", auth.mode().name().toLowerCase());
         if (config.recommendedMemoryMinMb > 0 || config.recommendedMemoryMaxMb > 0) {
@@ -716,6 +748,38 @@ public final class VestaHttpServer {
 
     private void handleModpackManifest(Response response, Callback callback) {
         json(response, callback, serverState.getManifest());
+    }
+
+    private void handleModpackArchive(Response response, Callback callback) throws Exception {
+        Optional<LocalArchivePack> archive = serverState.localArchive();
+        if (archive.isEmpty()) {
+            response.setStatus(404);
+            json(response, callback, Map.of("error", "no local archive pack configured"));
+            return;
+        }
+        LocalArchivePack pack = archive.get();
+        response.getHeaders().put(HttpHeader.CONTENT_TYPE, "application/octet-stream");
+        response.getHeaders().put(HttpHeader.CONTENT_LENGTH, String.valueOf(pack.size));
+        response.getHeaders().put(HttpHeader.ETAG, "\"" + pack.sha256 + "\"");
+        response.getHeaders().put("X-Vesta-Archive-Sha256", pack.sha256);
+        response.getHeaders().put("X-Vesta-Archive-Format", pack.format);
+        response.setStatus(200);
+        response.write(true, ByteBuffer.wrap(Files.readAllBytes(pack.resolvedPath)), callback);
+    }
+
+    private static String modeWireName(ModpackMode mode) {
+        if (mode == null) {
+            return "custom";
+        }
+        switch (mode) {
+            case PLATFORM:
+                return "platform";
+            case ARCHIVE:
+                return "archive";
+            case CUSTOM:
+            default:
+                return "custom";
+        }
     }
 
     private void handleModpackVersions(Response response, Callback callback) {

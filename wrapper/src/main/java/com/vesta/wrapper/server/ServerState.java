@@ -1,8 +1,12 @@
 package com.vesta.wrapper.server;
 
+import com.vesta.sync.VestaSync;
 import com.vesta.sync.manifest.KnownSourceRegistry;
+import com.vesta.sync.manifest.LocalArchivePack;
 import com.vesta.sync.manifest.ModloaderInfo;
+import com.vesta.sync.manifest.ModpackMode;
 import com.vesta.sync.manifest.ModpackState;
+import com.vesta.sync.manifest.PackSource;
 import com.vesta.sync.manifest.PrivateFileEntry;
 import com.vesta.sync.manifest.ServerInfo;
 import com.vesta.sync.manifest.ServerModpackManifest;
@@ -15,10 +19,12 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
@@ -32,6 +38,7 @@ public final class ServerState {
     private final List<Consumer<PushUpdateAvailable>> pushListeners = new CopyOnWriteArrayList<>();
 
     private volatile ModpackState modpackState;
+    private volatile LocalArchivePack localArchive;
     private volatile Instant updatedAt;
 
     public ServerState(WrapperConfig config) {
@@ -58,24 +65,27 @@ public final class ServerState {
 
         try {
             String previous = modpackState != null ? modpackState.getCurrentVersion() : null;
-            if (!config.modpackPlatformSource.isBlank()) {
-                if (!config.modpackPlatformSource.equals("modrinth")
-                        && !config.modpackPlatformSource.equals("curseforge")) {
-                    throw new IllegalArgumentException(
-                            "Platform pack source must be modrinth or curseforge"
-                    );
-                }
-                if (config.modpackPlatformProjectId.isBlank()
-                        || config.modpackPlatformVersionId.isBlank()) {
-                    throw new IllegalArgumentException(
-                            "Platform packs require project-id and version-id"
-                    );
-                }
+            LocalArchivePack nextArchive = null;
+            PackSource source = config.modpackSource;
+
+            if (source.isPlatform()) {
+                validatePlatformConfig(source);
                 this.modpackState = ModpackState.fromPlatform(
-                        config.modpackPlatformSource,
+                        source.wireName(),
                         config.modpackPlatformProjectId,
                         config.modpackPlatformVersionId,
                         config.modpackPlatformDownloadUrl,
+                        config.modpackName,
+                        config.modpackVersion,
+                        config.minecraftVersion,
+                        modloader,
+                        serverInfo
+                );
+            } else if (source == PackSource.ARCHIVE) {
+                nextArchive = LocalArchivePack.resolve(config.scanRoot, config.modpackArchivePath);
+                this.modpackState = ModpackState.fromArchive(
+                        nextArchive,
+                        VestaSync.API_MODPACK_ARCHIVE,
                         config.modpackName,
                         config.modpackVersion,
                         config.minecraftVersion,
@@ -97,13 +107,17 @@ public final class ServerState {
                         serverInfo
                 );
             }
+            this.localArchive = nextArchive;
             this.updatedAt = Instant.now();
             ServerModpackManifest m = modpackState.getManifest();
             m.revision = config.modpackRevision;
             m.minimumRevision = config.minimumRevision;
-            if (m.mode == com.vesta.sync.manifest.ModpackMode.PLATFORM) {
+            if (m.mode == ModpackMode.PLATFORM) {
                 log.info("Loaded {} platform pack reference: {} @ {}",
                         m.source, m.modpackId, m.versionId);
+            } else if (m.mode == ModpackMode.ARCHIVE) {
+                log.info("Loaded local archive pack: {} ({} bytes, {})",
+                        m.archivePath, m.archiveSize, m.archiveFormat);
             } else {
                 log.info("Loaded modpack manifest: {} public files ({} private)",
                         m.mods.size() + m.overrides.size(),
@@ -120,8 +134,31 @@ public final class ServerState {
         }
     }
 
+    private void validatePlatformConfig(PackSource source) {
+        if (config.modpackPlatformProjectId.isBlank()
+                || config.modpackPlatformVersionId.isBlank()) {
+            throw new IllegalArgumentException(
+                    "modpack.source = \"" + source.wireName()
+                            + "\" requires modpack.platform.project-id and version-id"
+            );
+        }
+        if (!config.modpackArchivePath.isBlank()) {
+            throw new IllegalArgumentException(
+                    "modpack.archive.path is only valid when modpack.source = \"archive\""
+            );
+        }
+    }
+
     public ContentInstaller installer() {
         return installer;
+    }
+
+    public Optional<Path> localArchivePath() {
+        return localArchive == null ? Optional.empty() : Optional.of(localArchive.resolvedPath);
+    }
+
+    public Optional<LocalArchivePack> localArchive() {
+        return Optional.ofNullable(localArchive);
     }
 
     public ContentInstaller.Result install(String relativePath, InputStream data) throws IOException {

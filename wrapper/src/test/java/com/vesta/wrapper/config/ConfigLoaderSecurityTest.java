@@ -1,6 +1,7 @@
 package com.vesta.wrapper.config;
 
 import com.vesta.sync.auth.SecurityMode;
+import com.vesta.sync.manifest.PackSource;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -72,21 +73,61 @@ class ConfigLoaderSecurityTest {
     void loadsPlatformPackReference() throws Exception {
         Path file = temp.resolve("wrapper-config.toml");
         Files.writeString(file, """
-                [modpack.platform]
+                [modpack]
                 source = "modrinth"
+
+                [modpack.platform]
                 project-id = "AANobbMI"
                 version-id = "example-version"
                 download-url = "https://cdn.example.test/pack.mrpack"
                 """);
 
         WrapperConfig config = ConfigLoader.load(file);
-        assertEquals("modrinth", config.modpackPlatformSource);
+        assertEquals(PackSource.MODRINTH, config.modpackSource);
         assertEquals("AANobbMI", config.modpackPlatformProjectId);
         assertEquals("example-version", config.modpackPlatformVersionId);
         assertEquals(
                 "https://cdn.example.test/pack.mrpack",
                 config.modpackPlatformDownloadUrl
         );
+    }
+
+    @Test
+    void loadsLegacyPlatformSourceForCompatibility() throws Exception {
+        Path file = temp.resolve("wrapper-config.toml");
+        Files.writeString(file, """
+                [modpack.platform]
+                source = "curseforge"
+                project-id = "123"
+                version-id = "456"
+                """);
+
+        WrapperConfig config = ConfigLoader.load(file);
+        assertEquals(PackSource.CURSEFORGE, config.modpackSource);
+        assertEquals("123", config.modpackPlatformProjectId);
+        assertEquals("456", config.modpackPlatformVersionId);
+    }
+
+    @Test
+    void loadsLocalArchivePath() throws Exception {
+        Path file = temp.resolve("wrapper-config.toml");
+        Files.writeString(file, """
+                [modpack]
+                source = "archive"
+
+                [modpack.archive]
+                path = "packs/friends.mrpack"
+                """);
+
+        WrapperConfig config = ConfigLoader.load(file);
+        assertEquals(PackSource.ARCHIVE, config.modpackSource);
+        assertEquals("packs/friends.mrpack", config.modpackArchivePath);
+    }
+
+    @Test
+    void defaultsToSelfHostedSource() {
+        WrapperConfig config = ConfigLoader.load(temp.resolve("missing.toml"));
+        assertEquals(PackSource.SELF_HOSTED, config.modpackSource);
     }
 
     @Test

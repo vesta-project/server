@@ -6,6 +6,7 @@ public final class VestaSync {
     public static final String API_MANIFEST = "/api/v1/modpack/manifest";
     public static final String API_MODPACK_INFO = "/api/v1/modpack/info";
     public static final String API_MODPACK_VERSIONS = "/api/v1/modpack/versions";
+    public static final String API_MODPACK_ARCHIVE = "/api/v1/modpack/archive";
     public static final String API_SYNC_CHECK = "/api/v1/sync/check";
     public static final String API_FILES = "/api/v1/files/";
 

@@ -3,6 +3,7 @@ package com.vesta.wrapper.config;
 import com.vesta.sync.auth.CapabilityLevel;
 import com.vesta.sync.auth.SecurityCapabilities;
 import com.vesta.sync.auth.SecurityMode;
+import com.vesta.sync.manifest.PackSource;
 import com.vesta.sync.manifest.UnresolvedPolicy;
 
 import java.nio.file.Path;
@@ -33,10 +34,13 @@ public final class WrapperConfig {
     public final String modpackName;
     public final String modpackDescription;
     public final String modpackVersion;
-    public final String modpackPlatformSource;
+    /** Explicit pack source: modrinth, curseforge, archive, or self-hosted. */
+    public final PackSource modpackSource;
     public final String modpackPlatformProjectId;
     public final String modpackPlatformVersionId;
     public final String modpackPlatformDownloadUrl;
+    /** Relative/absolute path used when {@link #modpackSource} is {@link PackSource#ARCHIVE}. */
+    public final String modpackArchivePath;
     public final long modpackRevision;
     public final long minimumRevision;
     public final int recommendedMemoryMinMb;
@@ -88,10 +92,11 @@ public final class WrapperConfig {
         this.modpackName = b.modpackName;
         this.modpackDescription = b.modpackDescription;
         this.modpackVersion = b.modpackVersion;
-        this.modpackPlatformSource = b.modpackPlatformSource;
+        this.modpackSource = b.modpackSource != null ? b.modpackSource : PackSource.SELF_HOSTED;
         this.modpackPlatformProjectId = b.modpackPlatformProjectId;
         this.modpackPlatformVersionId = b.modpackPlatformVersionId;
         this.modpackPlatformDownloadUrl = b.modpackPlatformDownloadUrl;
+        this.modpackArchivePath = b.modpackArchivePath;
         this.modpackRevision = Math.max(1L, b.modpackRevision);
         this.minimumRevision = Math.max(1L, Math.min(this.modpackRevision, b.minimumRevision));
         this.recommendedMemoryMinMb = Math.max(0, b.recommendedMemoryMinMb);
@@ -171,10 +176,11 @@ public final class WrapperConfig {
         String modpackName = "Server Modpack";
         String modpackDescription = "";
         String modpackVersion = "1.0.0";
-        String modpackPlatformSource = "";
+        PackSource modpackSource = PackSource.SELF_HOSTED;
         String modpackPlatformProjectId = "";
         String modpackPlatformVersionId = "";
         String modpackPlatformDownloadUrl = "";
+        String modpackArchivePath = "";
         long modpackRevision = 1L;
         long minimumRevision = 1L;
         int recommendedMemoryMinMb = 0;
@@ -218,10 +224,11 @@ public final class WrapperConfig {
         public Builder modpackName(String v) { modpackName = v; return this; }
         public Builder modpackDescription(String v) { modpackDescription = v; return this; }
         public Builder modpackVersion(String v) { modpackVersion = v; return this; }
-        public Builder modpackPlatformSource(String v) { modpackPlatformSource = v; return this; }
+        public Builder modpackSource(PackSource v) { modpackSource = v; return this; }
         public Builder modpackPlatformProjectId(String v) { modpackPlatformProjectId = v; return this; }
         public Builder modpackPlatformVersionId(String v) { modpackPlatformVersionId = v; return this; }
         public Builder modpackPlatformDownloadUrl(String v) { modpackPlatformDownloadUrl = v; return this; }
+        public Builder modpackArchivePath(String v) { modpackArchivePath = v; return this; }
         public Builder modpackRevision(long v) { modpackRevision = v; return this; }
         public Builder minimumRevision(long v) { minimumRevision = v; return this; }
         public Builder recommendedMemoryMinMb(int v) { recommendedMemoryMinMb = v; return this; }

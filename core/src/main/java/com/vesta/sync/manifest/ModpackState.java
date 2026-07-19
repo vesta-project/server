@@ -39,6 +39,7 @@ public final class ModpackState {
 
         ServerModpackManifest manifest = new ServerModpackManifest();
         manifest.mode = ModpackMode.CUSTOM;
+        manifest.source = PackSource.SELF_HOSTED.wireName();
         manifest.name = name;
         manifest.version = version;
         manifest.minecraftVersion = minecraftVersion;
@@ -65,7 +66,38 @@ public final class ModpackState {
         manifest.source = source;
         manifest.modpackId = projectId;
         manifest.versionId = versionId;
-        manifest.downloadUrl = downloadUrl;
+        if (downloadUrl != null && !downloadUrl.trim().isEmpty()) {
+            manifest.downloadUrl = downloadUrl;
+        }
+        manifest.name = name;
+        manifest.version = version;
+        manifest.minecraftVersion = minecraftVersion;
+        manifest.modloader = modloader;
+        manifest.serverInfo = serverInfo;
+        return new ModpackState(manifest, Collections.emptyList());
+    }
+
+    /**
+     * Reference a local {@code .zip}/{@code .mrpack} hosted by the wrapper.
+     * Contents are not extracted — clients download the archive as one blob.
+     */
+    public static ModpackState fromArchive(
+            LocalArchivePack archive,
+            String archiveDownloadUrl,
+            String name,
+            String version,
+            String minecraftVersion,
+            ModloaderInfo modloader,
+            ServerInfo serverInfo
+    ) {
+        ServerModpackManifest manifest = new ServerModpackManifest();
+        manifest.mode = ModpackMode.ARCHIVE;
+        manifest.source = PackSource.ARCHIVE.wireName();
+        manifest.downloadUrl = archiveDownloadUrl;
+        manifest.archivePath = archive.relativePath;
+        manifest.archiveSha256 = archive.sha256;
+        manifest.archiveSize = archive.size;
+        manifest.archiveFormat = archive.format;
         manifest.name = name;
         manifest.version = version;
         manifest.minecraftVersion = minecraftVersion;

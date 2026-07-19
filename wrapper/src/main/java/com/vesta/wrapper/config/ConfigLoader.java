@@ -4,6 +4,7 @@ import com.moandjiezana.toml.Toml;
 import com.vesta.sync.auth.CapabilityLevel;
 import com.vesta.sync.auth.SecurityCapabilities;
 import com.vesta.sync.auth.SecurityMode;
+import com.vesta.sync.manifest.PackSource;
 import com.vesta.sync.manifest.UnresolvedPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -75,10 +76,18 @@ public final class ConfigLoader {
             b.modpackName(toml.getString("modpack.name", b.modpackName));
             b.modpackDescription(toml.getString("modpack.description", b.modpackDescription));
             b.modpackVersion(toml.getString("modpack.version", b.modpackVersion));
-            b.modpackPlatformSource(toml.getString(
-                    "modpack.platform.source",
-                    b.modpackPlatformSource
-            ).trim().toLowerCase());
+
+            // Prefer top-level modpack.source. Fall back to legacy [modpack.platform].source.
+            String topLevelSource = toml.getString("modpack.source");
+            String legacyPlatformSource = toml.getString("modpack.platform.source", "");
+            if (topLevelSource != null && !topLevelSource.isBlank()) {
+                b.modpackSource(PackSource.parse(topLevelSource));
+            } else if (legacyPlatformSource != null && !legacyPlatformSource.isBlank()) {
+                b.modpackSource(PackSource.parse(legacyPlatformSource));
+            } else {
+                b.modpackSource(PackSource.SELF_HOSTED);
+            }
+
             b.modpackPlatformProjectId(toml.getString(
                     "modpack.platform.project-id",
                     b.modpackPlatformProjectId
@@ -90,6 +99,10 @@ public final class ConfigLoader {
             b.modpackPlatformDownloadUrl(toml.getString(
                     "modpack.platform.download-url",
                     b.modpackPlatformDownloadUrl
+            ).trim());
+            b.modpackArchivePath(toml.getString(
+                    "modpack.archive.path",
+                    b.modpackArchivePath
             ).trim());
             b.modpackRevision(toml.getLong("modpack.revision", b.modpackRevision));
             b.minimumRevision(toml.getLong(

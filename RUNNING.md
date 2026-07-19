@@ -56,24 +56,40 @@ auto-generate = true      # creates .vesta/tls.p12 on first start
 version = "1.0.0"        # bump when you change files
 ```
 
-### Reference an existing platform pack
+### Choose a pack source
 
-To make Vesta coordinate an existing Modrinth pack instead of hosting its files,
-add the exact project and version IDs:
+Set `modpack.source` explicitly:
+
+| Source | Meaning |
+|---|---|
+| `self-hosted` | Scan live `mods/` / `config/` and publish hashed files |
+| `modrinth` | Reference a Modrinth project + version (launcher resolves the archive) |
+| `curseforge` | Reference a CurseForge modpack + file ID (launcher resolves the archive) |
+| `archive` | Host a local `.zip` / `.mrpack` as one authenticated blob (not extracted) |
 
 ```toml
-[modpack.platform]
+[modpack]
 source = "modrinth"
+
+[modpack.platform]
 project-id = "your-project-id"
 version-id = "your-version-id"
-download-url = ""        # Modrinth is resolved automatically
+download-url = ""        # optional override; Modrinth/CurseForge resolve by IDs
 ```
 
-For CurseForge, set `source = "curseforge"` and provide a direct pack archive
-in `download-url`. The launcher can install that archive while retaining the
-Vesta server link and revision policy.
+For a pre-built pack file already on disk:
 
-Leave `source` empty to use the normal scanned `mods/` and `config/` mode.
+```toml
+[modpack]
+source = "archive"
+
+[modpack.archive]
+path = "packs/my-pack.mrpack"   # relative to scan-root
+```
+
+The wrapper serves that archive at `/api/v1/modpack/archive` under the same pack
+access gate. It does **not** unpack the archive into `mods/` or re-host its
+contents as individual files.
 
 ### Start Minecraft with the wrapper
 
