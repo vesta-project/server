@@ -10,6 +10,7 @@ import com.vesta.sync.manifest.PackSource;
 import com.vesta.sync.manifest.PrivateFileEntry;
 import com.vesta.sync.manifest.ServerInfo;
 import com.vesta.sync.manifest.ServerModpackManifest;
+import com.vesta.sync.manifest.VestaPackBuilder;
 import com.vesta.sync.protocol.PushUpdateAvailable;
 import com.vesta.sync.sync.SyncCheckResult;
 import com.vesta.wrapper.config.WrapperConfig;
@@ -19,6 +20,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -107,11 +109,37 @@ public final class ServerState {
                         serverInfo
                 );
             }
-            this.localArchive = nextArchive;
             this.updatedAt = Instant.now();
             ServerModpackManifest m = modpackState.getManifest();
             m.revision = config.modpackRevision;
             m.minimumRevision = config.minimumRevision;
+
+            if (source == PackSource.SELF_HOSTED) {
+                Path packPath = config.scanRoot.resolve(".vesta").resolve("pack.vestapack");
+                try {
+                    nextArchive = VestaPackBuilder.build(config.scanRoot, m, packPath);
+                    m.downloadUrl = VestaSync.API_MODPACK_ARCHIVE;
+                    m.archivePath = ".vesta/pack.vestapack";
+                    m.archiveSha256 = nextArchive.sha256;
+                    m.archiveSize = nextArchive.size;
+                    m.archiveFormat = VestaPackBuilder.FORMAT;
+                } catch (Exception packError) {
+                    log.error("Failed to generate Vesta pack: {}", packError.getMessage(), packError);
+                    // Keep the previous generated pack available if present.
+                    if (this.localArchive != null
+                            && VestaPackBuilder.FORMAT.equals(this.localArchive.format)
+                            && Files.exists(this.localArchive.resolvedPath)) {
+                        nextArchive = this.localArchive;
+                        m.downloadUrl = VestaSync.API_MODPACK_ARCHIVE;
+                        m.archivePath = ".vesta/pack.vestapack";
+                        m.archiveSha256 = nextArchive.sha256;
+                        m.archiveSize = nextArchive.size;
+                        m.archiveFormat = nextArchive.format;
+                    }
+                }
+            }
+
+            this.localArchive = nextArchive;
             if (m.mode == ModpackMode.PLATFORM) {
                 log.info("Loaded {} platform pack reference: {} @ {}",
                         m.source, m.modpackId, m.versionId);
@@ -119,9 +147,12 @@ public final class ServerState {
                 log.info("Loaded local archive pack: {} ({} bytes, {})",
                         m.archivePath, m.archiveSize, m.archiveFormat);
             } else {
-                log.info("Loaded modpack manifest: {} public files ({} private)",
+                log.info("Loaded modpack manifest: {} public files ({} private){}",
                         m.mods.size() + m.overrides.size(),
-                        modpackState.getPrivateFiles().size());
+                        modpackState.getPrivateFiles().size(),
+                        nextArchive != null
+                                ? (", Vesta pack " + nextArchive.sha256.substring(0, 12) + "…")
+                                : "");
             }
             if (previous != null) {
                 notifyPush(previous);

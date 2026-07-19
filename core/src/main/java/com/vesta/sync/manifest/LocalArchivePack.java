@@ -21,7 +21,7 @@ public final class LocalArchivePack {
     /** {@code mrpack} or {@code zip}. */
     public final String format;
 
-    private LocalArchivePack(
+    LocalArchivePack(
             Path resolvedPath,
             String relativePath,
             String sha256,
@@ -33,6 +33,16 @@ public final class LocalArchivePack {
         this.sha256 = sha256;
         this.size = size;
         this.format = format;
+    }
+
+    public static LocalArchivePack of(
+            Path resolvedPath,
+            String relativePath,
+            String sha256,
+            long size,
+            String format
+    ) {
+        return new LocalArchivePack(resolvedPath, relativePath, sha256, size, format);
     }
 
     public static LocalArchivePack resolve(Path scanRoot, String configuredPath) throws IOException {
