@@ -456,6 +456,8 @@ Download a file by its SHA-256 hash. The server stores files in a content-addres
 
 This endpoint enables the client to download any file the manifest references with `source: "server"` without needing a separate TCP interaction.
 
+> **Deprecated:** `GET /api/v1/private/files` and `GET /api/v1/private/files/{path}` return `410 Gone`. Use authenticated `GET /api/v1/modpack/manifest` and `GET /api/v1/files/{sha256}` instead.
+
 ---
 
 ## 5. ServerModpackManifest

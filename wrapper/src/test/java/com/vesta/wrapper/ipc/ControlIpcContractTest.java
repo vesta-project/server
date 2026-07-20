@@ -21,19 +21,28 @@ class ControlIpcContractTest {
     @AfterEach
     void tearDown() {
         if (server != null) {
-            server.stop();
+            try {
+                server.stop();
+            } finally {
+                server = null;
+            }
         }
     }
 
     @Test
     void heartbeatAndPermissionCheck() throws Exception {
-        int port = 19091;
         LinkCodeService links = new LinkCodeService(60);
-        server = new ControlIpcServer(port, links);
+        server = new ControlIpcServer(0, links);
         Thread serverThread = new Thread(server, "test-control");
         serverThread.setDaemon(true);
         serverThread.start();
-        Thread.sleep(300);
+
+        int port;
+        long readyDeadline = System.currentTimeMillis() + 5000;
+        while ((port = server.boundPort()) <= 0 && System.currentTimeMillis() < readyDeadline) {
+            Thread.sleep(50);
+        }
+        assertTrue(port > 0, "control IPC server should bind to an ephemeral port");
 
         try (Socket socket = new Socket("127.0.0.1", port)) {
             socket.setTcpNoDelay(true);

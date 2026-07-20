@@ -324,7 +324,7 @@ Seed UI depends on remote install APIs (already sketched) + platform download in
 | `security.private-paths` | Extra trees indexed as private-only |
 | ~~`vesta-files/`~~ | **Removed** from wrapper scan path — no duplicate blob cache |
 
-Public downloads: known files use platform CDN URLs in manifest; `source.type=server` files use `GET /api/v1/files/{sha256}` served from live path. Private files use `GET /api/v1/private/files/{path}`.
+Public downloads: known files use platform CDN URLs in manifest; `source.type=server` files use `GET /api/v1/files/{sha256}` served from live path (requires `pack.fetch` bearer). `GET /api/v1/private/files` and `GET /api/v1/private/files/{path}` are **deprecated** (`410 Gone`); pack content is unified in the gated manifest.
 
 Mod-only HTTP fallback may still use a local store until aligned — wrapper is canonical.
 

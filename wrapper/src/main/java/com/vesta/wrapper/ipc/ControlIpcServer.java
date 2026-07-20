@@ -38,7 +38,7 @@ public final class ControlIpcServer implements Runnable, PermissionChecker {
     private final AtomicReference<Peer> peer = new AtomicReference<>();
     private final ConcurrentHashMap<String, CompletableFuture<Result>> pendingChecks = new ConcurrentHashMap<>();
 
-    private ServerSocket serverSocket;
+    private volatile ServerSocket serverSocket;
 
     public ControlIpcServer(int port, LinkCodeService linkCodes) {
         this.port = port;
@@ -79,11 +79,17 @@ public final class ControlIpcServer implements Runnable, PermissionChecker {
         return linkCodes;
     }
 
+    /** Returns the active listener port, including an ephemeral port selected from port 0. */
+    public int boundPort() {
+        ServerSocket socket = serverSocket;
+        return socket != null ? socket.getLocalPort() : 0;
+    }
+
     @Override
     public void run() {
         try {
             serverSocket = new ServerSocket(port, 1, InetAddress.getByName("127.0.0.1"));
-            log.info("Control IPC listening on 127.0.0.1:{}", port);
+            log.info("Control IPC listening on 127.0.0.1:{}", serverSocket.getLocalPort());
             while (running.get()) {
                 try {
                     Socket socket = serverSocket.accept();

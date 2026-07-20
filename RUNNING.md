@@ -183,12 +183,18 @@ cd V:\server
 
 ### HTTP endpoints
 
+Pack content (`GET /api/v1/modpack/manifest` and `GET /api/v1/files/{sha256}`) requires a
+bearer token with `pack.fetch` in non-open security modes. Obtain a token via devtools,
+`POST /api/v1/auth/password`, or the Minecraft link flow.
+
 ```powershell
-# Modpack metadata
+$headers = @{ Authorization = "Bearer <token>" }
+
+# Modpack metadata (public)
 Invoke-RestMethod https://localhost:9090/api/v1/modpack/info
 
-# Full manifest (includes file hashes)
-Invoke-RestMethod https://localhost:9090/api/v1/modpack/manifest
+# Full manifest (mods + overrides, includes file hashes)
+Invoke-RestMethod https://localhost:9090/api/v1/modpack/manifest -Headers $headers
 
 # Sync check
 $body = @{
@@ -198,7 +204,7 @@ $body = @{
 Invoke-RestMethod -Method POST -Uri https://localhost:9090/api/v1/sync/check -Body $body -ContentType "application/json"
 
 # Download a file by SHA-256 (from manifest)
-Invoke-WebRequest https://localhost:9090/api/v1/files/<sha256hex> -OutFile downloaded.bin
+Invoke-WebRequest https://localhost:9090/api/v1/files/<sha256hex> -Headers $headers -OutFile downloaded.bin
 ```
 
 ### TCP protocol
@@ -214,4 +220,4 @@ When TCP and HTTP share port 9090, clients must send a **`0x00` byte** before ea
 ## Notes
 
 - **Files**: Scanned from `mods/` and `config/` directly (no `vesta-files` duplicate). Known MR/CF entries go in `.vesta-known.json`.
-- **Private files**: Listed at `/api/v1/private/files` when authenticated and permitted.
+- **Deprecated**: `GET /api/v1/private/files` returns `410 Gone`. Use the gated manifest and `GET /api/v1/files/{sha256}` instead.
