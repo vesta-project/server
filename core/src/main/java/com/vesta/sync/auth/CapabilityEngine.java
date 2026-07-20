@@ -59,7 +59,7 @@ public final class CapabilityEngine {
         }
     }
 
-    private final AccessControlConfig config;
+    private volatile AccessControlConfig config;
     private final PermissionChecker permissions;
     private final Predicate<UUID> whitelist;
     private final OpsLevelProvider opsLevels;
@@ -92,6 +92,11 @@ public final class CapabilityEngine {
 
     public AccessControlConfig config() {
         return config;
+    }
+
+    /** Hot-swap access levels/people/perm-nodes without restarting the wrapper. */
+    public synchronized void setConfig(AccessControlConfig next) {
+        this.config = next != null ? next : AccessControlConfig.defaults();
     }
 
     public Decision check(Action action, AuthContext ctx) {

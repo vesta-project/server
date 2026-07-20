@@ -94,6 +94,11 @@ public final class BearerTokenStore {
         byHash.remove(TokenService.hashToken(rawToken));
     }
 
+    /** Drop every issued bearer. Used when auth mode or password changes. */
+    public void revokeAll() {
+        byHash.clear();
+    }
+
     public int size() {
         return byHash.size();
     }

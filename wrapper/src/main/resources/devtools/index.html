@@ -36,6 +36,11 @@
     header {
       padding: 1.25rem 1.5rem 0.75rem;
       border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+      align-items: flex-end;
     }
     header h1 {
       margin: 0;
@@ -48,14 +53,22 @@
       color: var(--muted);
       font-size: 0.875rem;
     }
+    .live {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.75rem;
+      color: var(--muted);
+      text-align: right;
+    }
+    .live.ok { color: var(--ok); }
+    .live.err { color: var(--danger); }
     .layout {
       display: grid;
-      grid-template-columns: minmax(280px, 360px) 1fr;
+      grid-template-columns: minmax(300px, 380px) 1fr;
       gap: 1rem;
       padding: 1rem 1.5rem 2rem;
-      max-width: 1200px;
+      max-width: 1280px;
     }
-    @media (max-width: 860px) {
+    @media (max-width: 960px) {
       .layout { grid-template-columns: 1fr; }
     }
     .panel {
@@ -89,7 +102,7 @@
       padding: 0.45rem 0.55rem;
       margin-bottom: 0.65rem;
     }
-    input:focus, textarea:focus { outline: 1px solid var(--accent-dim); border-color: var(--accent); }
+    input:focus, textarea:focus, select:focus { outline: 1px solid var(--accent-dim); border-color: var(--accent); }
     .row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
     .row > * { flex: 1 1 auto; }
     button {
@@ -103,13 +116,15 @@
       padding: 0.45rem 0.7rem;
       cursor: pointer;
     }
-    button:hover { border-color: var(--accent); background: #28313d; }
+    button:hover:not(:disabled) { border-color: var(--accent); background: #28313d; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
     button.primary {
       background: var(--accent-dim);
       border-color: var(--accent);
     }
-    button.primary:hover { background: var(--accent); color: #0a1210; }
+    button.primary:hover:not(:disabled) { background: var(--accent); color: #0a1210; }
     button.danger { border-color: #6a3535; color: #f0c8c8; }
+    button.warn { border-color: #6a5a20; color: #e8d48a; }
     .stack { display: flex; flex-direction: column; gap: 0.75rem; }
     .badge {
       display: inline-block;
@@ -121,7 +136,7 @@
       color: var(--muted);
     }
     .badge.open { color: var(--warn); border-color: #6a5a20; }
-    .badge.password, .badge.linked { color: var(--ok); border-color: #2f5a42; }
+    .badge.password, .badge.linked, .badge.whitelist { color: var(--ok); border-color: #2f5a42; }
     .token {
       word-break: break-all;
       font-family: "IBM Plex Mono", monospace;
@@ -148,7 +163,7 @@
     }
     .cards {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
       gap: 0.5rem;
       margin-bottom: 0.75rem;
     }
@@ -166,12 +181,28 @@
     .status-line { font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
     .status-line.err { color: var(--danger); }
     .status-line.ok { color: var(--ok); }
+    .people-list { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 0.65rem; }
+    .people-row {
+      display: flex; gap: 0.5rem; align-items: center; justify-content: space-between;
+      background: var(--input); border: 1px solid var(--line); border-radius: 4px; padding: 0.4rem 0.55rem;
+      font-family: "IBM Plex Mono", monospace; font-size: 0.75rem;
+    }
+    .people-row button { flex: 0 0 auto; }
+    .check {
+      display: flex; align-items: center; gap: 0.45rem; margin-bottom: 0.65rem; color: var(--muted); font-size: 0.8rem;
+    }
+    .check input { width: auto; margin: 0; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+    @media (max-width: 520px) { .grid-2 { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <header>
-    <h1>Vesta Sync — Devtools</h1>
-    <p>Local console for info, auth, sync-check, and remote install against a running wrapper.</p>
+    <div>
+      <h1>Vesta Sync — Devtools</h1>
+      <p>Local admin console for status, Minecraft power, security, and pack tools.</p>
+    </div>
+    <div class="live" id="live-clock">Polling paused</div>
   </header>
 
   <div class="layout">
@@ -180,16 +211,86 @@
         <h2>Connection</h2>
         <label for="base">Base URL</label>
         <input id="base" value="" spellcheck="false" />
+        <div class="check">
+          <input type="checkbox" id="auto-refresh" checked />
+          <label for="auto-refresh" style="margin:0">Auto-refresh every 2s</label>
+        </div>
         <div class="row">
-          <button type="button" class="primary" id="btn-refresh">Refresh status</button>
+          <button type="button" class="primary" id="btn-refresh">Refresh now</button>
           <button type="button" id="btn-clear-log">Clear log</button>
         </div>
         <p class="status-line" id="conn-status">Not connected</p>
       </section>
 
       <section class="panel">
+        <h2>Minecraft control</h2>
+        <p class="hint" id="mc-hint">Requires a configured launch jar. Localhost can control without a bearer.</p>
+        <div class="cards" id="mc-cards">
+          <div class="card"><div class="k">State</div><div class="v" id="mc-state">—</div></div>
+          <div class="card"><div class="k">PID</div><div class="v" id="mc-pid">—</div></div>
+          <div class="card"><div class="k">Connector</div><div class="v" id="c-mod">—</div></div>
+        </div>
+        <div class="row">
+          <button type="button" class="primary" id="btn-mc-start">Start</button>
+          <button type="button" id="btn-mc-stop">Stop</button>
+          <button type="button" class="warn" id="btn-mc-restart">Restart</button>
+          <button type="button" class="danger" id="btn-mc-kill">Force kill</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Security</h2>
+        <p class="hint">Localhost-only. Changes apply immediately and persist to the active TOML.</p>
+        <label for="sec-mode">Authentication mode</label>
+        <select id="sec-mode">
+          <option value="open">open</option>
+          <option value="password">password</option>
+          <option value="linked">linked</option>
+          <option value="whitelist">whitelist</option>
+        </select>
+        <label for="sec-password">Password (leave blank to keep)</label>
+        <input id="sec-password" type="password" autocomplete="new-password" placeholder="••••••" />
+        <div class="check">
+          <input type="checkbox" id="sec-clear-password" />
+          <label for="sec-clear-password" style="margin:0">Clear password</label>
+        </div>
+        <div class="grid-2">
+          <div>
+            <label for="lvl-anon">Anonymous level</label>
+            <select id="lvl-anon"></select>
+          </div>
+          <div>
+            <label for="lvl-auth">Authenticated level</label>
+            <select id="lvl-auth"></select>
+          </div>
+          <div>
+            <label for="lvl-password">Password level</label>
+            <select id="lvl-password"></select>
+          </div>
+          <div>
+            <label for="lvl-linked">Linked level</label>
+            <select id="lvl-linked"></select>
+          </div>
+        </div>
+        <p class="hint" id="sec-meta">Password configured: — · Auth required for pack: —</p>
+        <button type="button" class="primary" id="btn-sec-save" style="width:100%">Save security settings</button>
+        <p class="status-line" id="sec-status"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Player access</h2>
+        <p class="hint">Per-UUID grants override baselines (0–4). Level 4 includes settings + power.</p>
+        <div class="people-list" id="people-list"></div>
+        <div class="row">
+          <input id="person-uuid" placeholder="Player UUID" spellcheck="false" />
+          <select id="person-level" style="flex:0 0 5rem"></select>
+        </div>
+        <button type="button" class="primary" id="btn-person-add" style="width:100%">Add / update player</button>
+      </section>
+
+      <section class="panel">
         <h2>Authentication</h2>
-        <p class="hint">Mode comes from <code>security.mode</code> in wrapper-config. Open skips password; password needs the shared secret; link needs a code from <code>/vesta link</code>.</p>
+        <p class="hint">Mode comes from <code>security.mode</code>. Open skips password; password needs the shared secret; link needs a code from <code>/vesta link</code>.</p>
         <label for="password">Password</label>
         <input id="password" type="password" autocomplete="off" />
         <button type="button" class="primary" id="btn-login">POST /auth/token</button>
@@ -206,7 +307,7 @@
       </section>
 
       <section class="panel">
-        <h2>Actions</h2>
+        <h2>Content actions</h2>
         <button type="button" id="btn-sync" style="width:100%;margin-bottom:0.5rem">POST /sync/check (empty client)</button>
 
         <label for="upload-path">Upload path</label>
@@ -228,9 +329,14 @@
           <div class="card"><div class="k">Security</div><div class="v" id="c-mode">—</div></div>
           <div class="card"><div class="k">Version</div><div class="v" id="c-ver">—</div></div>
           <div class="card"><div class="k">Files</div><div class="v" id="c-files">—</div></div>
-          <div class="card"><div class="k">Mod IPC</div><div class="v" id="c-mod">—</div></div>
+          <div class="card"><div class="k">Auth req</div><div class="v" id="c-authreq">—</div></div>
         </div>
         <div id="info-summary" class="hint">Load status to see modpack details.</div>
+      </section>
+
+      <section class="panel">
+        <h2>Level reference</h2>
+        <pre id="levels-ref">(load security)</pre>
       </section>
 
       <section class="panel">
@@ -239,19 +345,24 @@
           <button type="button" class="active" data-tab="log">Log</button>
           <button type="button" data-tab="info">Info</button>
           <button type="button" data-tab="status">Status</button>
+          <button type="button" data-tab="security">Security</button>
           <button type="button" data-tab="manifest">Manifest</button>
         </div>
-        <pre id="out">Ready. Click Refresh status.</pre>
+        <pre id="out">Ready. Click Refresh now.</pre>
       </section>
     </div>
   </div>
 
   <script>
     const $ = (id) => document.getElementById(id);
+    const POLL_MS = 2000;
     const state = {
       token: localStorage.getItem("vesta_devtools_token") || "",
-      last: { log: [], info: null, status: null, manifest: null },
+      last: { log: [], info: null, status: null, manifest: null, security: null },
       tab: "log",
+      refreshing: false,
+      powerBusy: false,
+      pollTimer: null,
     };
 
     function defaultBase() {
@@ -261,6 +372,21 @@
       }
       return "http://localhost:9090";
     }
+
+    function fillLevelSelect(el, selected) {
+      el.innerHTML = "";
+      for (let i = 0; i <= 4; i++) {
+        const opt = document.createElement("option");
+        opt.value = String(i);
+        opt.textContent = String(i);
+        if (selected != null && Number(selected) === i) opt.selected = true;
+        el.appendChild(opt);
+      }
+    }
+
+    ["lvl-anon", "lvl-auth", "lvl-password", "lvl-linked", "person-level"].forEach((id) => {
+      fillLevelSelect($(id), id === "person-level" ? 4 : 1);
+    });
 
     $("base").value = localStorage.getItem("vesta_devtools_base") || defaultBase();
     renderToken();
@@ -275,6 +401,12 @@
       const el = $("conn-status");
       el.textContent = msg;
       el.className = "status-line" + (cls ? " " + cls : "");
+    }
+
+    function setLive(msg, cls) {
+      const el = $("live-clock");
+      el.textContent = msg;
+      el.className = "live" + (cls ? " " + cls : "");
     }
 
     function showTab(name) {
@@ -300,7 +432,7 @@
       if (state.tab === "log") showTab("log");
     }
 
-    async function api(method, path, { body, auth } = {}) {
+    async function api(method, path, { body, auth, quiet } = {}) {
       const base = $("base").value.replace(/\/$/, "");
       localStorage.setItem("vesta_devtools_base", base);
       const headers = { Accept: "application/json" };
@@ -314,20 +446,40 @@
       const raw = await res.text();
       let parsed;
       try { parsed = raw ? JSON.parse(raw) : null; } catch { parsed = raw; }
-      logEntry(`${method} ${path}`, res.status, parsed);
+      if (!quiet) logEntry(`${method} ${path}`, res.status, parsed);
       return { res, data: parsed };
     }
 
-    function paintOverview(info, status) {
-      const mode = (status && status.security_mode) || (info && info.security_mode) || "—";
+    function paintOverview(info, status, security) {
+      const mode = (security && security.mode)
+        || (status && status.security_mode)
+        || (info && info.security_mode)
+        || "—";
       const modeEl = $("c-mode");
       modeEl.textContent = mode;
       modeEl.className = "v badge " + String(mode).toLowerCase();
       $("c-ver").textContent = (info && info.version) || (status && status.modpack_version) || "—";
       $("c-files").textContent = info && info.file_count != null ? String(info.file_count) : "—";
-      $("c-mod").textContent = status && status.mod_connected != null
-        ? (status.mod_connected ? "connected" : "offline")
+      $("c-authreq").textContent = status && status.access_requires_auth != null
+        ? (status.access_requires_auth ? "yes" : "no")
+        : (security && security.access_requires_auth != null
+          ? (security.access_requires_auth ? "yes" : "no")
+          : "—");
+      $("c-mod").textContent = status && status.connector_connected != null
+        ? (status.connector_connected ? "connected" : "offline")
         : "—";
+
+      const mc = (status && status.minecraft) || {};
+      $("mc-state").textContent = mc.state || (status && status.minecraft_running ? "running" : "stopped") || "—";
+      $("mc-pid").textContent = mc.pid != null ? String(mc.pid) : "—";
+      const manageable = !!(status && (status.minecraft_manageable || (mc && mc.manageable)));
+      ["btn-mc-start", "btn-mc-stop", "btn-mc-restart", "btn-mc-kill"].forEach((id) => {
+        $(id).disabled = !manageable || state.powerBusy;
+      });
+      $("mc-hint").textContent = manageable
+        ? "Localhost can control without a bearer. Stop is graceful; Force kill is immediate."
+        : "No managed Minecraft launch jar configured.";
+
       if (info) {
         $("info-summary").textContent =
           `${info.name || "?"} · MC ${info.minecraft_version || "?"} · ${info.modloader?.type || "?"} ${info.modloader?.version || ""}`
@@ -335,29 +487,187 @@
       }
     }
 
-    async function refresh() {
-      setConn("Fetching…");
+    function paintSecurity(security) {
+      if (!security) return;
+      $("sec-mode").value = security.mode || "open";
+      fillLevelSelect($("lvl-anon"), security.anonymous_level);
+      fillLevelSelect($("lvl-auth"), security.authenticated_level);
+      fillLevelSelect($("lvl-password"), security.password_level);
+      fillLevelSelect($("lvl-linked"), security.linked_level);
+      $("sec-meta").textContent =
+        `Password configured: ${security.password_configured ? "yes" : "no"} · Auth required for pack: ${security.access_requires_auth ? "yes" : "no"}`;
+      if (security.levels) {
+        $("levels-ref").textContent = Object.keys(security.levels)
+          .sort()
+          .map((k) => `Level ${k}: ${(security.levels[k] || []).join(", ") || "(none)"}`)
+          .join("\n");
+      }
+      const list = $("people-list");
+      list.innerHTML = "";
+      const people = security.people || [];
+      if (!people.length) {
+        const empty = document.createElement("div");
+        empty.className = "hint";
+        empty.textContent = "No per-player grants.";
+        list.appendChild(empty);
+      }
+      people.forEach((row) => {
+        const el = document.createElement("div");
+        el.className = "people-row";
+        const left = document.createElement("span");
+        left.textContent = `${row.uuid} → L${row.level}`;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "danger";
+        btn.textContent = "Remove";
+        btn.onclick = () => removePerson(row.uuid);
+        el.appendChild(left);
+        el.appendChild(btn);
+        list.appendChild(el);
+      });
+    }
+
+    async function refresh({ quiet } = {}) {
+      if (state.refreshing) return;
+      state.refreshing = true;
+      if (!quiet) setConn("Fetching…");
       try {
-        const [st, info, man] = await Promise.all([
-          api("GET", "/api/v1/status"),
-          api("GET", "/api/v1/modpack/info"),
-          api("GET", "/api/v1/modpack/manifest"),
+        const [st, info, man, sec] = await Promise.all([
+          api("GET", "/api/v1/status", { quiet: true }),
+          api("GET", "/api/v1/modpack/info", { quiet: true }),
+          api("GET", "/api/v1/modpack/manifest", { quiet: true }),
+          api("GET", "/api/v1/admin/security", { quiet: true }),
         ]);
         if (!st.res.ok) throw new Error("status failed");
         state.last.status = st.data;
-        state.last.info = info.data;
-        state.last.manifest = man.data;
-        paintOverview(info.data, st.data);
+        state.last.info = info.res.ok ? info.data : state.last.info;
+        state.last.manifest = man.res.ok ? man.data : state.last.manifest;
+        if (sec.res.ok) {
+          state.last.security = sec.data;
+          paintSecurity(sec.data);
+        }
+        paintOverview(state.last.info, st.data, state.last.security);
+        const stamp = new Date().toLocaleTimeString();
         setConn(`OK · ${$("base").value}`, "ok");
+        setLive(`Last refresh ${stamp}`, "ok");
         if (state.tab !== "log") showTab(state.tab);
       } catch (e) {
         setConn(`Failed: ${e.message}. Is the wrapper running?`, "err");
+        setLive(`Refresh failed · ${e.message}`, "err");
+      } finally {
+        state.refreshing = false;
       }
     }
 
-    $("btn-refresh").onclick = refresh;
+    async function power(action) {
+      if (action === "kill" && !confirm("Force-kill the Minecraft process immediately?")) return;
+      if (action === "stop" && !confirm("Gracefully stop the Minecraft server?")) return;
+      if (action === "restart" && !confirm("Restart the Minecraft server?")) return;
+      state.powerBusy = true;
+      paintOverview(state.last.info, state.last.status, state.last.security);
+      try {
+        const { res, data } = await api("POST", "/api/v1/server/power", { body: { action } });
+        if (!res.ok) setConn((data && data.error) || `Power ${action} failed`, "err");
+        await refresh({ quiet: true });
+      } finally {
+        state.powerBusy = false;
+        paintOverview(state.last.info, state.last.status, state.last.security);
+      }
+    }
+
+    async function saveSecurity() {
+      $("sec-status").textContent = "Saving…";
+      $("sec-status").className = "status-line";
+      const body = {
+        mode: $("sec-mode").value,
+        anonymous_level: Number($("lvl-anon").value),
+        authenticated_level: Number($("lvl-auth").value),
+        password_level: Number($("lvl-password").value),
+        linked_level: Number($("lvl-linked").value),
+      };
+      if ($("sec-clear-password").checked) {
+        body.clear_password = true;
+      } else if ($("sec-password").value) {
+        body.password = $("sec-password").value;
+      }
+      try {
+        const { res, data } = await api("PUT", "/api/v1/admin/security", { body });
+        if (!res.ok) {
+          $("sec-status").textContent = (data && data.error) || "Save failed";
+          $("sec-status").className = "status-line err";
+          return;
+        }
+        $("sec-password").value = "";
+        $("sec-clear-password").checked = false;
+        state.last.security = data;
+        paintSecurity(data);
+        $("sec-status").textContent = "Saved and applied";
+        $("sec-status").className = "status-line ok";
+        await refresh({ quiet: true });
+      } catch (e) {
+        $("sec-status").textContent = e.message;
+        $("sec-status").className = "status-line err";
+      }
+    }
+
+    async function addPerson() {
+      const uuid = $("person-uuid").value.trim();
+      const level = Number($("person-level").value);
+      if (!uuid) return;
+      const people = Array.isArray(state.last.security?.people)
+        ? state.last.security.people.slice()
+        : [];
+      const idx = people.findIndex((p) => p.uuid === uuid);
+      if (idx >= 0) people[idx] = { uuid, level };
+      else people.push({ uuid, level });
+      const { res, data } = await api("PUT", "/api/v1/admin/security", { body: { people } });
+      if (res.ok) {
+        state.last.security = data;
+        paintSecurity(data);
+        $("person-uuid").value = "";
+        await refresh({ quiet: true });
+      } else {
+        setConn((data && data.error) || "Could not update player", "err");
+      }
+    }
+
+    async function removePerson(uuid) {
+      if (!confirm(`Remove access grant for ${uuid}?`)) return;
+      const { res, data } = await api("DELETE", `/api/v1/admin/security?uuid=${encodeURIComponent(uuid)}`);
+      if (res.ok) {
+        state.last.security = data;
+        paintSecurity(data);
+        await refresh({ quiet: true });
+      } else {
+        setConn((data && data.error) || "Could not remove player", "err");
+      }
+    }
+
+    function schedulePoll() {
+      if (state.pollTimer) {
+        clearInterval(state.pollTimer);
+        state.pollTimer = null;
+      }
+      if (!$("auto-refresh").checked) {
+        setLive("Auto-refresh off");
+        return;
+      }
+      state.pollTimer = setInterval(() => {
+        if (document.hidden) return;
+        refresh({ quiet: true });
+      }, POLL_MS);
+    }
+
+    $("btn-refresh").onclick = () => refresh();
     $("btn-clear-log").onclick = () => { state.last.log = []; showTab("log"); };
     $("btn-clear-token").onclick = () => { state.token = ""; renderToken(); };
+    $("auto-refresh").onchange = schedulePoll;
+    $("btn-mc-start").onclick = () => power("start");
+    $("btn-mc-stop").onclick = () => power("stop");
+    $("btn-mc-restart").onclick = () => power("restart");
+    $("btn-mc-kill").onclick = () => power("kill");
+    $("btn-sec-save").onclick = saveSecurity;
+    $("btn-person-add").onclick = addPerson;
 
     $("btn-login").onclick = async () => {
       const password = $("password").value;
@@ -398,7 +708,7 @@
         auth: true,
         body: { path, content_base64 },
       });
-      if (res.ok) await refresh();
+      if (res.ok) await refresh({ quiet: true });
       else setConn((data && data.error) || "Upload failed", "err");
     };
 
@@ -408,7 +718,7 @@
         auth: true,
         body: { path },
       });
-      if (res.ok) await refresh();
+      if (res.ok) await refresh({ quiet: true });
       else setConn((data && data.error) || "Remove failed", "err");
     };
 
@@ -416,7 +726,11 @@
       b.onclick = () => showTab(b.dataset.tab);
     });
 
-    refresh();
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && $("auto-refresh").checked) refresh({ quiet: true });
+    });
+
+    refresh().then(schedulePoll);
   </script>
 </body>
 </html>

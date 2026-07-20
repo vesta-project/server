@@ -19,6 +19,7 @@ import java.util.Set;
  *   <li>{@code files.write} — modify server files</li>
  *   <li>{@code settings.manage} — change server settings</li>
  *   <li>{@code content.manage} — add/remove mods/plugins on the server</li>
+ *   <li>{@code server.power} — start/stop/restart the managed Minecraft server</li>
  * </ul>
  */
 public final class AccessCapability {
@@ -31,6 +32,7 @@ public final class AccessCapability {
     public static final String FILES_WRITE = "files.write";
     public static final String SETTINGS_MANAGE = "settings.manage";
     public static final String CONTENT_MANAGE = "content.manage";
+    public static final String SERVER_POWER = "server.power";
 
     private static final Set<String> ALL = Collections.unmodifiableSet(new HashSet<String>(Arrays.asList(
             STATS_READ,
@@ -40,7 +42,8 @@ public final class AccessCapability {
             CONSOLE_EXECUTE,
             FILES_WRITE,
             SETTINGS_MANAGE,
-            CONTENT_MANAGE
+            CONTENT_MANAGE,
+            SERVER_POWER
     )));
 
     private AccessCapability() {}

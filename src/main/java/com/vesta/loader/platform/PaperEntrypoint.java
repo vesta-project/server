@@ -57,25 +57,73 @@ public class PaperEntrypoint extends JavaPlugin {
             if (player.isOp() && permission.startsWith("vesta.")) {
                 return true;
             }
-            return player.hasPermission(permission);
+            // OfflinePlayer has no permission resolver; only online players can be
+            // checked against plugin permissions (e.g. LuckPerms). Offline players
+            // fall back to the OP-based checks above.
+            org.bukkit.entity.Player online = Bukkit.getPlayer(uuid);
+            if (online != null) {
+                return online.hasPermission(permission);
+            }
+            return false;
         });
 
-        var cmd = getCommand("vesta");
-        if (cmd != null) {
-            cmd.setExecutor((sender, command, label, args) -> {
-                if (args.length >= 1 && "link".equalsIgnoreCase(args[0])) {
-                    if (!(sender instanceof org.bukkit.entity.Player player)) {
-                        sender.sendMessage("Players only.");
-                        return true;
+        // Paper plugins (paper-plugin.yml) cannot declare commands in YAML or use
+        // getCommand(); register /vesta through the Brigadier lifecycle API instead.
+        // The legacy plugin.yml/getCommand path lives in BukkitEntrypoint.
+        try {
+            this.getLifecycleManager().registerEventHandler(
+                    io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents.COMMANDS,
+                    event -> {
+                        event.registrar().register(
+                                io.papermc.paper.command.brigadier.Commands.literal("vesta")
+                                        .executes(ctx -> {
+                                            sendVestaHelp(ctx.getSource().getSender());
+                                            return com.mojang.brigadier.Command.SINGLE_SUCCESS;
+                                        })
+                                        .then(io.papermc.paper.command.brigadier.Commands.literal("help")
+                                                .executes(ctx -> {
+                                                    sendVestaHelp(ctx.getSource().getSender());
+                                                    return com.mojang.brigadier.Command.SINGLE_SUCCESS;
+                                                }))
+                                        .then(io.papermc.paper.command.brigadier.Commands.literal("status")
+                                                .executes(ctx -> {
+                                                    var sender = ctx.getSource().getSender();
+                                                    boolean wrapper = com.vesta.loader.VestaSyncManager.get()
+                                                            .isWrapperDetected();
+                                                    sender.sendMessage("Vesta sync active. Wrapper IPC: "
+                                                            + (wrapper ? "connected" : "standalone (embedded HTTP)")
+                                                            + ".");
+                                                    return com.mojang.brigadier.Command.SINGLE_SUCCESS;
+                                                }))
+                                        .then(io.papermc.paper.command.brigadier.Commands.literal("link")
+                                                .executes(ctx -> {
+                                                    var sender = ctx.getSource().getSender();
+                                                    if (!(sender instanceof org.bukkit.entity.Player player)) {
+                                                        sender.sendMessage("Players only.");
+                                                        return com.mojang.brigadier.Command.SINGLE_SUCCESS;
+                                                    }
+                                                    String code = com.vesta.loader.VestaSyncManager.get()
+                                                            .createLinkCode(player.getUniqueId());
+                                                    sender.sendMessage("Vesta link code: " + code
+                                                            + " (expires in ~5 minutes). Enter it in the launcher.");
+                                                    return com.mojang.brigadier.Command.SINGLE_SUCCESS;
+                                                }))
+                                        .build(),
+                                "Vesta sync commands (help, status, link)"
+                        );
+                        getLogger().info("Registered /vesta command (help, status, link) via Paper lifecycle API.");
                     }
-                    String code = com.vesta.loader.VestaSyncManager.get().createLinkCode(player.getUniqueId());
-                    sender.sendMessage("Vesta link code: " + code + " (expires in ~5 minutes). Enter it in the launcher.");
-                    return true;
-                }
-                sender.sendMessage("Usage: /vesta link");
-                return true;
-            });
+            );
+        } catch (Throwable t) {
+            getLogger().warning("Could not register /vesta command: " + t.getMessage()
+                    + ". Account linking via command is disabled; sync + control IPC still active.");
         }
+    }
+
+    private static void sendVestaHelp(org.bukkit.command.CommandSender sender) {
+        sender.sendMessage("Vesta sync commands:");
+        sender.sendMessage("  /vesta status  - show sync/wrapper connection status");
+        sender.sendMessage("  /vesta link    - get a code to link your account in the launcher");
     }
 
     @Override

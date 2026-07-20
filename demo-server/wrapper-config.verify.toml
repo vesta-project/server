@@ -1,0 +1,82 @@
+[server]
+tcp-port = 9092
+http-port = 9090
+# Client modpack content lives in its own directory, separate from the Minecraft
+# server runtime (world/, plugins/, server configs) so server-only files never
+# get published to launcher clients. Never scan plugins/ — those are server-side.
+scan-root = "./vesta-pack"
+scan-paths = ["mods", "config"]
+
+[server.public]
+scheme = "http"
+host = "localhost"
+port = 9090
+
+[server.tls]
+enabled = false
+auto-generate = true
+keystore = ".vesta/tls.p12"
+keystore-password = "vesta-generated"
+
+[modpack]
+name = "Vesta Demo Pack"
+description = "A demo modpack served by the Vesta sync server."
+version = "1.0.0"
+minecraft-version = "1.21.4"
+source = "self-hosted"
+unresolved-policy = "server"
+
+[modpack.modloader]
+type = "fabric"
+version = "0.18.4"
+
+[modpack.platform]
+project-id = ""
+version-id = ""
+download-url = ""
+
+[modpack.archive]
+path = ""
+
+[modpack.server]
+host = "localhost"
+port = 25565
+description = "A Vesta-powered Minecraft server"
+is-required = false
+
+[minecraft]
+auto-start = true
+launch-jar = "paper-26.1.2-74.jar"
+working-directory = "."
+java-command = "C:/Program Files/Eclipse Adoptium/jdk-25.0.3.9-hotspot/bin/java.exe"
+jvm-args = ["-Xms1G", "-Xmx2G"]
+server-args = ["nogui"]
+
+[connector]
+auto-update = false
+
+[security]
+mode = "linked"
+password = "hi"
+token-ttl-seconds = 86400
+control-port = 9091
+anonymous-level = 0
+authenticated-level = 1
+password-level = 4
+linked-level = 1
+whitelist-level = 3
+
+[security.levels]
+"0" = ["stats.read"]
+"1" = ["stats.read", "pack.fetch"]
+"2" = ["stats.read", "pack.fetch", "console.read"]
+"3" = ["stats.read", "pack.fetch", "console.read", "files.read"]
+"4" = ["stats.read", "pack.fetch", "console.read", "files.read", "console.execute", "files.write", "settings.manage", "content.manage", "server.power"]
+
+[security.perm-nodes]
+"vesta.level.admin" = 4
+"vesta.level.maintainer" = 3
+
+[security.people]
+"43d24325-0ac2-454b-a708-62ebd28559de" = 4
+

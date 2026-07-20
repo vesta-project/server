@@ -4,7 +4,3 @@ main: com.vesta.loader.platform.PaperEntrypoint
 api-version: "1.21"
 authors: [Vesta]
 description: Client-server modpack synchronization for Vesta Launcher
-commands:
-  vesta:
-    description: Vesta sync account linking
-    usage: /vesta link

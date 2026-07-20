@@ -144,12 +144,20 @@ public final class MinecraftSessionChallengeService {
         return pending.size();
     }
 
+    /**
+     * Derives the one-time Mojang session {@code serverId}. Mojang's
+     * {@code joinServer}/{@code hasJoined} endpoints only accept a Minecraft
+     * server hash of at most 40 hex characters (SHA-1 sized); a longer digest
+     * (e.g. SHA-256) is rejected with {@code "Invalid serverId"}. The value only
+     * needs to be unpredictable and identical on both the join and hasJoined
+     * calls, so a SHA-1 hex digest is sufficient and Mojang-compatible.
+     */
     private static String digest(String input) {
         try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            MessageDigest md = MessageDigest.getInstance("SHA-1");
             return toHex(md.digest(input.getBytes(StandardCharsets.UTF_8)));
         } catch (Exception e) {
-            throw new IllegalStateException("SHA-256 unavailable", e);
+            throw new IllegalStateException("SHA-1 unavailable", e);
         }
     }
 

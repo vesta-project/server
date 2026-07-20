@@ -46,7 +46,11 @@ tasks {
 
     jar {
         archiveFileName.set("$modId-$modVersion+$releaseId.jar")
-        from(configurations.runtimeClasspath.get().filter { it.name.startsWith("vesta-") }.map { zipTree(it) })
+        // Shade the Vesta core project so classes like LinkCodeService ship inside
+        // the plugin. gson/guava/slf4j are provided by Paper at runtime.
+        from(configurations.runtimeClasspath.get()
+            .filter { it.name.startsWith("vesta-") || it.name.startsWith("core") }
+            .map { zipTree(it) })
     }
 }
 

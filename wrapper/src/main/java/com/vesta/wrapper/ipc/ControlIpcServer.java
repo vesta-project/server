@@ -153,11 +153,16 @@ public final class ControlIpcServer implements Runnable, PermissionChecker {
         } catch (IOException e) {
             log.info("Mod control peer disconnected: {}", e.getMessage());
         } finally {
-            modConnected.set(false);
+            // Only mark the connector offline if this peer is still the active one.
+            // The connector opens a short-lived wrapper-detection probe before the
+            // persistent control client; closing that probe must not clear the state
+            // of the newer, still-connected peer.
+            if (peer.compareAndSet(p, null)) {
+                modConnected.set(false);
+            }
             pendingChecks.forEach((k, f) -> f.complete(Result.UNAVAILABLE));
             pendingChecks.clear();
             p.close();
-            peer.compareAndSet(p, null);
         }
     }
 

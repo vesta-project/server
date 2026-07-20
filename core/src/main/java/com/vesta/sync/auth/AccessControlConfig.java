@@ -130,7 +130,8 @@ public final class AccessControlConfig {
                 AccessCapability.CONSOLE_EXECUTE,
                 AccessCapability.FILES_WRITE,
                 AccessCapability.SETTINGS_MANAGE,
-                AccessCapability.CONTENT_MANAGE
+                AccessCapability.CONTENT_MANAGE,
+                AccessCapability.SERVER_POWER
         ));
         return levels;
     }

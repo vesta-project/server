@@ -18,6 +18,8 @@ public final class VestaSync {
     public static final String API_STATUS = "/api/v1/status";
 
     public static final String API_SERVER_DESCRIPTOR = "/api/v1/server/descriptor";
+    public static final String API_SERVER_POWER = "/api/v1/server/power";
+    public static final String API_ADMIN_SECURITY = "/api/v1/admin/security";
     public static final String API_AUTH_MINECRAFT_CHALLENGE = "/api/v1/auth/minecraft/challenge";
     public static final String API_AUTH_MINECRAFT_COMPLETE = "/api/v1/auth/minecraft/complete";
     public static final String API_REALTIME_TICKET = "/api/v1/realtime/ticket";

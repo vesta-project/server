@@ -94,7 +94,7 @@ whitelist-level = 3
 
 # Valid capabilities:
 #   stats.read, pack.fetch, console.read, files.read,
-#   console.execute, files.write, settings.manage, content.manage
+#   console.execute, files.write, settings.manage, content.manage, server.power
 [security.levels]
 "0" = ["stats.read"]
 "1" = ["stats.read", "pack.fetch"]
@@ -109,6 +109,7 @@ whitelist-level = 3
   "files.write",
   "settings.manage",
   "content.manage",
+  "server.power",
 ]
 
 # UUID → level grants (in addition to OP / baselines).

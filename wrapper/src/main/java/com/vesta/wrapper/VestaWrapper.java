@@ -9,6 +9,7 @@ import com.vesta.sync.auth.OpsJsonReader;
 import com.vesta.sync.auth.RealtimeTicketService;
 import com.vesta.wrapper.auth.AuthService;
 import com.vesta.wrapper.config.ConfigLoader;
+import com.vesta.wrapper.config.SecuritySettingsService;
 import com.vesta.wrapper.config.WrapperConfig;
 import com.vesta.wrapper.ipc.ControlIpcServer;
 import com.vesta.wrapper.runtime.MinecraftServerProcess;
@@ -96,6 +97,12 @@ public class VestaWrapper {
                 whitelist::isWhitelisted,
                 new OpsJsonReader(config.scanRoot)
         );
+        SecuritySettingsService securitySettings = new SecuritySettingsService(
+                configFile.toAbsolutePath().normalize(),
+                auth,
+                capabilities,
+                config.controlPort > 0 ? config.controlPort : VestaSync.DEFAULT_CONTROL_PORT
+        );
 
         boolean multiplexed = !config.tlsEnabled && (config.tcpPort == config.httpPort);
         int actualHttpPort = multiplexed ? (config.httpPort + 100) : config.httpPort;
@@ -110,7 +117,10 @@ public class VestaWrapper {
                 whitelist,
                 minecraftChallenges,
                 realtimeTickets,
-                multiplexed
+                minecraftServer,
+                controlIpc,
+                multiplexed,
+                securitySettings
         );
         try {
             httpServer.start();

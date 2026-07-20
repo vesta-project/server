@@ -10,6 +10,7 @@ import com.vesta.sync.auth.RealtimeTicketService;
 import com.vesta.sync.auth.SecurityMode;
 import com.vesta.sync.perm.PermissionChecker;
 import com.vesta.wrapper.auth.AuthService;
+import com.vesta.wrapper.config.SecuritySettingsService;
 import com.vesta.wrapper.config.WrapperConfig;
 import com.vesta.wrapper.security.WhitelistService;
 import org.junit.jupiter.api.AfterEach;
@@ -51,6 +52,9 @@ class VestaHttpServerCommunicationTest {
 
     private VestaHttpServer server;
     private AuthService auth;
+    private CapabilityEngine capabilities;
+    private SecuritySettingsService securitySettings;
+    private Path configFile;
     private URI base;
 
     @BeforeEach
@@ -58,6 +62,19 @@ class VestaHttpServerCommunicationTest {
         Path configDirectory = Files.createDirectories(root.resolve("config"));
         Files.write(configDirectory.resolve("vesta-test.txt"),
                 "communication fixture".getBytes(StandardCharsets.UTF_8));
+        configFile = root.resolve("wrapper-config.toml");
+        Files.writeString(configFile, """
+                [security]
+                mode = "linked"
+                password = ""
+                token-ttl-seconds = 86400
+                control-port = 9091
+                anonymous-level = 0
+                authenticated-level = 1
+                password-level = 4
+                linked-level = 1
+                whitelist-level = 3
+                """, StandardCharsets.UTF_8);
 
         WrapperConfig config = new WrapperConfig.Builder()
                 .scanRoot(root)
@@ -78,12 +95,13 @@ class VestaHttpServerCommunicationTest {
         ServerState state = new ServerState(config);
         auth = new AuthService(config);
         WhitelistService whitelist = new WhitelistService(root);
-        CapabilityEngine capabilities = new CapabilityEngine(
+        capabilities = new CapabilityEngine(
                 config.capabilities,
                 new PermissionChecker.AllowAll(),
                 whitelist::isWhitelisted,
                 new com.vesta.sync.auth.OpsLevelProvider.None()
         );
+        securitySettings = new SecuritySettingsService(configFile, auth, capabilities, 9091);
         MinecraftSessionChallengeService challenges = new MinecraftSessionChallengeService(
                 Duration.ofSeconds(30),
                 (name, serverId) -> {
@@ -105,7 +123,10 @@ class VestaHttpServerCommunicationTest {
                 whitelist,
                 challenges,
                 new RealtimeTicketService(Duration.ofSeconds(30)),
-                true
+                new com.vesta.wrapper.runtime.MinecraftServerProcess(config),
+                null,
+                true,
+                securitySettings
         );
         server.start();
         base = URI.create("http://127.0.0.1:" + server.boundPort());
@@ -244,6 +265,75 @@ class VestaHttpServerCommunicationTest {
         assertEquals(403, handshake.getResponse().statusCode());
     }
 
+    @Test
+    void adminSecurityIsLoopbackReadableAndUpdatesLiveAccess() throws Exception {
+        HttpResponse<String> get = get(VestaSync.API_ADMIN_SECURITY, null);
+        assertEquals(200, get.statusCode());
+        JsonObject security = json(get);
+        assertEquals("linked", security.get("mode").getAsString());
+        assertFalse(security.get("password_configured").getAsBoolean());
+        assertFalse(security.has("password"));
+
+        UUID player = UUID.randomUUID();
+        JsonObject body = new JsonObject();
+        body.addProperty("mode", "open");
+        body.addProperty("anonymous_level", 1);
+        com.google.gson.JsonArray people = new com.google.gson.JsonArray();
+        JsonObject person = new JsonObject();
+        person.addProperty("uuid", player.toString());
+        person.addProperty("level", 4);
+        people.add(person);
+        body.add("people", people);
+
+        HttpResponse<String> put = put(VestaSync.API_ADMIN_SECURITY, body, null);
+        assertEquals(200, put.statusCode());
+        JsonObject updated = json(put);
+        assertEquals("open", updated.get("mode").getAsString());
+        assertEquals(SecurityMode.OPEN, auth.mode());
+        assertEquals(1, capabilities.config().anonymousBaseline);
+        assertEquals(4, capabilities.config().people.get(player).intValue());
+        assertFalse(updated.get("access_requires_auth").getAsBoolean());
+
+        HttpResponse<String> status = get(VestaSync.API_STATUS, null);
+        assertEquals(200, status.statusCode());
+        assertEquals("open", json(status).get("security_mode").getAsString());
+        assertFalse(json(status).get("access_requires_auth").getAsBoolean());
+    }
+
+    @Test
+    void adminSecurityRejectsPasswordModeWithoutPassword() throws Exception {
+        JsonObject body = new JsonObject();
+        body.addProperty("mode", "password");
+        body.addProperty("clear_password", true);
+        HttpResponse<String> put = put(VestaSync.API_ADMIN_SECURITY, body, null);
+        assertEquals(400, put.statusCode());
+        assertTrue(json(put).get("error").getAsString().toLowerCase().contains("password"));
+    }
+
+    @Test
+    void statusExposesMinecraftLifecycleFields() throws Exception {
+        HttpResponse<String> status = get(VestaSync.API_STATUS, null);
+        assertEquals(200, status.statusCode());
+        JsonObject body = json(status);
+        assertTrue(body.has("minecraft_manageable"));
+        assertTrue(body.has("minecraft_running"));
+        assertTrue(body.has("minecraft"));
+        assertEquals("stopped", body.getAsJsonObject("minecraft").get("state").getAsString());
+    }
+
+    @Test
+    void serverPowerRejectsUnknownActionAndMissingLaunchJar() throws Exception {
+        JsonObject bad = new JsonObject();
+        bad.addProperty("action", "pause");
+        assertEquals(400, post(VestaSync.API_SERVER_POWER, bad, null).statusCode());
+
+        JsonObject stop = new JsonObject();
+        stop.addProperty("action", "stop");
+        HttpResponse<String> response = post(VestaSync.API_SERVER_POWER, stop, null);
+        assertEquals(409, response.statusCode());
+        assertTrue(json(response).get("error").getAsString().contains("launch-jar"));
+    }
+
     private HttpResponse<String> get(String path, String bearer) throws Exception {
         return client.send(request(path, bearer).GET().build(), HttpResponse.BodyHandlers.ofString());
     }
@@ -253,6 +343,15 @@ class VestaHttpServerCommunicationTest {
                 request(path, bearer)
                         .header("Content-Type", "application/json")
                         .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+    }
+
+    private HttpResponse<String> put(String path, JsonObject body, String bearer) throws Exception {
+        return client.send(
+                request(path, bearer)
+                        .header("Content-Type", "application/json")
+                        .PUT(HttpRequest.BodyPublishers.ofString(body.toString()))
                         .build(),
                 HttpResponse.BodyHandlers.ofString());
     }

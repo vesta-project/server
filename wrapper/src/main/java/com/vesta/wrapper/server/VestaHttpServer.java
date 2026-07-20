@@ -19,8 +19,11 @@ import com.vesta.sync.manifest.PrivateFileEntry;
 import com.vesta.sync.manifest.ServerModpackManifest;
 import com.vesta.sync.sync.SyncCheckResult;
 import com.vesta.wrapper.auth.AuthService;
+import com.vesta.wrapper.config.SecuritySettingsService;
 import com.vesta.wrapper.config.WrapperConfig;
 import com.vesta.wrapper.content.ContentInstaller;
+import com.vesta.wrapper.ipc.ControlIpcServer;
+import com.vesta.wrapper.runtime.MinecraftServerProcess;
 import com.vesta.wrapper.security.WhitelistService;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
@@ -42,6 +45,9 @@ import org.eclipse.jetty.websocket.server.WebSocketUpgradeHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.net.URLDecoder;
@@ -76,6 +82,9 @@ public final class VestaHttpServer {
     private final WhitelistService whitelist;
     private final MinecraftSessionChallengeService minecraftChallenges;
     private final RealtimeTicketService realtimeTickets;
+    private final MinecraftServerProcess minecraft;
+    private final ControlIpcServer controlIpc;
+    private final SecuritySettingsService securitySettings;
 
     public VestaHttpServer(
             int port,
@@ -87,7 +96,28 @@ public final class VestaHttpServer {
             WhitelistService whitelist,
             MinecraftSessionChallengeService minecraftChallenges,
             RealtimeTicketService realtimeTickets,
+            MinecraftServerProcess minecraft,
+            ControlIpcServer controlIpc,
             boolean bindLocalOnly
+    ) {
+        this(port, serverState, config, auth, linkCodes, capabilities, whitelist,
+                minecraftChallenges, realtimeTickets, minecraft, controlIpc, bindLocalOnly, null);
+    }
+
+    public VestaHttpServer(
+            int port,
+            ServerState serverState,
+            WrapperConfig config,
+            AuthService auth,
+            LinkCodeService linkCodes,
+            CapabilityEngine capabilities,
+            WhitelistService whitelist,
+            MinecraftSessionChallengeService minecraftChallenges,
+            RealtimeTicketService realtimeTickets,
+            MinecraftServerProcess minecraft,
+            ControlIpcServer controlIpc,
+            boolean bindLocalOnly,
+            SecuritySettingsService securitySettings
     ) {
         this.serverState = serverState;
         this.config = config;
@@ -97,6 +127,9 @@ public final class VestaHttpServer {
         this.whitelist = whitelist;
         this.minecraftChallenges = minecraftChallenges;
         this.realtimeTickets = realtimeTickets;
+        this.minecraft = minecraft;
+        this.controlIpc = controlIpc;
+        this.securitySettings = securitySettings;
         this.jetty = new Server();
         ServerConnector connector;
         if (config.tlsEnabled) {
@@ -246,6 +279,21 @@ public final class VestaHttpServer {
                     handleStatus(response, callback);
                     return;
                 }
+                case VestaSync.API_SERVER_POWER -> {
+                    if (!allowLocalAdmin(request) && !requireCapability(
+                            request, response, callback, AccessCapability.SERVER_POWER)) {
+                        return;
+                    }
+                    handleServerPower(request, response, callback);
+                    return;
+                }
+                case VestaSync.API_ADMIN_SECURITY -> {
+                    if (!requireLoopback(request, response, callback)) {
+                        return;
+                    }
+                    handleAdminSecurity(request, response, callback);
+                    return;
+                }
                 case VestaSync.API_PRIVATE_FILES -> {
                     if (!requireCapability(request, response, callback, CapabilityEngine.Action.PRIVATE_RESOURCES)) return;
                     handlePrivateList(response, callback);
@@ -294,7 +342,24 @@ public final class VestaHttpServer {
             Callback callback,
             CapabilityEngine.Action action
     ) {
-        CapabilityEngine.Decision d = capabilities.check(action, authContext(request));
+        return requireCapability(request, response, callback, capabilities.check(action, authContext(request)));
+    }
+
+    private boolean requireCapability(
+            Request request,
+            Response response,
+            Callback callback,
+            String capability
+    ) {
+        return requireCapability(request, response, callback, capabilities.check(capability, authContext(request)));
+    }
+
+    private boolean requireCapability(
+            Request request,
+            Response response,
+            Callback callback,
+            CapabilityEngine.Decision d
+    ) {
         if (d == CapabilityEngine.Decision.ALLOW) {
             return true;
         }
@@ -591,7 +656,158 @@ public final class VestaHttpServer {
         status.put("updated_at", serverState.getUpdatedAt().toString());
         status.put("private_file_count", serverState.getPrivateFiles().size());
         status.put("whitelist_count", whitelist.all().size());
+        status.put("access_requires_auth", capabilities.config().accessRequiresAuth);
+        status.put("password_configured", auth.hasPassword());
+        status.put("minecraft_manageable", minecraft != null && minecraft.isConfigured());
+        status.put("minecraft_running", minecraft != null && minecraft.isRunning());
+        status.put("connector_connected", controlIpc != null && controlIpc.isModConnected());
+        if (minecraft != null) {
+            status.put("minecraft", minecraft.snapshot());
+        }
         json(response, callback, status);
+    }
+
+    private void handleServerPower(Request request, Response response, Callback callback) throws Exception {
+        if (!HttpMethod.POST.is(request.getMethod())) {
+            response.setStatus(405);
+            json(response, callback, Map.of("error", "method not allowed"));
+            return;
+        }
+        JsonObject body = GSON.fromJson(readBody(request), JsonObject.class);
+        String action = body != null && body.has("action")
+                ? body.get("action").getAsString().trim().toLowerCase(Locale.ROOT)
+                : "";
+        if (!Set.of("start", "stop", "restart", "kill").contains(action)) {
+            response.setStatus(400);
+            json(response, callback, Map.of("error", "action must be one of: start, stop, restart, kill"));
+            return;
+        }
+        if (minecraft == null || !minecraft.isConfigured()) {
+            response.setStatus(409);
+            json(response, callback, Map.of("error", "no managed Minecraft server is configured (set minecraft.launch-jar)"));
+            return;
+        }
+        try {
+            boolean changed;
+            switch (action) {
+                case "start" -> changed = minecraft.start();
+                case "restart" -> changed = minecraft.restart();
+                case "stop" -> {
+                    boolean wasRunning = minecraft.isRunning();
+                    minecraft.stop();
+                    changed = wasRunning;
+                }
+                case "kill" -> {
+                    boolean wasRunning = minecraft.isRunning();
+                    minecraft.kill();
+                    changed = wasRunning;
+                }
+                default -> {
+                    response.setStatus(400);
+                    json(response, callback, Map.of("error", "action must be one of: start, stop, restart, kill"));
+                    return;
+                }
+            }
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("action", action);
+            out.put("changed", changed);
+            out.put("running", minecraft.isRunning());
+            out.put("minecraft", minecraft.snapshot());
+            response.setStatus(200);
+            json(response, callback, out);
+        } catch (java.io.IOException e) {
+            response.setStatus(409);
+            json(response, callback, Map.of("error", e.getMessage()));
+        }
+    }
+
+    private void handleAdminSecurity(Request request, Response response, Callback callback) throws Exception {
+        if (securitySettings == null) {
+            response.setStatus(503);
+            json(response, callback, Map.of("error", "security settings service unavailable"));
+            return;
+        }
+        String method = request.getMethod();
+        if (HttpMethod.GET.is(method)) {
+            response.setStatus(200);
+            json(response, callback, securitySettings.snapshot());
+            return;
+        }
+        if (HttpMethod.PUT.is(method) || HttpMethod.POST.is(method)) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = GSON.fromJson(readBody(request), Map.class);
+            if (body == null) {
+                body = Map.of();
+            }
+            try {
+                Map<String, Object> snapshot = securitySettings.update(body);
+                response.setStatus(200);
+                json(response, callback, snapshot);
+            } catch (IllegalArgumentException e) {
+                response.setStatus(400);
+                json(response, callback, Map.of("error", e.getMessage()));
+            }
+            return;
+        }
+        if (HttpMethod.DELETE.is(method)) {
+            // DELETE /api/v1/admin/security?uuid=... removes a person grant
+            String query = request.getHttpURI().getQuery();
+            String uuidRaw = queryParam(query, "uuid");
+            if (uuidRaw == null || uuidRaw.isBlank()) {
+                response.setStatus(400);
+                json(response, callback, Map.of("error", "uuid query parameter required"));
+                return;
+            }
+            try {
+                UUID uuid = com.vesta.wrapper.config.SecuritySettingsService.parseFlexibleUuid(uuidRaw);
+                Map<String, Object> snapshot = securitySettings.upsertPerson(uuid, null);
+                response.setStatus(200);
+                json(response, callback, snapshot);
+            } catch (IllegalArgumentException e) {
+                response.setStatus(400);
+                json(response, callback, Map.of("error", e.getMessage()));
+            }
+            return;
+        }
+        response.setStatus(405);
+        json(response, callback, Map.of("error", "method not allowed"));
+    }
+
+    private static String queryParam(String query, String name) {
+        if (query == null || query.isBlank()) {
+            return null;
+        }
+        for (String part : query.split("&")) {
+            int eq = part.indexOf('=');
+            String key = eq >= 0 ? part.substring(0, eq) : part;
+            String value = eq >= 0 ? part.substring(eq + 1) : "";
+            if (name.equals(URLDecoder.decode(key, StandardCharsets.UTF_8))) {
+                return URLDecoder.decode(value, StandardCharsets.UTF_8);
+            }
+        }
+        return null;
+    }
+
+    private boolean requireLoopback(Request request, Response response, Callback callback) {
+        if (allowLocalAdmin(request)) {
+            return true;
+        }
+        response.setStatus(403);
+        json(response, callback, Map.of("error", "admin endpoints are localhost-only"));
+        return false;
+    }
+
+    private boolean allowLocalAdmin(Request request) {
+        try {
+            SocketAddress remote = request.getConnectionMetaData().getRemoteSocketAddress();
+            if (!(remote instanceof InetSocketAddress inet)) {
+                return false;
+            }
+            InetAddress address = inet.getAddress();
+            return address != null && address.isLoopbackAddress();
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private void handleServerDescriptor(Request request, Response response, Callback callback) {
@@ -650,7 +866,7 @@ public final class VestaHttpServer {
             pack.put("archive", archive);
             pack.put("total_size_bytes", manifest.archiveSize);
         }
-        pack.put("access_requires_auth", config.capabilities.access.accessRequiresAuth);
+        pack.put("access_requires_auth", capabilities.config().accessRequiresAuth);
         pack.put("minimum_access_level", capabilities.minimumLevelFor(AccessCapability.PACK_FETCH));
         if (accessCtx.authenticated || accessCtx.boundUuid != null || accessCtx.passwordAuthenticated) {
             pack.put("effective_level", effectiveLevel);
@@ -666,7 +882,7 @@ public final class VestaHttpServer {
         } else {
             authMethods.add("minecraft");
             authMethods.add("link");
-            if (config.securityPassword != null && !config.securityPassword.isBlank()) {
+            if (auth.hasPassword()) {
                 authMethods.add("password");
             }
         }
@@ -887,7 +1103,7 @@ public final class VestaHttpServer {
     private void applyCors(Request request, Response response) {
         String origin = request.getHeaders().get(HttpHeader.ORIGIN);
         response.getHeaders().put(HttpHeader.ACCESS_CONTROL_ALLOW_ORIGIN, origin != null ? origin : "*");
-        response.getHeaders().put(HttpHeader.ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, DELETE, OPTIONS");
+        response.getHeaders().put(HttpHeader.ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, PUT, DELETE, OPTIONS");
         response.getHeaders().put(HttpHeader.ACCESS_CONTROL_ALLOW_HEADERS, "Authorization, Content-Type, " + VestaSync.SESSION_HEADER);
         response.getHeaders().put(HttpHeader.ACCESS_CONTROL_MAX_AGE, "86400");
         if (origin != null) {

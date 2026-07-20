@@ -9,10 +9,12 @@ import com.sun.net.httpserver.HttpServer;
 import com.vesta.loader.ModLog;
 import com.vesta.sync.FileStore;
 import com.vesta.sync.VestaSync;
+import com.vesta.sync.manifest.KnownSourceRegistry;
 import com.vesta.sync.manifest.ModloaderInfo;
 import com.vesta.sync.manifest.ManifestBuilder;
 import com.vesta.sync.manifest.ModpackState;
 import com.vesta.sync.manifest.ServerInfo;
+import com.vesta.sync.manifest.UnresolvedPolicy;
 import com.vesta.sync.manifest.ServerModpackManifest;
 import com.vesta.sync.sync.SyncCheckResult;
 
@@ -74,7 +76,9 @@ public final class ModHttpServer {
             this.modpackState = ModpackState.fromScan(
                     serverRoot,
                     ManifestBuilder.DEFAULT_SCAN_DIRS,
-                    fileStore,
+                    KnownSourceRegistry.load(serverRoot),
+                    UnresolvedPolicy.SERVER,
+                    List.of(),
                     modpackName,
                     modpackVersion,
                     mcVersion,
