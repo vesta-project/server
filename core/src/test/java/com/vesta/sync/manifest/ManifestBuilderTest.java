@@ -100,7 +100,7 @@ class ManifestBuilderTest {
     }
 
     @Test
-    void unresolvedPrivatePolicy() throws Exception {
+    void unresolvedPrivatePolicyListsOnManifest() throws Exception {
         Path modsDir = tempDir.resolve("mods");
         Files.createDirectories(modsDir);
         Files.write(modsDir.resolve("manual.jar"), "manual".getBytes(StandardCharsets.UTF_8));
@@ -112,8 +112,26 @@ class ManifestBuilderTest {
                 UnresolvedPolicy.PRIVATE,
                 Collections.emptyList());
 
-        assertTrue(result.mods.isEmpty());
-        assertEquals(1, result.privateFiles.size());
-        assertEquals("mods/manual.jar", result.privateFiles.get(0).path);
+        assertEquals(1, result.mods.size());
+        assertEquals("mods/manual.jar", result.mods.get(0).path);
+        assertEquals("server", result.mods.get(0).source.type);
+        assertTrue(result.privateFiles.isEmpty());
+    }
+
+    @Test
+    void extraPrivatePathsAppearOnManifest() throws Exception {
+        Path privateDir = tempDir.resolve("vesta-private");
+        Files.createDirectories(privateDir);
+        Files.write(privateDir.resolve("secret.jar"), "secret".getBytes(StandardCharsets.UTF_8));
+
+        ManifestBuilder.ScanResult result = ManifestBuilder.scan(
+                tempDir,
+                Collections.emptyList(),
+                KnownSourceRegistry.empty(),
+                UnresolvedPolicy.SERVER,
+                Collections.singletonList("vesta-private"));
+
+        assertEquals(1, result.overrides.size());
+        assertEquals("vesta-private/secret.jar", result.overrides.get(0).path);
     }
 }

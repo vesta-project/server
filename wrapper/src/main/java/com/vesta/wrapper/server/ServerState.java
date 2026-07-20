@@ -147,9 +147,8 @@ public final class ServerState {
                 log.info("Loaded local archive pack: {} ({} bytes, {})",
                         m.archivePath, m.archiveSize, m.archiveFormat);
             } else {
-                log.info("Loaded modpack manifest: {} public files ({} private){}",
+                log.info("Loaded modpack manifest: {} pack files{}",
                         m.mods.size() + m.overrides.size(),
-                        modpackState.getPrivateFiles().size(),
                         nextArchive != null
                                 ? (", Vesta pack " + nextArchive.sha256.substring(0, 12) + "…")
                                 : "");

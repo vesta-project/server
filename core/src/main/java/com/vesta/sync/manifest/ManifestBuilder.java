@@ -17,7 +17,8 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Builds public (known) and private (unknown) file indexes from the scan tree without duplicating bytes.
+ * Builds the modpack file index from the scan tree without duplicating bytes.
+ * All pack content (including former private paths) is emitted as {@link ManifestFile} rows.
  */
 public final class ManifestBuilder {
 
@@ -46,25 +47,23 @@ public final class ManifestBuilder {
 
         List<ManifestFile> publicMods = new ArrayList<>();
         List<ManifestFile> publicOverrides = new ArrayList<>();
-        List<PrivateFileEntry> privateFiles = new ArrayList<>();
 
         for (String scanDir : scanDirs) {
-            walkDir(normalizedRoot, scanDir, publicMods, publicOverrides, privateFiles, known, unresolvedPolicy);
+            walkDir(normalizedRoot, scanDir, publicMods, publicOverrides, known, unresolvedPolicy);
         }
 
         if (extraPrivatePaths != null) {
             for (String extra : extraPrivatePaths) {
-                walkDir(normalizedRoot, extra, publicMods, publicOverrides, privateFiles, known, UnresolvedPolicy.PRIVATE);
+                walkDir(normalizedRoot, extra, publicMods, publicOverrides, known, UnresolvedPolicy.SERVER);
             }
         }
 
         publicMods.sort((a, b) -> a.path.compareTo(b.path));
         publicOverrides.sort((a, b) -> a.path.compareTo(b.path));
-        privateFiles.sort((a, b) -> a.path.compareTo(b.path));
 
-        log.info("Manifest scan: {} public mods, {} public overrides, {} private from {}",
-                publicMods.size(), publicOverrides.size(), privateFiles.size(), normalizedRoot);
-        return new ScanResult(publicMods, publicOverrides, privateFiles);
+        log.info("Manifest scan: {} mods, {} overrides from {}",
+                publicMods.size(), publicOverrides.size(), normalizedRoot);
+        return new ScanResult(publicMods, publicOverrides);
     }
 
     private static void walkDir(
@@ -72,7 +71,6 @@ public final class ManifestBuilder {
             String scanDir,
             List<ManifestFile> publicMods,
             List<ManifestFile> publicOverrides,
-            List<PrivateFileEntry> privateFiles,
             KnownSourceRegistry known,
             UnresolvedPolicy unresolvedPolicy
     ) throws IOException {
@@ -90,7 +88,7 @@ public final class ManifestBuilder {
             @Override
             public FileVisitResult preVisitDirectory(Path d, BasicFileAttributes attrs) {
                 String name = d.getFileName().toString();
-                if (name.startsWith(".") || "vesta-private".equals(name)) {
+                if (name.startsWith(".")) {
                     return FileVisitResult.SKIP_SUBTREE;
                 }
                 return FileVisitResult.CONTINUE;
@@ -110,17 +108,14 @@ public final class ManifestBuilder {
                 relative = PathSanitizer.sanitize(relative);
 
                 boolean platformKnown = known.isKnownPlatform(relative);
+                ManifestFile entry;
                 if (platformKnown) {
-                    ManifestFile entry = buildPublicEntry(file, known.get(relative));
-                    entry.path = relative;
-                    addPublic(relative, entry, publicMods, publicOverrides);
-                } else if (unresolvedPolicy == UnresolvedPolicy.PRIVATE) {
-                    privateFiles.add(buildPrivateEntry(file, relative));
+                    entry = buildPublicEntry(file, known.get(relative));
                 } else {
-                    ManifestFile entry = buildPublicEntry(file, serverSource());
-                    entry.path = relative;
-                    addPublic(relative, entry, publicMods, publicOverrides);
+                    entry = buildPublicEntry(file, serverSource());
                 }
+                entry.path = relative;
+                addPublic(relative, entry, publicMods, publicOverrides);
                 return FileVisitResult.CONTINUE;
             }
         });
@@ -148,15 +143,6 @@ public final class ManifestBuilder {
         return entry;
     }
 
-    private static PrivateFileEntry buildPrivateEntry(Path file, String relative) throws IOException {
-        PrivateFileEntry entry = new PrivateFileEntry();
-        entry.path = relative;
-        entry.sha256 = FileHasher.sha256(file);
-        entry.sha1 = FileHasher.sha1(file);
-        entry.size = Files.size(file);
-        return entry;
-    }
-
     private static FileSource serverSource() {
         FileSource source = new FileSource();
         source.type = "server";
@@ -166,16 +152,14 @@ public final class ManifestBuilder {
     public static final class ScanResult {
         public final List<ManifestFile> mods;
         public final List<ManifestFile> overrides;
+        /** @deprecated Pack content is unified in mods/overrides; always empty. */
+        @Deprecated
         public final List<PrivateFileEntry> privateFiles;
 
-        public ScanResult(
-                List<ManifestFile> mods,
-                List<ManifestFile> overrides,
-                List<PrivateFileEntry> privateFiles
-        ) {
+        public ScanResult(List<ManifestFile> mods, List<ManifestFile> overrides) {
             this.mods = Collections.unmodifiableList(new ArrayList<>(mods));
             this.overrides = Collections.unmodifiableList(new ArrayList<>(overrides));
-            this.privateFiles = Collections.unmodifiableList(new ArrayList<>(privateFiles));
+            this.privateFiles = Collections.emptyList();
         }
     }
 }

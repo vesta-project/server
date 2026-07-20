@@ -22,6 +22,10 @@
             {
                 "id": "minecraft",
                 "versions": "${mc_range_quilt}"
+            },
+            {
+                "id": "fabric-api",
+                "versions": "*"
             }
         ]
     }

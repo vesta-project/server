@@ -1,4 +1,4 @@
-package com.vesta.loader.server;
+package com.vesta.loader;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -7,9 +7,9 @@ import com.google.gson.JsonObject;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import com.vesta.loader.ModLog;
-import com.vesta.sync.FileStore;
 import com.vesta.sync.VestaSync;
 import com.vesta.sync.manifest.KnownSourceRegistry;
+import com.vesta.sync.manifest.ManifestFile;
 import com.vesta.sync.manifest.ModloaderInfo;
 import com.vesta.sync.manifest.ManifestBuilder;
 import com.vesta.sync.manifest.ModpackState;
@@ -17,6 +17,7 @@ import com.vesta.sync.manifest.ServerInfo;
 import com.vesta.sync.manifest.UnresolvedPolicy;
 import com.vesta.sync.manifest.ServerModpackManifest;
 import com.vesta.sync.sync.SyncCheckResult;
+import com.vesta.sync.util.PathSanitizer;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -26,6 +27,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,14 +40,13 @@ public final class ModHttpServer {
             .create();
 
     private final HttpServer server;
-    private final FileStore fileStore;
+    private final Path serverRoot;
     private final ModpackState modpackState;
     private final String host;
     private final int mcPort;
 
     public ModHttpServer(
             int port,
-            FileStore fileStore,
             Path serverRoot,
             String modpackName,
             String modpackVersion,
@@ -55,7 +56,7 @@ public final class ModHttpServer {
             String host,
             int mcPort
     ) throws IOException {
-        this.fileStore = fileStore;
+        this.serverRoot = serverRoot.toAbsolutePath().normalize();
         this.host = host;
         this.mcPort = mcPort;
 
@@ -175,8 +176,8 @@ public final class ModHttpServer {
             return;
         }
 
-        Path file = fileStore.get(sha256);
-        if (file == null) {
+        Path file = resolveByHash(sha256);
+        if (file == null || !Files.isRegularFile(file)) {
             sendJson(ex, 404, Map.of("error", "file not found"));
             return;
         }
@@ -187,6 +188,23 @@ public final class ModHttpServer {
         OutputStream os = ex.getResponseBody();
         os.write(data);
         os.close();
+    }
+
+    private Path resolveByHash(String sha256) {
+        ServerModpackManifest manifest = modpackState.getManifest();
+        List<ManifestFile> all = new ArrayList<>(manifest.mods);
+        all.addAll(manifest.overrides);
+        String want = sha256.toLowerCase();
+        for (ManifestFile entry : all) {
+            if (entry.sha256 != null && want.equalsIgnoreCase(entry.sha256)) {
+                String normalized = PathSanitizer.sanitize(entry.path);
+                Path live = serverRoot.resolve(normalized).normalize();
+                if (live.startsWith(serverRoot) && Files.isRegularFile(live)) {
+                    return live;
+                }
+            }
+        }
+        return null;
     }
 
     private void sendJson(HttpExchange ex, int status, Object data) throws IOException {

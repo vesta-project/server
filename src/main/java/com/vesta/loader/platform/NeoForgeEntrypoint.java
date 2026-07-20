@@ -1,6 +1,9 @@
 package com.vesta.loader.platform;
 
 import com.vesta.loader.VestaMod;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.neoforge.event.RegisterCommandsEvent;
 
 @net.neoforged.fml.common.Mod(VestaMod.MOD_ID)
 public class NeoForgeEntrypoint {
@@ -32,6 +35,16 @@ public class NeoForgeEntrypoint {
                 "0.0.0.0",
                 25565
             );
+        }
+    }
+
+    @EventBusSubscriber(modid = VestaMod.MOD_ID, bus = EventBusSubscriber.Bus.GAME)
+    public static final class Commands {
+        private Commands() {}
+
+        @SubscribeEvent
+        public static void register(RegisterCommandsEvent event) {
+            ModdedVestaMessenger.register(event.getDispatcher());
         }
     }
 }

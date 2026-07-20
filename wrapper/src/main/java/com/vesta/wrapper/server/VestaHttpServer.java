@@ -15,7 +15,6 @@ import com.vesta.sync.auth.RealtimeTicketService;
 import com.vesta.sync.manifest.LocalArchivePack;
 import com.vesta.sync.manifest.ManifestFile;
 import com.vesta.sync.manifest.ModpackMode;
-import com.vesta.sync.manifest.PrivateFileEntry;
 import com.vesta.sync.manifest.ServerModpackManifest;
 import com.vesta.sync.sync.SyncCheckResult;
 import com.vesta.wrapper.auth.AuthService;
@@ -295,8 +294,11 @@ public final class VestaHttpServer {
                     return;
                 }
                 case VestaSync.API_PRIVATE_FILES -> {
-                    if (!requireCapability(request, response, callback, CapabilityEngine.Action.PRIVATE_RESOURCES)) return;
-                    handlePrivateList(response, callback);
+                    response.setStatus(410);
+                    json(response, callback, Map.of(
+                            "error", "deprecated",
+                            "message", "Private file listing was merged into GET /api/v1/modpack/manifest (pack.fetch)."
+                    ));
                     return;
                 }
                 default -> {
@@ -306,8 +308,11 @@ public final class VestaHttpServer {
                         return;
                     }
                     if (path.startsWith(VestaSync.API_PRIVATE_FILES + "/")) {
-                        if (!requireCapability(request, response, callback, CapabilityEngine.Action.PRIVATE_RESOURCES)) return;
-                        handlePrivateDownload(request, response, callback);
+                        response.setStatus(410);
+                        json(response, callback, Map.of(
+                                "error", "deprecated",
+                                "message", "Private file downloads use GET /api/v1/files/{sha256} with pack.fetch."
+                        ));
                         return;
                     }
                     if (path.startsWith(VestaSync.API_MODPACK_VERSIONS + "/") && path.endsWith("/manifest")) {
@@ -605,56 +610,13 @@ public final class VestaHttpServer {
         json(response, callback, Map.of("removed", deleted, "version", serverState.getCurrentVersion()));
     }
 
-    private void handlePrivateList(Response response, Callback callback) {
-        List<Map<String, Object>> files = new ArrayList<>();
-        for (PrivateFileEntry e : serverState.getPrivateFiles()) {
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("path", e.path);
-            row.put("sha256", e.sha256);
-            row.put("size", e.size);
-            files.add(row);
-        }
-        json(response, callback, Map.of("files", files));
-    }
-
-    private void handlePrivateDownload(Request request, Response response, Callback callback) throws Exception {
-        String rel = request.getHttpURI().getPath().substring(VestaSync.API_PRIVATE_FILES.length());
-        if (rel.startsWith("/")) {
-            rel = rel.substring(1);
-        }
-        rel = URLDecoder.decode(rel, StandardCharsets.UTF_8);
-        if (rel.isEmpty()) {
-            response.setStatus(400);
-            json(response, callback, Map.of("error", "path required"));
-            return;
-        }
-        boolean allowed = false;
-        for (PrivateFileEntry e : serverState.getPrivateFiles()) {
-            if (e.path.equals(rel)) {
-                allowed = true;
-                break;
-            }
-        }
-        if (!allowed) {
-            response.setStatus(404);
-            json(response, callback, Map.of("error", "private file not found"));
-            return;
-        }
-        Optional<Path> live = serverState.installer().resolveLivePath(rel);
-        if (live.isEmpty()) {
-            response.setStatus(404);
-            json(response, callback, Map.of("error", "file missing on disk"));
-            return;
-        }
-        serveFile(response, callback, live.get());
-    }
-
     private void handleStatus(Response response, Callback callback) {
+        ServerModpackManifest manifest = serverState.getManifest();
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("security_mode", auth.mode().name().toLowerCase());
         status.put("modpack_version", serverState.getCurrentVersion());
         status.put("updated_at", serverState.getUpdatedAt().toString());
-        status.put("private_file_count", serverState.getPrivateFiles().size());
+        status.put("pack_file_count", manifest.mods.size() + manifest.overrides.size());
         status.put("whitelist_count", whitelist.all().size());
         status.put("access_requires_auth", capabilities.config().accessRequiresAuth);
         status.put("password_configured", auth.hasPassword());
@@ -1057,8 +1019,7 @@ public final class VestaHttpServer {
         ServerModpackManifest manifest = serverState.getManifest();
         List<ManifestFile> all = new ArrayList<>(manifest.mods);
         all.addAll(manifest.overrides);
-        Optional<Path> live = serverState.installer().resolveByHash(
-                sha256, serverState.getPrivateFiles(), all);
+        Optional<Path> live = serverState.installer().resolveByHash(sha256, all);
         if (live.isEmpty()) {
             response.setStatus(404);
             json(response, callback, Map.of("error", "file not found"));

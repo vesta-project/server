@@ -1,7 +1,6 @@
 package com.vesta.wrapper.content;
 
 import com.vesta.sync.hashing.FileHasher;
-import com.vesta.sync.manifest.PrivateFileEntry;
 import com.vesta.sync.util.PathSanitizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -77,17 +76,12 @@ public final class ContentInstaller {
         return Optional.of(target);
     }
 
-    public Optional<Path> resolveByHash(String sha256, Iterable<PrivateFileEntry> privateFiles, Iterable<com.vesta.sync.manifest.ManifestFile> publicFiles) {
+    public Optional<Path> resolveByHash(String sha256, Iterable<com.vesta.sync.manifest.ManifestFile> manifestFiles) {
         if (sha256 == null) {
             return Optional.empty();
         }
         String want = sha256.toLowerCase();
-        for (PrivateFileEntry p : privateFiles) {
-            if (want.equalsIgnoreCase(p.sha256)) {
-                return resolveLivePath(p.path);
-            }
-        }
-        for (com.vesta.sync.manifest.ManifestFile m : publicFiles) {
+        for (com.vesta.sync.manifest.ManifestFile m : manifestFiles) {
             if (want.equalsIgnoreCase(m.sha256)) {
                 return resolveLivePath(m.path);
             }

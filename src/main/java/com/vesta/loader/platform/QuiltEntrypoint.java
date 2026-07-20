@@ -26,5 +26,16 @@ public class QuiltEntrypoint implements ModInitializer, DedicatedServerModInitia
             "0.0.0.0",
             25565
         );
+        registerCommandsReflectively();
+    }
+
+    private static void registerCommandsReflectively() {
+        try {
+            Class.forName("com.vesta.loader.platform.FabricCommandHooks")
+                    .getMethod("register")
+                    .invoke(null);
+        } catch (ReflectiveOperationException | LinkageError ignored) {
+            // fabric-api command module not on the classpath
+        }
     }
 }

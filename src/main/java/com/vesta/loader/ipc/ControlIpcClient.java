@@ -4,7 +4,6 @@ import com.google.gson.JsonObject;
 import com.vesta.loader.ModLog;
 import com.vesta.sync.VestaSync;
 import com.vesta.sync.ipc.ControlCodec;
-import com.vesta.sync.perm.PermissionChecker;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -24,6 +23,8 @@ public final class ControlIpcClient implements Runnable {
     private final int port;
     private final BiFunction<UUID, String, Boolean> permissionFn;
     private final AtomicBoolean running = new AtomicBoolean(true);
+    private volatile Runnable onConnected;
+    private volatile boolean connectedNotified;
     private Socket socket;
 
     public ControlIpcClient(int port, BiFunction<UUID, String, Boolean> permissionFn) {
@@ -33,6 +34,10 @@ public final class ControlIpcClient implements Runnable {
 
     public ControlIpcClient(BiFunction<UUID, String, Boolean> permissionFn) {
         this(VestaSync.DEFAULT_CONTROL_PORT, permissionFn);
+    }
+
+    public void setOnConnected(Runnable onConnected) {
+        this.onConnected = onConnected;
     }
 
     public void stop() {
@@ -64,6 +69,7 @@ public final class ControlIpcClient implements Runnable {
                 s.setTcpNoDelay(true);
                 this.socket = s;
                 ModLog.info("Connected to wrapper control IPC on 127.0.0.1:{}", port);
+                notifyConnectedOnce();
                 DataInputStream in = new DataInputStream(s.getInputStream());
                 DataOutputStream out = new DataOutputStream(s.getOutputStream());
 
@@ -107,6 +113,17 @@ public final class ControlIpcClient implements Runnable {
                     }
                 }
             }
+        }
+    }
+
+    private void notifyConnectedOnce() {
+        if (connectedNotified) {
+            return;
+        }
+        connectedNotified = true;
+        Runnable callback = onConnected;
+        if (callback != null) {
+            callback.run();
         }
     }
 }

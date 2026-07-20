@@ -1,6 +1,7 @@
 package com.vesta.wrapper.auth;
 
 import com.vesta.sync.auth.AuthGate;
+import com.vesta.sync.auth.BearerTokenPersistence;
 import com.vesta.sync.auth.BearerTokenStore;
 import com.vesta.sync.auth.SecurityMode;
 import com.vesta.sync.auth.TokenService;
@@ -8,6 +9,7 @@ import com.vesta.wrapper.config.WrapperConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.file.Path;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -24,10 +26,16 @@ public final class AuthService {
     private volatile SecurityMode mode;
     private volatile String plaintextPassword;
     private volatile long tokenTtlSeconds;
+    private final BearerTokenPersistence tokenPersistence;
 
     public AuthService(WrapperConfig config) {
+        this(config, config.scanRoot);
+    }
+
+    public AuthService(WrapperConfig config, Path serverRoot) {
         this.tokenTtlSeconds = config.tokenTtlSeconds;
         this.plaintextPassword = config.securityPassword != null ? config.securityPassword : "";
+        this.tokenPersistence = serverRoot != null ? new BearerTokenPersistence(serverRoot) : null;
         rebuild(config.securityMode, this.plaintextPassword, this.tokenTtlSeconds, false);
     }
 
@@ -61,8 +69,9 @@ public final class AuthService {
     }
 
     public Optional<String> login(String password) {
-        String token = gate.issueTokenAfterPassword(password);
-        return Optional.ofNullable(token);
+        Optional<String> token = Optional.ofNullable(gate.issueTokenAfterPassword(password));
+        persistTokens();
+        return token;
     }
 
     public Optional<BearerTokenStore.Record> validateBearer(String headerOrToken) {
@@ -75,12 +84,16 @@ public final class AuthService {
     }
 
     public String issueLinkedToken(UUID uuid) {
-        return store.issue("linked", uuid);
+        String token = store.issue("linked", uuid);
+        persistTokens();
+        return token;
     }
 
     public String issueMinecraftToken(UUID uuid, String name) {
         log.info("Issued Minecraft-session bearer for {} ({})", name, uuid);
-        return store.issue("linked", uuid);
+        String token = store.issue("linked", uuid);
+        persistTokens();
+        return token;
     }
 
     /**
@@ -110,8 +123,11 @@ public final class AuthService {
         if (revokeExisting && this.store != null) {
             this.store.revokeAll();
             this.store = new BearerTokenStore(ttlSeconds);
+            attachPersistence(this.store, false);
+            persistTokens();
         } else if (this.store == null) {
             this.store = new BearerTokenStore(ttlSeconds);
+            attachPersistence(this.store, true);
         }
         this.gate = new AuthGate(mode, tokens, this.store);
 
@@ -125,6 +141,22 @@ public final class AuthService {
             log.error("security.mode=password but security.password is empty — auth will fail");
         } else {
             log.info("Security mode: {}", mode);
+        }
+    }
+
+    private void attachPersistence(BearerTokenStore nextStore, boolean loadFromDisk) {
+        if (tokenPersistence == null) {
+            return;
+        }
+        if (loadFromDisk) {
+            tokenPersistence.load(nextStore);
+        }
+        nextStore.setOnChange(this::persistTokens);
+    }
+
+    private void persistTokens() {
+        if (tokenPersistence != null && store != null) {
+            tokenPersistence.save(store);
         }
     }
 }

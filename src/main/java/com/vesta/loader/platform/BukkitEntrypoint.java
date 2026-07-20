@@ -3,6 +3,7 @@ package com.vesta.loader.platform;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.Bukkit;
 import com.vesta.loader.VestaMod;
+import com.vesta.loader.VestaCommands;
 import java.nio.file.Path;
 
 public class BukkitEntrypoint extends JavaPlugin {
@@ -60,18 +61,23 @@ public class BukkitEntrypoint extends JavaPlugin {
         var cmd = getCommand("vesta");
         if (cmd != null) {
             cmd.setExecutor((sender, command, label, args) -> {
-                if (args.length >= 1 && "link".equalsIgnoreCase(args[0])) {
-                    if (!(sender instanceof org.bukkit.entity.Player player)) {
-                        sender.sendMessage("Players only.");
-                        return true;
-                    }
-                    String code = com.vesta.loader.VestaSyncManager.get().createLinkCode(player.getUniqueId());
-                    sender.sendMessage("Vesta link code: " + code + " (expires in ~5 minutes). Enter it in the launcher.");
+                BukkitVestaMessenger messenger = new BukkitVestaMessenger(sender);
+                if (args.length == 0 || "help".equalsIgnoreCase(args[0])) {
+                    VestaCommands.sendHelp(messenger);
                     return true;
                 }
-                sender.sendMessage("Usage: /vesta link");
+                if ("status".equalsIgnoreCase(args[0])) {
+                    VestaCommands.sendStatus(messenger);
+                    return true;
+                }
+                if ("link".equalsIgnoreCase(args[0])) {
+                    VestaCommands.sendLink(messenger);
+                    return true;
+                }
+                VestaCommands.sendHelp(messenger);
                 return true;
             });
+            getLogger().info("Registered /vesta command (help, status, link).");
         }
     }
 

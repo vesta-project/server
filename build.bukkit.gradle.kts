@@ -24,8 +24,10 @@ sourceSets {
     main {
         java {
             exclude("com/vesta/loader/platform/FabricEntrypoint.java")
+            exclude("com/vesta/loader/platform/ModdedVestaMessenger.java")
             exclude("com/vesta/loader/platform/NeoForgeEntrypoint.java")
             exclude("com/vesta/loader/platform/PaperEntrypoint.java")
+            exclude("com/vesta/loader/platform/PaperVestaMessenger.java")
             exclude("com/vesta/loader/platform/QuiltEntrypoint.java")
         }
     }

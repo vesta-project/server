@@ -140,6 +140,91 @@ class VestaHttpServerCommunicationTest {
     }
 
     @Test
+    void privateFilesEndpointIsDeprecated() throws Exception {
+        HttpResponse<String> response = get(VestaSync.API_PRIVATE_FILES, null);
+        assertEquals(410, response.statusCode());
+        assertEquals("deprecated", json(response).get("error").getAsString());
+    }
+
+    @Test
+    void formerPrivatePathIsOnManifestAndFetchable() throws Exception {
+        // A second VestaHttpServer cannot start while the @BeforeEach instance is still
+        // bound — Jetty rejects duplicate WebSocket mappings on /api/v1/realtime.
+        server.stop();
+        server = null;
+
+        Path privateRoot = Files.createDirectories(root.resolve("private-fixture"));
+        Path privateDir = Files.createDirectories(privateRoot.resolve("vesta-private"));
+        Files.write(privateDir.resolve("extra.jar"), "private-mod".getBytes(StandardCharsets.UTF_8));
+        Path configDir = Files.createDirectories(privateRoot.resolve("config"));
+        Files.write(configDir.resolve("vesta-test.txt"), "x".getBytes(StandardCharsets.UTF_8));
+
+        WrapperConfig privateConfig = new WrapperConfig.Builder()
+                .scanRoot(privateRoot)
+                .scanPaths(java.util.List.of("config"))
+                .privatePaths(java.util.List.of("vesta-private"))
+                .httpPort(0)
+                .tlsEnabled(false)
+                .serverId(serverUuid)
+                .modpackName("Test Pack")
+                .modpackVersion("2.4")
+                .securityMode(SecurityMode.LINKED)
+                .build();
+        ServerState privateState = new ServerState(privateConfig);
+        VestaHttpServer privateServer = new VestaHttpServer(
+                0,
+                privateState,
+                privateConfig,
+                auth,
+                new LinkCodeService(60),
+                capabilities,
+                new WhitelistService(privateRoot),
+                new MinecraftSessionChallengeService(Duration.ofSeconds(30), (name, serverId) -> java.util.Optional.empty()),
+                new RealtimeTicketService(Duration.ofSeconds(30)),
+                new com.vesta.wrapper.runtime.MinecraftServerProcess(privateConfig),
+                null,
+                true,
+                securitySettings
+        );
+        privateServer.start();
+        try {
+            URI privateBase = URI.create("http://127.0.0.1:" + privateServer.boundPort());
+            String bearer = auth.issueLinkedToken(accountUuid);
+            HttpResponse<String> manifestResponse = client.send(
+                    HttpRequest.newBuilder(privateBase.resolve(VestaSync.API_MANIFEST))
+                            .timeout(Duration.ofSeconds(3))
+                            .header("Authorization", "Bearer " + bearer)
+                            .GET()
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, manifestResponse.statusCode());
+            JsonObject manifest = json(manifestResponse);
+            boolean found = false;
+            String hash = null;
+            for (var entry : manifest.getAsJsonArray("overrides")) {
+                JsonObject file = entry.getAsJsonObject();
+                if ("vesta-private/extra.jar".equals(file.get("path").getAsString())) {
+                    found = true;
+                    hash = file.get("sha256").getAsString();
+                    assertEquals("server", file.getAsJsonObject("source").get("type").getAsString());
+                }
+            }
+            assertTrue(found);
+            HttpResponse<byte[]> download = client.send(
+                    HttpRequest.newBuilder(privateBase.resolve(VestaSync.API_FILES + hash))
+                            .timeout(Duration.ofSeconds(3))
+                            .header("Authorization", "Bearer " + bearer)
+                            .GET()
+                            .build(),
+                    HttpResponse.BodyHandlers.ofByteArray());
+            assertEquals(200, download.statusCode());
+            assertArrayEquals("private-mod".getBytes(StandardCharsets.UTF_8), download.body());
+        } finally {
+            privateServer.stop();
+        }
+    }
+
+    @Test
     void descriptorIsPublicButManifestAndDownloadsRequireLinkedAccess() throws Exception {
         HttpResponse<String> descriptorResponse = get(VestaSync.API_SERVER_DESCRIPTOR, null);
         assertEquals(200, descriptorResponse.statusCode());

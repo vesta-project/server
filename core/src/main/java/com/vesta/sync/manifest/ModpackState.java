@@ -47,7 +47,7 @@ public final class ModpackState {
         manifest.mods = scan.mods;
         manifest.overrides = scan.overrides;
         manifest.serverInfo = serverInfo;
-        return new ModpackState(manifest, scan.privateFiles);
+        return new ModpackState(manifest, Collections.emptyList());
     }
 
     public static ModpackState fromPlatform(

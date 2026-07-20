@@ -29,6 +29,7 @@ dependencies {
     minecraft("com.mojang:minecraft:$mcVersion")
     mappings(loom.officialMojangMappings())
     modImplementation("org.quiltmc:quilt-loader:$quiltLoader")
+    modImplementation("net.fabricmc.fabric-api:fabric-api:${project.findProperty("deps.fabric-api") ?: "0.102.1+1.21.1"}")
 
     implementation(project(":core"))
     include(project(":core"))
@@ -38,9 +39,11 @@ sourceSets {
     main {
         java {
             exclude("com/vesta/loader/platform/BukkitEntrypoint.java")
+            exclude("com/vesta/loader/platform/BukkitVestaMessenger.java")
             exclude("com/vesta/loader/platform/FabricEntrypoint.java")
             exclude("com/vesta/loader/platform/NeoForgeEntrypoint.java")
             exclude("com/vesta/loader/platform/PaperEntrypoint.java")
+            exclude("com/vesta/loader/platform/PaperVestaMessenger.java")
         }
     }
 }

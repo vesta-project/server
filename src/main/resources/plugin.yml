@@ -6,5 +6,5 @@ authors: [Vesta]
 description: Client-server modpack synchronization for Vesta Launcher
 commands:
   vesta:
-    description: Vesta sync account linking
-    usage: /vesta link
+    description: Vesta sync commands (help, status, link)
+    usage: /vesta [help|status|link]

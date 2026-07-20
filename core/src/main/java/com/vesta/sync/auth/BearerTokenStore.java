@@ -2,6 +2,8 @@ package com.vesta.sync.auth;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -39,6 +41,7 @@ public final class BearerTokenStore {
     private final ConcurrentHashMap<String, Record> byHash = new ConcurrentHashMap<>();
     private final long ttlSeconds;
     private final Clock clock;
+    private volatile Runnable onChange;
 
     public BearerTokenStore(long ttlSeconds) {
         this(ttlSeconds, Clock.systemUTC());
@@ -49,11 +52,16 @@ public final class BearerTokenStore {
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
+    public void setOnChange(Runnable onChange) {
+        this.onChange = onChange;
+    }
+
     public String issue(String role, UUID boundUuid) {
         String raw = TokenService.issueOpaqueToken();
         String hash = TokenService.hashToken(raw);
         Instant now = clock.instant();
         byHash.put(hash, new Record(hash, role, boundUuid, now, now.plusSeconds(ttlSeconds)));
+        notifyChange();
         return raw;
     }
 
@@ -92,11 +100,32 @@ public final class BearerTokenStore {
             return;
         }
         byHash.remove(TokenService.hashToken(rawToken));
+        notifyChange();
     }
 
     /** Drop every issued bearer. Used when auth mode or password changes. */
     public void revokeAll() {
         byHash.clear();
+        notifyChange();
+    }
+
+    /** Restore a persisted record (hash-only; raw bearer is not recoverable). */
+    public void restore(Record record) {
+        if (record == null || record.tokenHash == null || record.tokenHash.trim().isEmpty()) {
+            return;
+        }
+        byHash.put(record.tokenHash, record);
+    }
+
+    public List<Record> snapshot() {
+        return new ArrayList<>(byHash.values());
+    }
+
+    private void notifyChange() {
+        Runnable listener = onChange;
+        if (listener != null) {
+            listener.run();
+        }
     }
 
     public int size() {
