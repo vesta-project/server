@@ -11,10 +11,16 @@
 param(
     [string]$Root = "",
     [int]$Port = 9090,
+    [Alias("instance")] [string]$Instance = "",
     [ValidateSet("", "none", "vanilla", "paper", "fabric", "forge", "neoforge")]
     [string]$Minecraft = "",
+    [Alias("existing")] [switch]$Existing,
     [switch]$SkipPortCheck,
     [switch]$NoService,
+    [Alias("backup")] [switch]$Backup,
+    [Alias("i-understand-risk")] [switch]$IUnderstandRisk,
+    [Alias("uninstall")] [switch]$Uninstall,
+    [Alias("minecraft-auto-start")] [switch]$MinecraftAutoStart,
     [switch]$Yes
 )
 
@@ -59,6 +65,243 @@ function Test-Java {
         $ErrorActionPreference = $prev
     }
     Write-Info ("Java: {0}" -f ($lines | Select-Object -First 1))
+}
+
+function Slugify-Instance([string]$Value) {
+    $s = $Value.ToLowerInvariant()
+    $s = $s -replace "[^a-z0-9]+", "-"
+    $s = $s -replace "^-+", ""
+    $s = $s -replace "-+$", ""
+    $s = $s -replace "-{2,}", "-"
+    return $s
+}
+
+function Get-InstanceSlug([string]$ServerRoot) {
+    if ($Instance -and -not [string]::IsNullOrWhiteSpace($Instance)) { return (Slugify-Instance $Instance) }
+    return (Slugify-Instance ([IO.Path]::GetFileName($ServerRoot)))
+}
+
+function Get-RegistryPath {
+    $dir = Join-Path $env:USERPROFILE ".vesta"
+    $path = Join-Path $dir "instances.json"
+    return $path
+}
+
+function Test-PortBusy([int]$PortToCheck) {
+    try {
+        $result = Test-NetConnection -ComputerName "127.0.0.1" -Port $PortToCheck -InformationLevel Quiet -WarningAction SilentlyContinue
+        return [bool]$result
+    } catch {
+        $client = New-Object System.Net.Sockets.TcpClient
+        $iar = $client.BeginConnect("127.0.0.1", $PortToCheck, $null, $null)
+        $success = $iar.AsyncWaitHandle.WaitOne(200, $false)
+        if ($success) { $null = $client.EndConnect($iar) }
+        $client.Close()
+        return [bool]$success
+    }
+}
+
+function Choose-FreePortPair([int]$HttpPort, [int]$ControlPort) {
+    $tries = 0
+    while ($true) {
+        $httpBusy = Test-PortBusy $HttpPort
+        $ctlBusy = Test-PortBusy $ControlPort
+        if (-not $httpBusy -and -not $ctlBusy) {
+            return [pscustomobject]@{ HttpPort = $HttpPort; ControlPort = $ControlPort }
+        }
+
+        $tries++
+        if ($tries -gt 100) {
+            Die "Could not find free HTTP/control ports after many attempts (last: $HttpPort/$ControlPort)"
+        }
+
+        if ($Yes) {
+            Write-Warn "Ports busy on localhost ($HttpPort/$ControlPort). Trying next pair..."
+            $HttpPort = $HttpPort + 1
+            $ControlPort = $ControlPort + 1
+            continue
+        }
+
+        $nextHttp = $HttpPort + 1
+        $nextCtl = $ControlPort + 1
+        $ans = Read-Host "Port conflict on localhost for HTTP=$HttpPort / control=$ControlPort. Try next pair ($nextHttp/$nextCtl)? [Y/n]"
+        if ([string]::IsNullOrWhiteSpace($ans) -or $ans.ToLowerInvariant().StartsWith("y")) {
+            $HttpPort = $nextHttp
+            $ControlPort = $nextCtl
+        } else {
+            Die "Aborting due to port conflict."
+        }
+    }
+}
+
+function Detect-MinecraftLaunchJar([string]$ServerRoot) {
+    $serverJar = Join-Path $ServerRoot "server.jar"
+    if (Test-Path $serverJar) { return "server.jar" }
+
+    $candidates = @()
+    Get-ChildItem -Path $ServerRoot -Filter "*.jar" -File -ErrorAction SilentlyContinue | ForEach-Object {
+        $name = $_.Name
+        if ($name -like "*sources*.jar" -or $name -like "*javadoc*.jar") { return }
+        if ($name -match "paper|fabric|forge|neoforge|server") { $candidates += $_ }
+    }
+
+    $newest = $candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($newest) { return $newest.Name }
+
+    # Fallback: wrapper can run only if the jar exists, but minecraft.auto-start stays false unless opted in.
+    return "server.jar"
+}
+
+function Extract-WrapperConfigFields([string]$ConfigPath) {
+    $out = [pscustomobject]@{
+        HttpPort = 0
+        ControlPort = 0
+        HasIdentityId = $false
+        IdentityId = ""
+        ConnectorAutoUpdate = $false
+        MinecraftAutoStart = $false
+        MinecraftLaunchJar = "server.jar"
+    }
+    if (-not (Test-Path $ConfigPath)) { return $out }
+
+    $lines = Get-Content $ConfigPath -Raw -ErrorAction SilentlyContinue
+    $section = ""
+    foreach ($line in ($lines -split "`r?`n")) {
+        if ($line -match "^\s*#") { continue }
+        if ($line -match "^\s*\[(.+)\]\s*$") {
+            $section = $matches[1]
+            continue
+        }
+
+        switch ($section) {
+            "server" {
+                if ($line -match "^\s*http-port\s*=\s*(\d+)\s*$") { $out.HttpPort = [int]$matches[1] }
+            }
+            "security" {
+                if ($line -match "^\s*control-port\s*=\s*(\d+)\s*$") { $out.ControlPort = [int]$matches[1] }
+            }
+            "connector" {
+                if ($line -match "^\s*auto-update\s*=\s*(true|false)\s*$") {
+                    $out.ConnectorAutoUpdate = ($matches[1] -eq "true")
+                }
+            }
+            "server.identity" {
+                if ($line -match "^\s*id\s*=\s*""?([^""]+)""?\s*$") { 
+                    $out.HasIdentityId = $true
+                    $out.IdentityId = $matches[1]
+                }
+            }
+            "minecraft" {
+                if ($line -match "^\s*auto-start\s*=\s*(true|false)\s*$") {
+                    $out.MinecraftAutoStart = ($matches[1] -eq "true")
+                }
+                if ($line -match "^\s*launch-jar\s*=\s*""?([^""]+)""?\s*$") {
+                    $out.MinecraftLaunchJar = $matches[1]
+                }
+            }
+        }
+    }
+    return $out
+}
+
+function Invoke-StatusProbe([int]$HttpPort) {
+    $callback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
+    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { param($sender, $certificate, $chain, $sslPolicyErrors) return $true }
+    try {
+        $uri = "https://localhost:$HttpPort/api/v1/status"
+        $resp = Invoke-RestMethod -Method GET -Uri $uri -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+        return $true
+    } catch {
+        return $false
+    } finally {
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $callback
+    }
+}
+
+function Wait-For-Status([int]$HttpPort, [int]$Attempts=30) {
+    for ($i=0; $i -lt $Attempts; $i++) {
+        if (Invoke-StatusProbe $HttpPort) { return $true }
+        Start-Sleep -Seconds 1
+    }
+    return $false
+}
+
+function Create-Backup([string]$ServerRoot) {
+    $ts = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
+    $out = Join-Path $ServerRoot ("vesta-backup-$ts.zip")
+
+    $paths = @()
+    $p1 = Join-Path $ServerRoot "mods"
+    if (Test-Path $p1) { $paths += $p1 }
+    $p2 = Join-Path $ServerRoot "config"
+    if (Test-Path $p2) { $paths += $p2 }
+    $p3 = Join-Path $ServerRoot "wrapper-config.toml"
+    if (Test-Path $p3) { $paths += $p3 }
+    if ($paths.Count -eq 0) { Die "No mods/config/wrapper-config found to back up." }
+
+    if (Get-Command Compress-Archive -ErrorAction SilentlyContinue) {
+        if (Test-Path $out) { Remove-Item $out -Force }
+        Compress-Archive -Path $paths -DestinationPath $out -Force
+        Write-Info "Backup created: $out"
+    } else {
+        Die "Compress-Archive not available on this PowerShell; cannot create --backup zip."
+    }
+}
+
+function Registry-Upsert(
+    [string]$InstanceName,
+    [string]$ConfigPath,
+    [string]$RootPath,
+    [string]$ServerId,
+    [string]$ServiceName
+) {
+    $regPath = Get-RegistryPath
+    $regDir = Split-Path $regPath -Parent
+    if (-not (Test-Path $regDir)) { New-Item -ItemType Directory -Force -Path $regDir | Out-Null }
+
+    $data = $null
+    if (Test-Path $regPath) {
+        $data = Get-Content $regPath -Raw | ConvertFrom-Json
+    } else {
+        $data = [pscustomobject]@{ version = 1; instances = @() }
+    }
+    if ($null -eq $data.instances) { $data.instances = @() }
+
+    $canonicalConfig = (Resolve-Path $ConfigPath).Path
+    $now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+    $existing = $null
+    foreach ($inst in @($data.instances)) {
+        if ($inst.config -eq $canonicalConfig) { $existing = $inst; break }
+    }
+
+    if ($existing -ne $null) {
+        $existing.name = $InstanceName
+        $existing.root = $RootPath
+        if (-not [string]::IsNullOrWhiteSpace($ServerId)) { $existing.server_id = $ServerId }
+        $existing.service_name = $ServiceName
+        # Ports are identity/discovery only; remove any legacy port fields.
+        $existing.PSObject.Properties.Remove("http_port") | Out-Null
+        $existing.PSObject.Properties.Remove("control_port") | Out-Null
+        # Keep existing registered_at.
+    } else {
+        $newInst = [pscustomobject]@{
+            name = $InstanceName
+            config = $canonicalConfig
+            root = $RootPath
+            server_id = $ServerId
+            service_name = $ServiceName
+            registered_at = $now
+        }
+        if ([string]::IsNullOrWhiteSpace($ServerId)) { $newInst.PSObject.Properties.Remove("server_id") | Out-Null }
+        # Append
+        $data.instances = @($data.instances) + @($newInst)
+    }
+
+    $tmp = "$regPath.tmp"
+    $json = $data | ConvertTo-Json -Depth 20
+    Set-Content -Path $tmp -Value $json -Encoding UTF8
+    Move-Item -Path $tmp -Destination $regPath -Force
 }
 
 function Get-ServerRoot {
@@ -114,81 +357,101 @@ function Install-Wrapper([string]$ServerRoot, [string]$TempDir) {
 
 function Write-Config([string]$ServerRoot, [string]$TempDir) {
     $cfg = Join-Path $ServerRoot "wrapper-config.toml"
-    if (Test-Path $cfg) {
-        Write-Info "Keeping existing wrapper-config.toml"
-        return
-    }
-    $defaults = Join-Path $TempDir "defaults.toml"
-    try {
+
+    if (-not (Test-Path $cfg)) {
+        $defaults = Join-Path $TempDir "defaults.toml"
         Get-Dist "defaults/wrapper-config.toml" $defaults
         Copy-Item $defaults $cfg
-    } catch {
-        @"
-[server]
-tcp-port = $Port
-http-port = $Port
-scan-root = "."
-scan-paths = ["mods", "config"]
-
-[server.public]
-scheme = "https"
-host = "localhost"
-port = $Port
-
-[server.tls]
-enabled = true
-auto-generate = true
-keystore = ".vesta/tls.p12"
-keystore-password = "vesta-generated"
-
-[server.identity]
-name = "Vesta Server"
-
-[modpack]
-name = "Server Modpack"
-version = "1.0.0"
-revision = 1
-minimum-revision = 1
-minecraft-version = "1.21.4"
-source = "self-hosted"
-unresolved-policy = "server"
-
-[modpack.modloader]
-type = "fabric"
-version = "0.18.4"
-
-[modpack.server]
-host = "localhost"
-port = $McPort
-
-[minecraft]
-auto-start = false
-launch-jar = "server.jar"
-working-directory = "."
-java-command = "java"
-jvm-args = ["-Xms1G", "-Xmx2G"]
-server-args = ["nogui"]
-
-[connector]
-auto-update = false
-
-[security]
-mode = "open"
-password = ""
-token-ttl-seconds = 86400
-control-port = 9091
-anonymous-level = 1
-authenticated-level = 1
-password-level = 4
-linked-level = 1
-whitelist-level = 3
-"@ | Set-Content -Encoding UTF8 $cfg
+    } else {
+        Write-Info "Patching existing wrapper-config.toml"
     }
-    $text = Get-Content $cfg -Raw
-    if ($text -notmatch "\[connector\]") {
-        Add-Content $cfg "`n[connector]`nauto-update = false`n"
+
+    $desiredHttpPort = $Port
+    $desiredControlPort = $ControlPort
+    $desiredAutoStart = [bool]$MinecraftAutoStart
+    $desiredLaunchJar = if ($MinecraftLaunchJar) { $MinecraftLaunchJar } else { "server.jar" }
+
+    $raw = Get-Content $cfg -Raw
+    $lines = $raw -split "`r?`n"
+    $section = ""
+    $identityHeaderIndex = -1
+    $identityIdFound = $false
+    $newId = ([guid]::NewGuid().ToString())
+
+    for ($i=0; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        if ($line -match "^\s*#") { continue }
+
+        if ($line -match "^\s*\[(.+)\]\s*$") {
+            $section = $matches[1].Trim()
+            if ($section -eq "server.identity") {
+                $identityHeaderIndex = $i
+            }
+            continue
+        }
+
+        switch ($section) {
+            "server" {
+                if ($line -match "^\s*tcp-port\s*=\s*\d+\s*$") {
+                    $lines[$i] = ("tcp-port = {0}" -f $desiredHttpPort)
+                }
+                if ($line -match "^\s*http-port\s*=\s*\d+\s*$") {
+                    $lines[$i] = ("http-port = {0}" -f $desiredHttpPort)
+                }
+            }
+            "server.public" {
+                if ($line -match "^\s*port\s*=\s*\d+\s*$") {
+                    $lines[$i] = ("port = {0}" -f $desiredHttpPort)
+                }
+            }
+            "security" {
+                if ($line -match "^\s*control-port\s*=\s*\d+\s*$") {
+                    $lines[$i] = ("control-port = {0}" -f $desiredControlPort)
+                }
+            }
+            "connector" {
+                if ($line -match "^\s*auto-update\s*=\s*(true|false)\s*$") {
+                    $lines[$i] = "auto-update = false"
+                }
+            }
+            "minecraft" {
+                if ($line -match "^\s*auto-start\s*=\s*(true|false)\s*$") {
+                    $lines[$i] = ("auto-start = {0}" -f ($desiredAutoStart.ToString().ToLowerInvariant()))
+                }
+                if ($line -match "^\s*launch-jar\s*=\s*.+$") {
+                    $lines[$i] = ("launch-jar = ""{0}""" -f $desiredLaunchJar)
+                }
+            }
+            "server.identity" {
+                if ($line -match "^\s*id\s*=\s*.+$") {
+                    if ($line -notmatch "^\s*#") { $identityIdFound = $true }
+                }
+            }
+        }
     }
-    Write-Info "Wrote $cfg (connector is NOT auto-installed)"
+
+    # Insert id under [server.identity] if missing.
+    if (-not $identityIdFound) {
+        if ($identityHeaderIndex -ge 0) {
+            $insertLine = ("id = ""{0}""" -f $newId)
+            $lines = @($lines[0..$identityHeaderIndex]) + @($insertLine) + @($lines[($identityHeaderIndex+1)..($lines.Count-1)])
+        } else {
+            $lines += ""
+            $lines += "[server.identity]"
+            $lines += "name = ""Vesta Server"""
+            $lines += ("id = ""{0}""" -f $newId)
+        }
+    }
+
+    # Ensure connector.auto-update=false exists even if [connector] header was missing.
+    $text2 = ($lines -join "`r`n")
+    if ($text2 -notmatch "\[connector\]") {
+        $text2 += "`r`n[connector]`nauto-update = false`r`n"
+    }
+
+    # Ensure minecraft section has a launch-jar; if not present, leave it unchanged (auto-start default stays false).
+    Set-Content -Path $cfg -Value $text2 -Encoding UTF8
+    Write-Info "Wrote/Patched $cfg (ports + identity.id; connector auto-update=false)"
 }
 
 function Write-StartScript([string]$ServerRoot) {
@@ -299,7 +562,7 @@ function Install-WindowsService([string]$ServerRoot) {
 
     $wrapperBat = Join-Path $ServerRoot "vesta-wrapper\bin\wrapper.bat"
     $config = Join-Path $ServerRoot "wrapper-config.toml"
-    $taskName = "VestaWrapper"
+    $taskName = "vesta-wrapper-$InstanceSlug"
 
     $action = New-ScheduledTaskAction -Execute $wrapperBat -Argument "--config `"$config`"" -WorkingDirectory $ServerRoot
     $trigger = New-ScheduledTaskTrigger -AtStartup
@@ -323,22 +586,134 @@ New-Item -ItemType Directory -Force -Path $temp | Out-Null
 try {
     Test-Java
     $serverRoot = Get-ServerRoot
+    $InstanceSlug = Get-InstanceSlug $serverRoot
+    $serviceName = "vesta-wrapper-$InstanceSlug"
+
     Write-Info "Installing Vesta into: $serverRoot"
+    Write-Info "Instance: $InstanceSlug"
     Write-Info "Dist base: $DistBase"
+
+    if ($Uninstall) {
+        $cmd = Get-Command vesta-wrapperctl -ErrorAction SilentlyContinue
+        if (-not $cmd) { Die "vesta-wrapperctl not found. Install/enable it (Wave 2) to use --uninstall." }
+        Write-Info "Delegating uninstall to vesta-wrapperctl (instance: $InstanceSlug)..."
+        & vesta-wrapperctl uninstall --instance $InstanceSlug
+        return
+    }
+
+    # Existing-server mode: detect server.jar/worlds unless operator explicitly set a mode.
+    $existingMode = [bool]$Existing
+    if (-not $existingMode) {
+        $hasJar = Test-Path (Join-Path $serverRoot "server.jar")
+        $hasWorlds = (Test-Path (Join-Path $serverRoot "worlds")) -or (Test-Path (Join-Path $serverRoot "world"))
+        if ($hasJar -or $hasWorlds) {
+            if ($Yes) {
+                $existingMode = $true
+            } else {
+                $ans = Read-Host "Existing Minecraft server detected. Use --existing mode? [y/N]"
+                if ($ans -and ($ans.ToLowerInvariant().StartsWith("y"))) { $existingMode = $true }
+            }
+        }
+    }
+
+    # Desired minecraft settings (auto-start stays false unless opted-in).
+    $MinecraftLaunchJar = "server.jar"
+    if ($existingMode) {
+        $MinecraftLaunchJar = Detect-MinecraftLaunchJar $serverRoot
+        if (-not $MinecraftAutoStart -and -not $Yes) {
+            $ans = Read-Host "Enable minecraft.auto-start in wrapper-config for this existing server? [y/N]"
+            if ($ans -and ($ans.ToLowerInvariant().StartsWith("y"))) { $MinecraftAutoStart = $true }
+        }
+        Write-Info "Existing server mode: launch-jar='$MinecraftLaunchJar', minecraft.auto-start=$MinecraftAutoStart"
+        Write-Info "Suggestion: consider scan-root separation via a 'vesta-pack/' folder."
+    } else {
+        $MinecraftAutoStart = $false
+        $MinecraftLaunchJar = "server.jar"
+    }
+
+    # Extract initial ports from existing wrapper-config (if present).
+    $cfgPath = Join-Path $serverRoot "wrapper-config.toml"
+    $haveCfg = Test-Path $cfgPath
+    $cfgFields = $null
+    if ($haveCfg) { $cfgFields = Extract-WrapperConfigFields $cfgPath }
+
+    if ($cfgFields -and $cfgFields.HttpPort -gt 0) { $Port = $cfgFields.HttpPort }
+    $ControlPort = if ($cfgFields -and $cfgFields.ControlPort -gt 0) { $cfgFields.ControlPort } else { $Port + 1 }
+
+    # Port preflight: probe HTTP/control ports and choose alternate pair if busy.
+    $ports = Choose-FreePortPair -HttpPort $Port -ControlPort $ControlPort
+    $Port = [int]$ports.HttpPort
+    $ControlPort = [int]$ports.ControlPort
+
+    # Backup/risk gating (installer will mutate existing wrapper files/config).
+    $needsMutation = $false
+    if (Test-Path (Join-Path $serverRoot "vesta-wrapper")) { $needsMutation = $true }
+
+    if ($haveCfg) {
+        $configNeedsMutation = $false
+        if ($cfgFields.HttpPort -ne $Port -or $cfgFields.ControlPort -ne $ControlPort) { $configNeedsMutation = $true }
+        if (-not $cfgFields.HasIdentityId) { $configNeedsMutation = $true }
+        if ($cfgFields.ConnectorAutoUpdate -ne $false) { $configNeedsMutation = $true }
+        if ($cfgFields.MinecraftAutoStart -ne [bool]$MinecraftAutoStart) { $configNeedsMutation = $true }
+        if ($cfgFields.MinecraftLaunchJar -ne $MinecraftLaunchJar) { $configNeedsMutation = $true }
+        if ($configNeedsMutation) { $needsMutation = $true }
+    }
+
+    if ($needsMutation -and -not $Backup -and -not $IUnderstandRisk) {
+        Die "Installer will mutate existing wrapper files/config. Re-run with --backup or --i-understand-risk."
+    }
+    if ($needsMutation -and $Backup) {
+        Create-Backup $serverRoot
+    }
+
+    # Install wrapper + patch wrapper-config for this instance's selected ports.
     New-Scaffold $serverRoot
     Install-Wrapper $serverRoot $temp
     Write-Config $serverRoot $temp
     Write-StartScript $serverRoot
-    $mc = Resolve-MinecraftChoice
-    Install-MinecraftJar $serverRoot $mc $temp
+
+    if (-not $existingMode) {
+        $mc = Resolve-MinecraftChoice
+        Install-MinecraftJar $serverRoot $mc $temp
+    } else {
+        Write-Info "Existing server mode: not downloading a new minecraft jar."
+    }
+
     Confirm-PortForward
     Install-WindowsService $serverRoot
 
+    # Post-install verify: hit GET /api/v1/status.
+    $ok = Wait-For-Status $Port
+    if (-not $ok -and $NoService) {
+        Write-Warn "No-service mode: starting wrapper briefly for verification..."
+        $wrapperBat = Join-Path $serverRoot "vesta-wrapper\bin\wrapper.bat"
+        $configFile = Join-Path $serverRoot "wrapper-config.toml"
+        if (Test-Path $wrapperBat) {
+            $proc = Start-Process -FilePath $wrapperBat -ArgumentList "--config `"$configFile`"" -WorkingDirectory $serverRoot -WindowStyle Hidden -PassThru
+            $ok = Wait-For-Status $Port 10
+            try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+        }
+    }
+
+    if ($ok) {
+        Write-Info "Verified: wrapper responded on /api/v1/status (instance: $InstanceSlug)."
+    } else {
+        Write-Warn "Verify step failed: wrapper did not respond on /api/v1/status yet."
+    }
+
+    # Upsert instance entry (identity/discovery only; ports resolved from wrapper-config at runtime).
+    $finalFields = Extract-WrapperConfigFields $cfgPath
+    $serverId = if ($finalFields -and $finalFields.IdentityId) { $finalFields.IdentityId } else { "" }
+    Registry-Upsert $InstanceSlug $cfgPath $serverRoot $serverId $serviceName
+
     Write-Host ""
     Write-Host "Done."
-    Write-Host "  Start manually:  $(Join-Path $serverRoot 'start-vesta-wrapper.bat')"
-    Write-Host "  Devtools:        https://localhost:$Port/devtools"
-    Write-Host "  Docs:            $RepoHint"
+    Write-Host "  Instance:       $InstanceSlug"
+    Write-Host "  Start manually: $(Join-Path $serverRoot 'start-vesta-wrapper.bat')"
+    Write-Host "  Devtools:       https://localhost:$Port/devtools"
+    Write-Host "  Status:         https://localhost:$Port/api/v1/status"
+    Write-Host "  Next steps:     vesta-wrapperctl status --instance $InstanceSlug"
+    Write-Host "  Docs:           $RepoHint"
     Write-Host ""
     Write-Host "The Vesta connector mod/plugin was NOT installed."
     Write-Host "Set connector.auto-update = true only when you intentionally opt in later."

@@ -38,6 +38,52 @@ if (-not (Test-Path $config)) {
     Write-Host "Created wrapper-config.toml — edit security.mode before exposing to LAN."
 }
 
+# Ensure a stable identity UUID exists for registry/instance identity.
+function Ensure-ServerIdentityId([string]$ConfigPath) {
+    $raw = Get-Content $ConfigPath -Raw
+    $lines = $raw -split "`r?`n"
+    $section = ""
+    $identityHeaderIndex = -1
+    $identityIdFound = $false
+    $newId = ([guid]::NewGuid().ToString())
+
+    for ($i=0; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        if ($line -match "^\s*#") { continue }
+        if ($line -match "^\s*\[(.+)\]\s*$") {
+            $section = $matches[1].Trim()
+            if ($section -eq "server.identity") { $identityHeaderIndex = $i }
+            continue
+        }
+        if ($section -eq "server.identity" -and $line -match "^\s*id\s*=") {
+            $identityIdFound = $true
+        }
+    }
+
+    if (-not $identityIdFound) {
+        if ($identityHeaderIndex -ge 0) {
+            $insertLine = "id = ""$newId"""
+            $lines = @($lines[0..$identityHeaderIndex]) + @($insertLine) + @($lines[($identityHeaderIndex+1)..($lines.Count-1)])
+        } else {
+            $lines += ""
+            $lines += "[server.identity]"
+            $lines += "name = ""Vesta Server"""
+            $lines += "id = ""$newId"""
+        }
+        Set-Content -Path $ConfigPath -Value ($lines -join "`r`n") -Encoding UTF8
+    }
+}
+
+# Read configured HTTP port for nicer devtools output.
+function Get-HttpPort([string]$ConfigPath) {
+    $raw = Get-Content $ConfigPath -Raw
+    if ($raw -match "(?m)^\s*http-port\s*=\s*(\d+)\s*$") { return [int]$matches[1] }
+    return 9090
+}
+
+Ensure-ServerIdentityId $config
+$httpPort = Get-HttpPort $config
+
 $startBat = Join-Path $target "start-vesta-wrapper.bat"
 @"
 @echo off
@@ -47,4 +93,4 @@ call "%~dp0vesta-wrapper\bin\wrapper.bat" --config "%~dp0wrapper-config.toml"
 
 Write-Host ""
 Write-Host "Done. Start sync with: $startBat" -ForegroundColor Green
-Write-Host "Devtools UI (when running): http://localhost:9090/devtools"
+Write-Host "Devtools UI (when running): https://localhost:$httpPort/devtools"

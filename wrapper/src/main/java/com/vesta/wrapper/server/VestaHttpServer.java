@@ -93,6 +93,10 @@ public final class VestaHttpServer {
     private final FileBrowserService fileBrowser;
     private volatile String tlsSha256Fingerprint;
 
+    // Test-only override: lets unit tests simulate non-loopback requests deterministically.
+    // When null, the real remote address is used.
+    Boolean loopbackOverrideForTests = null;
+
     public VestaHttpServer(
             int port,
             ServerState serverState,
@@ -975,6 +979,9 @@ public final class VestaHttpServer {
     }
 
     private boolean allowLocalAdmin(Request request) {
+        if (loopbackOverrideForTests != null) {
+            return loopbackOverrideForTests;
+        }
         try {
             SocketAddress remote = request.getConnectionMetaData().getRemoteSocketAddress();
             if (!(remote instanceof InetSocketAddress inet)) {

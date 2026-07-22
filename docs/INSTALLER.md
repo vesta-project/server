@@ -32,6 +32,11 @@ irm https://raw.githubusercontent.com/vesta-project/server/dist/install.ps1 | ie
 |------|---------|
 | `--root` / `-Root` | Server directory (created if missing) |
 | `--port` / `-Port` | Vesta HTTP port (default `9090`) |
+| `--instance` / `-Instance` | Instance slug for service/task names + registry (default: server root folder name) |
+| `--existing` | Treat `--root` as an existing Minecraft server (detect `server.jar`, keep `minecraft.auto-start=false` unless opted in) |
+| `--backup` | Create a timestamped backup zip of `mods/`, `config/`, and `wrapper-config.toml` before mutating install |
+| `--i-understand-risk` | Allow proceeding without `--backup` when the installer will mutate existing wrapper files/config |
+| `--uninstall` | Delegate uninstall to `vesta-wrapperctl uninstall` (installer does not implement uninstall logic) |
 | `--minecraft` / `-Minecraft` | `none`, `vanilla`, `paper`, `fabric`, `forge`, `neoforge` |
 | `--skip-port-check` / `-SkipPortCheck` | Skip confirmation loop |
 | `--no-service` / `-NoService` | Do not register systemd / launchd / scheduled task |
@@ -73,16 +78,16 @@ Installers verify `wrapperSha256` before extracting.
 
 | OS | Mechanism |
 |----|-----------|
-| Linux (root) | `systemd` unit `/etc/systemd/system/vesta-wrapper.service` |
-| Linux (user) | `~/.config/systemd/user/vesta-wrapper.service` (+ linger tip) |
-| macOS | `launchd` LaunchAgent / LaunchDaemon |
-| Windows | Scheduled task `VestaWrapper` (SYSTEM if elevated, else AtLogOn) |
+| Linux (root) | `systemd` unit `/etc/systemd/system/vesta-wrapper-<instance>.service` |
+| Linux (user) | `~/.config/systemd/user/vesta-wrapper-<instance>.service` (+ linger tip) |
+| macOS | `launchd` label `com.vesta.wrapper.<instance>` |
+| Windows | Scheduled task `vesta-wrapper-<instance>` (SYSTEM if elevated, else AtLogOn) |
 
 ## Port forwarding
 
-The installer prints instructions for TCP `9090` (and `25565` when a Minecraft
-jar is present), then loops until you confirm `y` or `skip`. Use
-`--skip-port-check` in CI.
+The installer prints instructions for the selected Vesta HTTP port (and `25565`
+when a Minecraft `server.jar` is present), then loops until you confirm `y` or
+`skip`. Use `--skip-port-check` in CI.
 
 ## Dev-from-repo helpers
 

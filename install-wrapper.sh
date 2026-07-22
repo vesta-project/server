@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # Install Vesta sync wrapper into an existing Minecraft server directory.
 # Usage: ./install-wrapper.sh /path/to/server --i-have-a-backup
 
@@ -42,6 +42,57 @@ if [[ ! -f "$CONFIG" ]]; then
   echo "Created wrapper-config.toml — edit security.mode before exposing to LAN."
 fi
 
+ensure_identity_id() {
+  local cfg="$1"
+  local new_id
+  new_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+
+  local section=""
+  local header_index=-1
+  local has_id=0
+  mapfile -t lines < "$cfg"
+
+  for i in "${!lines[@]}"; do
+    local line="${lines[$i]}"
+    if [[ "$line" =~ ^[[:space:]]*# ]]; then
+      continue
+    fi
+    if [[ "$line" =~ ^[[:space:]]*\\[([^]]+)\\][[:space:]]*$ ]]; then
+      section="${BASH_REMATCH[1]}"
+      if [[ "$section" == "server.identity" ]]; then
+        header_index="$i"
+      fi
+      continue
+    fi
+    if [[ "$section" == "server.identity" && "$line" =~ ^[[:space:]]*id[[:space:]]*= ]]; then
+      has_id=1
+      break
+    fi
+  done
+
+  if [[ "$has_id" -eq 0 ]]; then
+    if [[ "$header_index" -ge 0 ]]; then
+      lines=("${lines[@]:0:$((header_index+1))}" "id = \"$new_id\"" "${lines[@]:$((header_index+1))}")
+    else
+      lines+=("")
+      lines+=("[server.identity]")
+      lines+=("name = \"Vesta Server\"")
+      lines+=("id = \"$new_id\"")
+    fi
+    printf '%s\n' "${lines[@]}" > "$cfg"
+  fi
+}
+
+get_http_port() {
+  local cfg="$1"
+  local p
+  p="$(python3 -c 'import re,sys; txt=open(sys.argv[1],encoding="utf-8").read(); m=re.search(r"(?m)^\\s*http-port\\s*=\\s*(\\d+)\\s*$", txt); print(m.group(1) if m else \"9090\")' "$cfg")"
+  printf '%s\n' "$p"
+}
+
+ensure_identity_id "$CONFIG"
+HTTP_PORT="$(get_http_port "$CONFIG")"
+
 cat > "$TARGET/start-vesta-wrapper.sh" <<EOF
 #!/usr/bin/env bash
 cd "\$(dirname "\$0")"
@@ -51,4 +102,5 @@ chmod +x "$TARGET/start-vesta-wrapper.sh"
 
 echo ""
 echo "Done. Start sync with: $TARGET/start-vesta-wrapper.sh"
-echo "Devtools UI (when running): http://localhost:9090/devtools"
+echo "Devtools UI (when running): https://localhost:${HTTP_PORT}/devtools"
+

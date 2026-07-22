@@ -19,8 +19,6 @@ Parent directory `.vesta/` should be created if missing.
       "name": "my-paper-server",
       "config": "C:/servers/paper/wrapper-config.toml",
       "root": "C:/servers/paper",
-      "http_port": 9090,
-      "control_port": 9091,
       "server_id": "optional-uuid-from-config",
       "service_name": "vesta-wrapper-my-paper-server",
       "registered_at": "2026-07-22T18:00:00Z"
@@ -36,8 +34,6 @@ Parent directory `.vesta/` should be created if missing.
 - `name` (string, required): Human-friendly instance slug/display key.
 - `config` (string, required): Absolute path to `wrapper-config.toml`.
 - `root` (string, required): Absolute server root path for this instance.
-- `http_port` (number, required): Wrapper HTTP API port from config.
-- `control_port` (number, required): Wrapper control/TCP port from config.
 - `server_id` (string, optional): Server identity UUID from wrapper config.
 - `service_name` (string, required): OS service/task identifier for lifecycle control.
 - `registered_at` (string, required): ISO-8601 UTC timestamp for first registration.
@@ -47,6 +43,11 @@ Parent directory `.vesta/` should be created if missing.
 - The canonical key is the absolute `config` path.
 - Re-registering an existing `config` path must upsert the same entry, not create a duplicate.
 - `name` can change across updates, but `config` is the stable identity.
+
+## Port resolution rule (important)
+
+Ports are identity/discovery only and must be read from `wrapper-config.toml` at runtime.
+Installer/CLI tooling must NOT store port numbers in registry entries (to avoid drift).
 
 ## Write rules
 
