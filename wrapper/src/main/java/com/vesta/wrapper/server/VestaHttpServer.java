@@ -21,6 +21,8 @@ import com.vesta.wrapper.auth.AuthService;
 import com.vesta.wrapper.config.SecuritySettingsService;
 import com.vesta.wrapper.config.WrapperConfig;
 import com.vesta.wrapper.content.ContentInstaller;
+import com.vesta.wrapper.console.ConsoleBuffer;
+import com.vesta.wrapper.files.FileBrowserService;
 import com.vesta.wrapper.ipc.ControlIpcServer;
 import com.vesta.wrapper.runtime.MinecraftServerProcess;
 import com.vesta.wrapper.security.WhitelistService;
@@ -48,6 +50,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URLDecoder;
 import java.nio.ByteBuffer;
@@ -57,6 +60,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -84,6 +88,8 @@ public final class VestaHttpServer {
     private final MinecraftServerProcess minecraft;
     private final ControlIpcServer controlIpc;
     private final SecuritySettingsService securitySettings;
+    private final ConsoleBuffer consoleBuffer;
+    private final FileBrowserService fileBrowser;
 
     public VestaHttpServer(
             int port,
@@ -129,6 +135,13 @@ public final class VestaHttpServer {
         this.minecraft = minecraft;
         this.controlIpc = controlIpc;
         this.securitySettings = securitySettings;
+        this.consoleBuffer = minecraft != null ? minecraft.consoleBuffer() : new ConsoleBuffer();
+        this.fileBrowser = new FileBrowserService(
+                config.minecraftWorkingDirectory,
+                config.scanRoot,
+                config.scanPaths,
+                serverState
+        );
         this.jetty = new Server();
         ServerConnector connector;
         if (config.tlsEnabled) {
@@ -170,7 +183,8 @@ public final class VestaHttpServer {
                         realtimeTickets,
                         serverState,
                         auth,
-                        capabilities
+                        capabilities,
+                        consoleBuffer
                 );
             });
         });
@@ -286,6 +300,14 @@ public final class VestaHttpServer {
                     handleServerPower(request, response, callback);
                     return;
                 }
+                case VestaSync.API_CONSOLE -> {
+                    handleConsole(request, response, callback);
+                    return;
+                }
+                case VestaSync.API_FS -> {
+                    handleFilesystem(request, response, callback, "");
+                    return;
+                }
                 case VestaSync.API_ADMIN_SECURITY -> {
                     if (!requireLoopback(request, response, callback)) {
                         return;
@@ -302,6 +324,11 @@ public final class VestaHttpServer {
                     return;
                 }
                 default -> {
+                    if (path.startsWith(VestaSync.API_FS_PREFIX)) {
+                        String relative = path.substring(VestaSync.API_FS_PREFIX.length());
+                        handleFilesystem(request, response, callback, relative);
+                        return;
+                    }
                     if (path.startsWith(VestaSync.API_FILES)) {
                         if (!requireCapability(request, response, callback, CapabilityEngine.Action.PUBLIC_MODPACK)) return;
                         handleFileDownload(request, response, callback);
@@ -445,10 +472,18 @@ public final class VestaHttpServer {
             ));
             return;
         }
+        Set<String> scopes = new LinkedHashSet<>();
+        scopes.add("server_status");
+        scopes.add("pack_updates");
+        scopes.add("access_changes");
+        CapabilityEngine.AuthContext access = authContext(request);
+        if (capabilities.check(AccessCapability.CONSOLE_READ, access) == CapabilityEngine.Decision.ALLOW) {
+            scopes.add("console");
+        }
         RealtimeTicketService.Issued issued = realtimeTickets.issue(
                 config.serverId,
                 bearer.get(),
-                Set.of("server_status", "pack_updates", "access_changes")
+                scopes
         );
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("ticket", issued.value);
@@ -681,6 +716,157 @@ public final class VestaHttpServer {
             response.setStatus(409);
             json(response, callback, Map.of("error", e.getMessage()));
         }
+    }
+
+    private void handleConsole(Request request, Response response, Callback callback) throws Exception {
+        if (HttpMethod.GET.is(request.getMethod())) {
+            if (!requireCapability(request, response, callback, AccessCapability.CONSOLE_READ)) {
+                return;
+            }
+            if (minecraft == null || !minecraft.isConfigured()) {
+                response.setStatus(409);
+                json(response, callback, Map.of("error", "no managed Minecraft server is configured (set minecraft.launch-jar)"));
+                return;
+            }
+            long since = parseLongQuery(request.getHttpURI().getQuery(), "since", 0L);
+            int limit = (int) parseLongQuery(request.getHttpURI().getQuery(), "limit", 500L);
+            ConsoleBuffer.Snapshot snapshot = consoleBuffer.snapshot(since, limit);
+            List<Map<String, Object>> lines = new ArrayList<>();
+            for (ConsoleBuffer.Line line : snapshot.lines) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("cursor", line.cursor);
+                row.put("ts", line.ts.toString());
+                row.put("stream", line.stream);
+                row.put("text", line.text);
+                lines.add(row);
+            }
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("running", minecraft.isRunning());
+            out.put("cursor", snapshot.cursor);
+            out.put("lines", lines);
+            response.setStatus(200);
+            json(response, callback, out);
+            return;
+        }
+        if (HttpMethod.POST.is(request.getMethod())) {
+            if (!requireCapability(request, response, callback, AccessCapability.CONSOLE_EXECUTE)) {
+                return;
+            }
+            if (minecraft == null || !minecraft.isConfigured()) {
+                response.setStatus(409);
+                json(response, callback, Map.of("error", "no managed Minecraft server is configured (set minecraft.launch-jar)"));
+                return;
+            }
+            JsonObject body = GSON.fromJson(readBody(request), JsonObject.class);
+            String command = body != null && body.has("command") ? body.get("command").getAsString() : "";
+            if (command.isBlank()) {
+                response.setStatus(400);
+                json(response, callback, Map.of("error", "command required"));
+                return;
+            }
+            try {
+                minecraft.sendCommand(command);
+                response.setStatus(200);
+                json(response, callback, Map.of("ok", true));
+            } catch (IllegalArgumentException e) {
+                response.setStatus(400);
+                json(response, callback, Map.of("error", e.getMessage()));
+            } catch (IOException e) {
+                response.setStatus(409);
+                json(response, callback, Map.of("error", e.getMessage()));
+            }
+            return;
+        }
+        response.setStatus(405);
+        json(response, callback, Map.of("error", "method not allowed"));
+    }
+
+    private void handleFilesystem(
+            Request request,
+            Response response,
+            Callback callback,
+            String relativePath
+    ) throws Exception {
+        String method = request.getMethod();
+        String decoded = decodeFsPath(relativePath);
+        if (HttpMethod.GET.is(method)) {
+            if (!requireCapability(request, response, callback, AccessCapability.FILES_READ)) {
+                return;
+            }
+            String listPath = queryParam(request.getHttpURI().getQuery(), "path");
+            if (listPath != null || decoded.isEmpty()) {
+                try {
+                    String dir = listPath != null ? listPath : decoded;
+                    FileBrowserService.Listing listing = fileBrowser.list(dir);
+                    response.setStatus(200);
+                    json(response, callback, fileBrowser.listingToMap(listing));
+                } catch (SecurityException e) {
+                    response.setStatus(403);
+                    json(response, callback, Map.of("error", e.getMessage()));
+                } catch (IOException e) {
+                    response.setStatus(404);
+                    json(response, callback, Map.of("error", e.getMessage()));
+                }
+                return;
+            }
+            try {
+                Path file = fileBrowser.resolveFile(decoded);
+                streamFile(response, callback, file);
+            } catch (SecurityException e) {
+                response.setStatus(403);
+                json(response, callback, Map.of("error", e.getMessage()));
+            } catch (IOException e) {
+                response.setStatus(404);
+                json(response, callback, Map.of("error", e.getMessage()));
+            }
+            return;
+        }
+        if (HttpMethod.PUT.is(method)) {
+            if (!requireCapability(request, response, callback, AccessCapability.FILES_WRITE)) {
+                return;
+            }
+            if (decoded.isBlank()) {
+                response.setStatus(400);
+                json(response, callback, Map.of("error", "path required"));
+                return;
+            }
+            try (InputStream body = Content.Source.asInputStream(request)) {
+                fileBrowser.write(decoded, body);
+                response.setStatus(200);
+                json(response, callback, Map.of("path", decoded, "ok", true));
+            } catch (SecurityException e) {
+                response.setStatus(403);
+                json(response, callback, Map.of("error", e.getMessage()));
+            } catch (IOException e) {
+                response.setStatus(400);
+                json(response, callback, Map.of("error", e.getMessage()));
+            }
+            return;
+        }
+        if (HttpMethod.DELETE.is(method)) {
+            if (!requireCapability(request, response, callback, AccessCapability.FILES_WRITE)) {
+                return;
+            }
+            if (decoded.isBlank()) {
+                response.setStatus(400);
+                json(response, callback, Map.of("error", "path required"));
+                return;
+            }
+            try {
+                fileBrowser.delete(decoded);
+                response.setStatus(200);
+                json(response, callback, Map.of("path", decoded, "deleted", true));
+            } catch (SecurityException e) {
+                response.setStatus(403);
+                json(response, callback, Map.of("error", e.getMessage()));
+            } catch (IOException e) {
+                response.setStatus(400);
+                json(response, callback, Map.of("error", e.getMessage()));
+            }
+            return;
+        }
+        response.setStatus(405);
+        json(response, callback, Map.of("error", "method not allowed"));
     }
 
     private void handleAdminSecurity(Request request, Response response, Callback callback) throws Exception {
@@ -1029,10 +1215,14 @@ public final class VestaHttpServer {
     }
 
     private void serveFile(Response response, Callback callback, Path file) throws Exception {
+        streamFile(response, callback, file);
+    }
+
+    private void streamFile(Response response, Callback callback, Path file) throws Exception {
         response.getHeaders().put(HttpHeader.CONTENT_TYPE, "application/octet-stream");
         response.getHeaders().put(HttpHeader.CONTENT_LENGTH, String.valueOf(Files.size(file)));
         response.setStatus(200);
-        response.write(true, ByteBuffer.wrap(Files.readAllBytes(file)), callback);
+        Content.copy(Content.Source.from(Files.newInputStream(file)), response, callback);
     }
 
     private static void configureRealtime(ServerWebSocketContainer container) {
@@ -1089,6 +1279,25 @@ public final class VestaHttpServer {
 
     private String readBody(Request request) throws Exception {
         return Content.Source.asString(request);
+    }
+
+    private static String decodeFsPath(String relativePath) {
+        if (relativePath == null || relativePath.isBlank()) {
+            return "";
+        }
+        return URLDecoder.decode(relativePath, StandardCharsets.UTF_8);
+    }
+
+    private static long parseLongQuery(String query, String name, long defaultValue) {
+        String value = queryParam(query, name);
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException ignored) {
+            return defaultValue;
+        }
     }
 
     private static UUID parseUuid(String raw) {

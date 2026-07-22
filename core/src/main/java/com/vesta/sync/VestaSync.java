@@ -24,6 +24,9 @@ public final class VestaSync {
     public static final String API_AUTH_MINECRAFT_COMPLETE = "/api/v1/auth/minecraft/complete";
     public static final String API_REALTIME_TICKET = "/api/v1/realtime/ticket";
     public static final String API_REALTIME = "/api/v1/realtime";
+    public static final String API_CONSOLE = "/api/v1/console";
+    public static final String API_FS = "/api/v1/fs";
+    public static final String API_FS_PREFIX = "/api/v1/fs/";
 
     public static final int DEFAULT_HTTP_PORT = 9090;
     public static final int DEFAULT_TCP_PORT = 9090;

@@ -419,6 +419,41 @@ class VestaHttpServerCommunicationTest {
         assertTrue(json(response).get("error").getAsString().contains("launch-jar"));
     }
 
+    @Test
+    void consoleAndFilesystemRespectCapabilityLevels() throws Exception {
+        String linked = auth.issueLinkedToken(accountUuid);
+        String operator = auth.store().issue("operator", null);
+        String anonymous = auth.store().issue("anonymous", null);
+
+        assertEquals(401, get(VestaSync.API_CONSOLE, null).statusCode());
+        assertEquals(403, get(VestaSync.API_CONSOLE, anonymous).statusCode());
+        assertEquals(409, get(VestaSync.API_CONSOLE, linked).statusCode());
+
+        assertEquals(403, get(VestaSync.API_FS, anonymous).statusCode());
+        HttpResponse<String> listing = get(VestaSync.API_FS, operator);
+        assertEquals(200, listing.statusCode());
+        assertTrue(json(listing).has("entries"));
+
+        byte[] payload = "browser-write".getBytes(StandardCharsets.UTF_8);
+        HttpResponse<String> write = client.send(
+                request(VestaSync.API_FS_PREFIX + "config/browser-test.txt", operator)
+                        .PUT(HttpRequest.BodyPublishers.ofByteArray(payload))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, write.statusCode());
+
+        HttpResponse<byte[]> read = client.send(
+                request(VestaSync.API_FS_PREFIX + "config/browser-test.txt", operator).GET().build(),
+                HttpResponse.BodyHandlers.ofByteArray());
+        assertEquals(200, read.statusCode());
+        assertArrayEquals(payload, read.body());
+
+        JsonObject command = new JsonObject();
+        command.addProperty("command", "list");
+        HttpResponse<String> execute = post(VestaSync.API_CONSOLE, command, operator);
+        assertEquals(409, execute.statusCode());
+    }
+
     private HttpResponse<String> get(String path, String bearer) throws Exception {
         return client.send(request(path, bearer).GET().build(), HttpResponse.BodyHandlers.ofString());
     }

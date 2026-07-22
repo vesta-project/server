@@ -11,6 +11,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MinecraftServerProcessTest {
@@ -73,5 +74,19 @@ class MinecraftServerProcessTest {
         process.stop();
         process.kill();
         assertTrue(process.snapshot().get("state").equals("stopped"));
+    }
+
+    @Test
+    void sendCommandFailsWhenNotRunning() throws Exception {
+        Path jar = root.resolve("server.jar");
+        Files.writeString(jar, "dummy");
+        WrapperConfig config = new WrapperConfig.Builder()
+                .scanRoot(root)
+                .minecraftWorkingDirectory(root)
+                .minecraftLaunchJar(jar)
+                .build();
+        MinecraftServerProcess process = new MinecraftServerProcess(config);
+        assertThrows(java.io.IOException.class, () -> process.sendCommand("list"));
+        assertThrows(IllegalArgumentException.class, () -> process.sendCommand("  "));
     }
 }

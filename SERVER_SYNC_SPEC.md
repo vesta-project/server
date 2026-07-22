@@ -456,6 +456,53 @@ Download a file by its SHA-256 hash. The server stores files in a content-addres
 
 This endpoint enables the client to download any file the manifest references with `source: "server"` without needing a separate TCP interaction.
 
+#### `GET /api/v1/console`
+
+Returns recent Minecraft server console lines captured by the wrapper when `minecraft.launch-jar` is configured.
+
+**Query:** `since` (cursor), `limit` (max lines, default 500)  
+**Capability:** `console.read`  
+**Response** `200`: `{ "running", "cursor", "lines": [{ "cursor", "ts", "stream", "text" }] }`
+
+#### `POST /api/v1/console`
+
+Sends a command to the managed Minecraft server stdin.
+
+**Body:** `{ "command": "say hello" }`  
+**Capability:** `console.execute`  
+**Response** `200`: `{ "ok": true }`
+
+Realtime clients authenticated with a ticket that includes the `console` scope receive `console_line` events on `/api/v1/realtime`.
+
+#### `GET /api/v1/fs`
+
+Lists files under the Minecraft server working directory.
+
+**Query:** `path` (directory relative path, empty for server root)  
+**Capability:** `files.read`  
+**Response** `200`: `{ "path", "entries": [{ "name", "type", "size", "modified_at" }] }`
+
+#### `GET /api/v1/fs/{path}`
+
+Downloads a file by relative path (streamed, no size cap).
+
+**Capability:** `files.read`  
+**Response** `200`: `application/octet-stream`
+
+#### `PUT /api/v1/fs/{path}`
+
+Writes or replaces a file (raw request body).
+
+**Capability:** `files.write`  
+**Response** `200`: `{ "path", "ok": true }`
+
+#### `DELETE /api/v1/fs/{path}`
+
+Deletes a single file (not directories).
+
+**Capability:** `files.write`  
+**Response** `200`: `{ "path", "deleted": true }`
+
 > **Deprecated:** `GET /api/v1/private/files` and `GET /api/v1/private/files/{path}` return `410 Gone`. Use authenticated `GET /api/v1/modpack/manifest` and `GET /api/v1/files/{sha256}` instead.
 
 ---

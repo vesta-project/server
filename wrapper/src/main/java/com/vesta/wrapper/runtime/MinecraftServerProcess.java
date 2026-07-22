@@ -1,11 +1,14 @@
 package com.vesta.wrapper.runtime;
 
 import com.vesta.wrapper.config.WrapperConfig;
+import com.vesta.wrapper.console.ConsoleBuffer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -30,15 +33,26 @@ public final class MinecraftServerProcess {
     }
 
     private final WrapperConfig config;
+    private final ConsoleBuffer consoleBuffer;
     private volatile Process process;
     private volatile BufferedWriter stdin;
+    private volatile Thread outputReader;
     private volatile State state = State.STOPPED;
     private volatile Long pid;
     private volatile Instant startedAt;
     private volatile Integer lastExitCode;
 
     public MinecraftServerProcess(WrapperConfig config) {
+        this(config, new ConsoleBuffer());
+    }
+
+    public MinecraftServerProcess(WrapperConfig config, ConsoleBuffer consoleBuffer) {
         this.config = config;
+        this.consoleBuffer = consoleBuffer != null ? consoleBuffer : new ConsoleBuffer();
+    }
+
+    public ConsoleBuffer consoleBuffer() {
+        return consoleBuffer;
     }
 
     public List<String> command() {
@@ -82,6 +96,7 @@ public final class MinecraftServerProcess {
             pid = null;
             startedAt = null;
             stdin = null;
+            outputReader = null;
         }
         return state;
     }
@@ -127,18 +142,16 @@ public final class MinecraftServerProcess {
         ProcessBuilder builder = new ProcessBuilder(command());
         builder.directory(config.minecraftWorkingDirectory.toFile());
         builder.redirectErrorStream(true);
-        // Capture stdout so stdin stays writable for the graceful "stop" command.
-        // Inherit only the console for visibility by redirecting stdout to inherit while
-        // still piping stdin. Java allows redirectInput PIPE + redirectOutput INHERIT.
         builder.redirectInput(ProcessBuilder.Redirect.PIPE);
-        builder.redirectOutput(ProcessBuilder.Redirect.INHERIT);
-        builder.redirectError(ProcessBuilder.Redirect.INHERIT);
+        builder.redirectOutput(ProcessBuilder.Redirect.PIPE);
+        builder.redirectError(ProcessBuilder.Redirect.PIPE);
         process = builder.start();
         stdin = new BufferedWriter(new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8));
         pid = process.pid();
         startedAt = Instant.now();
         lastExitCode = null;
         state = State.RUNNING;
+        startOutputReader(process);
         log.info("Started Minecraft server process (pid {})", pid);
 
         Process launched = process;
@@ -153,6 +166,7 @@ public final class MinecraftServerProcess {
                         startedAt = null;
                         closeStdinQuietly();
                         this.process = null;
+                        outputReader = null;
                     }
                 }
                 log.info("Minecraft server process exited with code {}", exitCode);
@@ -163,6 +177,25 @@ public final class MinecraftServerProcess {
         watcher.setDaemon(true);
         watcher.start();
         return true;
+    }
+
+    public synchronized void sendCommand(String command) throws IOException {
+        if (!isConfigured()) {
+            throw new IOException("minecraft.launch-jar is not configured");
+        }
+        if (command == null || command.isBlank()) {
+            throw new IllegalArgumentException("command must not be blank");
+        }
+        if (!isRunning()) {
+            throw new IOException("minecraft server is not running");
+        }
+        BufferedWriter writer = stdin;
+        if (writer == null) {
+            throw new IOException("minecraft stdin is not available");
+        }
+        writer.write(command);
+        writer.newLine();
+        writer.flush();
     }
 
     /** Stops any running process, then starts a fresh one. */
@@ -183,15 +216,12 @@ public final class MinecraftServerProcess {
             startedAt = null;
             closeStdinQuietly();
             process = null;
+            outputReader = null;
             return;
         }
         state = State.STOPPING;
         try {
-            if (stdin != null) {
-                stdin.write("stop");
-                stdin.newLine();
-                stdin.flush();
-            }
+            sendCommand("stop");
         } catch (IOException e) {
             log.warn("Could not write stop command to Minecraft stdin: {}", e.getMessage());
         }
@@ -214,6 +244,7 @@ public final class MinecraftServerProcess {
             startedAt = null;
             closeStdinQuietly();
             process = null;
+            outputReader = null;
         }
     }
 
@@ -226,6 +257,7 @@ public final class MinecraftServerProcess {
             startedAt = null;
             closeStdinQuietly();
             process = null;
+            outputReader = null;
             return;
         }
         state = State.STOPPING;
@@ -249,7 +281,28 @@ public final class MinecraftServerProcess {
             startedAt = null;
             closeStdinQuietly();
             process = null;
+            outputReader = null;
         }
+    }
+
+    private void startOutputReader(Process launched) {
+        Thread reader = new Thread(() -> {
+            try (BufferedReader input = new BufferedReader(
+                    new InputStreamReader(launched.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = input.readLine()) != null) {
+                    consoleBuffer.append("stdout", line);
+                    log.debug("[minecraft] {}", line);
+                }
+            } catch (IOException error) {
+                if (launched.isAlive()) {
+                    log.debug("Stopped reading Minecraft output: {}", error.getMessage());
+                }
+            }
+        }, "vesta-minecraft-output");
+        reader.setDaemon(true);
+        reader.start();
+        outputReader = reader;
     }
 
     private void closeStdinQuietly() {

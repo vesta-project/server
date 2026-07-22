@@ -205,6 +205,17 @@ Invoke-RestMethod -Method POST -Uri https://localhost:9090/api/v1/sync/check -Bo
 
 # Download a file by SHA-256 (from manifest)
 Invoke-WebRequest https://localhost:9090/api/v1/files/<sha256hex> -Headers $headers -OutFile downloaded.bin
+
+# Console snapshot (requires console.read, level 2+)
+Invoke-RestMethod https://localhost:9090/api/v1/console -Headers $headers
+
+# Run a server command (requires console.execute, level 4)
+Invoke-RestMethod -Method POST -Uri https://localhost:9090/api/v1/console `
+  -Headers $headers -ContentType "application/json" -Body '{"command":"list"}'
+
+# Browse server files (requires files.read, level 3+)
+Invoke-RestMethod "https://localhost:9090/api/v1/fs?path=" -Headers $headers
+Invoke-WebRequest https://localhost:9090/api/v1/fs/server.properties -Headers $headers -OutFile server.properties
 ```
 
 ### TCP protocol

@@ -20,3 +20,4 @@ out/
 target/
 run/
 run-server/
+demo-server/*

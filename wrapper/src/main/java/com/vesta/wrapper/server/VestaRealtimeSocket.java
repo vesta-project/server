@@ -7,6 +7,7 @@ import com.vesta.sync.auth.CapabilityEngine;
 import com.vesta.sync.auth.RealtimeTicketService;
 import com.vesta.sync.protocol.PushUpdateAvailable;
 import com.vesta.wrapper.auth.AuthService;
+import com.vesta.wrapper.console.ConsoleBuffer;
 import org.eclipse.jetty.websocket.api.Callback;
 import org.eclipse.jetty.websocket.api.Session;
 import org.eclipse.jetty.websocket.api.StatusCode;
@@ -35,7 +36,9 @@ public final class VestaRealtimeSocket {
     private final ServerState serverState;
     private final AuthService auth;
     private final CapabilityEngine capabilities;
+    private final ConsoleBuffer consoleBuffer;
     private final Consumer<PushUpdateAvailable> pushListener;
+    private final Consumer<ConsoleBuffer.Line> consoleListener;
     private Session session;
     private volatile RealtimeTicketService.Ticket principal;
     private long rateWindowStarted = System.currentTimeMillis();
@@ -46,14 +49,17 @@ public final class VestaRealtimeSocket {
             RealtimeTicketService tickets,
             ServerState serverState,
             AuthService auth,
-            CapabilityEngine capabilities
+            CapabilityEngine capabilities,
+            ConsoleBuffer consoleBuffer
     ) {
         this.serverUuid = serverUuid;
         this.tickets = tickets;
         this.serverState = serverState;
         this.auth = auth;
         this.capabilities = capabilities;
+        this.consoleBuffer = consoleBuffer;
         this.pushListener = this::onPackUpdate;
+        this.consoleListener = this::onConsoleLine;
     }
 
     @OnWebSocketOpen
@@ -93,6 +99,9 @@ public final class VestaRealtimeSocket {
             }
             principal = consumed.get();
             serverState.addPushListener(pushListener);
+            if (principal.capabilities.contains("console")) {
+                consoleBuffer.addListener(consoleListener);
+            }
             send(Map.of(
                     "type", "ready",
                     "server_id", serverUuid.toString(),
@@ -130,6 +139,7 @@ public final class VestaRealtimeSocket {
     @OnWebSocketClose
     public void onClose(int statusCode, String reason) {
         serverState.removePushListener(pushListener);
+        consoleBuffer.removeListener(consoleListener);
         session = null;
         principal = null;
     }
@@ -197,6 +207,23 @@ public final class VestaRealtimeSocket {
         event.put("minimum_revision", serverState.getMinimumRevision());
         event.put("display_version", serverState.getCurrentVersion());
         event.put("updated_at", serverState.getUpdatedAt().toString());
+        send(event);
+    }
+
+    private void onConsoleLine(ConsoleBuffer.Line line) {
+        RealtimeTicketService.Ticket current = principal;
+        if (current == null || !current.capabilities.contains("console")) {
+            return;
+        }
+        if (!allowMessage()) {
+            return;
+        }
+        Map<String, Object> event = new LinkedHashMap<>();
+        event.put("type", "console_line");
+        event.put("cursor", line.cursor);
+        event.put("ts", line.ts.toString());
+        event.put("stream", line.stream);
+        event.put("text", line.text);
         send(event);
     }
 
