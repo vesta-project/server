@@ -7,6 +7,9 @@ coach port forwarding, and register an OS autostart service.
 The multi-instance registry contract used by installers and future CLI tooling is
 defined in [`INSTANCE_REGISTRY.md`](./INSTANCE_REGISTRY.md).
 
+Port numbers are identity/discovery only and must be resolved from each instance's
+`wrapper-config.toml` at runtime (installers/CLI must NOT store ports in the registry).
+
 **The installer never installs the Vesta connector mod/plugin.** Vanilla (and
 unknown) servers are supported with wrapper-only. For non-vanilla servers,
 install the connector later from GitHub Releases or a future panel/launcher
