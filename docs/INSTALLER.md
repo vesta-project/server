@@ -4,6 +4,9 @@ Amp-style installers that scaffold a server directory, download the latest
 wrapper from the GitHub **`dist`** branch, optionally download a Minecraft jar,
 coach port forwarding, and register an OS autostart service.
 
+The multi-instance registry contract used by installers and future CLI tooling is
+defined in [`INSTANCE_REGISTRY.md`](./INSTANCE_REGISTRY.md).
+
 **The installer never installs the Vesta connector mod/plugin.** Vanilla (and
 unknown) servers are supported with wrapper-only. For non-vanilla servers,
 install the connector later from GitHub Releases or a future panel/launcher

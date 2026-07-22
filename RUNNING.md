@@ -20,7 +20,8 @@ Windows (PowerShell):
 irm https://raw.githubusercontent.com/vesta-project/server/dist/install.ps1 | iex
 ```
 
-Details, flags, and `dist` layout: [`docs/INSTALLER.md`](docs/INSTALLER.md).
+Details, flags, `dist` layout, and the instance registry schema contract:
+[`docs/INSTALLER.md`](docs/INSTALLER.md), [`docs/INSTANCE_REGISTRY.md`](docs/INSTANCE_REGISTRY.md).
 
 ## Prerequisites
 
