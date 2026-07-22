@@ -25,8 +25,10 @@ import com.vesta.wrapper.console.ConsoleBuffer;
 import com.vesta.wrapper.files.FileBrowserService;
 import com.vesta.wrapper.ipc.ControlIpcServer;
 import com.vesta.wrapper.runtime.MinecraftServerProcess;
+import com.vesta.wrapper.runtime.PlayersQuery;
 import com.vesta.wrapper.security.WhitelistService;
 import com.vesta.wrapper.security.TlsMaterial;
+import com.vesta.wrapper.security.TokenBucketRateLimiter;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.HttpVersion;
@@ -91,6 +93,9 @@ public final class VestaHttpServer {
     private final SecuritySettingsService securitySettings;
     private final ConsoleBuffer consoleBuffer;
     private final FileBrowserService fileBrowser;
+    private final PlayersQuery playersQuery;
+    private final TokenBucketRateLimiter httpRateLimiter;
+    private final TokenBucketRateLimiter authRateLimiter;
     private volatile String tlsSha256Fingerprint;
 
     // Test-only override: lets unit tests simulate non-loopback requests deterministically.
@@ -148,6 +153,9 @@ public final class VestaHttpServer {
                 config.scanPaths,
                 serverState
         );
+        this.playersQuery = new PlayersQuery();
+        this.httpRateLimiter = new TokenBucketRateLimiter(config.httpRequestsPerMinute, 60_000L);
+        this.authRateLimiter = new TokenBucketRateLimiter(config.authAttemptsPerMinute, 60_000L);
         this.jetty = new Server();
         ServerConnector connector;
         if (config.tlsEnabled) {
@@ -190,7 +198,8 @@ public final class VestaHttpServer {
                         serverState,
                         auth,
                         capabilities,
-                        consoleBuffer
+                        consoleBuffer,
+                        config.websocketMessagesPerSecond
                 );
             });
         });
@@ -223,6 +232,9 @@ public final class VestaHttpServer {
             if (HttpMethod.OPTIONS.is(request.getMethod())) {
                 response.setStatus(204);
                 response.write(true, ByteBuffer.allocate(0), callback);
+                return;
+            }
+            if (!allowRequestRate(request, response, callback, path)) {
                 return;
             }
             if ("/devtools".equals(path) || "/devtools/".equals(path) || "/".equals(path)) {
@@ -304,6 +316,13 @@ public final class VestaHttpServer {
                 case VestaSync.API_STATUS -> {
                     response.setStatus(200);
                     handleStatus(response, callback);
+                    return;
+                }
+                case VestaSync.API_PLAYERS -> {
+                    if (!requireCapability(request, response, callback, AccessCapability.STATS_READ)) {
+                        return;
+                    }
+                    handlePlayers(response, callback);
                     return;
                 }
                 case VestaSync.API_SERVER_POWER -> {
@@ -685,6 +704,60 @@ public final class VestaHttpServer {
             status.put("tls", tls);
         }
         json(response, callback, status);
+    }
+
+    private void handlePlayers(Response response, Callback callback) {
+        response.setStatus(200);
+        json(response, callback, playersQuery.query(minecraft));
+    }
+
+    private boolean allowRequestRate(
+            Request request,
+            Response response,
+            Callback callback,
+            String path
+    ) {
+        if (!config.rateLimitsEnabled) {
+            return true;
+        }
+        boolean authPath = isAuthPath(path);
+        boolean mutating = HttpMethod.POST.is(request.getMethod())
+                || HttpMethod.PUT.is(request.getMethod())
+                || HttpMethod.DELETE.is(request.getMethod());
+        if (!authPath && !mutating) {
+            return true;
+        }
+        TokenBucketRateLimiter limiter = authPath ? authRateLimiter : httpRateLimiter;
+        TokenBucketRateLimiter.Decision decision = limiter.tryAcquire(clientIp(request));
+        if (decision.allowed) {
+            return true;
+        }
+        response.setStatus(429);
+        response.getHeaders().put(HttpHeader.RETRY_AFTER, String.valueOf(decision.retryAfterSeconds));
+        json(response, callback, Map.of(
+                "error", "rate limit exceeded",
+                "retry_after", decision.retryAfterSeconds
+        ));
+        return false;
+    }
+
+    private static boolean isAuthPath(String path) {
+        return VestaSync.API_AUTH_TOKEN.equals(path)
+                || VestaSync.API_AUTH_LINK.equals(path)
+                || VestaSync.API_AUTH_MINECRAFT_CHALLENGE.equals(path)
+                || VestaSync.API_AUTH_MINECRAFT_COMPLETE.equals(path);
+    }
+
+    private String clientIp(Request request) {
+        try {
+            SocketAddress remote = request.getConnectionMetaData().getRemoteSocketAddress();
+            if (remote instanceof InetSocketAddress inet && inet.getAddress() != null) {
+                return inet.getAddress().getHostAddress();
+            }
+        } catch (Exception ignored) {
+            // fall through
+        }
+        return "unknown";
     }
 
     private String tlsSha256Fingerprint() {
@@ -1100,7 +1173,8 @@ public final class VestaHttpServer {
                 "server_power",
                 "content_manage",
                 "admin_security_loopback",
-                "sync_check"
+                "sync_check",
+                "players"
         ));
 
         // Machine-discovery map: REST path -> required high-level capability token.
@@ -1121,6 +1195,7 @@ public final class VestaHttpServer {
         endpoints.put(VestaSync.API_FILES_UPLOAD, "content_manage");
         endpoints.put(VestaSync.API_CONTENT_REMOVE, "content_manage");
         endpoints.put(VestaSync.API_ADMIN_SECURITY, "admin_security_loopback");
+        endpoints.put(VestaSync.API_PLAYERS, "players");
         descriptor.put("endpoints", endpoints);
 
         descriptor.put("name", config.serverDisplayName);

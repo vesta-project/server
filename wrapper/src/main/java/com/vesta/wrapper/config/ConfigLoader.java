@@ -169,6 +169,23 @@ public final class ConfigLoader {
                     b.devtoolsLoopbackOnly
             ));
 
+            b.rateLimitsEnabled(toml.getBoolean(
+                    "rate_limits.enabled",
+                    b.rateLimitsEnabled
+            ));
+            b.httpRequestsPerMinute(toml.getLong(
+                    "rate_limits.http_requests_per_minute",
+                    (long) b.httpRequestsPerMinute
+            ).intValue());
+            b.websocketMessagesPerSecond(toml.getLong(
+                    "rate_limits.websocket_messages_per_second",
+                    (long) b.websocketMessagesPerSecond
+            ).intValue());
+            b.authAttemptsPerMinute(toml.getLong(
+                    "rate_limits.auth_attempts_per_minute",
+                    (long) b.authAttemptsPerMinute
+            ).intValue());
+
             String mode = toml.getString("security.mode", "open");
             b.securityMode(SecurityMode.parse(mode));
             b.securityPassword(toml.getString("security.password", b.securityPassword));

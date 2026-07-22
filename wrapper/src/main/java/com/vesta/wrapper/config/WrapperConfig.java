@@ -83,6 +83,15 @@ public final class WrapperConfig {
      */
     public final boolean devtoolsLoopbackOnly;
 
+    /** When false, HTTP and WebSocket rate limiting is disabled. */
+    public final boolean rateLimitsEnabled;
+    /** Token-bucket capacity for mutating HTTP routes (per remote IP, per minute). */
+    public final int httpRequestsPerMinute;
+    /** Max inbound WebSocket messages allowed per connection per second. */
+    public final int websocketMessagesPerSecond;
+    /** Token-bucket capacity for auth endpoints (per remote IP, per minute). */
+    public final int authAttemptsPerMinute;
+
     private WrapperConfig(Builder b) {
         this.tcpPort = b.tcpPort;
         this.httpPort = b.httpPort;
@@ -153,6 +162,11 @@ public final class WrapperConfig {
 
         this.devtoolsEnabled = b.devtoolsEnabled;
         this.devtoolsLoopbackOnly = b.devtoolsLoopbackOnly;
+
+        this.rateLimitsEnabled = b.rateLimitsEnabled;
+        this.httpRequestsPerMinute = Math.max(1, b.httpRequestsPerMinute);
+        this.websocketMessagesPerSecond = Math.max(1, b.websocketMessagesPerSecond);
+        this.authAttemptsPerMinute = Math.max(1, b.authAttemptsPerMinute);
     }
 
     private static AccessControlConfig defaultAccess(
@@ -243,6 +257,11 @@ public final class WrapperConfig {
         boolean devtoolsEnabled = true;
         boolean devtoolsLoopbackOnly = true;
 
+        boolean rateLimitsEnabled = true;
+        int httpRequestsPerMinute = 120;
+        int websocketMessagesPerSecond = 30;
+        int authAttemptsPerMinute = 20;
+
         public Builder tcpPort(int v) { tcpPort = v; return this; }
         public Builder httpPort(int v) { httpPort = v; return this; }
         public Builder tlsEnabled(boolean v) { tlsEnabled = v; return this; }
@@ -293,6 +312,10 @@ public final class WrapperConfig {
         public Builder connectorAutoUpdate(boolean v) { connectorAutoUpdate = v; return this; }
         public Builder devtoolsEnabled(boolean v) { devtoolsEnabled = v; return this; }
         public Builder devtoolsLoopbackOnly(boolean v) { devtoolsLoopbackOnly = v; return this; }
+        public Builder rateLimitsEnabled(boolean v) { rateLimitsEnabled = v; return this; }
+        public Builder httpRequestsPerMinute(int v) { httpRequestsPerMinute = v; return this; }
+        public Builder websocketMessagesPerSecond(int v) { websocketMessagesPerSecond = v; return this; }
+        public Builder authAttemptsPerMinute(int v) { authAttemptsPerMinute = v; return this; }
 
         public WrapperConfig build() {
             return new WrapperConfig(this);

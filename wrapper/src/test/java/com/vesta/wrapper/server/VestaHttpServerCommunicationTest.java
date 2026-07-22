@@ -247,10 +247,13 @@ class VestaHttpServerCommunicationTest {
                 new com.google.gson.JsonPrimitive("admin_security_loopback")));
         assertTrue(descriptor.getAsJsonArray("capabilities").contains(
                 new com.google.gson.JsonPrimitive("sync_check")));
+        assertTrue(descriptor.getAsJsonArray("capabilities").contains(
+                new com.google.gson.JsonPrimitive("players")));
         JsonObject endpoints = descriptor.getAsJsonObject("endpoints");
         assertEquals("sync_check", endpoints.get(VestaSync.API_SYNC_CHECK).getAsString());
         assertEquals("console", endpoints.get(VestaSync.API_CONSOLE).getAsString());
         assertEquals("filesystem", endpoints.get(VestaSync.API_FS).getAsString());
+        assertEquals("players", endpoints.get(VestaSync.API_PLAYERS).getAsString());
         JsonObject pack = descriptor.getAsJsonObject("pack");
         assertEquals(12, pack.get("current_revision").getAsLong());
         assertEquals(9, pack.get("minimum_revision").getAsLong());
@@ -497,6 +500,75 @@ class VestaHttpServerCommunicationTest {
         HttpResponse<String> response = post(VestaSync.API_SERVER_POWER, stop, null);
         assertEquals(409, response.statusCode());
         assertTrue(json(response).get("error").getAsString().contains("launch-jar"));
+    }
+
+    @Test
+    void playersReturnsEmptyWhenNotManageable() throws Exception {
+        HttpResponse<String> response = get(VestaSync.API_PLAYERS, null);
+        assertEquals(200, response.statusCode());
+        JsonObject body = json(response);
+        assertFalse(body.get("manageable").getAsBoolean());
+        assertTrue(body.getAsJsonArray("players").isEmpty());
+    }
+
+    @Test
+    void authRateLimitReturns429WithRetryAfter() throws Exception {
+        server.stop();
+        server = null;
+
+        WrapperConfig limitedConfig = new WrapperConfig.Builder()
+                .scanRoot(root)
+                .scanPaths(java.util.List.of("config"))
+                .httpPort(0)
+                .tlsEnabled(false)
+                .serverId(serverUuid)
+                .securityMode(SecurityMode.PASSWORD)
+                .securityPassword("correct-horse")
+                .rateLimitsEnabled(true)
+                .authAttemptsPerMinute(2)
+                .httpRequestsPerMinute(120)
+                .websocketMessagesPerSecond(30)
+                .build();
+
+        AuthService limitedAuth = new AuthService(limitedConfig);
+        CapabilityEngine limitedCapabilities = new CapabilityEngine(
+                limitedConfig.capabilities,
+                new PermissionChecker.AllowAll(),
+                uuid -> false,
+                new com.vesta.sync.auth.OpsLevelProvider.None()
+        );
+        server = new VestaHttpServer(
+                0,
+                new ServerState(limitedConfig),
+                limitedConfig,
+                limitedAuth,
+                new LinkCodeService(60),
+                limitedCapabilities,
+                new WhitelistService(root),
+                new MinecraftSessionChallengeService(
+                        Duration.ofSeconds(30),
+                        (name, serverId) -> java.util.Optional.empty()
+                ),
+                new RealtimeTicketService(Duration.ofSeconds(30)),
+                new com.vesta.wrapper.runtime.MinecraftServerProcess(limitedConfig),
+                null,
+                true,
+                null
+        );
+        server.start();
+        base = URI.create("http://127.0.0.1:" + server.boundPort());
+
+        JsonObject body = new JsonObject();
+        body.addProperty("password", "wrong");
+        assertEquals(401, post(VestaSync.API_AUTH_TOKEN, body, null).statusCode());
+        assertEquals(401, post(VestaSync.API_AUTH_TOKEN, body, null).statusCode());
+
+        HttpResponse<String> limited = post(VestaSync.API_AUTH_TOKEN, body, null);
+        assertEquals(429, limited.statusCode());
+        assertEquals("rate limit exceeded", json(limited).get("error").getAsString());
+        assertTrue(json(limited).get("retry_after").getAsLong() >= 1L);
+        assertTrue(limited.headers().firstValue("Retry-After").isPresent());
+        assertTrue(Integer.parseInt(limited.headers().firstValue("Retry-After").get()) >= 1);
     }
 
     @Test

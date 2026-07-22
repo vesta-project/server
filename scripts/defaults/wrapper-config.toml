@@ -125,3 +125,9 @@ whitelist-level = 3
 
 # Shorthand: listed UUIDs receive level 4 (merged into security.people)
 # admin-uuids = ["00000000-0000-0000-0000-000000000001"]
+
+[rate_limits]
+enabled = true
+http_requests_per_minute = 120
+websocket_messages_per_second = 30
+auth_attempts_per_minute = 20

@@ -29,7 +29,6 @@ import java.util.function.Consumer;
 @WebSocket
 public final class VestaRealtimeSocket {
     private static final Gson GSON = new Gson();
-    private static final int MAX_MESSAGES_PER_WINDOW = 30;
 
     private final UUID serverUuid;
     private final RealtimeTicketService tickets;
@@ -37,6 +36,7 @@ public final class VestaRealtimeSocket {
     private final AuthService auth;
     private final CapabilityEngine capabilities;
     private final ConsoleBuffer consoleBuffer;
+    private final int maxMessagesPerSecond;
     private final Consumer<PushUpdateAvailable> pushListener;
     private final Consumer<ConsoleBuffer.Line> consoleListener;
     private Session session;
@@ -52,12 +52,25 @@ public final class VestaRealtimeSocket {
             CapabilityEngine capabilities,
             ConsoleBuffer consoleBuffer
     ) {
+        this(serverUuid, tickets, serverState, auth, capabilities, consoleBuffer, 30);
+    }
+
+    public VestaRealtimeSocket(
+            UUID serverUuid,
+            RealtimeTicketService tickets,
+            ServerState serverState,
+            AuthService auth,
+            CapabilityEngine capabilities,
+            ConsoleBuffer consoleBuffer,
+            int maxMessagesPerSecond
+    ) {
         this.serverUuid = serverUuid;
         this.tickets = tickets;
         this.serverState = serverState;
         this.auth = auth;
         this.capabilities = capabilities;
         this.consoleBuffer = consoleBuffer;
+        this.maxMessagesPerSecond = Math.max(1, maxMessagesPerSecond);
         this.pushListener = this::onPackUpdate;
         this.consoleListener = this::onConsoleLine;
     }
@@ -157,7 +170,7 @@ public final class VestaRealtimeSocket {
             rateWindowStarted = now;
             rateWindowMessages = 0;
         }
-        return ++rateWindowMessages <= MAX_MESSAGES_PER_WINDOW;
+        return ++rateWindowMessages <= maxMessagesPerSecond;
     }
 
     private boolean hasCurrentAccess() {

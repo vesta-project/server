@@ -25,6 +25,7 @@ public final class VestaSync {
     public static final String API_REALTIME_TICKET = "/api/v1/realtime/ticket";
     public static final String API_REALTIME = "/api/v1/realtime";
     public static final String API_CONSOLE = "/api/v1/console";
+    public static final String API_PLAYERS = "/api/v1/players";
     public static final String API_FS = "/api/v1/fs";
     public static final String API_FS_PREFIX = "/api/v1/fs/";
 

@@ -240,4 +240,31 @@ class ConfigLoaderSecurityTest {
         assertFalse(config.devtoolsEnabled);
         assertFalse(config.devtoolsLoopbackOnly);
     }
+
+    @Test
+    void defaultsToRateLimitsEnabled() {
+        WrapperConfig config = ConfigLoader.load(temp.resolve("missing.toml"));
+        assertTrue(config.rateLimitsEnabled);
+        assertEquals(120, config.httpRequestsPerMinute);
+        assertEquals(30, config.websocketMessagesPerSecond);
+        assertEquals(20, config.authAttemptsPerMinute);
+    }
+
+    @Test
+    void loadsRateLimitsConfig() throws Exception {
+        Path file = temp.resolve("wrapper-config.toml");
+        Files.writeString(file, """
+                [rate_limits]
+                enabled = false
+                http_requests_per_minute = 10
+                websocket_messages_per_second = 5
+                auth_attempts_per_minute = 3
+                """);
+
+        WrapperConfig config = ConfigLoader.load(file);
+        assertFalse(config.rateLimitsEnabled);
+        assertEquals(10, config.httpRequestsPerMinute);
+        assertEquals(5, config.websocketMessagesPerSecond);
+        assertEquals(3, config.authAttemptsPerMinute);
+    }
 }
