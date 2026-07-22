@@ -84,7 +84,7 @@ auto-generate = true      # creates .vesta/tls.p12 on first start
 version = "1.0.0"        # bump when you change files
 
 [connector]
-auto-update = false      # reserved; leave false unless you opt in later
+auto-update = false      # reserved/no-op; leave false (installers never auto-install the connector)
 ```
 
 ### Choose a pack source

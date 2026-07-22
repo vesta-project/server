@@ -70,8 +70,8 @@ jvm-args = ["-Xms2G", "-Xmx4G"]
 server-args = ["nogui"]
 
 # Optional in-game connector (Fabric/Forge mod or Paper plugin).
-# Installers never auto-install it â€” use a future panel/launcher one-click for
-# non-vanilla servers. auto-update is reserved; leave false unless you opt in later.
+# Installers never auto-install it — use a future panel/launcher one-click for
+# non-vanilla servers. auto-update is reserved/no-op; leave false.
 [connector]
 auto-update = false
 

@@ -677,9 +677,12 @@ public final class VestaHttpServer {
         }
 
         if (config.tlsEnabled) {
-            status.put("tls", Map.of(
-                    "sha256_fingerprint", tlsSha256Fingerprint()
-            ));
+            Map<String, Object> tls = new LinkedHashMap<>();
+            String fingerprint = tlsSha256Fingerprint();
+            if (fingerprint != null && !fingerprint.isBlank()) {
+                tls.put("sha256_fingerprint", fingerprint);
+            }
+            status.put("tls", tls);
         }
         json(response, callback, status);
     }
@@ -1129,9 +1132,12 @@ public final class VestaHttpServer {
         descriptor.put("auth_methods", authMethods);
         descriptor.put("updated_at", serverState.getUpdatedAt().toString());
         if (config.tlsEnabled) {
-            descriptor.put("tls", Map.of(
-                    "sha256_fingerprint", tlsSha256Fingerprint()
-            ));
+            Map<String, Object> tls = new LinkedHashMap<>();
+            String fingerprint = tlsSha256Fingerprint();
+            if (fingerprint != null && !fingerprint.isBlank()) {
+                tls.put("sha256_fingerprint", fingerprint);
+            }
+            descriptor.put("tls", tls);
         }
         json(response, callback, descriptor);
     }

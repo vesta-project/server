@@ -235,6 +235,22 @@ class VestaHttpServerCommunicationTest {
         assertEquals("Test Vesta Server", descriptor.get("name").getAsString());
         assertTrue(descriptor.getAsJsonArray("capabilities").contains(
                 new com.google.gson.JsonPrimitive("minecraft_challenge")));
+        assertTrue(descriptor.getAsJsonArray("capabilities").contains(
+                new com.google.gson.JsonPrimitive("console")));
+        assertTrue(descriptor.getAsJsonArray("capabilities").contains(
+                new com.google.gson.JsonPrimitive("filesystem")));
+        assertTrue(descriptor.getAsJsonArray("capabilities").contains(
+                new com.google.gson.JsonPrimitive("server_power")));
+        assertTrue(descriptor.getAsJsonArray("capabilities").contains(
+                new com.google.gson.JsonPrimitive("content_manage")));
+        assertTrue(descriptor.getAsJsonArray("capabilities").contains(
+                new com.google.gson.JsonPrimitive("admin_security_loopback")));
+        assertTrue(descriptor.getAsJsonArray("capabilities").contains(
+                new com.google.gson.JsonPrimitive("sync_check")));
+        JsonObject endpoints = descriptor.getAsJsonObject("endpoints");
+        assertEquals("sync_check", endpoints.get(VestaSync.API_SYNC_CHECK).getAsString());
+        assertEquals("console", endpoints.get(VestaSync.API_CONSOLE).getAsString());
+        assertEquals("filesystem", endpoints.get(VestaSync.API_FS).getAsString());
         JsonObject pack = descriptor.getAsJsonObject("pack");
         assertEquals(12, pack.get("current_revision").getAsLong());
         assertEquals(9, pack.get("minimum_revision").getAsLong());
@@ -284,6 +300,69 @@ class VestaHttpServerCommunicationTest {
 
         assertEquals(401, post(
                 VestaSync.API_AUTH_MINECRAFT_COMPLETE, complete, null).statusCode());
+    }
+
+    @Test
+    void syncCheckRejectsInvalidBodiesWith400() throws Exception {
+        String bearer = auth.issueLinkedToken(accountUuid);
+
+        HttpResponse<String> empty = client.send(
+                request(VestaSync.API_SYNC_CHECK, bearer)
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(""))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals(400, empty.statusCode());
+        assertEquals("sync-check body required", json(empty).get("error").getAsString());
+
+        HttpResponse<String> invalidJson = client.send(
+                request(VestaSync.API_SYNC_CHECK, bearer)
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString("{not-json"))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals(400, invalidJson.statusCode());
+        assertEquals("invalid json", json(invalidJson).get("error").getAsString());
+
+        JsonObject missingVersion = new JsonObject();
+        missingVersion.add("installed_hashes", new JsonObject());
+        HttpResponse<String> missing = post(VestaSync.API_SYNC_CHECK, missingVersion, bearer);
+        assertEquals(400, missing.statusCode());
+        assertEquals("current_version must be a string", json(missing).get("error").getAsString());
+
+        JsonObject badHashes = new JsonObject();
+        badHashes.addProperty("current_version", "2.4");
+        badHashes.addProperty("installed_hashes", "nope");
+        HttpResponse<String> hashes = post(VestaSync.API_SYNC_CHECK, badHashes, bearer);
+        assertEquals(400, hashes.statusCode());
+        assertEquals("installed_hashes must be an object", json(hashes).get("error").getAsString());
+    }
+
+    @Test
+    void packUpdateIsSentOnRescanViaWebsocket() throws Exception {
+        String bearer = auth.issueLinkedToken(accountUuid);
+        JsonObject ticket = json(post(VestaSync.API_REALTIME_TICKET, new JsonObject(), bearer));
+
+        RecordingListener listener = new RecordingListener();
+        WebSocket socket = client.newWebSocketBuilder()
+                .connectTimeout(Duration.ofSeconds(3))
+                .buildAsync(wsUri(), listener)
+                .join();
+        socket.sendText("{\"type\":\"authenticate\",\"ticket\":\""
+                + ticket.get("ticket").getAsString() + "\"}", true).join();
+        assertEquals("ready", messageType(listener.nextMessage()));
+
+        Files.writeString(root.resolve("config").resolve("push-trigger.txt"), "updated",
+                StandardCharsets.UTF_8);
+        serverState.rescan();
+
+        JsonObject event = JsonParser.parseString(listener.nextMessage()).getAsJsonObject();
+        assertEquals("pack_update", event.get("type").getAsString());
+        assertEquals(12, event.get("revision").getAsLong());
+        assertEquals("2.4", event.get("display_version").getAsString());
+        assertEquals("2.4", event.get("previous_version").getAsString());
+        assertTrue(event.get("requires_restart").getAsBoolean());
+        socket.sendClose(WebSocket.NORMAL_CLOSURE, "done").join();
     }
 
     @Test

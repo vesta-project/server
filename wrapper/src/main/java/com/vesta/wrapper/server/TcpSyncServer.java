@@ -41,8 +41,13 @@ public final class TcpSyncServer implements Runnable {
         this.port = config.tcpPort;
         this.multiplexed = (config.tcpPort == config.httpPort);
         this.localHttpPort = config.httpPort + 100;
-        this.sessionManager = new SessionManager();
         this.serverState = new ServerState(config);
+        this.sessionManager = new SessionManager(session -> {
+            if (session.packUpdatesListener != null) {
+                serverState.removePushListener(session.packUpdatesListener);
+                session.packUpdatesListener = null;
+            }
+        });
         this.auth = auth;
         this.router = new MessageRouter(sessionManager, serverState, config, auth);
         this.workers = Executors.newCachedThreadPool(r -> {

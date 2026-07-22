@@ -95,6 +95,11 @@ public final class ClientConnection implements Runnable {
     public void close() {
         if (!running) return;
         running = false;
+        Session s = this.session;
+        this.session = null;
+        if (s != null) {
+            router.cleanupSession(s);
+        }
         try {
             socket.close();
         } catch (IOException ignored) {}

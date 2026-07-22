@@ -40,7 +40,7 @@ public final class MessageRouter {
         handlers.put(Handshake.class, new HandshakeHandler(sessionManager, serverState, auth));
         handlers.put(SyncCheck.class, new SyncCheckHandler(serverState));
         handlers.put(Heartbeat.class, new HeartbeatHandler(sessionManager));
-        handlers.put(Disconnect.class, new DisconnectHandler(sessionManager, serverState));
+        handlers.put(Disconnect.class, new DisconnectHandler());
         handlers.put(FileRequest.class, new FileRequestHandler(endpoint));
     }
 
@@ -50,6 +50,17 @@ public final class MessageRouter {
 
     public AuthService getAuth() {
         return auth;
+    }
+
+    /**
+     * Drops the TCP session (and any registered push listener via SessionManager hooks).
+     * Safe to call more than once.
+     */
+    public void cleanupSession(Session session) {
+        if (session == null) {
+            return;
+        }
+        sessionManager.remove(session.id);
     }
 
     public void dispatch(ClientConnection client, Object message) {

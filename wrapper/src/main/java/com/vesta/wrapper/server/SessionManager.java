@@ -7,6 +7,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 public final class SessionManager {
 
@@ -15,6 +16,7 @@ public final class SessionManager {
     private static final long CLEANUP_INTERVAL_SEC = 30;
 
     private final ConcurrentHashMap<String, Session> sessions = new ConcurrentHashMap<>();
+    private final Consumer<Session> onRemove;
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "vesta-session-cleanup");
         t.setDaemon(true);
@@ -22,6 +24,11 @@ public final class SessionManager {
     });
 
     public SessionManager() {
+        this(session -> {});
+    }
+
+    public SessionManager(Consumer<Session> onRemove) {
+        this.onRemove = onRemove != null ? onRemove : session -> {};
         scheduler.scheduleAtFixedRate(this::cleanup, CLEANUP_INTERVAL_SEC, CLEANUP_INTERVAL_SEC, TimeUnit.SECONDS);
     }
 
@@ -35,7 +42,9 @@ public final class SessionManager {
     public Session get(String id) {
         Session s = sessions.get(id);
         if (s != null && s.isExpired(TTL_MILLIS)) {
-            sessions.remove(id);
+            if (sessions.remove(id, s)) {
+                notifyRemoved(s);
+            }
             log.info("Session expired: {}", id);
             return null;
         }
@@ -43,8 +52,11 @@ public final class SessionManager {
     }
 
     public void remove(String id) {
-        sessions.remove(id);
-        log.info("Session removed: {}", id);
+        Session s = sessions.remove(id);
+        if (s != null) {
+            notifyRemoved(s);
+            log.info("Session removed: {}", id);
+        }
     }
 
     public void touch(String id) {
@@ -62,6 +74,7 @@ public final class SessionManager {
         int before = sessions.size();
         sessions.entrySet().removeIf(e -> {
             if (e.getValue().isExpired(TTL_MILLIS)) {
+                notifyRemoved(e.getValue());
                 log.info("Cleaned up expired session: {}", e.getKey());
                 return true;
             }
@@ -70,6 +83,14 @@ public final class SessionManager {
         int removed = before - sessions.size();
         if (removed > 0) {
             log.debug("Session cleanup removed {} sessions, {} remaining", removed, sessions.size());
+        }
+    }
+
+    private void notifyRemoved(Session session) {
+        try {
+            onRemove.accept(session);
+        } catch (Exception e) {
+            log.warn("Session removal hook failed for {}: {}", session.id, e.getMessage());
         }
     }
 
