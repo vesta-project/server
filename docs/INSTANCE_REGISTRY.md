@@ -56,3 +56,20 @@ Installer/CLI tooling must never store port numbers in registry entries (avoids 
 
 - Writes should be atomic (write temp file, then replace).
 - Unknown top-level keys should be preserved when practical to allow forward-compatible extensions.
+
+## CLI usage (`vesta-wrapperctl`)
+
+`scripts/vesta-wrapperctl.ps1` (Windows) and `scripts/vesta-wrapperctl.sh` (Unix) are the
+operator CLI for this registry:
+
+| Command | Notes |
+|---------|--------|
+| `list` | Show registry; HTTP ports resolved from each config |
+| `discover --roots <dirs>` | Scan for `wrapper-config.toml` (`--register` to upsert) |
+| `register` / `unregister` | Manual registry add/remove |
+| `status` / `start` / `stop` / `restart` | Lifecycle via registry `service_name`, else start scripts |
+| `logs` / `api` / `devtools` | Local ops helpers (ports from TOML) |
+| `uninstall` | Stop service, unregister, remove wrapper artifacts; `--delete-files` + confirm/`--yes` for full root delete |
+
+Lifecycle commands use the registry `service_name` exactly as registered (Windows task /
+systemd unit / launchd label).

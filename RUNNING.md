@@ -174,6 +174,22 @@ https://localhost:9090/devtools
 Devtools is a local debug tool (loopback-only when `[devtools].loopback_only = true`) and is intentionally not a production admin panel.
 For day-to-day ops, use `vesta-wrapperctl` and the loopback-gated HTTP APIs (for example `GET/PUT /api/v1/admin/security`).
 
+```powershell
+# Multi-instance CLI (ports always read from wrapper-config.toml)
+.\scripts\vesta-wrapperctl.ps1 register --config .\demo-server\wrapper-config.toml
+.\scripts\vesta-wrapperctl.ps1 list
+.\scripts\vesta-wrapperctl.ps1 status --instance demo-server
+.\scripts\vesta-wrapperctl.ps1 api GET /api/v1/status --instance demo-server
+.\scripts\vesta-wrapperctl.ps1 devtools --instance demo-server
+```
+
+```bash
+./scripts/vesta-wrapperctl.sh register --config ./demo-server/wrapper-config.toml
+./scripts/vesta-wrapperctl.sh status --instance demo-server
+```
+
+See [`docs/INSTALLER.md`](docs/INSTALLER.md) and [`docs/INSTANCE_REGISTRY.md`](docs/INSTANCE_REGISTRY.md).
+
 ### PowerShell smoke test
 
 With the wrapper running:

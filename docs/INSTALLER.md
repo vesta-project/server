@@ -4,12 +4,36 @@ Amp-style installers that scaffold a server directory, download the latest
 wrapper from the GitHub **`dist`** branch, optionally download a Minecraft jar,
 coach port forwarding, and register an OS autostart service.
 
-The multi-instance registry contract used by installers and future CLI tooling is
+The multi-instance registry contract used by installers and `vesta-wrapperctl` is
 defined in [`INSTANCE_REGISTRY.md`](./INSTANCE_REGISTRY.md).
 
 The instance registry is identity/discovery only. Port numbers are **not** stored there —
 installers/CLI always resolve `http-port` / `control-port` from each instance's
 `wrapper-config.toml` at runtime.
+
+## Day-to-day ops (`vesta-wrapperctl`)
+
+After install, use the multi-instance CLI (source of truth for uninstall):
+
+```powershell
+# Windows (from repo)
+.\scripts\vesta-wrapperctl.ps1 list
+.\scripts\vesta-wrapperctl.ps1 status --instance <slug>
+.\scripts\vesta-wrapperctl.ps1 start|stop|restart --instance <slug>
+.\scripts\vesta-wrapperctl.ps1 uninstall --instance <slug>   # keeps server files
+```
+
+```bash
+# Linux / macOS
+./scripts/vesta-wrapperctl.sh list
+./scripts/vesta-wrapperctl.sh status --instance <slug>
+./scripts/vesta-wrapperctl.sh uninstall --instance <slug>
+```
+
+Put `scripts/` on your `PATH` (or copy/symlink `vesta-wrapperctl.*` into `~/.local/bin` /
+a folder on PATH) so installer `--uninstall` and the printed next steps resolve `vesta-wrapperctl`.
+
+Selector precedence: `--config` > `--instance` > `--http-port` > single registered instance.
 
 **The installer never installs the Vesta connector mod/plugin.** Vanilla (and
 unknown) servers are supported with wrapper-only. For non-vanilla servers,
