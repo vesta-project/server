@@ -474,6 +474,19 @@ Sends a command to the managed Minecraft server stdin.
 
 Realtime clients authenticated with a ticket that includes the `console` scope receive `console_line` events on `/api/v1/realtime`.
 
+#### `GET /api/v1/players`
+
+Online player list when the wrapper manages a Minecraft process (`minecraft.launch-jar`).
+
+**Capability:** `stats.read`  
+**Response** `200` (always; never `409`):
+
+- Managed + running: `{ "manageable": true, "running": true, "online", "max"?, "players": [{ "name", "uuid"? }] }`
+- Managed + stopped: `{ "manageable": true, "running": false, "online": 0, "players": [] }`
+- Not managed: `{ "manageable": false, "players": [] }`
+
+Players are collected by sending `list` to the process stdin and parsing vanilla/Paper console output.
+
 #### `GET /api/v1/fs`
 
 Lists files under the Minecraft server working directory.
@@ -504,6 +517,29 @@ Deletes a single file (not directories).
 **Response** `200`: `{ "path", "deleted": true }`
 
 > **Deprecated:** `GET /api/v1/private/files` and `GET /api/v1/private/files/{path}` return `410 Gone`. Use authenticated `GET /api/v1/modpack/manifest` and `GET /api/v1/files/{sha256}` instead.
+
+#### `GET /api/v1/server/descriptor`
+
+Machine discovery document. Includes:
+
+- `capabilities`: high-level feature tokens (`server_descriptor`, `modpack_sync`, `minecraft_challenge`, `realtime_ticket`, `console`, `filesystem`, `server_power`, `content_manage`, `admin_security_loopback`, `sync_check`, `players`, …)
+- `endpoints`: map of REST path → capability token
+- optional `tls.sha256_fingerprint` when HTTPS is enabled
+
+#### Rate limits
+
+Configurable via TOML (not hardcoded):
+
+```toml
+[rate_limits]
+enabled = true
+http_requests_per_minute = 120
+websocket_messages_per_second = 30
+auth_attempts_per_minute = 20
+```
+
+When enabled, mutating HTTP routes and auth endpoints are token-bucket limited per remote IP.
+Exceeded requests return **`429`** with `Retry-After` and JSON `{ "error": "rate limit exceeded", "retry_after": N }`.
 
 ---
 

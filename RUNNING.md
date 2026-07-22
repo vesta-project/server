@@ -234,7 +234,37 @@ Invoke-RestMethod -Method POST -Uri https://localhost:9090/api/v1/console `
 # Browse server files (requires files.read, level 3+)
 Invoke-RestMethod "https://localhost:9090/api/v1/fs?path=" -Headers $headers
 Invoke-WebRequest https://localhost:9090/api/v1/fs/server.properties -Headers $headers -OutFile server.properties
+
+# Online players (requires stats.read; manageable=false when no launch-jar)
+Invoke-RestMethod https://localhost:9090/api/v1/players -Headers $headers
+
+# Write / delete under the Minecraft working directory (requires files.write)
+Invoke-RestMethod -Method PUT -Uri https://localhost:9090/api/v1/fs/notes.txt `
+  -Headers $headers -ContentType "text/plain" -Body "hello"
+Invoke-RestMethod -Method DELETE -Uri https://localhost:9090/api/v1/fs/notes.txt -Headers $headers
 ```
+
+### End-to-end smoke (`scripts/smoke-wrapper.*`)
+
+Automated Phase 3 checks against `demo-server` (ephemeral ports, auto tear-down):
+
+```powershell
+# Full (starts Paper briefly for console POST + cursor progression)
+.\scripts\smoke-wrapper.ps1
+
+# Wrapper-only (skips Minecraft start; console POST skipped)
+.\scripts\smoke-wrapper.ps1 -SkipMinecraft
+```
+
+```bash
+./scripts/smoke-wrapper.sh
+./scripts/smoke-wrapper.sh --skip-minecraft
+```
+
+Covers: `GET /status`, `POST /sync/check`, descriptor `capabilities`/`endpoints`, fs list/write/read/delete,
+console GET (+ POST when a paper jar is present), `GET /players`, `[rate_limits]` presence, and
+`vesta-wrapperctl status`. Realtime `console_line` over WebSocket needs a linked bearer ticket — the
+open-mode smoke verifies REST cursor progression instead.
 
 ### TCP protocol
 
@@ -243,10 +273,11 @@ When TCP and HTTP share port 9090, clients must send a **`0x00` byte** before ea
 ## 5. Run unit tests only
 
 ```powershell
-.\gradlew.bat :core:test
+.\gradlew.bat :core:test :wrapper:test
 ```
 
 ## Notes
 
 - **Files**: Scanned from `mods/` and `config/` directly (no `vesta-files` duplicate). Known MR/CF entries go in `.vesta-known.json`.
+- **Rate limits**: configure `[rate_limits]` in `wrapper-config.toml` (`enabled`, `http_requests_per_minute`, `websocket_messages_per_second`, `auth_attempts_per_minute`). Mutating HTTP + auth routes return `429` + `Retry-After` when exceeded.
 - **Deprecated**: `GET /api/v1/private/files` returns `410 Gone`. Use the gated manifest and `GET /api/v1/files/{sha256}` instead.

@@ -363,22 +363,24 @@ Mod-only HTTP fallback may still use a local store until aligned — wrapper is 
 
 Each phase **includes tests** (§12). Do not mark a phase done without them.
 
-| Phase | Deliverable |
-|-------|-------------|
-| **0** | Baseline: keep core tests green; fix/document known stubs |
-| **1** | Security modes in config; open warning; password; Vesta bearer issue/validate; session validation on mutating routes |
-| **2** | Control IPC + heartbeat; mod “skip HTTP only”; permission adapter interface + fakes |
-| **3** | Link codes (`/vesta link` + redeem); UUID bind storage |
-| **4** | Remote install/remove + **live rescan**; unauthorized reject |
-| **5** | Push notify + real version listing/history (as needed) |
-| **A** | **Known/private split**: `.vesta-known.json`, unresolved policy, private API, no wrapper blob duplicate |
-| **B** | **Minecraft session-challenge auth**, capability engine / access levels, layered gates on all non-open modes |
-| **C** | Whitelist + admin UUID list + OP/LP bridge + tests |
-| **D** | Launcher: auth commands, token store, private fetch, manifest resolve |
-| **E** | `install-wrapper.ps1` / `.sh` for existing servers + backup ack |
-| **6** | Process/console/player list hooks (if wrapper manages process) |
-| **7** | TLS/TOFU, rate limits, audit (hardening) |
-| **8** | App: seed server from modpack + setup wizard UX |
+| Phase | Deliverable | Status |
+|-------|-------------|--------|
+| **0** | Baseline: keep core tests green; fix/document known stubs | done |
+| **1** | Security modes in config; open warning; password; Vesta bearer issue/validate; session validation on mutating routes | done |
+| **2** | Control IPC + heartbeat; mod “skip HTTP only”; permission adapter interface + fakes | done |
+| **3** | Link codes (`/vesta link` + redeem); UUID bind storage | done |
+| **4** | Remote install/remove + **live rescan**; unauthorized reject | done |
+| **5** | Push notify + real version listing/history (as needed) | partial (push notify + payload parity; version history deferred) |
+| **A** | **Known/private split**: `.vesta-known.json`, unresolved policy, private API, no wrapper blob duplicate | done |
+| **B** | **Minecraft session-challenge auth**, capability engine / access levels, layered gates on all non-open modes | done |
+| **C** | Whitelist + admin UUID list + OP/LP bridge + tests | done |
+| **D** | Launcher: auth commands, token store, private fetch, manifest resolve | deferred (launcher UI postponed) |
+| **E** | `install-wrapper.ps1` / `.sh` + one-liner multi-instance installer (`--instance`, registry, backup, verify) | done |
+| **6** | Process/console/player list hooks (if wrapper manages process) | **console done**; **players REST done** (realtime `players_changed` deferred); file browser streaming R/W done |
+| **7** | TLS/TOFU, rate limits, audit (hardening) | **rate limits configurable + 429**; TLS fingerprint on status/descriptor; full TOFU pinning deferred |
+| **8** | App: seed server from modpack + setup wizard UX | deferred |
+
+**Ops additions (2026-07):** loopback-only `/devtools` (debug banner, not a production panel); `vesta-wrapperctl` multi-instance CLI; end-to-end `scripts/smoke-wrapper.ps1` / `.sh`.
 
 Launcher phases follow architecture cleanup and at least backend phases 1–4; **setup wizard / seed-server UI** after 5.5 APIs + home server entity.
 
@@ -419,14 +421,17 @@ Tests are **not optional**. Document conventions here; implement with each phase
 
 ## 13. Manual smoke (current branches)
 
-Until backend phases land, use:
+Primary wrapper smoke (console + fs + players + descriptor):
 
 ```powershell
-# Server
-cd V:\server
-.\gradlew.bat :core:test :wrapper:installDist
-# Run demo wrapper (see RUNNING.md)
+cd V:\server-connections-mvp
+.\gradlew.bat :core:test :wrapper:test :wrapper:installDist
+.\scripts\smoke-wrapper.ps1
+```
 
+Until launcher phases land, use:
+
+```powershell
 # Launcher — keep server-import for experiments; do not reset
 cd V:\launcher\vesta-launcher
 npm run tauri dev
@@ -434,6 +439,8 @@ npm run tauri dev
 ```
 
 Protocol smoke: [`run.ps1`](../run.ps1) (TCP `0x00` prefix when multiplexed).
+
+CI keeps `:core:test` + `:wrapper:test`. Full `smoke-wrapper` (Paper start) is manual / operator — not a CI gate.
 
 ---
 

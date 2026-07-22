@@ -75,14 +75,30 @@ Example (local packaging smoke test):
 ```powershell
 .\scripts\package-dist.ps1
 $env:VESTA_DIST_BASE = "file:///" + ((Resolve-Path .\build\dist).Path -replace '\\','/')
-.\scripts\install.ps1 -Root .\build\smoke-server -Minecraft none -SkipPortCheck -NoService -Yes
+.\scripts\install.ps1 -Root .\build\smoke-server -Instance smoke-test -Minecraft none -SkipPortCheck -NoService -Yes
 ```
 
 ```bash
 ./scripts/package-dist.sh
 VESTA_DIST_BASE="file://$(pwd)/build/dist" ./scripts/install.sh \
-  --root ./build/smoke-server --minecraft none --skip-port-check --no-service --yes
+  --root ./build/smoke-server --instance smoke-test --minecraft none --skip-port-check --no-service --yes
 ```
+
+### Wrapper API smoke (no installer)
+
+After `:wrapper:installDist`, exercise console/fs/players against `demo-server` with ephemeral ports:
+
+```powershell
+.\scripts\smoke-wrapper.ps1              # includes Paper console POST when paper-*.jar present
+.\scripts\smoke-wrapper.ps1 -SkipMinecraft
+```
+
+```bash
+./scripts/smoke-wrapper.sh
+./scripts/smoke-wrapper.sh --skip-minecraft
+```
+
+See [`RUNNING.md`](../RUNNING.md) for endpoint examples and rate-limit notes.
 
 ## Dist branch layout
 
