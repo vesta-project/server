@@ -473,6 +473,23 @@ class VestaHttpServerCommunicationTest {
     }
 
     @Test
+    void devtoolsHtmlDeniedFromNonLoopbackWithDevtoolsMessage() throws Exception {
+        server.loopbackOverrideForTests = false;
+        try {
+            HttpResponse<String> response = get("/devtools", null);
+            assertEquals(403, response.statusCode());
+            JsonObject body = json(response);
+            assertEquals("devtools is loopback-only", body.get("error").getAsString());
+            assertFalse(
+                    response.body().contains("admin"),
+                    "Devtools deny message must not use admin wording"
+            );
+        } finally {
+            server.loopbackOverrideForTests = null;
+        }
+    }
+
+    @Test
     void devtoolsHtmlReturns404WhenDisabled() throws Exception {
         server.stop();
         server = null;

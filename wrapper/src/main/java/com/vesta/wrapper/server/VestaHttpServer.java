@@ -231,7 +231,7 @@ public final class VestaHttpServer {
                     json(response, callback, Map.of("error", "not found"));
                     return;
                 }
-                if (config.devtoolsLoopbackOnly && !requireLoopback(request, response, callback)) {
+                if (config.devtoolsLoopbackOnly && !requireDevtoolsLoopback(request, response, callback)) {
                     return;
                 }
                 serveDevtools(response, callback);
@@ -975,6 +975,19 @@ public final class VestaHttpServer {
         }
         response.setStatus(403);
         json(response, callback, Map.of("error", "admin endpoints are localhost-only"));
+        return false;
+    }
+
+    private boolean requireDevtoolsLoopback(
+            Request request,
+            Response response,
+            Callback callback
+    ) {
+        if (allowLocalAdmin(request)) {
+            return true;
+        }
+        response.setStatus(403);
+        json(response, callback, Map.of("error", "devtools is loopback-only"));
         return false;
     }
 
