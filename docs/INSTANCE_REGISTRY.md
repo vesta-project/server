@@ -35,7 +35,9 @@ Parent directory `.vesta/` should be created if missing.
 - `config` (string, required): Absolute path to `wrapper-config.toml`.
 - `root` (string, required): Absolute server root path for this instance.
 - `server_id` (string, optional): Server identity UUID from wrapper config.
-- `service_name` (string, required): OS service/task identifier for lifecycle control.
+- `service_name` (string, required): OS lifecycle identifier for start/stop.
+  - Linux/Windows: `vesta-wrapper-<instance>` (systemd unit / scheduled task name)
+  - macOS: `com.vesta.wrapper.<instance>` (launchd label — must match the plist `Label`)
 - `registered_at` (string, required): ISO-8601 UTC timestamp for first registration.
 
 ## Canonical identity and dedupe
@@ -46,8 +48,9 @@ Parent directory `.vesta/` should be created if missing.
 
 ## Port resolution rule (important)
 
-Ports are identity/discovery only and must be read from `wrapper-config.toml` at runtime.
-Installer/CLI tooling must NOT store port numbers in registry entries (to avoid drift).
+The registry is identity/discovery only. Ports are **not** registry fields — always read
+`http-port` / `control-port` from each instance's `wrapper-config.toml` at runtime.
+Installer/CLI tooling must never store port numbers in registry entries (avoids drift).
 
 ## Write rules
 

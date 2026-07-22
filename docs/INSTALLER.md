@@ -7,8 +7,9 @@ coach port forwarding, and register an OS autostart service.
 The multi-instance registry contract used by installers and future CLI tooling is
 defined in [`INSTANCE_REGISTRY.md`](./INSTANCE_REGISTRY.md).
 
-Port numbers are identity/discovery only and must be resolved from each instance's
-`wrapper-config.toml` at runtime (installers/CLI must NOT store ports in the registry).
+The instance registry is identity/discovery only. Port numbers are **not** stored there —
+installers/CLI always resolve `http-port` / `control-port` from each instance's
+`wrapper-config.toml` at runtime.
 
 **The installer never installs the Vesta connector mod/plugin.** Vanilla (and
 unknown) servers are supported with wrapper-only. For non-vanilla servers,
@@ -83,7 +84,7 @@ Installers verify `wrapperSha256` before extracting.
 |----|-----------|
 | Linux (root) | `systemd` unit `/etc/systemd/system/vesta-wrapper-<instance>.service` |
 | Linux (user) | `~/.config/systemd/user/vesta-wrapper-<instance>.service` (+ linger tip) |
-| macOS | `launchd` label `com.vesta.wrapper.<instance>` |
+| macOS | `launchd` label `com.vesta.wrapper.<instance>` (also written as registry `service_name`) |
 | Windows | Scheduled task `vesta-wrapper-<instance>` (SYSTEM if elevated, else AtLogOn) |
 
 ## Port forwarding

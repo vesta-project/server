@@ -881,7 +881,12 @@ main() {
   if [[ -z "$INSTANCE" ]]; then
     die "Could not determine --instance slug (provide --instance explicitly)"
   fi
-  local service_name="vesta-wrapper-${INSTANCE}"
+  # service_name must match the OS lifecycle identifier (systemd unit / launchd label).
+  local service_name
+  case "$(uname -s)" in
+    Darwin) service_name="com.vesta.wrapper.${INSTANCE}" ;;
+    *) service_name="vesta-wrapper-${INSTANCE}" ;;
+  esac
 
   if [[ "$UNINSTALL" -eq 1 ]]; then
     if ! command -v vesta-wrapperctl >/dev/null 2>&1; then
