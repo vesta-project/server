@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 public final class ServerState {
@@ -42,6 +43,7 @@ public final class ServerState {
     private volatile ModpackState modpackState;
     private volatile LocalArchivePack localArchive;
     private volatile Instant updatedAt;
+    private final AtomicLong pushSeq = new AtomicLong();
 
     public ServerState(WrapperConfig config) {
         this.config = config;
@@ -221,10 +223,13 @@ public final class ServerState {
         PushUpdateAvailable push = new PushUpdateAvailable();
         push.ts = updatedAt.toString();
         push.session = "";
-        push.seq = 0;
+        push.seq = pushSeq.incrementAndGet();
+        push.revision = getCurrentRevision();
         push.newVersion = getCurrentVersion();
+        push.previousVersion = previousVersion;
         push.changelog = "Manifest rescanned";
         push.requiresRestart = true;
+        push.forceUpdate = false;
         for (Consumer<PushUpdateAvailable> listener : pushListeners) {
             try {
                 listener.accept(push);

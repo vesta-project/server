@@ -171,7 +171,8 @@ With the wrapper running, open:
 https://localhost:9090/devtools
 ```
 
-Use it to view status/info/manifest, obtain a bearer token (password or link code), run sync-check, and upload/remove a test file.
+Devtools is a local debug tool (loopback-only when `[devtools].loopback_only = true`) and is intentionally not a production admin panel.
+For day-to-day ops, use `vesta-wrapperctl` and the loopback-gated HTTP APIs (for example `GET/PUT /api/v1/admin/security`).
 
 ### PowerShell smoke test
 

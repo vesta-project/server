@@ -17,6 +17,7 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.math.BigInteger;
 import java.net.InetAddress;
@@ -27,6 +28,7 @@ import java.nio.file.StandardCopyOption;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.KeyStore;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
@@ -38,6 +40,42 @@ import java.util.Set;
 /** Creates the persistent TLS identity used by fresh self-hosted wrappers. */
 public final class TlsMaterial {
     private static final Logger log = LoggerFactory.getLogger(TlsMaterial.class);
+
+    /**
+     * Computes a stable SHA-256 fingerprint for the wrapper's self-hosted TLS identity.
+     *
+     * <p>The fingerprint is based on the DER-encoded certificate bytes of the persistent
+     * {@code "vesta"} entry in the PKCS#12 keystore.
+     */
+    public static String sha256Fingerprint(WrapperConfig config) throws Exception {
+        Path target = config.tlsKeyStore.toAbsolutePath().normalize();
+        if (!Files.exists(target)) {
+            ensure(config);
+        }
+
+        KeyStore keyStore = KeyStore.getInstance("PKCS12");
+        try (InputStream input = Files.newInputStream(target)) {
+            keyStore.load(input, config.tlsKeyStorePassword.toCharArray());
+        }
+
+        Certificate cert = keyStore.getCertificate("vesta");
+        if (cert == null) {
+            throw new IllegalStateException("TLS keystore has no 'vesta' certificate");
+        }
+
+        byte[] encoded = cert.getEncoded();
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        byte[] hash = digest.digest(encoded);
+        return toHex(hash);
+    }
+
+    private static String toHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) {
+            sb.append(String.format(java.util.Locale.ROOT, "%02x", b));
+        }
+        return sb.toString();
+    }
 
     public static Path ensure(WrapperConfig config) throws Exception {
         Path target = config.tlsKeyStore.toAbsolutePath().normalize();

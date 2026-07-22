@@ -37,10 +37,10 @@ public final class MessageRouter {
                 config.effectivePublicPort()
         );
 
-        handlers.put(Handshake.class, new HandshakeHandler(sessionManager, auth));
+        handlers.put(Handshake.class, new HandshakeHandler(sessionManager, serverState, auth));
         handlers.put(SyncCheck.class, new SyncCheckHandler(serverState));
         handlers.put(Heartbeat.class, new HeartbeatHandler(sessionManager));
-        handlers.put(Disconnect.class, new DisconnectHandler(sessionManager));
+        handlers.put(Disconnect.class, new DisconnectHandler(sessionManager, serverState));
         handlers.put(FileRequest.class, new FileRequestHandler(endpoint));
     }
 

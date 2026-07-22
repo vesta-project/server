@@ -51,6 +51,7 @@ class VestaHttpServerCommunicationTest {
             .build();
 
     private VestaHttpServer server;
+    private ServerState serverState;
     private AuthService auth;
     private CapabilityEngine capabilities;
     private SecuritySettingsService securitySettings;
@@ -92,7 +93,7 @@ class VestaHttpServerCommunicationTest {
                 .recommendedMemoryMaxMb(8192)
                 .securityMode(SecurityMode.LINKED)
                 .build();
-        ServerState state = new ServerState(config);
+        serverState = new ServerState(config);
         auth = new AuthService(config);
         WhitelistService whitelist = new WhitelistService(root);
         capabilities = new CapabilityEngine(
@@ -115,7 +116,7 @@ class VestaHttpServerCommunicationTest {
         );
         server = new VestaHttpServer(
                 0,
-                state,
+                serverState,
                 config,
                 auth,
                 new LinkCodeService(60),
@@ -452,6 +453,78 @@ class VestaHttpServerCommunicationTest {
         command.addProperty("command", "list");
         HttpResponse<String> execute = post(VestaSync.API_CONSOLE, command, operator);
         assertEquals(409, execute.statusCode());
+    }
+
+    @Test
+    void devtoolsHtmlIsServedOnLoopbackWhenEnabled() throws Exception {
+        HttpResponse<String> response = get("/", null);
+        assertEquals(200, response.statusCode());
+        assertTrue(
+                response.headers()
+                        .firstValue("content-type")
+                        .orElse("")
+                        .toLowerCase()
+                        .contains("text/html")
+        );
+        assertTrue(
+                response.body().contains("Local debug tool - not for production"),
+                "Expected debug banner in devtools HTML"
+        );
+    }
+
+    @Test
+    void devtoolsHtmlReturns404WhenDisabled() throws Exception {
+        server.stop();
+        server = null;
+
+        WrapperConfig disabledConfig = new WrapperConfig.Builder()
+                .scanRoot(root)
+                .scanPaths(java.util.List.of("config"))
+                .httpPort(0)
+                .tlsEnabled(false)
+                .serverId(serverUuid)
+                .serverDisplayName("Test Vesta Server")
+                .serverDescription("Fixture MOTD")
+                .modpackName("Test Pack")
+                .modpackVersion("2.4")
+                .modpackRevision(12)
+                .minimumRevision(9)
+                .recommendedMemoryMinMb(4096)
+                .recommendedMemoryMaxMb(8192)
+                .securityMode(SecurityMode.LINKED)
+                .devtoolsEnabled(false)
+                .devtoolsLoopbackOnly(true)
+                .build();
+
+        ServerState disabledState = new ServerState(disabledConfig);
+        WhitelistService disabledWhitelist = new WhitelistService(root);
+        LinkCodeService disabledLinkCodes = new LinkCodeService(60);
+        MinecraftSessionChallengeService disabledChallenges = new MinecraftSessionChallengeService(
+                Duration.ofSeconds(30),
+                (name, serverId) -> java.util.Optional.empty()
+        );
+        server = new VestaHttpServer(
+                0,
+                disabledState,
+                disabledConfig,
+                auth,
+                disabledLinkCodes,
+                capabilities,
+                disabledWhitelist,
+                disabledChallenges,
+                new RealtimeTicketService(Duration.ofSeconds(30)),
+                new com.vesta.wrapper.runtime.MinecraftServerProcess(disabledConfig),
+                null,
+                true,
+                securitySettings
+        );
+        server.start();
+        base = URI.create("http://127.0.0.1:" + server.boundPort());
+
+        HttpResponse<String> response = get("/", null);
+        assertEquals(404, response.statusCode());
+        JsonObject body = json(response);
+        assertEquals("not found", body.get("error").getAsString());
     }
 
     private HttpResponse<String> get(String path, String bearer) throws Exception {

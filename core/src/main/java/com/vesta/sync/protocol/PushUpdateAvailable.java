@@ -5,7 +5,11 @@ public final class PushUpdateAvailable {
     public long seq;
     public String session;
     public String ts;
+    /** Current manifest revision (SHA-1/pack revision analogue); sent to clients for cache/polling. */
+    public long revision;
     public String newVersion;
+    /** Previous version string the client was on when the push was generated. */
+    public String previousVersion;
     public String changelog;
     public boolean requiresRestart;
     public boolean forceUpdate;

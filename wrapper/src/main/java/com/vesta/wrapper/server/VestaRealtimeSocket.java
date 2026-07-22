@@ -196,17 +196,19 @@ public final class VestaRealtimeSocket {
         close(StatusCode.POLICY_VIOLATION, "access changed");
     }
 
-    private void onPackUpdate(PushUpdateAvailable ignored) {
+    private void onPackUpdate(PushUpdateAvailable push) {
         RealtimeTicketService.Ticket current = principal;
         if (current == null || !current.capabilities.contains("pack_updates")) {
             return;
         }
         Map<String, Object> event = new LinkedHashMap<>();
         event.put("type", "pack_update");
-        event.put("revision", serverState.getCurrentRevision());
+        event.put("revision", push.revision);
         event.put("minimum_revision", serverState.getMinimumRevision());
-        event.put("display_version", serverState.getCurrentVersion());
+        event.put("display_version", push.newVersion);
         event.put("updated_at", serverState.getUpdatedAt().toString());
+        event.put("previous_version", push.previousVersion);
+        event.put("requires_restart", push.requiresRestart);
         send(event);
     }
 

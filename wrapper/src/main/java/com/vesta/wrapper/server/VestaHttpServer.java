@@ -26,6 +26,7 @@ import com.vesta.wrapper.files.FileBrowserService;
 import com.vesta.wrapper.ipc.ControlIpcServer;
 import com.vesta.wrapper.runtime.MinecraftServerProcess;
 import com.vesta.wrapper.security.WhitelistService;
+import com.vesta.wrapper.security.TlsMaterial;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.HttpVersion;
@@ -90,6 +91,7 @@ public final class VestaHttpServer {
     private final SecuritySettingsService securitySettings;
     private final ConsoleBuffer consoleBuffer;
     private final FileBrowserService fileBrowser;
+    private volatile String tlsSha256Fingerprint;
 
     public VestaHttpServer(
             int port,
@@ -220,6 +222,14 @@ public final class VestaHttpServer {
                 return;
             }
             if ("/devtools".equals(path) || "/devtools/".equals(path) || "/".equals(path)) {
+                if (!config.devtoolsEnabled) {
+                    response.setStatus(404);
+                    json(response, callback, Map.of("error", "not found"));
+                    return;
+                }
+                if (config.devtoolsLoopbackOnly && !requireLoopback(request, response, callback)) {
+                    return;
+                }
                 serveDevtools(response, callback);
                 return;
             }
@@ -661,7 +671,26 @@ public final class VestaHttpServer {
         if (minecraft != null) {
             status.put("minecraft", minecraft.snapshot());
         }
+
+        if (config.tlsEnabled) {
+            status.put("tls", Map.of(
+                    "sha256_fingerprint", tlsSha256Fingerprint()
+            ));
+        }
         json(response, callback, status);
+    }
+
+    private String tlsSha256Fingerprint() {
+        if (tlsSha256Fingerprint != null) {
+            return tlsSha256Fingerprint;
+        }
+        try {
+            tlsSha256Fingerprint = TlsMaterial.sha256Fingerprint(config);
+        } catch (Exception e) {
+            log.warn("Could not compute TLS fingerprint: {}", e.getMessage());
+            tlsSha256Fingerprint = null;
+        }
+        return tlsSha256Fingerprint;
     }
 
     private void handleServerPower(Request request, Response response, Callback callback) throws Exception {
@@ -1042,8 +1071,35 @@ public final class VestaHttpServer {
                 "server_descriptor",
                 "modpack_sync",
                 "minecraft_challenge",
-                "realtime_ticket"
+                "realtime_ticket",
+                "console",
+                "filesystem",
+                "server_power",
+                "content_manage",
+                "admin_security_loopback",
+                "sync_check"
         ));
+
+        // Machine-discovery map: REST path -> required high-level capability token.
+        Map<String, Object> endpoints = new LinkedHashMap<>();
+        endpoints.put(VestaSync.API_SERVER_DESCRIPTOR, "server_descriptor");
+        endpoints.put(VestaSync.API_MODPACK_INFO, "modpack_sync");
+        endpoints.put(VestaSync.API_MANIFEST, "modpack_sync");
+        endpoints.put(VestaSync.API_MODPACK_VERSIONS, "modpack_sync");
+        endpoints.put(VestaSync.API_MODPACK_ARCHIVE, "modpack_sync");
+        endpoints.put(VestaSync.API_SYNC_CHECK, "sync_check");
+        endpoints.put(VestaSync.API_AUTH_MINECRAFT_CHALLENGE, "minecraft_challenge");
+        endpoints.put(VestaSync.API_AUTH_MINECRAFT_COMPLETE, "minecraft_challenge");
+        endpoints.put(VestaSync.API_REALTIME_TICKET, "realtime_ticket");
+        endpoints.put(VestaSync.API_CONSOLE, "console");
+        endpoints.put(VestaSync.API_FS, "filesystem");
+        endpoints.put(VestaSync.API_FS_PREFIX + "{path}", "filesystem");
+        endpoints.put(VestaSync.API_SERVER_POWER, "server_power");
+        endpoints.put(VestaSync.API_FILES_UPLOAD, "content_manage");
+        endpoints.put(VestaSync.API_CONTENT_REMOVE, "content_manage");
+        endpoints.put(VestaSync.API_ADMIN_SECURITY, "admin_security_loopback");
+        descriptor.put("endpoints", endpoints);
+
         descriptor.put("name", config.serverDisplayName);
         if (config.serverBannerUrl != null && !config.serverBannerUrl.isBlank()) {
             descriptor.put("banner_url", config.serverBannerUrl.trim());
@@ -1052,6 +1108,11 @@ public final class VestaHttpServer {
         descriptor.put("pack", pack);
         descriptor.put("auth_methods", authMethods);
         descriptor.put("updated_at", serverState.getUpdatedAt().toString());
+        if (config.tlsEnabled) {
+            descriptor.put("tls", Map.of(
+                    "sha256_fingerprint", tlsSha256Fingerprint()
+            ));
+        }
         json(response, callback, descriptor);
     }
 
@@ -1168,14 +1229,67 @@ public final class VestaHttpServer {
         }
 
         String body = readBody(request);
-        JsonObject req = GSON.fromJson(body, JsonObject.class);
-        String clientVersion = req.has("current_version") ? req.get("current_version").getAsString() : "";
+        if (body == null || body.isBlank()) {
+            response.setStatus(400);
+            json(response, callback, Map.of("error", "sync-check body required"));
+            return;
+        }
+
+        JsonObject req;
+        try {
+            req = GSON.fromJson(body, JsonObject.class);
+        } catch (Exception e) {
+            response.setStatus(400);
+            json(response, callback, Map.of("error", "invalid json"));
+            return;
+        }
+        if (req == null) {
+            response.setStatus(400);
+            json(response, callback, Map.of("error", "invalid json"));
+            return;
+        }
+
+        if (!req.has("current_version")
+                || req.get("current_version") == null
+                || req.get("current_version").isJsonNull()
+                || !req.get("current_version").isJsonPrimitive()) {
+            response.setStatus(400);
+            json(response, callback, Map.of("error", "current_version must be a string"));
+            return;
+        }
+        String clientVersion = req.get("current_version").getAsString();
+        if (clientVersion.isBlank()) {
+            response.setStatus(400);
+            json(response, callback, Map.of("error", "current_version must be non-empty"));
+            return;
+        }
 
         Map<String, String> installedHashes = new LinkedHashMap<>();
-        if (req.has("installed_hashes") && req.get("installed_hashes").isJsonObject()) {
-            JsonObject hashes = req.getAsJsonObject("installed_hashes");
-            for (String key : hashes.keySet()) {
-                installedHashes.put(key, hashes.get(key).getAsString());
+        if (req.has("installed_hashes")) {
+            if (req.get("installed_hashes") == null
+                    || req.get("installed_hashes").isJsonNull()) {
+                // Treat null as an empty map (client may not have hashes yet).
+            } else if (!req.get("installed_hashes").isJsonObject()) {
+                response.setStatus(400);
+                json(response, callback, Map.of("error", "installed_hashes must be an object"));
+                return;
+            } else {
+                JsonObject hashes = req.getAsJsonObject("installed_hashes");
+                for (String key : hashes.keySet()) {
+                    var element = hashes.get(key);
+                    if (element == null || element.isJsonNull() || !element.isJsonPrimitive()) {
+                        response.setStatus(400);
+                        json(response, callback, Map.of("error", "installed_hashes values must be strings"));
+                        return;
+                    }
+                    String hash = element.getAsString();
+                    if (!hash.matches("(?i)^[0-9a-f]{64}$")) {
+                        response.setStatus(400);
+                        json(response, callback, Map.of("error", "installed_hashes values must be sha256 hex"));
+                        return;
+                    }
+                    installedHashes.put(key, hash);
+                }
             }
         }
 
@@ -1183,13 +1297,10 @@ public final class VestaHttpServer {
 
         Map<String, Object> responseBody = new LinkedHashMap<>();
         responseBody.put("needs_update", result.needsUpdate);
-        if (result.needsUpdate) {
-            responseBody.put("new_version", result.newVersion);
-            responseBody.put("actions", result.actions);
-            if (result.manifest != null) {
-                responseBody.put("manifest", result.manifest);
-            }
-        }
+        // Align with TCP SyncCheckResponse: always include new_version and actions.
+        responseBody.put("new_version", result.newVersion);
+        responseBody.put("actions", result.actions);
+        if (result.manifest != null) responseBody.put("manifest", result.manifest);
         response.setStatus(200);
         json(response, callback, responseBody);
     }
