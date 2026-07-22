@@ -72,6 +72,17 @@ public final class WrapperConfig {
      */
     public final boolean connectorAutoUpdate;
 
+    /**
+     * Devtools is intentionally a local-only debug surface.
+     * When disabled, the wrapper returns 404 for `/` and `/devtools` HTML routes.
+     */
+    public final boolean devtoolsEnabled;
+    /**
+     * If true (default), HTML routes for devtools are gated to localhost/loopback only.
+     * Uses the same loopback detection as admin security endpoints.
+     */
+    public final boolean devtoolsLoopbackOnly;
+
     private WrapperConfig(Builder b) {
         this.tcpPort = b.tcpPort;
         this.httpPort = b.httpPort;
@@ -139,6 +150,9 @@ public final class WrapperConfig {
                     ? b.minecraftLaunchJar.normalize()
                     : this.minecraftWorkingDirectory.resolve(b.minecraftLaunchJar).normalize());
         this.connectorAutoUpdate = b.connectorAutoUpdate;
+
+        this.devtoolsEnabled = b.devtoolsEnabled;
+        this.devtoolsLoopbackOnly = b.devtoolsLoopbackOnly;
     }
 
     private static AccessControlConfig defaultAccess(
@@ -226,6 +240,9 @@ public final class WrapperConfig {
         Path minecraftLaunchJar;
         boolean connectorAutoUpdate = false;
 
+        boolean devtoolsEnabled = true;
+        boolean devtoolsLoopbackOnly = true;
+
         public Builder tcpPort(int v) { tcpPort = v; return this; }
         public Builder httpPort(int v) { httpPort = v; return this; }
         public Builder tlsEnabled(boolean v) { tlsEnabled = v; return this; }
@@ -274,6 +291,8 @@ public final class WrapperConfig {
         public Builder minecraftWorkingDirectory(Path v) { minecraftWorkingDirectory = v; return this; }
         public Builder minecraftLaunchJar(Path v) { minecraftLaunchJar = v; return this; }
         public Builder connectorAutoUpdate(boolean v) { connectorAutoUpdate = v; return this; }
+        public Builder devtoolsEnabled(boolean v) { devtoolsEnabled = v; return this; }
+        public Builder devtoolsLoopbackOnly(boolean v) { devtoolsLoopbackOnly = v; return this; }
 
         public WrapperConfig build() {
             return new WrapperConfig(this);

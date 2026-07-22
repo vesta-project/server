@@ -219,4 +219,25 @@ class ConfigLoaderSecurityTest {
         assertEquals(List.of("nogui", "--demo"), config.minecraftServerArgs);
         assertEquals(temp.resolve("fabric-server.jar"), config.minecraftLaunchJar);
     }
+
+    @Test
+    void defaultsToDevtoolsEnabledAndLoopbackOnly() {
+        WrapperConfig config = ConfigLoader.load(temp.resolve("missing.toml"));
+        assertTrue(config.devtoolsEnabled);
+        assertTrue(config.devtoolsLoopbackOnly);
+    }
+
+    @Test
+    void loadsDevtoolsConfigKnobs() throws Exception {
+        Path file = temp.resolve("wrapper-config.toml");
+        Files.writeString(file, """
+                [devtools]
+                enabled = false
+                loopback_only = false
+                """);
+
+        WrapperConfig config = ConfigLoader.load(file);
+        assertFalse(config.devtoolsEnabled);
+        assertFalse(config.devtoolsLoopbackOnly);
+    }
 }

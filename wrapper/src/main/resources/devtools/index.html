@@ -181,6 +181,19 @@
     .status-line { font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
     .status-line.err { color: var(--danger); }
     .status-line.ok { color: var(--ok); }
+
+    .debug-banner {
+      margin: 0 1.5rem 1rem;
+      padding: 0.65rem 0.75rem;
+      border: 1px solid #6a5a20;
+      border-left: 4px solid var(--warn);
+      border-radius: 6px;
+      background: rgba(201, 162, 39, 0.08);
+      color: #f0d37b;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.75rem;
+      line-height: 1.35;
+    }
     .people-list { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 0.65rem; }
     .people-row {
       display: flex; gap: 0.5rem; align-items: center; justify-content: space-between;
@@ -204,6 +217,10 @@
     </div>
     <div class="live" id="live-clock">Polling paused</div>
   </header>
+
+  <div class="debug-banner">
+    Local debug tool - not for production. Use <code>vesta-wrapperctl</code> and HTTP APIs for day-to-day ops.
+  </div>
 
   <div class="layout">
     <div class="stack">

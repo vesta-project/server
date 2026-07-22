@@ -160,6 +160,15 @@ public final class ConfigLoader {
                     b.connectorAutoUpdate
             ));
 
+            b.devtoolsEnabled(toml.getBoolean(
+                    "devtools.enabled",
+                    b.devtoolsEnabled
+            ));
+            b.devtoolsLoopbackOnly(toml.getBoolean(
+                    "devtools.loopback_only",
+                    b.devtoolsLoopbackOnly
+            ));
+
             String mode = toml.getString("security.mode", "open");
             b.securityMode(SecurityMode.parse(mode));
             b.securityPassword(toml.getString("security.password", b.securityPassword));

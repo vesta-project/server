@@ -126,3 +126,9 @@ whitelist-level = 3
 
 # Shorthand: listed UUIDs receive level 4 (merged into security.people)
 # admin-uuids = ["00000000-0000-0000-0000-000000000001"]
+
+[devtools]
+# Local debug tool - intentionally not a production admin panel.
+enabled = true
+# When true (default), `/` and `/devtools` HTML routes are reachable only from localhost/loopback.
+loopback_only = true
