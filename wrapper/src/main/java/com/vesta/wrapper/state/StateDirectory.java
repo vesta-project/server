@@ -1,6 +1,10 @@
 package com.vesta.wrapper.state;
 
 import java.io.IOException;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
@@ -129,6 +133,53 @@ public final class StateDirectory {
 
     private static Path sibling(Path file, String suffix) {
         return file.resolveSibling(file.getFileName() + suffix);
+    }
+
+    public static final String RUNNER_LOCK_FILE = "operation-runner.lock";
+
+    /**
+     * Acquires an exclusive OS file lock so only one operation runner (in any process) drives this
+     * state database. Fails closed with {@code runner_lock_held} if another holder exists.
+     */
+    public AutoCloseable acquireRunnerLock() {
+        Path lockFile = path.resolve(RUNNER_LOCK_FILE);
+        requireRegularOrAbsent(lockFile);
+        FileChannel channel = null;
+        try {
+            channel = FileChannel.open(lockFile, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
+                    LinkOption.NOFOLLOW_LINKS);
+            requireRegularOrAbsent(lockFile);
+            tightenFile(lockFile);
+            FileLock lock = channel.tryLock();
+            if (lock == null) {
+                throw new StateException("runner_lock_held", "Another operation runner holds the state lock");
+            }
+            FileChannel held = channel;
+            return () -> {
+                try (held) {
+                    lock.release();
+                }
+            };
+        } catch (OverlappingFileLockException e) {
+            closeQuietly(channel);
+            throw new StateException("runner_lock_held", "Another operation runner holds the state lock");
+        } catch (IOException e) {
+            closeQuietly(channel);
+            throw new StateException("runner_lock_failed", "Cannot acquire operation runner lock", e);
+        } catch (RuntimeException e) {
+            closeQuietly(channel);
+            throw e;
+        }
+    }
+
+    private static void closeQuietly(FileChannel channel) {
+        if (channel != null) {
+            try {
+                channel.close();
+            } catch (IOException ignored) {
+                // best effort
+            }
+        }
     }
 
     /** Tightens a regular file created inside the state directory (database, WAL, backups). Never follows links. */

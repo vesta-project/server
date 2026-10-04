@@ -96,7 +96,7 @@ class StateDatabaseTest {
             statement.execute("CREATE TABLE original (value TEXT)");
             statement.execute("INSERT INTO original VALUES ('before migration')");
             try (StateDatabase migrated = StateDatabase.open(directory, CLOCK)) {
-                assertEquals(1, migrated.schemaVersion());
+                assertEquals(StateDatabase.CURRENT_SCHEMA_VERSION, migrated.schemaVersion());
             }
         }
         try (var paths = Files.list(directory.backupsDir())) {

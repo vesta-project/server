@@ -11,8 +11,26 @@ final class Migrations {
     static List<String> statements(int version, long nowMillis) {
         return switch (version) {
             case 1 -> v1(nowMillis);
+            case 2 -> v2();
+            // v3: identity/authorization tables owned by the identity package; versioned only here.
+            case 3 -> com.vesta.wrapper.identity.IdentitySchema.statements(nowMillis);
             default -> throw new StateException("state_migration_unknown", "No migration for schema " + version);
         };
+    }
+
+    /**
+     * v2: persist bounded canonical operation inputs and runner ownership tokens. Rows created
+     * before v2 only have a payload hash, so they are marked {@code unavailable_legacy}; inputs are
+     * never fabricated and such rows are never executed.
+     */
+    private static List<String> v2() {
+        return List.of(
+                "ALTER TABLE operations ADD COLUMN input_json TEXT "
+                        + "CHECK (input_json IS NULL OR length(input_json) <= 65536)",
+                "ALTER TABLE operations ADD COLUMN input_status TEXT NOT NULL DEFAULT 'unavailable_legacy' "
+                        + "CHECK (input_status IN ('available','unavailable_legacy','purged'))",
+                "ALTER TABLE operations ADD COLUMN owner_token TEXT",
+                "CREATE INDEX operations_input_status ON operations(input_status, state)");
     }
 
     private static List<String> v1(long now) {

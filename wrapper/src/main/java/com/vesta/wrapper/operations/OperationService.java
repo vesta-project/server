@@ -19,6 +19,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -26,15 +27,21 @@ import java.util.UUID;
 /**
  * Durable operation repository and state machine.
  *
- * <p>This is the persistence/lifecycle layer only: it does not execute gameplay effects. Handlers
- * claim operations, call {@link #markExternalEffectStarted} BEFORE any external effect, and report
- * results. Every state transition commits atomically together with its audit record and event;
- * if auditing fails the transition does not happen.
+ * <p>Persists the bounded canonical request input (schema v2+) so a registered handler can
+ * execute it later; rows created before v2 have no input and are never executed. Every state
+ * transition commits atomically together with its audit record and event; if auditing fails the
+ * transition does not happen.
+ *
+ * <p>Ownership: {@link #claimNext(String)} stamps an owner token on the claimed row, and the
+ * token-taking lifecycle methods only mutate a row whose token matches exactly. The token-less
+ * overloads are equivalent to passing {@code null} and therefore only act on rows claimed via the
+ * token-less {@link #claimNext()}.
  */
 public final class OperationService {
     public static final int MAX_RESULT_CHARS = 16_384;
     public static final int MAX_ERROR_CHARS = 1_024;
     public static final int MAX_PAGE = 200;
+    public static final String INPUT_UNAVAILABLE = "input_unavailable";
     static final String ENGINE_SOURCE = "operation-engine";
     private static final Gson GSON = new Gson();
     private static final String COLUMNS = "id, seq, server_id, actor_principal_id, device_id, source, type, target, "
@@ -50,6 +57,10 @@ public final class OperationService {
         this.db = db;
         this.audit = audit;
         this.events = events;
+    }
+
+    public StateDatabase database() {
+        return db;
     }
 
     // ------------------------------------------------------------------ submission
@@ -75,7 +86,8 @@ public final class OperationService {
                 try (PreparedStatement ps = c.prepareStatement(
                         "INSERT INTO operations (id, server_id, actor_principal_id, device_id, source, type, target, "
                                 + "payload_hash, idempotency_key, state, requires_confirmation, external_effect_idempotent, "
-                                + "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
+                                + "created_at, updated_at, input_json, input_status) "
+                                + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'available')")) {
                     ps.setString(1, id);
                     ps.setString(2, db.serverId());
                     ps.setString(3, r.actor().principalId());
@@ -90,6 +102,7 @@ public final class OperationService {
                     ps.setInt(12, r.externalEffectIdempotent() ? 1 : 0);
                     ps.setLong(13, now);
                     ps.setLong(14, now);
+                    ps.setString(15, r.canonicalPayload());
                     ps.executeUpdate();
                 }
                 try (PreparedStatement ps = c.prepareStatement(
@@ -123,6 +136,14 @@ public final class OperationService {
         return db.read(c -> load(c, id));
     }
 
+    /**
+     * Stored input for an operation. Status is {@link OperationInput.InputStatus#UNAVAILABLE_LEGACY}
+     * for pre-v2 rows (and also when the stored JSON no longer matches the bound payload hash).
+     */
+    public Optional<OperationInput> input(String id) {
+        return db.read(c -> loadInput(c, id));
+    }
+
     /** Operations with seq greater than {@code afterSeq}, oldest first, bounded page. */
     public List<Operation> list(long afterSeq, int limit) {
         int bounded = Math.max(1, Math.min(MAX_PAGE, limit));
@@ -145,14 +166,50 @@ public final class OperationService {
         });
     }
 
+    /**
+     * Drops stored inputs of terminal (succeeded/failed/cancelled) operations finished before
+     * {@code finishedBefore}. Never touches non-terminal or recovery_required inputs. When rows are
+     * purged, a system audit record (count and cutoff only, no payload) is appended in the same
+     * transaction; if auditing fails nothing is erased.
+     */
+    public int purgeTerminalInputs(Instant finishedBefore) {
+        Objects.requireNonNull(finishedBefore, "finishedBefore");
+        return db.write(c -> {
+            int purged;
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE operations SET input_json = NULL, input_status = 'purged' WHERE input_status = 'available' "
+                            + "AND state IN ('succeeded','failed','cancelled') AND finished_at IS NOT NULL AND finished_at < ?")) {
+                ps.setLong(1, finishedBefore.toEpochMilli());
+                purged = ps.executeUpdate();
+            }
+            if (purged > 0) {
+                audit.append(c, new AuditRecord(AuditActor.system(ENGINE_SOURCE), "operation.inputs_purged",
+                        "operations", "ok", null,
+                        Map.of("count", Integer.toString(purged), "finishedBefore", finishedBefore.toString())));
+            }
+            return purged;
+        });
+    }
+
     // ------------------------------------------------------------------ worker lifecycle
 
-    /**
-     * Claims the oldest runnable queued operation (FIFO), atomically acquiring all of its resource
-     * locks in sorted order or none. A queued operation blocked by held locks reserves its resources
-     * so later conflicting operations cannot overtake it. Moves the claimed operation to validating.
-     */
+    /** Claims without an owner token (manual/administrative use). See {@link #claimNext(String)}. */
     public Optional<Operation> claimNext() {
+        return claimNextInternal(null).map(ClaimedOperation::operation);
+    }
+
+    /**
+     * Claims the oldest runnable queued operation (FIFO) with an available input, atomically
+     * acquiring all of its resource locks in sorted order or none, and stamps {@code ownerToken}.
+     * A queued operation blocked by held locks reserves its resources so later conflicting
+     * operations cannot overtake it. Moves the claimed operation to validating.
+     */
+    public Optional<ClaimedOperation> claimNext(String ownerToken) {
+        StateValues.requireText("ownerToken", ownerToken, 128);
+        return claimNextInternal(ownerToken);
+    }
+
+    private Optional<ClaimedOperation> claimNextInternal(String ownerToken) {
         return db.write(c -> {
             Set<String> unavailable = new HashSet<>();
             try (PreparedStatement ps = c.prepareStatement("SELECT resource FROM resource_locks");
@@ -162,13 +219,26 @@ public final class OperationService {
                 }
             }
             List<String> queued = new ArrayList<>();
-            try (PreparedStatement ps = c.prepareStatement("SELECT id FROM operations WHERE state = 'queued' ORDER BY seq");
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT id FROM operations WHERE state = 'queued' ORDER BY seq");
                  ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     queued.add(rs.getString(1));
                 }
             }
             for (String id : queued) {
+                boolean inputAvailable = loadInput(c, id)
+                        .map(i -> i.status() == OperationInput.InputStatus.AVAILABLE).orElse(false);
+                if (!inputAvailable) {
+                    // Never execute, never leave stuck: fail explicitly and audibly (nothing has started).
+                    Operation before = load(c, id).orElseThrow();
+                    update(c, id, "error_code = ?, error_message = ?", INPUT_UNAVAILABLE,
+                            "Stored operation input is unavailable; it will not be executed");
+                    finish(c, id, OperationState.FAILED);
+                    record(c, AuditActor.system(ENGINE_SOURCE), "operation.input_unavailable",
+                            load(c, id).orElseThrow(), before.state(), Map.of());
+                    continue;
+                }
                 List<String> resources = resources(c, id);
                 boolean free = resources.stream().noneMatch(unavailable::contains);
                 if (!free) {
@@ -185,34 +255,47 @@ public final class OperationService {
                         ps.executeUpdate();
                     }
                 }
-                setState(c, id, OperationState.VALIDATING);
+                update(c, id, "state = ?, owner_token = ?", OperationState.VALIDATING.wireName(), ownerToken);
                 Operation op = load(c, id).orElseThrow();
                 record(c, AuditActor.system(ENGINE_SOURCE), "operation.claim", op, OperationState.QUEUED, Map.of());
-                return Optional.of(op);
+                return Optional.of(new ClaimedOperation(op, ownerToken));
             }
             return Optional.empty();
         });
     }
 
     public Operation markRunning(String id) {
-        return transition(id, AuditActor.system(ENGINE_SOURCE), "operation.run",
+        return markRunning(id, null);
+    }
+
+    public Operation markRunning(String id, String ownerToken) {
+        return transition(id, ownerToken, AuditActor.system(ENGINE_SOURCE), "operation.run",
                 EnumSet.of(OperationState.VALIDATING), (c, op) -> setState(c, id, OperationState.RUNNING));
     }
 
-    /** Durably records that a non-replayable external effect may now happen. Call BEFORE the effect. */
     public Operation markExternalEffectStarted(String id) {
-        return transition(id, AuditActor.system(ENGINE_SOURCE), "operation.effect_started",
+        return markExternalEffectStarted(id, null);
+    }
+
+    /** Durably records that a non-replayable external effect may now happen. Call BEFORE the effect. */
+    public Operation markExternalEffectStarted(String id, String ownerToken) {
+        return transition(id, ownerToken, AuditActor.system(ENGINE_SOURCE), "operation.effect_started",
                 EnumSet.of(OperationState.RUNNING), (c, op) -> update(c, id, "external_effect_started = 1"));
     }
 
-    /** Progress is persisted and emitted as an event; it is not an audited state transition. */
     public Operation reportProgress(String id, int percent, String message) {
+        return reportProgress(id, null, percent, message);
+    }
+
+    /** Progress is persisted and emitted as an event; it is not an audited state transition. */
+    public Operation reportProgress(String id, String ownerToken, int percent, String message) {
         if (percent < 0 || percent > 100) {
             throw new OperationException(OperationException.INVALID_REQUEST, "progress must be 0..100");
         }
         String msg = StateValues.bounded(message, 256);
         return db.write(c -> {
             Operation op = require(c, id);
+            requireOwner(c, op, ownerToken);
             if (!op.state().active()) {
                 throw invalid(op, "report progress");
             }
@@ -223,8 +306,12 @@ public final class OperationService {
     }
 
     public Operation succeed(String id, String resultJson) {
+        return succeed(id, null, resultJson);
+    }
+
+    public Operation succeed(String id, String ownerToken, String resultJson) {
         String result = boundedOrReject(resultJson, MAX_RESULT_CHARS, "result");
-        return transition(id, AuditActor.system(ENGINE_SOURCE), "operation.succeed",
+        return transition(id, ownerToken, AuditActor.system(ENGINE_SOURCE), "operation.succeed",
                 EnumSet.of(OperationState.RUNNING, OperationState.CANCELLING), (c, op) -> {
                     update(c, id, "progress_percent = 100, result_json = ?", result);
                     finish(c, id, OperationState.SUCCEEDED);
@@ -232,13 +319,41 @@ public final class OperationService {
     }
 
     public Operation fail(String id, String errorCode, String errorMessage) {
+        return fail(id, null, errorCode, errorMessage);
+    }
+
+    public Operation fail(String id, String ownerToken, String errorCode, String errorMessage) {
         String code = StateValues.requireText("errorCode", errorCode, 64);
         String message = StateValues.bounded(errorMessage, MAX_ERROR_CHARS);
-        return transition(id, AuditActor.system(ENGINE_SOURCE), "operation.fail",
+        return transition(id, ownerToken, AuditActor.system(ENGINE_SOURCE), "operation.fail",
                 EnumSet.of(OperationState.VALIDATING, OperationState.RUNNING, OperationState.CANCELLING), (c, op) -> {
                     update(c, id, "error_code = ?, error_message = ?", code, message);
                     finish(c, id, OperationState.FAILED);
                 });
+    }
+
+    /**
+     * Records that the outcome of a started external effect is unknown. Locks are retained until an
+     * owner resolves the operation via {@link #resolveRecovery}; it is never replayed.
+     */
+    public Operation markRecoveryRequired(String id, String ownerToken, String reason) {
+        String code = StateValues.requireText("reason", reason, 64);
+        return transition(id, ownerToken, AuditActor.system(ENGINE_SOURCE), "operation.recovery_required",
+                EnumSet.of(OperationState.VALIDATING, OperationState.RUNNING, OperationState.CANCELLING), (c, op) -> {
+                    update(c, id, "error_code = ?, owner_token = NULL", code);
+                    setState(c, id, OperationState.RECOVERY_REQUIRED);
+                });
+    }
+
+    /**
+     * Releases a claimed operation when the runner shuts down at a safe point: not-started or
+     * idempotent effects are re-queued (locks and owner released); a started non-idempotent effect
+     * becomes recovery_required.
+     */
+    public Operation suspendForShutdown(String id, String ownerToken) {
+        return transition(id, ownerToken, AuditActor.system(ENGINE_SOURCE), "operation.suspend",
+                EnumSet.of(OperationState.VALIDATING, OperationState.RUNNING, OperationState.CANCELLING),
+                this::reconcile);
     }
 
     /**
@@ -251,34 +366,43 @@ public final class OperationService {
         if (current.state() == OperationState.CANCELLING) {
             return current;
         }
-        return transition(id, actor, "operation.cancel_request",
+        return db.write(c -> transition(c, id, actor, "operation.cancel_request",
                 EnumSet.of(OperationState.QUEUED, OperationState.AWAITING_CONFIRMATION,
-                        OperationState.VALIDATING, OperationState.RUNNING), (c, op) -> {
-                    update(c, id, "cancel_requested = 1");
+                        OperationState.VALIDATING, OperationState.RUNNING), (cc, op) -> {
+                    update(cc, id, "cancel_requested = 1");
                     if (op.state().active()) {
-                        setState(c, id, OperationState.CANCELLING);
+                        setState(cc, id, OperationState.CANCELLING);
                     } else {
-                        finish(c, id, OperationState.CANCELLED);
+                        finish(cc, id, OperationState.CANCELLED);
                     }
-                });
+                }));
     }
 
     public Operation acknowledgeCancelled(String id) {
-        return transition(id, AuditActor.system(ENGINE_SOURCE), "operation.cancelled",
+        return acknowledgeCancelled(id, null);
+    }
+
+    public Operation acknowledgeCancelled(String id, String ownerToken) {
+        return transition(id, ownerToken, AuditActor.system(ENGINE_SOURCE), "operation.cancelled",
                 EnumSet.of(OperationState.CANCELLING), (c, op) -> finish(c, id, OperationState.CANCELLED));
     }
 
     /**
-     * Startup reconciliation for operations that were claimed when the agent stopped.
-     * Non-idempotent operations whose external effect may have started become recovery_required
-     * (locks retained, never replayed). Others are re-queued (locks released) or, if cancelling,
-     * cancelled.
+     * Startup reconciliation. Must only run when no runner is active on this database.
+     * <ul>
+     *   <li>Claimed operations: non-idempotent operations whose external effect may have started become
+     *       recovery_required (locks retained, never replayed); others are re-queued (locks/owner
+     *       released) or, if cancelling, cancelled.</li>
+     *   <li>Non-terminal operations without an available input (pre-v2 rows): failed with
+     *       {@code input_unavailable}, unless a non-idempotent effect started (recovery_required).</li>
+     * </ul>
      */
     public List<Operation> recoverAfterRestart() {
         return db.write(c -> {
             List<String> ids = new ArrayList<>();
             try (PreparedStatement ps = c.prepareStatement(
-                    "SELECT id FROM operations WHERE state IN ('validating','running','cancelling') ORDER BY seq");
+                    "SELECT id FROM operations WHERE state IN ('validating','running','cancelling') "
+                            + "OR (input_status <> 'available' AND state IN ('queued','awaiting_confirmation')) ORDER BY seq");
                  ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     ids.add(rs.getString(1));
@@ -288,14 +412,14 @@ public final class OperationService {
             List<Operation> out = new ArrayList<>();
             for (String id : ids) {
                 Operation op = load(c, id).orElseThrow();
-                if (op.externalEffectStarted() && !op.externalEffectIdempotent()) {
-                    setState(c, id, OperationState.RECOVERY_REQUIRED);
-                } else if (op.state() == OperationState.CANCELLING) {
-                    finish(c, id, OperationState.CANCELLED);
+                boolean inputAvailable = loadInput(c, id).map(i -> i.status() == OperationInput.InputStatus.AVAILABLE)
+                        .orElse(false);
+                if (!inputAvailable && !(op.externalEffectStarted() && !op.externalEffectIdempotent())) {
+                    update(c, id, "error_code = ?, error_message = ?, owner_token = NULL", INPUT_UNAVAILABLE,
+                            "Stored operation input is unavailable; it will not be executed");
+                    finish(c, id, OperationState.FAILED);
                 } else {
-                    update(c, id, "external_effect_started = 0, progress_percent = 0, progress_message = NULL");
-                    releaseLocks(c, id);
-                    setState(c, id, OperationState.QUEUED);
+                    reconcile(c, op);
                 }
                 Operation after = load(c, id).orElseThrow();
                 record(c, engine, "operation.recover", after, op.state(), Map.of());
@@ -311,13 +435,13 @@ public final class OperationService {
             throw new OperationException(OperationException.INVALID_REQUEST, "outcome must be terminal");
         }
         String safeNote = StateValues.bounded(note, 256);
-        return transition(id, owner, "operation.resolve_recovery",
-                EnumSet.of(OperationState.RECOVERY_REQUIRED), (c, op) -> {
+        return db.write(c -> transition(c, id, owner, "operation.resolve_recovery",
+                EnumSet.of(OperationState.RECOVERY_REQUIRED), (cc, op) -> {
                     if (outcome == OperationState.FAILED) {
-                        update(c, id, "error_code = 'recovery_resolved_failed', error_message = ?", safeNote);
+                        update(cc, id, "error_code = 'recovery_resolved_failed', error_message = ?", safeNote);
                     }
-                    finish(c, id, outcome);
-                });
+                    finish(cc, id, outcome);
+                }));
     }
 
     // ------------------------------------------------------------------ package-level helpers
@@ -327,10 +451,17 @@ public final class OperationService {
         void apply(Connection c, Operation current) throws SQLException;
     }
 
-    Operation transition(String id, AuditActor actor, String action, Set<OperationState> from, Mutation mutation) {
-        return db.write(c -> transition(c, id, actor, action, from, mutation));
+    /** Owner-checked transition: the row's owner token must equal {@code ownerToken} (both may be null). */
+    Operation transition(String id, String ownerToken, AuditActor actor, String action, Set<OperationState> from,
+                         Mutation mutation) {
+        return db.write(c -> {
+            Operation op = require(c, id);
+            requireOwner(c, op, ownerToken);
+            return transition(c, id, actor, action, from, mutation);
+        });
     }
 
+    /** Unowned transition used for actor requests (cancel, recovery resolution, confirmation). */
     Operation transition(Connection c, String id, AuditActor actor, String action, Set<OperationState> from,
                          Mutation mutation) throws SQLException {
         Operation op = require(c, id);
@@ -375,8 +506,59 @@ public final class OperationService {
 
     // ------------------------------------------------------------------ internals
 
+    /** Shared crash/shutdown reconciliation for one claimed operation. */
+    private void reconcile(Connection c, Operation op) throws SQLException {
+        String id = op.id();
+        if (op.externalEffectStarted() && !op.externalEffectIdempotent()) {
+            update(c, id, "owner_token = NULL, error_code = COALESCE(error_code, 'effect_outcome_unknown')");
+            setState(c, id, OperationState.RECOVERY_REQUIRED);
+        } else if (op.state() == OperationState.CANCELLING) {
+            update(c, id, "owner_token = NULL");
+            finish(c, id, OperationState.CANCELLED);
+        } else {
+            update(c, id, "state = ?, owner_token = NULL, external_effect_started = 0, progress_percent = 0, "
+                    + "progress_message = NULL", OperationState.QUEUED.wireName());
+            releaseLocks(c, id);
+        }
+    }
+
+    private static void requireOwner(Connection c, Operation op, String ownerToken) throws SQLException {
+        String actual;
+        try (PreparedStatement ps = c.prepareStatement("SELECT owner_token FROM operations WHERE id = ?")) {
+            ps.setString(1, op.id());
+            try (ResultSet rs = ps.executeQuery()) {
+                actual = rs.next() ? rs.getString(1) : null;
+            }
+        }
+        if (!Objects.equals(actual, ownerToken)) {
+            throw new OperationException(OperationException.NOT_OWNER, "Operation is not owned by this caller");
+        }
+    }
+
+    private Optional<OperationInput> loadInput(Connection c, String id) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT input_status, input_json, payload_hash FROM operations WHERE id = ?")) {
+            ps.setString(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return Optional.empty();
+                }
+                OperationInput.InputStatus status = OperationInput.InputStatus.fromWire(rs.getString(1));
+                String json = rs.getString(2);
+                String hash = rs.getString(3);
+                if (status == OperationInput.InputStatus.AVAILABLE
+                        && (json == null || !StateValues.sha256Hex(json).equals(hash))) {
+                    // Stored input no longer matches what was authorized/confirmed: never execute it.
+                    return Optional.of(new OperationInput(id, OperationInput.InputStatus.UNAVAILABLE_LEGACY, null, hash));
+                }
+                return Optional.of(new OperationInput(id, status,
+                        status == OperationInput.InputStatus.AVAILABLE ? json : null, hash));
+            }
+        }
+    }
+
     private void finish(Connection c, String id, OperationState terminal) throws SQLException {
-        update(c, id, "state = ?, finished_at = ?", terminal.wireName(), db.clock().millis());
+        update(c, id, "state = ?, finished_at = ?, owner_token = NULL", terminal.wireName(), db.clock().millis());
         releaseLocks(c, id);
     }
 

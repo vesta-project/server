@@ -9,6 +9,7 @@ public final class OperationException extends StateException {
     public static final String INVALID_TRANSITION = "invalid_transition";
     public static final String CONFIRMATION_REJECTED = "confirmation_rejected";
     public static final String INVALID_REQUEST = "invalid_request";
+    public static final String NOT_OWNER = "not_owner";
 
     public OperationException(String code, String message) {
         super(code, message);

@@ -14,6 +14,7 @@ import java.time.Clock;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * Local SQLite (WAL) state store with versioned migrations.
@@ -24,7 +25,8 @@ import java.util.concurrent.locks.ReentrantLock;
  * on a newer-than-supported schema, or if the pre-migration backup cannot be made and verified.
  */
 public final class StateDatabase implements AutoCloseable {
-    public static final int CURRENT_SCHEMA_VERSION = 1;
+    /** 1 = foundation, 2 = persisted operation inputs/owner tokens, 3 = identity (IdentitySchema). */
+    public static final int CURRENT_SCHEMA_VERSION = 3;
     static final int BUSY_TIMEOUT_MS = 5_000;
 
     /** Unit of work against a connection owned by the database. */
@@ -37,8 +39,21 @@ public final class StateDatabase implements AutoCloseable {
     private final Clock clock;
     private final String url;
     private final ReentrantLock writeLock = new ReentrantLock(true);
+    /**
+     * Lifecycle guard: every read/write holds the shared side for its whole duration; close takes the
+     * exclusive side, so it waits for in-flight calls and all later calls are rejected. Fair, so a
+     * pending close is not starved by a stream of new calls (re-entrant nested reads still proceed).
+     */
+    private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock(true);
     private volatile boolean closed;
     private String serverId;
+    /**
+     * Lifecycle-owned connection held open (idle, autocommit, no transaction) from open until close.
+     * While any connection is open SQLite never deletes/recreates the -wal/-shm companions, so
+     * short-lived per-call connections closing cannot cause companion-file churn that races the
+     * per-connection link/special-file checks. Idle autocommit means it never blocks checkpoints.
+     */
+    private Connection anchor;
 
     private StateDatabase(StateDirectory directory, Clock clock) {
         this.directory = directory;
@@ -73,31 +88,35 @@ public final class StateDatabase implements AutoCloseable {
 
     /** Runs {@code work} in a write transaction; commits on success, rolls back on any throwable. */
     public <T> T write(SqlWork<T> work) {
-        ensureOpen();
         if (writeLock.isHeldByCurrentThread()) {
             throw new StateException("nested_transaction", "Nested write transactions are not supported");
         }
-        writeLock.lock();
-        try (Connection c = connect(SQLiteConfig.TransactionMode.IMMEDIATE, false)) {
-            c.setAutoCommit(false);
-            try {
-                T result = work.run(c);
-                c.commit();
-                return result;
-            } catch (Throwable t) {
-                rollbackQuietly(c, t);
-                throw wrap(t);
+        enter();
+        try {
+            writeLock.lock();
+            try (Connection c = connect(SQLiteConfig.TransactionMode.IMMEDIATE, false)) {
+                c.setAutoCommit(false);
+                try {
+                    T result = work.run(c);
+                    c.commit();
+                    return result;
+                } catch (Throwable t) {
+                    rollbackQuietly(c, t);
+                    throw wrap(t);
+                }
+            } catch (SQLException e) {
+                throw new StateException("state_io", "State database write failed", e);
+            } finally {
+                writeLock.unlock();
             }
-        } catch (SQLException e) {
-            throw new StateException("state_io", "State database write failed", e);
         } finally {
-            writeLock.unlock();
+            lifecycle.readLock().unlock();
         }
     }
 
     /** Runs {@code work} in a read-only snapshot transaction. */
     public <T> T read(SqlWork<T> work) {
-        ensureOpen();
+        enter();
         try (Connection c = connect(SQLiteConfig.TransactionMode.DEFERRED, true)) {
             c.setAutoCommit(false);
             try {
@@ -109,20 +128,64 @@ public final class StateDatabase implements AutoCloseable {
             }
         } catch (SQLException e) {
             throw new StateException("state_io", "State database read failed", e);
+        } finally {
+            lifecycle.readLock().unlock();
         }
     }
 
+    /**
+     * Rejects new calls, waits for in-flight reads/writes to finish, then closes the anchor connection
+     * (letting SQLite checkpoint and clean up its companion files). Idempotent. Must not be called from
+     * inside a read/write callback.
+     */
     @Override
     public void close() {
-        closed = true;
+        if (lifecycle.getReadHoldCount() > 0) {
+            throw new StateException("close_in_callback", "Cannot close the state database from inside a callback");
+        }
+        lifecycle.writeLock().lock();
+        try {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            closeAnchor();
+        } finally {
+            lifecycle.writeLock().unlock();
+        }
+    }
+
+    /** Acquires the shared lifecycle guard; caller must release it. Fails if closed. */
+    private void enter() {
+        lifecycle.readLock().lock();
+        if (closed) {
+            lifecycle.readLock().unlock();
+            throw new StateException("state_closed", "State database is closed");
+        }
+    }
+
+    private void closeAnchor() {
+        Connection a = anchor;
+        anchor = null;
+        if (a != null) {
+            try {
+                a.close();
+            } catch (SQLException e) {
+                throw new StateException("state_close_failed", "State database did not close cleanly", e);
+            }
+        }
     }
 
     // ---------------------------------------------------------------- internals
 
     private void initialize() {
         Path dbFile = directory.databaseFile();
-        boolean existed = Files.exists(dbFile);
-        try (Connection c = connect(SQLiteConfig.TransactionMode.IMMEDIATE, false)) {
+        boolean existed = Files.exists(dbFile, LinkOption.NOFOLLOW_LINKS);
+        Connection c = null;
+        try {
+            // Initialization is single-threaded (the instance is not yet published). This connection
+            // becomes the lifecycle anchor on success and is closed on any failure.
+            c = connect(SQLiteConfig.TransactionMode.IMMEDIATE, false);
             directory.tightenFile(dbFile);
             try (Statement s = c.createStatement(); ResultSet rs = s.executeQuery("PRAGMA journal_mode=WAL")) {
                 if (!rs.next() || !"wal".equalsIgnoreCase(rs.getString(1))) {
@@ -145,11 +208,30 @@ public final class StateDatabase implements AutoCloseable {
             }
             checkIntegrity(c);
             serverId = loadServerId(c);
+            if (!c.getAutoCommit()) {
+                throw new StateException("state_open_failed", "Anchor connection left inside a transaction");
+            }
+            // Companions are stable now: the anchor keeps them alive until close.
+            for (String suffix : List.of("-wal", "-shm")) {
+                directory.tightenFile(dbFile.resolveSibling(dbFile.getFileName() + suffix));
+            }
+            anchor = c;
         } catch (SQLException e) {
+            closeQuietly(c);
             throw new StateException("state_open_failed", "Cannot open state database", e);
+        } catch (RuntimeException | Error e) {
+            closeQuietly(c);
+            throw e;
         }
-        for (String suffix : List.of("-wal", "-shm")) {
-            directory.tightenFile(dbFile.resolveSibling(dbFile.getFileName() + suffix));
+    }
+
+    private static void closeQuietly(Connection c) {
+        if (c != null) {
+            try {
+                c.close();
+            } catch (SQLException ignored) {
+                // already failing; original error is reported
+            }
         }
     }
 
@@ -249,12 +331,6 @@ public final class StateDatabase implements AutoCloseable {
                 throw new StateException("state_identity_missing", "Durable server identity is missing");
             }
             return rs.getString(1);
-        }
-    }
-
-    private void ensureOpen() {
-        if (closed) {
-            throw new StateException("state_closed", "State database is closed");
         }
     }
 

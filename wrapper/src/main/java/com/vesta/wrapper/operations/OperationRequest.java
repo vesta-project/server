@@ -10,8 +10,10 @@ import java.util.TreeSet;
 /**
  * A request to create a durable operation.
  *
- * @param canonicalPayload canonical request parameters; only its SHA-256 is persisted, so do not
- *                         rely on it being recoverable and never put secrets in a form you need back
+ * @param canonicalPayload canonical typed request input (bounded to {@link #MAX_PAYLOAD_CHARS}); it is
+ *                         persisted for the registered handler and bound by its SHA-256. It must contain
+ *                         only the minimum needed to execute: never secrets, credentials or raw commands
+ *                         that are not the operation's declared input. Purged by retention after finish.
  * @param idempotencyKey optional client key, unique per server + actor
  * @param lockResources concrete resources (e.g. "game-generation", "files:/world") locked all-or-none
  * @param externalEffectIdempotent whether replaying the external effect after a crash is safe
