@@ -1,6 +1,6 @@
 # Server software implementation checkpoint
 
-Assessment date: **2026-10-04**. This is a partial engineering checkpoint, not a release declaration.
+Assessment date: **2026-10-04**. This is the historical **first** partial engineering checkpoint, not a release declaration. See [the execution/identity checkpoint](EXECUTION_IDENTITY_CHECKPOINT.md) for the subsequent schema-v3, runner, authorization, and 293-test assessment. Counts and unresolved implementation statements below describe the first checkpoint; the current requirement ledger may contain later partial evidence.
 
 ## Scope and authority
 

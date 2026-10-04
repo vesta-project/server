@@ -22,9 +22,15 @@
       "text": "Every agent has a stable `server_id`. Authentication, authorization, audit events, storage, and protocol resources are scoped to that ID so a future host supervisor can expose multiple separately secured servers.",
       "textSha256": "fdf3724964010f471cbf8fc43b74e0f60625bde11a8e7b76073a4beae8d7f3db",
       "phase": "P1",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "deployment-and-instance-scope-003",
@@ -313,9 +319,15 @@
       "text": "Administrative authority is granted only through the local Vesta wrapper console/CLI. Minecraft OP, LuckPerms, plugins, mods, or in-game commands cannot grant agent administration.",
       "textSha256": "776917913a2d31fa6900a76f394c6a4e0a810fcbbe5de0a7402da90461324a1d",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "identity-pairing-and-authority-007",
@@ -335,9 +347,15 @@
       "text": "Local recovery commands can create a new owner pairing and optionally revoke all existing administrative access.",
       "textSha256": "8a9c9230ee9116f10957b096dc5519f0e1b987f4ca2846d5f1ed189f635df454",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "identity-pairing-and-authority-009",
@@ -346,9 +364,15 @@
       "text": "The initial ownership flow uses a short-lived, single-use pairing code. Local launcher-guided onboarding and a headless installer/CLI flow should use the same underlying bootstrap protocol.",
       "textSha256": "1b45b652fa1e57f472adda31ce36fcf523df7e8d4eaa6e7708bcf51f558fd246",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "identity-pairing-and-authority-010",
@@ -357,9 +381,15 @@
       "text": "Pairing and invitation codes are rate-limited, single-use, and expire after a configurable interval with a ten-minute default.",
       "textSha256": "042855a9e1d43b11a7a7518b8fab0d9bb5557df5d20f2062cd3ede022935cff3",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "identity-pairing-and-authority-011",
@@ -368,9 +398,15 @@
       "text": "Owner may revoke any device. Other remote roles may revoke only principals and devices strictly below their own delegation rank.",
       "textSha256": "0322dc32cb4e4844699736b56fb07c7b332c8d530c0c8779915ef29a0681aaa4",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "unified-principal-model-001",
@@ -379,9 +415,15 @@
       "text": "One server-local Vesta principal is the canonical identity. Device keys, Minecraft UUIDs, Discord identities, pack-password grants, roles, and SFTP credentials attach claims/capabilities to that principal instead of creating separate account databases.",
       "textSha256": "2765c85d3cf661bf305b9e21c16e91e9bc9277466c0e375fb8a9950312ee38db",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "unified-principal-model-002",
@@ -445,9 +487,15 @@
       "text": "The target model uses named, per-action capabilities and server-local roles, not only cumulative numeric levels.",
       "textSha256": "eb7a6586f222e56556b760d82313c780d712647286d05e4627ca22da88871cf7",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "authorization-003",
@@ -483,9 +531,15 @@
       "text": "Built-in roles are supplied for a safe initial setup, and owners can create custom roles from named capabilities.",
       "textSha256": "7ae8818f5ee199dae162d154a45cc6a94c2a9e3b85fa97c8c556092f7e2ff2c8",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "authorization-006",
@@ -505,9 +559,15 @@
       "text": "Remote delegation follows a strict role hierarchy and cannot grant equal or greater authority. Owner and Administrator grants are local wrapper-console operations only. Administrators may invite Maintainers and lower; Maintainers may invite Moderators and lower only when explicitly granted a delegation capability (their default role cannot manage roles). The same rule continues down the hierarchy. Custom roles carry an explicit delegation rank, but rank alone never permits granting capabilities or resource scopes the delegator does not possess or is forbidden to delegate.",
       "textSha256": "77398e3d619843fdc3b12f9f69e7126976f53b59c5354f60d322327cb7f2d09f",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "authorization-008",
@@ -516,9 +576,15 @@
       "text": "Built-in roles are Owner, Administrator, Maintainer, Moderator, Viewer, and Pack User. Pack User is a limited server principal with pack access and a safe status view, not general management access.",
       "textSha256": "0154ca36b8e33a8d46ea855005a3541d4d225de7c6f2363fbdd4bb6c672555e2",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "authorization-009",
@@ -527,9 +593,15 @@
       "text": "The initial product assigns one primary role to a principal, plus optional per-principal capability overrides. The persistence and policy model uses role assignments rather than a single role column so multiple-role composition can be enabled later without migrating identity records.",
       "textSha256": "7f65f8569d9486aeb70cfe4ad958ab42ff6ab6e1e0b764ad8af7b7fab1c7e977",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "authorization-010",
@@ -538,9 +610,15 @@
       "text": "Effective policy supports inherited role allowances and explicit principal or scoped denies. Explicit deny wins over inherited allow; an individual allow cannot bypass a hard security invariant or grant beyond the delegator's scope.",
       "textSha256": "2fd89b5fa4c283fa4eeb4dfd159a99842534d6249f01b743a6a62568c539ca2e",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "authorization-011",
@@ -549,9 +627,15 @@
       "text": "Role assignments and individual overrides may have an optional expiry. Expired authority stops applying immediately and produces a notification/audit event; permanent grants remain the ordinary default.",
       "textSha256": "526d99fbc70231c6f6820c351eebb9c93ad1b46c9b0b2a8f99baaf0cc4f63325",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "authorization-012",
@@ -560,9 +644,15 @@
       "text": "File capabilities can carry normalized path scopes and separate list, read, create, overwrite, rename, mkdir, and delete rights. For example, a role may edit `config/**`, read `logs/**`, and have no world access.",
       "textSha256": "9572da759544a47dda0347f8843986ba4f48b2191594077c686c7b9cffdf310f",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "built-in-role-defaults-001",
@@ -571,9 +661,15 @@
       "text": "Owner has all server-local authority, including local recovery and granting Administrator, subject only to hard security invariants.",
       "textSha256": "1c51d86413ca1f09df86d936b2f300ab85fcb9fff9ff7feb866b428cb2a4474d",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "built-in-role-defaults-002",
@@ -582,9 +678,15 @@
       "text": "Administrator has broad remote operational, configuration, identity, integration, and pack authority, but cannot remotely create Owner or Administrator, invoke local recovery, erase protected security history, or bypass hard security rules.",
       "textSha256": "28a8bc008bd674e52363c997f3796c34c9ae8fd80426281ef8e723362bd13daa",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "built-in-role-defaults-003",
@@ -593,9 +695,15 @@
       "text": "Maintainer can manage lifecycle, raw console, files, content, backups, schedules/workflows, maintenance, and diagnostics by default. It cannot manage roles, credentials, security policy, owner recovery, or agent installation. These broad trusted-operator defaults are confirmed; owners may create narrower or more specialized custom roles by tweaking the capability presets.",
       "textSha256": "8cab39436240073bf1add4a2e998f722093e31aae2a9a28b5611b31a2c36135f",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "built-in-role-defaults-004",
@@ -604,9 +712,15 @@
       "text": "Moderator defaults to player visibility and typed moderation actions. Raw console and unrestricted file access are disabled unless explicitly granted.",
       "textSha256": "ab4d2d3d0aade43c5f4e8a509bce4af13104cc052d7456dabb92a672a61d469d",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "built-in-role-defaults-005",
@@ -615,9 +729,15 @@
       "text": "Viewer can see detailed server status, metrics, online player identities, activity history, and task progress without mutation rights. Logs and console output are separate opt-in capabilities because they may contain sensitive information.",
       "textSha256": "c57adf7c68cd6f99efeb406220adcba9c7d8f0e59d51fe1010fdb14881f9d118",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "built-in-role-defaults-006",
@@ -626,9 +746,15 @@
       "text": "Pack User receives pack access and the limited status surface only.",
       "textSha256": "8e1cc6d23bbb2af981803e8f8b5a9f557628622868f3368b496e305239d9b561",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+      ]
     },
     {
       "id": "trust-boundaries-and-powerful-operational-permissions-001",
@@ -2471,11 +2597,15 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Durable IDs/states/progress and exact actor/server/idempotency/safety binding passed. Production actions/executor and persisted requested inputs remain absent at this checkpoint.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent."
       ]
     },
     {
@@ -2498,11 +2628,15 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Persistence/reopen/service listing passed. Authorized reconnect/watch API and queue executor remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent."
       ]
     },
     {
@@ -2514,11 +2648,15 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Sorted atomic locks, concurrent non-overlap and FIFO conflict fairness passed. Real adapter/resource ownership remains absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent."
       ]
     },
     {
@@ -2541,11 +2679,15 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Claimed cancellation holds locks to explicit safe point; queued/awaiting cancellation passed. Real adapter safe points/UI remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent."
       ]
     },
     {
@@ -2568,11 +2710,15 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Uncertain non-idempotent effects retain locks in recovery-required; safe work requeues; explicit resolution passed. Real crash/executor integration remains absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent."
       ]
     },
     {
@@ -3618,11 +3764,15 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/state/StateDatabaseTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/state/StateDatabaseTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/state/StateDatabaseLifecycleTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Actual WAL/FK, identity, rollback, integrity and online pre-migration backup passed. Full migration/repair and local-filesystem gates remain open.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "2026-10-04 Windows: real v1/v2-to-v3 migrations/backups and three lifecycle regressions passed, including six-thread short-lived connections over three reopen rounds, 540 audited writes, WAL/SHM stability and in-flight close. Maintenance queue composition, Linux and service/native isolation remain unverified."
       ]
     },
     {
