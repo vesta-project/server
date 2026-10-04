@@ -33,6 +33,8 @@ dependencies {
     implementation("org.bouncycastle:bcpkix-jdk18on:1.79")
     implementation("at.favre.lib:bcrypt:0.10.2")
     implementation("com.moandjiezana.toml:toml4j:0.7.2")
+    // Durable local state (P1): SQLite WAL via the xerial JDBC driver (pinned release).
+    implementation("org.xerial:sqlite-jdbc:3.53.4.0")
 
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
