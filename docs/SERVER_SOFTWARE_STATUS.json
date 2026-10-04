@@ -1,0 +1,608 @@
+{
+  "auditDate": "2026-10-04",
+  "repository": "server-connections-mvp",
+  "commit": "6dd558e7bef1a5f6afd3ba84994820ec3ccc82ab",
+  "scope": "Planning only. Launcher examined only for shared VestaIndex schema; no launcher implementation audit or changes.",
+  "tests": {
+    "suites": 32,
+    "tests": 139,
+    "failures": 0,
+    "errors": 0,
+    "source": "Existing JUnit XML reports dated 2026-10-04 after core/wrapper rerun.",
+    "command": ".\\gradlew.bat :core:test :wrapper:test --rerun-tasks --offline --console=plain",
+    "limitations": "No live Minecraft, connector matrix, production deployment, Linux host, or security penetration verification."
+  },
+  "features": [
+    {
+      "id": "F01",
+      "name": "Deployment and instance scope",
+      "status": "partial",
+      "phase": 1,
+      "current": "Existing roots, config and instance registry exist; independent process/control-plane identities and tested Windows/Linux parity do not.",
+      "evidence": [
+        "scripts/install.ps1",
+        "wrapper/src/main/java/com/vesta/wrapper/config/ConfigLoader.java"
+      ],
+      "acceptance": "Install alongside an existing server without moving its data; preserve server_id across restart."
+    },
+    {
+      "id": "F02",
+      "name": "Process lifecycle",
+      "status": "partial",
+      "phase": 3,
+      "current": "Start/stop/restart/kill exist, but stop force-kills after ten seconds and control is owned by the agent JVM.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java",
+        "wrapper/src/main/java/com/vesta/wrapper/VestaWrapper.java"
+      ],
+      "acceptance": "Stop timeout offers a separate confirmed Kill; never silently kills or creates duplicate processes."
+    },
+    {
+      "id": "F03",
+      "name": "Independent supervisor and crash continuity",
+      "status": "not_started",
+      "phase": 3,
+      "current": "No separate supervisor executable or durable process/save-lease protocol found. Agent shutdown currently stops Minecraft.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/VestaWrapper.java",
+        "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java"
+      ],
+      "acceptance": "Kill/restart agent while Minecraft stays alive; recover control and journals without replay."
+    },
+    {
+      "id": "F04",
+      "name": "Startup script adoption and existing services",
+      "status": "partial",
+      "phase": 3,
+      "current": "Installer/CLI create and control launch artifacts; seamless script inspection/adoption and robust detached-child adapters remain.",
+      "evidence": [
+        "scripts/install.ps1"
+      ],
+      "acceptance": "Keep original scripts; take over only on approved restart and detect competing restart loops."
+    },
+    {
+      "id": "F05",
+      "name": "Readiness and crash-loop policy",
+      "status": "prototype",
+      "phase": 3,
+      "current": "Process-alive state exists, but it is not world readiness; no durable bounded crash-restart controller found.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java"
+      ],
+      "acceptance": "Expose starting/ready/degraded accurately; bounded configurable restart after crash, opt-in."
+    },
+    {
+      "id": "F06",
+      "name": "Local identity, pairing and device credentials",
+      "status": "prototype",
+      "phase": 2,
+      "current": "Link codes and bearers exist; canonical device principals, local owner bootstrap and device certificates are missing.",
+      "evidence": [
+        "core/src/main/java/com/vesta/sync/auth/TokenService.java",
+        "wrapper/src/main/java/com/vesta/wrapper/ipc/ControlIpcServer.java"
+      ],
+      "acceptance": "Single-use owner pairing, per-device revocation, OS-authorized local recovery."
+    },
+    {
+      "id": "F07",
+      "name": "Minecraft identity and admission adapters",
+      "status": "partial",
+      "phase": 2,
+      "current": "Session challenge and whitelist reader exist; binding to device principals, bans and policy reconciliation remain.",
+      "evidence": [
+        "core/src/main/java/com/vesta/sync/auth/MinecraftSessionChallengeService.java",
+        "core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java"
+      ],
+      "acceptance": "Verified UUID where appropriate; offline mode never treated as trusted online player identity."
+    },
+    {
+      "id": "F08",
+      "name": "Roles, denies, scope and delegation",
+      "status": "prototype",
+      "phase": 2,
+      "current": "Named capabilities exist within numeric levels derived from OP/permission nodes, not independent Vesta role assignments.",
+      "evidence": [
+        "core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java"
+      ],
+      "acceptance": "Owner/Admin locally granted only; deny wins, bounded delegation and expiry tested."
+    },
+    {
+      "id": "F09",
+      "name": "Operation confirmation and security audit",
+      "status": "not_started",
+      "phase": 1,
+      "current": "Ordinary logs exist, but no durable exact-target confirmations or protected structured audit subsystem found.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+      ],
+      "acceptance": "Actor/target/revision-bound confirmation; sensitive mutations fail if audit cannot persist."
+    },
+    {
+      "id": "F10",
+      "name": "TLS, stable server identity and device authentication",
+      "status": "partial",
+      "phase": 2,
+      "current": "TLS material and certificate fingerprint API exist; mutual TLS device lifecycle and renewal-safe identity separation remain.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/security/TlsMaterial.java",
+        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+      ],
+      "acceptance": "Bootstrap works without client cert; all management requires device authentication, including via proxy."
+    },
+    {
+      "id": "F11",
+      "name": "Vault, password hashing and credential lifecycle",
+      "status": "prototype",
+      "phase": 2,
+      "current": "MVP hashes human passwords with salted SHA-256 and persists plaintext security.password; no protected vault found.",
+      "evidence": [
+        "core/src/main/java/com/vesta/sync/auth/TokenService.java",
+        "wrapper/src/main/java/com/vesta/wrapper/config/SecuritySettingsService.java"
+      ],
+      "acceptance": "Argon2id for Vesta passwords; OS-protected recoverable secrets; no normal secret export."
+    },
+    {
+      "id": "F12",
+      "name": "Abuse, request and storage limits",
+      "status": "partial",
+      "phase": 2,
+      "current": "HTTP/auth token buckets exist; transfer/storage quotas and coordinated resource budgets are incomplete.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/security/TokenBucketRateLimiter.java",
+        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+      ],
+      "acceptance": "Bound input, memory, CPU, concurrent work and staging; recovery remains reachable."
+    },
+    {
+      "id": "F13",
+      "name": "Public/versioned API and event contract",
+      "status": "partial",
+      "phase": 1,
+      "current": "HTTP/WebSocket and legacy TCP messages exist; target OpenAPI, durable cursors, idempotency and consistent errors remain.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java",
+        "wrapper/src/test/java/com/vesta/wrapper/server/VestaHttpServerCommunicationTest.java"
+      ],
+      "acceptance": "Version negotiation; resumable event cursors with gaps; idempotent mutation contract."
+    },
+    {
+      "id": "F14",
+      "name": "10,000-line live console buffer",
+      "status": "verified",
+      "phase": 3,
+      "current": "Bounded in-memory console ring is present; focused existing ConsoleBuffer tests passed. This does not verify supervisor continuity.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/console/ConsoleBuffer.java",
+        "wrapper/src/test/java/com/vesta/wrapper/console/ConsoleBufferTest.java"
+      ],
+      "acceptance": "10,000-line cap, bounded bytes and slow-viewer protection; no retained duplicate game logs."
+    },
+    {
+      "id": "F15",
+      "name": "Game-log catch-up and player reconciliation",
+      "status": "partial",
+      "phase": 3,
+      "current": "Live list-command parsing exists; persistent log offsets, rotation/gap reconciliation and reliable absence are missing.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java"
+      ],
+      "acceptance": "Missing logs mark unknown; uncertain count never triggers sleep or replayed moderation."
+    },
+    {
+      "id": "F16",
+      "name": "File confinement and protected roots",
+      "status": "partial",
+      "phase": 4,
+      "current": "Basic sanitization/real-path checks exist; creation through symlink parents and protected-root coverage need hardening.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/files/FileBrowserService.java",
+        "wrapper/src/main/java/com/vesta/wrapper/content/ContentInstaller.java"
+      ],
+      "acceptance": "Race-aware confinement for existing/new paths, links, junctions and every file route."
+    },
+    {
+      "id": "F17",
+      "name": "File editing, trash, archives and transfers",
+      "status": "partial",
+      "phase": 4,
+      "current": "Read/write/delete exist with temporary-file replacement. No complete trash, optimistic edits, archives or resumable transfer engine found.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/files/FileBrowserService.java"
+      ],
+      "acceptance": "Recoverable bounded trash; revision-based text edits; safe archives and disk preflight."
+    },
+    {
+      "id": "F18",
+      "name": "SFTP service and unified file policy",
+      "status": "not_started",
+      "phase": 4,
+      "current": "No SFTP subsystem or dependency located.",
+      "evidence": [],
+      "acceptance": "Optional SFTP uses the same principals, scopes, quotas, locks, trash and audit."
+    },
+    {
+      "id": "F19",
+      "name": "Content sources and safe server updates",
+      "status": "prototype",
+      "phase": 4,
+      "current": "Live install/remove supports byte hashing; provider-resolution, expected-hash verification and restart activation are not complete.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/content/ContentInstaller.java",
+        "wrapper/src/main/java/com/vesta/wrapper/server/ServerState.java"
+      ],
+      "acceptance": "Refuse hashless arbitrary URL; stage server code until approved process exit; no automatic restart."
+    },
+    {
+      "id": "F20",
+      "name": "Separate hosted client-pack workspace",
+      "status": "prototype",
+      "phase": 5,
+      "current": "MVP can host platform/archive sources, but scan mode and generated packs read the live server tree.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/server/ServerState.java",
+        "core/src/main/java/com/vesta/sync/manifest/VestaPackBuilder.java"
+      ],
+      "acceptance": "Dedicated draft/overrides workspace; no automatic server-to-pack copying."
+    },
+    {
+      "id": "F21",
+      "name": "Vesta Pack schema and provider references",
+      "status": "partial",
+      "phase": 5,
+      "current": "Vesta index builder includes revision/minimum revision and external references; launcher-compatible schema fixtures need expansion.",
+      "evidence": [
+        "core/src/main/java/com/vesta/sync/manifest/VestaPackBuilder.java",
+        "core/src/main/java/com/vesta/sync/manifest/ServerModpackManifest.java"
+      ],
+      "acceptance": "Existing VestaIndex compatible; fixed provider IDs/hashes; clear unavailable-source failure."
+    },
+    {
+      "id": "F22",
+      "name": "Pack build, publication and scheduled release",
+      "status": "prototype",
+      "phase": 5,
+      "current": "Archive builder and configured revisions exist; durable publication transaction, automatic revision increment and scheduled activation remain.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/server/ServerState.java",
+        "core/src/main/java/com/vesta/sync/manifest/VestaPackBuilder.java"
+      ],
+      "acceptance": "Publish complete verified artifact immediately or at explicit time; only one public current revision."
+    },
+    {
+      "id": "F23",
+      "name": "Pack policy, minimum version and authorization",
+      "status": "partial",
+      "phase": 5,
+      "current": "Capabilities and revision fields exist; complete independent pack policy and minimum-version lifecycle remain.",
+      "evidence": [
+        "core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java",
+        "core/src/main/java/com/vesta/sync/manifest/ServerModpackManifest.java"
+      ],
+      "acceptance": "Optional/required release choices; revoked management falls back to public pack policy only."
+    },
+    {
+      "id": "F24",
+      "name": "Ignore policies and pack symlink safety",
+      "status": "not_started",
+      "phase": 5,
+      "current": "Independent target ignore rules and per-revision symlink consent protocol not located.",
+      "evidence": [],
+      "acceptance": "Pack/file/backup ignore policies stay separate; constrained links have explicit manifest warnings."
+    },
+    {
+      "id": "F25",
+      "name": "Backup repositories and retention",
+      "status": "not_started",
+      "phase": 6,
+      "current": "Installer copy/backup options are not a runtime restic repository/history subsystem.",
+      "evidence": [
+        "scripts/install.ps1"
+      ],
+      "acceptance": "Opt-in local/NAS/S3 encrypted repositories, recovery export, retention and working-space reserve."
+    },
+    {
+      "id": "F26",
+      "name": "Online backup consistency and save lease",
+      "status": "not_started",
+      "phase": 6,
+      "current": "No online-backup coordinator, crash-safe autosave lease or snapshot helper found.",
+      "evidence": [],
+      "acceptance": "Flush acknowledgement; independent same-generation autosave cleanup; honest plugin consistency."
+    },
+    {
+      "id": "F27",
+      "name": "Restore, inspection and recovery exports",
+      "status": "not_started",
+      "phase": 6,
+      "current": "No verified manual restore workflow or encrypted complete recovery export found.",
+      "evidence": [],
+      "acceptance": "Owner-confirmed restore, pre-restore backup, stopped game, scoped inspection, no automatic restore."
+    },
+    {
+      "id": "F28",
+      "name": "Durable operations, locks and recovery journals",
+      "status": "not_started",
+      "phase": 1,
+      "current": "HTTP actions are synchronous/ephemeral; no durable operation store or resource-lock recovery found.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+      ],
+      "acceptance": "Survive launcher/agent loss; safe-point cancellation; generation-bound restart and no blind replay."
+    },
+    {
+      "id": "F29",
+      "name": "Schedules and typed sequential workflows",
+      "status": "not_started",
+      "phase": 7,
+      "current": "Session cleanup timers are not an owner scheduler; durable typed workflows/presets absent.",
+      "evidence": [],
+      "acceptance": "Sequential steps/conditions/delays; authority rechecked; configurable missed-run policy."
+    },
+    {
+      "id": "F30",
+      "name": "Notification inbox and optional delivery",
+      "status": "not_started",
+      "phase": 7,
+      "current": "Push update events exist, but no durable per-account inbox/delivery subsystem found.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/server/ServerState.java"
+      ],
+      "acceptance": "Per-principal read state; offline retrieval; bounded optional email/Discord/webhook retries."
+    },
+    {
+      "id": "F31",
+      "name": "Maintenance, whitelist overlay and hooks",
+      "status": "not_started",
+      "phase": 7,
+      "current": "Whitelist read adapter exists; temporary maintenance restrictions and crash-safe reconciliation are absent.",
+      "evidence": [
+        "core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java"
+      ],
+      "acceptance": "Connector overlay or journalled whitelist reconciliation; no stale overwrite of owner edits."
+    },
+    {
+      "id": "F32",
+      "name": "Sleep, offline status and wake-on-join",
+      "status": "not_started",
+      "phase": 7,
+      "current": "No game-port sleep/status responder or wake coordinator located.",
+      "evidence": [],
+      "acceptance": "Never wake on ping; join wake rate-limited; honest retry/startup/offline responses."
+    },
+    {
+      "id": "F33",
+      "name": "MOTD/settings placeholders and lifecycle presentation",
+      "status": "prototype",
+      "phase": 7,
+      "current": "Static descriptor/status exists; structured live/offline templates and state-aware game responses are absent.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+      ],
+      "acceptance": "Online/offline templates; status in launcher; live changes state reload/restart requirements."
+    },
+    {
+      "id": "F34",
+      "name": "Typed moderation and online player management",
+      "status": "partial",
+      "phase": 7,
+      "current": "Online players and unrestricted console exist; separate safe moderation endpoints/history remain.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java",
+        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+      ],
+      "acceptance": "Moderator typed actions only by default; console authority never impersonates player."
+    },
+    {
+      "id": "F35",
+      "name": "Metrics, diagnostics and resource budgets",
+      "status": "prototype",
+      "phase": 7,
+      "current": "Basic process/status/list snapshots exist; TPS adapters, storage-limited retention and redacted bundles remain.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java",
+        "wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java"
+      ],
+      "acceptance": "Unknown metrics labelled; 24h/30d/1y retention tiers configurable; redacted manual export."
+    },
+    {
+      "id": "F36",
+      "name": "Structured server configuration",
+      "status": "prototype",
+      "phase": 4,
+      "current": "Security TOML editor exists; server.properties/JVM/ban/loader schema-backed edits and apply modes are incomplete.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/config/SecuritySettingsService.java"
+      ],
+      "acceptance": "Validate and preserve edits; report live/reload/restart; no external database provisioning."
+    },
+    {
+      "id": "F37",
+      "name": "SQLite state, repair and pending changes",
+      "status": "not_started",
+      "phase": 1,
+      "current": "No SQLite dependency/state layer or durable pending-change reconciliation located.",
+      "evidence": [],
+      "acceptance": "Local WAL database, safe exports/migrations; corruption fails closed; desired/effective state separate."
+    },
+    {
+      "id": "F38",
+      "name": "OS isolation and optional sandbox profiles",
+      "status": "prototype",
+      "phase": 3,
+      "current": "Service scripts exist; verified separate game/control identities and sandbox/resource-limit profiles remain.",
+      "evidence": [
+        "scripts/install.ps1"
+      ],
+      "acceptance": "Plugins cannot read/write agent state or supervisor control; portable mode warns honestly."
+    },
+    {
+      "id": "F39",
+      "name": "Java runtime and compatibility matrix",
+      "status": "partial",
+      "phase": 3,
+      "current": "Custom Java/JVM arguments and loader release matrix exist; guided game-runtime provisioning and 1.7+ test matrix remain.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java",
+        "scripts/install.ps1"
+      ],
+      "acceptance": "Game runtime independent of agent runtime; adapter capabilities match tested combinations."
+    },
+    {
+      "id": "F40",
+      "name": "Network discovery, NAT and optional proxy setup",
+      "status": "partial",
+      "phase": 8,
+      "current": "Server descriptor/address utilities exist; end-to-end reachability diagnostics, ACME and reviewed proxy setup remain.",
+      "evidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java",
+        "scripts/install.ps1"
+      ],
+      "acceptance": "Local/LAN/direct/VPN/proxy coexist; CGNAT diagnosed; probe consent; no required relay."
+    },
+    {
+      "id": "F41",
+      "name": "Signed agent/connector updates",
+      "status": "not_started",
+      "phase": 8,
+      "current": "Distribution packaging exists, not signed rollback-protected updates and approved activation.",
+      "evidence": [
+        "scripts/install.ps1"
+      ],
+      "acceptance": "Signed metadata/artifacts; no automatic restart; supervisor activates only while stopped."
+    },
+    {
+      "id": "F42",
+      "name": "Installer, CLI and nonintrusive uninstall",
+      "status": "partial",
+      "phase": 8,
+      "current": "Windows/Linux installers, registry/control CLI and service helpers exist; complete secure walkthrough/connector setup remain.",
+      "evidence": [
+        "scripts/install.ps1"
+      ],
+      "acceptance": "Preserve worlds/scripts/settings; opt-in connector; secure defaults and advanced answers."
+    },
+    {
+      "id": "F43",
+      "name": "Discord status/linking and integration presets",
+      "status": "not_started",
+      "phase": 7,
+      "current": "No Discord bot, identity linkage or outbound delivery provider located.",
+      "evidence": [],
+      "acceptance": "Optional channel-configured safe status/notifications; no remote Owner/Admin grant."
+    },
+    {
+      "id": "F44",
+      "name": "Declarative extensions and opt-in telemetry",
+      "status": "not_started",
+      "phase": 8,
+      "current": "No target schema-extension registry/telemetry consent implementation located.",
+      "evidence": [],
+      "acceptance": "No arbitrary code in privileged agent; no product telemetry unless explicitly enabled."
+    },
+    {
+      "id": "F45",
+      "name": "Velocity, multi-server, relay and host protocol extensions",
+      "status": "deferred",
+      "phase": 9,
+      "current": "Future topology/features; initial scope is one independently secured Java server per agent.",
+      "evidence": [],
+      "acceptance": "Preserve public server-scoped protocol; do not make later hosting capabilities initial blockers."
+    }
+  ],
+  "phases": [
+    {
+      "id": 0,
+      "title": "Baseline & contracts",
+      "depends": [],
+      "gate": "Requirements traceability, threat model, target schemas and migration boundaries accepted."
+    },
+    {
+      "id": 1,
+      "title": "Durable foundation",
+      "depends": [
+        0
+      ],
+      "gate": "SQLite, operations/locks, audit, confirmations and protocol failure recovery pass fault tests."
+    },
+    {
+      "id": 2,
+      "title": "Identity & security",
+      "depends": [
+        1
+      ],
+      "gate": "Independent roles, devices, local recovery, protected vault and all transport authorization pass."
+    },
+    {
+      "id": 3,
+      "title": "Supervisor & adoption",
+      "depends": [
+        1,
+        2
+      ],
+      "gate": "Agent loss leaves game running; no silent force kill; save cleanup and platform permissions proven."
+    },
+    {
+      "id": 4,
+      "title": "Files & content",
+      "depends": [
+        1,
+        2,
+        3
+      ],
+      "gate": "HTTPS/SFTP share path policy, trash, budgets and staged JAR activation; adversarial file tests pass."
+    },
+    {
+      "id": 5,
+      "title": "Client-pack hosting",
+      "depends": [
+        1,
+        2,
+        4
+      ],
+      "gate": "Separate workspace, compatible manifest, durable publication/revisions and pack policies pass."
+    },
+    {
+      "id": 6,
+      "title": "Backups & recovery",
+      "depends": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "gate": "Online cleanup survives agent loss; repositories verify; restores are manual and storage-safe."
+    },
+    {
+      "id": 7,
+      "title": "Automation & community ops",
+      "depends": [
+        3,
+        4,
+        5,
+        6
+      ],
+      "gate": "Durable workflows/inbox, metrics, moderation, maintenance and sleep operate with honest capabilities."
+    },
+    {
+      "id": 8,
+      "title": "Distribution & release",
+      "depends": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "gate": "Secure installer, signed updates, networking diagnostics and full Windows/Linux release gates pass."
+    },
+    {
+      "id": 9,
+      "title": "Later extensions",
+      "depends": [
+        8
+      ],
+      "gate": "Separately scoped proposals only; not required to call the single-server release complete."
+    }
+  ]
+}
