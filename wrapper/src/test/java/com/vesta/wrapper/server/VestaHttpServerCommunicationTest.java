@@ -77,8 +77,11 @@ class VestaHttpServerCommunicationTest {
                 whitelist-level = 3
                 """, StandardCharsets.UTF_8);
 
+        Files.writeString(root.resolve("transport-identity.p12"), "fixture-secret");
         WrapperConfig config = new WrapperConfig.Builder()
                 .scanRoot(root)
+                .minecraftWorkingDirectory(root)
+                .tlsKeyStore(root.resolve("transport-identity.p12"))
                 .scanPaths(java.util.List.of("config"))
                 .httpPort(0)
                 .tlsEnabled(false)
@@ -604,6 +607,32 @@ class VestaHttpServerCommunicationTest {
         command.addProperty("command", "list");
         HttpResponse<String> execute = post(VestaSync.API_CONSOLE, command, operator);
         assertEquals(409, execute.statusCode());
+    }
+
+    @Test
+    void protectedStateAndCustomTlsAreDeniedEvenToOperatorAcrossFileAndContentRoutes() throws Exception {
+        String operator = auth.store().issue("operator", null);
+        HttpResponse<String> listing = get(VestaSync.API_FS, operator);
+        assertEquals(200, listing.statusCode());
+        assertFalse(listing.body().contains("transport-identity.p12"));
+        assertFalse(listing.body().contains("wrapper-config.toml"));
+        for (String path : java.util.List.of("wrapper-config.toml", ".vesta/private", "transport-identity.p12")) {
+            assertEquals(403, get(VestaSync.API_FS_PREFIX + path, operator).statusCode());
+            var write = client.send(request(VestaSync.API_FS_PREFIX + path, operator)
+                    .PUT(HttpRequest.BodyPublishers.ofString("replacement")).build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(403, write.statusCode());
+            var delete = client.send(request(VestaSync.API_FS_PREFIX + path, operator).DELETE().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(403, delete.statusCode());
+            JsonObject upload = new JsonObject();
+            upload.addProperty("path", path);
+            upload.addProperty("content_base64", "cmVwbGFjZW1lbnQ=");
+            assertEquals(403, post(VestaSync.API_FILES_UPLOAD, upload, operator).statusCode());
+            assertEquals(403, post(VestaSync.API_CONTENT_REMOVE, upload, operator).statusCode());
+        }
+        assertEquals("fixture-secret", Files.readString(root.resolve("transport-identity.p12")));
+        assertTrue(Files.readString(configFile).contains("mode = \"linked\""));
+        Files.writeString(root.resolve(".ordinary-config"), "visible");
+        assertTrue(get(VestaSync.API_FS, operator).body().contains(".ordinary-config"));
     }
 
     @Test

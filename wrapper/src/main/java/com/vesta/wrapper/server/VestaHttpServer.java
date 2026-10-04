@@ -151,7 +151,8 @@ public final class VestaHttpServer {
                 config.minecraftWorkingDirectory,
                 config.scanRoot,
                 config.scanPaths,
-                serverState
+                serverState,
+                config.tlsKeyStore != null ? List.of(config.tlsKeyStore) : List.of()
         );
         this.playersQuery = new PlayersQuery();
         this.httpRateLimiter = new TokenBucketRateLimiter(config.httpRequestsPerMinute, 60_000L);
@@ -384,6 +385,9 @@ public final class VestaHttpServer {
             }
             response.setStatus(404);
             json(response, callback, Map.of("error", "not found"));
+        } catch (SecurityException e) {
+            response.setStatus(403);
+            json(response, callback, Map.of("error", "access denied"));
         } catch (Exception e) {
             log.error("HTTP error: {}", e.getMessage(), e);
             response.setStatus(500);
@@ -1434,7 +1438,7 @@ public final class VestaHttpServer {
         response.getHeaders().put(HttpHeader.CONTENT_TYPE, "application/octet-stream");
         response.getHeaders().put(HttpHeader.CONTENT_LENGTH, String.valueOf(Files.size(file)));
         response.setStatus(200);
-        Content.copy(Content.Source.from(Files.newInputStream(file)), response, callback);
+        Content.copy(Content.Source.from(Files.newInputStream(file, java.nio.file.LinkOption.NOFOLLOW_LINKS)), response, callback);
     }
 
     private static void configureRealtime(ServerWebSocketContainer container) {

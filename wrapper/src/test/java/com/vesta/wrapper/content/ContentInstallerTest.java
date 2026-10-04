@@ -35,7 +35,7 @@ class ContentInstallerTest {
     void rejectsTraversal() {
         Path scan = temp.resolve("server");
         ContentInstaller installer = new ContentInstaller(scan);
-        assertThrows(IllegalArgumentException.class, () ->
+        assertThrows(SecurityException.class, () ->
                 installer.install("../escape.jar", new ByteArrayInputStream(new byte[]{1})));
     }
 }

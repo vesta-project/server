@@ -25,6 +25,21 @@ class ConsoleBufferTest {
     }
 
     @Test
+    void oversizedDirectAppendAndMultibyteRetentionStayBounded() {
+        ConsoleBuffer buffer = new ConsoleBuffer();
+        buffer.append("stdout", "😀".repeat(ConsoleBuffer.MAX_LINE_CHARS));
+        var single = buffer.snapshot(0, 10).lines.get(0).text;
+        assertTrue(single.length() <= ConsoleBuffer.MAX_LINE_CHARS);
+        assertTrue(Character.isLowSurrogate(single.charAt(single.length() - 1)));
+        for (int i = 0; i < 100; i++) buffer.append("stdout", "界".repeat(ConsoleBuffer.MAX_LINE_CHARS));
+        var snapshot = buffer.snapshot(0, 10_000);
+        long bytes = snapshot.lines.stream().mapToLong(line -> line.text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length).sum();
+        assertTrue(bytes <= 2 * 1024 * 1024);
+        assertTrue(snapshot.lines.size() < 100);
+        assertEquals(101, snapshot.cursor);
+    }
+
+    @Test
     void evictsOldestLinesWhenLineCapExceeded() {
         ConsoleBuffer buffer = new ConsoleBuffer();
         for (int i = 0; i < 10_050; i++) {

@@ -47,7 +47,8 @@ public final class ServerState {
 
     public ServerState(WrapperConfig config) {
         this.config = config;
-        this.installer = new ContentInstaller(config.scanRoot);
+        this.installer = new ContentInstaller(config.scanRoot,
+                config.tlsKeyStore != null ? List.of(config.tlsKeyStore) : List.of());
         this.modpackDescription = config.modpackDescription;
         this.updatedAt = Instant.now();
         rescan();

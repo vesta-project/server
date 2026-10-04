@@ -41,7 +41,7 @@ class FileBrowserServiceTest {
     @Test
     void rejectsTraversal() {
         FileBrowserService browser = browser(root, List.of());
-        assertThrows(IllegalArgumentException.class, () -> browser.list("../secrets"));
+        assertThrows(SecurityException.class, () -> browser.list("../secrets"));
     }
 
     private static FileBrowserService browser(Path root, List<String> scanPaths) {

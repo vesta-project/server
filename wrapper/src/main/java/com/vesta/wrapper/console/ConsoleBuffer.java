@@ -35,6 +35,7 @@ public final class ConsoleBuffer {
         }
     }
 
+    public static final int MAX_LINE_CHARS = 16_384;
     private static final int MAX_LINES = 10_000;
     private static final int MAX_BYTES = 2 * 1024 * 1024;
 
@@ -48,14 +49,18 @@ public final class ConsoleBuffer {
         if (text == null || text.isEmpty()) {
             return;
         }
+        int end = Math.min(text.length(), MAX_LINE_CHARS);
+        if (end > 0 && Character.isHighSurrogate(text.charAt(end - 1))) end--;
+        String boundedText = text.substring(0, end);
+        int bytes = utf8Bytes(boundedText);
         String normalizedStream = stream != null ? stream : "stdout";
         Line line;
         List<Consumer<Line>> toNotify;
         synchronized (lock) {
-            evictIfNeeded(text.length());
-            line = new Line(nextCursor++, Instant.now(), normalizedStream, text);
+            evictIfNeeded(bytes);
+            line = new Line(nextCursor++, Instant.now(), normalizedStream, boundedText);
             lines.add(line);
-            totalBytes += text.length();
+            totalBytes += bytes;
             toNotify = List.copyOf(listeners);
         }
         for (Consumer<Line> listener : toNotify) {
@@ -104,7 +109,11 @@ public final class ConsoleBuffer {
         while ((!lines.isEmpty() && lines.size() >= MAX_LINES)
                 || (totalBytes + incomingBytes > MAX_BYTES && !lines.isEmpty())) {
             Line removed = lines.remove(0);
-            totalBytes -= removed.text.length();
+            totalBytes -= utf8Bytes(removed.text);
         }
+    }
+
+    private static int utf8Bytes(String text) {
+        return text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
     }
 }
