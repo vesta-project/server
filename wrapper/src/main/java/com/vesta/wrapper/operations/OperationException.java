@@ -10,6 +10,8 @@ public final class OperationException extends StateException {
     public static final String CONFIRMATION_REJECTED = "confirmation_rejected";
     public static final String INVALID_REQUEST = "invalid_request";
     public static final String NOT_OWNER = "not_owner";
+    public static final String AUTHORIZATION_DENIED = "authorization_denied";
+    public static final String UNKNOWN_TYPE = "unknown_type";
 
     public OperationException(String code, String message) {
         super(code, message);

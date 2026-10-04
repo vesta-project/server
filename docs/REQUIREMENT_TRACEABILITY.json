@@ -489,12 +489,15 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/operations/PolicyOperationAuthorityTest.java"
       ],
       "evidence": [
         "docs/IMPLEMENTATION_PROGRESS.md",
         "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
-        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
+        "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only.",
+        "docs/OPERATION_AUTHORITY_PASSWORD_CHECKPOINT.md",
+        "2026-10-04 Windows: 30 canonical-submission/authority cases passed against real SQLite/current identity, including all required exact capabilities, denies/reserved tiers/path scopes, source-label non-authority, expiry/revocation and actual runner checks before effects. Trusted bindings preserve canonical target/requirements/locks; request-supplied security fields cannot weaken contracts. Authenticated transport, production handlers, runtime/HTTP composition and replacement of legacy loopback/OP authority remain absent."
       ]
     },
     {
@@ -1193,6 +1196,8 @@
       ],
       "evidence": [
         "2026-10-04 Windows: relevant assertions passed in server (224 tests) and/or piston-lib (161 tests) fresh suites. Immutable provider IDs/URLs/hashes/provenance survive parsing; provider bytes not embedded. Full install/update provenance and CurseForge declared-path enforcement remain absent.",
+        "2026-10-04 subsequent manual-import checkpoint: vesta_manual_import.rs verifies write-free immutable-ID resolution, declared-path enforcement rather than resolver filenames, exact size/every declared hash, persisted provider provenance and two distinct paths for one provider file. Signed publication, trusted update and real provider-download execution remain unverified.",
+        "launcher-server-mvp:docs/VESTA_MANUAL_IMPORT_CHECKPOINT.md",
         "docs/IMPLEMENTATION_PROGRESS.md"
       ]
     },
@@ -1258,9 +1263,15 @@
       "text": "Custom packs use the Vesta Pack manifest model aligned with the launcher's persisted instance/modpack state. The hosted representation is a small JSON manifest plus an optional compressed overrides archive, each hashed and bound to the same monotonic pack revision.",
       "textSha256": "6bfac5ad75ce14900f231534933db08efd3715c72f0f3df6b5d965cb708234dc",
       "phase": "P5",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "launcher-server-mvp:crates/piston-lib/tests/vesta_manual_import.rs"
+      ],
+      "evidence": [
+        "2026-10-04 Windows: manual-import manifest persistence retains revision/minimumRevision, archive digest, unverified trust, signature envelope and declared immutable provider identities; older manifests remain readable. Separate signed hosted manifest/overrides publication and authenticated network sync remain absent.",
+        "launcher-server-mvp:docs/VESTA_MANUAL_IMPORT_CHECKPOINT.md",
+        "docs/IMPLEMENTATION_PROGRESS.md"
+      ]
     },
     {
       "id": "live-server-files-and-hosted-modpack-publication-012",
@@ -1269,9 +1280,15 @@
       "text": "The launcher downloads referenced Modrinth/CurseForge artifacts directly from their provider. Missing or withdrawn content fails with a clear affected-file error. A validated provider-byte cache is optional, opt-in, storage-bounded, and subject to provider redistribution terms.",
       "textSha256": "da0f5317795686f93eb28a83c973c9f65902506133d25e2aaeb7967f8b20aada",
       "phase": "P5",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "launcher-server-mvp:crates/piston-lib/tests/vesta_manual_import.rs"
+      ],
+      "evidence": [
+        "2026-10-04 Windows: injected provider-resolution failures aggregate affected-file errors and abort write-free planning; missing/wrong SHA-1 and non-HTTPS responses reject. Declared targets, exact artifact sizes and every declared SHA-1/SHA-256/SHA-512 are checked, bypassing unverified label cache. Real provider downloads, signed/trusted sync, withdrawal behavior and global storage/concurrency quotas remain unverified.",
+        "launcher-server-mvp:docs/VESTA_MANUAL_IMPORT_CHECKPOINT.md",
+        "docs/IMPLEMENTATION_PROGRESS.md"
+      ]
     },
     {
       "id": "live-server-files-and-hosted-modpack-publication-013",
@@ -1287,6 +1304,8 @@
       ],
       "evidence": [
         "2026-10-04 Windows: relevant assertions passed in server (224 tests) and/or piston-lib (161 tests) fresh suites. Java archive wire format and launcher canonical/legacy aliases parse. Vesta export rejects before output mutation. Signed portability/import authority remain absent.",
+        "2026-10-04 subsequent manual-import checkpoint: 24 parent Rust import cases plus parent use-install-submit.test.ts and vesta-trust-prompt.test.tsx verify exact reviewed-digest acknowledgement, private snapshots, cancel/no install, metadata bypass rejection, unchanged unverified signature status, concurrent fresh-directory reservation and native Windows link-safe rollback. Canonical/legacy launch-intent coverage added; full Tauri execution, Vesta export and signed portability remain separate gates.",
+        "launcher-server-mvp:docs/VESTA_MANUAL_IMPORT_CHECKPOINT.md",
         "docs/IMPLEMENTATION_PROGRESS.md"
       ]
     },
@@ -2599,13 +2618,16 @@
       "tests": [
         "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/operations/PolicyOperationAuthorityTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Durable IDs/states/progress and exact actor/server/idempotency/safety binding passed. Production actions/executor and persisted requested inputs remain absent at this checkpoint.",
         "docs/IMPLEMENTATION_PROGRESS.md",
         "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
-        "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent."
+        "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent.",
+        "docs/OPERATION_AUTHORITY_PASSWORD_CHECKPOINT.md",
+        "2026-10-04 Windows: 30 canonical-submission/authority cases passed, including persisted canonical target/lock/contract derivation, semantic round-trip rejection, bounded requirements, fresh policy before idempotent retrieval, unknown/corrupt/unavailable input refusal, transactional acceptance/rejection audit failure and real runner effect gating. Production actions, runtime/HTTP composition, authoritative confirmation revisions and release failure drills remain absent."
       ]
     },
     {
@@ -3641,9 +3663,15 @@
       "text": "Device private keys remain on the launcher device. The server stores only the public key/certificate and revocation metadata. Human-entered passwords and recovery passphrases are stored only as Argon2id verifiers when decryption is not required.",
       "textSha256": "45e68172447f03e7a07f7f1b12ee8331ca520205d0a48687ce9577d9b2ea9ad5",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/PasswordHasherTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/OPERATION_AUTHORITY_PASSWORD_CHECKPOINT.md",
+        "2026-10-04 Windows: 43 parent-authored Argon2id primitive cases passed, including independent Bun ASCII/UTF-8 reference hashes, fresh salts, strict bounded PHC/cost parsing, malformed-password rejection, rehash policy and concurrent callers. Credential persistence/rotation, recovery passphrase integration, mTLS/device key possession, sessions, rate/concurrency limits and encrypted vault remain absent; this is not a login or credential-storage implementation."
+      ]
     },
     {
       "id": "secrets-credentials-and-abuse-controls-003",
@@ -4249,9 +4277,15 @@
       "text": "Argon2id for Vesta-owned human password verification. Mature backup engines retain their reviewed native key derivation rather than changing their format.",
       "textSha256": "b71202d51fbb9c78de4b47a2402584137ba89c97e811d73cec770c8cc23640d8",
       "phase": "P2",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/identity/PasswordHasherTest.java"
+      ],
+      "evidence": [
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/OPERATION_AUTHORITY_PASSWORD_CHECKPOINT.md",
+        "2026-10-04 Windows: 43 parent-authored cases verify bounded Argon2id v19 hashing/verification against independent Bun reference fixtures, strict malformed/cost rejection and rehash policy. Production credential/login integration and reviewed native backup-engine orchestration remain absent; no backup format or KDF was changed."
+      ]
     },
     {
       "id": "security-direction-002",

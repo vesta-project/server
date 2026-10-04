@@ -2,6 +2,8 @@
 
 Assessment date: **2026-10-04**. Reviewed implementation and tests are committed in **`6052229`**. This extends the historical first checkpoint in `IMPLEMENTATION_PROGRESS.md`; it is not a release or full P1/P2 declaration. The 370-bullet requirement ledger now has **47 partially verified, 323 not verified, zero fully verified**; its five consistency tests and `--check` pass. Commits remain unsigned under the user's authorization; nothing has been pushed.
 
+**Historical assessment:** the later [canonical-authority/password checkpoint](OPERATION_AUTHORITY_PASSWORD_CHECKPOINT.md) records the implemented canonical submission/authority adapter, Argon2id primitive and newer verification. Gaps and counts below describe `6052229`, not a current assessment of those subsequently addressed domain gaps.
+
 ## Implemented and reviewed
 
 ### Persistent inputs and execution

@@ -65,69 +65,110 @@ public final class OperationService {
 
     // ------------------------------------------------------------------ submission
 
+    /**
+     * Unguarded submission for trusted in-process callers that already authorized the request.
+     * Remote/user submissions must go through {@link OperationSubmissionService}.
+     */
     public SubmitResult submit(OperationRequest r) {
-        String payloadHash = r.payloadHash();
-        try {
-            return db.write(c -> {
-                if (r.idempotencyKey() != null) {
-                    Optional<Operation> existing = findByIdempotencyKey(c, r.actor().principalId(), r.idempotencyKey());
-                    if (existing.isPresent()) {
-                        Operation op = existing.get();
-                        if (sameBinding(op, r, payloadHash)) {
-                            return new SubmitResult(op, false);
-                        }
-                        throw new OperationException(OperationException.IDEMPOTENCY_CONFLICT,
-                                "Idempotency key was already used for a different request");
-                    }
+        return submitGuarded(r, null);
+    }
+
+    /** Authorization guard evaluated inside the submit transaction; returns null to allow or a deny reason. */
+    @FunctionalInterface
+    interface SubmitGuard {
+        String denyReason(Connection c) throws SQLException;
+    }
+
+    private record SubmitOutcome(SubmitResult result, String rejectionCode, String reason) {
+    }
+
+    /**
+     * Submits in one write transaction: {@code guard} (if any) is evaluated first, then idempotency and the
+     * insert with its audit/event. A denial or idempotency conflict appends a rejection audit in that same
+     * transaction (no operation row) and is thrown after commit; if that audit fails nothing commits.
+     */
+    SubmitResult submitGuarded(OperationRequest r, SubmitGuard guard) {
+        SubmitOutcome outcome = db.write(c -> {
+            if (guard != null) {
+                String denial = guard.denyReason(c);
+                if (denial != null) {
+                    rejectSubmit(c, r, denial);
+                    return new SubmitOutcome(null, OperationException.AUTHORIZATION_DENIED, denial);
                 }
-                String id = UUID.randomUUID().toString();
-                long now = db.clock().millis();
-                OperationState initial = r.requiresConfirmation() ? OperationState.AWAITING_CONFIRMATION : OperationState.QUEUED;
-                try (PreparedStatement ps = c.prepareStatement(
-                        "INSERT INTO operations (id, server_id, actor_principal_id, device_id, source, type, target, "
-                                + "payload_hash, idempotency_key, state, requires_confirmation, external_effect_idempotent, "
-                                + "created_at, updated_at, input_json, input_status) "
-                                + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'available')")) {
-                    ps.setString(1, id);
-                    ps.setString(2, db.serverId());
-                    ps.setString(3, r.actor().principalId());
-                    ps.setString(4, r.actor().deviceId());
-                    ps.setString(5, r.actor().source());
-                    ps.setString(6, r.type());
-                    ps.setString(7, r.target());
-                    ps.setString(8, payloadHash);
-                    ps.setString(9, r.idempotencyKey());
-                    ps.setString(10, initial.wireName());
-                    ps.setInt(11, r.requiresConfirmation() ? 1 : 0);
-                    ps.setInt(12, r.externalEffectIdempotent() ? 1 : 0);
-                    ps.setLong(13, now);
-                    ps.setLong(14, now);
-                    ps.setString(15, r.canonicalPayload());
-                    ps.executeUpdate();
-                }
-                try (PreparedStatement ps = c.prepareStatement(
-                        "INSERT INTO operation_resources (operation_id, resource) VALUES (?,?)")) {
-                    for (String resource : r.lockResources()) {
-                        ps.setString(1, id);
-                        ps.setString(2, resource);
-                        ps.executeUpdate();
-                    }
-                }
-                Map<String, String> meta = new LinkedHashMap<>();
-                meta.put("type", r.type());
-                meta.put("state", initial.wireName());
-                meta.put("payloadHash", payloadHash);
-                audit.append(c, new AuditRecord(r.actor(), "operation.submit", r.target(), "accepted", id, meta));
-                events.append(c, "operation.created", id, stateJson(id, initial, 0));
-                return new SubmitResult(load(c, id).orElseThrow(), true);
-            });
-        } catch (OperationException e) {
-            if (OperationException.IDEMPOTENCY_CONFLICT.equals(e.getCode())) {
-                audit.append(new AuditRecord(r.actor(), "operation.submit", r.target(), "rejected", null,
-                        Map.of("reason", e.getCode(), "type", r.type())));
             }
-            throw e;
+            SubmitResult result = submitBody(c, r);
+            if (result == null) {
+                rejectSubmit(c, r, OperationException.IDEMPOTENCY_CONFLICT);
+                return new SubmitOutcome(null, OperationException.IDEMPOTENCY_CONFLICT, null);
+            }
+            return new SubmitOutcome(result, null, null);
+        });
+        if (OperationException.AUTHORIZATION_DENIED.equals(outcome.rejectionCode())) {
+            throw new OperationException(OperationException.AUTHORIZATION_DENIED,
+                    "Operation not authorized: " + outcome.reason());
         }
+        if (OperationException.IDEMPOTENCY_CONFLICT.equals(outcome.rejectionCode())) {
+            throw new OperationException(OperationException.IDEMPOTENCY_CONFLICT,
+                    "Idempotency key was already used for a different request");
+        }
+        return outcome.result();
+    }
+
+    private void rejectSubmit(Connection c, OperationRequest r, String reason) throws SQLException {
+        audit.append(c, new AuditRecord(r.actor(), "operation.submit", r.target(), "rejected", null,
+                Map.of("reason", StateValues.bounded(reason, 64), "type", r.type())));
+    }
+
+    /** Inserts the operation; returns null on an idempotency conflict (caller audits and rejects). */
+    private SubmitResult submitBody(Connection c, OperationRequest r) throws SQLException {
+        String payloadHash = r.payloadHash();
+        if (r.idempotencyKey() != null) {
+            Optional<Operation> existing = findByIdempotencyKey(c, r.actor().principalId(), r.idempotencyKey());
+            if (existing.isPresent()) {
+                Operation op = existing.get();
+                return sameBinding(op, r, payloadHash) ? new SubmitResult(op, false) : null;
+            }
+        }
+        String id = UUID.randomUUID().toString();
+        long now = db.clock().millis();
+        OperationState initial = r.requiresConfirmation() ? OperationState.AWAITING_CONFIRMATION : OperationState.QUEUED;
+        try (PreparedStatement ps = c.prepareStatement(
+                "INSERT INTO operations (id, server_id, actor_principal_id, device_id, source, type, target, "
+                        + "payload_hash, idempotency_key, state, requires_confirmation, external_effect_idempotent, "
+                        + "created_at, updated_at, input_json, input_status) "
+                        + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'available')")) {
+            ps.setString(1, id);
+            ps.setString(2, db.serverId());
+            ps.setString(3, r.actor().principalId());
+            ps.setString(4, r.actor().deviceId());
+            ps.setString(5, r.actor().source());
+            ps.setString(6, r.type());
+            ps.setString(7, r.target());
+            ps.setString(8, payloadHash);
+            ps.setString(9, r.idempotencyKey());
+            ps.setString(10, initial.wireName());
+            ps.setInt(11, r.requiresConfirmation() ? 1 : 0);
+            ps.setInt(12, r.externalEffectIdempotent() ? 1 : 0);
+            ps.setLong(13, now);
+            ps.setLong(14, now);
+            ps.setString(15, r.canonicalPayload());
+            ps.executeUpdate();
+        }
+        try (PreparedStatement ps = c.prepareStatement(
+                "INSERT INTO operation_resources (operation_id, resource) VALUES (?,?)")) {
+            for (String resource : r.lockResources()) {
+                ps.setString(1, id);
+                ps.setString(2, resource);
+                ps.executeUpdate();
+            }
+        }
+        Map<String, String> meta = new LinkedHashMap<>();
+        meta.put("type", r.type());
+        meta.put("state", initial.wireName());
+        meta.put("payloadHash", payloadHash);
+        audit.append(c, new AuditRecord(r.actor(), "operation.submit", r.target(), "accepted", id, meta));
+        events.append(c, "operation.created", id, stateJson(id, initial, 0));
+        return new SubmitResult(load(c, id).orElseThrow(), true);
     }
 
     // ------------------------------------------------------------------ queries

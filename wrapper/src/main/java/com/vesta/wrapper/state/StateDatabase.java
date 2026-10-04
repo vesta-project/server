@@ -42,7 +42,7 @@ public final class StateDatabase implements AutoCloseable {
     /**
      * Lifecycle guard: every read/write holds the shared side for its whole duration; close takes the
      * exclusive side, so it waits for in-flight calls and all later calls are rejected. Fair, so a
-     * pending close is not starved by a stream of new calls (re-entrant nested reads still proceed).
+     * pending close is not starved by a stream of new calls. Nested calls from callbacks are rejected.
      */
     private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock(true);
     private volatile boolean closed;
@@ -155,8 +155,17 @@ public final class StateDatabase implements AutoCloseable {
         }
     }
 
-    /** Acquires the shared lifecycle guard; caller must release it. Fails if closed. */
+    /**
+     * Acquires the shared lifecycle guard; caller must release it. Fails if closed, and rejects any
+     * read/write issued from inside another read/write callback on the same thread: a nested call would
+     * use a different connection (seeing a different snapshot, or self-deadlocking on the write lock), so
+     * callbacks must use the {@link Connection} they were given.
+     */
     private void enter() {
+        if (lifecycle.getReadHoldCount() > 0) {
+            throw new StateException("nested_call",
+                    "State database calls are not allowed inside a transaction callback; use its connection");
+        }
         lifecycle.readLock().lock();
         if (closed) {
             lifecycle.readLock().unlock();
