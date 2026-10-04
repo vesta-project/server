@@ -1,0 +1,53 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
+import { expectedLedger, extractRequirements } from './requirements-ledger.mjs';
+
+test('every baseline requirement bullet has a unique, phased traceability entry', () => {
+  const ledger = expectedLedger();
+  assert.ok(ledger.requirements.length > 300);
+  assert.equal(new Set(ledger.requirements.map((r) => r.id)).size, ledger.requirements.length);
+  for (const entry of ledger.requirements) {
+    assert.match(entry.phase, /^P[1-8]$/);
+    assert.match(entry.textSha256, /^[a-f0-9]{64}$/);
+    assert.match(entry.source, /SERVER_SOFTWARE_REQUIREMENTS\.md:\d+$/);
+    assert.ok(Array.isArray(entry.tests));
+    assert.ok(Array.isArray(entry.evidence));
+    assert.notEqual(entry.status, 'verified', 'Focused initial-batch tests cannot certify a compound requirement');
+  }
+});
+
+test('committed ledger matches source, including requirement amendments', () => {
+  const actual = JSON.parse(readFileSync(new URL('../docs/REQUIREMENT_TRACEABILITY.json', import.meta.url), 'utf8'));
+  assert.deepEqual(actual, expectedLedger());
+});
+
+test('partial evidence names real test sources and retains a limitation statement', () => {
+  const partial = expectedLedger().requirements.filter((r) => r.status === 'partially_verified');
+  assert.ok(partial.length > 0);
+  for (const entry of partial) {
+    assert.ok(entry.tests.length > 0, entry.id);
+    assert.ok(entry.evidence.some((e) => /remain|absent|unverified|not implemented|incomplete/i.test(e)), entry.id);
+    assert.ok(entry.evidence.includes('docs/IMPLEMENTATION_PROGRESS.md'), entry.id);
+    for (const source of entry.tests) {
+      if (source.startsWith('launcher-server-mvp:')) {
+        assert.match(source, /^launcher-server-mvp:crates\/piston-lib\/tests\/.+\.rs$/);
+      } else {
+        assert.match(source, /^(core|wrapper)\/src\/test\/java\/.+Test\.java$/);
+        assert.ok(existsSync(new URL('../' + source, import.meta.url)), source);
+      }
+    }
+  }
+});
+
+test('extractor excludes research and joins wrapped requirement text', () => {
+  const entries = extractRequirements('# Requirements\n## Locked decisions\n### Authorization\n- First requirement\n  continued here.\n- Second requirement.\n## Research influences\n- Not a requirement.\n');
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0].text, 'First requirement continued here.');
+  assert.equal(entries[0].source, 'docs/SERVER_SOFTWARE_REQUIREMENTS.md:4');
+  assert.equal(entries[0].phase, 'P2');
+});
+
+test('a newly introduced section must receive an explicit phase mapping', () => {
+  assert.throws(() => extractRequirements('## Locked decisions\n### Unknown feature\n- New requirement.\n'), /Unmapped requirement section/);
+});
