@@ -1,0 +1,16 @@
+{
+  "formatVersion": 1,
+  "name": "Java interoperability fixture",
+  "version": "1.2.3",
+  "revision": 4,
+  "minimumRevision": 2,
+  "minecraftVersion": "1.21.1",
+  "modloaderType": "fabric",
+  "modloaderVersion": "0.16.0",
+  "dependencies": {"minecraft": "1.21.1", "fabric-loader": "0.16.0"},
+  "files": [
+    {"path": "config/options.txt", "size": 8, "hashes": {"sha256": "9289140b1ac28dbda1437b283e6ca608e33186654e7d3a995da268c35906cd4c", "sha1": "792496cdf1c1b5b9ad44046ca6b64a42c3c4512e"}, "env": {"client": "required", "server": "required"}, "source": {"type": "embedded"}},
+    {"path": "mods/curseforge.jar", "size": 5, "hashes": {"sha256": "7117fff2d0fd294462b3c802b7cb8753579f23f3946b99cf55f38e873f013f10", "sha1": "6ca33ad04dbc4e215660f7707ece0fb2c03aeace"}, "env": {"client": "required", "server": "required"}, "source": {"type": "curseforge", "platform": "curseforge", "project_id": "123456", "version_id": "1234567", "url": "https://edge.forgecdn.net/files/1234/567/curseforge.jar"}},
+    {"path": "mods/modrinth.jar", "size": 5, "hashes": {"sha256": "7117fff2d0fd294462b3c802b7cb8753579f23f3946b99cf55f38e873f013f10", "sha1": "6ca33ad04dbc4e215660f7707ece0fb2c03aeace"}, "env": {"client": "required", "server": "required"}, "source": {"type": "modrinth", "platform": "modrinth", "project_id": "Abcd1234", "version_id": "Efgh5678", "url": "https://cdn.modrinth.com/data/Abcd1234/versions/Efgh5678/modrinth.jar"}}
+  ]
+}
