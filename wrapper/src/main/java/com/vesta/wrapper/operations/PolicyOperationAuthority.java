@@ -2,6 +2,8 @@ package com.vesta.wrapper.operations;
 
 import com.vesta.wrapper.authorization.AuthorizationService;
 
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.Objects;
 
@@ -19,7 +21,9 @@ import java.util.Objects;
  * actors resolve to no identity and are therefore denied here; trusted system operations need their own
  * explicitly reviewed authority.
  *
- * <p>Must be called outside StateDatabase callbacks (the runner does so).
+ * <p>{@link #recheck} must be called outside StateDatabase callbacks (the runner does so); it evaluates in
+ * one read snapshot. In-transaction callers (e.g. {@link PolicyConfirmationService}) use the package-private
+ * {@code verify(Connection, Operation)}, which performs exactly the same checks on the caller's connection.
  */
 public final class PolicyOperationAuthority implements OperationAuthority {
     private final OperationService ops;
@@ -39,48 +43,76 @@ public final class PolicyOperationAuthority implements OperationAuthority {
             return Decision.deny("no_stage");
         }
         try {
-            String reason = denyReason(operation);
+            // One read snapshot: stored input, binding integrity and current policy are evaluated together.
+            String reason = ops.database().read(c -> verify(c, operation).denial());
             return reason == null ? Decision.allow() : Decision.deny(reason);
         } catch (RuntimeException e) {
             return Decision.deny("authority_check_failed");
         }
     }
 
-    private String denyReason(Operation op) {
+    /**
+     * Outcome of the canonical check: {@code denial} is null when allowed, in which case
+     * {@code canonicalInput} is the hash-verified stored canonical input the decision was bound to.
+     */
+    record Verdict(String denial, String canonicalInput) {
+        static Verdict deny(String reason) {
+            return new Verdict(reason == null ? "denied" : reason, null);
+        }
+    }
+
+    /**
+     * Canonical fail-closed check inside the caller's transaction (no nested reads/writes): server, trusted
+     * binding, hash-verified stored input, canonical re-derivation equal to the persisted operation, and the
+     * operation principal/device's <em>current</em> policy for every derived requirement. Runtime failures
+     * deny with {@code authority_check_failed}; SQL failures propagate so the caller's transaction aborts.
+     */
+    Verdict verify(Connection c, Operation op) throws SQLException {
+        try {
+            return verifyUnchecked(c, op);
+        } catch (SQLException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            return Verdict.deny("authority_check_failed");
+        }
+    }
+
+    private Verdict verifyUnchecked(Connection c, Operation op) throws SQLException {
         if (op == null) {
-            return "no_operation";
+            return Verdict.deny("no_operation");
         }
         if (!ops.database().serverId().equals(op.serverId())) {
-            return "wrong_server";
+            return Verdict.deny("wrong_server");
         }
         OperationBinding<?> binding = bindings.find(op.type()).orElse(null);
         if (binding == null) {
-            return "unbound_type";
+            return Verdict.deny("unbound_type");
         }
-        OperationInput input = ops.input(op.id()).orElse(null);
+        OperationInput input = ops.loadInput(c, op.id()).orElse(null);
         if (input == null || input.status() != OperationInput.InputStatus.AVAILABLE) {
-            return OperationService.INPUT_UNAVAILABLE;
+            return Verdict.deny(OperationService.INPUT_UNAVAILABLE);
         }
-        // ops.input() already verified the stored JSON against the stored row hash; additionally bind it
+        // loadInput() already verified the stored JSON against the stored row hash; additionally bind it
         // to the hash of the operation snapshot being authorized.
         if (op.payloadHash() == null || !op.payloadHash().equals(input.payloadHash())) {
-            return "payload_mismatch";
+            return Verdict.deny("payload_mismatch");
         }
         OperationBinding.Derived derived;
         try {
             derived = binding.derive(input.canonicalJson());
         } catch (OperationFailure f) {
-            return f.getCode();
+            return Verdict.deny(f.getCode());
         }
         if (!derived.canonicalInput().equals(input.canonicalJson())
                 || !derived.target().equals(op.target())
                 || !derived.lockResources().equals(List.copyOf(op.lockResources()))
                 || derived.contract().externalEffectIdempotent() != op.externalEffectIdempotent()
                 || derived.contract().requiresConfirmation() != op.requiresConfirmation()) {
-            return "binding_mismatch";
+            return Verdict.deny("binding_mismatch");
         }
-        return OperationPolicy.denyReason(
-                authorization.resolve(op.actorPrincipalId(), op.deviceId()),
+        String denial = OperationPolicy.denyReason(
+                authorization.resolve(c, op.actorPrincipalId(), op.deviceId()),
                 op.actorPrincipalId(), op.deviceId(), derived.requirements());
+        return denial == null ? new Verdict(null, input.canonicalJson()) : Verdict.deny(denial);
     }
 }

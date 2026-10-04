@@ -520,11 +520,15 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/operations/PolicyConfirmationServiceTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Exact principal/device/action/target/payload/revision/expiry, single use, rejection burn and audit rollback passed. Canonical authority and authoritative revision/prepare-confirm handlers/UI remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/DURABLE_LIFECYCLE_CHECKPOINT.md",
+        "2026-10-05 Windows: Current-policy canonical confirmation transaction, server-owned live-generation revision, exact token ownership/single use/rejection burn and audit rollback are composed. Device possession/transport, user-facing API/UI and non-lifecycle adapters remain absent."
       ]
     },
     {
@@ -1249,11 +1253,14 @@
       "status": "partially_verified",
       "tests": [
         "core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java",
-        "launcher-server-mvp:crates/piston-lib/tests/vesta_pack.rs"
+        "launcher-server-mvp:crates/piston-lib/tests/vesta_pack.rs",
+        "launcher-server-mvp:crates/piston-lib/tests/vesta_import_limits.rs"
       ],
       "evidence": [
         "2026-10-04 Windows: relevant assertions passed in server (224 tests) and/or piston-lib (161 tests) fresh suites. Declared embedded overrides require exact size/every declared hash; undeclared files reject. Server workspace/upload/build and aggregate quotas remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "launcher-server-mvp:docs/VESTA_IMPORT_LIMITS_CHECKPOINT.md",
+        "2026-10-05 Windows: Manual Vesta import archive/count/index/declared/embedded/header-expansion budgets and declared provider/client totals reject before resolver/base install/writes, with exact boundaries, overflow, owned cleanup and native Windows staging junction coverage. Actual provider download stream ceilings, central-directory allocation cap, global reservations/concurrency and server workspace quotas remain absent."
       ]
     },
     {
@@ -1681,11 +1688,15 @@
       "phase": "P7",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/MinecraftProcessLifecycleTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/runtime/MinecraftProcessLifecycleTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/server/DurableLifecycleRouteTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Normal stop/STOPPING, timeout/interruption retention, delayed exit and no-duplicate restart passed. Force Kill authority/UI/workflow settings and supervisor remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/DURABLE_LIFECYCLE_CHECKPOINT.md",
+        "2026-10-05 Windows: Generation-bound real child-JVM stop times out without kill/relaunch; exact-authorized force kill rejects changed generations before signal. Durable mode disables legacy console/power mutations. No independent supervisor, Stop UI or unattended workflow policy is implemented."
       ]
     },
     {
@@ -2619,7 +2630,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/operations/PolicyOperationAuthorityTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/operations/PolicyOperationAuthorityTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Durable IDs/states/progress and exact actor/server/idempotency/safety binding passed. Production actions/executor and persisted requested inputs remain absent at this checkpoint.",
@@ -2627,7 +2639,9 @@
         "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent.",
         "docs/OPERATION_AUTHORITY_PASSWORD_CHECKPOINT.md",
-        "2026-10-04 Windows: 30 canonical-submission/authority cases passed, including persisted canonical target/lock/contract derivation, semantic round-trip rejection, bounded requirements, fresh policy before idempotent retrieval, unknown/corrupt/unavailable input refusal, transactional acceptance/rejection audit failure and real runner effect gating. Production actions, runtime/HTTP composition, authoritative confirmation revisions and release failure drills remain absent."
+        "2026-10-04 Windows: 30 canonical-submission/authority cases passed, including persisted canonical target/lock/contract derivation, semantic round-trip rejection, bounded requirements, fresh policy before idempotent retrieval, unknown/corrupt/unavailable input refusal, transactional acceptance/rejection audit failure and real runner effect gating. Production actions, runtime/HTTP composition, authoritative confirmation revisions and release failure drills remain absent.",
+        "docs/DURABLE_LIFECYCLE_CHECKPOINT.md",
+        "2026-10-05 Windows: Opt-in AgentRuntime composes lifecycle bindings and startup reconciliation; interrupted non-idempotent start stays recovery_required with locks, replacement generations reject, and runner close/failed ownership do not release another live worker. No HTTP/event client or complete action catalogue/release failure drill follows."
       ]
     },
     {
@@ -2652,13 +2666,16 @@
       "tests": [
         "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Persistence/reopen/service listing passed. Authorized reconnect/watch API and queue executor remain absent.",
         "docs/IMPLEMENTATION_PROGRESS.md",
         "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
-        "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent."
+        "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent.",
+        "docs/DURABLE_LIFECYCLE_CHECKPOINT.md",
+        "2026-10-05 Windows: Opt-in AgentRuntime composes lifecycle bindings and startup reconciliation; interrupted non-idempotent start stays recovery_required with locks, replacement generations reject, and runner close/failed ownership do not release another live worker. No HTTP/event client or complete action catalogue/release failure drill follows."
       ]
     },
     {
@@ -2672,13 +2689,16 @@
       "tests": [
         "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Sorted atomic locks, concurrent non-overlap and FIFO conflict fairness passed. Real adapter/resource ownership remains absent.",
         "docs/IMPLEMENTATION_PROGRESS.md",
         "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
-        "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent."
+        "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent.",
+        "docs/DURABLE_LIFECYCLE_CHECKPOINT.md",
+        "2026-10-05 Windows: Opt-in AgentRuntime composes lifecycle bindings and startup reconciliation; interrupted non-idempotent start stays recovery_required with locks, replacement generations reject, and runner close/failed ownership do not release another live worker. No HTTP/event client or complete action catalogue/release failure drill follows."
       ]
     },
     {
@@ -2703,13 +2723,16 @@
       "tests": [
         "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Claimed cancellation holds locks to explicit safe point; queued/awaiting cancellation passed. Real adapter safe points/UI remain absent.",
         "docs/IMPLEMENTATION_PROGRESS.md",
         "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
-        "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent."
+        "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent.",
+        "docs/DURABLE_LIFECYCLE_CHECKPOINT.md",
+        "2026-10-05 Windows: Opt-in AgentRuntime composes lifecycle bindings and startup reconciliation; interrupted non-idempotent start stays recovery_required with locks, replacement generations reject, and runner close/failed ownership do not release another live worker. No HTTP/event client or complete action catalogue/release failure drill follows."
       ]
     },
     {
@@ -2734,13 +2757,16 @@
       "tests": [
         "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Uncertain non-idempotent effects retain locks in recovery-required; safe work requeues; explicit resolution passed. Real crash/executor integration remains absent.",
         "docs/IMPLEMENTATION_PROGRESS.md",
         "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
-        "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent."
+        "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent.",
+        "docs/DURABLE_LIFECYCLE_CHECKPOINT.md",
+        "2026-10-05 Windows: Opt-in AgentRuntime composes lifecycle bindings and startup reconciliation; interrupted non-idempotent start stays recovery_required with locks, replacement generations reject, and runner close/failed ownership do not release another live worker. No HTTP/event client or complete action catalogue/release failure drill follows."
       ]
     },
     {
@@ -3861,11 +3887,15 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/state/StateDatabaseTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/state/StateDatabaseTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/config/DurableConfigLoaderTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Corrupt/newer/FK-invalid database rejects. Minecraft launch gating and local repair remain unwired.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/DURABLE_LIFECYCLE_CHECKPOINT.md",
+        "2026-10-05 Windows: Opt-in composition rejects corrupt/overlapping/linked state before child launch, and existing malformed config cannot downgrade to legacy defaults. Missing config still selects legacy defaults; OS recovery, native TOCTOU confinement and full corruption orchestration remain absent."
       ]
     },
     {

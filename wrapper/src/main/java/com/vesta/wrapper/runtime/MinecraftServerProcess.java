@@ -12,14 +12,17 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 public final class MinecraftServerProcess {
     private static final Logger log = LoggerFactory.getLogger(MinecraftServerProcess.class);
@@ -44,6 +47,67 @@ public final class MinecraftServerProcess {
     private volatile Long pid;
     private volatile Instant startedAt;
     private volatile Integer lastExitCode;
+    /**
+     * Opaque random id of the live process launched by this wrapper, paired with that exact process so a
+     * lock-free reader never reports an id for an exited or replaced process. Set on every actual launch
+     * (legacy and typed), cleared when the process is observed exited.
+     */
+    private volatile LiveGeneration live;
+
+    private record LiveGeneration(Process process, String id) {
+    }
+
+    private static final SecureRandom GENERATION_RANDOM = new SecureRandom();
+    /** Generation ids: "gen_" + 22 base64url chars (128 random bits). Never derived from the PID. */
+    public static final Pattern GENERATION_ID = Pattern.compile("gen_[A-Za-z0-9_-]{22}");
+
+    /**
+     * Called by typed lifecycle operations immediately before the real effect, while the process monitor
+     * is held (so the preceding validation and the effect cannot be separated by another mutation). It may
+     * throw to abort; nothing is then changed. It must not call back into this object's synchronized methods
+     * from another thread and wait for them.
+     */
+    @FunctionalInterface
+    public interface EffectGate {
+        void beforeEffect();
+    }
+
+    /** Known, no-guess lifecycle outcome with a stable code. */
+    public static final class LifecycleException extends Exception {
+        public static final String NOT_CONFIGURED = "not_configured";
+        public static final String LAUNCH_JAR_MISSING = "launch_jar_missing";
+        public static final String WORKING_DIRECTORY_MISSING = "working_directory_missing";
+        public static final String GAME_STOPPING = "game_stopping";
+        public static final String LAUNCH_FAILED = "launch_failed";
+        public static final String STALE_GENERATION = "stale_generation";
+        public static final String NOT_RUNNING = "not_running";
+        public static final String STOP_TIMEOUT = "stop_timeout";
+        public static final String KILL_UNCONFIRMED = "kill_unconfirmed";
+
+        private final String code;
+
+        public LifecycleException(String code, String message) {
+            super(message, null, false, false);
+            this.code = code;
+        }
+
+        public String getCode() {
+            return code;
+        }
+    }
+
+    /** @param launched false when a live, not-stopping process already existed (no effect, gate not called) */
+    public record StartResult(boolean launched, String generationId) {
+    }
+
+    /**
+     * @param outcome "stopped" (the expected generation exited) or "not_running" (no live process; no effect)
+     */
+    public record StopResult(String outcome, String generationId, Integer exitCode) {
+    }
+
+    public record KillResult(String generationId, Integer exitCode) {
+    }
 
     public MinecraftServerProcess(WrapperConfig config) {
         this(config, new ConsoleBuffer());
@@ -61,6 +125,11 @@ public final class MinecraftServerProcess {
             throw new IllegalArgumentException("stopTimeout must be non-negative");
         }
         this.stopTimeout = stopTimeout;
+    }
+
+    /** Graceful stop wait used by {@link #stop()} and typed stop operations. */
+    public Duration stopTimeout() {
+        return stopTimeout;
     }
 
     public ConsoleBuffer consoleBuffer() {
@@ -109,6 +178,7 @@ public final class MinecraftServerProcess {
             startedAt = null;
             stdin = null;
             outputReader = null;
+            live = null;
         }
         return state;
     }
@@ -149,29 +219,220 @@ public final class MinecraftServerProcess {
         if (process != null && process.isAlive()) {
             return false;
         }
-
-        state = State.STARTING;
-        ProcessBuilder builder = new ProcessBuilder(command());
-        builder.directory(config.minecraftWorkingDirectory.toFile());
-        builder.redirectErrorStream(true);
-        builder.redirectInput(ProcessBuilder.Redirect.PIPE);
-        builder.redirectOutput(ProcessBuilder.Redirect.PIPE);
-        builder.redirectError(ProcessBuilder.Redirect.PIPE);
         try {
-            process = builder.start();
+            launchLocked();
+        } catch (NotLaunched e) {
+            // Legacy contract: rethrow the original launch failure unchanged.
+            if (e.getCause() instanceof IOException io) {
+                throw io;
+            }
+            throw (RuntimeException) e.getCause();
+        }
+        return true;
+    }
+
+    /**
+     * Opaque id of the live process generation, or null when no process launched by this wrapper is alive.
+     * Lock-free (never takes the process monitor), so it is safe to call from inside state-database
+     * callbacks; the value can change immediately after it is read, so effects must re-check under
+     * {@link #startGeneration}/{@link #stopGeneration}/{@link #killGeneration}.
+     */
+    public String currentGenerationId() {
+        LiveGeneration g = live;
+        return g != null && g.process().isAlive() ? g.id() : null;
+    }
+
+    /** Generation of the live process; caller holds the monitor. */
+    private String liveGenerationLocked() {
+        Process current = process;
+        LiveGeneration g = live;
+        if (current == null || !current.isAlive() || g == null || g.process() != current) {
+            return null;
+        }
+        return g.id();
+    }
+
+    /**
+     * Typed start. Under the process monitor: if a live process exists returns it without any effect
+     * (and without re-validating launch configuration); a live STOPPING process fails {@code game_stopping}.
+     * Otherwise validates launch configuration (known no-effect failures), calls {@code gate.beforeEffect()},
+     * then launches and assigns a fresh generation id.
+     */
+    public synchronized StartResult startGeneration(EffectGate gate) throws LifecycleException {
+        java.util.Objects.requireNonNull(gate, "gate");
+        State current = state();
+        if (current == State.STOPPING) {
+            throw new LifecycleException(LifecycleException.GAME_STOPPING,
+                    "The game server is still stopping; start was not attempted");
+        }
+        if (current == State.RUNNING || current == State.STARTING) {
+            String id = liveGenerationLocked();
+            if (id == null) {
+                // Live process without a generation cannot happen (every launch assigns one); fail closed.
+                throw new LifecycleException(LifecycleException.LAUNCH_FAILED, "Live process has no generation");
+            }
+            return new StartResult(false, id);
+        }
+        if (config.minecraftLaunchJar == null) {
+            throw new LifecycleException(LifecycleException.NOT_CONFIGURED, "minecraft.launch-jar is not configured");
+        }
+        if (!Files.isRegularFile(config.minecraftLaunchJar)) {
+            throw new LifecycleException(LifecycleException.LAUNCH_JAR_MISSING, "The configured launch jar does not exist");
+        }
+        if (config.minecraftWorkingDirectory == null || !Files.isDirectory(config.minecraftWorkingDirectory)) {
+            throw new LifecycleException(LifecycleException.WORKING_DIRECTORY_MISSING,
+                    "The configured working directory does not exist");
+        }
+        gate.beforeEffect();
+        try {
+            return new StartResult(true, launchLocked());
+        } catch (NotLaunched e) {
+            // No process was created, so this is a known failure. Failures after creation are NOT caught
+            // here: they propagate as unknown outcomes (recovery_required for this non-idempotent start).
+            throw new LifecycleException(LifecycleException.LAUNCH_FAILED,
+                    "The game process could not be launched: " + e.getCause().getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * Typed graceful stop of exactly {@code expectedGeneration}. Never kills or restarts.
+     * <ul>
+     *   <li>No live process: {@code not_running} result, no effect, gate not called.</li>
+     *   <li>A different live generation: {@code stale_generation}, no effect.</li>
+     *   <li>Expected generation live and not yet stopping: gate, then STOPPING and the console stop line, all
+     *       under the monitor. Already STOPPING: no new effect; just waits.</li>
+     *   <li>Waits up to {@code timeout} outside the monitor; on timeout throws {@code stop_timeout} and the
+     *       process stays live and STOPPING.</li>
+     * </ul>
+     *
+     * @throws InterruptedException if interrupted while waiting (process stays STOPPING)
+     */
+    public StopResult stopGeneration(String expectedGeneration, EffectGate gate, Duration timeout)
+            throws LifecycleException, InterruptedException {
+        java.util.Objects.requireNonNull(gate, "gate");
+        if (timeout == null || timeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must be non-negative");
+        }
+        Process current;
+        synchronized (this) {
+            State s = state();
+            if (s == State.STOPPED) {
+                return new StopResult("not_running", null, null);
+            }
+            String id = liveGenerationLocked();
+            if (id == null || !id.equals(expectedGeneration)) {
+                throw new LifecycleException(LifecycleException.STALE_GENERATION,
+                        "A different game generation is running; nothing was stopped");
+            }
+            current = process;
+            if (state != State.STOPPING) {
+                gate.beforeEffect();
+                state = State.STOPPING;
+                try {
+                    writeLine("stop");
+                } catch (IOException e) {
+                    log.warn("Could not write stop command to Minecraft stdin: {}", e.getMessage());
+                }
+            }
+        }
+        if (!current.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) {
+            throw new LifecycleException(LifecycleException.STOP_TIMEOUT,
+                    "The game server did not stop within " + timeout.toSeconds() + "s; it remains stopping");
+        }
+        Integer exit = current.exitValue();
+        synchronized (this) {
+            if (process == current) {
+                clearStopped(current);
+            }
+        }
+        return new StopResult("stopped", expectedGeneration, exit);
+    }
+
+    /**
+     * Typed force kill of exactly {@code expectedGeneration}. The generation match, {@code gate.beforeEffect()}
+     * and {@code destroyForcibly()} happen atomically under the monitor, so a replacement process is never
+     * signalled. Waits up to {@code waitForExit} outside the monitor.
+     *
+     * @throws LifecycleException {@code not_running}/{@code stale_generation} (no effect) or
+     *                            {@code kill_unconfirmed} (signal sent, still alive after the wait)
+     */
+    public KillResult killGeneration(String expectedGeneration, EffectGate gate, Duration waitForExit)
+            throws LifecycleException, InterruptedException {
+        java.util.Objects.requireNonNull(gate, "gate");
+        if (waitForExit == null || waitForExit.isNegative()) {
+            throw new IllegalArgumentException("waitForExit must be non-negative");
+        }
+        Process current;
+        synchronized (this) {
+            if (state() == State.STOPPED) {
+                throw new LifecycleException(LifecycleException.NOT_RUNNING, "No game process is running; nothing was killed");
+            }
+            String id = liveGenerationLocked();
+            if (id == null || !id.equals(expectedGeneration)) {
+                throw new LifecycleException(LifecycleException.STALE_GENERATION,
+                        "A different game generation is running; nothing was killed");
+            }
+            current = process;
+            gate.beforeEffect();
+            state = State.STOPPING;
+            log.warn("Force-killing Minecraft server process generation {} (pid {})", id, current.pid());
+            current.destroyForcibly();
+        }
+        if (!current.waitFor(waitForExit.toMillis(), TimeUnit.MILLISECONDS)) {
+            throw new LifecycleException(LifecycleException.KILL_UNCONFIRMED,
+                    "Kill signal sent but the game process has not exited yet");
+        }
+        Integer exit = current.exitValue();
+        synchronized (this) {
+            if (process == current) {
+                clearStopped(current);
+            }
+        }
+        return new KillResult(expectedGeneration, exit);
+    }
+
+    /**
+     * Thrown only when no process was created (preparation or {@code ProcessBuilder.start} failed): a known,
+     * no-effect launch failure. Any failure after the process exists propagates as-is (unknown outcome) and
+     * the live process stays published.
+     */
+    private static final class NotLaunched extends Exception {
+        NotLaunched(Exception cause) {
+            super(null, cause, false, false);
+        }
+    }
+
+    /** Launches the configured command; caller holds the monitor and has checked nothing is alive. */
+    private String launchLocked() throws NotLaunched {
+        Process launched;
+        String generation;
+        try {
+            // Everything that can fail without creating a process happens before start().
+            generation = newGenerationId();
+            state = State.STARTING;
+            ProcessBuilder builder = new ProcessBuilder(command());
+            builder.directory(config.minecraftWorkingDirectory.toFile());
+            builder.redirectErrorStream(true);
+            builder.redirectInput(ProcessBuilder.Redirect.PIPE);
+            builder.redirectOutput(ProcessBuilder.Redirect.PIPE);
+            builder.redirectError(ProcessBuilder.Redirect.PIPE);
+            launched = builder.start();
         } catch (IOException | RuntimeException e) {
             clearStopped(null);
-            throw e;
+            throw new NotLaunched(e);
         }
+        // The process exists from here on: publish it with its generation first, so a later setup failure
+        // (propagated to the caller as an unknown outcome) never drops or hides a live game.
+        process = launched;
+        live = new LiveGeneration(launched, generation);
+        state = State.RUNNING;
         stdin = new BufferedWriter(new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8));
         pid = process.pid();
         startedAt = Instant.now();
         lastExitCode = null;
-        state = State.RUNNING;
-        startOutputReader(process);
+        startOutputReader(launched);
         log.info("Started Minecraft server process (pid {})", pid);
 
-        Process launched = process;
         Thread watcher = new Thread(() -> {
             try {
                 int exitCode = launched.waitFor();
@@ -183,6 +444,7 @@ public final class MinecraftServerProcess {
                         startedAt = null;
                         closeStdinQuietly();
                         this.process = null;
+                        live = null;
                         outputReader = null;
                     }
                 }
@@ -193,7 +455,13 @@ public final class MinecraftServerProcess {
         }, "vesta-minecraft-process");
         watcher.setDaemon(true);
         watcher.start();
-        return true;
+        return generation;
+    }
+
+    private static String newGenerationId() {
+        byte[] raw = new byte[16];
+        GENERATION_RANDOM.nextBytes(raw);
+        return "gen_" + Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
     }
 
     /**
@@ -307,6 +575,7 @@ public final class MinecraftServerProcess {
         startedAt = null;
         closeStdinQuietly();
         process = null;
+        live = null;
         outputReader = null;
     }
 
@@ -319,6 +588,7 @@ public final class MinecraftServerProcess {
             startedAt = null;
             closeStdinQuietly();
             process = null;
+            live = null;
             outputReader = null;
             return;
         }

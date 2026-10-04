@@ -28,16 +28,50 @@ public final class ConfigLoader {
 
     private static final Logger log = LoggerFactory.getLogger(ConfigLoader.class);
 
+    /**
+     * Fail-closed configuration error for an existing config file that cannot be read or parsed, or whose
+     * values have invalid types (including any {@code [state]} problem). The message names the file and
+     * the failure class only; it never echoes file contents (which may contain secrets).
+     */
+    public static final class ConfigException extends RuntimeException {
+        public ConfigException(String message) {
+            super(message, null, false, false);
+        }
+    }
+
+    private static final java.util.Set<String> STATE_KEYS = java.util.Set.of("enabled", "directory");
+
+    /**
+     * Loads the wrapper configuration.
+     *
+     * <p>A MISSING file yields the documented legacy defaults (durable runtime disabled, legacy mode is a
+     * compatibility checkpoint and not the secure product). An EXISTING file that is unreadable, not a
+     * regular file, malformed TOML, or has wrong value types throws {@link ConfigException}; it never
+     * falls back to permissive defaults, so a durable opt-in cannot silently disappear.
+     */
     public static WrapperConfig load(Path file) {
         WrapperConfig.Builder b = new WrapperConfig.Builder();
 
-        if (!Files.exists(file)) {
-            log.warn("Config file not found: {}, using defaults", file);
+        // Never follow links here: a dangling or redirected config link is rejected, not treated as missing.
+        if (!Files.exists(file, java.nio.file.LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(file)) {
+            log.warn("Config file not found: {}, using legacy defaults (durable runtime disabled)", file);
             return b.build();
+        }
+        java.nio.file.attribute.BasicFileAttributes attrs;
+        try {
+            attrs = Files.readAttributes(file, java.nio.file.attribute.BasicFileAttributes.class,
+                    java.nio.file.LinkOption.NOFOLLOW_LINKS);
+        } catch (Exception e) {
+            throw new ConfigException("Config file " + file + " cannot be inspected");
+        }
+        if (attrs.isSymbolicLink() || attrs.isOther() || !attrs.isRegularFile() || !Files.isReadable(file)) {
+            throw new ConfigException("Config file " + file + " is a link, reparse point or not a readable regular file");
         }
 
         try {
             Toml toml = new Toml().read(file.toFile());
+
+            validateStateTable(toml);
 
             b.tcpPort(toml.getLong("server.tcp-port", (long) b.tcpPort).intValue());
             b.httpPort(toml.getLong("server.http-port", (long) b.httpPort).intValue());
@@ -186,6 +220,14 @@ public final class ConfigLoader {
                     (long) b.authAttemptsPerMinute
             ).intValue());
 
+            // Durable agent runtime (opt-in). The directory must be outside the game root; overlap is
+            // rejected when the runtime opens (StateDirectory validation), never silently relocated.
+            b.durableRuntimeEnabled(toml.getBoolean("state.enabled", b.durableRuntimeEnabled));
+            String stateDirectory = toml.getString("state.directory");
+            if (stateDirectory != null && !stateDirectory.isBlank()) {
+                b.stateDirectory(Path.of(stateDirectory.trim()));
+            }
+
             String mode = toml.getString("security.mode", "open");
             b.securityMode(SecurityMode.parse(mode));
             b.securityPassword(toml.getString("security.password", b.securityPassword));
@@ -242,11 +284,39 @@ public final class ConfigLoader {
             }
 
             log.info("Loaded config from {}", file);
+            return b.build();
+        } catch (ConfigException e) {
+            throw e;
         } catch (Exception e) {
-            log.error("Failed to parse config: {}, using defaults", e.getMessage());
+            // Exception messages from the TOML parser may quote file content; report only the class.
+            throw new ConfigException("Config file " + file + " is invalid (" + e.getClass().getSimpleName()
+                    + "); refusing to start with defaults");
         }
+    }
 
-        return b.build();
+    /** Strict {@code [state]} validation: only known keys, exact types, non-blank directory. */
+    private static void validateStateTable(Toml toml) {
+        if (!toml.contains("state")) {
+            return;
+        }
+        Object raw = toml.toMap().get("state");
+        if (!(raw instanceof Map<?, ?> state)) {
+            throw new ConfigException("[state] must be a table");
+        }
+        for (Map.Entry<?, ?> entry : state.entrySet()) {
+            String key = unwrapTomlKey(String.valueOf(entry.getKey()));
+            if (!STATE_KEYS.contains(key)) {
+                // Never echo the key: config content may contain secrets.
+                throw new ConfigException("[state] has an unknown key");
+            }
+            Object value = entry.getValue();
+            if ("enabled".equals(key) && !(value instanceof Boolean)) {
+                throw new ConfigException("[state] enabled must be a boolean");
+            }
+            if ("directory".equals(key) && (!(value instanceof String s) || s.isBlank())) {
+                throw new ConfigException("[state] directory must be a non-blank string");
+            }
+        }
     }
 
     private static AccessControlConfig loadAccessControl(

@@ -92,6 +92,18 @@ public final class WrapperConfig {
     /** Token-bucket capacity for auth endpoints (per remote IP, per minute). */
     public final int authAttemptsPerMinute;
 
+    /**
+     * When true, the durable agent runtime (state database, audit, typed operations runner) is opened at
+     * startup before any Minecraft launch, and legacy lifecycle/console mutation routes fail closed.
+     * Default false: legacy wrapper behavior unchanged.
+     */
+    public final boolean durableRuntimeEnabled;
+    /**
+     * Durable state directory (absolute, normalized). Defaults to {@code <user.home>/.vesta/state/<serverId>},
+     * outside the game root. Overlap with the game/scan root is rejected when the runtime opens.
+     */
+    public final Path stateDirectory;
+
     private WrapperConfig(Builder b) {
         this.tcpPort = b.tcpPort;
         this.httpPort = b.httpPort;
@@ -167,6 +179,11 @@ public final class WrapperConfig {
         this.httpRequestsPerMinute = Math.max(1, b.httpRequestsPerMinute);
         this.websocketMessagesPerSecond = Math.max(1, b.websocketMessagesPerSecond);
         this.authAttemptsPerMinute = Math.max(1, b.authAttemptsPerMinute);
+
+        this.durableRuntimeEnabled = b.durableRuntimeEnabled;
+        this.stateDirectory = (b.stateDirectory != null
+                ? b.stateDirectory
+                : defaultStateDirectory(this.serverId)).toAbsolutePath().normalize();
     }
 
     private static AccessControlConfig defaultAccess(
@@ -198,6 +215,13 @@ public final class WrapperConfig {
                 nodes,
                 privatePaths
         );
+    }
+
+    /** Per-server default state location under the service account home, outside any game root. */
+    static Path defaultStateDirectory(UUID serverId) {
+        String home = System.getProperty("user.home");
+        Path base = home == null || home.isBlank() ? Path.of(".vesta-state") : Path.of(home, ".vesta", "state");
+        return base.resolve(serverId.toString());
     }
 
     public int effectivePublicPort() {
@@ -262,6 +286,9 @@ public final class WrapperConfig {
         int websocketMessagesPerSecond = 30;
         int authAttemptsPerMinute = 20;
 
+        boolean durableRuntimeEnabled = false;
+        Path stateDirectory;
+
         public Builder tcpPort(int v) { tcpPort = v; return this; }
         public Builder httpPort(int v) { httpPort = v; return this; }
         public Builder tlsEnabled(boolean v) { tlsEnabled = v; return this; }
@@ -316,6 +343,8 @@ public final class WrapperConfig {
         public Builder httpRequestsPerMinute(int v) { httpRequestsPerMinute = v; return this; }
         public Builder websocketMessagesPerSecond(int v) { websocketMessagesPerSecond = v; return this; }
         public Builder authAttemptsPerMinute(int v) { authAttemptsPerMinute = v; return this; }
+        public Builder durableRuntimeEnabled(boolean v) { durableRuntimeEnabled = v; return this; }
+        public Builder stateDirectory(Path v) { stateDirectory = v; return this; }
 
         public WrapperConfig build() {
             return new WrapperConfig(this);

@@ -576,7 +576,11 @@ public final class OperationService {
         }
     }
 
-    private Optional<OperationInput> loadInput(Connection c, String id) throws SQLException {
+    /**
+     * Hash-verified stored input inside the caller's transaction (same semantics as {@link #input(String)}).
+     * Package-private so authority/confirmation checks can reuse it without a nested transaction.
+     */
+    Optional<OperationInput> loadInput(Connection c, String id) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement(
                 "SELECT input_status, input_json, payload_hash FROM operations WHERE id = ?")) {
             ps.setString(1, id);

@@ -1,6 +1,6 @@
 # Server software implementation checkpoint
 
-Assessment date: **2026-10-04**. This is the historical **first** partial engineering checkpoint, not a release declaration. See [the execution/identity checkpoint](EXECUTION_IDENTITY_CHECKPOINT.md) for the subsequent schema-v3, runner, authorization, and 293-test assessment, then [the canonical-authority/password checkpoint](OPERATION_AUTHORITY_PASSWORD_CHECKPOINT.md) for the 366-test backend assessment and companion launcher manual-import integration. Counts and unresolved implementation statements below describe the first checkpoint; the current requirement ledger contains later partial evidence.
+Assessment date: **2026-10-04**. This is the historical **first** partial engineering checkpoint, not a release declaration. See [the execution/identity checkpoint](EXECUTION_IDENTITY_CHECKPOINT.md) for the subsequent schema-v3, runner, authorization, and 293-test assessment, then [the canonical-authority/password checkpoint](OPERATION_AUTHORITY_PASSWORD_CHECKPOINT.md) for the 366-test backend assessment and companion launcher manual-import integration. See [the durable lifecycle checkpoint](DURABLE_LIFECYCLE_CHECKPOINT.md) for the later opt-in real-process composition, canonical confirmation gateway and companion import-budget work. Counts and unresolved implementation statements below describe the first checkpoint; the current requirement ledger contains later partial evidence.
 
 ## Scope and authority
 

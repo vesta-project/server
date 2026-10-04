@@ -97,6 +97,9 @@ public final class VestaHttpServer {
     private final TokenBucketRateLimiter httpRateLimiter;
     private final TokenBucketRateLimiter authRateLimiter;
     private volatile String tlsSha256Fingerprint;
+    /** Legacy lifecycle/console mutation is disabled because the durable runtime owns the game. */
+    private final boolean durableLifecycleEnabled;
+    static final String LEGACY_LIFECYCLE_DISABLED = "legacy_lifecycle_disabled";
 
     // Test-only override: lets unit tests simulate non-loopback requests deterministically.
     // When null, the real remote address is used.
@@ -135,6 +138,33 @@ public final class VestaHttpServer {
             boolean bindLocalOnly,
             SecuritySettingsService securitySettings
     ) {
+        this(port, serverState, config, auth, linkCodes, capabilities, whitelist, minecraftChallenges,
+                realtimeTickets, minecraft, controlIpc, bindLocalOnly, securitySettings, false);
+    }
+
+    /**
+     * @param durableLifecycleEnabled when true the durable agent runtime owns game lifecycle: the legacy
+     *        power route and raw console writes (which can issue {@code stop} and bypass the durable
+     *        {@code game.generation} lock) fail closed for every caller, loopback/OP/password included.
+     *        No replacement network route is exposed.
+     */
+    public VestaHttpServer(
+            int port,
+            ServerState serverState,
+            WrapperConfig config,
+            AuthService auth,
+            LinkCodeService linkCodes,
+            CapabilityEngine capabilities,
+            WhitelistService whitelist,
+            MinecraftSessionChallengeService minecraftChallenges,
+            RealtimeTicketService realtimeTickets,
+            MinecraftServerProcess minecraft,
+            ControlIpcServer controlIpc,
+            boolean bindLocalOnly,
+            SecuritySettingsService securitySettings,
+            boolean durableLifecycleEnabled
+    ) {
+        this.durableLifecycleEnabled = durableLifecycleEnabled;
         this.serverState = serverState;
         this.config = config;
         this.auth = auth;
@@ -327,6 +357,11 @@ public final class VestaHttpServer {
                     return;
                 }
                 case VestaSync.API_SERVER_POWER -> {
+                    // Fail closed before any loopback/OP/password shortcut: no lock bypass.
+                    if (durableLifecycleEnabled && !HttpMethod.GET.is(request.getMethod())) {
+                        rejectLegacyLifecycle(response, callback);
+                        return;
+                    }
                     if (!allowLocalAdmin(request) && !requireCapability(
                             request, response, callback, AccessCapability.SERVER_POWER)) {
                         return;
@@ -777,6 +812,14 @@ public final class VestaHttpServer {
         return tlsSha256Fingerprint;
     }
 
+    private void rejectLegacyLifecycle(Response response, Callback callback) {
+        response.setStatus(409);
+        json(response, callback, Map.of(
+                "error", LEGACY_LIFECYCLE_DISABLED,
+                "message", "Legacy lifecycle and console mutation are disabled while the durable runtime is enabled"
+        ));
+    }
+
     private void handleServerPower(Request request, Response response, Callback callback) throws Exception {
         if (!HttpMethod.POST.is(request.getMethod())) {
             response.setStatus(405);
@@ -859,6 +902,11 @@ public final class VestaHttpServer {
             out.put("lines", lines);
             response.setStatus(200);
             json(response, callback, out);
+            return;
+        }
+        if (durableLifecycleEnabled && !HttpMethod.GET.is(request.getMethod())) {
+            // Raw console can issue stop/other lifecycle-affecting commands outside the durable lock.
+            rejectLegacyLifecycle(response, callback);
             return;
         }
         if (HttpMethod.POST.is(request.getMethod())) {

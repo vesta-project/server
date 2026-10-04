@@ -96,7 +96,15 @@ public final class OperationRunner implements AutoCloseable {
             throw new IllegalStateException("Runner already started");
         }
         started = true;
-        runnerLock = directory.acquireRunnerLock();
+        try {
+            runnerLock = directory.acquireRunnerLock();
+        } catch (RuntimeException e) {
+            // Nothing was acquired and no worker exists: this runner owns nothing and can never run.
+            healthy = false;
+            stopping = true;
+            lockReleased = true;
+            throw e;
+        }
         try {
             List<Operation> recovered = ops.recoverAfterRestart();
             if (!recovered.isEmpty()) {
@@ -104,6 +112,7 @@ public final class OperationRunner implements AutoCloseable {
             }
         } catch (RuntimeException e) {
             healthy = false;
+            stopping = true;
             releaseLock();
             throw e;
         }
@@ -140,7 +149,12 @@ public final class OperationRunner implements AutoCloseable {
         return healthy;
     }
 
-    /** True when every worker has exited and runner ownership was released. */
+    /**
+     * True once no execution by this runner can remain or start: every worker it started has exited and any
+     * runner lock it acquired was released. Also true after a start that failed before acquiring the lock
+     * (it owns nothing) and after closing a never-started runner. False while started and not yet stopped,
+     * or while workers that outlived shutdown are still alive. Only threads/locks owned by THIS runner count.
+     */
     public boolean fullyStopped() {
         return lockReleased;
     }
@@ -152,7 +166,14 @@ public final class OperationRunner implements AutoCloseable {
      */
     @Override
     public synchronized void close() {
-        if (!started || stopping) {
+        if (!started) {
+            // Never started: owns no lock or worker. Closing forbids a later start.
+            started = true;
+            stopping = true;
+            lockReleased = true;
+            return;
+        }
+        if (stopping) {
             return;
         }
         shutdownWorkers();

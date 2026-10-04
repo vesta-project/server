@@ -274,6 +274,53 @@ class OperationRunnerTest {
     }
 
     @Test
+    void closingNeverStartedRunnerPermanentlyStopsItWithoutAcquiringOwnership() {
+        var unused = new OperationRunner(directory, operations, HandlerRegistry.of(List.of()),
+                (current, stage) -> OperationAuthority.Decision.allow(), SETTINGS);
+        assertFalse(unused.fullyStopped());
+        unused.close(); unused.close();
+        assertTrue(unused.fullyStopped());
+        assertThrows(IllegalStateException.class, unused::start);
+        var replacement = runner(List.of(), (current, stage) -> OperationAuthority.Decision.allow());
+        assertTrue(replacement.healthy()); assertFalse(replacement.fullyStopped());
+    }
+
+    @Test
+    void failedLockAcquisitionOwnsNothingAndCannotDisturbAnotherRunner() {
+        var first = runner(List.of(), (current, stage) -> OperationAuthority.Decision.allow());
+        var competing = new OperationRunner(directory, operations, HandlerRegistry.of(List.of()),
+                (current, stage) -> OperationAuthority.Decision.allow(), SETTINGS);
+        assertEquals("runner_lock_held", assertThrows(StateException.class, competing::start).getCode());
+        assertFalse(competing.healthy()); assertTrue(competing.fullyStopped());
+        competing.close(); assertTrue(competing.fullyStopped());
+        assertThrows(IllegalStateException.class, competing::start);
+        assertTrue(first.healthy()); assertFalse(first.fullyStopped());
+        assertDoesNotThrow(() -> db.read(c -> 1));
+        var third = new OperationRunner(directory, operations, HandlerRegistry.of(List.of()),
+                (current, stage) -> OperationAuthority.Decision.allow(), SETTINGS);
+        assertEquals("runner_lock_held", assertThrows(StateException.class, third::start).getCode());
+        third.close(); assertTrue(third.fullyStopped());
+    }
+
+    @Test
+    void startupRecoveryFailureReleasesOnlyItsOwnRunnerOwnership() {
+        var op = submit("fixture.recover", "recovery-failure", List.of("config"), UNSAFE);
+        operations.claimNext().orElseThrow(); operations.markRunning(op.id());
+        db.write(c -> {
+            c.createStatement().execute("CREATE TRIGGER recovery_audit_failure BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT,'injected'); END");
+            return null;
+        });
+        var failed = new OperationRunner(directory, operations, HandlerRegistry.of(List.of()),
+                (current, stage) -> OperationAuthority.Decision.allow(), SETTINGS);
+        assertThrows(StateException.class, failed::start);
+        assertTrue(failed.fullyStopped()); assertFalse(failed.healthy()); failed.close();
+        assertEquals(OperationState.RUNNING, operations.get(op.id()).orElseThrow().state());
+        db.write(c -> { c.createStatement().execute("DROP TRIGGER recovery_audit_failure"); return null; });
+        var replacement = runner(List.of(), (current, stage) -> OperationAuthority.Decision.allow());
+        assertTrue(replacement.healthy());
+    }
+
+    @Test
     void auditFailureDuringRunTransitionStopsClaimsWithoutPerformingAnEffect() throws Exception {
         var effects = new AtomicInteger();
         Operation op = submit("fixture.write", "audit-fail", List.of("config"), SAFE);
