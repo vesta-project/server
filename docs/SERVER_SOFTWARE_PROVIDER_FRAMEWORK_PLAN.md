@@ -1,6 +1,6 @@
 # Server software providers, automatic installation and open protocol — plan
 
-Status (2026-10-05): **proposed; only step 2 of the suggested order is implemented** — the typed launch definition, see [LAUNCH_DEFINITION_CHECKPOINT.md](LAUNCH_DEFINITION_CHECKPOINT.md). The open protocol, providers, loader installers, verified transfer path and setup wizard are not started. This is a planning document, not evidence of capability; the requirement ledger changes only through the dated checkpoints.
+Status (2026-10-05): **partially implemented foundation** — step 2 (typed launch definition, [checkpoint](LAUNCH_DEFINITION_CHECKPOINT.md)) and the discovery/negotiation portion of step 1 ([protocol checkpoint](SERVER_FEATURE_PROTOCOL_CHECKPOINT.md)). Draft-v1 schemas, Java/Node codecs, shared conformance fixtures and trusted in-process feature reporting now exist; no complete management wire API or software descriptors/registry exist. Automatic providers, loader installers, verified transfer path and setup wizard remain not started. This is a planning document, not release evidence; the requirement ledger changes only through the dated checkpoints.
 
 ## Goal
 
@@ -29,7 +29,7 @@ Later: FerrumC and other native servers (experimental, individually certified), 
 - Launch contract is literal executable + argv + working directory, with JAR, classpath/argfile and native variants. No shell interpolation, no universal `server.jar`.
 - Reuse the existing generation-bound lifecycle: one `game.generation` lock, the three existing operation types, opaque generation IDs. No per-software operations or locks.
 - Unsupported graceful stop is rejected before any effect. No automatic force-kill. A live process or open port is not "ready".
-- Legacy `minecraft.launch-jar` keeps working through an explicit legacy adapter. Conflicting old and new launch definitions fail closed.
+- The current launch implementation accepts legacy `minecraft.launch-jar` through an explicit adapter and rejects conflicting definitions. Legacy code may be replaced directly during development; the user does not require compatibility migrations.
 - Server installs use their own root and receipts. They never touch client profiles or overwrite an existing server.
 - Approval binds to the exact plan snapshot, rechecked before commit. EULA acceptance is a separate affirmative choice.
 - The existing launcher downloader is not safe enough as-is (unbounded streaming, locked files accepted as valid). Server installs need a verified path with streamed-byte caps, deadlines, redirect limits, source allowlists and exact digests.

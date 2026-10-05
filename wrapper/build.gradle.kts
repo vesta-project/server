@@ -40,6 +40,10 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
+sourceSets.test {
+    resources.srcDir(rootProject.file("protocol"))
+}
+
 tasks.test {
     useJUnitPlatform()
 }

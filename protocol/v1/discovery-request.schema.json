@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:vesta:server-capabilities:v1:discovery-request",
+  "title": "Vesta draft-v1 server feature discovery request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "versions"],
+  "properties": {
+    "protocol": { "const": "vesta.server-capabilities" },
+    "versions": {
+      "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true,
+      "items": { "type": "integer", "minimum": 1, "maximum": 65535 }
+    }
+  }
+}

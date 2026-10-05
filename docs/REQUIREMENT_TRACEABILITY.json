@@ -4274,12 +4274,19 @@
       "tests": [
         "wrapper/src/test/java/com/vesta/wrapper/operations/OperationEventReplayServiceTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/state/EventLogBoundedScanTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeEventReplayTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeEventReplayTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/protocol/ServerFeatureProtocolTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/protocol/ServerFeatureCodecTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/protocol/ServerFeatureConformanceTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeFeatureDiscoveryTest.java"
       ],
       "evidence": [
         "2026-10-05 Windows: fresh server 579-test suite passed. Only the event-cursor, pagination and stable-error-code slice is evidenced, in-process: current exact tasks.view per page, server-bound canonical cursors over a finite window, explicit retention resync, strict sanitized operation-event projection and fixed redacted errors. The HTTPS/OpenAPI/stream surface, version negotiation, idempotency-key surface, deprecation policy, authenticated transport and snapshot-consistent resync remain unverified and not implemented.",
         "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/OPERATION_EVENT_REPLAY_CHECKPOINT.md"
+        "docs/OPERATION_EVENT_REPLAY_CHECKPOINT.md",
+        "2026-10-05 Windows: draft-v1 transport-neutral feature discovery adds highest-common-version negotiation, fixed pre-negotiation errors, strict 16-KiB Java/independent Node codecs and a shared 129-case corpus. Trusted runtime discovery uses the canonical UUID and cannot grant permission or authenticate; exact deny/revocation/confirmation checks still govern actions. The checkpoint records fresh Java/Node results and guard mutations. Complete HTTPS/OpenAPI/versioned event transports, management request idempotency/deprecation windows, authenticated discovery and snapshot-consistent resync remain unverified and not implemented; no phase or compound requirement is complete.",
+        "protocol/README.md",
+        "docs/SERVER_FEATURE_PROTOCOL_CHECKPOINT.md"
       ]
     },
     {

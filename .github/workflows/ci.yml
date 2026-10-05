@@ -19,6 +19,16 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check protocol conformance and requirement ledger
+        run: |
+          node --test scripts/server-feature-protocol.test.mjs scripts/requirements-ledger.test.mjs
+          node scripts/requirements-ledger.mjs --check
+
       - name: Run unit tests
         run: |
           chmod +x ./gradlew

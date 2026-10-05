@@ -67,6 +67,7 @@ public final class AgentRuntime implements AutoCloseable {
     private final LifecycleBindings.GenerationRevision generationRevision;
     private final OperationRunner runner;
     private final MinecraftServerProcess game;
+    private final ServerFeatureDiscovery featureDiscovery;
 
     private boolean shutdownRequested;
     private volatile boolean databaseClosed;
@@ -94,6 +95,7 @@ public final class AgentRuntime implements AutoCloseable {
         this.generationRevision = generationRevision;
         this.runner = runner;
         this.game = game;
+        this.featureDiscovery = new ServerFeatureDiscovery(database.serverId(), game);
     }
 
     /** Production composition: system UTC clock, no local authority, default runner settings. */
@@ -264,6 +266,11 @@ public final class AgentRuntime implements AutoCloseable {
     /** Trusted in-process sanitized operation-event replay; no stream or network route is exposed. */
     public OperationEventReplayService operationEvents() {
         return operationEvents;
+    }
+
+    /** Trusted implementation discovery, not user authority or a remotely accessible action API. */
+    public ServerFeatureDiscovery featureDiscovery() {
+        return featureDiscovery;
     }
 
     public OperationBindings bindings() {
