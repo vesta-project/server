@@ -97,6 +97,8 @@ class MinecraftProcessLifecycleTest {
         assertFalse(game.stop());
         assertTrue(game.isRunning());
         await(() -> !game.isRunning());
+        // OS exit can precede the watcher recording the result; observe that result before asserting its value.
+        await(() -> game.snapshot().get("last_exit_code") != null);
         assertEquals(MinecraftServerProcess.State.STOPPED, game.state());
         assertEquals(0, game.snapshot().get("last_exit_code"));
         assertEquals(1, Files.readAllLines(root.resolve("starts.txt")).size());

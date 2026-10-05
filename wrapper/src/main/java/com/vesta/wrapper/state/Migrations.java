@@ -14,6 +14,7 @@ final class Migrations {
             case 2 -> v2();
             // v3: identity/authorization tables owned by the identity package; versioned only here.
             case 3 -> com.vesta.wrapper.identity.IdentitySchema.statements(nowMillis);
+            case 4 -> com.vesta.wrapper.identity.PackPasswordSchema.statements();
             default -> throw new StateException("state_migration_unknown", "No migration for schema " + version);
         };
     }

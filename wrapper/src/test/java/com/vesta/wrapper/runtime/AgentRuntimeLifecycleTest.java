@@ -103,7 +103,11 @@ class AgentRuntimeLifecycleTest {
     }
 
     @AfterEach void cleanup() throws Exception {
-        if (runtime != null) { runtime.close(); await(runtime.runner()::fullyStopped); }
+        if (runtime != null) {
+            runtime.close();
+            await(runtime::databaseClosed);
+            assertTrue(runtime.runner().fullyStopped());
+        }
         if (game != null) { game.kill(); await(() -> !game.isRunning()); }
         if (jar != null) {
             long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
@@ -232,10 +236,13 @@ class AgentRuntimeLifecycleTest {
         open("ignore-stop"); String generation = started(); long pid = pid();
         submit(LifecycleBindings.STOP, input(generation));
         await(() -> game.consoleBuffer().snapshot(0, 100).lines.stream().anyMatch(line -> line.text.equals("COMMAND:stop")));
-        runtime.shutdown(); await(runtime.runner()::fullyStopped);
+        runtime.shutdown();
+        // Worker exit precedes asynchronous database cleanup; wait for the latter, not just runner ownership release.
+        await(runtime::databaseClosed);
+        assertTrue(runtime.runner().fullyStopped());
         assertTrue(ProcessHandle.of(pid).orElseThrow().isAlive()); assertEquals(MinecraftServerProcess.State.STOPPING, game.state());
         assertEquals(generation, game.currentGenerationId());
-        assertThrows(StateException.class, () -> runtime.database().read(c -> 1));
+        assertEquals("state_closed", assertThrows(StateException.class, () -> runtime.database().read(c -> 1)).getCode());
     }
 
     @Test void productionCompositionHasNoLocalProofBackdoorOrAutomaticGameLaunch() throws Exception {

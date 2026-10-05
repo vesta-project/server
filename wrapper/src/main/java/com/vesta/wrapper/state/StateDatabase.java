@@ -25,8 +25,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * on a newer-than-supported schema, or if the pre-migration backup cannot be made and verified.
  */
 public final class StateDatabase implements AutoCloseable {
-    /** 1 = foundation, 2 = persisted operation inputs/owner tokens, 3 = identity (IdentitySchema). */
-    public static final int CURRENT_SCHEMA_VERSION = 3;
+    /** 1 = foundation, 2 = operation inputs/owner tokens, 3 = identity, 4 = pack-password verifier. */
+    public static final int CURRENT_SCHEMA_VERSION = 4;
     static final int BUSY_TIMEOUT_MS = 5_000;
 
     /** Unit of work against a connection owned by the database. */

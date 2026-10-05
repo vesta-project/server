@@ -3691,12 +3691,17 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/PasswordHasherTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/identity/PasswordHasherTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/identity/PackPasswordServiceTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/security/PasswordKdfGateTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimePasswordTest.java"
       ],
       "evidence": [
         "docs/IMPLEMENTATION_PROGRESS.md",
         "docs/OPERATION_AUTHORITY_PASSWORD_CHECKPOINT.md",
-        "2026-10-04 Windows: 43 parent-authored Argon2id primitive cases passed, including independent Bun ASCII/UTF-8 reference hashes, fresh salts, strict bounded PHC/cost parsing, malformed-password rejection, rehash policy and concurrent callers. Credential persistence/rotation, recovery passphrase integration, mTLS/device key possession, sessions, rate/concurrency limits and encrypted vault remain absent; this is not a login or credential-storage implementation."
+        "2026-10-04 Windows: 43 parent-authored Argon2id primitive cases passed, including independent Bun ASCII/UTF-8 reference hashes, fresh salts, strict bounded PHC/cost parsing, malformed-password rejection, rehash policy and concurrent callers. Credential persistence/rotation, recovery passphrase integration, mTLS/device key possession, sessions, rate/concurrency limits and encrypted vault remain absent; this is not a login or credential-storage implementation.",
+        "docs/PACK_PASSWORD_CREDENTIAL_CHECKPOINT.md",
+        "2026-10-05 Windows: Server-scoped Argon2id pack-verifier persistence/reopen, exact credentials.manage policy, revision-CAS rotation/revocation/reactivation, audit rollback, secret-bearing SQL/crypto error redaction and bounded JVM-local KDF admission are tested in-process. No device-bound grants, Microsoft/Minecraft proof adapter, mTLS possession, recovery passphrases, sessions, encrypted vault or remotely usable pack policy is implemented. Historical evidence above remains dated; this extends partial evidence only."
       ]
     },
     {
@@ -3820,13 +3825,16 @@
       "tests": [
         "wrapper/src/test/java/com/vesta/wrapper/state/StateDatabaseTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/state/StateDatabaseLifecycleTest.java"
+        "wrapper/src/test/java/com/vesta/wrapper/state/StateDatabaseLifecycleTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/state/PackPasswordMigrationTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Actual WAL/FK, identity, rollback, integrity and online pre-migration backup passed. Full migration/repair and local-filesystem gates remain open.",
         "docs/IMPLEMENTATION_PROGRESS.md",
         "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
-        "2026-10-04 Windows: real v1/v2-to-v3 migrations/backups and three lifecycle regressions passed, including six-thread short-lived connections over three reopen rounds, 540 audited writes, WAL/SHM stability and in-flight close. Maintenance queue composition, Linux and service/native isolation remain unverified."
+        "2026-10-04 Windows: real v1/v2-to-v3 migrations/backups and three lifecycle regressions passed, including six-thread short-lived connections over three reopen rounds, 540 audited writes, WAL/SHM stability and in-flight close. Maintenance queue composition, Linux and service/native isolation remain unverified.",
+        "docs/PACK_PASSWORD_CREDENTIAL_CHECKPOINT.md",
+        "2026-10-05 Windows: Actual schema-3-to-4 migration preserves canonical server identity and built-in roles; original schema-3 online backup passes integrity verification. Fresh STRICT/FK/active-revoked constraints, failed migration rollback and pre-migration backup collision refusal are tested. Maintenance/snapshot operation-queue composition, Linux and native filesystem isolation remain unverified."
       ]
     },
     {

@@ -5,6 +5,7 @@ import com.vesta.wrapper.authorization.AuthorizationService;
 import com.vesta.wrapper.config.WrapperConfig;
 import com.vesta.wrapper.identity.IdentityService;
 import com.vesta.wrapper.identity.LocalAuthority;
+import com.vesta.wrapper.identity.PackPasswordService;
 import com.vesta.wrapper.operations.ConfirmationService;
 import com.vesta.wrapper.operations.OperationBindings;
 import com.vesta.wrapper.operations.OperationRunner;
@@ -56,6 +57,7 @@ public final class AgentRuntime implements AutoCloseable {
     private final OperationService operations;
     private final IdentityService identities;
     private final AuthorizationService authorization;
+    private final PackPasswordService packPasswords;
     private final OperationBindings bindings;
     private final OperationSubmissionService submissions;
     private final ConfirmationService confirmationTokens;
@@ -68,7 +70,8 @@ public final class AgentRuntime implements AutoCloseable {
     private volatile boolean databaseClosed;
 
     private AgentRuntime(StateDirectory stateDirectory, StateDatabase database, AuditLog audit, EventLog events,
-                         OperationService operations, IdentityService identities, OperationBindings bindings,
+                         OperationService operations, IdentityService identities, PackPasswordService packPasswords,
+                         OperationBindings bindings,
                          OperationSubmissionService submissions, ConfirmationService confirmationTokens,
                          PolicyConfirmationService confirmations,
                          LifecycleBindings.GenerationRevision generationRevision, OperationRunner runner,
@@ -80,6 +83,7 @@ public final class AgentRuntime implements AutoCloseable {
         this.operations = operations;
         this.identities = identities;
         this.authorization = identities.authorization();
+        this.packPasswords = packPasswords;
         this.bindings = bindings;
         this.submissions = submissions;
         this.confirmationTokens = confirmationTokens;
@@ -128,6 +132,7 @@ public final class AgentRuntime implements AutoCloseable {
             OperationService ops = new OperationService(db, audit, events);
             IdentityService identities = new IdentityService(db, audit, localAuthority);
             AuthorizationService authorization = identities.authorization();
+            PackPasswordService packPasswords = new PackPasswordService(db, audit, authorization);
             OperationBindings bindings = OperationBindings.of(LifecycleBindings.create(game));
             PolicyOperationAuthority authority = new PolicyOperationAuthority(ops, authorization, bindings);
             OperationSubmissionService submissions = new OperationSubmissionService(ops, authorization, bindings);
@@ -138,7 +143,7 @@ public final class AgentRuntime implements AutoCloseable {
             runner = new OperationRunner(directory, ops, bindings.handlers(), authority, runnerSettings);
             runner.start();
             LOG.info("Durable agent runtime opened (state outside game root; no network operation route)");
-            return new AgentRuntime(directory, db, audit, events, ops, identities, bindings, submissions, tokens,
+            return new AgentRuntime(directory, db, audit, events, ops, identities, packPasswords, bindings, submissions, tokens,
                     confirmations, revision, runner, game);
         } catch (Throwable t) {
             // 1. Stop our runner first (bounded). Safe in every start stage: if lock acquisition failed it
@@ -245,6 +250,11 @@ public final class AgentRuntime implements AutoCloseable {
 
     public AuthorizationService authorization() {
         return authorization;
+    }
+
+    /** Trusted in-process credential service; no password login or pack-grant route is exposed. */
+    public PackPasswordService packPasswords() {
+        return packPasswords;
     }
 
     public OperationBindings bindings() {
