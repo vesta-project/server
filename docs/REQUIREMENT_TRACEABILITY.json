@@ -1553,9 +1553,16 @@
       "text": "Existing-server adoption and new-server installation.",
       "textSha256": "14c5e3176a26af4c809f8a71cf0bec9fa19e8d6d57eb91a995244eebedc96948",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/installation.rs",
+        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/providers.rs"
+      ],
+      "evidence": [
+        "docs/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
+        "2026-10-05 Windows: callable local backend installs new Vanilla/Paper/Folia/Purpur fixture bundles with exact reviewed plans, no-clobber files and verified receipts. Adoption, loaders, launcher/headless wiring, managed Java and agent configuration persistence remain absent; no whole hosting requirement is verified.",
+        "docs/IMPLEMENTATION_PROGRESS.md"
+      ]
     },
     {
       "id": "server-operations-002",
@@ -2052,9 +2059,16 @@
       "text": "Hash verification is mandatory for arbitrary URL content. URL fetching also requires SSRF defenses, scheme/redirect restrictions, size limits, and clear unverified-origin labeling; a checksum proves byte identity, not trustworthiness.",
       "textSha256": "1c06d86fa1894fbbf994170663af807fa1f40709590fab002e4fb3994570cef1",
       "phase": "P4",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/transfer.rs",
+        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/installation.rs"
+      ],
+      "evidence": [
+        "docs/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
+        "2026-10-05 Windows: closed JAR providers check published digests, actual streamed size, compiled HTTPS sources and redirect-before-request refusal; direct-address policy/pinning and trusted proxy boundary are explicit. Arbitrary URL/content-management routes, native networking certification and artifact authenticity remain unimplemented/unverified.",
+        "docs/IMPLEMENTATION_PROGRESS.md"
+      ]
     },
     {
       "id": "files-and-content-006",
@@ -2063,9 +2077,16 @@
       "text": "Hashless arbitrary URL downloads are refused.",
       "textSha256": "caefe8bc364e006c300dde0dcab1af306d6e17ee18d0cf33571a4c2ae982edf7",
       "phase": "P4",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/transfer.rs",
+        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/providers.rs"
+      ],
+      "evidence": [
+        "docs/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
+        "2026-10-05 Windows: private artifact transfer requires a validated source-bound digest pin and owned disk sink; hashless, source-escaped and artifact-to-memory calls refuse. Compiled providers are the only exposed local install inputs; an authenticated arbitrary-content API remains not implemented.",
+        "docs/IMPLEMENTATION_PROGRESS.md"
+      ]
     },
     {
       "id": "files-and-content-007",
@@ -2118,9 +2139,17 @@
       "text": "Upload, download, extraction, archive, staging, and concurrent-operation limits start from secure presets calculated against available storage and host resources, with explicit owner-configurable ceilings and hard safety reserves.",
       "textSha256": "f9c6ef9a45e110ace526a30de9a1f618838955630592c866589e4c03c7a928a4",
       "phase": "P4",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/transfer.rs",
+        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/installation.rs",
+        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/plans.rs"
+      ],
+      "evidence": [
+        "docs/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
+        "2026-10-05 Windows: local JAR install metadata/artifact/cumulative retry-byte/deadline limits, two process-local slots, local-volume admission, reservations and 512-MiB floor are tested with tiny fixtures and native Windows volume/junction cases. Full upload/archive/extraction quotas, interprocess/alias certification, crash-staging expiry and user-configurable hosting UI remain absent.",
+        "docs/IMPLEMENTATION_PROGRESS.md"
+      ]
     },
     {
       "id": "backups-001",
@@ -2995,9 +3024,16 @@
       "text": "One Java runtime is configured for the single server instance. Setup detects or installs a compatible Java version, and the owner may override it with a custom executable path.",
       "textSha256": "ea8d3307e869949d0585a0590645ea049a9004800a18bca284516b9946549cbc",
       "phase": "P3",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/runtime.rs",
+        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/plans.rs"
+      ],
+      "evidence": [
+        "docs/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
+        "2026-10-05 Windows: one caller-selected existing Java path/evidence is bound into the new local install plan and fixed recipe. Bounded owned probes clear injection environment variables. Automatic detection/download, signed managed Java, actual host configuration persistence and complete onboarding remain absent.",
+        "docs/IMPLEMENTATION_PROGRESS.md"
+      ]
     },
     {
       "id": "java-runtime-002",
@@ -3006,9 +3042,17 @@
       "text": "Runtime compatibility is validated before server installation, update, or launch.",
       "textSha256": "f03db8a3db83a643257c93924203d7c27cfe8754cf912ac1d83625276b1ff369",
       "phase": "P3",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/runtime.rs",
+        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/providers.rs",
+        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/installation.rs"
+      ],
+      "evidence": [
+        "docs/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
+        "2026-10-05 Windows: provider Java requirements and selected runtime probes reject missing/unknown/incompatible evidence before new JAR installation; approved path/length/mtime rechecked before effects and commit. Update/launch compatibility integration, real game matrix, cryptographic executable identity and native confinement remain unverified.",
+        "docs/IMPLEMENTATION_PROGRESS.md"
+      ]
     },
     {
       "id": "java-runtime-003",

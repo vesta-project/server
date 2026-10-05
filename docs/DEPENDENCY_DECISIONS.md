@@ -28,3 +28,13 @@ Date: **2026-10-04**. This records the foundation batch's new dependency; it is 
 5. Repeat dependency intake for planned restic, ACME/SFTP, installer/service integration, and signed update tooling before enabling those adapters.
 
 The existing BouncyCastle dependency already supplies Argon2id/Ed25519 primitives. This checkpoint does not add a second crypto library or implement the vault/mTLS/signature contract; existing bcrypt-backed MVP authentication remains pending replacement under P2.
+
+## md-5 — accepted narrowly for published Purpur consistency checks (2026-10-05)
+
+- Coordinate: `md-5 = "=0.10.6"` in companion `launcher-server-mvp:crates/piston-lib/Cargo.toml`; Rust crate name `md5`.
+- Scope/reason: the official Purpur build API publishes MD5, not SHA-256. The new local server installer checks that published digest and separately records observed SHA-256. MD5 is explicitly legacy consistency evidence, **never authenticity, password hashing, signature verification or administrative trust**. SHA-1 receives the same legacy-warning/acknowledgment treatment.
+- Alternatives rejected: handwritten MD5; accepting hashless artifacts; pretending a locally computed SHA-256 was published/authenticated by upstream.
+- Cached crate metadata declares `MIT OR Apache-2.0`; upstream repository is `https://github.com/RustCrypto/hashes`. This is local metadata intake, not a complete distribution-license/provenance/vulnerability certification.
+- Version 0.10.6 was already locked transitively and cached. The only Cargo.lock change is adding the piston-lib dependency edge; no package version/source/checksum updates or dependency fetch were needed. Existing sha1/sha2/digest 0.10 infrastructure is retained.
+- Existing pinned `windows-sys 0.61.2` additionally enables `Win32_Storage_FileSystem` and `Win32_System_WindowsProgramming` for read-only `GetDriveTypeW` local-volume admission. No new crate or OS service is introduced, and this does not supply path-handle confinement or mapped-volume alias certification.
+- Release intake remains open: full SBOM, trusted locked-artifact provenance/vulnerability review, licence/notice packaging and clean supported-platform behavior. See [automatic-provider checkpoint](AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md) for fixture scope and remaining gates.

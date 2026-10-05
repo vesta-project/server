@@ -31,7 +31,11 @@ test('partial evidence names real test sources and retains a limitation statemen
     assert.ok(entry.evidence.includes('docs/IMPLEMENTATION_PROGRESS.md'), entry.id);
     for (const source of entry.tests) {
       if (source.startsWith('launcher-server-mvp:')) {
-        assert.match(source, /^launcher-server-mvp:crates\/piston-lib\/tests\/.+\.rs$/);
+        assert.match(source, /^launcher-server-mvp:crates\/piston-lib\/(tests|src\/game\/server_install\/tests)\/.+\.rs$/);
+        const launcher = new URL('../../launcher-server-mvp/', import.meta.url);
+        if (existsSync(launcher)) {
+          assert.ok(existsSync(new URL(source.slice('launcher-server-mvp:'.length), launcher)), source);
+        }
       } else {
         assert.match(source, /^(core|wrapper)\/src\/test\/java\/.+Test\.java$/);
         assert.ok(existsSync(new URL('../' + source, import.meta.url)), source);
