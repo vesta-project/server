@@ -13,6 +13,9 @@ public final class FakeMinecraft {
 
     public static void main(String[] args) throws Exception {
         String mode = args.length == 0 ? "graceful" : args[0];
+        // Record exactly what the process received and where it runs (overwritten on every launch).
+        Files.write(Path.of("args.txt"), java.util.Arrays.asList(args), StandardCharsets.UTF_8);
+        Files.writeString(Path.of("cwd.txt"), Path.of("").toAbsolutePath().toString(), StandardCharsets.UTF_8);
         Files.writeString(Path.of("starts.txt"), ProcessHandle.current().pid() + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         System.out.println("FAKE_READY");
         System.out.flush();

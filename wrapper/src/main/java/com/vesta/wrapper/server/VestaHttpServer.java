@@ -847,6 +847,9 @@ public final class VestaHttpServer {
                 case "restart" -> changed = minecraft.restart();
                 case "stop" -> {
                     boolean wasRunning = minecraft.isRunning();
+                    if (wasRunning && !minecraft.gracefulStopSupported()) {
+                        throw new java.io.IOException("graceful stop is not supported by this launch definition");
+                    }
                     minecraft.stop();
                     changed = wasRunning;
                 }

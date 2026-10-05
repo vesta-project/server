@@ -209,9 +209,19 @@
       "text": "The ordinary launch definition is an executable and argument array with an explicit working directory. It is passed directly to process creation without shell interpolation. Changing executable paths, JVM arguments that load code, or service targets is a trusted operational capability.",
       "textSha256": "df91d74c0d9c7d74faf2e1c239201a8b6caf0a329ac2fac455c847b3bad3191c",
       "phase": "P3",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/launch/LaunchSpecTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/config/ConfigLoaderLaunchTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/runtime/LaunchShapesProcessTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLaunchShapesTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/server/LegacyPowerRouteLaunchTest.java"
+      ],
+      "evidence": [
+        "2026-10-05 Windows: fresh server 687-test suite passed. The typed launch definition (java-jar, java-argfile, native) with an explicit working directory is evidenced with real owned child processes: literal arguments with no shell interpolation, strict value validation without echo, a strict [launch] configuration that fails closed on any conflict with the legacy keys, known no-effect preflight failures and a graceful stop that is never invented (an unsupported stop is rejected before any gate, state change or console write). Authorized remote registration or editing of launch definitions, local-only protection of changes, script presets, Linux/native execution and real server software remain unverified and not implemented.",
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/LAUNCH_DEFINITION_CHECKPOINT.md"
+      ]
     },
     {
       "id": "installation-components-and-process-continuity-011",

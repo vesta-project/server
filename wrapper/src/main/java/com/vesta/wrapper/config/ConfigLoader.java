@@ -8,6 +8,7 @@ import com.vesta.sync.auth.SecurityCapabilities;
 import com.vesta.sync.auth.SecurityMode;
 import com.vesta.sync.manifest.PackSource;
 import com.vesta.sync.manifest.UnresolvedPolicy;
+import com.vesta.wrapper.launch.LaunchSpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,6 +41,11 @@ public final class ConfigLoader {
     }
 
     private static final java.util.Set<String> STATE_KEYS = java.util.Set.of("enabled", "directory");
+    private static final java.util.Set<String> LAUNCH_KEYS = java.util.Set.of(
+            "kind", "java-command", "jvm-args", "jar", "argfiles", "executable", "args", "stop");
+    /** Legacy {@code [minecraft]} launch keys that must not appear next to a {@code [launch]} table. */
+    private static final java.util.Set<String> LEGACY_LAUNCH_KEYS =
+            java.util.Set.of("launch-jar", "java-command", "jvm-args", "server-args");
 
     /**
      * Loads the wrapper configuration.
@@ -72,6 +78,7 @@ public final class ConfigLoader {
             Toml toml = new Toml().read(file.toFile());
 
             validateStateTable(toml);
+            LaunchSpec launch = parseLaunchTable(toml);
 
             b.tcpPort(toml.getLong("server.tcp-port", (long) b.tcpPort).intValue());
             b.httpPort(toml.getLong("server.http-port", (long) b.httpPort).intValue());
@@ -283,6 +290,10 @@ public final class ConfigLoader {
                 ));
             }
 
+            if (launch != null) {
+                b.minecraftLaunch(launch);
+            }
+
             log.info("Loaded config from {}", file);
             return b.build();
         } catch (ConfigException e) {
@@ -317,6 +328,120 @@ public final class ConfigLoader {
                 throw new ConfigException("[state] directory must be a non-blank string");
             }
         }
+    }
+
+    /**
+     * Strict {@code [launch]} parsing. Returns {@code null} when the table is absent (legacy
+     * {@code [minecraft]} launch configuration applies). Only the keys valid for the chosen kind are
+     * accepted, with exact types; a native executable must state its stop mode; and the table cannot be
+     * combined with the legacy launch keys. Messages never echo configuration values.
+     */
+    private static LaunchSpec parseLaunchTable(Toml toml) {
+        Map<String, Object> root = toml.toMap();
+        if (!root.containsKey("launch")) {
+            return null; // an empty [launch] table is still present and fails below (kind is required)
+        }
+        Object raw = root.get("launch");
+        if (!(raw instanceof Map<?, ?> table)) {
+            throw new ConfigException("[launch] must be a table");
+        }
+        if (root.get("minecraft") instanceof Map<?, ?> minecraft) {
+            for (Object legacyKey : minecraft.keySet()) {
+                if (LEGACY_LAUNCH_KEYS.contains(unwrapTomlKey(String.valueOf(legacyKey)))) {
+                    throw new ConfigException("[launch] conflicts with the legacy [minecraft] launch keys");
+                }
+            }
+        }
+        Map<String, Object> values = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : table.entrySet()) {
+            String key = unwrapTomlKey(String.valueOf(entry.getKey()));
+            if (!LAUNCH_KEYS.contains(key)) {
+                throw new ConfigException("[launch] has an unknown key");
+            }
+            values.put(key, entry.getValue());
+        }
+        LaunchSpec.Kind kind;
+        try {
+            kind = LaunchSpec.Kind.fromWire(launchString(values, "kind", null));
+        } catch (IllegalArgumentException e) {
+            throw new ConfigException("[launch] kind is invalid");
+        }
+        Set<String> allowed = switch (kind) {
+            case JAVA_JAR -> Set.of("kind", "java-command", "jvm-args", "jar", "args", "stop");
+            case JAVA_ARGFILE -> Set.of("kind", "java-command", "jvm-args", "argfiles", "args", "stop");
+            case NATIVE -> Set.of("kind", "executable", "args", "stop");
+        };
+        if (!allowed.containsAll(values.keySet())) {
+            throw new ConfigException("[launch] has a key that is not valid for its kind");
+        }
+        List<String> args = launchStrings(values, "args");
+        LaunchSpec.StopMode stop = null;
+        if (values.containsKey("stop")) {
+            try {
+                stop = LaunchSpec.StopMode.fromWire(launchString(values, "stop", null));
+            } catch (IllegalArgumentException e) {
+                throw new ConfigException("[launch] stop is invalid");
+            }
+        } else if (kind == LaunchSpec.Kind.NATIVE) {
+            throw new ConfigException("[launch] stop is required for a native executable");
+        }
+        try {
+            LaunchSpec spec;
+            switch (kind) {
+                case JAVA_JAR -> spec = LaunchSpec.javaJar(launchString(values, "java-command", "java"),
+                        launchStrings(values, "jvm-args"), Path.of(launchString(values, "jar", null)), args);
+                case JAVA_ARGFILE -> {
+                    List<java.nio.file.Path> files = new ArrayList<>();
+                    for (String file : launchStrings(values, "argfiles")) {
+                        files.add(Path.of(file));
+                    }
+                    spec = LaunchSpec.javaArgFiles(launchString(values, "java-command", "java"),
+                            launchStrings(values, "jvm-args"), files, args);
+                }
+                default -> spec = LaunchSpec.nativeExecutable(Path.of(launchString(values, "executable", null)), args, stop);
+            }
+            return stop == null ? spec : spec.withStopMode(stop);
+        } catch (IllegalArgumentException e) {
+            // Includes invalid paths and values rejected by LaunchSpec; neither is echoed.
+            throw new ConfigException("[launch] has an invalid value");
+        }
+    }
+
+    private static String launchString(Map<String, Object> values, String key, String fallback) {
+        if (!values.containsKey(key)) {
+            if (fallback != null) {
+                return fallback;
+            }
+            throw new ConfigException("[launch] " + key + " is required");
+        }
+        if (!(values.get(key) instanceof String text)) {
+            throw new ConfigException("[launch] " + key + " must be a string");
+        }
+        return text;
+    }
+
+    private static List<String> launchStrings(Map<String, Object> values, String key) {
+        Object value = values.get(key);
+        if (value == null) {
+            if (values.containsKey(key)) {
+                throw new ConfigException("[launch] " + key + " must be a list of strings");
+            }
+            if (key.equals("argfiles")) {
+                throw new ConfigException("[launch] argfiles is required");
+            }
+            return List.of();
+        }
+        if (!(value instanceof List<?> list)) {
+            throw new ConfigException("[launch] " + key + " must be a list of strings");
+        }
+        List<String> out = new ArrayList<>();
+        for (Object element : list) {
+            if (!(element instanceof String text)) {
+                throw new ConfigException("[launch] " + key + " must be a list of strings");
+            }
+            out.add(text);
+        }
+        return out;
     }
 
     private static AccessControlConfig loadAccessControl(

@@ -2,6 +2,7 @@ package com.vesta.wrapper.runtime;
 
 import com.vesta.wrapper.config.WrapperConfig;
 import com.vesta.wrapper.console.ConsoleBuffer;
+import com.vesta.wrapper.launch.LaunchSpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -76,6 +77,11 @@ public final class MinecraftServerProcess {
     public static final class LifecycleException extends Exception {
         public static final String NOT_CONFIGURED = "not_configured";
         public static final String LAUNCH_JAR_MISSING = "launch_jar_missing";
+        public static final String LAUNCH_ARGFILE_MISSING = "launch_argfile_missing";
+        public static final String LAUNCH_EXECUTABLE_MISSING = "launch_executable_missing";
+        public static final String LAUNCH_EXECUTABLE_NOT_EXECUTABLE = "launch_executable_not_executable";
+        /** The launch definition has no graceful stop; rejected before any gate, state change or output. */
+        public static final String GRACEFUL_STOP_UNSUPPORTED = "graceful_stop_unsupported";
         public static final String WORKING_DIRECTORY_MISSING = "working_directory_missing";
         public static final String GAME_STOPPING = "game_stopping";
         public static final String LAUNCH_FAILED = "launch_failed";
@@ -137,16 +143,50 @@ public final class MinecraftServerProcess {
     }
 
     public List<String> command() {
-        if (config.minecraftLaunchJar == null) {
-            return List.of();
+        LaunchSpec spec = config.minecraftLaunch;
+        return spec == null ? List.of() : spec.command();
+    }
+
+    /**
+     * Whether the configured launch definition has a graceful stop. {@code false} when nothing is configured
+     * or the definition has no known graceful stop; stop requests are then rejected without any effect.
+     */
+    public boolean gracefulStopSupported() {
+        LaunchSpec spec = config.minecraftLaunch;
+        return spec != null && spec.gracefulStopSupported();
+    }
+
+    /**
+     * Known, no-effect launch preparation failure for the current definition, or {@code null} when its
+     * referenced files exist. Checks only the primary artifacts (jar, argument files, executable).
+     */
+    private static LifecycleException preflightFailure(LaunchSpec spec) {
+        switch (spec.kind()) {
+            case JAVA_JAR -> {
+                if (!Files.isRegularFile(spec.artifact())) {
+                    return new LifecycleException(LifecycleException.LAUNCH_JAR_MISSING, "The configured launch jar does not exist");
+                }
+            }
+            case JAVA_ARGFILE -> {
+                for (java.nio.file.Path file : spec.argFiles()) {
+                    if (!Files.isRegularFile(file)) {
+                        return new LifecycleException(LifecycleException.LAUNCH_ARGFILE_MISSING,
+                                "A configured argument file does not exist");
+                    }
+                }
+            }
+            case NATIVE -> {
+                if (!Files.isRegularFile(spec.artifact())) {
+                    return new LifecycleException(LifecycleException.LAUNCH_EXECUTABLE_MISSING,
+                            "The configured executable does not exist");
+                }
+                if (!Files.isExecutable(spec.artifact())) {
+                    return new LifecycleException(LifecycleException.LAUNCH_EXECUTABLE_NOT_EXECUTABLE,
+                            "The configured executable cannot be executed");
+                }
+            }
         }
-        List<String> command = new ArrayList<>();
-        command.add(config.minecraftJavaCommand);
-        command.addAll(config.minecraftJvmArgs);
-        command.add("-jar");
-        command.add(config.minecraftLaunchJar.toString());
-        command.addAll(config.minecraftServerArgs);
-        return List.copyOf(command);
+        return null;
     }
 
     public synchronized void startIfConfigured() throws IOException {
@@ -156,9 +196,9 @@ public final class MinecraftServerProcess {
         start();
     }
 
-    /** True when this wrapper can launch a Minecraft server (a launch jar is configured). */
+    /** True when this wrapper can launch a Minecraft server (a launch definition is configured). */
     public boolean isConfigured() {
-        return config.minecraftLaunchJar != null;
+        return config.minecraftLaunch != null;
     }
 
     public synchronized boolean isRunning() {
@@ -188,6 +228,10 @@ public final class MinecraftServerProcess {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("configured", isConfigured());
         out.put("manageable", isConfigured());
+        if (config.minecraftLaunch != null) {
+            out.put("launch_kind", config.minecraftLaunch.kind().wireName());
+            out.put("graceful_stop_supported", config.minecraftLaunch.gracefulStopSupported());
+        }
         out.put("running", current == State.RUNNING || current == State.STARTING || current == State.STOPPING);
         out.put("state", current.name().toLowerCase(Locale.ROOT));
         if (pid != null) {
@@ -210,11 +254,15 @@ public final class MinecraftServerProcess {
      * @return {@code true} if a new process was launched, {@code false} if one was already alive.
      */
     public synchronized boolean start() throws IOException {
-        if (config.minecraftLaunchJar == null) {
+        LaunchSpec spec = config.minecraftLaunch;
+        if (spec == null) {
             throw new IOException("minecraft.launch-jar is not configured");
         }
-        if (!Files.isRegularFile(config.minecraftLaunchJar)) {
-            throw new IOException("Minecraft launch jar does not exist: " + config.minecraftLaunchJar);
+        LifecycleException unlaunchable = preflightFailure(spec);
+        if (unlaunchable != null) {
+            throw new IOException(spec.kind() == LaunchSpec.Kind.JAVA_JAR
+                    ? "Minecraft launch jar does not exist: " + spec.artifact()
+                    : unlaunchable.getMessage());
         }
         if (process != null && process.isAlive()) {
             return false;
@@ -273,11 +321,13 @@ public final class MinecraftServerProcess {
             }
             return new StartResult(false, id);
         }
-        if (config.minecraftLaunchJar == null) {
+        LaunchSpec spec = config.minecraftLaunch;
+        if (spec == null) {
             throw new LifecycleException(LifecycleException.NOT_CONFIGURED, "minecraft.launch-jar is not configured");
         }
-        if (!Files.isRegularFile(config.minecraftLaunchJar)) {
-            throw new LifecycleException(LifecycleException.LAUNCH_JAR_MISSING, "The configured launch jar does not exist");
+        LifecycleException unlaunchable = preflightFailure(spec);
+        if (unlaunchable != null) {
+            throw unlaunchable;
         }
         if (config.minecraftWorkingDirectory == null || !Files.isDirectory(config.minecraftWorkingDirectory)) {
             throw new LifecycleException(LifecycleException.WORKING_DIRECTORY_MISSING,
@@ -326,6 +376,11 @@ public final class MinecraftServerProcess {
             }
             current = process;
             if (state != State.STOPPING) {
+                if (!gracefulStopSupported()) {
+                    // Known no-effect failure: no gate call, no state change, no console output, no kill.
+                    throw new LifecycleException(LifecycleException.GRACEFUL_STOP_UNSUPPORTED,
+                            "The launch definition has no graceful stop; nothing was stopped");
+                }
                 gate.beforeEffect();
                 state = State.STOPPING;
                 try {
@@ -513,6 +568,9 @@ public final class MinecraftServerProcess {
      *                     process is launched in that case and the old one remains {@code STOPPING}.
      */
     public boolean restart() throws IOException {
+        if (isRunning() && !gracefulStopSupported()) {
+            throw new IOException("graceful stop is not supported by this launch definition; restart not started");
+        }
         if (!stop()) {
             throw new IOException("previous Minecraft process is still stopping; restart not started");
         }
@@ -537,6 +595,12 @@ public final class MinecraftServerProcess {
                 return true;
             }
             if (state != State.STOPPING) {
+                if (!gracefulStopSupported()) {
+                    // No invented stop: leave the live process untouched (no state change, no console write,
+                    // no wait) and report that it is still running. Force kill remains a separate action.
+                    log.warn("The launch definition has no graceful stop; leaving the process running");
+                    return false;
+                }
                 state = State.STOPPING;
                 try {
                     writeLine("stop");

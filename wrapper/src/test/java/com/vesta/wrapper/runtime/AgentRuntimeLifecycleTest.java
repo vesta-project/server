@@ -119,6 +119,20 @@ class AgentRuntimeLifecycleTest {
                 }
             }
         }
+        // Windows can keep an exited child's working-directory handle briefly; retry here, as for the jar, so
+        // the @TempDir cleanup does not race it. Anything still locked is left for @TempDir to report.
+        deleteTreeWithRetry(root);
+    }
+
+    private static void deleteTreeWithRetry(Path dir) throws Exception {
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (Files.exists(dir)) {
+            try (var walk = Files.walk(dir)) {
+                walk.sorted(java.util.Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+            }
+            if (!Files.exists(dir) || System.nanoTime() >= deadline) return;
+            Thread.sleep(50);
+        }
     }
 
     @Test void realCompositionCreatesCanonicalStateAndAlreadyRunningStartIsANoOp() throws Exception {

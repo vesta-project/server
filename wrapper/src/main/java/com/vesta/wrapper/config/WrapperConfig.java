@@ -5,6 +5,7 @@ import com.vesta.sync.auth.SecurityCapabilities;
 import com.vesta.sync.auth.SecurityMode;
 import com.vesta.sync.manifest.PackSource;
 import com.vesta.sync.manifest.UnresolvedPolicy;
+import com.vesta.wrapper.launch.LaunchSpec;
 
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
@@ -66,6 +67,14 @@ public final class WrapperConfig {
     public final List<String> minecraftServerArgs;
     public final Path minecraftWorkingDirectory;
     public final Path minecraftLaunchJar;
+    /**
+     * The effective launch definition, or {@code null} when none is configured. Either an explicit
+     * definition from {@link Builder#minecraftLaunch} or, for the legacy {@code minecraft.launch-jar}
+     * configuration, the equivalent {@code java -jar} definition built from the legacy fields. The legacy
+     * fields above describe only the legacy form: with an explicit definition {@link #minecraftLaunchJar} is
+     * {@code null}. Supplying both forms is rejected.
+     */
+    public final LaunchSpec minecraftLaunch;
     /**
      * Reserved for a future panel/launcher updater. Installers never auto-install
      * the connector JAR; default remains false.
@@ -170,6 +179,16 @@ public final class WrapperConfig {
                 : (b.minecraftLaunchJar.isAbsolute()
                     ? b.minecraftLaunchJar.normalize()
                     : this.minecraftWorkingDirectory.resolve(b.minecraftLaunchJar).normalize());
+        if (b.minecraftLaunch != null && b.minecraftLaunchJar != null) {
+            // Never choose between two launch definitions: ambiguity could run the wrong executable.
+            throw new IllegalStateException("Conflicting launch definitions");
+        }
+        this.minecraftLaunch = b.minecraftLaunch != null
+                ? b.minecraftLaunch.resolveAgainst(this.minecraftWorkingDirectory)
+                : (this.minecraftLaunchJar != null
+                    ? LaunchSpec.legacyJavaJar(this.minecraftJavaCommand, this.minecraftJvmArgs,
+                            this.minecraftLaunchJar, this.minecraftServerArgs)
+                    : null);
         this.connectorAutoUpdate = b.connectorAutoUpdate;
 
         this.devtoolsEnabled = b.devtoolsEnabled;
@@ -276,6 +295,7 @@ public final class WrapperConfig {
         List<String> minecraftServerArgs = new ArrayList<>(List.of("nogui"));
         Path minecraftWorkingDirectory;
         Path minecraftLaunchJar;
+        LaunchSpec minecraftLaunch;
         boolean connectorAutoUpdate = false;
 
         boolean devtoolsEnabled = true;
@@ -336,6 +356,8 @@ public final class WrapperConfig {
         public Builder minecraftServerArgs(List<String> v) { minecraftServerArgs = new ArrayList<>(v); return this; }
         public Builder minecraftWorkingDirectory(Path v) { minecraftWorkingDirectory = v; return this; }
         public Builder minecraftLaunchJar(Path v) { minecraftLaunchJar = v; return this; }
+        /** Explicit launch definition; mutually exclusive with {@link #minecraftLaunchJar} (build fails). */
+        public Builder minecraftLaunch(LaunchSpec v) { minecraftLaunch = v; return this; }
         public Builder connectorAutoUpdate(boolean v) { connectorAutoUpdate = v; return this; }
         public Builder devtoolsEnabled(boolean v) { devtoolsEnabled = v; return this; }
         public Builder devtoolsLoopbackOnly(boolean v) { devtoolsLoopbackOnly = v; return this; }
