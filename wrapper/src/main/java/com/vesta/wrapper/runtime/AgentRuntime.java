@@ -8,6 +8,7 @@ import com.vesta.wrapper.identity.LocalAuthority;
 import com.vesta.wrapper.identity.PackPasswordService;
 import com.vesta.wrapper.operations.ConfirmationService;
 import com.vesta.wrapper.operations.OperationBindings;
+import com.vesta.wrapper.operations.OperationEventReplayService;
 import com.vesta.wrapper.operations.OperationRunner;
 import com.vesta.wrapper.operations.OperationService;
 import com.vesta.wrapper.operations.OperationSubmissionService;
@@ -58,6 +59,7 @@ public final class AgentRuntime implements AutoCloseable {
     private final IdentityService identities;
     private final AuthorizationService authorization;
     private final PackPasswordService packPasswords;
+    private final OperationEventReplayService operationEvents;
     private final OperationBindings bindings;
     private final OperationSubmissionService submissions;
     private final ConfirmationService confirmationTokens;
@@ -71,7 +73,7 @@ public final class AgentRuntime implements AutoCloseable {
 
     private AgentRuntime(StateDirectory stateDirectory, StateDatabase database, AuditLog audit, EventLog events,
                          OperationService operations, IdentityService identities, PackPasswordService packPasswords,
-                         OperationBindings bindings,
+                         OperationEventReplayService operationEvents, OperationBindings bindings,
                          OperationSubmissionService submissions, ConfirmationService confirmationTokens,
                          PolicyConfirmationService confirmations,
                          LifecycleBindings.GenerationRevision generationRevision, OperationRunner runner,
@@ -84,6 +86,7 @@ public final class AgentRuntime implements AutoCloseable {
         this.identities = identities;
         this.authorization = identities.authorization();
         this.packPasswords = packPasswords;
+        this.operationEvents = operationEvents;
         this.bindings = bindings;
         this.submissions = submissions;
         this.confirmationTokens = confirmationTokens;
@@ -133,6 +136,7 @@ public final class AgentRuntime implements AutoCloseable {
             IdentityService identities = new IdentityService(db, audit, localAuthority);
             AuthorizationService authorization = identities.authorization();
             PackPasswordService packPasswords = new PackPasswordService(db, audit, authorization);
+            OperationEventReplayService operationEvents = new OperationEventReplayService(db, events, authorization);
             OperationBindings bindings = OperationBindings.of(LifecycleBindings.create(game));
             PolicyOperationAuthority authority = new PolicyOperationAuthority(ops, authorization, bindings);
             OperationSubmissionService submissions = new OperationSubmissionService(ops, authorization, bindings);
@@ -143,7 +147,7 @@ public final class AgentRuntime implements AutoCloseable {
             runner = new OperationRunner(directory, ops, bindings.handlers(), authority, runnerSettings);
             runner.start();
             LOG.info("Durable agent runtime opened (state outside game root; no network operation route)");
-            return new AgentRuntime(directory, db, audit, events, ops, identities, packPasswords, bindings, submissions, tokens,
+            return new AgentRuntime(directory, db, audit, events, ops, identities, packPasswords, operationEvents, bindings, submissions, tokens,
                     confirmations, revision, runner, game);
         } catch (Throwable t) {
             // 1. Stop our runner first (bounded). Safe in every start stage: if lock acquisition failed it
@@ -255,6 +259,11 @@ public final class AgentRuntime implements AutoCloseable {
     /** Trusted in-process credential service; no password login or pack-grant route is exposed. */
     public PackPasswordService packPasswords() {
         return packPasswords;
+    }
+
+    /** Trusted in-process sanitized operation-event replay; no stream or network route is exposed. */
+    public OperationEventReplayService operationEvents() {
+        return operationEvents;
     }
 
     public OperationBindings bindings() {

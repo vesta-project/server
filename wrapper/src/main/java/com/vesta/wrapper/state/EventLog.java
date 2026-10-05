@@ -126,6 +126,79 @@ public final class EventLog {
         });
     }
 
+    /**
+     * Journal boundaries observed in one snapshot.
+     *
+     * @param prunedThrough persisted retention watermark (every cursor at or below it was removed)
+     * @param oldestRetained lowest retained cursor, or 0 when none is retained
+     * @param latest highest cursor ever issued as far as this journal can tell: the retained maximum, or the
+     *               retention watermark when every row was pruned
+     */
+    public record Bounds(long prunedThrough, long oldestRetained, long latest) {
+    }
+
+    /**
+     * One journal row for a bounded scan. {@code payloadJson} is non-null only for a requested type whose
+     * payload is within the character limit; {@code payloadChars} reports the stored length of a requested
+     * type so an oversize payload can be distinguished from an absent one without being read into memory.
+     */
+    public record ScanRow(long cursor, String type, String operationId, long atMillis, String payloadJson,
+                          int payloadChars) {
+    }
+
+    /** Reads the journal boundaries inside the caller's transaction. */
+    public Bounds bounds(Connection c) throws SQLException {
+        long pruned = prunedThrough(c);
+        long oldest = 0;
+        long max = 0;
+        try (PreparedStatement ps = c.prepareStatement("SELECT MIN(cursor), MAX(cursor) FROM events");
+             ResultSet rs = ps.executeQuery()) {
+            if (rs.next()) {
+                oldest = rs.getLong(1);
+                max = rs.getLong(2);
+            }
+        }
+        return new Bounds(pruned, oldest, Math.max(max, pruned));
+    }
+
+    /**
+     * Bounded scan of cursors in {@code (after, through]} inside the caller's transaction. Header fields are
+     * truncated in SQL and payloads are projected only for {@code payloadTypes} within
+     * {@code maxPayloadChars}, so unrelated or oversize stored text is never loaded.
+     */
+    public List<ScanRow> scan(Connection c, long after, long through, int limit, List<String> payloadTypes,
+                              int maxPayloadChars) throws SQLException {
+        if (limit < 1 || limit > MAX_PAGE || payloadTypes.isEmpty() || payloadTypes.size() > 8) {
+            throw new StateException("invalid_request", "invalid scan request");
+        }
+        String marks = String.join(",", java.util.Collections.nCopies(payloadTypes.size(), "?"));
+        String sql = "SELECT cursor, substr(type, 1, 65), substr(operation_id, 1, 65), at, "
+                + "CASE WHEN type IN (" + marks + ") AND length(payload_json) <= ? THEN payload_json END, "
+                + "CASE WHEN type IN (" + marks + ") THEN length(payload_json) ELSE 0 END "
+                + "FROM events WHERE cursor > ? AND cursor <= ? ORDER BY cursor LIMIT ?";
+        List<ScanRow> rows = new ArrayList<>();
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            int i = 1;
+            for (String type : payloadTypes) {
+                ps.setString(i++, type);
+            }
+            ps.setInt(i++, maxPayloadChars);
+            for (String type : payloadTypes) {
+                ps.setString(i++, type);
+            }
+            ps.setLong(i++, after);
+            ps.setLong(i++, through);
+            ps.setInt(i, limit);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(new ScanRow(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getLong(4),
+                            rs.getString(5), rs.getInt(6)));
+                }
+            }
+        }
+        return List.copyOf(rows);
+    }
+
     private static long prunedThrough(Connection c) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("SELECT value FROM meta WHERE key = 'events_pruned_through'");
              ResultSet rs = ps.executeQuery()) {

@@ -4260,9 +4260,17 @@
       "text": "Compatibility negotiation, stable error codes, idempotency keys for mutating requests, pagination, event cursors, and deprecation windows are part of the protocol contract so third-party panels can be reliable clients.",
       "textSha256": "6df9f137e86020d362867a7e992d75144d716ef1b7d66fd60eaa9b3efdd94c83",
       "phase": "P8",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "wrapper/src/test/java/com/vesta/wrapper/operations/OperationEventReplayServiceTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/state/EventLogBoundedScanTest.java",
+        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeEventReplayTest.java"
+      ],
+      "evidence": [
+        "2026-10-05 Windows: fresh server 579-test suite passed. Only the event-cursor, pagination and stable-error-code slice is evidenced, in-process: current exact tasks.view per page, server-bound canonical cursors over a finite window, explicit retention resync, strict sanitized operation-event projection and fixed redacted errors. The HTTPS/OpenAPI/stream surface, version negotiation, idempotency-key surface, deprecation policy, authenticated transport and snapshot-consistent resync remain unverified and not implemented.",
+        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/OPERATION_EVENT_REPLAY_CHECKPOINT.md"
+      ]
     },
     {
       "id": "proxies-and-hosting-extensibility-005",
