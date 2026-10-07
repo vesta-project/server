@@ -6,6 +6,6 @@ The companion launcher's backend now installs **Fabric** and **Quilt** dedicated
 
 Software support and a verified bundle grant **no management authority**; Microsoft/Minecraft identity remains the intended common online-mode flow.
 
-Fresh evidence: full `piston-lib` suite 367 passed (three consecutive runs), 19 new parent-authored loader tests, six executed and restored guard mutations, production check, rustfmt and 146 Node/ledger tests. **Independent review is incomplete**: it confirmed one defect (fixed) before the reviewer model's usage limit stopped it.
+Fresh evidence: full `piston-lib` suite 367 passed (three consecutive runs), 19 new parent-authored loader tests, six executed and restored guard mutations, production check, rustfmt and 146 Node/ledger tests. A complete independent read-only review found four defects in total (Java-8 argfile floor, experimental loader opt-in, schema-2 hash domain, workspace path tightening), all fixed with regression tests; the follow-up suite is 372 passed with twelve executed and restored guard mutations across both commits.
 
 No requirement or phase status is promoted (ledger unchanged: 370 entries, 59 partially verified, 311 not verified). Hosting UI/headless/config adapters, managed Java, authenticated remote installation, durable operation integration, native confinement, the independent supervisor and signed distribution remain open.

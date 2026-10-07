@@ -6,7 +6,7 @@ Assessment date: **2026-10-04**. This is the historical **first** partial engine
 
 **2026-10-06 bounded execution foundation:** the [bounded server execution checkpoint](BOUNDED_SERVER_EXECUTION_CHECKPOINT.md) maps the companion launcher's private owned-child and declared-file primitives to the original requirements. Production use remains the selected-Java probe; prepared jobs are inert fixtures only. Loader recipes, native confinement and durable operation/reconciliation composition remain open. No requirement status or phase is promoted.
 
-**2026-10-06 Fabric/Quilt servers:** the [Fabric/Quilt server bundle checkpoint](FABRIC_QUILT_SERVER_BUNDLE_CHECKPOINT.md) records download-only Fabric/Quilt installation in the companion launcher. No requirement status or phase is promoted; independent review is incomplete.
+**2026-10-06 Fabric/Quilt servers:** the [Fabric/Quilt server bundle checkpoint](FABRIC_QUILT_SERVER_BUNDLE_CHECKPOINT.md) records download-only Fabric/Quilt installation in the companion launcher. No requirement status or phase is promoted; independent review findings are fixed.
 
 ## Scope and authority
 
