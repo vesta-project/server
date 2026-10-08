@@ -1,0 +1,290 @@
+{
+  "provenance": {
+    "oracle": "scripts/AuditHashOracle.java (Java source-file execution)",
+    "gson_version": "2.11.0",
+    "gson_coordinate": "com.google.code.gson:gson:2.11.0",
+    "gson_sha256": "57928d6e5a6edeb2abd3770a8f95ba44dce45f3b23b7a9dc2b309c581552a78b",
+    "gson_version_evidence": "META-INF/maven/com.google.code.gson/gson/pom.properties loaded through the Gson classloader and checked against the pinned coordinate",
+    "gson_convention": "new Gson() defaults; compact JSON, HTML-safe escaping enabled",
+    "field_array_convention": "JSON array [domain, prev_hash, server_id, principal_id, device_id, source, action, target, outcome, operation_id, at_ms, metadata_json]",
+    "metadata_convention": "AuditRecord normalizes null metadata to {}, copies entries into natural-order TreeMap\u003cString,String\u003e, and normalizes null values to empty strings",
+    "string_ordering": "Java String natural ordering compares UTF-16 code units",
+    "hash_convention": "SHA-256 over UTF-8 bytes of Gson compact serialization of the field array; lowercase hexadecimal",
+    "reference": "wrapper/src/main/java/com/vesta/wrapper/audit/AuditLog.java:144-162",
+    "metadata_reference": "wrapper/src/main/java/com/vesta/wrapper/audit/AuditRecord.java:22-55",
+    "gson_pin": "core/build.gradle.kts and wrapper/build.gradle.kts: com.google.code.gson:gson:2.11.0"
+  },
+  "vectors": [
+    {
+      "case_id": "original-java-domain",
+      "previous_case_id": null,
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "server_id": "server-main",
+      "principal_id": "user-42",
+      "device_id": "device-a1",
+      "source": "https",
+      "action": "server.start",
+      "target": "server:world",
+      "outcome": "accepted",
+      "operation_id": "op-100",
+      "at_ms": 1735689600123,
+      "metadata_input": [
+        [
+          "zeta",
+          "last"
+        ],
+        [
+          "alpha",
+          "first"
+        ]
+      ],
+      "metadata_json": "{\"alpha\":\"first\",\"zeta\":\"last\"}",
+      "chain_input_json": "[\"vesta-audit-v1\",\"0000000000000000000000000000000000000000000000000000000000000000\",\"server-main\",\"user-42\",\"device-a1\",\"https\",\"server.start\",\"server:world\",\"accepted\",\"op-100\",1735689600123,\"{\\\"alpha\\\":\\\"first\\\",\\\"zeta\\\":\\\"last\\\"}\"]",
+      "sha256": "e24cdd074e7515f49f163ab37abd5a286eacca620a08dd41af97b53ef73766de",
+      "gson_version": "2.11.0"
+    },
+    {
+      "case_id": "null-operation-id",
+      "previous_case_id": null,
+      "prev_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "server_id": "server-main",
+      "principal_id": "system",
+      "device_id": "local",
+      "source": "operation-engine",
+      "action": "server.stop",
+      "target": "server:world",
+      "outcome": "accepted",
+      "operation_id": null,
+      "at_ms": 0,
+      "metadata_input": [
+        [
+          "reason",
+          "maintenance"
+        ]
+      ],
+      "metadata_json": "{\"reason\":\"maintenance\"}",
+      "chain_input_json": "[\"vesta-audit-v1\",\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"server-main\",\"system\",\"local\",\"operation-engine\",\"server.stop\",\"server:world\",\"accepted\",null,0,\"{\\\"reason\\\":\\\"maintenance\\\"}\"]",
+      "sha256": "abcd8f2f33f41661cb07db19650539d4a671b06c0f46c1bb5bcf0c33bc62bcf0",
+      "gson_version": "2.11.0"
+    },
+    {
+      "case_id": "null-metadata-normalized-empty-object",
+      "previous_case_id": null,
+      "prev_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "server_id": "server-main",
+      "principal_id": "user-7",
+      "device_id": "device-b2",
+      "source": "local-cli",
+      "action": "config.read",
+      "target": "config:server",
+      "outcome": "accepted",
+      "operation_id": "op-null-metadata",
+      "at_ms": 42,
+      "metadata_input": null,
+      "metadata_json": "{}",
+      "chain_input_json": "[\"vesta-audit-v1\",\"1111111111111111111111111111111111111111111111111111111111111111\",\"server-main\",\"user-7\",\"device-b2\",\"local-cli\",\"config.read\",\"config:server\",\"accepted\",\"op-null-metadata\",42,\"{}\"]",
+      "sha256": "7d63072a8cbe8e539d09b30401d39d1d1ffa0b77ec84edc9e1935b07da7db449",
+      "gson_version": "2.11.0"
+    },
+    {
+      "case_id": "gson-html-safe-escaping",
+      "previous_case_id": null,
+      "prev_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+      "server_id": "server-main",
+      "principal_id": "user-8",
+      "device_id": "device-c3",
+      "source": "https",
+      "action": "config.update",
+      "target": "config:motd",
+      "outcome": "accepted",
+      "operation_id": "op-html",
+      "at_ms": 1735689600999,
+      "metadata_input": [
+        [
+          "markup",
+          "\u003ctag\u003e\u0026\u003d\u0027quote\u0027 \u003e"
+        ]
+      ],
+      "metadata_json": "{\"markup\":\"\\u003ctag\\u003e\\u0026\\u003d\\u0027quote\\u0027 \\u003e\"}",
+      "chain_input_json": "[\"vesta-audit-v1\",\"2222222222222222222222222222222222222222222222222222222222222222\",\"server-main\",\"user-8\",\"device-c3\",\"https\",\"config.update\",\"config:motd\",\"accepted\",\"op-html\",1735689600999,\"{\\\"markup\\\":\\\"\\\\u003ctag\\\\u003e\\\\u0026\\\\u003d\\\\u0027quote\\\\u0027 \\\\u003e\\\"}\"]",
+      "sha256": "99d030d2959ddd7dd4455b88ec42a5497e273130c566122acf1d510a457d53cb",
+      "gson_version": "2.11.0"
+    },
+    {
+      "case_id": "unicode-line-separators",
+      "previous_case_id": null,
+      "prev_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+      "server_id": "server-main",
+      "principal_id": "user-9",
+      "device_id": "device-d4",
+      "source": "https",
+      "action": "config.read",
+      "target": "config:motd",
+      "outcome": "accepted",
+      "operation_id": "op-lines",
+      "at_ms": 1735689601000,
+      "metadata_input": [
+        [
+          "separators",
+          "before\u2028middle\u2029after"
+        ]
+      ],
+      "metadata_json": "{\"separators\":\"before\\u2028middle\\u2029after\"}",
+      "chain_input_json": "[\"vesta-audit-v1\",\"3333333333333333333333333333333333333333333333333333333333333333\",\"server-main\",\"user-9\",\"device-d4\",\"https\",\"config.read\",\"config:motd\",\"accepted\",\"op-lines\",1735689601000,\"{\\\"separators\\\":\\\"before\\\\u2028middle\\\\u2029after\\\"}\"]",
+      "sha256": "f113e0fa14af7769134e01fbbfbd816e1ae9658ed6758580698974f27125f5db",
+      "gson_version": "2.11.0"
+    },
+    {
+      "case_id": "metadata-quotes-backslash-newline-controls",
+      "previous_case_id": null,
+      "prev_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+      "server_id": "server-main",
+      "principal_id": "user-10",
+      "device_id": "device-e5",
+      "source": "local-cli",
+      "action": "operation.inspect",
+      "target": "operation:op-55",
+      "outcome": "accepted",
+      "operation_id": "op-control-values",
+      "at_ms": 1735689601001,
+      "metadata_input": [
+        [
+          "text",
+          "quote\u003d\" backslash\u003d\\ newline\u003d\n tab\u003d\t nul\u003d\u0000 soh\u003d\u0001 backspace\u003d\b formfeed\u003d\f return\u003d\r"
+        ]
+      ],
+      "metadata_json": "{\"text\":\"quote\\u003d\\\" backslash\\u003d\\\\ newline\\u003d\\n tab\\u003d\\t nul\\u003d\\u0000 soh\\u003d\\u0001 backspace\\u003d\\b formfeed\\u003d\\f return\\u003d\\r\"}",
+      "chain_input_json": "[\"vesta-audit-v1\",\"4444444444444444444444444444444444444444444444444444444444444444\",\"server-main\",\"user-10\",\"device-e5\",\"local-cli\",\"operation.inspect\",\"operation:op-55\",\"accepted\",\"op-control-values\",1735689601001,\"{\\\"text\\\":\\\"quote\\\\u003d\\\\\\\" backslash\\\\u003d\\\\\\\\ newline\\\\u003d\\\\n tab\\\\u003d\\\\t nul\\\\u003d\\\\u0000 soh\\\\u003d\\\\u0001 backspace\\\\u003d\\\\b formfeed\\\\u003d\\\\f return\\\\u003d\\\\r\\\"}\"]",
+      "sha256": "e423c765bea7e7d592ea70e149d6e97f53fb9a9f12eac5b79f0d6e39bbb3a9b3",
+      "gson_version": "2.11.0"
+    },
+    {
+      "case_id": "unicode-utf16-tree-order",
+      "previous_case_id": null,
+      "prev_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+      "server_id": "server-main",
+      "principal_id": "user-11",
+      "device_id": "device-f6",
+      "source": "https",
+      "action": "config.read",
+      "target": "config:unicode",
+      "outcome": "accepted",
+      "operation_id": "op-unicode",
+      "at_ms": 1735689601002,
+      "metadata_input": [
+        [
+          "",
+          "BMP private-use"
+        ],
+        [
+          "𐀀",
+          "supplementary linear-A"
+        ],
+        [
+          "café",
+          "😀"
+        ]
+      ],
+      "metadata_json": "{\"café\":\"😀\",\"𐀀\":\"supplementary linear-A\",\"\":\"BMP private-use\"}",
+      "chain_input_json": "[\"vesta-audit-v1\",\"5555555555555555555555555555555555555555555555555555555555555555\",\"server-main\",\"user-11\",\"device-f6\",\"https\",\"config.read\",\"config:unicode\",\"accepted\",\"op-unicode\",1735689601002,\"{\\\"café\\\":\\\"😀\\\",\\\"𐀀\\\":\\\"supplementary linear-A\\\",\\\"\\\":\\\"BMP private-use\\\"}\"]",
+      "sha256": "60e78cf752887a3362f4c07485ff467902dc634679ac1bd55c593af470c2af6e",
+      "gson_version": "2.11.0"
+    },
+    {
+      "case_id": "negative-signed-millisecond",
+      "previous_case_id": null,
+      "prev_hash": "6666666666666666666666666666666666666666666666666666666666666666",
+      "server_id": "server-main",
+      "principal_id": "user-12",
+      "device_id": "device-g7",
+      "source": "https",
+      "action": "server.start",
+      "target": "server:world",
+      "outcome": "accepted",
+      "operation_id": "op-negative-time",
+      "at_ms": -9223372036854775808,
+      "metadata_input": [
+        [
+          "epoch",
+          "minimum signed millis"
+        ]
+      ],
+      "metadata_json": "{\"epoch\":\"minimum signed millis\"}",
+      "chain_input_json": "[\"vesta-audit-v1\",\"6666666666666666666666666666666666666666666666666666666666666666\",\"server-main\",\"user-12\",\"device-g7\",\"https\",\"server.start\",\"server:world\",\"accepted\",\"op-negative-time\",-9223372036854775808,\"{\\\"epoch\\\":\\\"minimum signed millis\\\"}\"]",
+      "sha256": "5b7365720f2cf1db3ef86831f04bbb0328df15de0bae94b87206a090c83b75e3",
+      "gson_version": "2.11.0"
+    },
+    {
+      "case_id": "large-signed-millisecond",
+      "previous_case_id": null,
+      "prev_hash": "7777777777777777777777777777777777777777777777777777777777777777",
+      "server_id": "server-main",
+      "principal_id": "user-13",
+      "device_id": "device-h8",
+      "source": "local-cli",
+      "action": "server.stop",
+      "target": "server:world",
+      "outcome": "accepted",
+      "operation_id": "op-large-time",
+      "at_ms": 9223372036854775807,
+      "metadata_input": [
+        [
+          "epoch",
+          "maximum signed millis"
+        ]
+      ],
+      "metadata_json": "{\"epoch\":\"maximum signed millis\"}",
+      "chain_input_json": "[\"vesta-audit-v1\",\"7777777777777777777777777777777777777777777777777777777777777777\",\"server-main\",\"user-13\",\"device-h8\",\"local-cli\",\"server.stop\",\"server:world\",\"accepted\",\"op-large-time\",9223372036854775807,\"{\\\"epoch\\\":\\\"maximum signed millis\\\"}\"]",
+      "sha256": "c211680ad3053840c0910529ad0802a6e9a9f25c595ec48dc7d2269b62750de3",
+      "gson_version": "2.11.0"
+    },
+    {
+      "case_id": "non-genesis-chained-entry",
+      "previous_case_id": "original-java-domain",
+      "prev_hash": "e24cdd074e7515f49f163ab37abd5a286eacca620a08dd41af97b53ef73766de",
+      "server_id": "server-main",
+      "principal_id": "user-42",
+      "device_id": "device-a1",
+      "source": "https",
+      "action": "server.stop",
+      "target": "server:world",
+      "outcome": "accepted",
+      "operation_id": "op-101",
+      "at_ms": 1735689600124,
+      "metadata_input": [
+        [
+          "phase",
+          "second"
+        ]
+      ],
+      "metadata_json": "{\"phase\":\"second\"}",
+      "chain_input_json": "[\"vesta-audit-v1\",\"e24cdd074e7515f49f163ab37abd5a286eacca620a08dd41af97b53ef73766de\",\"server-main\",\"user-42\",\"device-a1\",\"https\",\"server.stop\",\"server:world\",\"accepted\",\"op-101\",1735689600124,\"{\\\"phase\\\":\\\"second\\\"}\"]",
+      "sha256": "4fbeffb86f4ef0cf902680591c899b8b32ef626f6d1b13c5c156d5f9e77bdfa6",
+      "gson_version": "2.11.0"
+    },
+    {
+      "case_id": "null-metadata-value-normalized-empty-string",
+      "previous_case_id": null,
+      "prev_hash": "8888888888888888888888888888888888888888888888888888888888888888",
+      "server_id": "server-main",
+      "principal_id": "user-14",
+      "device_id": "device-i9",
+      "source": "https",
+      "action": "config.read",
+      "target": "config:optional",
+      "outcome": "accepted",
+      "operation_id": "op-null-value",
+      "at_ms": 1735689601003,
+      "metadata_input": [
+        [
+          "optional",
+          null
+        ]
+      ],
+      "metadata_json": "{\"optional\":\"\"}",
+      "chain_input_json": "[\"vesta-audit-v1\",\"8888888888888888888888888888888888888888888888888888888888888888\",\"server-main\",\"user-14\",\"device-i9\",\"https\",\"config.read\",\"config:optional\",\"accepted\",\"op-null-value\",1735689601003,\"{\\\"optional\\\":\\\"\\\"}\"]",
+      "sha256": "4ae4c5f4f7aa0cf7df6b92145179d68551a2d49c79b62ed918b7c8afc7e16b2d",
+      "gson_version": "2.11.0"
+    }
+  ]
+}

@@ -6,6 +6,58 @@ implementation or deployment. The detailed accepted requirements remain in
 [SERVER_SOFTWARE_STATUS.json](SERVER_SOFTWARE_STATUS.json) is the dated source
 for the HTML roadmap's status assessment.
 
+## 0. Owner direction (2026-10-07)
+
+The owner clarified the intended product shape. Where this section conflicts with
+older text below, this section wins.
+
+1. **One script installs the backend.** A single install script sets up the
+   server-side backend (management agent, and later the supervisor) on the host,
+   normally as a system service. Headless/answer-file installs use the same flow.
+2. **After install, everything is authenticated remote management.** Clients only
+   need the server address and sign-in. Microsoft/Minecraft identity (prove the
+   Minecraft UUID, then resolve its current server-local role) is the expected
+   common method; pack passwords are an alternative, not administrative
+   authority. The launcher is the first client. **A web app is planned later**
+   that needs only an IP/address and authentication. This supersedes the
+   "No remote web panel is planned" sentence in section 1; the web app still
+   uses the same authenticated agent API and authority checks, never a weaker path.
+3. **Onboarding includes server-software installation.** Picking software and a
+   version during onboarding installs it automatically on the backend.
+4. **Clients signal desired changes; the backend does the work.** A client sends
+   only *what* should change (software, Minecraft version, loader version,
+   experimental opt-in, acknowledgements). The backend resolves metadata, plans,
+   returns a review (EULA/licence, checksum notes, Java requirement), the owner
+   confirms that exact plan, and the backend downloads, verifies and installs.
+   Clients never send URLs, digests, sizes, library lists, launch arguments or
+   artifact paths.
+5. **Changes while the game is running: prepare now, apply when stopped.**
+   Planning, download and verification may run while players are online. Switching
+   the active software is locked while Minecraft runs and is shown as a pending
+   change ("stop the server to apply"). Nothing stops or restarts the game
+   automatically, consistent with the existing no-auto-restart rule.
+6. **World and configuration persist across software changes.** Software versions
+   are installed side by side; the active version is switched, the world/config
+   directory is kept. A pre-change backup is taken (Minecraft upgrades worlds one
+   way) and the previous software version stays available for rollback.
+7. **Rust host-wrapper migration is the next direction.** The owner requested a
+   Rust rebuild up to the current Java implementation checkpoint, with the Java
+   wrapper/core and Minecraft plugin/mod retained for comparison and interoperability.
+   This does not mean every unfinished product requirement is implemented, nor that
+   known unsafe legacy trust routes should be copied. The existing Rust installer
+   (`piston-lib::game::server_install` in the launcher repository) remains the
+   download/verification reference; the Rust agent should reuse a transport-neutral
+   library rather than require the whole launcher engine or an unselected Java/Rust
+   sidecar. Crate extraction and Rust parity must earn fresh regression evidence.
+   See [the Rust migration plan](RUST_WRAPPER_MIGRATION_PLAN.md) and its checked
+   file/test accounting; Java-to-Rust translation does not promote the original ledger.
+8. **Migration model allocation and review.** Use GPT-6 Luna for bounded mechanical
+   work, including existing-test translations, with clear file ownership and parent
+   verification/cleanup. Use GPT-6.1 Sol for serious backend work and the final
+   independent review. No Anthropic models are to be used for this migration. Preserve
+   every original requirement ID and historic evidence; translated tests alone never
+   establish complete requirement parity or release readiness.
+
 ## 1. Outcome and scope
 
 Build a self-hosted Minecraft Java server management product with the launcher as
