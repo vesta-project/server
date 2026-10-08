@@ -4,6 +4,7 @@ members = [
     "crates/vesta-state",
     "crates/vesta-control",
     "crates/vesta-game-runtime",
+    "crates/vesta-server-install",
 ]
 resolver = "3"
 
@@ -33,7 +34,7 @@ libc = "=0.2.183"
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Memory", "Win32_System_Threading", "Win32_System_SystemServices", "Win32_System_WindowsProgramming"] }
 
 [workspace.lints.rust]
-# Only the isolated, reviewed Windows ACL adapter may opt into native unsafe calls.
+# Only isolated, reviewed native adapters and owned test fixtures may opt into unsafe calls.
 unsafe_code = "deny"
 
 [workspace.lints.clippy]

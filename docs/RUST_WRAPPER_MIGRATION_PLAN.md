@@ -65,7 +65,7 @@ All new workspace packages are non-publishable development packages.
 | `crates/vesta-state` | Protected state, SQLite schema/transactions/migrations/backup, audit, events, desired/effective settings. Trusted in-process persistence, not a remote API. **Admitted; executed tests.** |
 | `crates/vesta-control` | Identity/policy/password/proof components; operations/confirmations/runner/replay; protected file/content/pack services and runtime composition, split into cohesive modules. **Admitted 2026-10-08; canonical identity, bounded pack-password primitives/service and one-time Minecraft hasJoined challenges executed and tested.** Authenticated device/claim linking, the complete Microsoft identity flow, operations, file/content and full pack/runtime composition remain unfinished. |
 | `crates/vesta-game-runtime` | **Admitted 2026-10-08: bounded console and owned direct-child component**, with native inert-process tests. Literal argv/cwd, generation-bound stdin/stop/kill, timeout retention and actual exit/drain ownership are implemented. Trusted lifecycle composition, independent supervisor/IPC/process-tree control remain unfinished. No network listener or administrative policy. |
-| `crates/vesta-server-install` (planned) | Narrow extracted installer/providers; explicit progress/transport policy, not Tauri/full Piston. |
+| `crates/vesta-server-install` | **Admitted 2026-10-08; extracted and verified**, with all installer test families and a narrow Piston adapter. Explicit private transport configuration/live progress, no Tauri/full Piston. Authenticated install/activation/launch composition remains unfinished. |
 | `apps/vesta-agent` (planned) | Thin configuration/CLI/composition. Remote management remains closed until canonical authenticated transport composition exists. |
 
 The current Java game process is an in-process wrapper child. Keep the future
@@ -173,6 +173,12 @@ node --test scripts/requirements-ledger.test.mjs scripts/server-feature-protocol
    pins, receipts, no-clobber publication, schema-1 golden hash and schema-2 v2 domain.
    Keep six automatic providers and explicit Forge/NeoForge unavailability. No broad
    launcher engine feature split, managed-JRE import, JNI or unselected sidecar.
+   **Later 2026-10-08 extraction integrated and verified** — see
+   [the installer checkpoint](RUST_INSTALLER_EXTRACTION_CHECKPOINT.md). All test families moved;
+   Piston retains a borrowed progress/proxy adapter, not duplicate implementation. Six requirement
+   rows relocate test pointers only, without changing claims/statuses/history. Relative sibling
+   checkouts need revision-pinned CI wiring before publication; local-only references are not
+   remote CI evidence. Host operation/confirmation/recovery/activation remains unfinished.
 
 ## Model allocation and owned work
 
@@ -256,6 +262,17 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   remain unchanged; parity stays **24 migrated, 17 retained Java plugin, 181 not migrated,
   0 verified**. Production lifecycle bindings, authenticated/Java-plan composition, process-tree
   containment, independent supervision and mandatory final whole-rebuild review remain pending.
+- **Later 2026-10-08 installer extraction, native Windows 11 / Rust 1.96.0:** fresh settled
+  server format/all-target check/workspace tests/strict all-target Clippy passed: **556 Rust
+  tests**, including **168 extracted installer cases**, plus **210 full Piston tests** and
+  **159 Node tests**, zero failed/ignored/skipped. Old Piston count is intentionally reduced
+  by the moved 164 cases, with two new adapter tests; no family was dropped. Sol's scoped
+  extraction/follow-up source review and parent's inert-failure correction/cleanup are recorded
+  [at the checkpoint](RUST_INSTALLER_EXTRACTION_CHECKPOINT.md), including earlier lint/accounting
+  failures. All 222 Java hashes/370 frozen requirements and original statuses/history remain;
+  six rows change only 14 live test pointers. Parity stays **24 migrated, 17 retained Java plugin,
+  181 not migrated, 0 verified**; final whole-rebuild review stays `not_run`. Core Rust minimum
+  is honestly **1.88** for the preserved sysinfo pin; no MSRV or non-Windows execution is inferred.
 - Owner direction is to design for all intended platform compatibilities while testing
   Windows only in the current increment. Linux, macOS and non-Windows architecture/native
   behavior remain unexecuted and unverified; WSL presence is not platform evidence.

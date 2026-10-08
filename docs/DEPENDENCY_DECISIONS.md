@@ -255,3 +255,60 @@ notices and vulnerabilities; produce the full SBOM; assess ring's native build a
 platforms; and execute MSRV and integration checks before any release claim. No trusted provenance,
 complete license/notice review, vulnerability status, platform certification or production
 behavior is established here.
+
+## Extracted server-installer intake (2026-10-08)
+
+The unpublished `vesta-server-install` package reuses the existing Rust installer, not a new
+HTTP/execution subsystem. Its direct versions match the companion installer selections:
+
+| Direct pin | Purpose / retained features | Cached manifest licence | Declared Rust minimum |
+| --- | --- | --- | --- |
+| `tokio = 1.50.0` | Existing async/process/filesystem/I/O, `full` | MIT | 1.71 |
+| `reqwest = 0.11.27` | Existing bounded transport, `json/stream/multipart/socks`, default TLS retained | MIT OR Apache-2.0 | 1.63.0 |
+| `futures = 0.3.32` | Existing async traits/utilities | MIT OR Apache-2.0 | 1.71 |
+| `thiserror = 2.0.18` | Fixed domain errors | MIT OR Apache-2.0 | 1.68 |
+| `sha1 = 0.10.6`, `sha2 = 0.10.9`, `md-5 = 0.10.6` | Original pins plus separately observed SHA-256; SHA-1/MD5 never authenticity | MIT OR Apache-2.0 | Not declared in these cached manifests |
+| `sysinfo = 0.38.4` | Existing available-space checks | MIT | **1.88** |
+| `dunce = 1.0.5` | Existing canonical-path normalization | CC0-1.0 OR MIT-0 OR Apache-2.0 | Not declared |
+| `url = 2.5.8` | Existing URL policy/parser | MIT OR Apache-2.0 | 1.63 |
+| `wiremock = 0.6.5` (tests only) | Owned local HTTP fixtures | MIT/Apache-2.0 (cached spelling) | Not declared |
+
+Existing workspace exact pins for serde/serde_json/SHA-256/UUID/windows-sys/tempfile are reused;
+serde additionally enables `rc`. No root direct pin was changed. The crate keeps edition 2021 and
+declares **Rust 1.88**, honestly matching sysinfo; foundation declarations remain 1.85. Neither
+minimum was executed. Windows/Rust 1.96 is the current evidence, not an MSRV certification.
+
+Normal offline resolution expands the server lock from **106 to 247** package entries. All newly
+selected registry entries were compared by name/version/source/checksum with the companion lock
+and match. No retained registry entry changed checksum. Seven older server entries were replaced
+or removed; do not describe the expanded lock as version-neutral:
+
+- `futures-util 0.3.34` -> `0.3.32`.
+- `js-sys 0.3.106` -> `0.3.91`.
+- `wasm-bindgen`, `wasm-bindgen-macro`, `wasm-bindgen-macro-support`, `wasm-bindgen-shared`:
+  `0.2.129` -> `0.2.114`.
+- `syn 3.0.6` removed; the existing `syn 2.0.119` remains, not a repin of that package.
+
+Historical server lock edges connect these to UUID's target-WASM js-sys/wasm-bindgen graph;
+newer macro-support selects syn 3, older support syn 2. The cached UUID/reqwest manifests scope
+those JS/wasm dependencies to WASM. This is not a blanket native Windows foundation repin.
+However, futures-util is also used by the newly admitted native reqwest/futures graph: do not call
+that package universally WASM-only. The resolver's internal selection cause was not established;
+the chosen graph intentionally matches the original companion installer, rather than silently
+claiming the two prior graphs were identical. Both whole-project regressions must pass with it.
+The companion lock adds only the new path-package stanza and Piston dependency edge; no existing
+registry version/source/checksum change is required there.
+
+The package declares `GPL-3.0-only`, matching the actual repository LICENSE files. The companion
+workspace's MIT metadata conflicts with its GPL root license and was not inherited or treated as
+permission to relicense. No publication, full licence compatibility/notice review or distribution
+arrangement is approved by this extraction.
+
+Reqwest's existing native/default TLS dependencies (including target-dependent native TLS,
+OpenSSL/SChannel/Security Framework and SOCKS support) are retained, not replaced by the separate
+Minecraft identity adapter's Rustls stack. sysinfo and windows-sys retain platform-specific native
+code. Function-scoped native allowances cover the unchanged read-only volume/file-handle calls;
+they do not certify native isolation, process-tree containment or path-race resistance. No cached
+crate was modified. Full SBOM, trusted provenance/vulnerability/notice review, clean-platform
+packaging, supported service accounts, MSRV execution, CI sibling-checkout wiring and release
+approval remain open. See [the extraction checkpoint](RUST_INSTALLER_EXTRACTION_CHECKPOINT.md).

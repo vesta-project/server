@@ -1555,8 +1555,8 @@
       "phase": "P7",
       "status": "partially_verified",
       "tests": [
-        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/installation.rs",
-        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/providers.rs"
+        "crates/vesta-server-install/src/tests/installation.rs",
+        "crates/vesta-server-install/src/tests/providers.rs"
       ],
       "evidence": [
         "docs/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
@@ -2061,8 +2061,8 @@
       "phase": "P4",
       "status": "partially_verified",
       "tests": [
-        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/transfer.rs",
-        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/installation.rs"
+        "crates/vesta-server-install/src/tests/transfer.rs",
+        "crates/vesta-server-install/src/tests/installation.rs"
       ],
       "evidence": [
         "docs/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
@@ -2079,8 +2079,8 @@
       "phase": "P4",
       "status": "partially_verified",
       "tests": [
-        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/transfer.rs",
-        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/providers.rs"
+        "crates/vesta-server-install/src/tests/transfer.rs",
+        "crates/vesta-server-install/src/tests/providers.rs"
       ],
       "evidence": [
         "docs/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
@@ -2141,9 +2141,9 @@
       "phase": "P4",
       "status": "partially_verified",
       "tests": [
-        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/transfer.rs",
-        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/installation.rs",
-        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/plans.rs"
+        "crates/vesta-server-install/src/tests/transfer.rs",
+        "crates/vesta-server-install/src/tests/installation.rs",
+        "crates/vesta-server-install/src/tests/plans.rs"
       ],
       "evidence": [
         "docs/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
@@ -3026,8 +3026,8 @@
       "phase": "P3",
       "status": "partially_verified",
       "tests": [
-        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/runtime.rs",
-        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/plans.rs"
+        "crates/vesta-server-install/src/tests/runtime.rs",
+        "crates/vesta-server-install/src/tests/plans.rs"
       ],
       "evidence": [
         "docs/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
@@ -3044,9 +3044,9 @@
       "phase": "P3",
       "status": "partially_verified",
       "tests": [
-        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/runtime.rs",
-        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/providers.rs",
-        "launcher-server-mvp:crates/piston-lib/src/game/server_install/tests/installation.rs"
+        "crates/vesta-server-install/src/tests/runtime.rs",
+        "crates/vesta-server-install/src/tests/providers.rs",
+        "crates/vesta-server-install/src/tests/installation.rs"
       ],
       "evidence": [
         "docs/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
