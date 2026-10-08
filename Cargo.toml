@@ -1,5 +1,10 @@
 [workspace]
-members = ["crates/vesta-protocol", "crates/vesta-state", "crates/vesta-control"]
+members = [
+    "crates/vesta-protocol",
+    "crates/vesta-state",
+    "crates/vesta-control",
+    "crates/vesta-game-runtime",
+]
 resolver = "3"
 
 [workspace.package]

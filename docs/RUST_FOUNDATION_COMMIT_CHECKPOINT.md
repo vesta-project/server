@@ -50,6 +50,15 @@ The protected companion launcher `vesta-launcher/src-tauri/Cargo.toml` is not st
 Its SHA-256 is unchanged:
 `4f0e1eef699c54f1c1ee09007a3eca7e932e7b04a5ed15f4db73ddbfe0d01251`.
 
+## Actual local commit outcome
+
+The inspected 93-file foundations scope was committed successfully as
+`33ffb729a618a0f80e4b94b2d2c784fd59e57193`, using the per-command unsigned override.
+Git reported signature status `N`; inspection of the commit object confirmed no signature header.
+The server working tree was clean immediately afterward and the protected launcher hash was
+rechecked unchanged. No push or signing-configuration change occurred. The subsequently started
+operations increment is not implementation evidence contained in this foundations commit.
+
 ## Still pending
 
 Durable operations/confirmation/runner/replay; game/runtime/supervisor/IPC; protected files/content/full

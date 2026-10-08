@@ -1,6 +1,11 @@
 # Next Rust increment: durable-operations kernel
 
-Date: **2026-10-08**. Status: **scoped design only; no implementation or execution evidence**.
+Date: **2026-10-08**. Status: **ordinary observation facade plus staged test-only kernel integrated and verified**.
+The first all-target control check compiled with private-kernel reachability warnings. The first
+control unit-test run passed 230 and failed one overbroad redaction assertion. Corrected ordinary
+observation and staged private-kernel verification, independent review and the fresh integrated
+353-test Windows pass are recorded in [the bounded checkpoint](RUST_OPERATIONS_OBSERVATION_CHECKPOINT.md).
+Production operation execution/composition remains unfinished.
 
 This is the next bounded slice of the approved [Rust-native migration](RUST_WRAPPER_MIGRATION_PLAN.md),
 after [the Minecraft checkpoint](RUST_MINECRAFT_IDENTITY_CHECKPOINT.md). It preserves the original
@@ -53,7 +58,48 @@ focused tests; Luna must not design production authority or weaken assertions.
 trusted-library composition is not a network authorization boundary. Source labels, loopback,
 Minecraft receipts/password matches and test fixtures confer no local/admin authority.
 
-## Safety contracts to settle before implementation
+## Frozen narrow interface
+
+The useful public facade is `Operations::new(StateDatabase)`, `get(&Subject, &OperationId)`,
+`list(&Subject, after_seq, limit)` and `request_cancel(&Subject, &OperationId)`. `get` and `list`
+resolve current `TasksView` in the same server-filtered read snapshot as their projections.
+Pages accept nonnegative cursors and limits 1..=200 without silent clamping. Summaries expose only
+ID/sequence/state/percentage/cancellation flag and timestamps; no input, result/error/progress
+text, arbitrary stored type/target/source, actor/device, lockset, hash, owner or confirmation data.
+
+The stable capability inventory has **no `TasksCancel` / `tasks.cancel`**. Task-view authority
+alone cannot authorize mutation. Nonterminal cancellation additionally requires the exact initiating
+principal **and device**, a hash-verified canonical binding, and all that binding's exact current
+action requirements inside the write transaction. No rank or Owner bypass is added. Terminal no-op
+observation still requires current task access and exact actor/device but may use purged input;
+`recovery_required` rejects cancellation. Unbound retained operation types fail closed. Until actual
+reviewed production bindings arrive, public observation is useful but production cancellation is
+intentionally unavailable; fixture bindings are private `cfg(test)` only.
+
+Admission, OS-owner session, claiming, unstarted release and terminal-input purge are **staged
+private `cfg(test)` kernel code**. They compile and execute only in crate unit-test builds, and
+are absent from ordinary library builds, including the library linked by integration tests,
+until reviewed trusted production composition and real closed domain bindings exist.
+Their exclusively used dependencies are gated with them, not warning-suppressed or made public.
+All public observation/cancellation, bounded persisted validation, canonical binding/lock checks,
+current policy and shared mutation/audit/event paths remain ordinary production code.
+Tested staged scheduling/recovery/retention is not shipped production-kernel completion. No public registry, caller-supplied grants/locks, execution/effect API,
+fake production handler or public uninhabited selector is added. The transaction policy seam is
+`identity::policy_in(&Connection, server_id, now_ms, Option<&Subject>)`, crate-private and delegated
+to the existing repository without opening another transaction. Owner sessions borrow `Operations`,
+retain the database directory's OS lock, and are non-`Send`/non-`Sync` for this no-worker increment.
+
+Persisted resource reads use a 33rd-row overflow sentinel for a 32-key bound. Queue claims traverse
+bounded keyset pages rather than stopping permanently at the first blocked page. Earlier remaining
+queued rows reserve their entire locksets; overlapping earlier resources and held locks are checked
+in the same immediate transaction without accumulating an unbounded in-memory queue/lock list.
+Allocations are bounded; transaction latency may still scale with queue length.
+
+These interfaces and limits are implementation choices for this bounded slice, not new normative
+requirements or evidence of execution. Parent owns the identity seam/wiring/builds/accounting;
+Sol owns new operations sources and focused private unit tests.
+
+## Safety contracts
 
 1. **Input and bindings.** Limit raw/canonical UTF-8 bytes before parsing/allocation; 64 KiB is
    the proposed conservative first bound, not a new normative product constant. Reject unknown

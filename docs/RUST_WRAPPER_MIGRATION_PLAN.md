@@ -64,7 +64,7 @@ All new workspace packages are non-publishable development packages.
 | `crates/vesta-protocol` | Bounded discovery/negotiation and eventual pack/wire contracts. No authority, process control or network listener. **Admitted; executed tests.** |
 | `crates/vesta-state` | Protected state, SQLite schema/transactions/migrations/backup, audit, events, desired/effective settings. Trusted in-process persistence, not a remote API. **Admitted; executed tests.** |
 | `crates/vesta-control` | Identity/policy/password/proof components; operations/confirmations/runner/replay; protected file/content/pack services and runtime composition, split into cohesive modules. **Admitted 2026-10-08; canonical identity, bounded pack-password primitives/service and one-time Minecraft hasJoined challenges executed and tested.** Authenticated device/claim linking, the complete Microsoft identity flow, operations, file/content and full pack/runtime composition remain unfinished. |
-| `crates/vesta-game-runtime` (planned) | Literal launch definitions, owned game generations, stdin/exits, bounded console and platform adapters. No network listener or administrative policy. |
+| `crates/vesta-game-runtime` | **Admitted 2026-10-08: bounded synchronous console capture only**, with inert-reader tests. Literal launch definitions, owned game generations, stdin/exits and process/IPC supervision remain unfinished. No network listener or administrative policy. |
 | `crates/vesta-server-install` (planned) | Narrow extracted installer/providers; explicit progress/transport policy, not Tauri/full Piston. |
 | `apps/vesta-agent` (planned) | Thin configuration/CLI/composition. Remote management remains closed until canonical authenticated transport composition exists. |
 
@@ -144,8 +144,13 @@ node --test scripts/requirements-ledger.test.mjs scripts/server-feature-protocol
    until an uncooperative worker actually exits; dropping a handle is not termination.
    The next bounded slice is the [durable-operations kernel](RUST_OPERATIONS_KERNEL_PLAN.md):
    canonical admission/idempotency, owned fair claiming/locks, cancellation journaling and
-   conservative reconciliation over the existing schema. Its design has been scoped by Sol;
-   **implementation and tests have not begun**. Production execution handlers, real worker
+   conservative reconciliation over the existing schema. Its narrow API has been frozen by Sol;
+   **ordinary observation and a staged test-only private kernel are integrated and verified** —
+   see [the bounded operations checkpoint](RUST_OPERATIONS_OBSERVATION_CHECKPOINT.md) for corrected
+   execution, failed-attempt history and the explicit production/test staging boundary. The useful public facade
+   observes sanitized summaries under current task access; cancellation additionally requires the
+   exact initiating actor/device and current action requirements of a verified binding. There is
+   no invented `tasks.cancel` capability and no production binding yet. Production execution handlers, real worker
    supervision, confirmation consumption, authorized replay and remote wiring remain separate
    work; no fake handler or successful no-op may imply those are complete.
 6. **Game/files/pack/composition.** Build literal argv/cwd, generation-bound start/stop/kill,
@@ -153,7 +158,9 @@ node --test scripts/requirements-ledger.test.mjs scripts/server-feature-protocol
    draining as cohesive Rust components. PID/open port is not readiness. Current durable
    lifecycle types are start/stop/force-kill, not a new durable restart. Required behavior
    and legacy transports must be accounted for, not reproduced by copying Java APIs or
-   weakening trust paths.
+   weakening trust paths. **Bounded console capture is admitted and verified 2026-10-08** —
+   see [the console checkpoint](RUST_CONSOLE_CAPTURE_CHECKPOINT.md). Inert readers, ring retention
+   and paging do not establish process-pipe draining, lifecycle ownership or authenticated output.
 7. **Installer extraction/reuse.** Extract the reviewed installer and all tests, with
    exactly four external seams: progress types, Java-major parser, configured proxy,
    and linked-ancestor checks. Preserve transfer restrictions, deadlines, original
@@ -222,6 +229,16 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   [the Minecraft checkpoint](RUST_MINECRAFT_IDENTITY_CHECKPOINT.md). Real transport/Mojang,
   authenticated-device/canonical-claim composition, dependency Trace redaction, hard DNS
   cancellation, other platforms/MSRV and final whole-rebuild review remain unfinished.
+- **Later 2026-10-08 operations/console increment, native Windows 11 / Rust 1.96.0:** fresh
+  four-member format/check/offline-locked tests/strict all-target Clippy passed: **353 Rust tests**,
+  zero failures/ignored, and **159 Node tests**, zero failures/skips. Ordinary current-policy
+  operation observations/cancellation validation and bounded console capture are integrated.
+  Private admission/OS scheduling/recovery/retention is **staged cfg(test) code**, not a shipped
+  scheduler or worker. Scoped independent Sol source reviews and parent-run fault/concurrency
+  regressions are documented in the two checkpoints. All 222 hashes/370 original requirements
+  remain intact; inventory dispositions stay **24 migrated, 17 retained Java plugin, 181 not
+  migrated, 0 verified**. Final whole-rebuild review, authenticated composition and actual game/
+  worker effects remain pending.
 - Owner direction is to design for all intended platform compatibilities while testing
   Windows only in the current increment. Linux, macOS and non-Windows architecture/native
   behavior remain unexecuted and unverified; WSL presence is not platform evidence.

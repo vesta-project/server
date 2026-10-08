@@ -1,4 +1,4 @@
-//! Trusted, in-process canonical identity and policy components.
+//! Trusted, in-process canonical identity, policy and operations components.
 //!
 //! This crate does not authenticate a transport, expose a listener, enroll a device,
 //! or turn Minecraft identity, passwords, OP, connector possession or loopback into
@@ -6,6 +6,7 @@
 #![deny(unsafe_code)]
 
 pub mod identity;
+pub mod operations;
 
 mod error;
 

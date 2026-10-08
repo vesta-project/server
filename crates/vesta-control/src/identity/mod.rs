@@ -43,5 +43,16 @@ pub use service::IdentityService;
 
 pub type EpochMillis = i64;
 
+/// Resolve current policy on a trusted caller's already-admitted transaction.
+/// This does not open a snapshot or accept caller-retained authority.
+pub(crate) fn policy_in(
+    connection: &rusqlite::Connection,
+    server_id: &str,
+    now_ms: EpochMillis,
+    subject: Option<&Subject>,
+) -> crate::Result<PolicySnapshot> {
+    repository::Repository::new(connection, server_id, now_ms).policy(subject)
+}
+
 #[cfg(test)]
 mod tests;

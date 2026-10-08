@@ -701,6 +701,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "vesta-game-runtime"
+version = "0.1.0"
+
+[[package]]
 name = "vesta-protocol"
 version = "0.1.0"
 dependencies = [
