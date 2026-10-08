@@ -64,7 +64,7 @@ All new workspace packages are non-publishable development packages.
 | `crates/vesta-protocol` | Bounded discovery/negotiation and eventual pack/wire contracts. No authority, process control or network listener. **Admitted; executed tests.** |
 | `crates/vesta-state` | Protected state, SQLite schema/transactions/migrations/backup, audit, events, desired/effective settings. Trusted in-process persistence, not a remote API. **Admitted; executed tests.** |
 | `crates/vesta-control` | Identity/policy/password/proof components; operations/confirmations/runner/replay; protected file/content/pack services and runtime composition, split into cohesive modules. **Admitted 2026-10-08; canonical identity, bounded pack-password primitives/service and one-time Minecraft hasJoined challenges executed and tested.** Authenticated device/claim linking, the complete Microsoft identity flow, operations, file/content and full pack/runtime composition remain unfinished. |
-| `crates/vesta-game-runtime` | **Admitted 2026-10-08: bounded synchronous console capture only**, with inert-reader tests. Literal launch definitions, owned game generations, stdin/exits and process/IPC supervision remain unfinished. No network listener or administrative policy. |
+| `crates/vesta-game-runtime` | **Admitted 2026-10-08: bounded console and owned direct-child component**, with native inert-process tests. Literal argv/cwd, generation-bound stdin/stop/kill, timeout retention and actual exit/drain ownership are implemented. Trusted lifecycle composition, independent supervisor/IPC/process-tree control remain unfinished. No network listener or administrative policy. |
 | `crates/vesta-server-install` (planned) | Narrow extracted installer/providers; explicit progress/transport policy, not Tauri/full Piston. |
 | `apps/vesta-agent` (planned) | Thin configuration/CLI/composition. Remote management remains closed until canonical authenticated transport composition exists. |
 
@@ -160,7 +160,13 @@ node --test scripts/requirements-ledger.test.mjs scripts/server-feature-protocol
    and legacy transports must be accounted for, not reproduced by copying Java APIs or
    weakening trust paths. **Bounded console capture is admitted and verified 2026-10-08** —
    see [the console checkpoint](RUST_CONSOLE_CAPTURE_CHECKPOINT.md). Inert readers, ring retention
-   and paging do not establish process-pipe draining, lifecycle ownership or authenticated output.
+   and paging alone do not establish process-pipe draining, lifecycle ownership or authenticated output.
+   **Later 2026-10-08 owned direct-child increment admitted and verified** — see
+   [the process checkpoint](RUST_GAME_PROCESS_CHECKPOINT.md) for native literal argv/cwd, bounded
+   stdin, actual exit/drain ownership, timeout retention and error-path recovery evidence. This
+   ordinary component does not activate the staged operations kernel, install production lifecycle
+   bindings or establish authenticated management, artifact/Java-plan composition, readiness,
+   process-tree containment or independent supervisor continuity.
 7. **Installer extraction/reuse.** Extract the reviewed installer and all tests, with
    exactly four external seams: progress types, Java-major parser, configured proxy,
    and linked-ancestor checks. Preserve transfer restrictions, deadlines, original
@@ -239,6 +245,17 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   remain intact; inventory dispositions stay **24 migrated, 17 retained Java plugin, 181 not
   migrated, 0 verified**. Final whole-rebuild review, authenticated composition and actual game/
   worker effects remain pending.
+- **Later 2026-10-08 owned direct-child increment, native Windows 11 / Rust 1.96.0:** fresh
+  settled-source format/check/offline-locked workspace tests/strict all-target Clippy passed:
+  **388 Rust tests**, zero failed/ignored, and **159 Node tests**, zero failed/skipped. Runtime
+  now includes literal native launch, bounded stdin, generation-bound stop/kill/wait, timeout
+  ownership and actual exit/drain finalization. Scoped independent Sol source review identified
+  two corrected error-path defects; parent executed real inert-process and private fault witnesses.
+  [The process checkpoint](RUST_GAME_PROCESS_CHECKPOINT.md) retains earlier failed attempts and
+  the exact assertion limits. All 222 hashes/370 requirements and the protected launcher digest
+  remain unchanged; parity stays **24 migrated, 17 retained Java plugin, 181 not migrated,
+  0 verified**. Production lifecycle bindings, authenticated/Java-plan composition, process-tree
+  containment, independent supervision and mandatory final whole-rebuild review remain pending.
 - Owner direction is to design for all intended platform compatibilities while testing
   Windows only in the current increment. Linux, macOS and non-Windows architecture/native
   behavior remain unexecuted and unverified; WSL presence is not platform evidence.

@@ -117,6 +117,16 @@ impl ConsoleCapture {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn poison_for_test(&self) {
+        let inner = self.inner.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = inner.lock().unwrap();
+            panic!("controlled console poison");
+        })
+        .join();
+    }
+
     /// Drain to EOF regardless of whether a viewer exists. LF, CR and CRLF are
     /// delimiters; empty lines are retained and a final unterminated line is flushed.
     /// Invalid UTF-8 is replaced explicitly, never interpreted as commands.

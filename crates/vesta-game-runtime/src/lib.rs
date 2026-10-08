@@ -1,9 +1,11 @@
-//! In-process game-runtime foundations, not process supervision or authentication.
+//! Trusted in-process game ownership and bounded console capture, not authentication.
 //!
-//! Only bounded console capture is implemented here. No Minecraft process, stdin
-//! command dispatch, listener, IPC or readiness/crash-continuity claim is provided.
-//! Console output can contain secrets: a future application must enforce current
-//! console-read policy before exposing snapshots. Task-view authority is not enough.
+//! Literal launch and generation-bound direct-child control are host-library components,
+//! not an agent, independent supervisor, IPC, readiness or crash-continuity claim.
+//! Console output can contain secrets: an application must enforce current console-read
+//! policy before exposing snapshots. Task-view authority is not enough. Launch/commands
+//! require trusted backend composition; these APIs do not authorize remote requests.
 #![deny(unsafe_code)]
 
 pub mod console;
+pub mod process;
