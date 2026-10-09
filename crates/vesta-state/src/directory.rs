@@ -146,7 +146,7 @@ impl StateDirectory {
         Ok(RunnerLock { file })
     }
 
-    fn verify_root_spelling(&self) -> Result<()> {
+    pub(crate) fn verify_root_spelling(&self) -> Result<()> {
         reject_linked_directories(&self.raw, "state_dir_linked")?;
         reject_linked_directories(&self.path, "state_dir_linked")?;
         let actual = normalize_real(&self.raw)?;
@@ -225,7 +225,7 @@ pub(crate) fn require_regular_or_absent(path: &Path) -> Result<bool> {
     }
 }
 
-fn is_link_or_special(metadata: &fs::Metadata) -> bool {
+pub(crate) fn is_link_or_special(metadata: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
@@ -237,7 +237,7 @@ fn is_link_or_special(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_symlink() || (!metadata.is_file() && !metadata.is_dir())
 }
 
-fn require_directory(path: &Path) -> Result<()> {
+pub(crate) fn require_directory(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path).map_err(|_| StateError::new("state_file_linked"))?;
     if is_link_or_special(&metadata) || !metadata.is_dir() {
         return Err(StateError::new("state_file_linked"));
@@ -245,7 +245,7 @@ fn require_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn reject_linked_directories(path: &Path, code: &'static str) -> Result<()> {
+pub(crate) fn reject_linked_directories(path: &Path, code: &'static str) -> Result<()> {
     for ancestor in path.ancestors() {
         match fs::symlink_metadata(ancestor) {
             Ok(metadata) if !is_link_or_special(&metadata) && metadata.is_dir() => {}
@@ -326,7 +326,7 @@ fn is_within(path: &Path, root: &Path) -> Result<bool> {
     }
 }
 
-fn create_real_directories(path: &Path) -> Result<()> {
+pub(crate) fn create_real_directories(path: &Path) -> Result<()> {
     let mut missing = Vec::new();
     let mut ancestor = path;
     while !fs::symlink_metadata(ancestor)
@@ -367,7 +367,7 @@ fn create_real_directories(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn open_regular(path: &Path, create_new: bool, create: bool) -> Result<File> {
+pub(crate) fn open_regular(path: &Path, create_new: bool, create: bool) -> Result<File> {
     #[cfg(windows)]
     {
         crate::windows_security::open_regular(path, create_new, create)
@@ -396,7 +396,7 @@ fn open_regular(path: &Path, create_new: bool, create: bool) -> Result<File> {
     }
 }
 
-fn tighten_open_file(file: &File) -> Result<()> {
+pub(crate) fn tighten_open_file(file: &File) -> Result<()> {
     #[cfg(windows)]
     {
         crate::windows_security::tighten_handle(file, false)

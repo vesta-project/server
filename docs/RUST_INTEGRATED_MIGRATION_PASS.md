@@ -557,3 +557,18 @@ pack-only authentication/session/routes, full host composition and remaining fam
 accounting are still unfinished. Inventory remains **26 migrated / 17 retained Java plugin /
 179 not_migrated / 0 verified**, with all 370 original requirements preserved. No real
 provider/Java/Minecraft/Mojang execution, exposure, signing change, push or PR occurred.
+
+### Protected content-addressed publication — 2026-10-09
+
+Model allocation changed by the owner: this wave was implemented and verified by the
+parent as Claude Opus 5.5, without helpers. `vesta-state` gains an owner-only flat
+`<state>/artifacts` directory with never-replacing primitives; `packs::PackArtifacts`
+publishes built Vesta packs and pinned opaque archives under their SHA-256 using unique
+create-new staging plus no-replace hard links, and re-verifies size/digest on every load.
+Earlier artifacts are never replaced or removed; injected failures before/after linking,
+conflicting names, tampering, extra links and real Windows junctions are tested. See
+[the checkpoint](RUST_PACK_PUBLICATION_CHECKPOINT.md), including the failed first Clippy
+attempt. Fresh Windows verification passed **896 workspace tests / 42 summaries**, format,
+all-target check, strict Clippy, **159 Node tests** and both accounting checkers.
+Catalogue selection, pack-only sessions/routes, host composition, stage/artifact
+reconciliation, remaining accounting and the final independent review remain unfinished.

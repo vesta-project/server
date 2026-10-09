@@ -6,6 +6,7 @@
 //! lock is advisory and there is no independent supervisor/security boundary here.
 #![deny(unsafe_code)]
 
+pub mod artifacts;
 pub mod audit;
 pub mod events;
 pub mod settings;

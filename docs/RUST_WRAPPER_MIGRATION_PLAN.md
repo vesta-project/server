@@ -359,6 +359,12 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   authentication/routes, full composition, remaining family/requirement accounting and
   final independent whole-rebuild review remain open. Declared control/agent Rust 1.88
   and the deliberate dependency intake are not minimum-toolchain/platform execution.
+- **2026-10-09 protected publication continuation:** content-addressed, never-replacing
+  publication of built packs and pinned archives into owner-only protected state, with
+  verification on every load, is recorded [at its checkpoint](RUST_PACK_PUBLICATION_CHECKPOINT.md).
+  Fresh Windows verification passed **896 workspace tests / 42 summaries**, format/check/
+  strict Clippy, **159 Node tests** and both checkers. Three rows gain scoped evidence but
+  remain `not_migrated`; catalogue/routes/sessions/composition and final review stay open.
 - Owner direction is to design for all intended platform compatibilities while testing
   Windows only in the current increment. Linux, macOS and non-Windows architecture/native
   behavior remain unexecuted and unverified; WSL presence is not platform evidence.

@@ -2095,7 +2095,7 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "0067d8aca31507123bcb378816602804aaf1ad94f767dde6b2cafb2ee62e810d",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/packs/publish.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/LocalArchivePackTest.java",
         "core/src/test/java/com/vesta/sync/manifest/VestaPackBuilderTest.java",
@@ -2103,17 +2103,28 @@
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Partial host-side Rust equivalent: PackPreparation::archive pins confined opaque .zip/.mrpack bytes (case-insensitive extension, traversal/link refusal, never extracted) and PackArtifacts publishes them content-addressed in protected state. Java resolvedPath re-reading of a mutable server-root file is deliberately replaced by pinned, verified bytes.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "ModpackState.fromArchive archive-mode manifest/catalogue selection and authenticated download route remain unimplemented.",
+        "Absolute configured archive paths are not accepted; the configured-host archive selection contract is still to be composed.",
+        "Whole-family applicable-requirement accounting and separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/packs/tests.rs",
+        "crates/vesta-control/src/packs/publish_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "docs/RUST_PACK_PUBLICATION_CHECKPOINT.md",
+          "date": "2026-10-09",
+          "claim": "Opaque archive pinning (existing traversal/extension/opaque tests) plus protected content-addressed publication surviving source replacement; scoped, not archive-mode catalogue or route parity."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Archive pinning and publication are tested; archive-mode manifest/catalogue/serving, family accounting and final review remain unfinished."
       }
     },
     {
@@ -2412,23 +2423,29 @@
       "status": "not_migrated",
       "rationale": "Partial host-side Rust equivalent: immutable retained-byte hybrid ZIP and existing protocol index projection, independently admitted hashes/provider references and bounded deterministic output. It does not copy mutable Java builders, reopen live files, replace retained plugin consumers or claim completed disk publication.",
       "gaps": [
-        "Safe unique disk staging/publication and configured authenticated archive services remain unimplemented; an in-memory result does not satisfy returned regular-file/publication behavior.",
+        "Catalogue selection/revision records and authenticated pack-only archive serving remain unimplemented; protected content-addressed publication alone is not a download route.",
         "Whole-family applicable-requirement accounting and separate final independent whole-rebuild review remain pending."
       ],
       "rustTests": [
         "crates/vesta-control/src/packs/build_tests.rs",
-        "crates/vesta-control/src/packs/tests.rs"
+        "crates/vesta-control/src/packs/tests.rs",
+        "crates/vesta-control/src/packs/publish_tests.rs"
       ],
       "evidence": [
         {
           "path": "docs/RUST_VESTA_BUILD_CHECKPOINT.md",
           "date": "2026-10-09",
           "claim": "Scoped builder and two Java assertion-method dispositions, executed Windows evidence, deliberate stricter admission and unresolved required disk effects; not full production-row parity."
+        },
+        {
+          "path": "docs/RUST_PACK_PUBLICATION_CHECKPOINT.md",
+          "date": "2026-10-09",
+          "claim": "Safer replacement for game-root fixed-temp output and replace/atomic-move fallback: unique create-new staging, no-replace content-addressed hard-link publication in protected state, verification on every load; scoped, not whole-row parity."
         }
       ],
       "results": {
         "status": "unverified",
-        "summary": "Scoped hybrid construction is implemented and tested; useful publication/service behavior, whole-family accounting and final review are still unresolved."
+        "summary": "Scoped hybrid construction and protected content-addressed publication are implemented and tested; catalogue/serving behavior, whole-family accounting and final review remain unresolved."
       }
     },
     {
@@ -3225,23 +3242,28 @@
       "status": "not_migrated",
       "rationale": "The method's hybrid format/index/order/source/membership assertions map to the independent mixed-index/manual-ZIP and native retained-body tests. Java placeholder hashes, short provider IDs and arbitrary CDN URL are deliberately replaced with validated real fixture descriptors, not accepted for compatibility.",
       "gaps": [
-        "The Java method's returned-path regular-file assertion needs safe disk publication; immutable bytes alone do not close it.",
         "Whole-family applicable-requirement accounting and separate final independent review remain pending."
       ],
       "rustTests": [
         "crates/vesta-control/src/packs/build_tests.rs",
-        "crates/vesta-control/src/packs/tests.rs"
+        "crates/vesta-control/src/packs/tests.rs",
+        "crates/vesta-control/src/packs/publish_tests.rs"
       ],
       "evidence": [
         {
           "path": "docs/RUST_VESTA_BUILD_CHECKPOINT.md",
           "date": "2026-10-09",
           "claim": "Explicit disposition of embedsUnknownFilesAndLeavesKnownSourcesExternal assertions, with executed bounded ZIP evidence and the regular-file assertion still open."
+        },
+        {
+          "path": "docs/RUST_PACK_PUBLICATION_CHECKPOINT.md",
+          "date": "2026-10-09",
+          "claim": "The returned-path regular-file assertion maps to publication of a single-link regular content-addressed file in protected state, reloaded and verified; the Java game-root output location is deliberately not reproduced."
         }
       ],
       "results": {
         "status": "unverified",
-        "summary": "Scoped hybrid/index assertions are tested; required disk-file behavior and complete family verification remain unfinished."
+        "summary": "Hybrid/index and published regular-file assertions are tested; complete family verification and final review remain unfinished."
       }
     },
     {

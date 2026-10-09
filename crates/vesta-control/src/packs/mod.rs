@@ -2,9 +2,14 @@
 //! Prepared bytes are immutable artifacts; later on-disk replacement cannot change
 //! them under a prior hash. A refresh is bounded, not an atomic tree snapshot.
 mod build;
+mod publish;
 pub use build::{
     BuiltVestaPack, MAX_VESTA_ARCHIVE_BYTES, MAX_VESTA_ENTRIES, MAX_VESTA_INDEX_BYTES,
     VestaBuildError, VestaBuildLimits, build_vesta,
+};
+pub use publish::{
+    ArtifactFormat, LoadedArtifact, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_ENTRIES, PackArtifacts,
+    PublishedArtifact,
 };
 
 use crate::files::{FileError, PackNode, PackRoot, RelativePath};
@@ -75,6 +80,9 @@ pub enum PackError {
     Unavailable,
     TooLarge,
     InvalidArchive,
+    /// A published name or bytes disagree with the expected content identity.
+    Conflict,
+    NotPublished,
     Catalogue(CatalogueError),
 }
 impl PackError {
@@ -87,6 +95,8 @@ impl PackError {
             Self::Unavailable => "pack_unavailable",
             Self::TooLarge => "pack_too_large",
             Self::InvalidArchive => "pack_archive_invalid",
+            Self::Conflict => "pack_artifact_conflict",
+            Self::NotPublished => "pack_artifact_not_published",
             Self::Catalogue(_) => "pack_catalogue_invalid",
         }
     }
