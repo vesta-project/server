@@ -2,7 +2,8 @@
 name = "vesta-agent"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# The composed control library includes ZIP 8.2 (Rust 1.88).
+rust-version = "1.88"
 publish.workspace = true
 
 [dependencies]

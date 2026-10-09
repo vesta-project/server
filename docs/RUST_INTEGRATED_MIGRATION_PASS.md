@@ -1,6 +1,6 @@
 # Coordinated Rust migration pass
 
-Started: **2026-10-08**. Updated: **2026-10-09**. Status: **bounded game-operation slice locally checkpointed and Windows-tested; migration and final review incomplete**.
+Started: **2026-10-08**. Updated: **2026-10-09**. Status: **bounded library slices implemented and Windows-tested; migration and final review incomplete**.
 
 The pause/failed-attempt sections below are historical. The final executed results and local
 checkpoint are recorded near the end; they do not certify the remaining wrapper rebuild.
@@ -16,8 +16,10 @@ Java sources/tests/builds and the Minecraft plugin/mod remain available for comp
 - Parent settles shared interfaces and owns Cargo manifests/lockfiles, integration, executed
   verification, accounting and cleanup. Sol owns serious backend implementation and independent
   review; Luna owns bounded mechanical inventories/test work against settled interfaces.
-- Space Bunny is unavailable according to the owner and is not retried during this pass.
-  No Anthropic/default-model agents or nested orchestration are used.
+- Earlier pause/resumption sections record Bunny's unavailability at that time. The later
+  owner-authorized continuation used one bounded Bunny native-junction fixture; parent
+  inspected and executed it. Serious backend work remains parent/configured-Sol owned.
+  No Anthropic/default-model fallback or nested orchestration is used.
 - Writers have disjoint explicit file ownership. No blanket source translation, cfg(test)
   authority exposure, fake production handlers or skipped/ignored assertions to force a pass.
 - Integrate one candidate, then run the full native Windows workspace, companion installer,
@@ -515,3 +517,43 @@ summaries**, zero failed/ignored. Workspace format, all-target compilation and s
 Clippy passed; **159 Node tests** and both frozen accounting checkers passed.
 Useful-current-Java accounting, durable effects, configured services, authenticated routes,
 full host composition and final independent review remain unfinished.
+
+### Owned-byte hybrid ZIP continuation — 2026-10-09
+
+`packs::build_vesta` now consumes an immutable prepared snapshot and validated host pack
+metadata. It independently admits exact body membership/size/SHA-256/optional SHA-1,
+metadata agreement and provider IDs/URLs; Embedded/Server files become overrides and
+Platform files remain references. There is no reopening, incoming extraction, download,
+disk publication, route or authority. Stored ZIP output has fixed Unix/DOS-1980/0644
+metadata, stable member order, bounded compact JSON and a sticky bounded seekable sink.
+Checked conservative minimum overhead is refused before writer construction; the sink
+still governs actual output and exceptional finalization.
+
+Parent reviewed the configured Sol's disjoint source implementation, added actual host/
+protected native snapshot/builder integration, independently inspected local/central/footer
+ZIP structures and CRCs, and exercised actual footer failure. The retained Java `known`
+and `embedded` literal vectors match frozen fixture hashes; the final integration compares
+provider fingerprint fields unchanged, omitting only optional embedded SHA-1. Three
+builder/test inventory rows now carry explicit **partial** mappings and assertion/gap
+dispositions without changing their `not_migrated` status. See
+[the checkpoint](RUST_VESTA_BUILD_CHECKPOINT.md) for exact assertions, attempts and commands.
+
+Dependency intake pins companion `zip 8.2.0` with defaults disabled and adds only its
+three missing registry packages, preserving retained identities/checksums. Control/agent
+explicitly declare Rust 1.88; equivalent MSRV-aware Clippy condition/multiple expressions
+preserve existing security check order without suppressions. Failed compile, fixture and
+Clippy attempts remain recorded rather than counted as passes.
+
+Fresh final-source Windows 11/Rust 1.96 verification passed **881 workspace Rust tests /
+42 full summaries**, zero failed/ignored/filtered, workspace format/all-target compilation
+and strict Clippy. Fresh companion check/tests passed **210 / 9 summaries** (existing
+unused-import warning); fresh **159 Node tests** and both frozen accounting checkers passed.
+The intentional exceptional ZIP Drop fixture emits only fixed input-free sink text.
+Protected launcher raw digest is unchanged. No MSRV/non-Windows, launcher-production,
+publication, whole-family or final independent whole-rebuild review claim follows.
+
+Useful durable file/content effects, safe disk staging/publication, configured pack services,
+pack-only authentication/session/routes, full host composition and remaining family/requirement
+accounting are still unfinished. Inventory remains **26 migrated / 17 retained Java plugin /
+179 not_migrated / 0 verified**, with all 370 original requirements preserved. No real
+provider/Java/Minecraft/Mojang execution, exposure, signing change, push or PR occurred.

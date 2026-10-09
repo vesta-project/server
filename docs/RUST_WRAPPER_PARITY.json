@@ -2399,24 +2399,36 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "7523dac297429dd3f0c06f0a42959e8a09fb23a6e335e18448b3440db5ef8090",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/packs/build.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/VestaPackBuilderTest.java",
         "core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java"
       ],
-      "fixturePaths": [],
-      "applicableRequirements": [],
-      "disposition": "pending_mapping",
-      "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
-      "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+      "fixturePaths": [
+        "core/src/test/resources/vesta-builder-v1.json"
       ],
-      "rustTests": [],
-      "evidence": [],
+      "applicableRequirements": [],
+      "disposition": "migrate_to_rust",
+      "status": "not_migrated",
+      "rationale": "Partial host-side Rust equivalent: immutable retained-byte hybrid ZIP and existing protocol index projection, independently admitted hashes/provider references and bounded deterministic output. It does not copy mutable Java builders, reopen live files, replace retained plugin consumers or claim completed disk publication.",
+      "gaps": [
+        "Safe unique disk staging/publication and configured authenticated archive services remain unimplemented; an in-memory result does not satisfy returned regular-file/publication behavior.",
+        "Whole-family applicable-requirement accounting and separate final independent whole-rebuild review remain pending."
+      ],
+      "rustTests": [
+        "crates/vesta-control/src/packs/build_tests.rs",
+        "crates/vesta-control/src/packs/tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "docs/RUST_VESTA_BUILD_CHECKPOINT.md",
+          "date": "2026-10-09",
+          "claim": "Scoped builder and two Java assertion-method dispositions, executed Windows evidence, deliberate stricter admission and unresolved required disk effects; not full production-row parity."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Scoped hybrid construction is implemented and tested; useful publication/service behavior, whole-family accounting and final review are still unresolved."
       }
     },
     {
@@ -3203,23 +3215,33 @@
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "73c79a0ba2cc702bde22891eb9fd40a0cbcafe41ebb1549fb5748f9a5a073de5",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/packs/build_tests.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/VestaPackBuilderTest.java"
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "The method's hybrid format/index/order/source/membership assertions map to the independent mixed-index/manual-ZIP and native retained-body tests. Java placeholder hashes, short provider IDs and arbitrary CDN URL are deliberately replaced with validated real fixture descriptors, not accepted for compatibility.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "The Java method's returned-path regular-file assertion needs safe disk publication; immutable bytes alone do not close it.",
+        "Whole-family applicable-requirement accounting and separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/packs/build_tests.rs",
+        "crates/vesta-control/src/packs/tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "docs/RUST_VESTA_BUILD_CHECKPOINT.md",
+          "date": "2026-10-09",
+          "claim": "Explicit disposition of embedsUnknownFilesAndLeavesKnownSourcesExternal assertions, with executed bounded ZIP evidence and the regular-file assertion still open."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Scoped hybrid/index assertions are tested; required disk-file behavior and complete family verification remain unfinished."
       }
     },
     {
@@ -3229,7 +3251,7 @@
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "a8c3eef96cb53d5fa255231f98292d5e965fae3a90d590fa0761f6a4dd7cb821",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/packs/tests.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java"
       ],
@@ -3237,17 +3259,27 @@
         "core/src/test/resources/vesta-builder-v1.json"
       ],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Native trusted host/snapshot/build integration compares the frozen metadata/source/loader/provider-fingerprint structure and exact embedded/reference membership. The only explicit shared-wire delta is optional embedded SHA-1 absence for ordinary SHA-256 snapshots. Frozen Java fixture bytes remain unchanged; no Java or actual launcher exchange is claimed.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Safe published-file behavior and real composed launcher consumption are not established by fixture-level JSON/ZIP inspection.",
+        "Whole-family applicable-requirement accounting and separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/packs/tests.rs",
+        "crates/vesta-control/src/packs/build_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "docs/RUST_VESTA_BUILD_CHECKPOINT.md",
+          "date": "2026-10-09",
+          "claim": "Scoped independent golden-fixture interoperability assertions and explicit optional-hash/application limitations, not whole-family or production launcher verification."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Scoped shared-wire assertions are tested; publication/application composition, complete family accounting and final review remain unfinished."
       }
     },
     {

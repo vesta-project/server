@@ -1,6 +1,12 @@
 //! Explicit trusted pack preparation. No listener, session or filesystem mutation.
 //! Prepared bytes are immutable artifacts; later on-disk replacement cannot change
 //! them under a prior hash. A refresh is bounded, not an atomic tree snapshot.
+mod build;
+pub use build::{
+    BuiltVestaPack, MAX_VESTA_ARCHIVE_BYTES, MAX_VESTA_ENTRIES, MAX_VESTA_INDEX_BYTES,
+    VestaBuildError, VestaBuildLimits, build_vesta,
+};
+
 use crate::files::{FileError, PackNode, PackRoot, RelativePath};
 use std::{collections::BTreeMap, fmt, path::Path};
 use vesta_protocol::pack::{

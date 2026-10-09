@@ -228,30 +228,30 @@ impl Operations {
             // Resolve current authority BEFORE idempotent retrieval, not merely
             // before inserting a new row. Time is sampled after writer admission.
             self.authorize_plan(&repo, subject, &plan)?;
-            if let Some(key) = idempotency_key {
-                if let Some(existing) = repo.find_key(&subject.principal, key)? {
-                    let resources = repo.check_locks(&existing)?;
-                    if existing.subject.device != subject.device
-                        || existing.source != REQUEST_SOURCE
-                        || existing.operation_type != plan.operation_type
-                        || existing.target != plan.target
-                        || existing.payload_hash != plan.payload_hash
-                        || resources != plan.resources
-                        || existing.effect_idempotent != plan.effect_idempotent
-                        || existing.requires_confirmation != plan.requires_confirmation
-                        || existing.idempotency_key.as_deref() != Some(key)
-                    {
-                        return Err(OperationError::rejected(
-                            OperationErrorCode::IdempotencyConflict,
-                        ));
-                    }
-                    // Terminal retention is allowed to remove input. Nonterminal
-                    // retrieval must still reject a corrupted persisted binding.
-                    if !existing.summary.state.is_terminal() {
-                        self.verify_binding(&repo, &existing)?;
-                    }
-                    return Ok(Admission::Existing(existing.summary));
+            if let Some(key) = idempotency_key
+                && let Some(existing) = repo.find_key(&subject.principal, key)?
+            {
+                let resources = repo.check_locks(&existing)?;
+                if existing.subject.device != subject.device
+                    || existing.source != REQUEST_SOURCE
+                    || existing.operation_type != plan.operation_type
+                    || existing.target != plan.target
+                    || existing.payload_hash != plan.payload_hash
+                    || resources != plan.resources
+                    || existing.effect_idempotent != plan.effect_idempotent
+                    || existing.requires_confirmation != plan.requires_confirmation
+                    || existing.idempotency_key.as_deref() != Some(key)
+                {
+                    return Err(OperationError::rejected(
+                        OperationErrorCode::IdempotencyConflict,
+                    ));
                 }
+                // Terminal retention is allowed to remove input. Nonterminal
+                // retrieval must still reject a corrupted persisted binding.
+                if !existing.summary.state.is_terminal() {
+                    self.verify_binding(&repo, &existing)?;
+                }
+                return Ok(Admission::Existing(existing.summary));
             }
             let op = repo.insert(subject, &plan, idempotency_key)?;
             self.audit.append(

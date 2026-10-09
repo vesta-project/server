@@ -99,10 +99,10 @@ impl SessionProvider for MojangProvider {
 fn decode_http_response(
     response: &mut ureq::http::Response<ureq::Body>,
 ) -> Result<Option<JoinedProfile>, MinecraftError> {
-    if let Some(encoding) = response.headers().get("content-encoding") {
-        if encoding.as_bytes() != b"identity" {
-            return Err(MinecraftError::unavailable());
-        }
+    if let Some(encoding) = response.headers().get("content-encoding")
+        && encoding.as_bytes() != b"identity"
+    {
+        return Err(MinecraftError::unavailable());
     }
     let status = response.status().as_u16();
     let reader = response

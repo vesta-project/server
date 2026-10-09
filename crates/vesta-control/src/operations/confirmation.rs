@@ -240,12 +240,11 @@ fn require_current_target(
     if let Some(GameCommand::ForceKill {
         expected_generation,
     }) = plan.command
+        && *revision != SourceRevision::for_game(Some(expected_generation))
     {
-        if *revision != SourceRevision::for_game(Some(expected_generation)) {
-            return Err(OperationError::rejected(
-                OperationErrorCode::SourceRevisionUnavailable,
-            ));
-        }
+        return Err(OperationError::rejected(
+            OperationErrorCode::SourceRevisionUnavailable,
+        ));
     }
     Ok(())
 }

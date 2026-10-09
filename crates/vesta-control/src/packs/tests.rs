@@ -153,6 +153,151 @@ fn assert_catalogue_error<T: std::fmt::Debug>(
     }
 }
 
+#[test]
+fn trusted_host_snapshot_builds_the_frozen_hybrid_index_from_only_pinned_public_bytes() {
+    use crate::config::HostConfiguration;
+    use std::io::{Cursor, Read};
+    let fixture = Fixture::open();
+    fixture.write("config/options.txt", b"embedded");
+    fixture.write("mods/curseforge.jar", b"known");
+    fixture.write("mods/modrinth.jar", b"known");
+    fixture.write("mods/host-secret.toml", b"private fixture secret");
+    let document = br#"schema-version = 1
+[paths]
+state = 'private-state'
+game = 'game'
+scan-roots = ['game/mods', 'game/config']
+launch-definition = 'game/mods/host-secret.toml'
+[pack]
+name = 'Java interoperability fixture'
+version = '1.2.3'
+revision = 4
+minimum-revision = 2
+minecraft-version = '1.21.1'
+[pack.loader]
+kind = 'fabric'
+version = '0.16.0'
+[pack-access]
+mode = 'minecraft'
+[listener]
+mode = 'disabled'
+"#;
+    let host =
+        HostConfiguration::parse_toml(document, fixture._temp.path(), Path::new("host.toml"))
+            .unwrap();
+    host.validate_host_paths().unwrap();
+    let pack = host.pack();
+    let metadata = ManifestMetadata::new(
+        pack.name(),
+        pack.version(),
+        pack.revision(),
+        pack.minimum_revision(),
+    )
+    .unwrap();
+    let protected: Vec<_> = host
+        .host_protected_paths()
+        .iter()
+        .map(PathBuf::as_path)
+        .collect();
+    let preparation = PackPreparation::open(
+        &fixture.db,
+        host.game(),
+        &protected,
+        limits(1_024, 1_024, 32, 256),
+    )
+    .unwrap();
+    // The retained Java test's literal b"known" has these independently checked
+    // fixture hashes; provider bodies are inert text, never executable JARs.
+    let provider_hash = "7117fff2d0fd294462b3c802b7cb8753579f23f3946b99cf55f38e873f013f10";
+    let sources = SourceRegistry::new(vec![
+        KnownSource::new(
+            "mods/curseforge.jar",
+            provider_hash,
+            FileSource::platform(
+                Platform::Curseforge,
+                "123456",
+                "1234567",
+                Some("https://edge.forgecdn.net/files/1234/567/curseforge.jar"),
+            )
+            .unwrap(),
+        )
+        .unwrap(),
+        KnownSource::new(
+            "mods/modrinth.jar",
+            provider_hash,
+            FileSource::platform(
+                Platform::Modrinth,
+                "Abcd1234",
+                "Efgh5678",
+                Some("https://cdn.modrinth.com/data/Abcd1234/versions/Efgh5678/modrinth.jar"),
+            )
+            .unwrap(),
+        )
+        .unwrap(),
+    ])
+    .unwrap();
+    let snapshot = preparation.snapshot(metadata, &sources).unwrap();
+    assert_eq!(
+        entries(&snapshot),
+        [
+            "config/options.txt",
+            "mods/curseforge.jar",
+            "mods/modrinth.jar"
+        ]
+    );
+    let build_limits =
+        super::VestaBuildLimits::new(1_024 * 1_024, 68 * 1_024 * 1_024, 4_097).unwrap();
+    let artifact = super::build_vesta(&snapshot, pack, build_limits).unwrap();
+    assert_eq!(artifact.format(), "vesta");
+    assert_eq!(artifact.size(), artifact.bytes().len() as u64);
+    let mut archive = zip::ZipArchive::new(Cursor::new(artifact.bytes())).unwrap();
+    assert_eq!(
+        archive.len(),
+        2,
+        "providers remain references, not embedded downloads"
+    );
+    let mut embedded = Vec::new();
+    archive
+        .by_name("overrides/config/options.txt")
+        .unwrap()
+        .read_to_end(&mut embedded)
+        .unwrap();
+    assert_eq!(embedded, b"embedded");
+    let mut index = Vec::new();
+    archive
+        .by_name("vesta.index.json")
+        .unwrap()
+        .read_to_end(&mut index)
+        .unwrap();
+    let actual: serde_json::Value = serde_json::from_slice(&index).unwrap();
+    let mut expected: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../core/src/test/resources/vesta-builder-v1.json"
+    ))
+    .unwrap();
+    // Compare the full independent fixture, including both provider hashes.
+    // Only ordinary embedded SHA-1 is omitted: snapshot preparation promises
+    // SHA-256, while SHA-1 remains optional for embedded files on the shared wire.
+    expected["files"][0]["hashes"]
+        .as_object_mut()
+        .unwrap()
+        .remove("sha1");
+    assert_eq!(actual, expected);
+    drop(archive);
+    fixture.write(
+        "config/options.txt",
+        b"later replacement must not be served under the old digest",
+    );
+    fixture.write("mods/curseforge.jar", b"later provider replacement");
+    std::fs::remove_file(fixture.game.join("mods/modrinth.jar")).unwrap();
+    let repeated = super::build_vesta(&snapshot, pack, build_limits).unwrap();
+    assert_eq!(repeated.bytes(), artifact.bytes());
+    assert_eq!(repeated.sha256(), artifact.sha256());
+    assert_eq!(
+        std::fs::read(fixture.game.join("mods/host-secret.toml")).unwrap(),
+        b"private fixture secret"
+    );
+}
+
 /// A scan of mods and config is deterministic, and every digest is the digest of the
 /// exact bytes the file holds.
 #[test]
@@ -266,7 +411,7 @@ fn configured_and_state_paths_are_excluded_from_every_snapshot() {
         .expect("exclusions are skipped rather than fatal");
     assert_eq!(entries(&snapshot), ["mods/alpha.jar"]);
     for name in [
-        "mods/server.properties",
+        "mods/host-secret.toml",
         "wrapper-config.toml",
         "mods/.git/config",
         "mods/.vesta/state.db",

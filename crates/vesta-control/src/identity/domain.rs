@@ -185,7 +185,7 @@ impl CodeLifetime {
 pub(super) fn duration_millis(duration: Duration) -> Result<i64> {
     // A negative interval has no meaning as a lifetime or relative expiry, and
     // `Duration::as_millis` does not report it as a negative number.
-    if duration < Duration::ZERO || duration.subsec_nanos() % 1_000_000 != 0 {
+    if duration < Duration::ZERO || !duration.subsec_nanos().is_multiple_of(1_000_000) {
         return Err(invalid());
     }
     i64::try_from(duration.as_millis()).map_err(|_| invalid())

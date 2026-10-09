@@ -215,24 +215,24 @@ impl Operations {
             if row.cursor <= processed || row.cursor > through {
                 return Err(StateError::new("state_integrity_failed").into());
             }
-            if let Some(kind) = ReplayEventKind::stored(&row.event_type) {
-                if let Some(operation_id) = self.replay_operation(repo, row)? {
-                    if events.len() == limit {
-                        // Keep this eligible event for the next page. Ineligible
-                        // rows after the output limit still consume scan budget.
-                        stopped = true;
-                        break;
-                    }
-                    let (state, progress_percent) = validate_payload(row)?;
-                    events.push(ReplayEvent {
-                        event_cursor: row.cursor,
-                        kind,
-                        at_ms: row.at_ms,
-                        operation_id,
-                        state,
-                        progress_percent,
-                    });
+            if let Some(kind) = ReplayEventKind::stored(&row.event_type)
+                && let Some(operation_id) = self.replay_operation(repo, row)?
+            {
+                if events.len() == limit {
+                    // Keep this eligible event for the next page. Ineligible
+                    // rows after the output limit still consume scan budget.
+                    stopped = true;
+                    break;
                 }
+                let (state, progress_percent) = validate_payload(row)?;
+                events.push(ReplayEvent {
+                    event_cursor: row.cursor,
+                    kind,
+                    at_ms: row.at_ms,
+                    operation_id,
+                    state,
+                    progress_percent,
+                });
             }
             processed = row.cursor;
         }

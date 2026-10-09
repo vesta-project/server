@@ -168,13 +168,13 @@ pub(super) fn absolute(path: &Path) -> Result<()> {
             return Err(FileError::InvalidRoot);
         }
         #[cfg(windows)]
-        if let Component::Prefix(prefix) = component {
-            if !matches!(
+        if let Component::Prefix(prefix) = component
+            && !matches!(
                 prefix.kind(),
                 std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)
-            ) {
-                return Err(FileError::InvalidRoot);
-            }
+            )
+        {
+            return Err(FileError::InvalidRoot);
         }
     }
     Ok(())

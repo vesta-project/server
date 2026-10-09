@@ -55,10 +55,10 @@ impl ControlledClock {
 
 impl Clock for ControlledClock {
     fn millis(&self) -> i64 {
-        if let Ok(mut notification) = self.next_sample.lock() {
-            if let Some(sender) = notification.take() {
-                let _ = sender.send(());
-            }
+        if let Ok(mut notification) = self.next_sample.lock()
+            && let Some(sender) = notification.take()
+        {
+            let _ = sender.send(());
         }
         self.now_ms.load(Ordering::SeqCst)
     }

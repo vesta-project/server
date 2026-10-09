@@ -391,3 +391,52 @@ or crypto package is introduced. Admission/framing do not implement authenticati
 a route dispatcher or peer-worker lifecycle. [The host checkpoint](RUST_HOST_CONFIGURATION_CHECKPOINT.md)
 records scope, actual verification history, residual native/transport limitations
 and unfinished full-host composition. All release/platform/MSRV gates remain open.
+
+## Owned-byte hybrid Vesta ZIP intake (2026-10-09)
+
+The control library adds exact **`zip = 8.2.0` with defaults disabled**, using only
+Stored output. No Deflate, bzip2, zstd, time, encryption or other optional ZIP feature
+is selected. The released cached writer/read APIs replace handwritten archive code;
+semantic index/archive compatibility is the target, not JDK compressor or timestamp
+quirks. Production construction consumes retained verified bytes, not incoming archives,
+mutable filenames, provider downloads or caller-selected output paths.
+
+| New locked package | Cached manifest licence | Declared Rust minimum | Upstream |
+| --- | --- | --- | --- |
+| `zip 8.2.0` | MIT | **1.88** | https://github.com/zip-rs/zip2 |
+| `crc32fast 1.5.0` | MIT OR Apache-2.0 | 1.63 | https://github.com/srijs/rust-crc32fast |
+| `typed-path 0.12.3` | MIT OR Apache-2.0 | 1.65.0 | https://github.com/chipsenkbeil/typed-path |
+
+Offline resolution added exactly those three packages. Parent comparison of their
+name/version/registry source/checksum against the companion lock matched every entry;
+no retained server package version/source/checksum changed or was removed. The selected
+ZIP graph also uses existing `memchr 2.8.3`, `indexmap 2.13.0`, `equivalent 1.0.2`,
+`hashbrown 0.16.1` and `cfg-if 1.0.5` with their std/default features. No dependency fetch
+was required. Existing locked **`sha1 = 0.10.6`** and **`url = 2.5.8`** acquire direct
+control edges, for legacy provider consistency metadata and URL parsing respectively;
+SHA-256 remains the content/artifact fingerprint. SHA-1 and CRC32 are **not authenticity,
+signatures, passwords or authority**. URL descriptions authorize no fetch.
+
+`vesta-control` and its composing `vesta-agent` explicitly declare **Rust 1.88** to match
+ZIP, rather than leaving misleading inherited 1.85 declarations. Protocol, state and game
+foundation declarations remain 1.85; the installer already declares 1.88. Only Windows
+11/Rust 1.96 has been executed; neither minimum nor any other platform is certified.
+Initial offline all-target intake compilation passed, with incremental-cache finalization
+permission notes; settled verification uses `CARGO_INCREMENTAL=0`.
+
+`zip`/`typed-path` declare no build script; `crc32fast` has a Rust build script and CPU
+optimized implementations. This is local dependency/API/feature intake, not a complete
+build-code, architecture, licence/notice, trusted provenance or vulnerability audit.
+ZIP's Drop attempts finalization and can log errors; the bounded sink retains only fixed
+input-free diagnostics. A checked conservative Stored-length preflight rejects ordinary
+output-cap failures before creating the writer, and the seekable sink still enforces
+actual output. A real footer-failure fixture exercises Drop's fixed diagnostic. The
+explicit 1.88 declaration also enables MSRV-aware Clippy suggestions in existing control
+code/tests; equivalent let-chains and a multiple test are used without lint suppression.
+[The build checkpoint](RUST_VESTA_BUILD_CHECKPOINT.md) records implementation, failed
+attempts, executed evidence and remaining application boundaries.
+Full SBOM/notices, trusted registry/release provenance, update
+policy, vulnerability review, minimum-toolchain/non-Windows/native packaging and release
+approval remain open. Building an unsigned in-memory artifact is not publishing it or
+establishing launcher trust; safe staging/publication and authenticated serving remain
+separate required application work.

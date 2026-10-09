@@ -345,6 +345,20 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   warning), **159 Node tests** and both accounting checkers. Protected launcher digest is
   unchanged. This scoped audit is not the final whole-rebuild review; unfinished useful
   behaviors and all inventory/requirement/product/release statuses remain unpromoted.
+- **2026-10-09 owned-byte hybrid ZIP continuation:** immutable snapshot/host metadata
+  produces a bounded deterministic Stored Vesta ZIP, with independently verified bodies,
+  strict provider references, fixed ZIP metadata and no reopening/download/extraction or
+  publication authority. Parent review, independent header/CRC/JSON assertions, actual
+  footer-failure and native host/snapshot/golden-index integration are recorded
+  [at the checkpoint](RUST_VESTA_BUILD_CHECKPOINT.md). Fresh final-source verification
+  passed **881 workspace tests / 42 full summaries**, format/all-target check/strict Clippy,
+  **210 companion tests / 9 summaries** (existing warning), **159 Node tests** and both
+  accounting checkers. Protected launcher digest and frozen Java/requirement bytes are
+  unchanged. Three builder/test rows gain partial assertion mappings but remain
+  `not_migrated`/whole-row `unverified`: safe disk publication, configured services,
+  authentication/routes, full composition, remaining family/requirement accounting and
+  final independent whole-rebuild review remain open. Declared control/agent Rust 1.88
+  and the deliberate dependency intake are not minimum-toolchain/platform execution.
 - Owner direction is to design for all intended platform compatibilities while testing
   Windows only in the current increment. Linux, macOS and non-Windows architecture/native
   behavior remain unexecuted and unverified; WSL presence is not platform evidence.
