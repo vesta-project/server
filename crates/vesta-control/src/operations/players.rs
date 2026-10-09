@@ -201,10 +201,15 @@ fn with_console_access<T>(
                 Some(subject),
             )
             .map_err(OperationError::from)?;
-            match policy.check(Capability::ConsoleRead, None) {
-                identity::Decision::Allow => work(),
-                identity::Decision::Deny(reason) => Err(OperationError::forbidden(reason).into()),
-            }
+            let result = match policy.check(Capability::ConsoleRead, None) {
+                identity::Decision::Allow => work()?,
+                identity::Decision::Deny(reason) => {
+                    return Err(OperationError::forbidden(reason).into());
+                }
+            };
+            #[cfg(test)]
+            tests::finish_read(snapshot.connection())?;
+            Ok(result)
         })
         .map_err(PlayerQueryError::from)
 }
@@ -300,10 +305,12 @@ impl QueryEndpoint {
             if mailbox.busy {
                 return Err(PlayerQueryError::Busy);
             }
-            mailbox.busy = true;
-            mailbox.pending = Some(request);
             Ok(())
         })?;
+        // Database finalization must succeed before caller-owned admission becomes
+        // visible. A failed read cannot leave an orphan request in this mailbox.
+        mailbox.busy = true;
+        mailbox.pending = Some(request);
         drop(mailbox);
         let result = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()));
         match result {
@@ -412,7 +419,7 @@ impl QueryDriver {
         if self.current.is_none() && may_enqueue {
             match self.take_request() {
                 Ok(Some(mut request)) => {
-                    let queued = self.enqueue(game, &request, uncertain);
+                    let queued = self.enqueue(game, &mut request, uncertain);
                     match queued {
                         Ok(phase) => self.current = Some(Pending { request, phase }),
                         Err(error) => {
@@ -535,7 +542,7 @@ impl QueryDriver {
     fn enqueue(
         &self,
         game: &mut GameLifecycle,
-        request: &Request,
+        request: &mut Request,
         uncertain: bool,
     ) -> PlayerQueryResult<Phase> {
         let marker = Arc::new(Mutex::new(None));
@@ -548,32 +555,49 @@ impl QueryDriver {
         let generation = request.generation;
         let view = game.view.clone();
         let console = self.console.clone();
-        let receipt = with_console_access(&self.operations, &request.subject, || {
+        // Own the receipt outside the transaction's return value. read_with can fail
+        // while finalizing an otherwise successful callback, after native admission.
+        let mut admitted = None;
+        let checked = with_console_access(&self.operations, &request.subject, || {
             request.alive(&self.stopping)?;
             if uncertain {
                 return Err(RuntimeError::ObserveFailed.into());
             }
             ensure_live(game.process.snapshot(), generation)?;
-            game.process
-                .queue_list_guarded(generation, move || {
-                    with_console_access(&operations, &subject, || {
-                        if stopping.load(Ordering::Acquire) {
-                            return Err(PlayerQueryError::ShuttingDown);
-                        }
-                        if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
-                            return Err(PlayerQueryError::TimedOut);
-                        }
-                        ensure_view(&view, generation)?;
-                        // Horizon immediately before the fixed write, not request acceptance
-                        // or its later ACK. An immediate response cannot be skipped.
-                        let latest = console.snapshot(0, 1)?.latest_cursor;
-                        *mark.lock().map_err(|_| PlayerQueryError::Unavailable)? = Some(latest);
-                        Ok(())
+            admitted = Some(
+                game.process
+                    .queue_list_guarded(generation, move || {
+                        with_console_access(&operations, &subject, || {
+                            if stopping.load(Ordering::Acquire) {
+                                return Err(PlayerQueryError::ShuttingDown);
+                            }
+                            if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+                                return Err(PlayerQueryError::TimedOut);
+                            }
+                            ensure_view(&view, generation)?;
+                            // Horizon immediately before the fixed write, not request acceptance
+                            // or its later ACK. An immediate response cannot be skipped.
+                            let latest = console.snapshot(0, 1)?.latest_cursor;
+                            *mark.lock().map_err(|_| PlayerQueryError::Unavailable)? = Some(latest);
+                            Ok(())
+                        })
                     })
-                })
-                .map_err(PlayerQueryError::from)
-        })?;
-        Ok(Phase::Writing { receipt, marker })
+                    .map_err(PlayerQueryError::from)?,
+            );
+            Ok(())
+        });
+        match (checked, admitted) {
+            (Ok(()), Some(receipt)) => Ok(Phase::Writing { receipt, marker }),
+            (Err(error), Some(receipt)) => {
+                // Refuse the caller, cancel any not-yet-executed guard, but retain
+                // Writing/Busy and lifecycle exclusion until the actual ACK.
+                request.cancelled.store(true, Ordering::Release);
+                request.respond(Err(error));
+                Ok(Phase::Writing { receipt, marker })
+            }
+            (Err(error), None) => Err(error),
+            (Ok(()), None) => Err(PlayerQueryError::Unavailable),
+        }
     }
 }
 

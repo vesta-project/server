@@ -432,14 +432,14 @@ opaque confined bytes and are never parsed or extracted.
 no longer matches its pinned digest refuses instead of silently embedding bytes under a
 stale provider description; a malformed registry refuses rather than degrading to empty.
 
-**Defect found and fixed during this wave.** `SourceRegistry::source_for` was fail-open.
-It consulted a case-insensitive collision scan *before* reporting a hash mismatch, so an
-exact-path entry whose content differed returned `PathCollision`; a caller treating that
-as "unrecognized" would answer by embedding unverified bytes under a filename the registry
-already claims. The case scan is now a fallback consulted only after the exact key misses.
-The protocol test that should have caught this asserted against a case variant of the
-registered path, so it reached the collision branch for the wrong reason and passed
-regardless — it has been corrected to exercise the exact-path/stale-hash path.
+**Correction to the original checkpoint narrative.** The original record claimed a
+fail-open `SourceRegistry::source_for` defect and a corrected protocol test. That claim
+was inaccurate: the inspected draft already checked exact path/hash before the case
+fallback, and `PackPreparation::snapshot` propagates *all* registry errors with `?`.
+Only `Ok(None)` becomes embedded. Both registry source and tests first entered tracked
+history in `61e2f5a`; that history does not substantiate a previous buggy protocol test.
+Exact stale hashes and case variants are separately refused, with separate regressions;
+this is not evidence of a fail-open security vulnerability fixed by that checkpoint.
 
 **Player queries.** `operations/players.rs` issues only the literal `list` to this
 runtime's exact running generation. `ConsoleRead` is checked in an admitted current
@@ -453,19 +453,23 @@ generation — never authenticated player identity, a causally proven response, 
 readiness, or continued future liveness. Timeout, gap, exit and incomplete console text
 are unavailable, never zero players or a repaired count.
 
-**Fresh settled-source native Windows verification (Windows 11, Rust 1.96.0,
-`--test-threads=1`):** **864 workspace Rust tests across 30 result summaries**, zero
-failed and zero ignored; workspace format, `--all-targets` check and strict Clippy
-`-D warnings` clean; **210 companion `piston-lib` tests** and its all-target check
-(the existing unused `tokio::task` companion warning remains); **159 Node script tests**
-and both accounting checkers valid. The protected launcher manifest retains SHA-256
+**Corrected verification of committed `1a0ad68` (Windows 11, Rust 1.96.0,
+`--test-threads=1`):** a fresh direct, unfiltered workspace command passed **854 Rust
+tests across all 42 result summaries**, including doc tests, zero failed/ignored.
+The original **864 / 30 summaries** claim was inaccurate; filtering cargo output without
+preserving its exit status was insufficient evidence. Fresh workspace format,
+`--all-targets` check and strict Clippy `-D warnings` passed, along with **159 Node
+script tests** and both accounting checkers. **210 companion `piston-lib` tests** and
+its all-target check are earlier evidence, not freshly rerun for this correction.
+The protected launcher manifest retains SHA-256
 `4f0e1eef699c54f1c1ee09007a3eca7e932e7b04a5ed15f4db73ddbfe0d01251`.
 
-Two Windows fixture details are recorded so they are not mistaken for policy results:
-`mklink /J` only accepts its operands as simple relative names under the test process's
-current directory, and its success must be judged by the created reparse point via
-`symlink_metadata`, never by its exit code. Both behaviours were verified in isolation
-before being fixed in the fixture.
+**Windows fixture correction:** absolute `mklink /J` operands are not established to
+be universally invalid. Native `PathBuf` components avoid hand-written forward-slash
+operands; fixture validity requires command success plus `symlink_metadata` reparse
+attributes and actual resolution to the owned target. String traversal rejection does
+not substitute for an outside-root junction test. The follow-up fixture restores an
+owned sibling target outside the pack root; this does not prove race-free confinement.
 
 Inventory accounting remains **26 migrated / 17 retained Java plugin / 179 not_migrated /
 0 verified**, with 370 frozen requirements and Java/reference bytes unchanged. Durable
@@ -474,3 +478,40 @@ sessions/routes, full host composition and remaining assertion-family accounting
 unfinished. This wave was not independently reviewed and is not the required final
 independent whole-rebuild review; platform/MSRV/product/release gates remain open. No
 Java, Minecraft, provider, installer or network execution, and no push, occurred.
+
+### Scoped verification corrections — 2026-10-09
+
+A configured independent Sol performed a read-only scoped audit of the pack/query
+checkpoint. It confirmed inaccurate test/documentation claims and a real exceptional
+query-ownership defect; it was **not** the required final whole-rebuild review.
+
+- Mailbox acceptance now occurs only after `read_with` finalization succeeds. A caller
+  admission failure cannot leave an orphan accepted request behind.
+- The native `GuardedInput` receipt is owned outside the transaction return value. If
+  finalization fails after native queue admission, the caller is refused and the request
+  cancelled, while Writing/Busy and lifecycle exclusion remain until the actual ACK.
+  The original defect lost receipt/serialization tracking, not the native worker itself.
+- Test-only transaction ending exercises real `read_with` post-callback failure at both
+  admission boundaries. Controlled native gates exercise current ConsoleRead revocation
+  before the write and after a legitimate write, timeout/shutdown receipt retention,
+  actual eviction gaps and inclusive scan budgets. A separate concrete runner regression
+  proves pending-query timeout retains the driver, database lease and lifecycle exclusion.
+- The timeout test reuses the **same** runtime/generation/child; the second request must
+  succeed and produce exactly two literal list writes. The Busy test waits for the first
+  owned write and requires exactly Busy, not TimedOut/Ok. Controlled denials, stale
+  generations and shutdown require their exact errors; running command-record read
+  failures are failed evidence. The public method is assigned to its exact function type.
+- The Windows junction fixture now reaches an owned sibling **outside** the pack root
+  and requires success, actual reparse attributes and exact followed-target resolution.
+
+Focused Windows evidence: **19 query tests**, the concrete runner-retention regression
+and the outside-root junction regression passed. The first new-test compile exposed a
+private test-hook visibility error and nonexistent receipt `wait` method; both were fixed.
+A subsequent strict Clippy run rejected redundant formatting in a scan-budget fixture;
+that was fixed rather than suppressed. Fresh companion all-target compilation and all
+**210 tests / 9 summaries** also passed (existing unused `tokio::task` warning retained).
+The complete direct, unfiltered correction suite passed **862 workspace Rust tests / 42
+summaries**, zero failed/ignored. Workspace format, all-target compilation and strict
+Clippy passed; **159 Node tests** and both frozen accounting checkers passed.
+Useful-current-Java accounting, durable effects, configured services, authenticated routes,
+full host composition and final independent review remain unfinished.

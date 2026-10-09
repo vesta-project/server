@@ -640,6 +640,108 @@ fn delayed_stop(
 }
 
 #[test]
+fn pending_player_query_timeout_retains_driver_database_and_lifecycle_exclusion() {
+    let harness = Harness::new(false);
+    let owner = harness.operations.open_owner().unwrap();
+    let mut game = GameLifecycle::new(harness.launch());
+    let generation = game.start(|_| Ok(())).unwrap();
+    game.publish().unwrap();
+    wait_for(|| harness.cwd.join("operation-ready").exists());
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let mut gate = Some((entered_tx, release_rx));
+    let mut blocker = game
+        .process
+        .queue_list_guarded(generation, move || {
+            let (entered, release) = gate.take().unwrap();
+            entered.send(()).unwrap();
+            release.recv_timeout(WAIT).unwrap();
+            Err(StateError::new("state_owned_test_no_write"))
+        })
+        .unwrap();
+    entered_rx.recv_timeout(WAIT).unwrap();
+    let (shared, players) = DriverState::new(&owner, &game);
+    let driver = FixtureDriver {
+        driver: Driver {
+            owner,
+            game,
+            players,
+            active: None,
+            shared: shared.clone(),
+            stop_wait: Duration::from_millis(25),
+            observation_uncertain: None,
+            after_dispatch: None,
+        },
+        cwd: harness.cwd.clone(),
+        gate_release: release_tx.clone(),
+    };
+    let handle = thread::spawn(move || driver.run());
+    let mut owned = OwnedRuntime {
+        runtime: OperationRuntime {
+            operations: harness.operations.clone(),
+            shared,
+            driver: Some(handle),
+        },
+        cwd: harness.cwd.clone(),
+        gate_release: Some(release_tx.clone()),
+    };
+    let error = owned
+        .runtime
+        .query_players(&harness.subject, generation, Duration::from_millis(250))
+        .unwrap_err();
+    assert!(matches!(error, super::super::PlayerQueryError::TimedOut));
+    let error = owned
+        .runtime
+        .query_players(&harness.subject, generation, Duration::from_secs(1))
+        .unwrap_err();
+    assert!(
+        matches!(error, super::super::PlayerQueryError::Busy),
+        "timing out did not acknowledge the queued writer: {error:?}"
+    );
+    let start = harness.submit(GameCommand::Start);
+    thread::sleep(Duration::from_millis(60));
+    assert_eq!(
+        harness.state(&start),
+        super::super::OperationState::Queued,
+        "lifecycle dispatch must remain excluded until the native query ACK"
+    );
+    assert!(matches!(
+        owned.runtime.shutdown(Duration::ZERO).unwrap(),
+        ShutdownOutcome::TimedOut(_)
+    ));
+    assert_eq!(harness.db.close().unwrap_err().code(), "state_runtime_busy");
+    assert!(harness.db.directory().acquire_runner_lock().is_err());
+    assert!(owned.runtime.driver.is_some());
+    assert_eq!(
+        owned.runtime.game_snapshot().unwrap().generation,
+        Some(generation)
+    );
+    assert_eq!(
+        fs::read(harness.cwd.join("operation-commands")).unwrap(),
+        b""
+    );
+    release_tx.send(()).unwrap();
+    let mut ack = None;
+    wait_for(|| {
+        ack = blocker.try_result();
+        ack.is_some()
+    });
+    assert!(matches!(
+        ack,
+        Some(Err(vesta_game_runtime::process::GuardedError::Guard(_)))
+    ));
+    fs::write(harness.cwd.join("release-game"), b"release").unwrap();
+    assert_eq!(
+        owned.runtime.shutdown(WAIT).unwrap(),
+        ShutdownOutcome::Complete
+    );
+    assert_eq!(
+        fs::read(harness.cwd.join("operation-commands")).unwrap(),
+        b""
+    );
+}
+
+#[test]
 fn pending_native_guard_shutdown_timeout_retains_exact_claim_lock_database_and_worker() {
     let harness = Harness::new(false);
     let (mut owned, stop, release, entered) = delayed_stop(&harness);

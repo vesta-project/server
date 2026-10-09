@@ -329,49 +329,61 @@ fn a_visible_hard_link_is_refused_and_the_file_is_left_intact() {
 #[cfg(windows)]
 #[test]
 fn a_visible_directory_junction_is_refused_and_the_target_is_left_intact() {
+    const TARGET_BYTES: &[u8] = b"owned target bytes outside the scan root";
     let fixture = Fixture::open();
     fixture.write("mods/alpha.jar", ALPHA_BYTES);
-    // Both mklink operands stay inside the owned temporary tree. This is a refusal
-    // fixture, not an escape test: the crossing-root case is covered by the traversal
-    // test, and pointing mklink outside the root proved only that the fixture could
-    // not be built.
-    let outside = fixture.mkdir("outside");
-    std::fs::write(outside.join("secret.jar"), b"outside the root").expect("bytes outside");
-
-    // The mklink operands must be relative to the test process's current directory.
-    // With absolute operands, Rust's argv quoting plus cmd.exe's /c handling yields
-    // `Parameter format not correct - "junction"` — that is a Windows quoting quirk
-    // and says nothing about path policy, so it must not decide this test.
-    //
-    // Run from the temporary tree itself so both operands are simple relative names.
+    // The junction must point somewhere the scan root does not contain, or the refusal
+    // below would prove nothing about crossing the root. The owned target is a sibling
+    // of the game directory inside the fixture's temporary tree (game is `temp/game`,
+    // so the sibling is `temp/<target>`), so the whole fixture still lives under the
+    // TempDir the Fixture owns.
     let root = fixture.game.canonicalize().expect("an existing root");
+    let target = root
+        .parent()
+        .expect("a game directory that is not the temporary root itself")
+        .join("owned-junction-target");
+    std::fs::create_dir(&target).expect("an owned target directory");
+    let target_file = target.join("secret.jar");
+    std::fs::write(&target_file, TARGET_BYTES).expect("owned bytes outside the root");
+
+    // mklink is a cmd.exe internal, so it must run through cmd.exe. Both operands are
+    // PathBufs built from components, so Windows separators are the path's own rather
+    // than hand-written ones, and both stay separate argv entries for cmd to read
+    // against the current directory: the link from inside the canonical root, the
+    // target as a `..` path back out of it.
     let junction = PathBuf::from("mods").join("junction");
-    let target = PathBuf::from("outside");
-    // mklink is a cmd.exe internal, so it must run through cmd.exe. Both operands stay
-    // separate argv entries, which cmd then reads against the current directory.
-    //
-    // This fixture only creates a link to a directory the root already owns. It
-    // creates no file, opens no handle to the target and changes no byte; production
-    // code never creates links and treats one only as a refusal.
+    let relative_target = PathBuf::from("..").join("owned-junction-target");
+    // This fixture only creates a link to a directory this test owns. It creates no
+    // file, opens no handle to the target and changes no byte; production code never
+    // creates links and treats one only as a refusal.
     let made = std::process::Command::new("cmd.exe")
         .args(["/d", "/c", "mklink", "/J"])
         .arg(&junction)
-        .arg(&target)
+        .arg(&relative_target)
         .current_dir(&root)
         .output()
         .expect("cmd.exe runs");
     // Judge the fixture by the native object it left behind, never by mklink's exit
-    // code. `exists()` follows the link, so also require a real reparse point: without
-    // one a plain directory would look like a passing fixture and the refusal below
-    // would be testing the wrong thing.
+    // code alone. `exists()` follows the link, so also require a real reparse point:
+    // without one a plain directory would look like a passing fixture and the refusal
+    // below would be testing the wrong thing. The followed path must also reach the
+    // owned target, or nothing outside the root would have been crossed.
     let created = root.join(&junction);
     // symlink_metadata, not metadata: a junction's own attributes, never its target's.
     let reparse = std::fs::symlink_metadata(&created).is_ok_and(|metadata| {
         std::os::windows::fs::MetadataExt::file_attributes(&metadata) & 0x400 != 0
     });
+    let followed = std::fs::canonicalize(&created).is_ok_and(|followed| {
+        let owned = std::fs::canonicalize(&target).expect("the owned target exists");
+        followed == owned
+    });
     assert!(
-        created.exists() && reparse,
-        "create the owned junction fixture: {made:?}"
+        made.status.success(),
+        "mklink must report success: {made:?}"
+    );
+    assert!(
+        created.exists() && reparse && followed,
+        "create the junction fixture that reaches the owned target: {made:?}"
     );
 
     let preparation = preparation(&fixture);
@@ -385,8 +397,8 @@ fn a_visible_directory_junction_is_refused_and_the_target_is_left_intact() {
         ALPHA_BYTES
     );
     assert_eq!(
-        std::fs::read(outside.join("secret.jar")).expect("the target is untouched"),
-        b"outside the root"
+        std::fs::read(&target_file).expect("the owned target is untouched"),
+        TARGET_BYTES
     );
 }
 

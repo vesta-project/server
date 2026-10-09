@@ -322,15 +322,29 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   requirement or final whole-rebuild review status is promoted by this slice.
 - **2026-10-09 pack-preparation and player-query continuation:** explicit trusted pack
   preparation (bounded deterministic snapshot, retained bodies, opaque archive pinning,
-  strict map-only source registry) and a closed authorized `list` query are implemented,
-  including a fixed fail-open `SourceRegistry::source_for` and the protocol test that had
-  masked it. Fresh settled-source Windows verification passed **864 Rust tests** across
-  30 summaries, format/all-target check/strict Clippy, **159 Node tests**/both accounting
-  checkers and **210 companion tests**/all-target check. Durable file/content effects,
+  strict map-only source registry) and a closed authorized `list` query are implemented.
+  **Record correction:** the original fail-open registry/test-fix claim was unsupported;
+  snapshots propagate all registry errors, and the inspected draft already checked exact
+  path/hash first. The original **864 / 30 summaries** test total was inaccurate and its
+  filtered shell output insufficient. An unfiltered rerun of committed `1a0ad68` passed
+  **854 workspace Rust tests across 42 summaries**, format/all-target check/strict Clippy,
+  and **159 Node tests**/both accounting checkers. **210 companion tests**/all-target check
+  remain earlier checkpoint evidence, not a fresh execution in this correction.
+  Durable file/content effects,
   configured catalogue/archive *services*, authenticated pack sessions/routes, full host
   composition and remaining assertion-family accounting are still unfinished; this wave
   was not independently reviewed and promotes no family, original requirement or
   final whole-rebuild review status.
+- **2026-10-09 scoped verification correction:** independent configured Sol source audit
+  identified post-admission database-finalization receipt loss. The parent fixed mailbox
+  acceptance and retained native receipt ownership, added fault/revocation/gap/budget and
+  concrete runner-retention regressions, tightened Busy/same-runtime timeout/error evidence
+  and restored the owned outside-root junction target. Fresh direct Windows verification
+  passed **862 workspace tests / 42 summaries**, format/all-target compilation/strict Clippy,
+  **210 companion tests / 9 summaries** and all-target compilation (existing unused-import
+  warning), **159 Node tests** and both accounting checkers. Protected launcher digest is
+  unchanged. This scoped audit is not the final whole-rebuild review; unfinished useful
+  behaviors and all inventory/requirement/product/release statuses remain unpromoted.
 - Owner direction is to design for all intended platform compatibilities while testing
   Windows only in the current increment. Linux, macOS and non-Windows architecture/native
   behavior remain unexecuted and unverified; WSL presence is not platform evidence.

@@ -1,9 +1,9 @@
 //! Inert native player-query checks over real protected SQLite and owned copies of this
 //! test executable. No services, Minecraft/Java, provider, shell or network.
 //!
-//! Every refusal below must be proved by the *absence* of an owned native write, not
-//! merely by the returned error: a refusal that happened after the `list` write would
-//! still have touched a running game console.
+//! Pre-write refusals require an empty owned command record. A response timeout or
+//! revocation after a legitimate write instead requires refusal of the observation;
+//! it cannot undo a command that already reached the child.
 use super::*;
 use crate::identity::{Capability, DeviceId, PrincipalId, Subject};
 use crate::operations::{GameCommand, ShutdownOutcome};
@@ -27,6 +27,23 @@ const QUERY_WAIT: Duration = Duration::from_secs(8);
 const ENABLE: &[u8] = b"vesta-owned-inert-player-query-fixture-v1";
 const LIST_LINE: &str = "There are 2 of a max of 20 players online: OwnedAlpha, OwnedBeta";
 
+thread_local! {
+    static FAIL_READ_FINALIZATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Exercise the real read_with post-callback failure without a production fault API.
+pub(super) fn finish_read(connection: &rusqlite::Connection) -> PlayerQueryResult<()> {
+    if FAIL_READ_FINALIZATION.with(|flag| flag.replace(false)) {
+        connection
+            .execute_batch("ROLLBACK")
+            .map_err(|_| PlayerQueryError::Unavailable)?;
+    }
+    Ok(())
+}
+
+#[path = "players_regression_tests.rs"]
+mod regressions;
+
 /// An inert child that records the exact commands it receives and answers `list` with a
 /// fixed console line. It never runs a game, a shell or a network operation.
 ///
@@ -37,7 +54,6 @@ fn inert_player_query_fixture() {
     if fs::read("player-query-fixture-enabled").ok().as_deref() != Some(ENABLE) {
         return;
     }
-    let silent = fs::read("silent-list").ok().as_deref() == Some(b"silent".as_slice());
     let mut commands = OpenOptions::new()
         .create(true)
         .append(true)
@@ -67,7 +83,7 @@ fn inert_player_query_fixture() {
             Ok(line) => {
                 writeln!(commands, "{line}").unwrap();
                 commands.flush().unwrap();
-                if line == "list" && !silent {
+                if line == "list" && !std::path::Path::new("silent-list").exists() {
                     // An answer on stdout only: the query path reads console capture,
                     // never the command file. Keep the wording exactly as a server emits.
                     println!("[12:00:01] [Server thread/INFO]: {LIST_LINE}");
@@ -101,10 +117,6 @@ struct Harness {
     db: StateDatabase,
     operations: Operations,
     subject: Subject,
-    // Retained so a test's intent is readable at its call site; the marker file is
-    // what the child actually reads.
-    #[allow(dead_code)]
-    silent: bool,
 }
 impl Harness {
     fn new(silent: bool) -> Self {
@@ -137,7 +149,6 @@ impl Harness {
             db,
             operations,
             subject,
-            silent,
         }
     }
     fn launch(&self) -> LaunchSpec {
@@ -168,15 +179,13 @@ impl Harness {
             Ok(())
         }).unwrap();
     }
-    /// The exact bytes this child was asked to write, or `None` when it never wrote any.
-    /// The exact bytes this child was asked to write. The fixture creates this file when
-    /// it starts, so "no write" means empty content, never a missing file.
+    /// The ready child has created this record. Read failure is failed evidence,
+    /// not proof of no write; never-started fixtures use a separate absence assertion.
     fn commands(&self) -> Option<String> {
-        fs::read_to_string(self.cwd.join("player-query-commands")).ok()
+        Some(fs::read_to_string(self.cwd.join("player-query-commands")).unwrap())
     }
-    /// True when no command byte reached the child. A missing record also counts: when
-    /// the fixture never ran, there was nothing it could have been asked. An empty
-    /// record is exactly "asked nothing", so a non-empty one is the failure.
+    /// True only when a ready child's command record was successfully read and
+    /// observed empty. commands() panics on unavailable or invalid evidence.
     #[track_caller]
     fn wrote_nothing(&self) -> bool {
         match self.commands() {
@@ -211,14 +220,9 @@ impl Drop for Harness {
         }
     }
 }
-/// The runtime's Drop joins the driver, which retains the child, and the driver waits
-/// for the owned generation to actually exit. A player query is not a stop: this
-/// fixture deliberately refuses `stop` so that every "a query is not a stop" assertion
-/// stays true. That makes the runtime's ordinary shutdown unable to complete, so the
-/// fixture must actually exit.
-///
-/// This is bounded *observation* by the caller, not an abandonment: the outcome below
-/// is recorded and asserted, so a genuine shutdown failure is still a test failure.
+/// Cleanup releases this inert child before runtime Drop joins. Production shutdown
+/// is observation-only: it sends neither stop nor kill. The fixture itself supports
+/// literal stop for tests that explicitly request that operation.
 struct OwnedRuntime {
     runtime: OperationRuntime,
     cwd: PathBuf,
@@ -228,15 +232,10 @@ impl Drop for OwnedRuntime {
         let _ = fs::write(self.cwd.join("release-game"), b"release");
     }
 }
-/// Release the inert child and wait for the real exit this runtime observes.
-///
-/// It must *not* be `shutdown(...).unwrap()`: that panics inside Drop while the thread
-/// is already unwinding, and the failure is far harder to read. A shutdown that does not
-/// complete is still asserted, just through a value the caller can inspect.
+/// Release the inert child and require its actual observed exit and IO drain.
 #[track_caller]
 fn shutdown(owned: &mut OwnedRuntime) -> ShutdownOutcome {
-    // Release the inert child first. It ignores `stop`, so without this the driver
-    // would be waiting for an exit that only the fixture can perform.
+    // Cleanup only: shutdown itself must not send a command or kill the child.
     let _ = fs::write(owned.cwd.join("release-game"), b"release");
     let outcome = owned.runtime.shutdown(WAIT).unwrap();
     assert_eq!(
@@ -329,11 +328,13 @@ fn without_console_read_the_query_is_refused_before_any_stdin_write() {
         .runtime
         .query_players(&harness.subject, generation, QUERY_WAIT)
         .expect_err("a denied caller cannot query");
-    assert!(
-        matches!(error, PlayerQueryError::Operation(_)),
-        "expected an authorization refusal, got {}",
-        code_of(&error)
-    );
+    match error {
+        PlayerQueryError::Operation(error) => {
+            assert_eq!(error.code(), "forbidden");
+            assert_eq!(error.reason(), Some(identity::DenyReason::ExplicitDeny));
+        }
+        other => panic!("expected exact authorization refusal, got {other:?}"),
+    }
     assert!(
         harness.wrote_nothing(),
         "the child was never asked for anything"
@@ -388,18 +389,8 @@ fn with_no_running_game_the_query_is_unavailable_not_an_empty_list() {
             QUERY_WAIT,
         )
         .expect_err("a stopped runtime has no players");
-    // Ownership is checked before phase, so a generation this runtime never held is
-    // classified stale. Either refusal is correct and neither is a player count; the
-    // property under test is that no list is ever produced.
-    assert!(
-        matches!(
-            code_of(&error),
-            "players_query_not_running" | "players_query_stale_generation"
-        ),
-        "unexpected classification {}",
-        code_of(&error)
-    );
-    assert!(harness.wrote_nothing(), "no game exists to be asked");
+    assert!(matches!(error, PlayerQueryError::StaleGeneration));
+    assert!(!harness.cwd.join("player-query-commands").exists());
     assert_eq!(shutdown(&mut owned), ShutdownOutcome::Complete);
 }
 
@@ -464,20 +455,15 @@ fn an_unanswered_query_times_out_and_never_reports_zero_players() {
         owned.runtime.game_snapshot().unwrap().phase,
         ProcessPhase::Running
     );
-    assert_eq!(shutdown(&mut owned), ShutdownOutcome::Complete);
-
-    // A second query on the same runtime is not permanently rejected as busy: the
-    // timed-out request released the single mailbox slot.
-    let harness = Harness::new(false);
-    let mut owned = harness.runtime();
-    let generation = running(&harness, &owned.runtime);
-    assert!(
-        owned
-            .runtime
-            .query_players(&harness.subject, generation, QUERY_WAIT)
-            .is_ok(),
-        "a completed request leaves the endpoint usable"
-    );
+    wait_for(|| !owned.runtime.player_queries().mailbox.lock().unwrap().busy);
+    fs::remove_file(harness.cwd.join("silent-list")).unwrap();
+    let second = owned
+        .runtime
+        .query_players(&harness.subject, generation, QUERY_WAIT)
+        .expect("the same endpoint and child are usable after timeout");
+    assert_eq!(second.generation(), generation);
+    assert_eq!(second.list().online(), 2);
+    assert_eq!(harness.commands().as_deref(), Some("list\nlist\n"));
     assert_eq!(shutdown(&mut owned), ShutdownOutcome::Complete);
 }
 
@@ -486,74 +472,34 @@ fn an_unanswered_query_times_out_and_never_reports_zero_players() {
 #[test]
 fn a_second_concurrent_query_is_refused_as_busy_and_writes_nothing_extra() {
     let harness = Harness::new(true);
-    // The runtime is shared so both callers reach the same endpoint and the same
-    // mailbox. It is handed back through a channel so the main thread keeps unique
-    // ownership for the real shutdown at the end.
-    let shared = Arc::new(harness.runtime());
-    let generation = running(&harness, &shared.runtime);
-    let second = harness.subject.clone();
-    let (returned, back) = mpsc::sync_channel(1);
-
-    let first_runtime = Arc::clone(&shared);
-    let first_subject = harness.subject.clone();
-    let first = thread::spawn(move || {
-        let result = first_runtime
+    let mut owned = harness.runtime();
+    let generation = running(&harness, &owned.runtime);
+    thread::scope(|scope| {
+        let first = scope.spawn(|| {
+            owned
+                .runtime
+                .query_players(&harness.subject, generation, Duration::from_secs(2))
+        });
+        // The owned child recording list proves that the first call has acquired
+        // the mailbox and executed its write. It remains silent, so no result can
+        // free the slot before the second call except the explicit first deadline.
+        wait_for(|| harness.commands().as_deref() == Some("list\n"));
+        let error = owned
             .runtime
-            .query_players(&first_subject, generation, Duration::from_millis(300))
-            .map(|_| ());
-        let _ = returned.send(first_runtime);
-        result
+            .query_players(&harness.subject, generation, QUERY_WAIT)
+            .expect_err("the second caller cannot overwrite the pending request");
+        assert!(matches!(error, PlayerQueryError::Busy), "{error:?}");
+        assert!(matches!(
+            first.join().unwrap(),
+            Err(PlayerQueryError::TimedOut)
+        ));
     });
-    let busy = shared
-        .runtime
-        .query_players(&second, generation, Duration::from_millis(300));
-    let first = first.join().expect("the first query thread returns");
-    // The query thread handed its clone back through the channel. `shared` is this
-    // thread's own binding and would be a second reference, so move it in: what
-    // arrives is then the only remaining one and the runtime is not dropped without
-    // an observed shutdown.
-    let returned = back
-        .recv_timeout(WAIT)
-        .expect("the query thread hands its clone back");
-    // `shared` is this thread's own binding and would be a second reference, so move it
-    // in: what remains is then the only reference and the runtime is not dropped
-    // without an observed shutdown.
-    drop(returned);
-    let mut owned =
-        Arc::try_unwrap(shared).unwrap_or_else(|_| panic!("the query thread kept its own clone"));
-
-    // If the first query completed before the second was admitted, the slot was
-    // legitimately free and an Ok is a scheduling outcome, not a policy failure.
-    if let Err(error) = busy {
-        assert!(
-            matches!(
-                code_of(&error),
-                // Busy when the first query still owns the mailbox. TimedOut is also a
-                // correct refusal here: a caller with a 300ms deadline must expire
-                // rather than block behind a query that will not answer, and the
-                // fixture is deliberately silent. Either way it is refused, and
-                // refused without a second native write.
-                "players_query_busy" | "players_query_timeout"
-            ),
-            "the second caller is refused, not served: {}",
-            code_of(&error)
-        );
-    }
-    assert!(
-        first.is_err(),
-        "the silent query still fails on its own merits"
-    );
+    assert_eq!(harness.commands().as_deref(), Some("list\n"));
     assert_eq!(
-        harness.commands().as_deref(),
-        Some("list\n"),
-        "a busy refusal adds no second write"
-    );
-    let runtime = &mut owned;
-    assert_eq!(
-        runtime.runtime.game_snapshot().unwrap().phase,
+        owned.runtime.game_snapshot().unwrap().phase,
         ProcessPhase::Running
     );
-    assert_eq!(shutdown(runtime), ShutdownOutcome::Complete);
+    assert_eq!(shutdown(&mut owned), ShutdownOutcome::Complete);
 }
 
 /// After shutdown is requested the query is refused and the child is not asked again.
@@ -568,16 +514,7 @@ fn a_shutting_down_runtime_refuses_new_queries_without_writing() {
         .runtime
         .query_players(&harness.subject, generation, QUERY_WAIT)
         .expect_err("a stopping runtime admits no new query");
-    assert!(
-        matches!(
-            code_of(&error),
-            "players_query_stopping"
-                | "players_query_not_running"
-                | "players_query_stale_generation"
-        ),
-        "unexpected classification {}",
-        code_of(&error)
-    );
+    assert!(matches!(error, PlayerQueryError::ShuttingDown));
     assert!(
         harness.wrote_nothing(),
         "a stopping runtime must not write to the console"
@@ -591,9 +528,8 @@ fn a_shutting_down_runtime_refuses_new_queries_without_writing() {
 fn untrustworthy_console_text_is_refused_instead_of_parsed() {
     use vesta_game_runtime::console::{ConsoleCapture, ConsoleStream};
 
-    // A truncated line, a line carrying a replacement scalar from lossy UTF-8 repair,
-    // and a line whose count contradicts its own name list. Each is captured into its
-    // own store so one case cannot mask another.
+    // A replacement scalar and a malformed formatting escape are captured into
+    // independent stores so neither refusal can mask the other.
     let cases: &[(&str, &str)] = &[
         (
             "a repaired malformed scalar",
@@ -639,8 +575,7 @@ fn untrustworthy_console_text_is_refused_instead_of_parsed() {
         }
     }
 
-    // A name list with no empty interior token is refused: "Steve,,Alex" is a list
-    // whose shape cannot be trusted, not a two-name list.
+    // An empty interior name token is malformed, not a two-name player list.
     let capture = ConsoleCapture::new();
     let after = capture.snapshot(0, 1).unwrap().latest_cursor;
     let report = capture
@@ -771,15 +706,12 @@ fn the_query_surface_accepts_no_command_or_authority_input() {
     // Compile-time statement: the signature below is the entire caller-visible input.
     // If a command string or authorization callback were ever added, this stops
     // compiling, which is the point.
-    fn only_inputs(
-        runtime: &OperationRuntime,
-        subject: &Subject,
-        generation: GenerationId,
-        timeout: Duration,
-    ) -> PlayerQueryResult<PlayerObservation> {
-        runtime.query_players(subject, generation, timeout)
-    }
-    let _ = only_inputs;
+    let _: fn(
+        &OperationRuntime,
+        &Subject,
+        GenerationId,
+        Duration,
+    ) -> PlayerQueryResult<PlayerObservation> = OperationRuntime::query_players;
     // And the error surface carries no text-bearing variant either.
     assert_eq!(PlayerQueryError::TimedOut.code(), "players_query_timeout");
 }
