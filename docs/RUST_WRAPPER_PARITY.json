@@ -1617,23 +1617,32 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "82f4b0a88ef9507cc12bf40e6a531afb2992eef4f76abb81719a8880e23dd77f",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/pack_access.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/BearerTokenPersistenceTest.java"
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Deliberate replacement: pack sessions are memory-only and end with the process, so no token hashes are written to disk.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Sessions do not survive restart; clients re-authenticate. Persisted management credentials belong to the future device boundary.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/pack_access_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/pack_access_tests.rs",
+          "date": "2026-10-09",
+          "claim": "In-memory bounded store with expiry purge -> stores_are_bounded_and_refuse_rather_than_evict_live_sessions."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Persistence deliberately not reproduced."
       }
     },
     {
@@ -1642,7 +1651,7 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "b9f1d245d0cee79e5147abaa15fd37348225d3af9aa58dc74175390f7ba8914a",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/pack_access.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/AuthTest.java",
         "core/src/test/java/com/vesta/sync/auth/BearerTokenPersistenceTest.java",
@@ -1650,17 +1659,27 @@
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Pack session secrets are random, returned once and retained only as a server-bound SHA-256 with bounded stores and expiry. Unlike Java bearers they carry only pack grants (never operator/management roles) and are rechecked against current policy on every use.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Java operator/linked bearer roles are deliberately not reproduced; management sessions require the separate canonical device boundary, which does not exist yet.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/pack_access_tests.rs",
+        "crates/vesta-control/src/host_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/pack_access_tests.rs",
+          "date": "2026-10-09",
+          "claim": "Hash-only bounded expiring sessions and per-use policy recheck -> sessions_authenticate_until_expiry_and_secrets_are_single_purpose, a_ban_whitelist_removal_or_password_rotation_ends_existing_sessions, stores_are_bounded_and_refuse_rather_than_evict_live_sessions, limits_are_validated_and_output_is_redacted."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Pack session store tests pass; management bearers deliberately absent."
       }
     },
     {
@@ -1890,23 +1909,33 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "528d1e846f4db7b7825b730f41091bbdc3307ac7b38521f3da1a7ba19eab5a18",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/pack_access.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/RealtimeTicketServiceTest.java"
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "PackSessions::issue_ticket/redeem_ticket provide single-use, short-lived tickets bound to a live pack session in a server-bound store; redemption always consumes the ticket and rechecks the session and current pack-access policy.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "No realtime/WebSocket transport redeems tickets yet.",
+        "Tickets carry no scopes; Java scopes (server_status, pack_updates, access_changes, console) are not modeled, and console access is deliberately not a pack scope.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/pack_access_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/pack_access_tests.rs",
+          "date": "2026-10-09",
+          "claim": "Single use, expiry, session-bound lifetime and revocation -> tickets_are_single_use_short_lived_and_never_outlive_their_session; server binding -> secrets_are_bound_to_the_issuing_server."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Ticket tests pass; no transport redeems them."
       }
     },
     {
@@ -3166,7 +3195,7 @@
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "1587861f4cd885448227bd2d6ce96ee0b40e7b16ca40d26bb1ed32aa71900515",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/pack_access.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/RealtimeTicketServiceTest.java"
       ],
@@ -3174,17 +3203,26 @@
         "core/src/test/java/com/vesta/sync/auth/MutableClock.java"
       ],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Ticket single-use, expiry and purge assertions have Rust equivalents in the pack session store.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "wrongServerConsumesTicket: Rust stores are per server and keys are server-bound, so a foreign ticket is simply unknown; there is no shared cross-server store to exercise.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/pack_access_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/pack_access_tests.rs",
+          "date": "2026-10-09",
+          "claim": "consumesOnceAndPreservesBoundSessionData, rejectsExpiredTicketAndExpiredBearerSession -> tickets_are_single_use_short_lived_and_never_outlive_their_session, sessions_authenticate_until_expiry_and_secrets_are_single_purpose; purgesExpiredTickets -> stores_are_bounded_and_refuse_rather_than_evict_live_sessions; wrongServerConsumesTicket (partial) -> secrets_are_bound_to_the_issuing_server."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Three of four methods mapped; cross-server consumption differs by design."
       }
     },
     {
@@ -6042,22 +6080,28 @@
       "status": "not_migrated",
       "rationale": "Partial host-side Rust equivalent: Whitelist::parse is a pure bounded strict parser of whitelist.json bytes with MinecraftUuid membership. Java silently skipped malformed entries and treated read failures as an empty set; Rust deliberately refuses the whole document (fail closed) and grants no authority.",
       "gaps": [
-        "Protected file loading, reload on change and composition into pack-access policy (whitelist-gated Minecraft-policy access) are not implemented.",
+        "Reload is explicit (Host::reload_admission), not file watching.",
         "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
       "rustTests": [
-        "crates/vesta-control/src/whitelist_tests.rs"
+        "crates/vesta-control/src/whitelist_tests.rs",
+        "crates/vesta-control/src/host_tests.rs"
       ],
       "evidence": [
         {
           "path": "docs/RUST_INTEGRATED_MIGRATION_PASS.md",
           "date": "2026-10-09",
           "claim": "Strict bounded whitelist parser with malformed/oversized/duplicate/BOM/redaction tests; no loading or policy composition."
+        },
+        {
+          "path": "crates/vesta-control/src/host_tests.rs",
+          "date": "2026-10-09",
+          "claim": "Host loads and reloads whitelist, server.properties and bans together; Minecraft pack policy uses them -> a_malformed_whitelist_refuses_and_a_valid_one_is_loaded_and_reloadable, minecraft_pack_sessions_follow_the_servers_admission_files."
         }
       ],
       "results": {
         "status": "unverified",
-        "summary": "Parser tests pass; loading and pack-access policy composition remain unimplemented."
+        "summary": "Parser, loading and pack-access composition tests pass."
       }
     },
     {
@@ -6164,21 +6208,30 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "498727161d894aa8544299e696a0be045eede8a0e2e0f880f43517f3d68a8bbd",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/pack_access.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Partial: PackSessions replaces in-memory TCP sync sessions with server-bound, hash-only, expiring pack sessions rechecked against current policy on every use.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "No TCP sync transport, heartbeat or idle cleanup thread exists yet; expiry is evaluated lazily on use and issue.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/pack_access_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/pack_access_tests.rs",
+          "date": "2026-10-09",
+          "claim": "Session lifetime, bounds and revocation -> sessions_authenticate_until_expiry_and_secrets_are_single_purpose, stores_are_bounded_and_refuse_rather_than_evict_live_sessions, tickets_are_single_use_short_lived_and_never_outlive_their_session."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Session store exists; transport does not."
       }
     },
     {

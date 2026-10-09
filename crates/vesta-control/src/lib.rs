@@ -10,7 +10,9 @@ pub mod config;
 pub mod files;
 pub mod host;
 pub mod identity;
+pub mod minecraft_admission;
 pub mod operations;
+pub mod pack_access;
 pub mod packs;
 pub mod whitelist;
 

@@ -118,6 +118,18 @@ pub struct PasswordVerification {
     status: PasswordVerificationStatus,
 }
 impl PasswordVerification {
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        server_id: &str,
+        revision: PasswordRevision,
+        status: PasswordVerificationStatus,
+    ) -> Self {
+        Self {
+            server_id: server_id.to_owned(),
+            revision,
+            status,
+        }
+    }
     pub fn server_id(&self) -> &str {
         &self.server_id
     }
@@ -163,6 +175,18 @@ impl PackPasswords {
             #[cfg(test)]
             before_commit: None,
         })
+    }
+
+    /// Trusted pack-access policy input: the active revision, or `None` when absent or
+    /// revoked. Exposes no verifier and is not an administrative observation.
+    pub(crate) fn active_revision(&self) -> Result<Option<PasswordRevision>> {
+        let row = self
+            .db
+            .read_with(|transaction| load(transaction.connection(), self.db.server_id()))
+            .map_err(ControlError::from)?;
+        Ok(row
+            .filter(|row| row.revoked_at.is_none())
+            .map(|row| row.revision))
     }
 
     pub fn metadata(&self, subject: &Subject) -> Result<PasswordMetadata> {

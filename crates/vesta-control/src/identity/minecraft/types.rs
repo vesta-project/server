@@ -231,6 +231,14 @@ impl VerifiedMinecraftProfile {
     pub fn name(&self) -> &MinecraftName {
         &self.name
     }
+    #[cfg(test)]
+    pub(crate) fn for_test(server: ServerUuid, uuid: MinecraftUuid) -> Self {
+        Self {
+            server,
+            uuid,
+            name: MinecraftName::parse("Fixture").expect("valid fixture name"),
+        }
+    }
 }
 impl fmt::Debug for VerifiedMinecraftProfile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

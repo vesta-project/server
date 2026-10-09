@@ -176,10 +176,10 @@ fn a_malformed_whitelist_refuses_and_a_valid_one_is_loaded_and_reloadable() {
             .unwrap();
     assert!(host.whitelist().contains(player));
     std::fs::write(&whitelist, b"[]").unwrap();
-    host.reload_whitelist().unwrap();
+    host.reload_admission().unwrap();
     assert!(host.whitelist().is_empty());
     std::fs::write(&whitelist, b"[{}]").unwrap();
-    refused(host.reload_whitelist(), "whitelist_malformed");
+    refused(host.reload_admission(), "whitelist_malformed");
     // A refused reload keeps the previously loaded whitelist.
     assert!(host.whitelist().is_empty());
     assert!(matches!(
@@ -356,4 +356,141 @@ fn a_missing_launch_program_is_a_known_failure_before_any_effect() {
     let reopened = f.reopen();
     assert_eq!(principals(&reopened), 0);
     reopened.close().unwrap();
+}
+
+fn seed_owner(db: &StateDatabase) -> Subject {
+    let principal = PrincipalId::parse(&uuid::Uuid::new_v4().to_string()).unwrap();
+    let device = DeviceId::parse(&uuid::Uuid::new_v4().to_string()).unwrap();
+    db.write(|c| {
+        let now = db.clock().millis();
+        c.execute("INSERT INTO principals (id,server_id,display_name,status,created_at,updated_at) VALUES (?,?,'Fixture','active',?,?)",
+            params![principal.as_str(), db.server_id(), now, now])?;
+        c.execute("INSERT INTO devices (id,server_id,principal_id,label,public_key_sha256,created_at) VALUES (?,?,?,'Fixture',?,?)",
+            params![device.as_str(), db.server_id(), principal.as_str(), hex::encode(Sha256::digest(device.as_str().as_bytes())), now])?;
+        c.execute("INSERT INTO role_assignments (id,principal_id,role_id,granted_by,created_at) VALUES (?,?,'owner','fixture',?)",
+            params![uuid::Uuid::new_v4().to_string(), principal.as_str(), now])?;
+        Ok(())
+    }).unwrap();
+    Subject { principal, device }
+}
+
+const PLAYER: &str = "550e8400-e29b-41d4-a716-446655440000";
+
+#[test]
+fn minecraft_pack_sessions_follow_the_servers_admission_files() {
+    use crate::identity::minecraft::{MinecraftUuid, VerifiedMinecraftProfile};
+    use crate::pack_access::PackAccessError;
+    use std::time::Instant;
+    let f = Fixture::new();
+    let mut host = f.open("minecraft").unwrap();
+    let server = ServerUuid::parse(host.database().server_id()).unwrap();
+    let player = MinecraftUuid::parse(PLAYER).unwrap();
+    let proof = VerifiedMinecraftProfile::for_test(server, player);
+
+    // Before the first server run there is no server.properties: nobody is admitted.
+    assert!(host.server_properties().is_none());
+    assert_eq!(host.pack_policy().unwrap().grant_minecraft(&proof), None);
+
+    let game = f.base().join("game");
+    std::fs::write(
+        game.join("server.properties"),
+        "white-list=true\nonline-mode=true\n",
+    )
+    .unwrap();
+    std::fs::write(
+        game.join("whitelist.json"),
+        format!(r#"[{{"uuid":"{PLAYER}","name":"Player"}}]"#),
+    )
+    .unwrap();
+    host.reload_admission().unwrap();
+    let grant = host.pack_policy().unwrap().grant_minecraft(&proof).unwrap();
+    let now = Instant::now();
+    let (secret, _) = host.pack_sessions().issue(grant, now).unwrap();
+    assert!(
+        host.pack_sessions()
+            .authenticate(secret.expose(), now, &host.pack_policy().unwrap())
+            .is_ok()
+    );
+
+    // Banning the player in Minecraft's own file ends the pack session after reload.
+    std::fs::write(
+        game.join("banned-players.json"),
+        format!(r#"[{{"uuid":"{PLAYER}","expires":"forever"}}]"#),
+    )
+    .unwrap();
+    host.reload_admission().unwrap();
+    assert_eq!(
+        host.pack_sessions()
+            .authenticate(secret.expose(), now, &host.pack_policy().unwrap()),
+        Err(PackAccessError::Invalid)
+    );
+
+    // A malformed admission file refuses the reload and keeps the previous data.
+    std::fs::write(game.join("server.properties"), "online-mode=maybe\n").unwrap();
+    refused(host.reload_admission(), "admission_data_malformed");
+    assert!(host.bans().contains(player));
+    assert!(matches!(
+        host.shutdown(Duration::from_secs(5)).unwrap(),
+        HostShutdown::Complete
+    ));
+}
+
+#[test]
+fn password_pack_sessions_end_when_the_password_is_revoked() {
+    use crate::identity::password::SecretPassword;
+    use crate::identity::{PasswordRevision, PasswordVerificationStatus};
+    use crate::pack_access::PackAccessError;
+    use std::time::Instant;
+    let f = Fixture::new();
+    let host = f.open("minecraft-or-password").unwrap();
+    let owner = seed_owner(host.database());
+    let passwords = host.pack_passwords().unwrap();
+    assert_eq!(host.pack_policy().unwrap().password, None);
+    let password = SecretPassword::try_from("correct horse battery".to_owned()).unwrap();
+    let metadata = passwords
+        .set(&owner, PasswordRevision::ABSENT, &password)
+        .unwrap();
+
+    let verification = passwords.verify(b"correct horse battery".to_vec()).unwrap();
+    assert_eq!(verification.status(), PasswordVerificationStatus::Match);
+    let grant = host
+        .pack_policy()
+        .unwrap()
+        .grant_password(&verification)
+        .unwrap();
+    let wrong = passwords.verify(b"wrong horse".to_vec()).unwrap();
+    assert_eq!(host.pack_policy().unwrap().grant_password(&wrong), None);
+
+    let now = Instant::now();
+    let (secret, _) = host.pack_sessions().issue(grant, now).unwrap();
+    assert!(
+        host.pack_sessions()
+            .authenticate(secret.expose(), now, &host.pack_policy().unwrap())
+            .is_ok()
+    );
+    passwords.revoke(&owner, metadata.revision()).unwrap();
+    assert_eq!(
+        host.pack_sessions()
+            .authenticate(secret.expose(), now, &host.pack_policy().unwrap()),
+        Err(PackAccessError::Invalid)
+    );
+    assert!(matches!(
+        host.shutdown(Duration::from_secs(5)).unwrap(),
+        HostShutdown::Complete
+    ));
+}
+
+#[test]
+fn malformed_admission_data_refuses_startup_and_releases_the_database() {
+    let f = Fixture::new();
+    std::fs::write(f.base().join("game/server.properties"), "white-list=yes\n").unwrap();
+    refused(f.open("minecraft"), "admission_data_malformed");
+    std::fs::write(
+        f.base().join("game/server.properties"),
+        "white-list=false\n",
+    )
+    .unwrap();
+    std::fs::write(f.base().join("game/banned-players.json"), b"{}").unwrap();
+    refused(f.open("minecraft"), "admission_data_malformed");
+    f.reopen().close().unwrap();
 }

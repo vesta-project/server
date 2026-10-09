@@ -36,7 +36,7 @@ design), Plugin-side (retained Java), or Unknown.
 | Area | Java evidence | Rust status | Gap |
 |---|---|---|---|
 | Identity: Minecraft proof and canonical policy | `identity/`, `auth/AuthService` | Partial | Device enrollment and pairing are missing. Production local authority is unavailable. |
-| Pack passwords and pack-only access | `security/PasswordKdfGate`, pack-password tests | Partial | Password metadata and verification exist. Pack-only sessions, tickets and routes are missing. |
+| Pack passwords and pack-only access | `security/PasswordKdfGate`, `auth/BearerTokenStore`, `RealtimeTicketService`, `server/SessionManager` | Partial | `pack_access.rs`: Minecraft-policy grants from the server's real `server.properties`/whitelist/bans (offline mode fails closed), password grants on the active revision, hash-only bounded sessions and single-use tickets rechecked on every use; composed in `Host`. No routes or transport. |
 | Operations and confirmations | `operations/` | Partial | Closed lifecycle driver exists. Confirmation coverage is unverified. |
 | Process and console | `runtime/MinecraftServerProcess`, `console/ConsoleBuffer` | Partial | Owned direct-child control and console capture exist. No supervisor, no crash policy. |
 | Player query | `runtime/PlayersQuery`, `PlayerListParser` | Partial | Literal `list` query exists. Runtime composition is not wired. |
@@ -48,7 +48,7 @@ design), Plugin-side (retained Java), or Unknown.
 | HTTP, TCP, realtime | `server/VestaHttpServer`, `TcpSyncServer`, `VestaRealtimeSocket`, `SessionManager` | Missing | No listener in any crate. |
 | TLS | `security/TlsMaterial` | Missing | No socket is opened. |
 | Rate limiting | `security/TokenBucketRateLimiter` | Partial | `admission.rs` peer limiter. Equivalence is unverified. |
-| Whitelist | `security/WhitelistService` | Partial | `whitelist.rs`: strict bounded parser (fails closed) and protected file loading (missing file = empty). Pack-access policy composition missing. |
+| Whitelist and admission data | `security/WhitelistService` | Partial | `whitelist.rs`, `minecraft_admission.rs` (`server.properties`, `banned-players.json`), composed into pack-access policy with explicit reload. No file watching. |
 | Config loading and host composition | `config/ConfigLoader`, `WrapperConfig`, `runtime/AgentRuntime` | Partial | `host.rs`: `Host::open` composes database, identity, pack passwords, Minecraft challenges, whitelist, files, pack preparation, releases and the operation runtime; no owner bootstrap, no game start, rollback on failure, observation-only shutdown. No transport; CLI still only `check-config`. |
 | Discovery | `runtime/ServerFeatureDiscovery` | Partial | `Host::discover` reports composed mechanisms honestly. No transport serves it. |
 | Installer | `ContentInstaller`, `AgentRuntime` | Unknown | `vesta-server-install` exists. Capability not inspected. |
@@ -96,7 +96,8 @@ Each wave ends with focused tests, a fresh full suite and an unsigned local comm
 
 0. **Done:** protected content-addressed pack publication (`2709401`); release ledger, whitelist parser,
    accounting report and checkpoint-doc archive (`dbbefab`); reference-aware artifact pruning and
-   protected whitelist loading, host composition and discovery (next commit).
+   protected whitelist loading, host composition and discovery (`52773b0`); pack-access policy,
+   sessions/tickets and Minecraft admission data (next commit).
 1. **Accounting pass:** script-based recount of requirement links; classify the 179 rows by
    kind and boundary; record dispositions with evidence. No promotion without tests.
 2. **Catalogue and revisions (remaining):** sync/status route, configuration dropping its now
@@ -107,9 +108,10 @@ Each wave ends with focused tests, a fresh full suite and an unsigned local comm
    staged replacement, integration with operation effects.
 5. **Host composition (remaining):** host-run CLI entrypoint once a transport exists; player
    query and console exposure through authenticated channels.
-6. **Transports and sessions:** TLS, bounded HTTP and TCP, pack-only sessions and tickets,
-   rate limits, whitelist; management routes stay unavailable until a canonical device
-   boundary exists.
+6. **Transports:** TLS, bounded HTTP and TCP serving discovery, pack status/sync/download and
+   pack-only authentication over the existing session store, with rate limits; management
+   routes stay unavailable until a canonical device boundary exists. Needs new reviewed
+   networking/TLS dependencies.
 7. **Out of migration scope:** backups, SFTP, scheduling, NAT, metrics, Discord, MOTD (future work).
 8. **Verification gate:** settled-source fmt, check, test, clippy, Node and parity checks
    on Windows; a separately configured Sol performs the whole-rebuild review; parent fixes

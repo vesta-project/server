@@ -11,7 +11,9 @@ use crate::config::{ConfigError, HostConfiguration, PackAccessMode};
 use crate::files::{self, FileBrowser, FileError};
 use crate::identity::minecraft::{MinecraftChallenges, MinecraftError, ServerUuid};
 use crate::identity::{IdentityService, PackPasswords};
+use crate::minecraft_admission::{AdmissionDataError, BanList, ServerProperties};
 use crate::operations::{OperationError, OperationRuntime, Operations, ShutdownOutcome};
+use crate::pack_access::{PackAccessPolicy, PackSessions, SessionLimits};
 use crate::packs::{
     MAX_PINNED_BYTES, MAX_PINNED_FILE_BYTES, MAX_SNAPSHOT_FILES, MAX_SNAPSHOT_SCAN, PackError,
     PackPreparation, PackReleases, ReleaseError, SnapshotLimits,
@@ -26,6 +28,8 @@ use vesta_protocol::discovery::{
 use vesta_state::{Clock, StateDatabase, StateError};
 
 const WHITELIST_FILE: &str = "whitelist.json";
+const PROPERTIES_FILE: &str = "server.properties";
+const BANS_FILE: &str = "banned-players.json";
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum HostError {
@@ -36,6 +40,7 @@ pub enum HostError {
     Identity(ControlError),
     Minecraft(MinecraftError),
     Whitelist(WhitelistError),
+    Admission(AdmissionDataError),
     Files(FileError),
     Pack(PackError),
     Release(ReleaseError),
@@ -51,6 +56,7 @@ impl HostError {
             Self::Identity(error) => error.code(),
             Self::Minecraft(error) => error.code(),
             Self::Whitelist(error) => error.code(),
+            Self::Admission(error) => error.code(),
             Self::Files(error) => error.code(),
             Self::Pack(error) => error.code(),
             Self::Release(error) => error.code(),
@@ -79,7 +85,9 @@ pub struct Host {
     identity: IdentityService,
     passwords: Option<PackPasswords>,
     minecraft: MinecraftChallenges,
-    whitelist: Whitelist,
+    server: ServerUuid,
+    admission: AdmissionData,
+    sessions: PackSessions,
     files: FileBrowser,
     preparations: Vec<PackPreparation>,
     releases: PackReleases,
@@ -138,13 +146,40 @@ impl Host {
     pub fn minecraft(&self) -> &MinecraftChallenges {
         &self.minecraft
     }
-    /// Loaded once at startup; an operator edit needs an explicit reload.
+    /// Loaded at startup; operator edits need an explicit `reload_admission`.
     pub fn whitelist(&self) -> &Whitelist {
-        &self.whitelist
+        &self.admission.whitelist
     }
-    pub fn reload_whitelist(&mut self) -> Result<(), HostError> {
-        self.whitelist = load_whitelist(&self.config)?;
+    /// `None` when `server.properties` is absent: Minecraft policy then fails closed.
+    pub fn server_properties(&self) -> Option<ServerProperties> {
+        self.admission.properties
+    }
+    pub fn bans(&self) -> &BanList {
+        &self.admission.bans
+    }
+    /// Reloads the server's whitelist, properties and bans together; a refused reload
+    /// keeps the previous data in full.
+    pub fn reload_admission(&mut self) -> Result<(), HostError> {
+        self.admission = AdmissionData::load(&self.config)?;
         Ok(())
+    }
+    pub fn pack_sessions(&self) -> &PackSessions {
+        &self.sessions
+    }
+    /// The current pack-access policy, read fresh for each decision.
+    pub fn pack_policy(&self) -> Result<PackAccessPolicy<'_>, HostError> {
+        let password = match &self.passwords {
+            Some(passwords) => passwords.active_revision().map_err(HostError::Identity)?,
+            None => None,
+        };
+        Ok(PackAccessPolicy {
+            server: self.server,
+            mode: self.config.pack_access(),
+            properties: self.admission.properties,
+            whitelist: &self.admission.whitelist,
+            bans: &self.admission.bans,
+            password,
+        })
     }
     pub fn files(&self) -> &FileBrowser {
         &self.files
@@ -229,7 +264,8 @@ fn compose(
     };
     let server = ServerUuid::parse(db.server_id()).map_err(HostError::Minecraft)?;
     let minecraft = MinecraftChallenges::new(server).map_err(HostError::Minecraft)?;
-    let whitelist = load_whitelist(&config)?;
+    let admission = AdmissionData::load(&config)?;
+    let sessions = PackSessions::new(server, SessionLimits::default());
     let files =
         FileBrowser::open(db.clone(), config.game(), &protected).map_err(HostError::Files)?;
     let limits = SnapshotLimits::new(
@@ -257,7 +293,9 @@ fn compose(
         identity,
         passwords,
         minecraft,
-        whitelist,
+        server,
+        admission,
+        sessions,
         files,
         preparations,
         releases,
@@ -272,8 +310,26 @@ fn read_launch_definition(config: &HostConfiguration) -> Result<LaunchConfigurat
     LaunchConfiguration::parse_toml(&bytes, config.base()).map_err(HostError::Launch)
 }
 
-fn load_whitelist(config: &HostConfiguration) -> Result<Whitelist, HostError> {
-    Whitelist::load(&config.game().join(WHITELIST_FILE)).map_err(HostError::Whitelist)
+struct AdmissionData {
+    whitelist: Whitelist,
+    properties: Option<ServerProperties>,
+    bans: BanList,
+}
+impl AdmissionData {
+    fn load(config: &HostConfiguration) -> Result<Self, HostError> {
+        let game = config.game();
+        let properties = match ServerProperties::load(&game.join(PROPERTIES_FILE)) {
+            Ok(properties) => Some(properties),
+            // Absent before the first server run; Minecraft policy fails closed meanwhile.
+            Err(AdmissionDataError::Unavailable) => None,
+            Err(error) => return Err(HostError::Admission(error)),
+        };
+        Ok(Self {
+            whitelist: Whitelist::load(&game.join(WHITELIST_FILE)).map_err(HostError::Whitelist)?,
+            properties,
+            bans: BanList::load(&game.join(BANS_FILE)).map_err(HostError::Admission)?,
+        })
+    }
 }
 
 #[cfg(test)]

@@ -645,3 +645,29 @@ protected launcher manifest digest is unchanged. 64 of 222 inventory rows now na
 counterpart; statuses are unchanged (26 migrated / 17 retained / 179 not_migrated /
 0 verified). Transports, pack-only sessions and routes, file mutations and the final
 independent review remain unfinished.
+
+### Pack-only access, sessions and Minecraft admission data — 2026-10-09
+
+Parent Claude Opus 5.5 wrote the pack-access policy, session store and host integration.
+A Haiku helper (self-reported `claude-haiku-5-5`) wrote the `server.properties` and
+`banned-players.json` parsers; the parent reviewed them. The helper followed real Java
+`.properties` rules (whitespace separators, `\u` escapes) where the brief was narrower.
+
+- `minecraft_admission`: strict bounded parsers. Unreadable/ambiguous data refuses; every
+  listed ban counts regardless of `expires` (fail-closed simplification).
+- `pack_access`: pack grants come only from a server-bound verified Minecraft profile that
+  the server's real admission data admits (online mode, not banned, whitelisted when the
+  whitelist is on; unknown properties fail closed) or from a password match on the active
+  revision in password mode. Grants never become management subjects. Sessions and
+  single-use tickets are random, returned once, retained only as a server-bound SHA-256,
+  bounded (refuse rather than evict), expiring, and rechecked against current policy on
+  every use, so bans, whitelist removal, mode change or password rotation end access.
+  Sessions are memory-only.
+- `Host` loads and reloads whitelist, properties and bans together (a refused reload keeps
+  the previous data), owns the session store and builds the current policy per decision.
+
+Verification on settled source passed format, all-target check, strict Clippy and
+**1013 workspace tests / 42 summaries**, zero failed/ignored/filtered; **161 Node tests**
+and both accounting checkers passed; the protected launcher manifest digest is unchanged.
+69 of 222 inventory rows name a Rust counterpart; statuses are unchanged. No transport or
+route serves pack access yet; the final independent review remains outstanding.
