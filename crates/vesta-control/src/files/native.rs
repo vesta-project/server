@@ -114,6 +114,56 @@ mod windows {
     }
 }
 
+/// A single atomic no-replace move. Do not substitute std::fs::rename: it can
+/// silently overwrite a target that appeared after the absence check.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub(super) fn rename_absent(from: &Path, to: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+    let from: Vec<u16> = from.as_os_str().encode_wide().chain([0]).collect();
+    let to: Vec<u16> = to.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: both NUL-terminated UTF-16 buffers live for this synchronous call.
+    // Zero flags deliberately exclude REPLACE_EXISTING and COPY_ALLOWED: a move
+    // either renames on the same volume or refuses without a copy/delete window.
+    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } == 0 {
+        return Err(super::mutation::no_replace_error(
+            std::io::Error::last_os_error(),
+        ));
+    }
+    Ok(())
+}
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+pub(super) fn rename_absent(from: &Path, to: &Path) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let from =
+        std::ffi::CString::new(from.as_os_str().as_bytes()).map_err(|_| FileError::InvalidPath)?;
+    let to =
+        std::ffi::CString::new(to.as_os_str().as_bytes()).map_err(|_| FileError::InvalidPath)?;
+    // SAFETY: stable NUL-terminated path buffers; AT_FDCWD accepts absolute paths.
+    // Unsupported kernels/filesystems fail closed rather than falling back to replace.
+    if unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    } != 0
+    {
+        return Err(super::mutation::no_replace_error(
+            std::io::Error::last_os_error(),
+        ));
+    }
+    Ok(())
+}
+#[cfg(not(any(windows, target_os = "linux")))]
+pub(super) fn rename_absent(_from: &Path, _to: &Path) -> Result<()> {
+    Err(FileError::Unavailable)
+}
+
 /// Available and total bytes on the volume holding `path`.
 #[cfg(windows)]
 #[allow(unsafe_code)]

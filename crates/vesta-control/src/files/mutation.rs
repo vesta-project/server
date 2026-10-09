@@ -1,4 +1,4 @@
-//! Recoverable, optimistically concurrent single-file writes, deletes and restores.
+//! Protected single-level directory creation and optimistically concurrent file mutations.
 //!
 //! Callers name the bytes they expect to replace (`If-Match`) or require absence, so a
 //! stale edit refuses with the current hash instead of overwriting newer content. The
@@ -8,6 +8,10 @@
 //! destructive effect. Authority and the precondition are rechecked in the completion
 //! transaction together with the success audit. Failed completion is compensated only
 //! while the effect's hash still matches. Explicit reconciliation retains uncertain data.
+//! Mkdir and rename use single native effects and compensate failed completion; they do
+//! not journal. A process interruption after the native effect but before database commit
+//! can leave an unaudited directory/move, as with create-only writes. Rename never uses a
+//! copy/delete fallback, so interruption cannot leave a partially copied or replaced file.
 //! Path checks are same-account hygiene, not race-free confinement.
 use super::{FileBrowser, FileError, RelativePath, Result, io_error, native};
 use crate::identity::{self, Capability, Subject};
@@ -122,6 +126,94 @@ impl Reason {
 }
 
 impl FileBrowser {
+    /// Creates exactly one directory level; the existing parent must be authorized.
+    pub fn mkdir(&self, subject: &Subject, path: &RelativePath) -> Result<()> {
+        let admission = mutation_admission(self.db.directory().path())?;
+        let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
+        let mut target = None;
+        let result = self
+            .db
+            .write_with(|transaction| {
+                let connection = transaction.connection();
+                self.authorize_destination(connection, subject, path, Capability::FilesMkdir)?;
+                let directory = self.parent(path)?.join(leaf(path));
+                require_absent(&directory)?;
+                fs::create_dir(&directory).map_err(no_replace_error)?;
+                target = Some(directory);
+                self.audit(connection, subject, "files.mkdir", path, [])?;
+                Ok(())
+            })
+            .map_err(FileError::from);
+        if let Err(error) = &result
+            && target.is_some()
+        {
+            // Never recursively remove: an intervening child's data must be retained.
+            let reversed = (|| {
+                let checked = self.root.resolve(Some(path))?;
+                if Some(&checked.path) != target.as_ref() || !checked.metadata.is_dir() {
+                    return Err(FileError::LinkedPath);
+                }
+                fs::remove_dir(&checked.path).map_err(io_error)
+            })();
+            if reversed.is_err() {
+                return Err(FileError::RecoveryRequired(Box::new(error.clone())));
+            }
+        }
+        result
+    }
+
+    /// Atomically moves one regular file, never replacing a destination. Both names
+    /// require rename authority, and the source must still have the expected bytes.
+    /// Unlike a hard-link/delete move, the native operation has no two-name crash window.
+    pub fn rename(
+        &self,
+        subject: &Subject,
+        from: &RelativePath,
+        to: &RelativePath,
+        expected_sha256: &str,
+    ) -> Result<FileChange> {
+        check_hex(expected_sha256)?;
+        let admission = mutation_admission(self.db.directory().path())?;
+        let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
+        let mut targets = None;
+        let result = self
+            .db
+            .write_with(|transaction| {
+                let connection = transaction.connection();
+                self.authorize(connection, subject, from, Capability::FilesRename)?;
+                self.authorize_destination(connection, subject, to, Capability::FilesRename)?;
+                let checked = self.root.resolve(Some(from))?;
+                let source = checked.path;
+                let destination = self.parent(to)?.join(leaf(to));
+                require_hash(&source, Some(expected_sha256))?;
+                require_mutable_target(&source)?;
+                require_absent(&destination)?;
+                let size = checked.metadata.len();
+                native::rename_absent(&source, &destination)?;
+                targets = Some((source, destination));
+                self.audit(
+                    connection,
+                    subject,
+                    "files.rename",
+                    from,
+                    [
+                        ("to", Some(to.as_str().to_owned())),
+                        ("sha256", Some(expected_sha256.to_owned())),
+                    ],
+                )?;
+                Ok(FileChange {
+                    sha256: expected_sha256.to_owned(),
+                    size,
+                    trash: None,
+                })
+            })
+            .map_err(FileError::from);
+        if let Some((source, destination)) = targets {
+            return settle_rename(result, &source, &destination, expected_sha256);
+        }
+        result
+    }
+
     pub fn write(
         &self,
         subject: &Subject,
@@ -483,6 +575,27 @@ impl FileBrowser {
         path: &RelativePath,
         capability: Capability,
     ) -> Result<i64> {
+        self.authorize_path(connection, subject, path, capability, false)
+    }
+
+    fn authorize_destination(
+        &self,
+        connection: &Connection,
+        subject: &Subject,
+        path: &RelativePath,
+        capability: Capability,
+    ) -> Result<i64> {
+        self.authorize_path(connection, subject, path, capability, true)
+    }
+
+    fn authorize_path(
+        &self,
+        connection: &Connection,
+        subject: &Subject,
+        path: &RelativePath,
+        capability: Capability,
+        allow_directory: bool,
+    ) -> Result<i64> {
         let now = self.db.clock().millis();
         let policy = identity::policy_in(connection, self.db.server_id(), now, Some(subject))?;
         let parent = self.parent(path)?;
@@ -492,7 +605,7 @@ impl FileBrowser {
                 return Err(crate::ControlError::forbidden(reason).into());
             }
         }
-        if let Some(resource) = self.checked_existing_resource(path)? {
+        if let Some(resource) = self.checked_existing_path(path, allow_directory)? {
             super::authorize(&policy, capability, &resource)?;
         }
         Ok(now)
@@ -502,11 +615,22 @@ impl FileBrowser {
         &self,
         path: &RelativePath,
     ) -> Result<Option<crate::identity::Resource>> {
+        self.checked_existing_path(path, false)
+    }
+
+    fn checked_existing_path(
+        &self,
+        path: &RelativePath,
+        allow_directory: bool,
+    ) -> Result<Option<crate::identity::Resource>> {
         let checked = match self.root.resolve(Some(path)) {
             Ok(checked) => checked,
             Err(FileError::NotFound) => return Ok(None),
             Err(error) => return Err(error),
         };
+        if allow_directory && checked.metadata.is_dir() {
+            return Ok(Some(checked.resource));
+        }
         if !checked.metadata.is_file() {
             return Err(FileError::NotRegular);
         }
@@ -774,6 +898,34 @@ impl Stage {
 impl Drop for Stage {
     fn drop(&mut self) {
         remove_stage(&self.path);
+    }
+}
+
+fn settle_rename<T>(
+    result: Result<T>,
+    source: &Path,
+    destination: &Path,
+    expected: &str,
+) -> Result<T> {
+    let Err(error) = &result else {
+        return result;
+    };
+    let reversed = (|| {
+        require_hash(destination, Some(expected))?;
+        require_absent(source)?;
+        native::rename_absent(destination, source)
+    })();
+    if reversed.is_err() {
+        return Err(FileError::RecoveryRequired(Box::new(error.clone())));
+    }
+    result
+}
+
+pub(super) fn no_replace_error(error: std::io::Error) -> FileError {
+    if error.kind() == std::io::ErrorKind::AlreadyExists {
+        FileError::Conflict(None)
+    } else {
+        io_error(error)
     }
 }
 

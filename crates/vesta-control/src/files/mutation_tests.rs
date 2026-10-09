@@ -995,3 +995,485 @@ fn committed_restore_reports_success_and_keeps_denied_cleanup_for_retry() {
     assert_eq!(f.files.purge_expired_trash().unwrap(), 1);
     assert_eq!((f.trash_rows(), f.trash_files()), (0, 0));
 }
+
+#[test]
+fn mkdir_creates_one_level_and_audits_only_success() {
+    let f = Fixture::open();
+    let path = Fixture::path("config/new-directory");
+    f.files.mkdir(&f.owner, &path).unwrap();
+    assert!(f.game.join(path.as_str()).is_dir());
+    refused(f.files.mkdir(&f.owner, &path), "file_conflict");
+    f.put("config/existing.txt", b"untouched");
+    refused(
+        f.files
+            .mkdir(&f.owner, &Fixture::path("config/existing.txt")),
+        "file_conflict",
+    );
+    refused(
+        f.files.mkdir(&f.owner, &Fixture::path("missing/child")),
+        "file_not_found",
+    );
+    assert!(!f.game.join("missing").exists());
+    assert_eq!(f.get("config/existing.txt").unwrap(), b"untouched");
+    assert_eq!(
+        f.audit_actions()
+            .iter()
+            .filter(|a| *a == "files.mkdir")
+            .count(),
+        1
+    );
+    assert_eq!((f.trash_rows(), f.trash_files()), (0, 0));
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+#[test]
+fn rename_moves_one_file_to_an_absent_name_and_audits_both_names() {
+    let f = Fixture::open();
+    f.put("config/source.txt", b"keep bytes");
+    f.files
+        .mkdir(&f.owner, &Fixture::path("destination"))
+        .unwrap();
+    let from = Fixture::path("config/source.txt");
+    let to = Fixture::path("destination/moved.txt");
+    let change = f
+        .files
+        .rename(&f.owner, &from, &to, &sha(b"keep bytes"))
+        .unwrap();
+    assert_eq!(
+        change,
+        FileChange {
+            sha256: sha(b"keep bytes"),
+            size: 10,
+            trash: None
+        }
+    );
+    assert!(f.get(from.as_str()).is_none());
+    assert_eq!(f.get(to.as_str()).unwrap(), b"keep bytes");
+    let metadata: String =
+        f.db.read(|c| {
+            Ok(c.query_row(
+                "SELECT metadata_json FROM audit_events WHERE action='files.rename'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert!(metadata.contains(from.as_str()));
+    assert!(metadata.contains(to.as_str()));
+    assert!(!metadata.contains(&f.game.to_string_lossy().to_string()));
+    assert_eq!((f.trash_rows(), f.trash_files()), (0, 0));
+}
+
+#[test]
+fn rename_refuses_stale_hash_existing_targets_and_missing_parents() {
+    let f = Fixture::open();
+    f.put("config/source.txt", b"source");
+    f.put("config/existing.txt", b"target");
+    fs::create_dir(f.game.join("config/existing-dir")).unwrap();
+    let from = Fixture::path("config/source.txt");
+    let fresh = Fixture::path("config/new.txt");
+    match f
+        .files
+        .rename(&f.owner, &from, &fresh, &sha(b"stale"))
+        .unwrap_err()
+    {
+        FileError::Conflict(current) => assert_eq!(current, Some(sha(b"source"))),
+        error => panic!("unexpected {error:?}"),
+    }
+    for to in [
+        "config/existing.txt",
+        "config/existing-dir",
+        "config/source.txt",
+    ] {
+        refused(
+            f.files
+                .rename(&f.owner, &from, &Fixture::path(to), &sha(b"source")),
+            "file_conflict",
+        );
+    }
+    refused(
+        f.files.rename(
+            &f.owner,
+            &from,
+            &Fixture::path("missing/file.txt"),
+            &sha(b"source"),
+        ),
+        "file_not_found",
+    );
+    refused(
+        f.files.rename(
+            &f.owner,
+            &Fixture::path("config/absent.txt"),
+            &fresh,
+            &sha(b"source"),
+        ),
+        "file_not_found",
+    );
+    refused(
+        f.files.rename(
+            &f.owner,
+            &Fixture::path("config/existing-dir"),
+            &fresh,
+            &sha(b""),
+        ),
+        "file_not_regular",
+    );
+    for bad in ["", "ABC", &"g".repeat(64), &"A".repeat(64)] {
+        refused(
+            f.files.rename(&f.owner, &from, &fresh, bad),
+            "file_path_invalid",
+        );
+    }
+    assert_eq!(f.get("config/source.txt").unwrap(), b"source");
+    assert_eq!(f.get("config/existing.txt").unwrap(), b"target");
+    assert!(!f.game.join("missing").exists());
+    assert!(!f.game.join(fresh.as_str()).exists());
+    assert!(!f.audit_actions().iter().any(|a| a == "files.rename"));
+}
+
+#[test]
+fn mkdir_and_rename_use_distinct_capabilities_and_both_rename_scopes() {
+    let f = Fixture::open();
+    let stranger = seed(&f.db, false);
+    f.put("config/source.txt", b"source");
+    let dir = Fixture::path("config/new-dir");
+    let from = Fixture::path("config/source.txt");
+    let to = Fixture::path("moved.txt");
+    f.grant(&stranger, Capability::FilesCreate, "**");
+    f.grant(&stranger, Capability::FilesDelete, "**");
+    refused(f.files.mkdir(&stranger, &dir), "forbidden");
+    refused(
+        f.files.rename(&stranger, &from, &to, &sha(b"source")),
+        "forbidden",
+    );
+    f.grant(&stranger, Capability::FilesMkdir, "config/**");
+    f.files.mkdir(&stranger, &dir).unwrap();
+    refused(
+        f.files.mkdir(&stranger, &Fixture::path("outside")),
+        "forbidden",
+    );
+    f.grant(&stranger, Capability::FilesRename, "config/**");
+    refused(
+        f.files.rename(&stranger, &from, &to, &sha(b"source")),
+        "forbidden",
+    );
+    refused(
+        f.files.rename(&stranger, &to, &from, &sha(b"source")),
+        "forbidden",
+    );
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        f.grant(&stranger, Capability::FilesRename, "moved.txt");
+        f.files
+            .rename(&stranger, &from, &to, &sha(b"source"))
+            .unwrap();
+    }
+}
+
+#[test]
+fn mkdir_and_rename_refuse_protected_traversal_and_ambiguous_names() {
+    let f = Fixture::open();
+    for text in [
+        "../escape",
+        "config/../escape",
+        "/absolute",
+        r"config\escape",
+        "config/name.",
+        "config/name ",
+        "config/name:stream",
+        "config/CON",
+        "config/COM0",
+    ] {
+        refused(RelativePath::parse(text), "file_path_invalid");
+    }
+    for text in [
+        ".vesta/child",
+        "config/.git",
+        "WRAPPER-CONFIG.TOML",
+        "config/start-vesta-wrapper.bat",
+    ] {
+        refused(RelativePath::parse(text), "file_path_protected");
+    }
+    let protected = f.game.join("secrets");
+    let files = FileBrowser::open(f.db.clone(), &f.game, &[&protected]).unwrap();
+    f.put("config/source.txt", b"source");
+    refused(
+        files.mkdir(&f.owner, &Fixture::path("secrets")),
+        "file_path_protected",
+    );
+    refused(
+        files.rename(
+            &f.owner,
+            &Fixture::path("config/source.txt"),
+            &Fixture::path("secrets"),
+            &sha(b"source"),
+        ),
+        "file_path_protected",
+    );
+    fs::create_dir(&protected).unwrap();
+    f.put("secrets/hidden.txt", b"hidden");
+    refused(
+        files.rename(
+            &f.owner,
+            &Fixture::path("secrets/hidden.txt"),
+            &Fixture::path("config/moved.txt"),
+            &sha(b"hidden"),
+        ),
+        "file_path_protected",
+    );
+    assert_eq!(f.get("config/source.txt").unwrap(), b"source");
+    assert_eq!(f.get("secrets/hidden.txt").unwrap(), b"hidden");
+}
+
+#[test]
+fn mkdir_and_rename_refuse_hard_link_aliases() {
+    let f = Fixture::open();
+    f.put("config/source.txt", b"source");
+    fs::hard_link(
+        f.game.join("config/source.txt"),
+        f.game.join("config/alias.txt"),
+    )
+    .unwrap();
+    let from = Fixture::path("config/source.txt");
+    let to = Fixture::path("config/moved.txt");
+    refused(
+        f.files.rename(&f.owner, &from, &to, &sha(b"source")),
+        "file_path_linked",
+    );
+    refused(f.files.mkdir(&f.owner, &from), "file_path_linked");
+    f.put("config/plain.txt", b"plain");
+    refused(
+        f.files.rename(
+            &f.owner,
+            &Fixture::path("config/plain.txt"),
+            &from,
+            &sha(b"plain"),
+        ),
+        "file_path_linked",
+    );
+    assert_eq!(f.get("config/source.txt").unwrap(), b"source");
+    assert_eq!(f.get("config/alias.txt").unwrap(), b"source");
+    assert!(!f.game.join(to.as_str()).exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn mkdir_and_rename_refuse_junction_ancestors_and_sources() {
+    let f = Fixture::open();
+    let outside = f._temp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("source.txt"), b"outside").unwrap();
+    let linked = f.game.join("linked");
+    let status = std::process::Command::new("cmd.exe")
+        .args(["/d", "/c", "mklink", "/J"])
+        .arg(&linked)
+        .arg(&outside)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    refused(
+        f.files.mkdir(&f.owner, &Fixture::path("linked/new-dir")),
+        "file_path_linked",
+    );
+    refused(
+        f.files.mkdir(&f.owner, &Fixture::path("linked")),
+        "file_path_linked",
+    );
+    refused(
+        f.files.rename(
+            &f.owner,
+            &Fixture::path("linked/source.txt"),
+            &Fixture::path("config/moved.txt"),
+            &sha(b"outside"),
+        ),
+        "file_path_linked",
+    );
+    refused(
+        f.files.rename(
+            &f.owner,
+            &Fixture::path("linked"),
+            &Fixture::path("config/moved.txt"),
+            &sha(b""),
+        ),
+        "file_path_linked",
+    );
+    f.put("config/plain.txt", b"plain");
+    refused(
+        f.files.rename(
+            &f.owner,
+            &Fixture::path("config/plain.txt"),
+            &Fixture::path("linked/moved.txt"),
+            &sha(b"plain"),
+        ),
+        "file_path_linked",
+    );
+    assert!(!outside.join("new-dir").exists());
+    assert_eq!(fs::read(outside.join("source.txt")).unwrap(), b"outside");
+    fs::remove_dir(linked).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn mkdir_and_rename_refuse_symlink_sources_and_parents() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::open();
+    f.put("config/source.txt", b"source");
+    symlink(f.game.join("config/source.txt"), f.game.join("alias.txt")).unwrap();
+    symlink(f.game.join("config"), f.game.join("linked")).unwrap();
+    refused(
+        f.files.mkdir(&f.owner, &Fixture::path("linked/new-dir")),
+        "file_path_linked",
+    );
+    refused(
+        f.files.rename(
+            &f.owner,
+            &Fixture::path("alias.txt"),
+            &Fixture::path("config/moved.txt"),
+            &sha(b"source"),
+        ),
+        "file_path_linked",
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn mkdir_and_rename_check_canonical_case_and_protected_short_aliases() {
+    let f = Fixture::open();
+    fs::create_dir(f.game.join("config/CanonicalLongDirectory")).unwrap();
+    f.put("config/CanonicalLongName.toml", b"source");
+    f.put("wrapper-config.toml", b"protected");
+    let stranger = seed(&f.db, false);
+    f.grant(
+        &stranger,
+        Capability::FilesMkdir,
+        "config/CANONICALLONGDIRECTORY/**",
+    );
+    refused(
+        f.files.mkdir(
+            &stranger,
+            &Fixture::path("config/CANONICALLONGDIRECTORY/new"),
+        ),
+        "forbidden",
+    );
+    f.grant(
+        &stranger,
+        Capability::FilesRename,
+        "config/CANONICALLONGNAME.TOML",
+    );
+    f.grant(&stranger, Capability::FilesRename, "config/new.txt");
+    refused(
+        f.files.rename(
+            &stranger,
+            &Fixture::path("config/CANONICALLONGNAME.TOML"),
+            &Fixture::path("config/new.txt"),
+            &sha(b"source"),
+        ),
+        "forbidden",
+    );
+    if let Some(alias) = short_leaf(&f.game.join("wrapper-config.toml")) {
+        let path = Fixture::path(&alias);
+        refused(f.files.mkdir(&f.owner, &path), "file_path_protected");
+        refused(
+            f.files.rename(
+                &f.owner,
+                &path,
+                &Fixture::path("config/new.txt"),
+                &sha(b"protected"),
+            ),
+            "file_path_protected",
+        );
+        refused(
+            f.files.rename(
+                &f.owner,
+                &Fixture::path("config/CanonicalLongName.toml"),
+                &path,
+                &sha(b"source"),
+            ),
+            "file_path_protected",
+        );
+    }
+    assert_eq!(f.get("wrapper-config.toml").unwrap(), b"protected");
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+#[test]
+fn native_rename_never_replaces_a_target_that_appeared_after_preflight() {
+    let f = Fixture::open();
+    f.put("config/source.txt", b"source");
+    let source = f.game.join("config/source.txt");
+    let destination = f.game.join("config/new.txt");
+    require_absent(&destination).unwrap();
+    fs::write(&destination, b"intervening").unwrap();
+    refused(
+        native::rename_absent(&source, &destination),
+        "file_conflict",
+    );
+    assert_eq!(f.get("config/source.txt").unwrap(), b"source");
+    assert_eq!(f.get("config/new.txt").unwrap(), b"intervening");
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+#[test]
+fn mkdir_and_rename_compensate_failed_audit_and_failed_commit() {
+    for commit_failure in [false, true] {
+        let f = Fixture::open();
+        f.put("config/source.txt", b"source");
+        f.db.write(|c| {
+            if commit_failure {
+                c.execute_batch("CREATE TABLE deferred_file_failure (principal TEXT REFERENCES principals(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_new_file_commit AFTER INSERT ON audit_events WHEN NEW.action IN ('files.mkdir','files.rename') BEGIN INSERT INTO deferred_file_failure VALUES ('missing-principal'); END;")?;
+            } else {
+                c.execute_batch("CREATE TRIGGER reject_new_file_audit BEFORE INSERT ON audit_events WHEN NEW.action IN ('files.mkdir','files.rename') BEGIN SELECT RAISE(ABORT,'fixture'); END;")?;
+            }
+            Ok(())
+        }).unwrap();
+        let dir = Fixture::path("config/new-dir");
+        let from = Fixture::path("config/source.txt");
+        let to = Fixture::path("config/moved.txt");
+        assert!(f.files.mkdir(&f.owner, &dir).is_err());
+        assert!(!f.game.join(dir.as_str()).exists());
+        assert!(
+            f.files
+                .rename(&f.owner, &from, &to, &sha(b"source"))
+                .is_err()
+        );
+        assert_eq!(f.get(from.as_str()).unwrap(), b"source");
+        assert!(!f.game.join(to.as_str()).exists());
+        assert!(
+            !f.audit_actions()
+                .iter()
+                .any(|a| a == "files.mkdir" || a == "files.rename")
+        );
+    }
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+#[test]
+fn rename_compensation_retains_unknown_effects_and_new_source_data() {
+    let f = Fixture::open();
+    let source = f.game.join("config/source.txt");
+    let destination = f.game.join("config/moved.txt");
+    fs::write(&destination, b"foreign").unwrap();
+    refused(
+        settle_rename::<()>(
+            Err(FileError::Unavailable),
+            &source,
+            &destination,
+            &sha(b"expected"),
+        ),
+        "file_recovery_required",
+    );
+    assert_eq!(fs::read(&destination).unwrap(), b"foreign");
+    fs::write(&destination, b"expected").unwrap();
+    fs::write(&source, b"new source").unwrap();
+    refused(
+        settle_rename::<()>(
+            Err(FileError::Unavailable),
+            &source,
+            &destination,
+            &sha(b"expected"),
+        ),
+        "file_recovery_required",
+    );
+    assert_eq!(fs::read(&source).unwrap(), b"new source");
+    assert_eq!(fs::read(&destination).unwrap(), b"expected");
+}
