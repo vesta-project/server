@@ -1496,7 +1496,7 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "5c4bbdbae31a1862717685120c392ec4164a33b36b6aa6ea642b52b753d4a454",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/packs/publish.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
@@ -1506,8 +1506,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/packs/publish_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/packs/publish_tests.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `publication_is_content_addressed_verified_and_idempotent` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -1584,7 +1592,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Legacy authority shortcut: Java pack password grants level 4 by default; do not reproduce as management authority."
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/AuthGate.java",
@@ -1705,7 +1714,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Legacy authority shortcut: Java maps Minecraft OP level directly to Vesta level; do not reproduce."
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/CapabilityLevel.java",
@@ -1730,7 +1740,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Legacy authority shortcut: numeric OP-derived Vesta levels are not Rust management authority."
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/LinkCodeService.java",
@@ -1755,7 +1766,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Legacy authority shortcut: connector possession can mint link codes; do not reproduce."
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/MinecraftSessionChallengeService.java",
@@ -1876,7 +1888,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Legacy authority shortcut: live ops.json status must not grant Rust management authority."
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/OpsLevelProvider.java",
@@ -1901,7 +1914,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Legacy authority shortcut: Minecraft OP status must not grant Rust management authority."
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/RealtimeTicketService.java",
@@ -1987,7 +2001,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Legacy authority shortcut: open mode authenticates everyone; Rust pack access is not management authority."
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/TokenService.java",
@@ -2013,7 +2028,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Legacy authority shortcut: operator bearer possession is not Rust management authority."
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/hashing/FileHasher.java",
@@ -2581,7 +2597,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Legacy authority shortcut: connector permission-check ALLOW responses must not grant Rust management authority."
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/Disconnect.java",
@@ -2764,7 +2781,7 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "6280192dd34762b527232e862b847931d7b912d82c7f0b03d2de538e089b160c",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-protocol/src/pack/sync.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
       ],
@@ -2776,8 +2793,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-protocol/tests/pack_catalogue_sync.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-protocol/tests/pack_catalogue_sync.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `golden_complete_diff_retains_metadata_and_old_hash_preconditions` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -2789,7 +2814,7 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "f7f7d038972bd67b3fc338c1119a294e77a80492d8696bdc177fb492702cd90d",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-protocol/src/pack/sync.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
       ],
@@ -2801,8 +2826,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-protocol/tests/pack_catalogue_sync.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-protocol/tests/pack_catalogue_sync.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `golden_complete_diff_retains_metadata_and_old_hash_preconditions` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -2839,7 +2872,7 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "0e4c5716166b01099f29dc19562cb78795b2604a8fdce8b9d276e84a9afd2032",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-protocol/src/framing.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
       ],
@@ -2851,8 +2884,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-protocol/src/framing_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-protocol/src/framing_tests.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `a_literal_golden_frame_decodes_to_its_text` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -2963,7 +3004,7 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "22fad30504e24b91328ba47196612f749b422de9d4fb553ca952f37d8c45b3d1",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/files/path.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/util/PathSanitizerTest.java"
       ],
@@ -2975,8 +3016,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/files/tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/files/tests.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `portable_paths_refuse_ambiguous_spelling_and_devices_without_echo` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -3033,7 +3082,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Legacy authority assertions for open-mode authentication and bearer access are not reproduced as Rust management authority."
     },
     {
       "javaPath": "core/src/test/java/com/vesta/sync/auth/BearerTokenPersistenceTest.java",
@@ -3087,7 +3137,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Legacy authority assertions for direct Minecraft OP-to-Vesta-level mapping are intentionally not reproduced."
     },
     {
       "javaPath": "core/src/test/java/com/vesta/sync/auth/LinkCodeServiceTest.java",
@@ -3113,7 +3164,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Legacy authority assertion for connector-issued redeemable link codes is intentionally not reproduced."
     },
     {
       "javaPath": "core/src/test/java/com/vesta/sync/auth/MinecraftSessionChallengeServiceTest.java",
@@ -3247,7 +3299,7 @@
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "46262396f1953b15ef74e9abd84a7c30f090daeee00fc1f704261118361714df",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/files/pack_root.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/hashing/FileHasherTest.java"
       ],
@@ -3259,8 +3311,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/files/pack_root_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/files/pack_root_tests.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `exact_and_empty_streams_keep_independent_digest_goldens` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -3367,7 +3427,7 @@
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "d0e0b01a53927da71161696983fa8de453e8dcd3d605b086fd90af984d8dcf67",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-protocol/src/pack/catalogue.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/ModpackStatePlatformTest.java"
       ],
@@ -3379,8 +3439,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-protocol/tests/pack_catalogue_sync.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-protocol/tests/pack_catalogue_sync.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function `platform_and_archive_catalogues_are_descriptive_and_never_remove_all` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -3472,7 +3540,7 @@
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "7d818d128eb610644353e7e6dcc305312ed0410deafbe72613a8a145cde70502",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-protocol/src/framing_tests.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
       ],
@@ -3484,8 +3552,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-protocol/src/framing_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-protocol/src/framing_tests.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `a_literal_golden_frame_decodes_to_its_text` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -3566,7 +3642,7 @@
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "967ff6c7d6adfcc48055e9dc45f39cad151a69ac7f8720011407dbbf1fe99d53",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/files/path.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/util/PathSanitizerTest.java"
       ],
@@ -3578,8 +3654,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/files/tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/files/tests.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `portable_paths_refuse_ambiguous_spelling_and_devices_without_echo` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -3756,7 +3840,8 @@
       "results": {
         "status": "not_run",
         "summary": "Plugin retention classification only; no plugin or host parity tests were run."
-      }
+      },
+      "notes": "Legacy authority shortcut: connector permission-check ALLOW replies must not grant Rust management authority."
     },
     {
       "javaPath": "src/main/java/com/vesta/loader/platform/BukkitEntrypoint.java",
@@ -3974,7 +4059,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "1ec87df3c21c376f55f015dc79500a5939de05a8f11e0ebf4f7a33907e5c1751",
-      "rustCounterpart": null,
+      "rustCounterpart": "apps/vesta-agent/src/main.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
@@ -3984,8 +4069,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "apps/vesta-agent/tests/serve.rs"
+      ],
+      "evidence": [
+        {
+          "path": "apps/vesta-agent/tests/serve.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `serve_refuses_disabled_listener_without_opening_state_or_launching` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -4209,7 +4302,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "e95ef14152a3a8c4815fb3f28e0fa7dc6baf06d2a8711fba2cbc8a02b4424681",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/identity/policy.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
@@ -4219,8 +4312,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/identity/tests/policy.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/identity/tests/policy.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `unknown_disabled_mismatched_and_revoked_identities_resolve_no_authority` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -4232,7 +4333,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "26d407912feb0195e85621c7dd21d1306fc2cfbac55aae3a2b1605ce03789957",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/identity/builtin_roles.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
@@ -4242,8 +4343,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/identity/tests/policy.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/identity/tests/policy.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `unknown_disabled_mismatched_and_revoked_identities_resolve_no_authority` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -4255,7 +4364,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "8b03328cdef2f975a756baa5fb7475b490c7bf9897e58ad14dda663e2f8a54d7",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/identity/capability.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
@@ -4265,8 +4374,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/identity/tests/policy.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/identity/tests/policy.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `unknown_disabled_mismatched_and_revoked_identities_resolve_no_authority` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -4278,7 +4395,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "bcca49e4cc14f540eed5faf5acf69f10ea1b37dc89a9fc2849792d88727098c4",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/identity/policy.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
@@ -4288,8 +4405,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/identity/tests/policy.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/identity/tests/policy.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `unknown_disabled_mismatched_and_revoked_identities_resolve_no_authority` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -4301,7 +4426,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "624f0824adcccda71fd0d86bbf531d4bd13a06c19b6cb95c9bc77514942d44a8",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/identity/policy.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
@@ -4311,8 +4436,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/identity/tests/policy.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/identity/tests/policy.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `unknown_disabled_mismatched_and_revoked_identities_resolve_no_authority` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -4324,7 +4457,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "342eda1cd175ee8c3fce871f8d124777e9ded003c60d8bff39cbf9e3da55c40e",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/identity/scope.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
@@ -4334,8 +4467,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/identity/tests/scopes.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/identity/tests/scopes.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `root_and_canonical_components_are_accepted_verbatim` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -5068,7 +5209,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Legacy authority shortcut: unauthenticated connector IPC must not grant supervisor or management authority."
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/launch/LaunchSpec.java",
@@ -5263,7 +5405,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "b5ae7225a5726ac2700a4e51b1d1398b58e5fe66e56af6fa5a7be5411375ffdb",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/operations/domain.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
@@ -5278,8 +5420,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/operations/tests/ledger.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/operations/tests/ledger.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `canonical_admission_is_exact_and_summaries_events_audit_disclose_no_inputs` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -5291,7 +5441,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "6e9b3f58a68b021fcfeaac61e6bca5a5140727480be2b054240d18e78ed57525",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/operations/mod.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/operations/PolicyOperationAuthorityTest.java"
@@ -5304,8 +5454,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/operations/tests/review_regressions.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/operations/tests/review_regressions.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `policy_resolution_failure_is_not_an_audited_action_refusal` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -6220,7 +6378,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "8d904f71fb4727ea6f0cb81970ba43e8e4e0af81145a1345436f3baccce2a05c",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-game-runtime/src/process/mod.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeEventReplayTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeFeatureDiscoveryTest.java",
@@ -6240,8 +6398,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-game-runtime/tests/process_lifecycle.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-game-runtime/tests/process_lifecycle.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `graceful_stop_delivers_exact_stop_and_drains_final_output` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -6307,7 +6473,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "74f16d1cde28c92027b31de3fe7b131ab70e3eb54599f6af6719360fedaef8be",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/operations/players.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/runtime/PlayersQueryTest.java"
       ],
@@ -6319,8 +6485,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/operations/players_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/operations/players_tests.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `inert_player_query_fixture` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -6658,7 +6832,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "7fa73d9e0a22ddf8a5ddd3d8aec40c7f63767d9213623a671233754610953ceb",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/routes.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/server/DurableLifecycleRouteTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/server/LegacyPowerRouteLaunchTest.java",
@@ -6673,12 +6847,21 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/https.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/https.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `tls_only_and_explicit_fixture_trust` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Legacy authority shortcuts: loopback power/security-admin/devtools access is not reproduced; Rust transport exposes pack-only routes."
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/VestaRealtimeSocket.java",
@@ -7131,7 +7314,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "a85546910e6ebe3554447c1ac69093683bcd1381ce9386aa3049362ba7f245b5",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/config/mod.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/config/ConfigLoaderLaunchTest.java"
       ],
@@ -7143,8 +7326,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/config/tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/config/tests.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `independent_toml_golden_has_explicit_paths_metadata_and_minecraft_access` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -7157,7 +7348,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "a7f50a5f679a58b9461c1931cf940902a852c980f664da9b993456be79adccd2",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/config/mod.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/config/ConfigLoaderSecurityTest.java"
       ],
@@ -7169,8 +7360,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/config/tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/config/tests.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `independent_toml_golden_has_explicit_paths_metadata_and_minecraft_access` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -7183,7 +7382,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "bcea6ce112f823ca904b66569cbc0ff4facc8ab90b53b015f7f805b64ac6ac63",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/config/mod.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/config/DurableConfigLoaderTest.java"
       ],
@@ -7195,8 +7394,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/config/tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/config/tests.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `independent_toml_golden_has_explicit_paths_metadata_and_minecraft_access` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -7286,7 +7493,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "57e87cb61950fe5372552b1b20389d65ba7d86bb5d294220d6ee7372bde88712",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/files/mutation.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/content/ContentInstallerTest.java"
       ],
@@ -7298,8 +7505,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/files/mutation_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/files/mutation_tests.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `creation_requires_absence_and_never_replaces` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -7358,7 +7573,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "21bfe462e79aaf6ca42844e8a74b5eb1ad1be56cba2916220bf689f9ad7f6aea",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/files/path.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/files/ServerFileBoundaryTest.java"
       ],
@@ -7372,8 +7587,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/files/tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/files/tests.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `portable_paths_refuse_ambiguous_spelling_and_devices_without_echo` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -7569,7 +7792,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Legacy authority assertion for connector permission-check ALLOW over unauthenticated IPC is intentionally not reproduced."
     },
     {
       "javaPath": "wrapper/src/test/java/com/vesta/wrapper/launch/LaunchSpecTest.java",
@@ -7619,7 +7843,7 @@
       "kind": "test_helper",
       "boundary": "host",
       "javaSha256": "04532b4016b40630c99e002e8d468174dd835db0cd2486e89c01afa893e91970",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/operations/tests/mod.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/identity/PackPasswordServiceTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/operations/OperationEventReplayServiceTest.java",
@@ -7638,8 +7862,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/operations/tests/ledger.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/operations/tests/ledger.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `canonical_admission_is_exact_and_summaries_events_audit_disclose_no_inputs` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -7652,7 +7884,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "d4665658c5bad775deb9eb0c3fa8121a93e202ed5979d8cb2ea5046fa595292e",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/operations/repository.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java"
       ],
@@ -7666,8 +7898,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/operations/tests/ledger.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/operations/tests/ledger.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `canonical_admission_is_exact_and_summaries_events_audit_disclose_no_inputs` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -7680,7 +7920,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "b088c0bc45f5c8e1c087c8366bbb806c0475f3524abf05412db0fba1b85439aa",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/operations/replay.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/operations/OperationEventReplayServiceTest.java"
       ],
@@ -7694,8 +7934,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/operations/replay_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/operations/replay_tests.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `replay_returns_historical_fixed_lifecycle_without_stored_or_actor_secrets` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -7708,7 +7956,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "33ca2c7e5bd649e86b219ad108a8258c63fe300dc74ee4504d7b94017aa967b6",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/operations/runner.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java"
       ],
@@ -7720,8 +7968,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/operations/runner_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/operations/runner_tests.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `inert_game_fixture` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -7734,7 +7990,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "03b0d04fcf71c7094d14b1df0b1bb7b5dd0f7230b6a9aedb5fabd40c8742011b",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/operations/confirmation.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/operations/PolicyConfirmationServiceTest.java"
       ],
@@ -7748,8 +8004,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/operations/confirmation_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/operations/confirmation_tests.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `token_owns_exact_allocation_is_bounded_and_redacted` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -7762,7 +8026,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "c193e8d4d7481a902653d307209473d363795539c0cc7691c0725399bade06b1",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/operations/mod.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/operations/PolicyOperationAuthorityTest.java"
       ],
@@ -7776,8 +8040,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/operations/tests/ledger.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/operations/tests/ledger.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `canonical_admission_is_exact_and_summaries_events_audit_disclose_no_inputs` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -8100,7 +8372,7 @@
       "kind": "test_helper",
       "boundary": "host",
       "javaSha256": "99c7c7c7c8d22454fcfc7e96993438a94fa1791dfcdc4f37bad8b8e13fd81e85",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-game-runtime/tests/fixtures/game.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeFeatureDiscoveryTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLaunchShapesTest.java",
@@ -8117,8 +8389,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-game-runtime/tests/process_lifecycle.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-game-runtime/tests/process_lifecycle.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `graceful_stop_delivers_exact_stop_and_drains_final_output` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -8130,7 +8410,7 @@
       "kind": "test_helper",
       "boundary": "host",
       "javaSha256": "147308c206276b9cb081ba8405aadada4b7dfd2799e0e18e14a41c160de7b33d",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-game-runtime/tests/fixtures/game.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/runtime/MinecraftProcessLifecycleTest.java"
@@ -8143,8 +8423,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-game-runtime/tests/process_lifecycle.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-game-runtime/tests/process_lifecycle.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `graceful_stop_delivers_exact_stop_and_drains_final_output` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -8157,7 +8445,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "5003f51b99021b75d80b6f835706f37c68ceaf256b5320f530c75c25256f95e0",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-game-runtime/src/process/launch.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/runtime/LaunchShapesProcessTest.java"
       ],
@@ -8171,8 +8459,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-game-runtime/tests/launch_configuration.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-game-runtime/tests/launch_configuration.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `native_configuration_preserves_exact_argv_cwd_and_shell_metacharacters` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -8185,7 +8481,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "589dfd51d725085193895f5a4a434407b8b89ba745ae040bd9f6ef7480be1b9a",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-game-runtime/src/process/mod.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/runtime/MinecraftProcessLifecycleTest.java"
       ],
@@ -8199,8 +8495,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-game-runtime/tests/process_lifecycle.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-game-runtime/tests/process_lifecycle.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `graceful_stop_delivers_exact_stop_and_drains_final_output` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -8213,7 +8517,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "bfda7a41c372d7a511af03d01a267055ab87621fe04904071eed854ee9f0baa8",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-game-runtime/src/process/mod.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/runtime/MinecraftServerProcessTest.java"
       ],
@@ -8225,8 +8529,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-game-runtime/tests/process_lifecycle.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-game-runtime/tests/process_lifecycle.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `graceful_stop_delivers_exact_stop_and_drains_final_output` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -8294,7 +8606,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "731166e84d8fe250704288749f63103b03b73dea3ffa56aaeaf6d10766c764dc",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/operations/players.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/runtime/PlayersQueryTest.java"
       ],
@@ -8306,8 +8618,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/operations/players_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/operations/players_tests.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `inert_player_query_fixture` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -8580,7 +8900,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "0954ab639038a04e076bde50478da23038c7e203b06498d04b10019f433f9c64",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-state/src/events.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/state/EventLogBoundedScanTest.java"
       ],
@@ -8592,8 +8912,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-state/tests/event_bounded_scan.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-state/tests/event_bounded_scan.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `bounds_describe_empty_retained_and_fully_pruned_journals` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -8606,7 +8934,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "8e1c67956128df67095c4ef5828b23ebab840c13e5e23ffd77304252be7f4db9",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-state/src/migrations.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java"
       ],
@@ -8618,8 +8946,16 @@
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-state/tests/operation_input_migration.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-state/tests/operation_input_migration.rs",
+          "date": "2026-10-10",
+          "claim": "Existing Rust test function `migrating_v1_and_v2_hash_only_rows_never_fabricates_inputs_and_preserves_backups` is present in this source."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
