@@ -184,6 +184,7 @@ fn wrong_token_and_prior_session_claims_cannot_release_current_ownership() {
     let mut first = f.ops.open_owner().expect("first owner");
     let old = first.claim_next().expect("claim").expect("old claim");
     let old_token = queue::claim_token(&old).to_owned();
+    let stale = queue::stale_witness(&old);
     code(
         first.release_unstarted(queue::forge_token(&old)),
         "not_owner",
@@ -194,6 +195,9 @@ fn wrong_token_and_prior_session_claims_cannot_release_current_ownership() {
     drop(first);
     assert_eq!(before, f.counts());
     assert_eq!(f.read(&row.id).state, OperationState::Validating);
+    code(f.ops.open_owner(), "state_runner_lock_held");
+    assert_eq!(before, f.counts());
+    drop(old); // The claim, not merely the session handle, retained the OS lock.
     let mut second = f.ops.open_owner().expect("actual next OS owner reconciles");
     assert_eq!(f.read(&row.id).state, OperationState::Queued);
     assert!(f.owner(&row.id).is_none() && f.held(&row.id).is_empty());
@@ -202,7 +206,10 @@ fn wrong_token_and_prior_session_claims_cannot_release_current_ownership() {
         .expect("reclaim known effect-free binding")
         .expect("current claim");
     assert!(queue::claim_token(&current) != old_token);
-    code(second.release_unstarted(old), "not_owner");
+    code(
+        second.release_unstarted(queue::forge_stale(&current, stale)),
+        "not_owner",
+    );
     assert!(f.owner(&row.id).as_deref() == Some(queue::claim_token(&current)));
     assert_eq!(
         second
@@ -269,8 +276,16 @@ fn reopen_of_actual_database_recovers_unstarted_claim_without_fabricating_effect
     let row = f.admit(&["a"], "reopen");
     let mut owner = f.ops.open_owner().expect("initial owner");
     let claim = owner.claim_next().expect("claim").expect("claim exists");
-    drop(claim);
     drop(owner);
+    code(f.ops.open_owner(), "state_runner_lock_held");
+    assert_eq!(
+        f.db.close()
+            .expect_err("live claim retains persistence")
+            .code(),
+        "state_runtime_busy"
+    );
+    assert_eq!(f.read(&row.id).state, OperationState::Validating);
+    drop(claim);
     let directory = f.db.directory().clone();
     f.db.close().expect("real initial database drains");
     let reopened =

@@ -8,8 +8,11 @@ This continues the approved migration using an owned direct-child process and bo
 component, not Java classes or a new supervisor/remote API. Inert Rust fixture processes are
 permitted tests; real Minecraft/provider/installer execution is not authorized. The caller is
 trusted host application code, not authenticated remote authority. Activation/installation must
-never call stop/restart automatically. This is not independent supervisor/IPC/crash continuity,
-process-tree confinement, readiness, durable operation/effect composition, or signed distribution.
+never call stop/restart automatically. This component alone is not independent supervisor/IPC/crash
+continuity, process-tree confinement, readiness, durable operation/effect composition, or signed
+distribution. The subsequently approved closed host operation composition is documented in
+[RUST_GAME_OPERATIONS_API.md](RUST_GAME_OPERATIONS_API.md), with executed scope recorded separately
+in [RUST_INTEGRATED_MIGRATION_PASS.md](RUST_INTEGRATED_MIGRATION_PASS.md).
 
 ## Public API (`vesta_game_runtime::process`)
 
@@ -30,7 +33,8 @@ impl LaunchSpec {
                stop: GracefulStop) -> Result<Self, RuntimeError>;
 }
 
-// Opaque generation lookup, not permission or PID. No caller constructor.
+// Opaque generation lookup, not permission, PID or native attachment.
+// The 2026-10-09 operation integration adds strict parse_hex/to_hex lookup encoding.
 // Manual Debug renders GenerationId([redacted]), not the private bytes.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct GenerationId(/* private */);

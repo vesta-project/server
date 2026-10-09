@@ -1,33 +1,38 @@
-//! Durable operation observations and a private admission/scheduling kernel.
+//! Durable operations over current canonical server-local policy.
 //!
-//! Public calls accept `Subject` LOOKUP KEYS from trusted application code, not
-//! authenticated transport/device evidence. There is no listener, registry,
-//! authority injection, worker, external-effect API, confirmation or replay here.
-//! Production bindings remain closed until actual domain implementations arrive.
-//! Private admission, OS-owned scheduling/reconciliation and input retention are
-//! STAGED TEST-ONLY code: compiled only in crate unit-test builds and exercised by
-//! those tests. They are absent from ordinary library and linked integration-test
-//! builds until reviewed trusted production composition exists. This is not a
-//! completed production operation runtime. Public observations/cancellation and
-//! their shared canonical verification, policy and persistence checks remain
-//! ordinary production code; the production binding registry remains closed.
+//! `Subject` values are trusted application lookup keys, NOT transport authentication.
+//! Only the concrete game lifecycle composition can execute the closed production
+//! bindings. There is no public handler/authority registry, local-proof issuer or
+//! network route. Private ownership is retained through genuine execution lifetime.
+mod bindings;
+mod confirmation;
+mod confirmation_repository;
 mod domain;
+mod game;
 mod input;
-#[cfg(test)]
 mod queue;
+mod replay;
 mod repository;
+mod runner;
 
+pub use bindings::GameCommand;
+pub(crate) use bindings::SourceRevision;
+pub use confirmation::{ConfirmationToken, IssuedConfirmation, MAX_CONFIRMATION_TTL};
+pub use domain::Admission;
 #[cfg(test)]
-pub(crate) use domain::{Admission, PurgeReport};
+pub(crate) use domain::PurgeReport;
 pub use domain::{
     CancelOutcome, MAX_PAGE, OperationError, OperationErrorCode, OperationId, OperationPage,
     OperationState, OperationSummary, OperationsResult,
 };
-#[cfg(test)]
-pub(crate) use queue::OwnerSession;
+pub(crate) use queue::{Claim, FinishOutcome, OwnerSession};
+pub use replay::{
+    MAX_REPLAY_RETURN, MAX_REPLAY_SCAN, ReplayCursor, ReplayEvent, ReplayEventKind, ReplayPage,
+    ReplayStatus,
+};
+pub use runner::{OperationRuntime, RunnerStatus, ShutdownOutcome};
 
 use crate::identity::{self, Capability, PolicySnapshot, Subject};
-#[cfg(test)]
 use domain::{ENGINE_SOURCE, text};
 use domain::{MAX_REQUIREMENTS, REQUEST_SOURCE, hash_text, invalid};
 use input::PreparedOperation;
@@ -172,10 +177,26 @@ impl Operations {
         self.finish_request(result, subject, "operation.cancel_request", Some(id))
     }
 
-    /// Trusted crate-only input boundary. No production binding is installed and
-    /// no remote request may pass capability/target/locks/source/safety declarations.
-    #[cfg(test)]
-    pub(crate) fn admit(
+    /// Typed request boundary for the closed lifecycle inventory. `Subject` is a
+    /// trusted lookup key, not authentication. Launch configuration and all security
+    /// declarations remain server-owned; current policy is checked before retries.
+    pub fn submit_game(
+        &self,
+        subject: &Subject,
+        command: GameCommand,
+        idempotency_key: Option<&str>,
+    ) -> OperationsResult<Admission> {
+        self.admit(
+            subject,
+            command.operation_type(),
+            &command.canonical_input()?,
+            idempotency_key,
+        )
+    }
+
+    /// Private canonical admission shared with non-executing unit fixtures. There
+    /// is no transport-selected capability/target/locks/source/safety declaration.
+    fn admit(
         &self,
         subject: &Subject,
         operation_type: &str,
@@ -251,10 +272,9 @@ impl Operations {
         self.finish_request(result, subject, "operation.submit", None)
     }
 
-    /// Acquires ownership from THIS database directory and reconciles while held.
-    /// This has no worker/execution semantics; it must not be publicly promoted.
-    #[cfg(test)]
-    pub(crate) fn open_owner(&self) -> OperationsResult<OwnerSession<'_>> {
+    /// Only concrete crate-owned composition may acquire native execution ownership.
+    /// Claims and native guards retain THIS database directory's lock and lease.
+    pub(crate) fn open_owner(&self) -> OperationsResult<OwnerSession> {
         OwnerSession::open(self)
     }
 
@@ -346,6 +366,18 @@ impl Operations {
         repo: &Repository<'_>,
         op: &StoredOperation,
     ) -> OperationsResult<PreparedOperation> {
+        let plan = self.verified_plan(repo, op)?;
+        self.authorize_plan(repo, &op.subject, &plan)?;
+        Ok(plan)
+    }
+
+    /// Canonical integrity is distinct from authority. Used only for exact owner
+    /// bookkeeping after a worker has returned; it NEVER grants an effect permit.
+    fn verified_plan(
+        &self,
+        repo: &Repository<'_>,
+        op: &StoredOperation,
+    ) -> OperationsResult<PreparedOperation> {
         let canonical = repo
             .input(op)?
             .ok_or_else(|| OperationError::rejected(OperationErrorCode::InputUnavailable))?;
@@ -367,7 +399,6 @@ impl Operations {
                 OperationErrorCode::BindingMismatch,
             ));
         }
-        self.authorize_plan(repo, &op.subject, &plan)?;
         Ok(plan)
     }
     fn record_state(
@@ -396,6 +427,71 @@ impl Operations {
             )?,
         )?;
         self.append_event(repo, "operation.state", &after.summary)
+    }
+    /// Exact-owner returned-outcome bookkeeping, not an effect authorization.
+    /// Current denial is retained only as a fixed policy reason, never actor input.
+    fn record_finish(
+        &self,
+        repo: &Repository<'_>,
+        after: &StoredOperation,
+        before: OperationState,
+        authority_denial: Option<&'static str>,
+    ) -> OperationsResult<()> {
+        self.audit.append(
+            repo.connection(),
+            &AuditRecord::new(
+                engine_actor()?,
+                "operation.finish".to_owned(),
+                operation_target(&after.summary.id),
+                "ok".to_owned(),
+                Some(after.summary.id.as_str().to_owned()),
+                [
+                    ("from".to_owned(), Some(before.as_str().to_owned())),
+                    (
+                        "to".to_owned(),
+                        Some(after.summary.state.as_str().to_owned()),
+                    ),
+                    (
+                        "current_authority".to_owned(),
+                        Some(
+                            if authority_denial.is_some() {
+                                "denied"
+                            } else {
+                                "allowed"
+                            }
+                            .to_owned(),
+                        ),
+                    ),
+                    (
+                        "authority_denial".to_owned(),
+                        authority_denial.map(str::to_owned),
+                    ),
+                ],
+            )?,
+        )?;
+        self.append_event(repo, "operation.state", &after.summary)
+    }
+    #[cfg(test)]
+    fn record_progress(
+        &self,
+        repo: &Repository<'_>,
+        after: &StoredOperation,
+    ) -> OperationsResult<()> {
+        self.audit.append(
+            repo.connection(),
+            &AuditRecord::new(
+                engine_actor()?,
+                "operation.progress".to_owned(),
+                operation_target(&after.summary.id),
+                "ok".to_owned(),
+                Some(after.summary.id.as_str().to_owned()),
+                [(
+                    "progress".to_owned(),
+                    Some(after.summary.progress_percent.to_string()),
+                )],
+            )?,
+        )?;
+        self.append_event(repo, "operation.progress", &after.summary)
     }
     fn append_event(
         &self,
@@ -491,7 +587,6 @@ fn request_actor(subject: &Subject) -> OperationsResult<AuditActor> {
         REQUEST_SOURCE.to_owned(),
     )?)
 }
-#[cfg(test)]
 fn engine_actor() -> OperationsResult<AuditActor> {
     Ok(AuditActor::system(ENGINE_SOURCE.to_owned())?)
 }

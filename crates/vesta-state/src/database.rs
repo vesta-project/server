@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 5;
+pub const CURRENT_SCHEMA_VERSION: u32 = 6;
 pub const BUSY_TIMEOUT_MS: u64 = 5_000;
 
 /// A callback-borrowed, already-established query-only snapshot.
@@ -87,6 +87,29 @@ impl std::fmt::Debug for StateDatabase {
     }
 }
 
+/// Keeps the database open while an owned runtime may still need transactions.
+/// This is lifecycle retention, not authority or a substitute for an OS runner lock.
+#[must_use = "retain this lease until all owned runtime work has really finished"]
+pub struct RuntimeLease {
+    inner: Arc<Shared>,
+}
+
+impl std::fmt::Debug for RuntimeLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeLease")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for RuntimeLease {
+    fn drop(&mut self) {
+        let mut lifecycle = self.inner.lock();
+        lifecycle.runtime_owners -= 1;
+        self.inner.changed.notify_all();
+    }
+}
+
 struct Shared {
     directory: StateDirectory,
     clock: Arc<dyn Clock>,
@@ -105,6 +128,7 @@ enum Phase {
 struct Lifecycle {
     phase: Phase,
     active: usize,
+    runtime_owners: usize,
     next_writer: u64,
     writers: VecDeque<u64>,
     writer_active: bool,
@@ -180,6 +204,7 @@ impl StateDatabase {
                 lifecycle: Mutex::new(Lifecycle {
                     phase: Phase::Open,
                     active: 0,
+                    runtime_owners: 0,
                     next_writer: 0,
                     writers: VecDeque::new(),
                     writer_active: false,
@@ -294,7 +319,27 @@ impl StateDatabase {
         Ok(result)
     }
 
-    /// Reject further admissions immediately, drain all admitted reads/queued writers, and close
+    /// Retain lifecycle ownership independently of any one transaction callback.
+    /// A busy close leaves admissions open so the owner can finish and record its outcome.
+    pub fn retain_runtime(&self) -> Result<RuntimeLease> {
+        if self.current_call().is_some() {
+            return Err(StateError::new("state_nested_call"));
+        }
+        let mut lifecycle = self.inner.lock();
+        if lifecycle.phase != Phase::Open {
+            return Err(StateError::new("state_closed"));
+        }
+        lifecycle.runtime_owners = lifecycle
+            .runtime_owners
+            .checked_add(1)
+            .ok_or_else(|| StateError::new("state_io"))?;
+        Ok(RuntimeLease {
+            inner: self.inner.clone(),
+        })
+    }
+
+    /// Refuse closure while runtime leases exist, without rejecting their transactions.
+    /// Otherwise reject further admissions, drain admitted reads/queued writers, and close
     /// the anchor. Concurrent closers wait for completion; subsequent close calls are no-ops.
     pub fn close(&self) -> Result<()> {
         if self.current_call().is_some() {
@@ -309,7 +354,12 @@ impl StateDatabase {
                 }
                 return Ok(());
             }
-            Phase::Open => lifecycle.phase = Phase::Closing,
+            Phase::Open => {
+                if lifecycle.runtime_owners != 0 {
+                    return Err(StateError::new("state_runtime_busy"));
+                }
+                lifecycle.phase = Phase::Closing;
+            }
         }
         self.inner.changed.notify_all();
         while lifecycle.active != 0 {

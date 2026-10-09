@@ -22,7 +22,8 @@ mod windows_security;
 
 pub use clock::{Clock, SystemClock};
 pub use database::{
-    BUSY_TIMEOUT_MS, CURRENT_SCHEMA_VERSION, ReadTransaction, StateDatabase, WriteTransaction,
+    BUSY_TIMEOUT_MS, CURRENT_SCHEMA_VERSION, ReadTransaction, RuntimeLease, StateDatabase,
+    WriteTransaction,
 };
 pub use directory::{RunnerLock, StateDirectory};
 pub use error::{StateError, TransactionError};

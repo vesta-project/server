@@ -357,19 +357,19 @@ fn pending_ids(
 }
 
 #[test]
-fn schema_four_to_five_preserves_data_backup_and_pending_expiry_plans() {
+fn schema_four_to_current_preserves_data_backup_and_pending_expiry_plans() {
     let temp = tempfile::tempdir().expect("create local test root");
     let directory = StateDirectory::new(temp.path().join("private state"), None)
         .expect("create private state directory");
     let clock = Arc::new(TestClock::new(FIXED_TIME_MS));
 
     // Start with a genuine current database and seed all rows through real SQLite and audit APIs.
-    let db = StateDatabase::open(directory.clone(), clock.clone()).expect("open fresh v5 state");
+    let db = StateDatabase::open(directory.clone(), clock.clone()).expect("open fresh state");
     assert_eq!(
         db.schema_version().expect("read schema version"),
         CURRENT_SCHEMA_VERSION
     );
-    assert_eq!(CURRENT_SCHEMA_VERSION, 5);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 6);
     seed_v4_data(&db);
     let expected_rows = db
         .read(|connection| Ok(persisted_rows(connection)?))
@@ -382,14 +382,17 @@ fn schema_four_to_five_preserves_data_backup_and_pending_expiry_plans() {
     let server_id = db.server_id().to_owned();
     db.close().expect("close before constructing v4 fixture");
 
-    // The trusted fixture connection removes only v5's two indexes and restores v4's version.
+    // Remove every post-v4 schema change offline, not just its version marker.
     let raw = Connection::open(directory.database_file()).expect("open local fixture database");
     raw.execute_batch(
-        "DROP INDEX role_assignments_pending_expiry;\
+        "BEGIN IMMEDIATE;\
+         DROP INDEX role_assignments_pending_expiry;\
          DROP INDEX principal_overrides_pending_expiry;\
-         PRAGMA user_version=4;",
+         ALTER TABLE confirmations DROP COLUMN accepted_at;\
+         PRAGMA user_version=4;\
+         COMMIT;",
     )
-    .expect("remove only v5 indexes and set the v4 schema marker");
+    .expect("restore the genuine v4 fixture schema and version");
     assert_eq!(user_version(&raw).expect("read fixture version"), 4);
     let v4_index_names = index_definitions(&raw)
         .expect("list v4 indexes")
@@ -400,10 +403,13 @@ fn schema_four_to_five_preserves_data_backup_and_pending_expiry_plans() {
     assert!(!v4_index_names.contains("principal_overrides_pending_expiry"));
     drop(raw);
 
-    // Reopening exercises the real pre-migration backup and v4->v5 migration path.
+    // Reopening exercises the real backup and all migrations from v4 through current.
     let migrated = StateDatabase::open(directory.clone(), clock.clone())
-        .expect("migrate genuine v4 schema to v5");
-    assert_eq!(migrated.schema_version().expect("read migrated version"), 5);
+        .expect("migrate genuine v4 schema to current");
+    assert_eq!(
+        migrated.schema_version().expect("read migrated version"),
+        CURRENT_SCHEMA_VERSION
+    );
     assert_eq!(migrated.server_id(), server_id);
     assert_eq!(
         migrated

@@ -1,4 +1,4 @@
-use super::RuntimeError;
+use super::{GuardedError, GuardedInput, RuntimeError};
 use crate::console::{ConsoleCapture, ConsoleStream};
 use std::{
     io::{self, Read, Write},
@@ -12,6 +12,13 @@ use std::{
 };
 
 const QUEUE_LINES: usize = 8;
+
+// Guarded requests use the same bounded, exclusively owned writer as ordinary
+// lines. The request retains its callback/core through the actual native write.
+enum Input {
+    Line(String),
+    Guarded(Box<dyn FnOnce(&mut ChildStdin) -> bool + Send>),
+}
 
 #[derive(Default)]
 struct Failures {
@@ -27,7 +34,7 @@ struct Pipes {
 
 pub(super) struct IoThreads {
     pipes: Option<Pipes>,
-    lines: Option<SyncSender<String>>,
+    lines: Option<SyncSender<Input>>,
     // Index zero is stdin; the remaining two are output drain workers.
     workers: [Option<JoinHandle<()>>; 3],
     failures: Arc<Failures>,
@@ -52,7 +59,7 @@ impl IoThreads {
         let (stdin_tx, stdin_rx) = mpsc::channel::<ChildStdin>();
         let (stdout_tx, stdout_rx) = mpsc::channel::<ChildStdout>();
         let (stderr_tx, stderr_rx) = mpsc::channel::<ChildStderr>();
-        let (lines_tx, lines_rx) = mpsc::sync_channel::<String>(QUEUE_LINES);
+        let (lines_tx, lines_rx) = mpsc::sync_channel::<Input>(QUEUE_LINES);
         let mut owned = Self {
             pipes: Some(Pipes {
                 stdin: stdin_tx,
@@ -68,8 +75,12 @@ impl IoThreads {
             "game-stdin",
             Box::new(move || {
                 if let Ok(mut pipe) = stdin_rx.recv() {
-                    for line in lines_rx {
-                        if pipe.write_all(line.as_bytes()).is_err() {
+                    for input in lines_rx {
+                        let wrote = match input {
+                            Input::Line(line) => pipe.write_all(line.as_bytes()).is_ok(),
+                            Input::Guarded(effect) => effect(&mut pipe),
+                        };
+                        if !wrote {
                             failures.stdin.store(true, Ordering::Release);
                             break;
                         }
@@ -178,9 +189,48 @@ impl IoThreads {
         let mut payload = String::with_capacity(line.len() + 1);
         payload.push_str(line);
         payload.push('\n');
-        sender.try_send(payload).map_err(|failure| match failure {
+        sender
+            .try_send(Input::Line(payload))
+            .map_err(|failure| match failure {
+                TrySendError::Full(_) => RuntimeError::StdinBusy,
+                TrySendError::Disconnected(_) => RuntimeError::StdinUnavailable,
+            })
+    }
+
+    pub(super) fn guarded_stop<E, F>(&self, mut guard: F) -> Result<GuardedInput<E>, RuntimeError>
+    where
+        E: Send + 'static,
+        F: FnMut() -> Result<(), E> + Send + 'static,
+    {
+        // All request preparation and queue failures precede authorization. Queue
+        // admission is never reported as a native write or an effect marker.
+        let sender = self.lines.as_ref().ok_or(RuntimeError::StdinUnavailable)?;
+        let (ack, receiver) = mpsc::channel();
+        let work = Input::Guarded(Box::new(move |pipe| {
+            let result = match guard() {
+                Err(error) => Err(GuardedError::Guard(error)),
+                // The fixed native call directly follows the fresh guard. No
+                // cached permit, allocation, dispatch or external callback here.
+                Ok(()) => pipe
+                    .write_all(b"stop\n")
+                    .map_err(|_| GuardedError::Runtime(RuntimeError::StdinUnavailable)),
+            };
+            let native_failed = matches!(&result, Err(GuardedError::Runtime(_)));
+            // The callback/core stays owned through native write_all. Dispose
+            // it before acknowledging: an observed ACK proves this callback can
+            // no longer execute. The concrete runtime still retains its owner,
+            // claim and this exact native writer handle independently.
+            drop(guard);
+            let _ = ack.send(result);
+            !native_failed
+        }));
+        sender.try_send(work).map_err(|failure| match failure {
             TrySendError::Full(_) => RuntimeError::StdinBusy,
             TrySendError::Disconnected(_) => RuntimeError::StdinUnavailable,
+        })?;
+        Ok(GuardedInput {
+            receiver,
+            completed: false,
         })
     }
 

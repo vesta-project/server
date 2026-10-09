@@ -5,7 +5,11 @@ The first all-target control check compiled with private-kernel reachability war
 control unit-test run passed 230 and failed one overbroad redaction assertion. Corrected ordinary
 observation and staged private-kernel verification, independent review and the fresh integrated
 353-test Windows pass are recorded in [the bounded checkpoint](RUST_OPERATIONS_OBSERVATION_CHECKPOINT.md).
-Production operation execution/composition remains unfinished.
+Production operation execution/composition was unfinished at that checkpoint. The closed
+Start/Stop/ForceKill candidate begun on 2026-10-09 is described separately in
+[RUST_GAME_OPERATIONS_API.md](RUST_GAME_OPERATIONS_API.md); its verification status is recorded in
+[RUST_INTEGRATED_MIGRATION_PASS.md](RUST_INTEGRATED_MIGRATION_PASS.md). The staged-only restrictions
+below describe the 2026-10-08 slice, not a prohibition on the subsequently approved composition.
 
 This is the next bounded slice of the approved [Rust-native migration](RUST_WRAPPER_MIGRATION_PLAN.md),
 after [the Minecraft checkpoint](RUST_MINECRAFT_IDENTITY_CHECKPOINT.md). It preserves the original

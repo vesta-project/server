@@ -30,6 +30,41 @@ pub enum GracefulStop {
 /// Process identity lookup, never a PID or permission. No caller constructor.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct GenerationId([u8; 16]);
+impl GenerationId {
+    /// Canonical opaque lookup data, never native identity or authorization.
+    pub fn to_hex(self) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut encoded = String::with_capacity(32);
+        for byte in self.0 {
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 15)]));
+        }
+        encoded
+    }
+
+    /// Only the exact lowercase, nonzero 128-bit representation is accepted.
+    /// Successful parsing supplies a lookup key, not a process/effect permit.
+    pub fn parse_hex(encoded: &str) -> Result<Self, RuntimeError> {
+        if encoded.len() != 32 {
+            return Err(RuntimeError::StaleGeneration);
+        }
+        fn digit(byte: u8) -> Result<u8, RuntimeError> {
+            match byte {
+                b'0'..=b'9' => Ok(byte - b'0'),
+                b'a'..=b'f' => Ok(byte - b'a' + 10),
+                _ => Err(RuntimeError::StaleGeneration),
+            }
+        }
+        let mut bytes = [0; 16];
+        for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
+            bytes[index] = (digit(pair[0])? << 4) | digit(pair[1])?;
+        }
+        if bytes == [0; 16] {
+            return Err(RuntimeError::StaleGeneration);
+        }
+        Ok(Self(bytes))
+    }
+}
 impl fmt::Debug for GenerationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("GenerationId([redacted])")
@@ -113,6 +148,51 @@ impl fmt::Display for RuntimeError {
 }
 impl std::error::Error for RuntimeError {}
 
+/// The guard's exact error is preserved; it cannot be confused with a native
+/// failure after the durable effect marker. No reusable permit is returned.
+#[derive(Debug, Eq, PartialEq)]
+pub enum GuardedError<E> {
+    Guard(E),
+    Runtime(RuntimeError),
+}
+impl<E> From<RuntimeError> for GuardedError<E> {
+    fn from(error: RuntimeError) -> Self {
+        Self::Runtime(error)
+    }
+}
+
+/// Acknowledgement of the actual owned stdin request, not queue acceptance.
+/// Timeout or dropping the receipt does not cancel/detach its writer or callback.
+pub struct GuardedInput<E> {
+    receiver: std::sync::mpsc::Receiver<Result<(), GuardedError<E>>>,
+    completed: bool,
+}
+impl<E> fmt::Debug for GuardedInput<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GuardedInput")
+            .field("completed", &self.completed)
+            .finish_non_exhaustive()
+    }
+}
+impl<E> GuardedInput<E> {
+    /// Return one exact result after guard/write returns. A vanished worker is
+    /// uncertainty, never an acknowledgement of a no-effect failure.
+    pub fn try_result(&mut self) -> Option<Result<(), GuardedError<E>>> {
+        if self.completed {
+            return None;
+        }
+        let result = match self.receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(GuardedError::Runtime(RuntimeError::ThreadFailed))
+            }
+        };
+        self.completed = true;
+        Some(result)
+    }
+}
+
 struct OwnedChild {
     child: Child,
     generation: GenerationId,
@@ -181,6 +261,28 @@ impl GameProcess {
         self.own_spawned(child, generation, spec.stop(), io)
     }
 
+    /// All fallible preparation precedes the guard. A successful guard is
+    /// immediately followed by native spawn; no permit can be retained/reused.
+    /// `spec` is literal trusted host configuration, never operation input.
+    pub fn start_guarded<E>(
+        &mut self,
+        spec: &LaunchSpec,
+        guard: impl FnOnce(ProcessSnapshot) -> Result<(), E>,
+    ) -> Result<GenerationId, GuardedError<E>> {
+        self.poll()?;
+        if self.owned.is_some() {
+            return Err(RuntimeError::AlreadyOwned.into());
+        }
+        spec.preflight()?;
+        let generation = self.new_generation()?;
+        let io = io::IoThreads::prepare(&self.console)?;
+        let mut command = spec.command();
+        guard(self.snapshot()).map_err(GuardedError::Guard)?;
+        let child = command.spawn().map_err(|_| RuntimeError::SpawnFailed)?;
+        self.own_spawned(child, generation, spec.stop(), io)
+            .map_err(GuardedError::Runtime)
+    }
+
     fn own_spawned(
         &mut self,
         child: Child,
@@ -247,6 +349,45 @@ impl GameProcess {
         self.current(generation)?.io.queue(line)
     }
 
+    /// Admit a fixed stop request to the existing bounded writer. The callback
+    /// runs in that owned worker immediately before actual stdin write, not now.
+    /// Its captures must retain/recheck any host authority through completion.
+    pub fn queue_stop_guarded<E, F>(
+        &mut self,
+        generation: GenerationId,
+        guard: F,
+    ) -> Result<GuardedInput<E>, RuntimeError>
+    where
+        E: Send + 'static,
+        F: FnMut() -> Result<(), E> + Send + 'static,
+    {
+        self.poll()?;
+        let owned = self.current(generation)?;
+        if owned.stop == GracefulStop::Unsupported {
+            return Err(RuntimeError::UnsupportedStop);
+        }
+        if owned.exit.is_some() {
+            return Err(RuntimeError::StaleGeneration);
+        }
+        // Admission is NOT graceful delivery, stopping evidence or an effect.
+        owned.io.guarded_stop(guard)
+    }
+
+    /// Record actual guarded-write acknowledgement without dispatching anything.
+    /// A guard denial leaves graceful admission and phase unchanged.
+    pub fn acknowledge_guarded_stop(
+        &mut self,
+        generation: GenerationId,
+    ) -> Result<(), RuntimeError> {
+        if self.completed(generation).is_some() {
+            return Ok(());
+        }
+        let owned = self.current(generation)?;
+        owned.graceful_admitted = true;
+        owned.stopping = true;
+        Ok(())
+    }
+
     pub fn stop(
         &mut self,
         generation: GenerationId,
@@ -277,6 +418,34 @@ impl GameProcess {
         self.kill_with(generation, timeout, |child| {
             child.kill().map_err(|_| RuntimeError::KillFailed)
         })
+    }
+
+    /// Exact-generation preflight precedes authorization; actual native kill
+    /// immediately follows it. Timeouts retain the child and every IO handle.
+    pub fn force_kill_guarded<E>(
+        &mut self,
+        generation: GenerationId,
+        timeout: Duration,
+        guard: impl FnOnce(ProcessSnapshot) -> Result<(), E>,
+    ) -> Result<WaitOutcome, GuardedError<E>> {
+        let until = deadline(timeout)?;
+        self.poll()?;
+        if self.completed(generation).is_some() {
+            // A guarded effect API cannot report effect success for observation
+            // alone. Ordinary force_kill retains its completed-wait semantics.
+            return Err(RuntimeError::StaleGeneration.into());
+        }
+        let snapshot = self.snapshot();
+        let owned = self.current(generation)?;
+        if owned.exit.is_some() {
+            return Err(RuntimeError::StaleGeneration.into());
+        }
+        guard(snapshot).map_err(GuardedError::Guard)?;
+        // Retain ownership even when native kill fails.
+        owned.stopping = true;
+        owned.child.kill().map_err(|_| RuntimeError::KillFailed)?;
+        self.wait_until(generation, until)
+            .map_err(GuardedError::Runtime)
     }
 
     fn kill_with(
@@ -359,7 +528,9 @@ impl GameProcess {
         Err(RuntimeError::GenerationUnavailable)
     }
 
-    fn snapshot(&self) -> ProcessSnapshot {
+    /// Bounded observation of retained ownership, including observation failures.
+    /// Stopped is published only after actual child exit and all workers joined.
+    pub fn snapshot(&self) -> ProcessSnapshot {
         match &self.owned {
             Some(owned) => ProcessSnapshot {
                 generation: Some(owned.generation),
@@ -403,5 +574,7 @@ fn valid_command(line: &str) -> bool {
 
 #[cfg(test)]
 mod fault_tests;
+#[cfg(test)]
+mod guarded_tests;
 #[cfg(test)]
 mod tests;

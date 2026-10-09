@@ -1,6 +1,5 @@
-//! Closed, server-owned derivation. There is deliberately no production binding
-//! or public registry/injection API yet. Adding a real domain binding needs review;
-//! a capability identifier does not implement an action or authenticate a caller.
+//! Closed, server-owned derivation for implemented game lifecycle actions.
+//! There is no public registry or caller-selected capability/lock/safety declaration.
 use super::domain::{
     MAX_INPUT_BYTES, OperationError, OperationErrorCode, OperationsResult, identifier, invalid,
 };
@@ -16,7 +15,6 @@ pub(super) struct Requirement {
 /// No Debug/Serialize: this contains requested input. Its only constructor is the
 /// closed derivation below, never caller-selected safety/target/lock parameters.
 pub(super) struct PreparedOperation {
-    #[cfg(test)]
     pub(super) operation_type: String,
     pub(super) canonical_input: String,
     pub(super) payload_hash: String,
@@ -25,6 +23,7 @@ pub(super) struct PreparedOperation {
     pub(super) resources: Vec<String>,
     pub(super) effect_idempotent: bool,
     pub(super) requires_confirmation: bool,
+    pub(super) command: Option<super::GameCommand>,
 }
 
 pub(super) fn digest(input: &str) -> String {
@@ -38,8 +37,10 @@ pub(super) fn derive(operation_type: &str, raw_input: &str) -> OperationsResult<
     {
         return Err(invalid());
     }
-    // Only private unit tests register these typed, side-effect-free contracts.
-    // Production remains closed rather than advertising a fake executable action.
+    if let Some(plan) = super::bindings::derive(operation_type, raw_input)? {
+        return Ok(plan);
+    }
+    // Private fixtures never become executable production bindings.
     #[cfg(test)]
     if matches!(
         operation_type,
@@ -157,6 +158,7 @@ mod fixture {
             resources: bound.resources,
             effect_idempotent: kind == "fixture.safe",
             requires_confirmation: kind == "fixture.confirm",
+            command: None,
         })
     }
 }

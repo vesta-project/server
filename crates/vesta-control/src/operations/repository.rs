@@ -6,13 +6,11 @@ use super::domain::{
     OperationId, OperationState, OperationSummary, OperationsResult, corrupt, identifier, lock_key,
     text,
 };
-#[cfg(test)]
 use super::{
     domain::{MAX_PAGE, REQUEST_SOURCE},
     input::PreparedOperation,
 };
 use crate::identity::{DeviceId, PrincipalId, Subject};
-#[cfg(test)]
 use rusqlite::params_from_iter;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
@@ -31,7 +29,6 @@ pub(super) struct StoredOperation {
     pub(super) operation_type: String,
     pub(super) target: String,
     pub(super) payload_hash: String,
-    #[cfg(test)]
     pub(super) idempotency_key: Option<String>,
     pub(super) effect_idempotent: bool,
     pub(super) requires_confirmation: bool,
@@ -42,7 +39,7 @@ pub(super) struct StoredOperation {
 
 pub(super) struct Repository<'a> {
     connection: &'a Connection,
-    server: &'a str,
+    pub(super) server: &'a str,
     pub(super) now: i64,
 }
 impl<'a> Repository<'a> {
@@ -209,7 +206,6 @@ impl<'a> Repository<'a> {
     }
 }
 
-#[cfg(test)]
 impl<'a> Repository<'a> {
     pub(super) fn find_key(
         &self,
@@ -414,7 +410,6 @@ impl<'a> Repository<'a> {
     }
 }
 
-#[cfg(test)]
 impl<'a> Repository<'a> {
     pub(super) fn requeue_unstarted(
         &self,
@@ -459,6 +454,7 @@ impl<'a> Repository<'a> {
         }
         Ok(())
     }
+    #[cfg(test)]
     pub(super) fn purge_page(
         &self,
         cutoff: i64,
@@ -477,6 +473,7 @@ impl<'a> Repository<'a> {
         rows.map(|row| row.map_err(OperationError::from).and_then(stored_id))
             .collect()
     }
+    #[cfg(test)]
     pub(super) fn purge(&self, id: &OperationId, cutoff: i64) -> OperationsResult<()> {
         let op = self.require(id)?;
         self.check_locks(&op)?;
@@ -493,6 +490,84 @@ impl<'a> Repository<'a> {
 }
 
 impl<'a> Repository<'a> {
+    /// Mutations below are reachable only after the owner core has checked the
+    /// exact current private session/token, canonical binding and lockset, and
+    /// resolved policy in this same transaction. Returned-outcome bookkeeping may
+    /// record clean denial, never grant a new effect. SQL repeats owner/state/effect.
+    pub(super) fn mark_running(&self, op: &StoredOperation) -> OperationsResult<StoredOperation> {
+        if op.summary.state != OperationState::Validating
+            || op.effect_started
+            || op.summary.cancel_requested
+            || op.owner_token.is_none()
+        {
+            return Err(corrupt());
+        }
+        self.changed(self.connection.execute(
+            "UPDATE operations SET state='running',updated_at=? WHERE id=? AND server_id=? \
+             AND state='validating' AND owner_token=? AND external_effect_started=0 AND cancel_requested=0",
+            params![self.now, op.summary.id.as_str(), self.server, op.owner_token],
+        )?)?;
+        self.require(&op.summary.id)
+    }
+    pub(super) fn mark_effect(&self, op: &StoredOperation) -> OperationsResult<StoredOperation> {
+        if op.summary.state != OperationState::Running
+            || op.effect_started
+            || op.summary.cancel_requested
+            || op.owner_token.is_none()
+        {
+            return Err(corrupt());
+        }
+        self.changed(self.connection.execute(
+            "UPDATE operations SET external_effect_started=1,updated_at=? WHERE id=? AND server_id=? \
+             AND state='running' AND owner_token=? AND external_effect_started=0 AND cancel_requested=0",
+            params![self.now, op.summary.id.as_str(), self.server, op.owner_token],
+        )?)?;
+        self.require(&op.summary.id)
+    }
+    #[cfg(test)]
+    pub(super) fn progress(
+        &self,
+        op: &StoredOperation,
+        percent: u8,
+    ) -> OperationsResult<StoredOperation> {
+        if !op.summary.state.is_claimed() || op.owner_token.is_none() || percent > 100 {
+            return Err(corrupt());
+        }
+        self.changed(self.connection.execute(
+            "UPDATE operations SET progress_percent=?,progress_message=NULL,updated_at=? \
+             WHERE id=? AND server_id=? AND state=? AND owner_token=? AND external_effect_started=? \
+             AND cancel_requested=?",
+            params![percent, self.now, op.summary.id.as_str(), self.server, op.summary.state.as_str(),
+                op.owner_token, op.effect_started, op.summary.cancel_requested],
+        )?)?;
+        self.require(&op.summary.id)
+    }
+    pub(super) fn finish_owned(
+        &self,
+        op: &StoredOperation,
+        terminal: OperationState,
+        code: Option<&'static str>,
+        result_json: Option<&str>,
+    ) -> OperationsResult<StoredOperation> {
+        if !op.summary.state.is_claimed()
+            || op.owner_token.is_none()
+            || !terminal.is_terminal()
+            || (terminal == OperationState::Cancelled && op.effect_started)
+            || (terminal == OperationState::Succeeded && !op.effect_started)
+        {
+            return Err(corrupt());
+        }
+        self.changed(self.connection.execute(
+            "UPDATE operations SET state=?,finished_at=?,updated_at=?,owner_token=NULL,error_code=?,\
+             error_message=NULL,result_json=?,progress_message=NULL WHERE id=? AND server_id=? AND state=? \
+             AND owner_token=? AND external_effect_started=? AND cancel_requested=?",
+            params![terminal.as_str(), self.now, self.now, code, result_json,
+                op.summary.id.as_str(), self.server, op.summary.state.as_str(), op.owner_token,
+                op.effect_started, op.summary.cancel_requested],
+        )?)?;
+        self.delete_locks(&op.summary.id)?;
+        self.require(&op.summary.id)
+    }
     fn delete_locks(&self, id: &OperationId) -> OperationsResult<()> {
         self.connection.execute(
             "DELETE FROM resource_locks WHERE operation_id=?",
@@ -627,7 +702,6 @@ impl RawOperation {
             operation_type,
             target,
             payload_hash,
-            #[cfg(test)]
             idempotency_key: self.idempotency_key,
             effect_idempotent: boolean(self.effect_idempotent)?,
             requires_confirmation: boolean(self.requires_confirmation)?,

@@ -1,6 +1,7 @@
 //! Validated task values and input-free failures. None of these values is authority.
 use crate::{ControlError, identity::DenyReason};
 use std::{error::Error, fmt};
+use vesta_game_runtime::process::RuntimeError;
 use vesta_state::{StateError, TransactionError};
 
 pub const MAX_PAGE: usize = 200;
@@ -9,8 +10,8 @@ pub(crate) const MAX_RESOURCES: usize = 32;
 pub(crate) const MAX_REQUIREMENTS: usize = 32;
 pub(crate) const MAX_LOCK_BYTES: usize = 256;
 pub(crate) const REQUEST_SOURCE: &str = "operation-request";
-#[cfg(test)]
 pub(crate) const ENGINE_SOURCE: &str = "operation-kernel";
+pub(crate) const MAX_RESULT_BYTES: usize = 16_384;
 
 pub type OperationsResult<T> = std::result::Result<T, OperationError>;
 
@@ -27,6 +28,11 @@ pub enum OperationErrorCode {
     InvalidTransition,
     NotOwner,
     RecoveryRequired,
+    CancellationRequested,
+    OwnerStopping,
+    ConfirmationRejected,
+    SourceRevisionUnavailable,
+    ResultTooLarge,
 }
 impl OperationErrorCode {
     pub const fn code(self) -> &'static str {
@@ -42,6 +48,11 @@ impl OperationErrorCode {
             Self::InvalidTransition => "invalid_transition",
             Self::NotOwner => "not_owner",
             Self::RecoveryRequired => "recovery_required",
+            Self::CancellationRequested => "cancellation_requested",
+            Self::OwnerStopping => "owner_stopping",
+            Self::ConfirmationRejected => "confirmation_rejected",
+            Self::SourceRevisionUnavailable => "source_revision_unavailable",
+            Self::ResultTooLarge => "result_too_large",
         }
     }
 }
@@ -52,6 +63,9 @@ impl OperationErrorCode {
 #[derive(Clone, Eq, PartialEq)]
 pub enum OperationError {
     State(StateError),
+    /// Native process failures preserve their own fixed namespace and cause;
+    /// they are neither database failures nor ordinary authorization denials.
+    Runtime(RuntimeError),
     Rejected {
         code: OperationErrorCode,
         reason: Option<DenyReason>,
@@ -70,6 +84,7 @@ impl OperationError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::State(error) => error.code(),
+            Self::Runtime(error) => error.code(),
             Self::Rejected { code, .. } => code.code(),
             Self::Policy(error) => error.code(),
             Self::Rollback { .. } => "rollback_failed",
@@ -146,6 +161,7 @@ impl Error for OperationError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::State(error) => Some(error),
+            Self::Runtime(error) => Some(error),
             Self::Policy(error) => Some(error),
             Self::Rollback { primary, .. } | Self::AuditUnavailable { primary, .. } => {
                 Some(primary.as_ref())
@@ -157,6 +173,11 @@ impl Error for OperationError {
 impl From<StateError> for OperationError {
     fn from(error: StateError) -> Self {
         Self::State(error)
+    }
+}
+impl From<RuntimeError> for OperationError {
+    fn from(error: RuntimeError) -> Self {
+        Self::Runtime(error)
     }
 }
 impl From<rusqlite::Error> for OperationError {
@@ -227,7 +248,6 @@ impl OperationId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
-    #[cfg(test)]
     pub(crate) fn fresh() -> Self {
         Self(uuid::Uuid::new_v4().to_string())
     }
@@ -305,9 +325,8 @@ pub enum CancelOutcome {
     AlreadyRequested(OperationSummary),
     AlreadyTerminal(OperationSummary),
 }
-#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Admission {
+pub enum Admission {
     Created(OperationSummary),
     Existing(OperationSummary),
 }
@@ -315,4 +334,33 @@ pub(crate) enum Admission {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PurgeReport {
     pub(crate) purged: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observation_failure_preserves_native_type_and_fixed_redacted_errors() {
+        let error = OperationError::from(RuntimeError::ObserveFailed);
+        assert!(matches!(
+            error,
+            OperationError::Runtime(RuntimeError::ObserveFailed)
+        ));
+        assert_eq!(error.code(), "game_observe_failed");
+        assert_eq!(error.reason(), None);
+        assert_eq!(error.secondary(), None);
+        assert_eq!(error.primary(), &error);
+        assert_eq!(error.to_string(), "Operation request failed");
+        assert_eq!(
+            format!("{error:?}"),
+            "OperationError { code: \"game_observe_failed\", reason: None }"
+        );
+        // The source is the fixed typed runtime enum, never a raw native IO/
+        // process error or a forged StateError with a game_* database code.
+        let source = error.source().expect("preserved typed runtime cause");
+        assert_eq!(source.to_string(), "Game runtime failed");
+        assert!(source.downcast_ref::<RuntimeError>().is_some());
+        assert!(source.downcast_ref::<StateError>().is_none());
+    }
 }

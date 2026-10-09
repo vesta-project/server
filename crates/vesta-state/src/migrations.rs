@@ -9,6 +9,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         3 => apply_v3(c, now_ms),
         4 => apply_v4(c),
         5 => apply_v5(c),
+        6 => apply_v6(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -295,6 +296,16 @@ fn apply_v5(c: &Connection) -> crate::Result<()> {
          WHERE expires_at IS NOT NULL AND revoked_at IS NULL AND expiry_recorded_at IS NULL;\
          CREATE INDEX principal_overrides_pending_expiry ON principal_overrides(expires_at, id) \
          WHERE expires_at IS NOT NULL AND revoked_at IS NULL AND expiry_recorded_at IS NULL;",
+    )?;
+    Ok(())
+}
+
+fn apply_v6(c: &Connection) -> crate::Result<()> {
+    // Legacy consumed tokens include refusals: never backfill them as accepted proof.
+    c.execute_batch(
+        "ALTER TABLE confirmations ADD COLUMN accepted_at INTEGER \
+         CHECK (accepted_at IS NULL OR (consumed_at IS NOT NULL AND \
+         consumed_at=accepted_at AND accepted_at>=created_at AND accepted_at<expires_at));",
     )?;
     Ok(())
 }
