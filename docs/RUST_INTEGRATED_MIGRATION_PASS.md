@@ -269,6 +269,14 @@ only), and the Stop-admission `ObserveFailed` path is exercised through the shar
 transition rather than by forcing that exact admission error. Neither is inferred covered. A
 fresh independent review of the final source is outstanding.
 
+### Local checkpoint
+
+After the full green pass, parent created the authorized unsigned local checkpoint
+`2f2e3804cc4e03b51f26e2b07d9b49e05381abde` on `feat/server-software-foundation`, containing only the
+operation kernel, confirmation, replay, driver, state lease/migration and documentation changes.
+Both working trees are otherwise clean; the companion retains only its pre-existing protected
+manifest change. Nothing was pushed, published or merged.
+
 The final Node/preservation rerun passed **159 tests**, none failed/cancelled/skipped/todo, and
 both inventory/requirement checkers passed. Complete requirement ledger JSON is unchanged from
 the starting server HEAD. The protected launcher manifest raw digest remains exact; only its
