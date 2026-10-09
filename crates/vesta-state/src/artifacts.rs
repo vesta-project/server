@@ -20,6 +20,7 @@ use std::{
 };
 
 pub const ARTIFACTS_DIR: &str = "artifacts";
+pub const TRASH_DIR: &str = "trash";
 pub const MAX_ARTIFACT_NAME_BYTES: usize = 96;
 
 /// Flat lowercase ASCII names: alphanumerics, `-` and `.`, starting and ending with an
@@ -69,9 +70,18 @@ impl fmt::Debug for ArtifactDirectory {
 impl StateDirectory {
     /// Create (owner-only) or verify the artifact directory. Linked/special entries refuse.
     pub fn artifacts(&self) -> Result<ArtifactDirectory> {
+        self.flat_directory(ARTIFACTS_DIR)
+    }
+
+    /// The owner-only flat directory holding recoverable copies of replaced/deleted files.
+    pub fn trash(&self) -> Result<ArtifactDirectory> {
+        self.flat_directory(TRASH_DIR)
+    }
+
+    fn flat_directory(&self, name: &str) -> Result<ArtifactDirectory> {
         self.verify_root_spelling()?;
         require_directory(self.path())?;
-        let path = self.path().join(ARTIFACTS_DIR);
+        let path = self.path().join(name);
         reject_linked_directories(&path, "state_artifact_linked")?;
         create_real_directories(&path)?;
         let directory = ArtifactDirectory {
@@ -157,6 +167,13 @@ impl ArtifactDirectory {
                 .map_err(|_| StateError::new("state_artifact_linked")),
             Err(_) => Err(StateError::new("state_artifact_linked")),
         }
+    }
+
+    /// Flush directory metadata after a synced create-new file, before recording its name.
+    /// Windows has no portable directory fsync; see the platform durability limitation below.
+    pub fn sync(&self) -> Result<()> {
+        self.verify()?;
+        sync_directory(&self.path)
     }
 
     /// Count entries, scanning at most `limit + 1`. Returns `None` when the limit is exceeded.

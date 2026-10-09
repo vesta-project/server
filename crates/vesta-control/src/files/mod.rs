@@ -4,14 +4,24 @@
 //! same conservative ASCII policy as canonical scopes; no Unicode grant is inferred.
 //! Native checks reject links/reparse points and protected names, but are not a
 //! handle-relative ancestor walk or same-account race-free confinement claim.
-//! Mutations are deliberately absent until composed with durable effect ownership.
+//! Mutations (`mutation`) are recoverable single-file writes/deletes/restores with
+//! optimistic concurrency. Pending trash provenance is durably journaled before destructive
+//! effects; failed completion is compensated only while the owned effect hash still matches.
+//! Unix replacement/restore preserves permission mode bits (not ownership, ACLs, xattrs or
+//! timestamps). Windows preserves the read-only attribute and refuses read-only replacement
+//! or deletion; it does not copy custom ACLs or other attributes. Stages start private on Unix.
 mod local_document;
+mod mutation;
 mod native;
 mod pack_root;
 mod path;
 mod root;
 
 pub(crate) use local_document::read_local_document;
+pub use mutation::{
+    FileChange, MAX_TRASH_FILE_BYTES, MAX_WRITE_BYTES, SPACE_RESERVE_BYTES, TrashEntry,
+    TrashPolicy, WritePrecondition,
+};
 pub(crate) use pack_root::{PackNode, PackRoot};
 pub use path::{MAX_COMPONENT_BYTES, MAX_PATH_BYTES, RelativePath};
 
@@ -42,6 +52,12 @@ pub enum FileError {
     TooLarge,
     InvalidLimit,
     Unavailable,
+    /// The precondition no longer holds; carries the current SHA-256 when one exists.
+    Conflict(Option<String>),
+    TrashFull,
+    InsufficientSpace,
+    /// A change was applied but neither recorded nor reversed; inspect before retrying.
+    RecoveryRequired(Box<FileError>),
     Control(ControlError),
     State(StateError),
     Rollback {
@@ -62,6 +78,10 @@ impl FileError {
             Self::TooLarge => "file_too_large",
             Self::InvalidLimit => "file_limit_invalid",
             Self::Unavailable => "file_unavailable",
+            Self::Conflict(_) => "file_conflict",
+            Self::TrashFull => "file_trash_full",
+            Self::InsufficientSpace => "file_insufficient_space",
+            Self::RecoveryRequired(_) => "file_recovery_required",
             Self::Control(error) => error.code(),
             Self::State(error) => error.code(),
             Self::Rollback { .. } => "rollback_failed",
@@ -85,7 +105,9 @@ impl Error for FileError {
         match self {
             Self::Control(error) => Some(error),
             Self::State(error) => Some(error),
-            Self::Rollback { primary, .. } => Some(primary.as_ref()),
+            Self::Rollback { primary, .. } | Self::RecoveryRequired(primary) => {
+                Some(primary.as_ref())
+            }
             _ => None,
         }
     }
@@ -93,6 +115,16 @@ impl Error for FileError {
 impl From<ControlError> for FileError {
     fn from(error: ControlError) -> Self {
         Self::Control(error)
+    }
+}
+impl From<StateError> for FileError {
+    fn from(error: StateError) -> Self {
+        Self::State(error)
+    }
+}
+impl From<rusqlite::Error> for FileError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::State(error.into())
     }
 }
 impl From<TransactionError<FileError>> for FileError {
@@ -170,6 +202,8 @@ impl fmt::Debug for FileRead {
 pub struct FileBrowser {
     db: StateDatabase,
     root: root::Root,
+    audit: vesta_state::audit::AuditLog,
+    trash_policy: TrashPolicy,
 }
 impl fmt::Debug for FileBrowser {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -183,7 +217,17 @@ impl FileBrowser {
         let mut protected = protected.to_vec();
         protected.push(db.directory().path());
         let root = root::Root::open(root, &protected)?;
-        Ok(Self { db, root })
+        Ok(Self {
+            audit: vesta_state::audit::AuditLog::new(db.clone())?,
+            db,
+            root,
+            trash_policy: TrashPolicy::default(),
+        })
+    }
+
+    pub fn with_trash_policy(mut self, policy: TrashPolicy) -> Self {
+        self.trash_policy = policy;
+        self
     }
 
     /// `None` explicitly selects the root. Returned and scanned work are bounded.

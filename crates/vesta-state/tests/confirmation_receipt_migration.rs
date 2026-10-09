@@ -153,6 +153,7 @@ fn genuine_v5_migration_preserves_confirmation_rows_without_inventing_receipts()
         .execute_batch(
             r#"
             BEGIN IMMEDIATE;
+            DROP TABLE file_trash;
             DROP TABLE pack_releases;
             CREATE TABLE confirmations_v5 (
                 id TEXT PRIMARY KEY,
@@ -197,7 +198,7 @@ fn genuine_v5_migration_preserves_confirmation_rows_without_inventing_receipts()
 
     let migrated = StateDatabase::open(directory.clone(), fixture.clock.clone()).unwrap();
     assert_eq!(migrated.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 7);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 8);
     let (migrated_rows, accepted_values) = migrated
         .read(|connection| {
             let mut statement = connection.prepare(

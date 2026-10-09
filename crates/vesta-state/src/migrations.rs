@@ -11,6 +11,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         5 => apply_v5(c),
         6 => apply_v6(c),
         7 => apply_v7(c),
+        8 => apply_v8(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -327,6 +328,34 @@ fn apply_v7(c: &Connection) -> crate::Result<()> {
             published_at INTEGER NOT NULL,
             PRIMARY KEY (server_id, revision)
         ) STRICT;
+        "#,
+    )?;
+    Ok(())
+}
+
+/// Recoverable copies of replaced or deleted game files. Bytes live in `<state>/trash`
+/// under `name`; rows are removed when the copy is restored, purged or expires.
+fn apply_v8(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(
+        r#"
+        CREATE TABLE file_trash (
+            id TEXT PRIMARY KEY CHECK (length(id) = 32 AND id NOT GLOB '*[^0-9a-f]*'),
+            server_id TEXT NOT NULL REFERENCES server_identity(server_id),
+            path TEXT NOT NULL CHECK (length(CAST(path AS BLOB)) BETWEEN 1 AND 4096),
+            sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+            size INTEGER NOT NULL CHECK (size >= 0),
+            reason TEXT NOT NULL CHECK (reason IN ('replace', 'delete')),
+            principal_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('pending', 'complete', 'recovery-required', 'restored')),
+            effect_sha256 TEXT CHECK (effect_sha256 IS NULL OR (length(effect_sha256) = 64 AND effect_sha256 NOT GLOB '*[^0-9a-f]*')),
+            unix_mode INTEGER CHECK (unix_mode IS NULL OR unix_mode BETWEEN 0 AND 4095),
+            readonly INTEGER NOT NULL CHECK (readonly IN (0, 1)),
+            trashed_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL CHECK (expires_at > trashed_at),
+            CHECK ((reason = 'replace' AND effect_sha256 IS NOT NULL) OR (reason = 'delete' AND effect_sha256 IS NULL))
+        ) STRICT;
+        CREATE INDEX file_trash_expiry ON file_trash(server_id, expires_at);
         "#,
     )?;
     Ok(())
