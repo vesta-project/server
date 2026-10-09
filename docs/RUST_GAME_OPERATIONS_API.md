@@ -1,6 +1,6 @@
 # Closed Rust game operations
 
-Date: **2026-10-09**. Status: **integration candidate; verification pending**.
+Date: **2026-10-09**. Status: **implemented and Windows-tested bounded composition; scoped Sol rereview completed with correction; final whole-rebuild review unfinished**.
 
 This is a Rust-native trusted host composition over the existing state, identity and
 owned game-process components. It supersedes the staged-only execution scope in
@@ -67,7 +67,10 @@ success before an effect marker, cancellation after a started effect, or recover
 
 `request_shutdown` refuses new claims/delayed gates synchronously. `shutdown(timeout)` is
 observation-only; timeout retains the same driver join handle, claims, child and I/O. It sends
-no automatic stop/kill/restart. Runtime Drop requests shutdown and joins indefinitely if needed;
+no automatic stop/kill/restart. Sticky native observation failure raised during dispatch is
+preserved in the driver's typed join result even if task bookkeeping and later native polls
+succeed; it cannot silently become a successful first shutdown join. Runtime Drop requests
+shutdown and joins indefinitely if needed;
 it is intentionally not a bounded shutdown or independent supervisor/crash-continuity claim.
 The database's explicit close returns `state_runtime_busy` while a runtime lease lives and leaves
 transactions available for real outcome writes. The lease is lifecycle retention, not authority.

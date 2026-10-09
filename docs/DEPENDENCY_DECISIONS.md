@@ -312,3 +312,40 @@ they do not certify native isolation, process-tree containment or path-race resi
 crate was modified. Full SBOM, trusted provenance/vulnerability/notice review, clean-platform
 packaging, supported service accounts, MSRV execution, CI sibling-checkout wiring and release
 approval remain open. See [the extraction checkpoint](RUST_INSTALLER_EXTRACTION_CHECKPOINT.md).
+
+## Trusted launch TOML intake (2026-10-09)
+
+The existing `vesta-game-runtime` library adds exact workspace pin `toml = "=0.9.12"`,
+resolved as **0.9.12+spec-1.1.0**, and the existing `serde = 1.0.228` derive dependency.
+TOML defaults are disabled; only `std`, `parse` and `serde` are enabled. This parses a
+bounded, launch-only trusted local document into a private validated Rust plan. It is not
+an authenticated remote configuration API or a full `WrapperConfig` replacement.
+
+- Cached TOML manifest: **MIT OR Apache-2.0**, declared Rust minimum **1.76**, upstream
+  `https://github.com/toml-rs/toml`. This is metadata intake, not notice/provenance certification.
+- The inspected version is deliberately pinned; it is not a claim to use the latest release.
+  Cargo reported a newer `1.1.8+spec-1.1.0` as available at resolution.
+- The lock adds exactly seven package entries without repinning existing packages:
+  `serde_spanned 1.1.2`, `toml 0.9.12+spec-1.1.0`,
+  `toml_datetime 0.7.5+spec-1.1.0`, `toml_parser 1.1.5+spec-1.1.0`,
+  `toml_writer 1.1.3+spec-1.1.0`, `winnow 0.7.15`, and `winnow 1.0.4`.
+- The inspected native normal runtime graph selects `serde_core`, `serde_spanned`,
+  `toml_datetime`, `toml_parser`, and `winnow 0.7.15`; `toml_parser` also selects
+  `winnow 1.0.4`. Lock-resolved `toml_writer` and TOML's `indexmap` edge were not
+  selected in that normal graph. A lock entry is not proof that a package runs.
+- The cached parser has recursion limit **80** with `unbounded` disabled. The adapter
+  independently caps UTF-8 input at **65,536 bytes**, rejects unknown/cross-kind fields,
+  bounds resolved paths and assembled argv, and discards raw parser diagnostics. A
+  200-level nested-array negative fixture refuses with a fixed input-free error.
+- Alternatives rejected: handwritten TOML, importing Java configuration classes, silently
+  accepting the whole legacy document, permissive missing-config defaults, and using
+  caller-selected config to manufacture authority or launch through a shell/PATH search.
+
+Locked resolution and initial all-target compilation succeeded, followed by actual Windows
+adapter/native-fixture tests. Exact commands and failed-attempt history are in
+[RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md](RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md).
+No real Java/Minecraft or argfile execution was used. The adapter introduces no native
+library, service or network listener. Rust 1.96 Windows execution is not Rust 1.76, workspace
+1.85/installer 1.88 MSRV evidence. Full transitive licence/notice review, SBOM, trusted
+provenance/vulnerability checks, MSRV and other-platform execution, packaging and signed
+release approval remain open.

@@ -8,4 +8,5 @@
 #![deny(unsafe_code)]
 
 pub mod console;
+pub mod launch_config;
 pub mod process;

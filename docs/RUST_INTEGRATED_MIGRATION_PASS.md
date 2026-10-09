@@ -1,6 +1,9 @@
 # Coordinated Rust migration pass
 
-Date: **2026-10-08**. Status: **assessment and implementation in progress; not verified**.
+Started: **2026-10-08**. Updated: **2026-10-09**. Status: **bounded game-operation slice locally checkpointed and Windows-tested; migration and final review incomplete**.
+
+The pause/failed-attempt sections below are historical. The final executed results and local
+checkpoint are recorded near the end; they do not certify the remaining wrapper rebuild.
 
 The owner requested a larger parallel implementation and integration pass rather than a series
 of tiny checkpoints. Scope is useful behavior already implemented in the retained Java
@@ -250,9 +253,11 @@ child modules, so the workspace format check found one unformatted test file; pa
 workspace formatter, then format, all-target check and strict all-target Clippy passed.
 
 The two previously failing tests then passed, and the fresh complete workspace Windows test suite
-passed: **635 tests, 0 failed, 0 ignored** across 36 test binaries
-(`cargo test --workspace --offline --locked -- --test-threads=1`), on top of passing workspace
-format, all-target check and strict all-target Clippy.
+passed: **635 tests, 0 failed, 0 ignored** across 36 test-result summaries
+(`cargo test --workspace --offline --locked -- --test-threads=1`). Workspace format passed;
+the immediately preceding post-fix all-target check and strict Clippy targeted `vesta-control`
+and its dependencies. The other packages had passed the earlier whole-workspace checks, but
+that earlier command is not a freshly executed final whole-workspace lint result.
 
 ### Scoped independent review status
 
@@ -289,7 +294,45 @@ While the control fixture correction was isolated, parent executed the four othe
 `CARGO_INCREMENTAL=0 cargo test --manifest-path V:/server-connections-mvp/Cargo.toml --workspace --exclude vesta-control --offline --locked -- --test-threads=1`.
 It passed (exit 0): **322 tests**, none failed or ignored (protocol 29, state 66, game runtime 59,
 installer 168). This includes actual new guarded-native tests and the refactored state fixtures.
-The control suite and final integrated workspace/strict-Clippy pass remain pending.
+At that intermediate point the control suite and final integrated checks were pending; the
+subsequent 635-test workspace pass and scoped post-fix lint results above supersede that status.
+
+### Continuation verification — 2026-10-09
+
+Against source checkpoint `2f2e380` and documentation HEAD `ed99439`, parent freshly ran:
+
+```text
+cargo fmt --manifest-path V:/server-connections-mvp/Cargo.toml --all -- --check
+CARGO_INCREMENTAL=0 cargo check --manifest-path V:/server-connections-mvp/Cargo.toml --workspace --all-targets --offline --locked
+CARGO_INCREMENTAL=0 cargo clippy --manifest-path V:/server-connections-mvp/Cargo.toml --workspace --all-targets --offline --locked -- -D warnings
+```
+
+All three passed on native Windows (combined command exit 0). This is fresh whole-workspace
+compile/lint evidence, separate from the earlier 635-test run; tests were not rerun by this
+command. A separate fresh Node run (`node --test scripts/*.test.mjs`) passed **159 tests**,
+none failed/cancelled/skipped/todo; the parity and requirement ledger `--check` commands passed,
+retaining all **222 Java files** and **370 frozen requirements**. Server source was clean and
+the protected companion manifest digest remained exact.
+A separate fresh serial baseline workspace test command also passed **635 tests**, zero
+failed/ignored, before the launch increment. The focused independent Sol rereview then found a
+real propagation defect: sticky observation failure introduced inside dispatch could retain
+ownership/recovery correctly yet disappear from the driver's returned result after successful
+later polls. The parent corrected the return-path merge without loosening ownership, and added
+late-dispatch and earlier-error-preservation regressions. First compilation of those tests failed
+on two mistaken test-only `runner_lock` calls; corrected them to the existing
+`acquire_runner_lock` API. The fresh focused driver suite passed **14 tests**, zero failed/ignored.
+The late-dispatch regression injects the existing private failure transition after real Start;
+it does not force a native polling syscall failure. Sol's correction/launch scoped rereview is
+complete: the propagation defect and one new unsupported-stop fixture-readiness race are closed,
+with no remaining concrete scoped defect found. Parent's fresh settled-source whole-workspace
+format/check/tests/strict Clippy then passed **658 tests**, zero failed/ignored. Fresh companion
+check/**210 tests** and Node/**159 tests** plus both accounting checkers passed. The protected
+manifest digest remains exact. See [the launch checkpoint](RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md)
+for failed attempts, exact commands and limitations; final whole-rebuild review remains unfinished.
+
+The owner now requests fewer helpers, with bounded Luna or explicitly requested/verified Haiku
+work and serious backend/review remaining with Sol. No requested Haiku 5.5 registration was
+verified or silently substituted; this continuation uses one Sol reviewer and bounded Luna work.
 
 ### Behavior accounting boundary
 
@@ -300,8 +343,12 @@ bindings, transaction-taking private repositories, owned driver and focused test
 process effects in `vesta-game-runtime/src/process` and lifecycle/receipt durability in
 `vesta-state`. Generic Java handler interfaces are not new Rust production requirements.
 
-The preserved inventory remains **181 not_migrated, 24 migrated, 17 retained Java plugin,
-0 verified**. No row or whole requirement is advanced by this partial slice. In particular,
+The operation checkpoint left the inventory at **181 not_migrated, 24 migrated, 17 retained
+Java plugin, 0 verified**. No row or whole requirement was advanced by that partial slice.
+The subsequent bounded launch-definition increment maps only `LaunchSpec`/`LaunchSpecTest`,
+with explicit Rust-native behavior dispositions: **179 not_migrated, 26 migrated, 17 retained
+Java plugin, 0 verified**. See [the launch checkpoint](RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md)
+for the scoped review, exact execution and unresolved behavior; no whole requirement is promoted. In particular,
 `OperationService`, `OperationSubmissionService`, `OperationRunner` and their test families still
 need complete behavior-by-behavior disposition, including non-game domain composition and staged
 purge/progress functions. This record supplies bounded progress/evidence, not a claim that every

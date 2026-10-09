@@ -8,6 +8,7 @@ mod io;
 mod launch;
 
 pub use launch::{LaunchSpec, MAX_ARG_BYTES, MAX_ARGS, MAX_ARGV_BYTES, MAX_PATH_BYTES};
+pub(crate) use launch::{MAX_REQUIRED_FILES, validate_args};
 
 use crate::console::ConsoleCapture;
 use std::{
@@ -565,7 +566,7 @@ fn deadline(timeout: Duration) -> Result<Instant, RuntimeError> {
         .ok_or(RuntimeError::InvalidTimeout)
 }
 
-fn forbidden_char(c: char) -> bool {
+pub(crate) fn forbidden_char(c: char) -> bool {
     c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')
 }
 fn valid_command(line: &str) -> bool {

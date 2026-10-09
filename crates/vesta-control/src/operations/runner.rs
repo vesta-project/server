@@ -142,6 +142,8 @@ impl OperationRuntime {
             shared: shared.clone(),
             stop_wait,
             observation_uncertain: None,
+            #[cfg(test)]
+            after_dispatch: None,
         };
         let driver = thread::Builder::new()
             .name("vesta-operation-runner".into())
@@ -265,6 +267,8 @@ struct Driver {
     // retroactively turn an uncertain effect into a known timeout/success.
     // Typed native classification, never a database error namespace.
     observation_uncertain: Option<RuntimeError>,
+    #[cfg(test)]
+    after_dispatch: Option<fn(&mut Driver)>,
 }
 impl Driver {
     fn note_observation_failure(&mut self, error: RuntimeError) {
@@ -272,6 +276,12 @@ impl Driver {
         self.game.view.invalidate_revision();
         self.shared.error(error.code());
         self.shared.stop();
+    }
+
+    fn retain_observation_failure(&self, first_failure: &mut Option<OperationError>) {
+        if let Some(error) = self.observation_uncertain {
+            first_failure.get_or_insert_with(|| OperationError::from(error));
+        }
     }
 
     fn run(&mut self) -> OperationsResult<()> {
@@ -308,7 +318,16 @@ impl Driver {
                 match self.owner.claim_next_with_revision(&self.game.revision()) {
                     Ok(Some(claim)) => {
                         self.shared.active(Some(claim.id().clone()));
-                        if let Err(error) = self.execute(claim) {
+                        let result = self.execute(claim);
+                        #[cfg(test)]
+                        if let Some(probe) = self.after_dispatch.take() {
+                            probe(self);
+                        }
+                        // Internal native polls can lose observation proof while
+                        // execute records the task outcome and returns Ok. Keep
+                        // that typed failure even if later polls/joins succeed.
+                        self.retain_observation_failure(&mut first_failure);
+                        if let Err(error) = result {
                             self.shared.error(error.code());
                             self.shared.stop();
                             first_failure.get_or_insert(error);

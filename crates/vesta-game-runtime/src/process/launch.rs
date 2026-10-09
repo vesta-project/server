@@ -9,6 +9,7 @@ pub const MAX_ARGS: usize = 256;
 pub const MAX_ARG_BYTES: usize = 8_192;
 pub const MAX_ARGV_BYTES: usize = 32_768;
 pub const MAX_PATH_BYTES: usize = 4_096;
+pub(crate) const MAX_REQUIRED_FILES: usize = 16;
 // Windows includes the executable, quoting, separators and terminating NUL.
 const MAX_NATIVE_UNITS: usize = 32_767;
 
@@ -21,6 +22,7 @@ pub struct LaunchSpec {
     args: Vec<String>,
     cwd: PathBuf,
     stop: GracefulStop,
+    required_files: Vec<PathBuf>,
 }
 impl fmt::Debug for LaunchSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -42,6 +44,7 @@ impl LaunchSpec {
             args,
             cwd,
             stop,
+            required_files: Vec::new(),
         };
         spec.validate()?;
         spec.preflight()?;
@@ -51,14 +54,7 @@ impl LaunchSpec {
     fn validate(&self) -> Result<(), RuntimeError> {
         let program = path_text(&self.program)?;
         path_text(&self.cwd)?;
-        if self.args.len() > MAX_ARGS
-            || self
-                .args
-                .iter()
-                .any(|arg| arg.len() > MAX_ARG_BYTES || arg.chars().any(forbidden_char))
-        {
-            return Err(RuntimeError::InvalidLaunch);
-        }
+        validate_args(&self.args)?;
         // Refuse scripts on all platforms to keep the portable contract consistent.
         if self
             .program
@@ -86,9 +82,24 @@ impl LaunchSpec {
         Ok(())
     }
 
+    pub(crate) fn with_required_files(mut self, files: Vec<PathBuf>) -> Result<Self, RuntimeError> {
+        if files.len() > MAX_REQUIRED_FILES {
+            return Err(RuntimeError::InvalidLaunch);
+        }
+        for file in &files {
+            path_text(file)?;
+        }
+        self.required_files = files;
+        self.preflight()?;
+        Ok(self)
+    }
+
     pub(super) fn preflight(&self) -> Result<(), RuntimeError> {
-        // Not native confinement: paths can change after this check.
-        if !self.program.is_file() || !self.cwd.is_dir() {
+        // Not native confinement or provenance: paths can change after this check.
+        if !self.program.is_file()
+            || !self.cwd.is_dir()
+            || self.required_files.iter().any(|file| !file.is_file())
+        {
             return Err(RuntimeError::InvalidLaunch);
         }
         Ok(())
@@ -109,6 +120,17 @@ impl LaunchSpec {
         // No shell, environment rewriting or detached-process flags.
         command
     }
+}
+
+pub(crate) fn validate_args(args: &[String]) -> Result<(), RuntimeError> {
+    if args.len() > MAX_ARGS
+        || args
+            .iter()
+            .any(|arg| arg.len() > MAX_ARG_BYTES || arg.chars().any(forbidden_char))
+    {
+        return Err(RuntimeError::InvalidLaunch);
+    }
+    Ok(())
 }
 
 fn path_text(path: &std::path::Path) -> Result<&str, RuntimeError> {

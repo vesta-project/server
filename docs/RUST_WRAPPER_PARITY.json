@@ -4645,23 +4645,39 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "d99943f704da15f2c361f46ed865245929afa16d46d7d12b51a3dcd8cd1823c8",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-game-runtime/src/launch_config/mod.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/launch/LaunchSpecTest.java"
       ],
-      "fixturePaths": [],
-      "applicableRequirements": [],
-      "disposition": "migrate_to_rust",
-      "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
-      "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+      "fixturePaths": [
+        "crates/vesta-game-runtime/tests/fixtures/game.rs"
       ],
-      "rustTests": [],
-      "evidence": [],
+      "applicableRequirements": [
+        "installation-components-and-process-continuity-010"
+      ],
+      "disposition": "migrate_to_rust",
+      "status": "migrated",
+      "rationale": "Useful JAR, ordered argfile and native literal argv/cwd/stop behavior is represented by a private owned Rust plan compiled into the existing process spec. The checkpoint explicitly dispositions Java builders/copy/equality/hash and JDK text quirks rather than reproducing them; legacy/PATH/missing-config/automatic-start defaults are refused. This maps a bounded definition family, not ConfigLoader, WrapperConfig or whole requirements.",
+      "gaps": [
+        "Windows/Rust 1.96 execution only; other platforms and declared MSRVs unexecuted.",
+        "Inert executable witnesses argv, not real Java/JVM or argfile interpretation, artifact provenance or installer-receipt launch composition.",
+        "Full configuration/protected config-file opening, authenticated host/transport composition, independent supervisor and final whole-rebuild review remain unfinished."
+      ],
+      "rustTests": [
+        "crates/vesta-game-runtime/src/launch_config/tests.rs",
+        "crates/vesta-game-runtime/tests/launch_configuration.rs",
+        "crates/vesta-control/src/operations/tests/launch_configuration.rs"
+      ],
+      "evidence": [
+        {
+          "path": "docs/RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md",
+          "date": "2026-10-09",
+          "claim": "Exact literal JAR/argfile/native argv and cwd, explicit/default stop semantics, bounded closed-schema redaction, explicit selected Java, no implicit nogui/PATH/shell/start/authority, and retained-artifact preflight before the real effect guard; executed commands, failed attempts and deliberate Java behavior dispositions are recorded separately from product gaps."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "passed",
+        "summary": "Fresh settled-source native Windows/Rust 1.96 workspace suite 658, format/all-target check/strict Clippy, companion 210 and Node 159 passed after scoped review fixes. The checkpoint distinguishes runtime 78 and configured-launch composition 2 from whole-requirement/product certification. Migrated, not verified or exact Java semantics."
       }
     },
     {
@@ -6566,23 +6582,39 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "2474670ad49ebce66852a1015ea6b6ce1abfc6b591c41b0953144e24a78a8ff0",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-game-runtime/src/launch_config/tests.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/launch/LaunchSpecTest.java"
       ],
-      "fixturePaths": [],
-      "applicableRequirements": [],
-      "disposition": "migrate_to_rust",
-      "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
-      "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+      "fixturePaths": [
+        "crates/vesta-game-runtime/tests/fixtures/game.rs"
       ],
-      "rustTests": [],
-      "evidence": [],
+      "applicableRequirements": [
+        "installation-components-and-process-continuity-010"
+      ],
+      "disposition": "migrate_to_rust",
+      "status": "migrated",
+      "rationale": "Useful launch-shape, literal argv/cwd, stop, invalid text/path/list/kind, bounds and redaction assertions are covered by parser tests and actual inert-process witnesses. Private owned consumed data replaces Java defensive-copy/setter/equality APIs; permissive legacy/default launch and incidental Java whitespace/UTF-16 behavior have explicit Rust-native dispositions, not copied assertions or claimed exact Java parity.",
+      "gaps": [
+        "Windows/Rust 1.96 execution only; non-Windows native behavior and MSRVs unexecuted.",
+        "No actual Java/JVM argfile or loader execution; selected inert executables record argv/cwd only.",
+        "Full ConfigLoader/WrapperConfig families, protected file opening and final independent whole-rebuild review are not advanced by these launch-definition tests."
+      ],
+      "rustTests": [
+        "crates/vesta-game-runtime/src/launch_config/tests.rs",
+        "crates/vesta-game-runtime/tests/launch_configuration.rs",
+        "crates/vesta-control/src/operations/tests/launch_configuration.rs"
+      ],
+      "evidence": [
+        {
+          "path": "docs/RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md",
+          "date": "2026-10-09",
+          "claim": "Behavior-disposition table and exact executed Windows commands document parser negatives, native literal shape witnesses, retained-artifact refusal before effect, explicit native stop, fixed redaction and canonical no-authority/no-auto-start composition. Java-only object/JDK/legacy assertions are explicitly dispositioned; no skipped tests or whole-requirement promotion."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "passed",
+        "summary": "Fresh settled-source Windows/Rust 1.96 workspace 658 tests, format/all-target check/strict Clippy, companion 210 and Node 159 passed. Scoped review corrected the command-log readiness race without weakening assertions; the checkpoint records component witnesses, failed attempts and remaining gaps. Migrated, not verified."
       }
     },
     {

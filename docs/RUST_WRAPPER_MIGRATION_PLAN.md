@@ -63,8 +63,8 @@ All new workspace packages are non-publishable development packages.
 | --- | --- |
 | `crates/vesta-protocol` | Bounded discovery/negotiation and eventual pack/wire contracts. No authority, process control or network listener. **Admitted; executed tests.** |
 | `crates/vesta-state` | Protected state, SQLite schema/transactions/migrations/backup, audit, events, desired/effective settings. Trusted in-process persistence, not a remote API. **Admitted; executed tests.** |
-| `crates/vesta-control` | Identity/policy/password/proof components; operations/confirmations/runner/replay; protected file/content/pack services and runtime composition, split into cohesive modules. **Admitted 2026-10-08; canonical identity, bounded pack-password primitives/service and one-time Minecraft hasJoined challenges executed and tested.** The 2026-10-09 closed game-operation/confirmation/replay candidate is tracked in [its API](RUST_GAME_OPERATIONS_API.md) and [integration record](RUST_INTEGRATED_MIGRATION_PASS.md), not inferred verified here. Authenticated device/claim linking, complete Microsoft identity flow, file/content and full pack/host composition remain unfinished. |
-| `crates/vesta-game-runtime` | **Admitted 2026-10-08: bounded console and owned direct-child component**, with native inert-process tests. Literal argv/cwd, generation-bound stdin/stop/kill, timeout retention and actual exit/drain ownership are implemented. The 2026-10-09 concrete lifecycle-driver candidate is tracked separately; independent supervisor/IPC/process-tree control remain unfinished. No network listener or administrative policy. |
+| `crates/vesta-control` | Identity/policy/password/proof components; operations/confirmations/runner/replay; protected file/content/pack services and runtime composition, split into cohesive modules. **Admitted 2026-10-08; canonical identity, bounded pack-password primitives/service and one-time Minecraft hasJoined challenges executed and tested.** The 2026-10-09 closed game-operation/confirmation/replay slice is implemented and Windows-tested in [its API](RUST_GAME_OPERATIONS_API.md) and [integration record](RUST_INTEGRATED_MIGRATION_PASS.md); the latest driver correction passed fresh integrated verification and scoped rereview, not whole-migration approval. Authenticated device/claim linking, complete Microsoft identity flow, file/content and full pack/host composition remain unfinished. |
+| `crates/vesta-game-runtime` | **Admitted 2026-10-08: bounded console and owned direct-child component**, with native inert-process tests. Literal argv/cwd, generation-bound stdin/stop/kill, timeout retention and actual exit/drain ownership are implemented. The 2026-10-09 concrete lifecycle driver and trusted launch-only TOML adapter are tracked separately in [the integration record](RUST_INTEGRATED_MIGRATION_PASS.md) and [launch checkpoint](RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md); independent supervisor/IPC/process-tree control remain unfinished. No network listener or administrative policy. |
 | `crates/vesta-server-install` | **Admitted 2026-10-08; extracted and verified**, with all installer test families and a narrow Piston adapter. Explicit private transport configuration/live progress, no Tauri/full Piston. Authenticated install/activation/launch composition remains unfinished. |
 | `apps/vesta-agent` (planned) | Thin configuration/CLI/composition. Remote management remains closed until canonical authenticated transport composition exists. |
 
@@ -150,8 +150,10 @@ node --test scripts/requirements-ledger.test.mjs scripts/server-feature-protocol
    execution, failed-attempt history and the explicit production/test staging boundary. The useful public facade
    observes sanitized summaries under current task access; cancellation additionally requires the
    exact initiating actor/device and current action requirements of a verified binding. There is
-   no invented `tasks.cancel` capability and no production binding yet. Production execution handlers, real worker
-   supervision, confirmation consumption, authorized replay and remote wiring remain separate
+   no invented `tasks.cancel` capability. That checkpoint preceded production bindings. The later
+   **2026-10-09** closed Start/Stop/ForceKill composition adds real owned execution, canonical
+   confirmation consumption and authorized replay; see [the integration record](RUST_INTEGRATED_MIGRATION_PASS.md).
+   Non-game bindings, authenticated remote wiring and independent supervision remain separate
    work; no fake handler or successful no-op may imply those are complete.
 6. **Game/files/pack/composition.** Build literal argv/cwd, generation-bound start/stop/kill,
    timeout ownership, graceful-stop refusal before effects and continuous bounded output
@@ -167,6 +169,14 @@ node --test scripts/requirements-ledger.test.mjs scripts/server-feature-protocol
    ordinary component does not activate the staged operations kernel, install production lifecycle
    bindings or establish authenticated management, artifact/Java-plan composition, readiness,
    process-tree containment or independent supervisor continuity.
+   **2026-10-09 trusted launch configuration increment:** a bounded launch-only TOML document
+   compiles Java JAR, ordered argfile or native shapes into the existing private process spec.
+   Base/cwd/executable are explicit; no PATH/shell/legacy/missing-config/auto-start fallback.
+   Required JAR/argfile references are rechecked at real spawn before its effect guard. One real
+   canonical composition fixture witnesses no automatic start or config-derived authority.
+   [The launch checkpoint](RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md) records exact executed
+   evidence, failed attempts, deliberate Rust-native changes and remaining full-config/file-opening
+   gaps. This does not supply Java discovery, real loader execution or a host executable.
 7. **Installer extraction/reuse.** Extract the reviewed installer and all tests, with
    exactly four external seams: progress types, Java-major parser, configured proxy,
    and linked-ancestor checks. Preserve transfer restrictions, deadlines, original
@@ -187,9 +197,13 @@ approved Rust interfaces. New tests preserve relevant behavioral and safety asse
 without copying obsolete Java APIs, class structure or incidental JDK semantics.
 Parent/GPT-6.1 Sol handles architecture, security-sensitive implementation, integration,
 independent assertions and cleanup. A final **independent GPT-6.1 Sol review** is
-mandatory. No Anthropic-model helpers/fallbacks or default-model nested workflows
-are authorized for this migration. Luna test assistance supersedes the earlier
-parent-only test-authorship preference for this migration, not all future work.
+mandatory. The owner requested **fewer helpers on 2026-10-09**, allowing bounded Luna and
+explicitly requested Haiku assistance as a limited exception to the earlier no-Anthropic-helper
+rule. The requested Haiku 5.5 model/registration must actually be verified; no version/model
+fallback is authorized silently. Serious backend/review remains with Sol. This increment uses
+one resumed Sol reviewer and narrow Luna accounting, not nested/default-model workflows.
+Luna test assistance supersedes the earlier parent-only test-authorship preference for this
+migration, not all future work.
 
 Assign disjoint owned files and frozen APIs. No worker may weaken assertions,
 regenerate golden output from the port, edit another worker's source, add hidden
@@ -273,6 +287,17 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   six rows change only 14 live test pointers. Parity stays **24 migrated, 17 retained Java plugin,
   181 not migrated, 0 verified**; final whole-rebuild review stays `not_run`. Core Rust minimum
   is honestly **1.88** for the preserved sysinfo pin; no MSRV or non-Windows execution is inferred.
+- **2026-10-09 closed lifecycle/launch continuation:** the preceding operation checkpoint and
+  fresh pre-launch baseline passed **635 Rust tests**, plus fresh whole-workspace format/check/
+  strict Clippy and **159 Node tests**. The next bounded trusted launch adapter has **78 passing
+  runtime tests**, **2 canonical-composition tests** and **14 passing focused driver tests**;
+  the separate fresh settled-source integrated rerun passed **658 Rust tests**, whole-workspace
+  format/check/strict Clippy, **210 companion tests** and **159 Node tests** plus both checkers.
+  [The launch checkpoint](RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md) records those results and
+  failed attempts separately from the component results. Scoped Sol review corrected mid-dispatch observation-result loss and a new
+  test readiness race. Only LaunchSpec/LaunchSpecTest receive migrated-not-verified mappings:
+  **26 migrated, 17 retained Java plugin, 179 not_migrated, 0 verified**. Full config/application,
+  protected files, packs/sync, transports, platform/MSRV and final whole-rebuild gates remain open.
 - Owner direction is to design for all intended platform compatibilities while testing
   Windows only in the current increment. Linux, macOS and non-Windows architecture/native
   behavior remain unexecuted and unverified; WSL presence is not platform evidence.

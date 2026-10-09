@@ -492,6 +492,7 @@ fn returned_stop_ack_with_second_owned_writer_draining_retains_lock_until_actual
             shared: shared.clone(),
             stop_wait: Duration::from_millis(25),
             observation_uncertain: None,
+            after_dispatch: None,
         },
         cwd: harness.cwd.clone(),
         gate_release: second_release_tx.clone(),
@@ -621,6 +622,7 @@ fn delayed_stop(
             shared: shared.clone(),
             stop_wait: Duration::from_millis(25),
             observation_uncertain: None,
+            after_dispatch: None,
         },
         cwd: harness.cwd.clone(),
         gate_release: release_tx.clone(),
@@ -814,6 +816,7 @@ fn delayed_stop_ack(
             shared: shared.clone(),
             stop_wait: Duration::from_millis(25),
             observation_uncertain: None,
+            after_dispatch: None,
         },
         cwd: harness.cwd.clone(),
         gate_release: release_tx.clone(),
@@ -837,6 +840,104 @@ fn delayed_stop_ack(
         gate_release: Some(release_tx.clone()),
     };
     (owned, stop, release_tx)
+}
+
+fn dispatch_driver(harness: &Harness, probe: Option<fn(&mut Driver)>) -> FixtureDriver {
+    let owner = harness.operations.open_owner().unwrap();
+    let game = GameLifecycle::new(harness.launch());
+    let shared = Arc::new(DriverState {
+        stopping: owner.stop_flag(),
+        observation: Mutex::new(Observation::default()),
+        view: game.view.clone(),
+    });
+    let (release, _) = mpsc::channel();
+    FixtureDriver {
+        driver: Driver {
+            owner,
+            game,
+            active: None,
+            shared,
+            stop_wait: Duration::from_millis(25),
+            observation_uncertain: None,
+            after_dispatch: probe,
+        },
+        cwd: harness.cwd.clone(),
+        gate_release: release,
+    }
+}
+
+#[test]
+fn late_dispatch_observation_failure_survives_successful_later_polls_and_real_exit() {
+    let harness = Harness::new(true);
+    let start = harness.submit(GameCommand::Start);
+    let driver = dispatch_driver(
+        &harness,
+        Some(|driver| {
+            // Private test-only seam after a real dispatch, not a production fault
+            // provider or claimed native syscall injection. It enters the same
+            // sticky failure transition used by internal native poll refusals.
+            driver.note_observation_failure(RuntimeError::ObserveFailed);
+        }),
+    );
+    let operations = driver.owner.operations().clone();
+    let shared = driver.shared.clone();
+    let handle = thread::spawn(move || driver.run());
+    let mut owned = OwnedRuntime {
+        runtime: OperationRuntime {
+            operations,
+            shared,
+            driver: Some(handle),
+        },
+        cwd: harness.cwd.clone(),
+        gate_release: None,
+    };
+    harness.wait_state(&start, super::super::OperationState::Succeeded);
+    wait_for(|| owned.runtime.status().unwrap().last_error_code == Some("game_observe_failed"));
+    wait_for(|| harness.cwd.join("operation-ready").is_file());
+    assert_eq!(
+        owned.runtime.game_snapshot().unwrap().phase,
+        ProcessPhase::Running
+    );
+    assert!(matches!(
+        owned.runtime.shutdown(Duration::ZERO).unwrap(),
+        ShutdownOutcome::TimedOut(_)
+    ));
+    assert_eq!(harness.db.close().unwrap_err().code(), "state_runtime_busy");
+    assert!(harness.db.directory().acquire_runner_lock().is_err());
+    fs::write(harness.cwd.join("release-game"), b"release").unwrap();
+    let error = owned.runtime.shutdown(WAIT).unwrap_err();
+    assert!(matches!(
+        error,
+        OperationError::Runtime(RuntimeError::ObserveFailed)
+    ));
+    assert_eq!(error.code(), "game_observe_failed");
+    assert_eq!(
+        owned.runtime.game_snapshot().unwrap().phase,
+        ProcessPhase::Stopped
+    );
+    // An observation error after a known completed Start does not erase its fact.
+    assert_eq!(
+        harness.state(&start),
+        super::super::OperationState::Succeeded
+    );
+    assert!(harness.db.directory().acquire_runner_lock().is_ok());
+}
+
+#[test]
+fn merging_sticky_observation_failure_never_overwrites_an_earlier_failure() {
+    let harness = Harness::new(false);
+    let mut driver = dispatch_driver(&harness, None);
+    driver.note_observation_failure(RuntimeError::ObserveFailed);
+    let previous = OperationError::from(StateError::new("state_operation_corrupt"));
+    let mut failure = Some(previous.clone());
+    driver.retain_observation_failure(&mut failure);
+    assert_eq!(failure, Some(previous));
+    let mut failure = None;
+    driver.retain_observation_failure(&mut failure);
+    assert_eq!(
+        failure,
+        Some(OperationError::Runtime(RuntimeError::ObserveFailed))
+    );
 }
 
 #[test]

@@ -13,6 +13,7 @@ use tempfile::TempDir;
 use vesta_state::{Clock, StateDirectory};
 
 mod faults;
+mod launch_configuration;
 mod ledger;
 mod review_regressions;
 mod scheduling;
