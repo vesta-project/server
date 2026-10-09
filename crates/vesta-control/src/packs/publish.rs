@@ -246,6 +246,23 @@ impl PackArtifacts {
         Ok(())
     }
 
+    /// Open the pinned single-link regular file without following links. Checks its
+    /// current length; callers must verify the digest and length of bytes they read.
+    pub fn open_pinned(&self, artifact: &PublishedArtifact) -> Result<File, PackError> {
+        if artifact.size > MAX_ARTIFACT_BYTES as u64 {
+            return Err(PackError::TooLarge);
+        }
+        let file = self
+            .directory
+            .open(&artifact.name()?)
+            .map_err(state_error)?
+            .ok_or(PackError::NotPublished)?;
+        if file.metadata().map_err(|_| PackError::Unavailable)?.len() != artifact.size {
+            return Err(PackError::Conflict);
+        }
+        Ok(file)
+    }
+
     /// Re-read and verify the published bytes. Absent names are `NotPublished`; a size or
     /// digest disagreement is `Conflict`, never silently served under that identity.
     pub fn load(

@@ -8,6 +8,7 @@ use hyper::{
 };
 use hyper_util::rt::{TokioIo, TokioTimer};
 use rustls_pki_types::pem::PemObject;
+use sha2::{Digest, Sha256};
 use std::{
     convert::Infallible,
     fmt,
@@ -17,6 +18,11 @@ use std::{
     task::{Context, Poll},
     thread,
     time::Duration,
+};
+use std::{
+    fs::File,
+    future::Future,
+    io::{self, Read},
 };
 use tokio::{
     net::TcpListener,
@@ -36,44 +42,142 @@ const DOWNLOADS: usize = 2;
 const BODY_CHUNK: usize = 64 * 1024;
 const HANDSHAKES: usize = 8;
 
-// A verified snapshot is zero-copy and globally bounded. Hold admission through
-// the last transmitted chunk drop, not merely through synchronous load/body drop.
-struct ReplyBody {
-    bytes: Bytes,
+enum ReplyBody {
+    Bytes(Bytes),
+    Artifact(Box<ArtifactBody>),
+}
+struct ArtifactBody {
+    stream: Option<ArtifactStream>,
+    pending: Option<JoinHandle<(ArtifactStream, io::Result<Bytes>)>>,
+}
+struct ArtifactStream {
+    file: File,
+    hash: Sha256,
+    expected_hash: [u8; 32],
+    size: u64,
+    remaining: u64,
+    permit: Arc<OwnedSemaphorePermit>,
+}
+impl ArtifactBody {
+    fn new(
+        file: File,
+        artifact: &vesta_control::packs::PublishedArtifact,
+        permit: OwnedSemaphorePermit,
+    ) -> io::Result<Self> {
+        // Hyper may never poll a zero-length body. Validate that identity now.
+        if artifact.size() == 0 && Sha256::digest([])[..] != artifact.sha256().as_bytes()[..] {
+            return Err(io::Error::other("artifact identity mismatch"));
+        }
+        Ok(Self {
+            stream: Some(ArtifactStream {
+                file,
+                hash: Sha256::new(),
+                expected_hash: *artifact.sha256().as_bytes(),
+                size: artifact.size(),
+                remaining: artifact.size(),
+                permit: Arc::new(permit),
+            }),
+            pending: None,
+        })
+    }
+}
+impl ArtifactStream {
+    fn read_chunk(&mut self) -> io::Result<Bytes> {
+        // Only this fixed-size allocation is made, never an artifact-sized buffer.
+        let count = self.remaining.min(BODY_CHUNK as u64) as usize;
+        let mut data = vec![0; count];
+        self.file.read_exact(&mut data)?;
+        self.hash.update(&data);
+        self.remaining -= count as u64;
+        if self.remaining == 0 {
+            let mut extra = [0; 1];
+            if self.file.read(&mut extra)? != 0
+                || self.file.metadata()?.len() != self.size
+                || self.hash.clone().finalize()[..] != self.expected_hash[..]
+            {
+                return Err(io::Error::other("artifact identity mismatch"));
+            }
+            // Withhold the final bytes until verification: Content-Length must not
+            // allow Hyper/the peer to consider a mismatched response complete.
+        }
+        Ok(Bytes::from_owner(DownloadOwner {
+            data,
+            _permit: self.permit.clone(),
+        }))
+    }
 }
 impl Body for ReplyBody {
     type Data = Bytes;
-    type Error = Infallible;
+    type Error = io::Error;
     fn poll_frame(
         mut self: Pin<&mut Self>,
-        _: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
-        if self.bytes.is_empty() {
-            return Poll::Ready(None);
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, io::Error>>> {
+        match &mut *self {
+            Self::Bytes(bytes) => {
+                if bytes.is_empty() {
+                    return Poll::Ready(None);
+                }
+                let count = bytes.len().min(BODY_CHUNK);
+                Poll::Ready(Some(Ok(Frame::data(bytes.split_to(count)))))
+            }
+            Self::Artifact(body) => {
+                if body.pending.is_none() {
+                    let Some(mut stream) = body.stream.take() else {
+                        return Poll::Ready(None);
+                    };
+                    if stream.remaining == 0 {
+                        return Poll::Ready(None);
+                    }
+                    // A cancelled body cannot cancel synchronous IO. The task owns
+                    // its file and permit until that one bounded read finishes.
+                    body.pending = Some(tokio::task::spawn_blocking(move || {
+                        let data = stream.read_chunk();
+                        (stream, data)
+                    }));
+                }
+                let result = match Pin::new(body.pending.as_mut().expect("pending read")).poll(cx) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(result) => result,
+                };
+                body.pending = None;
+                match result {
+                    Ok((stream, Ok(bytes))) => {
+                        if stream.remaining != 0 {
+                            body.stream = Some(stream);
+                        }
+                        Poll::Ready(Some(Ok(Frame::data(bytes))))
+                    }
+                    Ok((_, Err(error))) => Poll::Ready(Some(Err(error))),
+                    Err(_) => Poll::Ready(Some(Err(io::Error::other("artifact read failed")))),
+                }
+            }
         }
-        let count = self.bytes.len().min(BODY_CHUNK);
-        Poll::Ready(Some(Ok(Frame::data(self.bytes.split_to(count)))))
     }
     fn is_end_stream(&self) -> bool {
-        self.bytes.is_empty()
+        match self {
+            Self::Bytes(bytes) => bytes.is_empty(),
+            Self::Artifact(body) => {
+                body.pending.is_none() && body.stream.as_ref().is_none_or(|s| s.remaining == 0)
+            }
+        }
     }
     fn size_hint(&self) -> SizeHint {
-        SizeHint::with_exact(self.bytes.len() as u64)
+        match self {
+            Self::Bytes(bytes) => SizeHint::with_exact(bytes.len() as u64),
+            // Content-Length is set from the checked published size. Do not claim
+            // completion while an unverified read is in flight.
+            Self::Artifact(_) => SizeHint::default(),
+        }
     }
 }
 struct DownloadOwner<T> {
     data: T,
-    _permit: OwnedSemaphorePermit,
+    _permit: Arc<OwnedSemaphorePermit>,
 }
 impl<T: AsRef<[u8]>> AsRef<[u8]> for DownloadOwner<T> {
     fn as_ref(&self) -> &[u8] {
         self.data.as_ref()
-    }
-}
-struct ArtifactOwner(vesta_control::packs::LoadedArtifact);
-impl AsRef<[u8]> for ArtifactOwner {
-    fn as_ref(&self) -> &[u8] {
-        self.0.bytes()
     }
 }
 const WORKERS: usize = 2;
@@ -363,7 +467,7 @@ fn response(status: StatusCode, bytes: impl Into<Bytes>, content_type: &'static 
         .header("content-type", content_type)
         .header("content-length", bytes.len())
         .header("cache-control", "no-store")
-        .body(ReplyBody { bytes })
+        .body(ReplyBody::Bytes(bytes))
         .expect("fixed response headers")
 }
 fn error(status: StatusCode, code: &'static str) -> Reply {

@@ -827,3 +827,48 @@ fn tls_below_12_is_rejected_and_mismatched_key_fails_start() {
         "tls_material_unavailable"
     );
 }
+
+#[test]
+fn disk_stream_large_artifact_matches_published_identity_over_https() {
+    let f = Fixture::new("minecraft-or-password", 8, 4096, 30);
+    let owner = f.owner();
+    let session = f.password_session(&owner);
+    let payload: Vec<u8> = (0..11 * 64 * 1024 + 37).map(|n| (n % 251) as u8).collect();
+    let release = f.publish(&owner, UpdatePolicy::Optional, &payload, "streamed");
+    let reply = f.request("GET", "/api/v2/pack/artifact", b"", Some(&session));
+    assert_eq!(reply.status, 200);
+    assert_eq!(reply.body, payload);
+    assert_eq!(reply.headers["content-length"], payload.len().to_string());
+    assert_eq!(
+        reply.headers["etag"],
+        format!("\"{}\"", release.artifact().sha256().to_hex())
+    );
+}
+
+#[test]
+fn replaced_artifact_aborts_https_and_wrong_length_is_refused_before_headers() {
+    let f = Fixture::new("minecraft-or-password", 8, 4096, 30);
+    let owner = f.owner();
+    let session = f.password_session(&owner);
+    let payload = vec![b'x'; 9 * 64 * 1024];
+    let release = f.publish(&owner, UpdatePolicy::Optional, &payload, "streamed");
+    let path = f
+        .temp
+        .path()
+        .join("private-state/artifacts")
+        .join(format!("{}.zip", release.artifact().sha256().to_hex()));
+    // Replace the pinned spelling with a same-length, different regular file.
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, vec![b'y'; payload.len()]).unwrap();
+    let mut stream = f.stream();
+    write!(stream, "GET /api/v2/pack/artifact HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {session}\r\nConnection: close\r\n\r\n").unwrap();
+    stream.flush().unwrap();
+    assert!(
+        read_reply(stream).is_err(),
+        "mismatched response must never complete its advertised length"
+    );
+    // Size must be checked before advertising the published Content-Length.
+    std::fs::write(&path, b"truncated").unwrap();
+    f.request("GET", "/api/v2/pack/artifact", b"", Some(&session))
+        .error(503, "pack_unavailable");
+}

@@ -10,7 +10,7 @@ use vesta_control::{
         PasswordVerificationStatus,
         minecraft::{ChallengeId, MinecraftName, MinecraftUuid},
     },
-    packs::{ArtifactFormat, MAX_ARTIFACT_BYTES},
+    packs::ArtifactFormat,
 };
 use vesta_protocol::discovery::{self, Failure};
 
@@ -279,22 +279,23 @@ fn dispatch(
                 return error(StatusCode::SERVICE_UNAVAILABLE, "download_busy");
             };
             let artifact = release.artifact();
-            let Ok(loaded) = host
-                .releases()
-                .artifacts()
-                .load(artifact, MAX_ARTIFACT_BYTES)
-            else {
+            let Ok(file) = host.releases().artifacts().open_pinned(artifact) else {
                 return error(StatusCode::SERVICE_UNAVAILABLE, "pack_unavailable");
             };
             let content_type = match artifact.format() {
                 ArtifactFormat::Vesta => "application/vnd.vesta.pack",
                 ArtifactFormat::Zip | ArtifactFormat::Mrpack => "application/zip",
             };
-            let bytes = hyper::body::Bytes::from_owner(super::DownloadOwner {
-                data: super::ArtifactOwner(loaded),
-                _permit: permit,
-            });
-            let mut reply = response(StatusCode::OK, bytes, content_type);
+            let Ok(body) = super::ArtifactBody::new(file, artifact, permit) else {
+                return error(StatusCode::SERVICE_UNAVAILABLE, "pack_unavailable");
+            };
+            let mut reply = http::Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", content_type)
+                .header("content-length", artifact.size())
+                .header("cache-control", "no-store")
+                .body(super::ReplyBody::Artifact(Box::new(body)))
+                .expect("fixed artifact headers");
             let etag = format!("\"{}\"", artifact.sha256().to_hex());
             let Ok(etag) = http::HeaderValue::from_str(&etag) else {
                 return error(StatusCode::SERVICE_UNAVAILABLE, "pack_unavailable");

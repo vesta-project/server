@@ -131,7 +131,7 @@ fn chunked_response_holds_download_permit_until_completion_or_cancel() {
             StatusCode::OK,
             Bytes::from_owner(DownloadOwner {
                 data: vec![0; BODY_CHUNK * 3],
-                _permit: budget.clone().try_acquire_owned().unwrap(),
+                _permit: Arc::new(budget.clone().try_acquire_owned().unwrap()),
             }),
             "application/zip",
         );
@@ -155,12 +155,162 @@ fn chunked_response_holds_download_permit_until_completion_or_cancel() {
             StatusCode::OK,
             Bytes::from_owner(DownloadOwner {
                 data: vec![0; BODY_CHUNK * 3],
-                _permit: budget.clone().try_acquire_owned().unwrap(),
+                _permit: Arc::new(budget.clone().try_acquire_owned().unwrap()),
             }),
             "application/zip",
         );
         while reply.body_mut().frame().await.is_some() {}
         drop(reply);
         assert_eq!(budget.available_permits(), 1);
+    });
+}
+
+struct DiskFixture {
+    _temp: tempfile::TempDir,
+    directory: vesta_state::artifacts::ArtifactDirectory,
+    name: vesta_state::artifacts::ArtifactName,
+    path: std::path::PathBuf,
+    size: u64,
+    digest: [u8; 32],
+}
+impl DiskFixture {
+    fn new(chunks: usize) -> Self {
+        use std::io::Write;
+        let temp = tempfile::tempdir().unwrap();
+        let state = vesta_state::StateDirectory::new(temp.path().join("state"), None).unwrap();
+        state.prepare().unwrap();
+        let directory = state.artifacts().unwrap();
+        let name = vesta_state::artifacts::ArtifactName::new("test.zip").unwrap();
+        let mut file = directory.create_new(&name).unwrap();
+        let data = [b'x'; BODY_CHUNK];
+        let mut hash = Sha256::new();
+        for _ in 0..chunks {
+            file.write_all(&data).unwrap();
+            hash.update(data);
+        }
+        file.sync_all().unwrap();
+        drop(file);
+        Self {
+            path: temp.path().join("state/artifacts/test.zip"),
+            _temp: temp,
+            directory,
+            name,
+            size: (chunks * BODY_CHUNK) as u64,
+            digest: hash.finalize().into(),
+        }
+    }
+    fn body(&self, budget: &Arc<Semaphore>) -> ReplyBody {
+        ReplyBody::Artifact(Box::new(ArtifactBody {
+            stream: Some(ArtifactStream {
+                file: self.directory.open(&self.name).unwrap().unwrap(),
+                hash: Sha256::new(),
+                expected_hash: self.digest,
+                size: self.size,
+                remaining: self.size,
+                permit: Arc::new(budget.clone().try_acquire_owned().unwrap()),
+            }),
+            pending: None,
+        }))
+    }
+}
+fn disk_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+}
+#[test]
+fn disk_stream_memory_is_chunk_bounded_independent_of_artifact_size() {
+    use http_body_util::BodyExt;
+    disk_runtime().block_on(async {
+        for chunks in [9, 257] {
+            let disk = DiskFixture::new(chunks);
+            let budget = Arc::new(Semaphore::new(DOWNLOADS));
+            let mut body = disk.body(&budget);
+            let mut seen = 0u64;
+            let mut hash = Sha256::new();
+            let mut last = None;
+            while let Some(frame) = body.frame().await {
+                let data = frame.unwrap().into_data().unwrap();
+                assert!(!data.is_empty() && data.len() <= BODY_CHUNK);
+                hash.update(&data);
+                seen += data.len() as u64;
+                assert_eq!(budget.available_permits(), DOWNLOADS - 1);
+                // The body has no read-ahead queue: at most one bounded read
+                // allocation, plus chunks still owned by Hyper/the caller.
+                if let ReplyBody::Artifact(body) = &body {
+                    assert!(body.pending.is_none());
+                }
+                last = Some(data);
+            }
+            assert_eq!(seen, disk.size);
+            assert_eq!(&hash.finalize()[..], &disk.digest);
+            drop(body);
+            assert_eq!(budget.available_permits(), DOWNLOADS - 1);
+            drop(last);
+            assert_eq!(budget.available_permits(), DOWNLOADS);
+        }
+    });
+}
+#[test]
+fn disk_stream_drop_releases_permit_after_inflight_chunk_drops() {
+    use http_body_util::BodyExt;
+    disk_runtime().block_on(async {
+        let disk = DiskFixture::new(10);
+        let budget = Arc::new(Semaphore::new(DOWNLOADS));
+        let mut body = disk.body(&budget);
+        let data = body.frame().await.unwrap().unwrap().into_data().unwrap();
+        drop(body);
+        assert_eq!(budget.available_permits(), DOWNLOADS - 1);
+        drop(data);
+        assert_eq!(budget.available_permits(), DOWNLOADS);
+    });
+}
+#[test]
+fn disk_stream_truncation_growth_and_same_size_rewrite_abort_before_final_chunk() {
+    use http_body_util::BodyExt;
+    use std::io::{Seek, Write};
+    disk_runtime().block_on(async {
+        for change in ["truncate", "grow", "rewrite"] {
+            let disk = DiskFixture::new(5);
+            let budget = Arc::new(Semaphore::new(DOWNLOADS));
+            let mut body = disk.body(&budget);
+            let first = body.frame().await.unwrap().unwrap().into_data().unwrap();
+            drop(first);
+            let mut writer = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&disk.path)
+                .unwrap();
+            match change {
+                "truncate" => writer.set_len(BODY_CHUNK as u64).unwrap(),
+                "grow" => writer.set_len(disk.size + 1).unwrap(),
+                _ => {
+                    writer
+                        .seek(std::io::SeekFrom::Start((BODY_CHUNK * 2) as u64))
+                        .unwrap();
+                    writer.write_all(b"changed").unwrap();
+                }
+            }
+            writer.sync_all().unwrap();
+            drop(writer);
+            let mut sent = BODY_CHUNK as u64;
+            let mut aborted = false;
+            while let Some(frame) = body.frame().await {
+                match frame {
+                    Ok(frame) => sent += frame.into_data().unwrap().len() as u64,
+                    Err(_) => {
+                        aborted = true;
+                        break;
+                    }
+                }
+            }
+            assert!(aborted, "{change}");
+            assert!(
+                sent < disk.size,
+                "must not complete old Content-Length: {change}"
+            );
+            drop(body);
+            assert_eq!(budget.available_permits(), DOWNLOADS);
+        }
     });
 }
