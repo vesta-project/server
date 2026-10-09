@@ -5,7 +5,9 @@
 //! requires `pack.force_update`. Authority and the expected current revision are
 //! rechecked in the same write transaction that records the release and its audit.
 //! A release is a hosting record, not a download grant, session or pack-access decision.
-use super::{BuiltVestaPack, PackArtifacts, PackError, PreparedArchive, PublishedArtifact};
+use super::{
+    BuiltVestaPack, PackArtifacts, PackError, PreparedArchive, PruneReport, PublishedArtifact,
+};
 use crate::ControlError;
 use crate::config::PackMetadata;
 use crate::identity::{self, Capability, Decision, EpochMillis, Subject};
@@ -22,6 +24,7 @@ use super::publish::ArtifactFormat;
 const SOURCE: &str = "pack-release";
 const TARGET: &str = "pack-release";
 const PUBLISH: &str = "pack_release.publish";
+const PRUNE: &str = "pack_release.prune";
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum ReleaseError {
@@ -246,10 +249,10 @@ impl PackReleases {
             let connection = snapshot.connection();
             let current = current(connection, self.db.server_id())?;
             let plan = plan_from(current.as_ref(), expected, policy)?;
-            self.authorize(connection, subject, &plan)?;
+            self.authorize(connection, subject, plan.raises_minimum())?;
             Ok(plan)
         });
-        self.audit_refusal(subject, result.map_err(ReleaseError::from))
+        self.audit_refusal(subject, PUBLISH, result.map_err(ReleaseError::from))
     }
 
     pub fn publish_vesta(
@@ -308,7 +311,7 @@ impl PackReleases {
             if plan_from(current.as_ref(), plan.previous, plan.policy)? != *plan {
                 return Err(ReleaseError::Conflict);
             }
-            let now = self.authorize(connection, subject, plan)?;
+            let now = self.authorize(connection, subject, plan.raises_minimum())?;
             if let Some(current) = &current
                 && !acknowledge_lower_version
                 && !version_not_lower(display_version, &current.display_version)
@@ -362,19 +365,49 @@ impl PackReleases {
                 published_at: now,
             })
         });
-        self.audit_refusal(subject, result.map_err(ReleaseError::from))
+        self.audit_refusal(subject, PUBLISH, result.map_err(ReleaseError::from))
+    }
+
+    /// Remove published artifacts other than the hosted release's, plus abandoned stages.
+    /// Runs inside a write transaction so no release can be recorded concurrently; an
+    /// unrecorded publication that loses its artifact here fails its own recording safely.
+    pub fn prune(&self, subject: &Subject) -> Result<PruneReport, ReleaseError> {
+        let result = self.db.write_with(|transaction| {
+            let connection = transaction.connection();
+            self.authorize(connection, subject, false)?;
+            let current = current(connection, self.db.server_id())?;
+            let report = self
+                .artifacts
+                .prune_except(current.as_ref().map(PackRelease::artifact))?;
+            self.audit.append(
+                connection,
+                &AuditRecord::new(
+                    actor(subject)?,
+                    PRUNE.to_owned(),
+                    TARGET.to_owned(),
+                    "success".to_owned(),
+                    None,
+                    [
+                        ("removed".to_owned(), Some(report.removed.to_string())),
+                        ("retained".to_owned(), Some(report.retained.to_string())),
+                    ],
+                )?,
+            )?;
+            Ok(report)
+        });
+        self.audit_refusal(subject, PRUNE, result.map_err(ReleaseError::from))
     }
 
     fn authorize(
         &self,
         connection: &Connection,
         subject: &Subject,
-        plan: &ReleasePlan,
+        raises_minimum: bool,
     ) -> Result<EpochMillis, ReleaseError> {
         let now = self.db.clock().millis();
         let policy = identity::policy_in(connection, self.db.server_id(), now, Some(subject))?;
         let mut required = vec![Capability::PackPublish];
-        if plan.raises_minimum() {
+        if raises_minimum {
             required.push(Capability::PackForceUpdate);
         }
         for capability in required {
@@ -389,6 +422,7 @@ impl PackReleases {
     fn audit_refusal<T>(
         &self,
         subject: &Subject,
+        action: &str,
         result: Result<T, ReleaseError>,
     ) -> Result<T, ReleaseError> {
         let Err(ReleaseError::Control(primary)) = &result else {
@@ -401,7 +435,7 @@ impl PackReleases {
             .and_then(|actor| {
                 AuditRecord::new(
                     actor,
-                    PUBLISH.to_owned(),
+                    action.to_owned(),
                     TARGET.to_owned(),
                     "denied".to_owned(),
                     None,

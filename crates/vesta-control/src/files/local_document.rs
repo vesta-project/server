@@ -2,7 +2,7 @@
 use super::{FileError, Result, io_error, native, root};
 use std::{fs, io::Read, path::Path};
 
-pub(crate) const MAX_LOCAL_DOCUMENT_BYTES: usize = 65_536;
+pub(crate) const MAX_LOCAL_DOCUMENT_BYTES: usize = 1_048_576;
 
 pub(crate) fn read_local_document(path: &Path, limit: usize) -> Result<Vec<u8>> {
     if limit == 0 || limit > MAX_LOCAL_DOCUMENT_BYTES {
@@ -86,6 +86,11 @@ mod tests {
         );
         fs::write(&path, []).unwrap();
         assert!(read_local_document(&path, 1).unwrap().is_empty());
+        fs::write(&path, vec![42; MAX_LOCAL_DOCUMENT_BYTES + 1]).unwrap();
+        refused(
+            read_local_document(&path, MAX_LOCAL_DOCUMENT_BYTES + 1),
+            "file_limit_invalid",
+        );
     }
 
     #[test]

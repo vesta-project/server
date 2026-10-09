@@ -415,3 +415,103 @@ fn test_empty_object_missing_uuid() {
     let result = Whitelist::parse(json.as_bytes());
     assert_eq!(result, Err(WhitelistError::Malformed));
 }
+
+#[test]
+fn test_load_valid_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("whitelist.json");
+    let json = r#"[
+        {
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "name": "Player1"
+        }
+    ]"#;
+    std::fs::write(&path, json).unwrap();
+    let whitelist = Whitelist::load(&path).expect("load valid file");
+    assert_eq!(whitelist.len(), 1);
+    let uuid = MinecraftUuid::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
+    assert!(whitelist.contains(uuid));
+}
+
+#[test]
+fn test_load_missing_file_returns_empty() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("nonexistent.json");
+    let whitelist = Whitelist::load(&path).expect("missing file means empty");
+    assert!(whitelist.is_empty());
+    assert_eq!(whitelist.len(), 0);
+}
+
+#[test]
+fn test_load_directory_instead_of_file_unavailable() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("directory");
+    std::fs::create_dir(&path).unwrap();
+    let result = Whitelist::load(&path);
+    assert_eq!(result, Err(WhitelistError::Unavailable));
+}
+
+#[test]
+fn test_load_relative_path_unavailable() {
+    let result = Whitelist::load(std::path::Path::new("relative/path.json"));
+    assert_eq!(result, Err(WhitelistError::Unavailable));
+}
+
+#[test]
+fn test_load_file_too_large() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("too_large.json");
+    let bytes = vec![b'x'; MAX_WHITELIST_BYTES + 1];
+    std::fs::write(&path, bytes).unwrap();
+    let result = Whitelist::load(&path);
+    assert_eq!(result, Err(WhitelistError::TooLarge));
+}
+
+#[test]
+fn test_load_malformed_content() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("malformed.json");
+    std::fs::write(&path, b"not json at all {").unwrap();
+    let result = Whitelist::load(&path);
+    assert_eq!(result, Err(WhitelistError::Malformed));
+}
+
+#[cfg(windows)]
+#[test]
+fn test_load_junction_unavailable() {
+    let temp = tempfile::tempdir().unwrap();
+    let real = temp.path().join("real");
+    let alias = temp.path().join("alias");
+    std::fs::create_dir(&real).unwrap();
+    let json = r#"[{"uuid": "550e8400-e29b-41d4-a716-446655440000"}]"#;
+    std::fs::write(real.join("whitelist.json"), json).unwrap();
+    let status = std::process::Command::new("cmd.exe")
+        .args(["/d", "/c", "mklink", "/J"])
+        .arg(&alias)
+        .arg(&real)
+        .status()
+        .unwrap();
+    assert!(status.success(), "create owned whitelist junction");
+    let result = Whitelist::load(&alias.join("whitelist.json"));
+    assert_eq!(result, Err(WhitelistError::Unavailable));
+    std::fs::remove_dir(&alias).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn test_load_symlinked_file_unavailable() {
+    let temp = tempfile::tempdir().unwrap();
+    let real = temp.path().join("real.json");
+    let link = temp.path().join("link.json");
+    let json = r#"[{"uuid": "550e8400-e29b-41d4-a716-446655440000"}]"#;
+    std::fs::write(&real, json).unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let result = Whitelist::load(&link);
+    assert_eq!(result, Err(WhitelistError::Unavailable));
+}
+
+#[test]
+fn test_load_error_code_unavailable() {
+    let error = WhitelistError::Unavailable;
+    assert_eq!(error.code(), "whitelist_unavailable");
+}

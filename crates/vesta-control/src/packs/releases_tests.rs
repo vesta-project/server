@@ -446,3 +446,124 @@ fn debug_output_omits_versions_digests_and_subjects() {
     assert!(!text.contains(&release.artifact().sha256().to_hex()));
     assert!(!text.contains(f.owner.principal.as_str()));
 }
+
+fn artifact_names(f: &Fixture) -> Vec<String> {
+    let mut names: Vec<_> = std::fs::read_dir(f.db.directory().path().join("artifacts"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn pruning_keeps_only_the_hosted_artifact_and_never_touches_foreign_names() {
+    let f = Fixture::open();
+    f.publish(&f.owner, UpdatePolicy::Optional, "1", b"old one")
+        .unwrap();
+    f.publish(&f.owner, UpdatePolicy::Optional, "2", b"old two")
+        .unwrap();
+    let hosted = f
+        .publish(&f.owner, UpdatePolicy::Optional, "3", b"hosted")
+        .unwrap();
+    let directory = f.db.directory().path().join("artifacts");
+    let stale_stage = format!("stage-{}.tmp", "0a".repeat(16));
+    let foreign = [
+        "notes.txt".to_owned(),
+        "stage-0a.tmp".to_owned(),
+        format!("{}.jar", "ab".repeat(32)),
+        format!("{}.zip", "AB".repeat(32)),
+    ];
+    std::fs::write(directory.join(&stale_stage), b"abandoned").unwrap();
+    for name in &foreign {
+        std::fs::write(directory.join(name), b"foreign").unwrap();
+    }
+
+    let report = f.releases.prune(&f.owner).unwrap();
+    assert_eq!((report.removed(), report.retained()), (3, 0));
+    let mut expected: Vec<String> = foreign.to_vec();
+    expected.push(format!("{}.zip", hosted.artifact().sha256().to_hex()));
+    expected.sort();
+    assert_eq!(artifact_names(&f), expected);
+    for name in &foreign {
+        assert_eq!(std::fs::read(directory.join(name)).unwrap(), b"foreign");
+    }
+    assert_eq!(
+        f.releases
+            .artifacts()
+            .load(hosted.artifact(), 64)
+            .unwrap()
+            .bytes(),
+        b"hosted"
+    );
+    // Release history rows are retained even though only the hosted bytes remain.
+    assert_eq!(f.rows(), 3);
+    let again = f.releases.prune(&f.owner).unwrap();
+    assert_eq!((again.removed(), again.retained()), (0, 0));
+
+    let audit = AuditLog::new(f.db.clone()).unwrap().page(0, 100).unwrap();
+    let prunes: Vec<_> = audit.iter().filter(|entry| entry.action == PRUNE).collect();
+    assert_eq!(prunes.len(), 2);
+    assert!(prunes[0].metadata_json.contains("\"removed\":\"3\""));
+}
+
+#[test]
+fn pruning_without_a_release_removes_every_owned_name() {
+    let f = Fixture::open();
+    f.releases
+        .artifacts()
+        .publish_archive(&f.archive(b"unreferenced"))
+        .unwrap();
+    assert_eq!(artifact_names(&f).len(), 1);
+    let report = f.releases.prune(&f.owner).unwrap();
+    assert_eq!((report.removed(), report.retained()), (1, 0));
+    assert!(artifact_names(&f).is_empty());
+}
+
+#[test]
+fn pruning_requires_pack_publish_and_refusals_are_audited() {
+    let f = Fixture::open();
+    f.publish(&f.owner, UpdatePolicy::Optional, "1", b"first")
+        .unwrap();
+    f.publish(&f.owner, UpdatePolicy::Optional, "2", b"second")
+        .unwrap();
+    let before = artifact_names(&f);
+    let stranger = seed(&f.db, false);
+    refused(f.releases.prune(&stranger), "forbidden");
+    assert_eq!(artifact_names(&f), before);
+    let audit = AuditLog::new(f.db.clone()).unwrap().page(0, 100).unwrap();
+    let denied = audit.last().unwrap();
+    assert_eq!(
+        (denied.action.as_str(), denied.outcome.as_str()),
+        (PRUNE, "denied")
+    );
+}
+
+#[test]
+fn an_unrecorded_publication_removed_by_pruning_fails_its_recording_safely() {
+    let f = Fixture::open();
+    let hosted = f
+        .publish(&f.owner, UpdatePolicy::Optional, "1", b"hosted")
+        .unwrap();
+    let plan = f
+        .releases
+        .plan(&f.owner, 1, UpdatePolicy::Optional)
+        .unwrap();
+    let pending = f
+        .releases
+        .artifacts()
+        .publish_archive(&f.archive(b"pending"))
+        .unwrap();
+    assert_eq!(f.releases.prune(&f.owner).unwrap().removed(), 1);
+    refused(
+        f.releases.record(&f.owner, &plan, pending, "2", false),
+        "pack_artifact_not_published",
+    );
+    assert_eq!(f.releases.current().unwrap().unwrap(), hosted);
+    // A retry republishes the bytes and records normally.
+    let retried = f
+        .releases
+        .publish_archive(&f.owner, &plan, &f.archive(b"pending"), "2", false)
+        .unwrap();
+    assert_eq!(retried.revision(), 2);
+}

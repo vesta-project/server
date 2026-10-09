@@ -8,6 +8,7 @@
 pub mod admission;
 pub mod config;
 pub mod files;
+pub mod host;
 pub mod identity;
 pub mod operations;
 pub mod packs;

@@ -10,7 +10,7 @@ pub use build::{
 };
 pub use publish::{
     ArtifactFormat, LoadedArtifact, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_ENTRIES, PackArtifacts,
-    PublishedArtifact,
+    PruneReport, PublishedArtifact,
 };
 pub use releases::{
     PackRelease, PackReleases, ReleaseError, ReleasePlan, UpdatePolicy, UpdateStatus,

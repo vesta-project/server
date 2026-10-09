@@ -12,6 +12,7 @@ pub const MAX_WHITELIST_ENTRIES: usize = 10_000;
 pub enum WhitelistError {
     TooLarge,
     Malformed,
+    Unavailable,
 }
 
 impl WhitelistError {
@@ -19,6 +20,7 @@ impl WhitelistError {
         match self {
             Self::TooLarge => "whitelist_too_large",
             Self::Malformed => "whitelist_malformed",
+            Self::Unavailable => "whitelist_unavailable",
         }
     }
 }
@@ -37,6 +39,16 @@ pub struct Whitelist {
 }
 
 impl Whitelist {
+    /// Missing file means an empty whitelist, as in Minecraft; anything else unreadable refuses.
+    pub fn load(path: &std::path::Path) -> Result<Self, WhitelistError> {
+        match crate::files::read_local_document(path, MAX_WHITELIST_BYTES) {
+            Ok(bytes) => Self::parse(&bytes),
+            Err(crate::files::FileError::NotFound) => Ok(Self::default()),
+            Err(crate::files::FileError::TooLarge) => Err(WhitelistError::TooLarge),
+            Err(_) => Err(WhitelistError::Unavailable),
+        }
+    }
+
     pub fn parse(bytes: &[u8]) -> Result<Self, WhitelistError> {
         if bytes.len() > MAX_WHITELIST_BYTES {
             return Err(WhitelistError::TooLarge);

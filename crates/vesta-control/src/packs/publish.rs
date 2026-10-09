@@ -85,6 +85,22 @@ impl fmt::Debug for PublishedArtifact {
     }
 }
 
+/// Outcome of a prune pass. Retained names could not be removed now (for example an
+/// open stage or a file being read on Windows) and are left for a later pass.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PruneReport {
+    pub(crate) removed: usize,
+    pub(crate) retained: usize,
+}
+impl PruneReport {
+    pub const fn removed(&self) -> usize {
+        self.removed
+    }
+    pub const fn retained(&self) -> usize {
+        self.retained
+    }
+}
+
 /// Owned bytes re-read from disk and verified against the published identity.
 pub struct LoadedArtifact {
     artifact: PublishedArtifact,
@@ -191,6 +207,31 @@ impl PackArtifacts {
         Ok(artifact)
     }
 
+    /// Remove every name this module created except `keep`. Foreign names are never
+    /// touched. Callers must serialize this against recording which artifact is hosted.
+    pub(crate) fn prune_except(
+        &self,
+        keep: Option<&PublishedArtifact>,
+    ) -> Result<PruneReport, PackError> {
+        let keep = keep.map(PublishedArtifact::name).transpose()?;
+        let mut report = PruneReport::default();
+        for name in self
+            .directory
+            .list(MAX_ARTIFACT_ENTRIES)
+            .map_err(state_error)?
+        {
+            if Some(&name) == keep.as_ref() || !owned_name(name.as_str()) {
+                continue;
+            }
+            match self.directory.remove(&name) {
+                Ok(true) => report.removed += 1,
+                Ok(false) => {}
+                Err(_) => report.retained += 1,
+            }
+        }
+        Ok(report)
+    }
+
     /// Cheap presence check: a single-link file of the recorded size. Not a digest check.
     pub(crate) fn present(&self, artifact: &PublishedArtifact) -> Result<(), PackError> {
         let file = self
@@ -232,6 +273,24 @@ impl PackArtifacts {
             bytes,
         })
     }
+}
+
+fn owned_name(name: &str) -> bool {
+    let hex = |text: &str, length: usize| {
+        text.len() == length
+            && text
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    };
+    if let Some(random) = name
+        .strip_prefix("stage-")
+        .and_then(|rest| rest.strip_suffix(".tmp"))
+    {
+        return hex(random, 32);
+    }
+    name.split_once('.').is_some_and(|(digest, extension)| {
+        hex(digest, 64) && matches!(extension, "vestapack" | "zip" | "mrpack")
+    })
 }
 
 fn read_exact_bounded(file: File, expected: usize) -> Result<Vec<u8>, PackError> {

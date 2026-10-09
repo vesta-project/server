@@ -3944,21 +3944,29 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "ba089660aae48d70a6a2845bd18cd5f7f00aaa8e296d890e5517902c5dd1a101",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-state/src/audit.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Rust AuditActor validates principal, device, and source text bounds and provides the system/local actor constructor. Java validation exceptions and accepted text details are not a compatibility guarantee.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Exact Java StateException messages/types and full-family requirements have not been compared. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-state/tests/audit_vectors.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-state/tests/audit_vectors.rs",
+          "date": "2026-10-09",
+          "claim": "AuditActor construction bounds and whitespace behavior -> metadata_boundaries_count_utf16_and_reject_secret_names_without_echo"
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Rust source and cited test assertions inspected; tests were not executed."
       }
     },
     {
@@ -3967,21 +3975,29 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "1ff2be880c6e0fa3fd65f76bd2b71cdc67ebfcd4b8cd4bde3585d9a29b211610",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-state/src/audit.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Rust AuditEntry is the persisted audit-page value returned by AuditLog, carrying sequence, server, actor, event, time, metadata, and chain hashes. Rust timestamps use milliseconds and the page API returns typed entries.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "The Java data record has no standalone behavioral test, and field-by-field Java/Rust serialization parity has not been established. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-state/tests/audit_events_settings.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-state/tests/audit_events_settings.rs",
+          "date": "2026-10-09",
+          "claim": "AuditEntry pagination values are produced by page calls and page sizes are asserted -> audit_is_append_only_and_modified_record_is_detected_including_on_service_open"
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Rust source and cited test assertions inspected; tests were not executed."
       }
     },
     {
@@ -3990,21 +4006,40 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "0640a291baab98c4a117195094e6bb162bfe9a9df10d2848ff1d708e3eac85e8",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-state/src/audit.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Rust AuditLog appends within caller-owned transactions, pages bounded records, and verifies the persisted hash chain on service construction. Update/delete triggers reject mutations and modified entries are detected on verification and reopen.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "As in Java, retained-row verification cannot detect tail truncation or a completely rewritten chain without an external checkpoint. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-state/tests/audit_events_settings.rs",
+        "crates/vesta-state/tests/foundation_bounds.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-state/tests/audit_events_settings.rs",
+          "date": "2026-10-09",
+          "claim": "append, page, trigger-protected update/delete, tamper detection, and corrupt-chain reopen refusal -> audit_is_append_only_and_modified_record_is_detected_including_on_service_open"
+        },
+        {
+          "path": "crates/vesta-state/tests/audit_events_settings.rs",
+          "date": "2026-10-09",
+          "claim": "caller mutation and audit append roll back together -> audit_append_and_caller_mutation_roll_back_together"
+        },
+        {
+          "path": "crates/vesta-state/tests/foundation_bounds.rs",
+          "date": "2026-10-09",
+          "claim": "page limits clamp to the documented range and return a tail page -> audit_page_limits_are_clamped_into_the_documented_window"
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Rust source and cited test assertions inspected; tests were not executed."
       }
     },
     {
@@ -4013,21 +4048,46 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "0906983160baf8de6e7d6e978c2b904e6a9cf9546e39e280d0441df93be9a9da",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-state/src/audit.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Rust AuditRecord validates bounded fields and metadata, rejects secret-bearing keys, normalizes null metadata values, canonicalizes metadata, and hashes Java/Gson-compatible bytes. Duplicate keys are rejected rather than silently replaced.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Rust reports normalized state error codes rather than Java exception/message details; caller-visible error text parity is not preserved. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-state/tests/audit_events_settings.rs",
+        "crates/vesta-state/tests/audit_vectors.rs",
+        "crates/vesta-state/tests/foundation_bounds.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-state/tests/audit_events_settings.rs",
+          "date": "2026-10-09",
+          "claim": "secret-bearing metadata keys are rejected -> accidental_secret_metadata_keys_are_rejected"
+        },
+        {
+          "path": "crates/vesta-state/tests/audit_events_settings.rs",
+          "date": "2026-10-09",
+          "claim": "metadata key/value/entry bounds, canonical ordering, null normalization -> audit_metadata_bounds_and_canonical_encoding_are_enforced"
+        },
+        {
+          "path": "crates/vesta-state/tests/audit_vectors.rs",
+          "date": "2026-10-09",
+          "claim": "metadata bytes and hash match frozen Java/Gson vectors -> audit_bytes_and_hashes_match_independent_gson_vectors"
+        },
+        {
+          "path": "crates/vesta-state/tests/foundation_bounds.rs",
+          "date": "2026-10-09",
+          "claim": "record field bounds accept exact limits and reject one unit more -> audit_record_field_bounds_are_inclusive_and_refuse_one_more_unit"
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Rust source and cited test assertions inspected; tests were not executed."
       }
     },
     {
@@ -4036,21 +4096,35 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "ee7ed9d4e5dbfc8f62afb51cbaf890ea0841042d8a9efffe5aa0065ff12e156e",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-state/src/audit.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Rust AuditVerification reports validity, checked entry count, and the first broken sequence as the result of full-chain verification. AuditLog refuses construction when retained chain entries fail verification.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "The Java record uses -1 for no broken sequence while Rust represents it as None; no Java-facing compatibility serializer is established. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-state/tests/audit_events_settings.rs",
+        "crates/vesta-state/tests/foundation_bounds.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-state/tests/audit_events_settings.rs",
+          "date": "2026-10-09",
+          "claim": "valid checked count and first broken sequence are asserted; invalid chain refuses service open -> audit_is_append_only_and_modified_record_is_detected_including_on_service_open"
+        },
+        {
+          "path": "crates/vesta-state/tests/foundation_bounds.rs",
+          "date": "2026-10-09",
+          "claim": "foreign-server row fails verification and identifies broken sequence -> a_row_attributed_to_a_foreign_server_is_detected_by_chain_verification"
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Rust source and cited test assertions inspected; tests were not executed."
       }
     },
     {
@@ -4300,7 +4374,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "3967fed641f0c099c3f6add9f6e989a9ee49ccd4302a4db249569ef40897a2bc",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-game-runtime/src/console.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/console/ConsoleBufferTest.java"
       ],
@@ -4308,15 +4382,40 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Rust ConsoleCapture retains console lines under a 10,000-line and 2 MiB UTF-8 byte budget, pages by cursor with explicit gap reporting, and bounds each line to MAX_LINE_BYTES. The Java direct append(String) API and char-based MAX_LINE_CHARS limit are replaced by reader-driven capture with byte-based limits.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Java addListener and removeListener live notification has no Rust counterpart; ConsoleCapture exposes only capture_reader and snapshot.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-game-runtime/tests/console_capture.rs",
+        "crates/vesta-game-runtime/tests/console_adversarial.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-game-runtime/tests/console_capture.rs",
+          "date": "2026-10-09",
+          "claim": "append, snapshot and cursor paging -> snapshots_page_without_skipping_across_both_streams"
+        },
+        {
+          "path": "crates/vesta-game-runtime/tests/console_capture.rs",
+          "date": "2026-10-09",
+          "claim": "max line size and scalar-safe publication bound -> publication_bounds_keep_scalars_and_drain_excess_bytes_to_the_marker"
+        },
+        {
+          "path": "crates/vesta-game-runtime/tests/console_capture.rs",
+          "date": "2026-10-09",
+          "claim": "line-count and byte retention with eviction -> retention_bounds_and_failures_report_fixed_redacted_errors"
+        },
+        {
+          "path": "crates/vesta-game-runtime/tests/console_adversarial.rs",
+          "date": "2026-10-09",
+          "claim": "mixed-size eviction within exact byte budget -> mixed_size_publication_evicts_multiple_lines_and_keeps_exact_byte_budget"
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Rust source and cited test bodies inspected; tests were not executed."
       }
     },
     {
@@ -4350,7 +4449,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "9e20cafc1ff3fff610f5d1430b46f2bd0e387740120c32ede5c108f559c1deee",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/files/mod.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/files/FileBrowserServiceTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/files/ServerFileBoundaryTest.java"
@@ -4359,15 +4458,35 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Rust files/mod.rs provides a bounded, sorted directory list that hides protected and non-portable entries, and a bounded read that returns hashed bytes. Java write and delete operations are not implemented in Rust, and the Java traversal rejection is covered by RelativePath::parse.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Java FileBrowserService.write (upload) has no Rust production counterpart in the files module.",
+        "Java FileBrowserService.delete has no Rust production counterpart in the files module.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/files/tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/files/tests.rs",
+          "date": "2026-10-09",
+          "claim": "list entries, sorting and hidden protected entries (listsWritesReadsAndDeletesFiles, list part) -> lists_are_bounded_sorted_and_hide_protected_or_nonportable_entries"
+        },
+        {
+          "path": "crates/vesta-control/src/files/tests.rs",
+          "date": "2026-10-09",
+          "claim": "reading file bytes (listsWritesReadsAndDeletesFiles, read part) -> ordinary_binary_reads_hash_the_returned_bytes_and_never_expose_native_paths"
+        },
+        {
+          "path": "crates/vesta-control/src/files/tests.rs",
+          "date": "2026-10-09",
+          "claim": "list traversal rejected (rejectsTraversal) -> portable_paths_refuse_ambiguous_spelling_and_devices_without_echo"
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Rust files module source and cited test bodies inspected; tests were not executed."
       }
     },
     {
@@ -4376,21 +4495,40 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "7e4b81e671ba9b5363b08b50f84cc690e35cd43e0d5ff97d0ed988f0eee22dad",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/files/path.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Rust RelativePath::parse in files/path.rs applies the same eight protected names case-insensitively at every depth, the same 4,096-byte path and 255-byte segment bounds, and refuses traversal, backslash and absolute spellings. Java's Unicode-accepting normalize and its returned String contract are replaced by ASCII-only validated RelativePath values, and root confinement is handled in files/root.rs.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Java FileBrowserService.write and delete callers of ServerPathPolicy have no Rust counterpart; the Rust files module exposes only list and read.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/files/tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/files/tests.rs",
+          "date": "2026-10-09",
+          "claim": "normalize rejects traversal, backslash, absolute and ambiguous spellings -> portable_paths_refuse_ambiguous_spelling_and_devices_without_echo"
+        },
+        {
+          "path": "crates/vesta-control/src/files/tests.rs",
+          "date": "2026-10-09",
+          "claim": "PROTECTED_NAMES denied case-insensitively at every depth -> protected_names_are_denied_case_insensitively_at_every_depth"
+        },
+        {
+          "path": "crates/vesta-control/src/files/tests.rs",
+          "date": "2026-10-09",
+          "claim": "MAX_PATH_LENGTH and MAX_SEGMENT_LENGTH bounds are inclusive -> path_bounds_are_inclusive_and_debug_is_redacted"
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Rust path.rs source and cited test bodies inspected; tests were not executed."
       }
     },
     {
@@ -5611,7 +5749,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "be0047b4291b0bf884cc2a52c89f920afed315cdbc3b24f9472970e6f9006ef3",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/host.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeEventReplayTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeFeatureDiscoveryTest.java",
@@ -5623,15 +5761,26 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Partial Rust equivalent: Host::open validates host paths, reads the protected launch definition, opens the canonical database and composes identity, pack-password (password access mode only), Minecraft challenge, whitelist, file, pack preparation, release and operation-runtime services without binding listeners, bootstrapping an owner or starting the game; startup failures release the database and shutdown is observation-only.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "No network transport, pack-only session or route composition; Java HTTP/TCP/realtime wiring has no Rust equivalent yet.",
+        "Event replay, lifecycle command submission and password verification are composed as services but not exposed through any authenticated channel.",
+        "Java AgentRuntime lifecycle/kill/generation assertions are covered by operations runner tests, which are not re-verified for this row.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/host_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/host_tests.rs",
+          "date": "2026-10-09",
+          "claim": "Composition without owner bootstrap or launch, reopen after shutdown, missing/malformed launch definitions, missing Java, missing program, whitelist load/reload, protected secret documents -> opening_composes_services_without_starting_a_game_or_bootstrapping_an_owner, a_missing_or_malformed_launch_definition_refuses_before_any_state_is_created, a_launch_without_a_selected_java_refuses_and_releases_the_database, a_missing_launch_program_is_a_known_failure_before_any_effect, a_malformed_whitelist_refuses_and_a_valid_one_is_loaded_and_reloadable, configured_secret_documents_inside_the_game_tree_are_never_browsable."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Host composition tests pass; transports and sessions remain unimplemented."
       }
     },
     {
@@ -5673,7 +5822,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "e7df8af00c2ad1f61c7b1817409cda9d55d836fe2bf50a9f9e782ba0788fe4fa",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-game-runtime/src/players.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/runtime/PlayerListParserTest.java"
       ],
@@ -5681,15 +5830,44 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Rust parse_player_list_line recognizes the vanilla of-a-max-of and slash count forms with optional log prefixes, returns a bounded PlayerList, and drops bare UUIDs. Where Java silently returned Optional.empty or repaired an online count of 0 from the names, Rust refuses with NotRecognized, Malformed, or Inconsistent.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "The Java Player.toMap() output shape, which omits blank UUIDs, has no Rust serializer compared in this row.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-game-runtime/src/players_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-game-runtime/src/players_tests.rs",
+          "date": "2026-10-09",
+          "claim": "parseLine vanilla empty list -> an_empty_vanilla_list_reports_zero_and_no_players"
+        },
+        {
+          "path": "crates/vesta-game-runtime/src/players_tests.rs",
+          "date": "2026-10-09",
+          "claim": "parseLine vanilla named players without UUID -> a_vanilla_list_keeps_names_in_written_order_without_uuids"
+        },
+        {
+          "path": "crates/vesta-game-runtime/src/players_tests.rs",
+          "date": "2026-10-09",
+          "claim": "parseLine slash form and log prefix -> the_slash_form_and_a_console_prefix_both_parse"
+        },
+        {
+          "path": "crates/vesta-game-runtime/src/players_tests.rs",
+          "date": "2026-10-09",
+          "claim": "parseLine UUID suffix -> a_parenthesized_uuid_is_separated_from_the_name_and_lowercased"
+        },
+        {
+          "path": "crates/vesta-game-runtime/src/players_tests.rs",
+          "date": "2026-10-09",
+          "claim": "bare UUID is not given a fabricated name -> a_bare_uuid_is_dropped_rather_than_given_a_fabricated_name"
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Rust source and cited test bodies inspected; tests were not executed."
       }
     },
     {
@@ -5723,21 +5901,30 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "70762202fd9e7eeb593dbfc98b0e8eb1e9d6589aabaf3690dda1d19c802c7063",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/host.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Host::discover negotiates draft-v1 discovery and reports game.start/stop/force_kill/tasks.replay from the composed launch definition, with game.readiness and supervisor.continuity unsupported (not_implemented) and game.stop unsupported_stop when the launch has no console stop. Descriptive only; it authorizes nothing.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "No discovery transport/route serves the manifest yet.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/host_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/host_tests.rs",
+          "date": "2026-10-09",
+          "claim": "Feature set, canonical server ID, unsupported version and unsupported stop -> discovery_reports_composed_mechanisms_bound_to_the_canonical_server, discovery_reports_an_unsupported_stop_mechanism_honestly."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Host discovery tests pass; no transport serves it."
       }
     },
     {
@@ -5806,7 +5993,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "5be55ff55f7d3508dd3e306a6c563fb4b1b69c4173ff3c314823445ec565ae2e",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/admission.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/security/TokenBucketRateLimiterTest.java"
       ],
@@ -5814,15 +6001,31 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Rust PeerRateLimiter in admission.rs implements a per-address token bucket with exact fractional refill, a fixed burst, and a retry-after equal to the one-token wait. The Java string-keyed buckets, blank-key unknown mapping, and whole-second retry rounding are not reproduced.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Java string-keyed buckets, including the blank or null key mapped to a shared unknown bucket, have no Rust counterpart because Rust keys are typed peer addresses.",
+        "The Java retryAfterSeconds rounding to at least one second is replaced by a Rust Duration of the exact one-token wait.",
+        "The Java PasswordKdfGate purpose-keyed use of this limiter is not represented by admission.rs.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/admission.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/admission.rs",
+          "date": "2026-10-09",
+          "claim": "burst cap then reject and refill over window -> burst_and_exact_continuous_refill_preserve_fractional_credit"
+        },
+        {
+          "path": "crates/vesta-control/src/admission.rs",
+          "date": "2026-10-09",
+          "claim": "retry-after equals the window and keys are isolated -> retry_matches_the_window_and_addresses_have_independent_budgets"
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Rust source and cited test bodies inspected; tests were not executed."
       }
     },
     {
@@ -6471,7 +6674,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "bd9748df877c129b1804f02e22541f67377635e9e75dc4b74770cf66c2361a97",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-game-runtime/src/console.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/console/ConsoleBufferTest.java"
       ],
@@ -6479,15 +6682,40 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "The Java console-buffer cases for cursor paging, oversized and multibyte retention, and line-cap eviction have Rust integration tests against ConsoleCapture. The Java char-based bound is checked against the Rust byte-based bound.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "No Rust test exercises the Java listener callbacks, and the Java UTF-16 character-count boundary is not reproduced as such.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-game-runtime/tests/console_capture.rs",
+        "crates/vesta-game-runtime/tests/console_adversarial.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-game-runtime/tests/console_capture.rs",
+          "date": "2026-10-09",
+          "claim": "snapshotReturnsLinesAfterCursor -> snapshots_page_without_skipping_across_both_streams"
+        },
+        {
+          "path": "crates/vesta-game-runtime/tests/console_capture.rs",
+          "date": "2026-10-09",
+          "claim": "oversizedDirectAppendAndMultibyteRetentionStayBounded -> publication_bounds_keep_scalars_and_drain_excess_bytes_to_the_marker"
+        },
+        {
+          "path": "crates/vesta-game-runtime/tests/console_adversarial.rs",
+          "date": "2026-10-09",
+          "claim": "oversizedDirectAppendAndMultibyteRetentionStayBounded -> mixed_size_publication_evicts_multiple_lines_and_keeps_exact_byte_budget"
+        },
+        {
+          "path": "crates/vesta-game-runtime/tests/console_capture.rs",
+          "date": "2026-10-09",
+          "claim": "evictsOldestLinesWhenLineCapExceeded -> retention_bounds_and_failures_report_fixed_redacted_errors"
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Rust test bodies inspected for matching bounds and paging; tests were not executed."
       }
     },
     {
@@ -6523,7 +6751,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "95949d223a479d370170978afda85960d78e7de61549e83836528a65bd453eb6",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/files/mod.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/files/FileBrowserServiceTest.java"
       ],
@@ -6531,15 +6759,29 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "The Java list and traversal cases have Rust counterparts in files/tests.rs. The Java write-then-delete round trip has no Rust counterpart because the Rust files module has no write or delete operation.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "The Java write and delete steps of listsWritesReadsAndDeletesFiles have no Rust test or production counterpart.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/files/tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/files/tests.rs",
+          "date": "2026-10-09",
+          "claim": "listsWritesReadsAndDeletesFiles, list and read steps -> lists_are_bounded_sorted_and_hide_protected_or_nonportable_entries and ordinary_binary_reads_hash_the_returned_bytes_and_never_expose_native_paths"
+        },
+        {
+          "path": "crates/vesta-control/src/files/tests.rs",
+          "date": "2026-10-09",
+          "claim": "rejectsTraversal -> portable_paths_refuse_ambiguous_spelling_and_devices_without_echo"
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Rust test bodies inspected for matching list, read and traversal assertions; tests were not executed."
       }
     },
     {
@@ -7155,7 +7397,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "301b2cfc75ed4d22f525c5fbcc3be60bd61f378c9fcfe7ccced96f61bd7fbb33",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/host.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeFeatureDiscoveryTest.java"
       ],
@@ -7167,15 +7409,24 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Discovery negotiation and reopen-without-owner-or-launch assertions have host-level Rust tests.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Forged-feature, revoked-device and kill-confirmation assertions are not exercised through discovery; equivalent authority rules live in identity/operations tests and are not re-verified for this row.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/host_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/host_tests.rs",
+          "date": "2026-10-09",
+          "claim": "noCommonVersionIsFixedNoEffectFailure -> discovery_reports_composed_mechanisms_bound_to_the_canonical_server; canonicalIdentitySurvivesReopenWithoutCreatingAnOwnerOrLaunching -> opening_composes_services_without_starting_a_game_or_bootstrapping_an_owner."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Two of five methods mapped to host tests."
       }
     },
     {
@@ -7215,7 +7466,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "4b8854b5a2720b2ce841713d792f861f7e2d9e8a7b313ac51236c7690b8d37a0",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/host.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
       ],
@@ -7227,15 +7478,24 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Host-level composition assertions have Rust tests; generation, stop, kill and reconciliation assertions belong to the operations runner.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Lifecycle, generation, force-kill confirmation, reconciliation, second-runtime and revocation-before-effect methods are mapped only through operations runner tests, not re-verified for this row.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/host_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/host_tests.rs",
+          "date": "2026-10-09",
+          "claim": "productionCompositionHasNoLocalProofBackdoorOrAutomaticGameLaunch and realCompositionCreatesCanonicalState -> opening_composes_services_without_starting_a_game_or_bootstrapping_an_owner; missingJarIsKnownFailureBeforeAnyExternalEffect -> a_missing_launch_program_is_a_known_failure_before_any_effect."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Composition methods mapped to host tests; lifecycle methods remain with operations tests."
       }
     },
     {
@@ -7412,7 +7672,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "dec0ba6e17bf4e7de42fd0d11ae1ebedcd9f7374b7081775e7ac0c0ad272a2fa",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-game-runtime/src/players.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/runtime/PlayerListParserTest.java"
       ],
@@ -7420,15 +7680,44 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Each Java PlayerListParserTest case has a Rust golden-expectation counterpart in players_tests.rs. The Java Optional-empty result for non-list lines is the Rust NotRecognized refusal.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "The Java null-input assertion has no separate Rust test because the Rust API takes a string slice.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-game-runtime/src/players_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-game-runtime/src/players_tests.rs",
+          "date": "2026-10-09",
+          "claim": "parsesVanillaEmptyList -> an_empty_vanilla_list_reports_zero_and_no_players"
+        },
+        {
+          "path": "crates/vesta-game-runtime/src/players_tests.rs",
+          "date": "2026-10-09",
+          "claim": "parsesVanillaNamedPlayers -> a_vanilla_list_keeps_names_in_written_order_without_uuids"
+        },
+        {
+          "path": "crates/vesta-game-runtime/src/players_tests.rs",
+          "date": "2026-10-09",
+          "claim": "parsesSlashFormAndLogPrefix -> the_slash_form_and_a_console_prefix_both_parse"
+        },
+        {
+          "path": "crates/vesta-game-runtime/src/players_tests.rs",
+          "date": "2026-10-09",
+          "claim": "parsesOptionalUuidSuffix -> a_parenthesized_uuid_is_separated_from_the_name_and_lowercased"
+        },
+        {
+          "path": "crates/vesta-game-runtime/src/players_tests.rs",
+          "date": "2026-10-09",
+          "claim": "rejectsNonListLines -> an_unrelated_console_line_is_not_recognized"
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Rust golden-expectation test bodies inspected; tests were not executed."
       }
     },
     {
@@ -7502,7 +7791,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "8f73363b5b138696de1ebf55c3a15eec4f969d4f826c03f214388e07d8bf281a",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/admission.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/security/TokenBucketRateLimiterTest.java"
       ],
@@ -7510,15 +7799,29 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "The Java token-bucket cases for burst, refill, key isolation, and retry-after have Rust counterparts in admission.rs. The Java retry value is expressed in whole seconds and the Rust value in Duration.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "The Java isolatesKeys case uses arbitrary string keys; Rust covers isolation between IP addresses only.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/admission.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/admission.rs",
+          "date": "2026-10-09",
+          "claim": "allowsBurstUpToCapacityThenRejects and refillsOverWindow -> burst_and_exact_continuous_refill_preserve_fractional_credit"
+        },
+        {
+          "path": "crates/vesta-control/src/admission.rs",
+          "date": "2026-10-09",
+          "claim": "isolatesKeys and retryAfterReflectsRefillWindow -> retry_matches_the_window_and_addresses_have_independent_budgets"
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Rust test bodies inspected for matching assertions; tests were not executed."
       }
     },
     {

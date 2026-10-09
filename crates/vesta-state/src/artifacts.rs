@@ -172,6 +172,24 @@ impl ArtifactDirectory {
         }
         Ok(Some(count))
     }
+
+    /// Valid artifact names among at most `limit` scanned entries, sorted. Foreign or
+    /// non-UTF-8 names are skipped (and never touched) but still consume the scan budget.
+    pub fn list(&self, limit: usize) -> Result<Vec<ArtifactName>> {
+        self.verify()?;
+        let mut names = Vec::new();
+        let entries = fs::read_dir(&self.path).map_err(|_| StateError::new("state_io"))?;
+        for entry in entries.take(limit) {
+            let entry = entry.map_err(|_| StateError::new("state_io"))?;
+            if let Some(name) = entry.file_name().to_str()
+                && let Ok(name) = ArtifactName::new(name)
+            {
+                names.push(name);
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
 }
 
 #[cfg(target_os = "linux")]

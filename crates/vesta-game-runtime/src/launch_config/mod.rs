@@ -175,6 +175,9 @@ impl LaunchConfiguration {
     pub fn kind(&self) -> LaunchKind {
         self.kind
     }
+    pub fn graceful_stop(&self) -> GracefulStop {
+        self.stop
+    }
 
     /// Consume the plan into the existing owned-process contract. If Java was
     /// omitted, trusted host composition must supply its selected absolute path;

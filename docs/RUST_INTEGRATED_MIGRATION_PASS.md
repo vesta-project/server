@@ -575,9 +575,11 @@ reconciliation, remaining accounting and the final independent review remain unf
 
 ### Pack releases, whitelist parser, accounting and doc archive — 2026-10-09
 
-Parent Claude Opus 5.5 with bounded helpers: Haiku (actual model `claude-haiku-4-5-20251001`)
-wrote the whitelist parser; GPT-6 Luna wrote the accounting report script, archived the
-per-slice checkpoint docs and mapped shared-core parity rows. The parent reviewed, corrected
+Parent Claude Opus 5.5 with bounded helpers: a Haiku helper (self-reported
+`claude-haiku-4-5-20251001`) wrote the whitelist parser; helpers launched with the `luna`
+agent type (configured `gpt-6-luna`; the serving model was not independently verified) wrote
+the accounting report script, archived the per-slice checkpoint docs and mapped shared-core
+parity rows. The parent reviewed, corrected
 and verified all helper output; an interrupted Luna mapping run was checked row by row and
 one wrong test-function citation was fixed.
 
@@ -607,3 +609,39 @@ protected launcher manifest digest is unchanged. Inventory statuses are unchange
 (26 migrated / 17 retained / 179 not_migrated / 0 verified). Artifact pruning, a sync/status
 route, whitelist loading, pack-only sessions, host composition and the final independent
 review remain unfinished.
+
+### Artifact pruning, whitelist loading, host composition and discovery — 2026-10-09
+
+Parent Claude Opus 5.5. Helpers: a Haiku run that self-reported `claude-haiku-4-5-20251001`
+wrote whitelist file loading before it was interrupted (the owner then asked not to use
+Haiku 4.5); a later Haiku run self-reported `claude-haiku-5-5` and mapped 9 wrapper parity
+rows; a `luna`-type run mapped 5 audit rows before the owner stopped it; a Bunny run
+(self-reported `space-bunny-free`) wrote the read-only `docs/JAVA_NETWORK_SURFACE.md`
+inventory. The parent reviewed all helper output, verified every cited Rust test function
+and spot-checked the network inventory against Java source.
+
+- `PackReleases::prune` (`pack.publish`, audited) removes content-addressed artifacts and
+  abandoned stages other than the hosted release's, inside a write transaction so it cannot
+  interleave with recording; foreign names are never touched and busy names are retained.
+  An unrecorded publication pruned meanwhile fails its recording and can be retried.
+- `Whitelist::load` reads `whitelist.json` through the protected local-document reader
+  (missing file = empty; linked/relative/unreadable = unavailable); the reader cap rose to
+  1 MiB with each caller still passing its own limit.
+- `host::Host::open` composes the canonical database, identity, pack passwords (password
+  access mode only), Minecraft challenges, whitelist, file browser, per-scan-root pack
+  preparation, release ledger and operation runtime from one validated configuration. It
+  never binds a listener, bootstraps an owner or starts the game; failures before the
+  runtime starts release the database; `shutdown` is observation-only and returns the host
+  on timeout. `Host::discover` is the Rust `ServerFeatureDiscovery`.
+
+Failed attempts: the first host tests failed because the fixture's launch program did not
+exist (launch preflight correctly refuses) and relative executables resolve against the
+working directory; one test expected the wrong overlap code. An earlier verification log
+was corrupted by an orphaned run from the interrupted session writing the same file, so it
+was discarded and rerun into a fresh log. The settled-source run passed format, all-target
+check, strict Clippy and **965 workspace tests / 42 summaries** (942 + 23), zero
+failed/ignored/filtered; **161 Node tests** and both accounting checkers passed; the
+protected launcher manifest digest is unchanged. 64 of 222 inventory rows now name a Rust
+counterpart; statuses are unchanged (26 migrated / 17 retained / 179 not_migrated /
+0 verified). Transports, pack-only sessions and routes, file mutations and the final
+independent review remain unfinished.
