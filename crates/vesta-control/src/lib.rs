@@ -5,6 +5,7 @@
 //! administrative authority. Production local authority is deliberately unavailable.
 #![deny(unsafe_code)]
 
+pub mod files;
 pub mod identity;
 pub mod operations;
 

@@ -1839,6 +1839,7 @@ dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.3",
  "hex",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",
@@ -1849,6 +1850,7 @@ dependencies = [
  "uuid",
  "vesta-game-runtime",
  "vesta-state",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

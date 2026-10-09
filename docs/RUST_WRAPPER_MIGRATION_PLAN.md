@@ -298,6 +298,19 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   test readiness race. Only LaunchSpec/LaunchSpecTest receive migrated-not-verified mappings:
   **26 migrated, 17 retained Java plugin, 179 not_migrated, 0 verified**. Full config/application,
   protected files, packs/sync, transports, platform/MSRV and final whole-rebuild gates remain open.
+- **2026-10-09 file/pack implementation continuation:** canonical bounded file listing/read
+  and protected native path observations, strict Rust-native catalogue/revision validation,
+  deterministic pure add/update/keep/remove proposals, and ten new real SQLite foundation
+  assertions are implemented. The first full source run passed **707 Rust tests**, workspace
+  format/check/strict Clippy, **159 Node tests**/both checkers and **210 companion tests**.
+  Scoped Sol review found configured missing-secret alias/existence gaps; the parent fixed
+  them and added actual junction/missing-suffix/pre-probe regressions. Fresh final corrected-source
+  verification passed **710 Rust tests**, format/all-target check/strict Clippy; fresh Node and
+  accounting/preservation checks also passed. Exact commands and the Windows concurrent-linker
+  failed attempt are recorded [at the checkpoint](RUST_FILE_PACK_CHECKPOINT.md). No complete Java family or original requirement is promoted:
+  **26 migrated, 17 retained Java plugin, 179 not_migrated, 0 verified**, with final whole-rebuild
+  review still `not_run`. Durable file/content mutations, host catalogue/archive services,
+  full configuration/application and safe transport/session composition remain unfinished.
 - Owner direction is to design for all intended platform compatibilities while testing
   Windows only in the current increment. Linux, macOS and non-Windows architecture/native
   behavior remain unexecuted and unverified; WSL presence is not platform evidence.

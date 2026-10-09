@@ -349,3 +349,24 @@ library, service or network listener. Rust 1.96 Windows execution is not Rust 1.
 1.85/installer 1.88 MSRV evidence. Full transitive licence/notice review, SBOM, trusted
 provenance/vulnerability checks, MSRV and other-platform execution, packaging and signed
 release approval remain open.
+
+## Protected file observations and validated pack reconciliation (2026-10-09)
+
+The file-observation service adds only direct target-specific `vesta-control` edges to
+already-pinned `libc = 0.2.183` on Unix and `windows-sys = 0.61.2` on Windows. The lock
+diff adds only those two dependency names to the existing control-package entry; no
+package/version/source/checksum or feature was added, repinned or fetched. The native
+Windows adapter uses existing FileSystem features for no-reparse opens, disk/file/link
+inspection and actual held-file paths. Unix uses existing libc no-follow/nonblocking/
+cloexec flags; it has not been executed on the current Windows host. Narrow unsafe
+allowance is isolated to the held-handle Windows adapter. This is native observation,
+not a sandbox, handle-relative directory confinement or file-mutation authority.
+
+Pure pack validation/reconciliation reuses existing `serde`, `serde_json`, `sha2` and
+`hex`; no regex, archive or networking dependency is introduced. Strict Rust-native
+catalogue schemas do not replace the retained Java/index wire schema. Opaque archive
+metadata authorizes no download/extraction/ZIP construction. The current slice has no
+file writes/deletes or network/process effects. [The scoped checkpoint](RUST_FILE_PACK_CHECKPOINT.md)
+records actual tests, review fixes, alias/ancestor race limits and remaining behavior.
+Licence/provenance/SBOM/notice, non-Windows/MSRV, service-account and release gates remain
+open; existing package intake is not refreshed into a new release certification.

@@ -2,7 +2,9 @@
 //! archive builder, provider resolver, signature verifier, or authorization boundary.
 //! Paths, hashes and URLs are descriptive inputs here, never executable/install policy.
 
+pub mod catalogue;
 pub mod model;
+pub mod sync;
 
 use model::{
     BuilderFile, BuilderManifest, PackDependencies, PackEnvironment, PackHashes, VestaFileSource,

@@ -356,3 +356,32 @@ method or future binding has a production counterpart. Protected files/content, 
 configuration/application, safe transports and shared host/plugin ownership remain open, alongside
 the separate OS-authentication, supervisor, installer activation, platform/MSRV and release gates.
 
+## File observations / pure catalogue reconciliation continuation — 2026-10-09
+
+Actual implementation following the trusted launch checkpoint adds canonical protected
+file observations in `vesta-control::files`, private validated Rust-native catalogue/sync
+values in `vesta-protocol::pack`, and ten real SQLite assertion tests over existing
+state/audit/settings/events. Existing index projection and Java/plugin wire/source
+contracts are retained. File writes/deletes, network source execution, archive extraction
+and administrative transport are not introduced. No Java-style handler/service registry
+or injected permission callback is added to bypass durable application authority.
+
+The first settled-source integrated run passed **707 Rust tests**, zero failed/ignored,
+workspace format/all-target check/strict Clippy, **159 Node tests**/both accounting checkers
+and **210 companion tests**. Scoped Sol review then identified missing configured-secret
+ancestor alias loss and existence-probe gaps; parent source/regression corrections are
+recorded with the exact final verification and failed attempts in
+[RUST_FILE_PACK_CHECKPOINT.md](RUST_FILE_PACK_CHECKPOINT.md). Fresh final corrected-source
+verification passed **710 Rust tests**, zero failed/ignored, workspace format/all-target
+check/strict Clippy and fresh Node/accounting/preservation checks. The earlier pre-correction
+pass is not final-source evidence, and the scoped review is not the mandatory whole-rebuild review.
+
+Inventory accounting remains **26 migrated / 17 retained Java plugin / 179 not_migrated /
+0 verified**, with all frozen Java hashes and 370 requirement IDs/text/status/history
+unchanged. Full file/content families, configured pack host/archive services,
+configuration/application, safe sessions/transports and complete foundation family
+accounting remain unfinished. The protected launcher manifest's inherited worktree
+modification remains untouched at the recorded raw digest. No push/publication, real
+game/provider/installer execution, EULA acceptance, world/demo erasure or OS/global
+security changes occurred. Cross-platform source is not non-Windows/MSRV test evidence.
+
