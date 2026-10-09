@@ -1,0 +1,15 @@
+[package]
+name = "vesta-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+vesta-control = { path = "../../crates/vesta-control" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

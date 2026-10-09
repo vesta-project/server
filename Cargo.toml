@@ -5,6 +5,7 @@ members = [
     "crates/vesta-control",
     "crates/vesta-game-runtime",
     "crates/vesta-server-install",
+    "apps/vesta-agent",
 ]
 resolver = "3"
 

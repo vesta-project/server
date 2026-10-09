@@ -385,3 +385,30 @@ modification remains untouched at the recorded raw digest. No push/publication, 
 game/provider/installer execution, EULA acceptance, world/demo erasure or OS/global
 security changes occurred. Cross-platform source is not non-Windows/MSRV test evidence.
 
+## Trusted host descriptions / passive CLI / bounded transport primitives — 2026-10-09
+
+Following `f8a70c8`, strict full-host descriptions and a private protected local reader,
+one-line player parsing, monotonic bounded peer admission and strict length-prefixed
+UTF-8 framing are implemented. `apps/vesta-agent` is the sixth workspace member; its
+only substantive command is passive `check-config`, with no database preparation,
+owner generation, listener or game start. No Java-shaped configuration builder or
+incidental permissive JDK decoding is restored. Configuration, IP, player text and
+frame possession confer no administrative authority.
+
+Fresh settled-source native Windows verification passed **816 workspace Rust tests
+across 41 result summaries**, zero failed/ignored, workspace format/all-target check/
+strict Clippy, **159 Node tests**/both accounting checkers, and **210 companion tests**/
+all-target check. The existing companion unused `tokio::task` warning remains. The
+prior 811-test run predates five review-suggested regressions and is not final evidence.
+Scoped Sol review, parent fixes (including recursive partial-write stack safety),
+failed-attempt history, exact commands, native limitations and missing functionality
+are recorded in [the host checkpoint](RUST_HOST_CONFIGURATION_CHECKPOINT.md).
+
+Inventory accounting remains **26 migrated / 17 retained Java plugin / 179 not_migrated /
+0 verified**, with 370 frozen requirements and Java/reference bytes unchanged. Full
+host/runtime composition, correlated player query, durable file/content effects,
+configured pack/source/archive services, safe authenticated pack sessions/routes and
+remaining assertion-family accounting are still unfinished. This scoped review is
+not the required final independent whole-rebuild review; platform/MSRV/product/release
+gates remain open. The protected launcher manifest retained its exact recorded digest.
+

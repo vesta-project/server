@@ -159,7 +159,7 @@ fn exclusion(path: &Path) -> Result<PathBuf> {
         }
     }
 }
-fn absolute(path: &Path) -> Result<()> {
+pub(super) fn absolute(path: &Path) -> Result<()> {
     if !path.is_absolute() || path.as_os_str().len() > 32_768 {
         return Err(FileError::InvalidRoot);
     }
@@ -179,7 +179,7 @@ fn absolute(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn plain_ancestors(path: &Path) -> Result<()> {
+pub(super) fn plain_ancestors(path: &Path) -> Result<()> {
     for ancestor in path.ancestors() {
         let metadata = fs::symlink_metadata(ancestor).map_err(io_error)?;
         plain(&metadata)?;

@@ -370,3 +370,24 @@ file writes/deletes or network/process effects. [The scoped checkpoint](RUST_FIL
 records actual tests, review fixes, alias/ancestor race limits and remaining behavior.
 Licence/provenance/SBOM/notice, non-Windows/MSRV, service-account and release gates remain
 open; existing package intake is not refreshed into a new release certification.
+
+## Trusted full-host descriptions, passive CLI and transport primitives (2026-10-09)
+
+`vesta-control` reuses the existing exact workspace TOML pin **0.9.12+spec-1.1.0**,
+with unchanged disabled defaults and `std`/`parse`/`serde` features. The lock adds only
+that control dependency edge and the local non-publishable `vesta-agent` package
+(`vesta-control`, test-only `tempfile`). No registry package/version/source/checksum
+or feature was added or repinned. The launch-only TOML intake above still applies;
+it is not a new provenance, vulnerability, licence/notice or MSRV certification.
+
+The full-host parser is a separate closed bounded schema with map-only tables and
+no legacy open-security fallback. It reuses the existing private native file adapter
+rather than introducing another FFI or path authority. `check-config` is passive:
+no database preparation, credentials, game start, certificate generation or listener.
+
+Peer token-bucket admission, player-output parsing and length-prefixed UTF-8 framing
+use only std and existing workspace support; no regex, async/network/TLS, archive
+or crypto package is introduced. Admission/framing do not implement authentication,
+a route dispatcher or peer-worker lifecycle. [The host checkpoint](RUST_HOST_CONFIGURATION_CHECKPOINT.md)
+records scope, actual verification history, residual native/transport limitations
+and unfinished full-host composition. All release/platform/MSRV gates remain open.

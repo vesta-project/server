@@ -5,10 +5,12 @@
 //! Native checks reject links/reparse points and protected names, but are not a
 //! handle-relative ancestor walk or same-account race-free confinement claim.
 //! Mutations are deliberately absent until composed with durable effect ownership.
+mod local_document;
 mod native;
 mod path;
 mod root;
 
+pub(crate) use local_document::read_local_document;
 pub use path::{MAX_COMPONENT_BYTES, MAX_PATH_BYTES, RelativePath};
 
 use crate::{

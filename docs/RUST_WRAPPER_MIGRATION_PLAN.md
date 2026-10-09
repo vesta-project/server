@@ -66,7 +66,7 @@ All new workspace packages are non-publishable development packages.
 | `crates/vesta-control` | Identity/policy/password/proof components; operations/confirmations/runner/replay; protected file/content/pack services and runtime composition, split into cohesive modules. **Admitted 2026-10-08; canonical identity, bounded pack-password primitives/service and one-time Minecraft hasJoined challenges executed and tested.** The 2026-10-09 closed game-operation/confirmation/replay slice is implemented and Windows-tested in [its API](RUST_GAME_OPERATIONS_API.md) and [integration record](RUST_INTEGRATED_MIGRATION_PASS.md); the latest driver correction passed fresh integrated verification and scoped rereview, not whole-migration approval. Authenticated device/claim linking, complete Microsoft identity flow, file/content and full pack/host composition remain unfinished. |
 | `crates/vesta-game-runtime` | **Admitted 2026-10-08: bounded console and owned direct-child component**, with native inert-process tests. Literal argv/cwd, generation-bound stdin/stop/kill, timeout retention and actual exit/drain ownership are implemented. The 2026-10-09 concrete lifecycle driver and trusted launch-only TOML adapter are tracked separately in [the integration record](RUST_INTEGRATED_MIGRATION_PASS.md) and [launch checkpoint](RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md); independent supervisor/IPC/process-tree control remain unfinished. No network listener or administrative policy. |
 | `crates/vesta-server-install` | **Admitted 2026-10-08; extracted and verified**, with all installer test families and a narrow Piston adapter. Explicit private transport configuration/live progress, no Tauri/full Piston. Authenticated install/activation/launch composition remains unfinished. |
-| `apps/vesta-agent` (planned) | Thin configuration/CLI/composition. Remote management remains closed until canonical authenticated transport composition exists. |
+| `apps/vesta-agent` | **Added 2026-10-09: passive `check-config` CLI only**, the sixth non-publishable member. Strict trusted host descriptions/protected loading, bounded player parsing, peer admission and framing are tracked in [the host checkpoint](RUST_HOST_CONFIGURATION_CHECKPOINT.md). Full startup/runtime/transport composition remains unfinished; no listener, bootstrap or game start is supplied. |
 
 The current Java game process is an in-process wrapper child. Keep the future
 independent supervisor at the runtime boundary, but do not add a stub binary or claim
@@ -311,6 +311,15 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   **26 migrated, 17 retained Java plugin, 179 not_migrated, 0 verified**, with final whole-rebuild
   review still `not_run`. Durable file/content mutations, host catalogue/archive services,
   full configuration/application and safe transport/session composition remain unfinished.
+- **2026-10-09 host-description continuation:** strict trusted full-host configuration,
+  protected bounded local loading, the passive sixth-member `check-config` executable,
+  one-line player parsing, bounded monotonic peer admission and UTF-8 framing are
+  implemented. Fresh settled-source Windows verification passed **816 Rust tests**,
+  format/all-target check/strict Clippy, **159 Node tests**/both accounting checkers
+  and **210 companion tests**/all-target check. Scoped Sol review and parent regression
+  fixes are recorded [at the host checkpoint](RUST_HOST_CONFIGURATION_CHECKPOINT.md).
+  Full host/runtime/session/route composition remains unfinished; no family, original
+  requirement or final whole-rebuild review status is promoted by this slice.
 - Owner direction is to design for all intended platform compatibilities while testing
   Windows only in the current increment. Linux, macOS and non-Windows architecture/native
   behavior remain unexecuted and unverified; WSL presence is not platform evidence.
