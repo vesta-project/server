@@ -1,0 +1,31 @@
+[package]
+name = "vesta-transport"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.88"
+publish.workspace = true
+
+[dependencies]
+vesta-control = { path = "../vesta-control" }
+vesta-protocol.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+http.workspace = true
+tokio.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+tokio-rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+vesta-state.workspace = true
+rusqlite.workspace = true
+sha2.workspace = true
+hex.workspace = true
+
+[lints]
+workspace = true

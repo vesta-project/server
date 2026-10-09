@@ -494,3 +494,166 @@ fn malformed_admission_data_refuses_startup_and_releases_the_database() {
     refused(f.open("minecraft"), "admission_data_malformed");
     f.reopen().close().unwrap();
 }
+
+#[test]
+fn network_facades_are_send_sync_share_sessions_and_observe_atomic_admission_reload() {
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<NetworkHost>();
+    let f = Fixture::new();
+    let mut host = f.open("minecraft").unwrap();
+    let network = host.network_handle();
+    let clone = network.clone();
+    let player =
+        crate::identity::minecraft::MinecraftUuid::parse("12345678-1234-4234-8234-123456789abc")
+            .unwrap();
+    assert!(std::ptr::eq(network.sessions(), host.pack_sessions()));
+    assert!(std::ptr::eq(clone.sessions(), network.sessions()));
+    assert!(std::ptr::eq(clone.releases(), host.releases()));
+    assert!(!network.with_policy(|p| p.admits(player)).unwrap());
+    std::fs::write(
+        f.base().join("game/server.properties"),
+        "online-mode=true\nwhite-list=false\n",
+    )
+    .unwrap();
+    host.reload_admission().unwrap();
+    assert!(network.with_policy(|p| p.admits(player)).unwrap());
+    assert!(clone.with_policy(|p| p.admits(player)).unwrap());
+    std::fs::write(
+        f.base().join("game/banned-players.json"),
+        b"[{\"uuid\":\"12345678-1234-4234-8234-123456789abc\",\"name\":\"Fixture\"}]",
+    )
+    .unwrap();
+    host.reload_admission().unwrap();
+    assert!(!network.with_policy(|p| p.admits(player)).unwrap());
+    std::fs::write(f.base().join("game/banned-players.json"), b"not JSON").unwrap();
+    assert!(host.reload_admission().is_err());
+    assert!(!clone.with_policy(|p| p.admits(player)).unwrap());
+    let request = DiscoveryRequest::new(vec![1]).unwrap();
+    assert_eq!(
+        network.discover(&request).unwrap(),
+        host.discover(&request).unwrap()
+    );
+    drop(network);
+    drop(clone);
+    assert!(matches!(
+        host.shutdown(Duration::from_secs(5)).unwrap(),
+        HostShutdown::Complete
+    ));
+}
+
+#[test]
+fn owned_serving_refresh_ends_minecraft_sessions_and_preserves_malformed_snapshot() {
+    use crate::identity::minecraft::{MinecraftUuid, VerifiedMinecraftProfile};
+    use crate::pack_access::PackAccessError;
+    use std::time::Instant;
+    let f = Fixture::new();
+    let game = f.base().join("game");
+    std::fs::write(
+        game.join("server.properties"),
+        "online-mode=true\nwhite-list=true\n",
+    )
+    .unwrap();
+    let allow = format!(r#"[{{"uuid":"{PLAYER}","name":"Player"}}]"#);
+    std::fs::write(game.join("whitelist.json"), &allow).unwrap();
+    let host = f.open("minecraft").unwrap();
+    let network = host.network_handle();
+    let player = MinecraftUuid::parse(PLAYER).unwrap();
+    let proof = VerifiedMinecraftProfile::for_test(
+        ServerUuid::parse(host.database().server_id()).unwrap(),
+        player,
+    );
+    let refresh = network.start_admission_refresh().unwrap();
+    let wait = |admitted: bool| {
+        let deadline = Instant::now() + Duration::from_secs(7);
+        while network.with_policy(|p| p.admits(player)).unwrap() != admitted {
+            assert!(
+                Instant::now() < deadline,
+                "refresh did not observe local policy edit"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let grant = network
+        .with_policy(|p| p.grant_minecraft(&proof))
+        .unwrap()
+        .unwrap();
+    let (secret, _) = network.sessions().issue(grant, Instant::now()).unwrap();
+    std::fs::write(game.join("whitelist.json"), b"[]").unwrap();
+    wait(false);
+    assert_eq!(
+        network
+            .with_policy(|p| network
+                .sessions()
+                .authenticate(secret.expose(), Instant::now(), p))
+            .unwrap(),
+        Err(PackAccessError::Invalid)
+    );
+    std::fs::write(game.join("whitelist.json"), &allow).unwrap();
+    wait(true);
+    let grant = network
+        .with_policy(|p| p.grant_minecraft(&proof))
+        .unwrap()
+        .unwrap();
+    let (secret, _) = network.sessions().issue(grant, Instant::now()).unwrap();
+    std::fs::write(
+        game.join("banned-players.json"),
+        format!(r#"[{{"uuid":"{PLAYER}","expires":"forever"}}]"#),
+    )
+    .unwrap();
+    wait(false);
+    assert_eq!(
+        network
+            .with_policy(|p| network
+                .sessions()
+                .authenticate(secret.expose(), Instant::now(), p))
+            .unwrap(),
+        Err(PackAccessError::Invalid)
+    );
+    std::fs::write(game.join("banned-players.json"), b"malformed").unwrap();
+    std::thread::sleep(Duration::from_millis(2200));
+    assert!(!network.with_policy(|p| p.admits(player)).unwrap());
+    let started = Instant::now();
+    drop(refresh);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    drop(network);
+    assert!(matches!(
+        host.shutdown(Duration::from_secs(5)).unwrap(),
+        HostShutdown::Complete
+    ));
+}
+
+#[test]
+fn host_startup_reconciles_pending_file_rows_before_runtime_admission() {
+    let f = Fixture::new();
+    let host = f.open("minecraft").unwrap();
+    assert_eq!(host.files().reconcile_pending().unwrap(), 0);
+    host.database().write(|c| {
+        c.execute("INSERT INTO file_trash (id,server_id,path,sha256,size,reason,principal_id,device_id,status,effect_sha256,unix_mode,readonly,trashed_at,expires_at) VALUES (?,?,?, ?,3,'delete',?,?,'pending',NULL,NULL,0,0,1)", params!["a".repeat(32),host.database().server_id(),"config/missing.txt","0".repeat(64),"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"])?;
+        Ok(())
+    }).unwrap();
+    assert!(matches!(
+        host.shutdown(Duration::from_secs(5)).unwrap(),
+        HostShutdown::Complete
+    ));
+    let host = f.open("minecraft").unwrap();
+    let status: String = host
+        .database()
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT status FROM file_trash WHERE id=?",
+                ["a".repeat(32)],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(
+        status, "recovery-required",
+        "a missing copy cannot be silently completed or deleted"
+    );
+    assert_eq!(host.files().reconcile_pending().unwrap(), 0);
+    assert_eq!(host.runtime().game_snapshot().unwrap().generation, None);
+    assert!(matches!(
+        host.shutdown(Duration::from_secs(5)).unwrap(),
+        HostShutdown::Complete
+    ));
+}

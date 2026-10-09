@@ -40,13 +40,13 @@ design), Plugin-side (retained Java), or Unknown.
 | Operations and confirmations | `operations/` | Partial | Closed lifecycle driver exists. Confirmation coverage is unverified. |
 | Process and console | `runtime/MinecraftServerProcess`, `console/ConsoleBuffer` | Partial | Owned direct-child control and console capture exist. No supervisor, no crash policy. |
 | Player query | `runtime/PlayersQuery`, `PlayerListParser` | Partial | Literal `list` query exists. Runtime composition is not wired. |
-| File browser | `files/FileBrowserService`, `ServerPathPolicy` | Partial | Read-only observations exist. Protected mutations are not implemented. |
-| Content install | `content/ContentInstaller` | Missing | No Rust managed-content install or update. |
+| File browser | `files/FileBrowserService`, `ServerPathPolicy` | Partial | List/read plus `files/mutation.rs`: create/overwrite/delete/restore with If-Match hashes, scoped capabilities, bounded recoverable trash (10 GiB / 10 % / 7 days), disk-space preflight and audited transactions. No mkdir/rename, no resumable uploads, no operation journal. |
+| Content install | `content/ContentInstaller` | Partial | Java upload/remove is covered by recoverable file mutations. Provider-sourced installs (Modrinth/CurseForge/hashed URLs) remain. |
 | Pack catalogue, manifest, archive | `core/manifest/ServerModpackManifest`, `LocalArchivePack` | Partial (Replaced format) | Rust-native catalogue schema, stored ZIP builder and content-addressed publication exist. No catalogue selection, no archive-mode manifest. |
 | Pack revisions and update policy | `manifest/ModpackState` | Partial | `packs/releases.rs`: database-backed monotonic releases, optional/required minimum (`pack.force_update`), `current`/`update_available`/`update_required`, display-version acknowledgement. Reference-aware artifact pruning (`prune`) exists. No status route or signing. |
 | Sync and status | `core/sync` | Partial | Pure proposal types. No I/O, no status route. |
-| HTTP, TCP, realtime | `server/VestaHttpServer`, `TcpSyncServer`, `VestaRealtimeSocket`, `SessionManager` | Missing | No listener in any crate. |
-| TLS | `security/TlsMaterial` | Missing | No socket is opened. |
+| HTTP, TCP, realtime | `server/VestaHttpServer`, `TcpSyncServer`, `VestaRealtimeSocket`, `SessionManager` | Partial | `vesta-transport`: bounded HTTPS (hyper + tokio-rustls) serving discovery, pack status, password/Minecraft pack sign-in, tickets and artifact download; management refused, legacy v1 removed; `vesta-agent serve`. No TCP sync protocol or WebSocket. |
+| TLS | `security/TlsMaterial` | Partial | Configured PEM only via the protected reader, TLS 1.2+, no generation or plaintext fallback. Certificate generation/rotation and mTLS management are not implemented. |
 | Rate limiting | `security/TokenBucketRateLimiter` | Partial | `admission.rs` peer limiter. Equivalence is unverified. |
 | Whitelist and admission data | `security/WhitelistService` | Partial | `whitelist.rs`, `minecraft_admission.rs` (`server.properties`, `banned-players.json`), composed into pack-access policy with explicit reload. No file watching. |
 | Config loading and host composition | `config/ConfigLoader`, `WrapperConfig`, `runtime/AgentRuntime` | Partial | `host.rs`: `Host::open` composes database, identity, pack passwords, Minecraft challenges, whitelist, files, pack preparation, releases and the operation runtime; no owner bootstrap, no game start, rollback on failure, observation-only shutdown. No transport; CLI still only `check-config`. |
@@ -104,11 +104,12 @@ Each wave ends with focused tests, a fresh full suite and an unsigned local comm
    non-authoritative revision fields.
 3. **Archive-mode manifest and snapshot:** pinned snapshot, refresh and serve for `.zip` and
    `.mrpack` artifacts.
-4. **Protected file and content services:** validated relative paths, bounded reads,
-   staged replacement, integration with operation effects.
+4. **Protected file and content services (remaining):** mkdir/rename, resumable chunked uploads,
+   content install from Modrinth/CurseForge/URLs (Java `ContentInstaller`), and optional
+   operation-journal integration for file effects.
 5. **Host composition (remaining):** host-run CLI entrypoint once a transport exists; player
    query and console exposure through authenticated channels.
-6. **Transports:** TLS, bounded HTTP and TCP serving discovery, pack status/sync/download and
+6. **Transports (remaining):** WebSocket realtime, TCP sync and disk-streamed downloads. Done: TLS, bounded HTTP and TCP serving discovery, pack status/sync/download and
    pack-only authentication over the existing session store, with rate limits; management
    routes stay unavailable until a canonical device boundary exists. Needs new reviewed
    networking/TLS dependencies.

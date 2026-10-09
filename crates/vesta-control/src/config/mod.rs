@@ -202,6 +202,14 @@ impl TlsListener {
     pub fn port(&self) -> u16 {
         self.port
     }
+    /// Trusted local composition/tests may explicitly request a kernel-assigned port.
+    /// Changes only the port; preserves validated TLS/limits and grants no authority.
+    /// Parsed operator configuration still requires an explicit nonzero port.
+    pub fn on_ephemeral_port(&self) -> Self {
+        let mut listener = self.clone();
+        listener.port = 0;
+        listener
+    }
     pub fn certificate(&self) -> &Path {
         &self.certificate
     }

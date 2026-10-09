@@ -1,10 +1,14 @@
-//! Thin trusted-local configuration inspection entrypoint, not a management host.
-//!
-//! No listener, database preparation, owner bootstrap or game start is performed.
-use std::{path::PathBuf, process::ExitCode};
-use vesta_control::config::HostConfiguration;
+//! Trusted-local host entrypoint for configuration inspection and serving.
+use std::{path::PathBuf, process::ExitCode, sync::Arc, time::Duration};
+use vesta_control::{
+    config::{HostConfiguration, ListenerDescription},
+    host::{Host, HostShutdown},
+};
+use vesta_state::SystemClock;
+use vesta_transport::{Transport, TransportShutdown};
 
 const USAGE: &str = "Usage: vesta-agent check-config <path>";
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os();
@@ -17,7 +21,7 @@ fn main() -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    if command != "check-config" {
+    if command != "check-config" && command != "serve" {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     }
@@ -33,7 +37,14 @@ fn main() -> ExitCode {
         eprintln!("configuration_failed: config_environment_unavailable");
         return ExitCode::FAILURE;
     };
-    match HostConfiguration::load_file(&source, &base)
+    if command == "check-config" {
+        return check_config(&source, &base);
+    }
+    serve(&source, &base)
+}
+
+fn check_config(source: &std::path::Path, base: &std::path::Path) -> ExitCode {
+    match HostConfiguration::load_file(source, base)
         .and_then(|configuration| configuration.validate_host_paths())
     {
         Ok(_) => {
@@ -43,6 +54,88 @@ fn main() -> ExitCode {
         Err(error) => {
             eprintln!("configuration_failed: {}", error.code());
             ExitCode::FAILURE
+        }
+    }
+}
+
+fn serve(source: &std::path::Path, base: &std::path::Path) -> ExitCode {
+    let configuration = match HostConfiguration::load_file(source, base) {
+        Ok(configuration) => configuration,
+        Err(error) => {
+            eprintln!("configuration_failed: {}", error.code());
+            return ExitCode::FAILURE;
+        }
+    };
+    let listener = match configuration.listener().clone() {
+        ListenerDescription::Tls(listener) => listener,
+        ListenerDescription::Disabled => {
+            eprintln!("listener_disabled");
+            return ExitCode::FAILURE;
+        }
+    };
+    let host = match Host::open(configuration, Arc::new(SystemClock)) {
+        Ok(host) => host,
+        Err(error) => {
+            eprintln!("host_open_failed: {}", error.code());
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut transport = match Transport::start(host.network_handle(), &listener) {
+        Ok(transport) => transport,
+        Err(_) => {
+            eprintln!("transport_start_failed");
+            shutdown_host(host);
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("serving; bound_address={}", transport.local_addr());
+    let signal_failed = wait_for_ctrl_c().is_err();
+    if signal_failed {
+        eprintln!("signal_wait_failed");
+    }
+
+    loop {
+        match transport.shutdown(SHUTDOWN_TIMEOUT) {
+            Ok(TransportShutdown::Complete) => break,
+            Ok(TransportShutdown::TimedOut(owned)) => {
+                eprintln!("transport_shutdown_timed_out; retaining_runtime");
+                transport = owned;
+            }
+            Err(_) => {
+                eprintln!("transport_shutdown_failed");
+                shutdown_host(host);
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    let shutdown = shutdown_host(host);
+    if signal_failed {
+        ExitCode::FAILURE
+    } else {
+        shutdown
+    }
+}
+
+fn wait_for_ctrl_c() -> Result<(), ()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| ())?;
+    runtime.block_on(tokio::signal::ctrl_c()).map_err(|_| ())
+}
+
+fn shutdown_host(mut host: Host) -> ExitCode {
+    loop {
+        match host.shutdown(SHUTDOWN_TIMEOUT) {
+            Ok(HostShutdown::Complete) => return ExitCode::SUCCESS,
+            Ok(HostShutdown::TimedOut(owned)) => {
+                eprintln!("host_shutdown_timed_out; retaining_runtime");
+                host = *owned;
+            }
+            Err(error) => {
+                eprintln!("host_shutdown_failed: {}", error.code());
+                return ExitCode::FAILURE;
+            }
         }
     }
 }

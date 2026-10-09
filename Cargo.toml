@@ -3,6 +3,7 @@ members = [
     "crates/vesta-protocol",
     "crates/vesta-state",
     "crates/vesta-control",
+    "crates/vesta-transport",
     "crates/vesta-game-runtime",
     "crates/vesta-server-install",
     "apps/vesta-agent",
@@ -16,6 +17,14 @@ rust-version = "1.85"
 publish = false
 
 [workspace.dependencies]
+hyper = { version = "=1.8.1", default-features = false, features = ["server", "http1"] }
+hyper-util = { version = "=0.1.20", default-features = false, features = ["tokio"] }
+http-body-util = { version = "=0.1.3", default-features = false }
+http = "=1.4.0"
+tokio = { version = "=1.50.0", default-features = false, features = ["rt-multi-thread", "net", "time", "sync", "macros", "signal", "io-util"] }
+rustls = { version = "=0.23.37", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = { version = "=1.14.0", default-features = false, features = ["std"] }
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12"] }
 vesta-state = { path = "crates/vesta-state" }
 vesta-protocol = { path = "crates/vesta-protocol" }
 vesta-game-runtime = { path = "crates/vesta-game-runtime" }

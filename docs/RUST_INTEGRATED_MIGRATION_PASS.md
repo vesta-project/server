@@ -671,3 +671,37 @@ Verification on settled source passed format, all-target check, strict Clippy an
 and both accounting checkers passed; the protected launcher manifest digest is unchanged.
 69 of 222 inventory rows name a Rust counterpart; statuses are unchanged. No transport or
 route serves pack access yet; the final independent review remains outstanding.
+
+### Recoverable file mutations and the pack-only HTTPS transport — 2026-10-10
+
+Parent Claude Opus 5.5 routed this wave. Sol (self-reported `gpt-6.1-sol`) built the
+`vesta-transport` crate and `vesta-agent serve` (a nested `gpt-6-luna` helper it spawned,
+against plan rules, wrote only `apps/vesta-agent/{src/main.rs,Cargo.toml}`, later reviewed by
+Sol). Independent Sol reviews found six file-mutation defects (leaf aliases, compensation
+clobbering a later mutation, crash-window provenance loss, orphan copies, missing state-volume
+reserve, lost permissions) and three transport defects (unbounded artifact memory, admission
+data never refreshed by `serve`, TLS handshakes bypassing rate limits). Sol fix agents
+addressed all nine with regressions before hitting the Sol usage limit mid-verification;
+the parent then fixed two over-strict new tests (rustls answers a TLS 1.1 hello with
+`handshake_failure`, and continuous token refill allows one extra connection) and made the
+accept loop back off instead of stopping on transient accept errors. `gpt-6-luna` mapped
+36 more parity rows (103 of 222 now name a Rust counterpart); the parent verified every
+cited test function.
+
+- Files: create/overwrite/delete/restore with If-Match SHA-256, scoped capabilities, a
+  two-phase recoverable trash (pending provenance recorded before any destructive effect,
+  `reconcile_pending` at host start), serialized mutations through compensation, canonical
+  leaf checks, state- and game-volume space preflight, copy-first purge and recorded
+  permissions. Schema v8 `file_trash`.
+- Transport: TLS 1.2+ from configured PEM via the protected reader; discovery, pack status,
+  password and Minecraft pack sign-in, tickets and verified artifact download; management
+  refused, legacy v1 removed; bounded connections, handshakes, headers, bodies, per-IP rates,
+  two-permit downloads held through transmission, owned admission refresh, joined shutdown
+  that returns ownership on timeout.
+
+Settled-source verification passed format, all-target check, strict Clippy and
+**1065 workspace tests / 47 summaries**, zero failed/ignored/filtered; **161 Node tests**
+and both accounting checkers passed; the protected launcher digest is unchanged. Remaining:
+disk-streamed downloads, WebSocket/TCP sync, mkdir/rename and resumable uploads, provider
+content installs, certificate rotation and mTLS management, and the final independent
+whole-rebuild review.

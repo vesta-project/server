@@ -440,3 +440,30 @@ policy, vulnerability review, minimum-toolchain/non-Windows/native packaging and
 approval remain open. Building an unsigned in-memory artifact is not publishing it or
 establishing launcher trust; safe staging/publication and authenticated serving remain
 separate required application work.
+
+## Bounded HTTPS transport intake (2026-10-10)
+
+Scope: `vesta-transport` and the thin `vesta-agent serve` composition, serving descriptive
+discovery and pack-only resources over TLS. Not canonical device authentication, mTLS
+management, WebSockets or Java compatibility endpoints.
+
+| Exact direct pin | Requested features | Licence | Metadata MSRV | Purpose |
+|---|---|---|---|---|
+| `hyper = 1.8.1` | defaults off; `server,http1` | MIT | 1.63 | HTTP/1 parsing and connection serving |
+| `hyper-util = 0.1.20` | defaults off; `tokio` | MIT | 1.64 | Tokio I/O and timer adapters |
+| `http-body-util = 0.1.3` | defaults off | MIT | 1.61 | Incremental bounded bodies |
+| `http = 1.4.0` | defaults | MIT OR Apache-2.0 | 1.57 | Typed HTTP request/response types |
+| `tokio = 1.50.0` | defaults off; `rt-multi-thread,net,time,sync,macros,signal,io-util` | MIT | 1.71 | Owned runtime, sockets, deadlines, joins, Ctrl+C |
+| `rustls = 0.23.37` | defaults off; `ring,std,tls12` | Apache-2.0 OR ISC OR MIT | 1.71 | TLS from configured certificate/key material |
+| `rustls-pki-types = 1.14.0` | defaults off; `std` | MIT OR Apache-2.0 | 1.60 | PEM parsing and owned key types |
+| `tokio-rustls = 0.26.4` | defaults off; `ring,tls12` | MIT OR Apache-2.0 | 1.71 | Async rustls handshake/stream |
+
+Only `tokio-rustls 0.26.4` is a newly locked registry package, resolved offline from the
+local cache; no existing locked version changed. Licences/MSRVs were read from offline Cargo
+metadata. Cargo feature unification keeps broader hyper/tokio features enabled by existing
+consumers (reqwest). `ring` is the provider; `aws-lc-rs` was not added. The crate declares
+Rust 1.88; only Rust 1.96 was executed. Fixture certificates are named test-only and are
+never production defaults. Rejected: handwritten HTTP/TLS, generated trust, plaintext
+fallback, Java authority shortcuts, unbounded queues and detaching synchronous work on
+shutdown. SBOM, provenance/vulnerability review, notices and cross-platform validation
+remain release gates.
