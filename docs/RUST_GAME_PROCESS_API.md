@@ -1,7 +1,7 @@
 # Rust owned game-process increment — frozen test interface
 
 Date: 2026-10-08. Status: **implemented ordinary-library contract; not itself executed evidence**.
-See [the process checkpoint](RUST_GAME_PROCESS_CHECKPOINT.md) for actual Windows commands/results,
+See [the process checkpoint](archive/RUST_GAME_PROCESS_CHECKPOINT.md) for actual Windows commands/results,
 review fixes, failed-attempt history and remaining gaps.
 
 This continues the approved migration using an owned direct-child process and bounded console

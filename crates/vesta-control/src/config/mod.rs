@@ -166,6 +166,14 @@ impl PackMetadata {
     pub fn loader(&self) -> Option<&LoaderDescription> {
         self.loader.as_ref()
     }
+    /// The release ledger, not configuration, is authoritative for published revisions.
+    pub(crate) fn with_revisions(&self, revision: u64, minimum_revision: u64) -> Self {
+        Self {
+            revision,
+            minimum_revision,
+            ..self.clone()
+        }
+    }
 }
 impl fmt::Debug for PackMetadata {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

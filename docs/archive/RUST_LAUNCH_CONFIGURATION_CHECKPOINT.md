@@ -170,6 +170,6 @@ claimed. No launcher formatting or source edits were made for this increment. Th
 retains only its pre-existing protected manifest modification, with exact raw SHA-256
 `4f0e1eef699c54f1c1ee09007a3eca7e932e7b04a5ed15f4db73ddbfe0d01251`.
 
-Dependency intake is recorded in [DEPENDENCY_DECISIONS.md](DEPENDENCY_DECISIONS.md).
+Dependency intake is recorded in [DEPENDENCY_DECISIONS.md](../DEPENDENCY_DECISIONS.md).
 No Java inventory hash or frozen requirement text/status/history is replaced. Parity statuses
 and mandatory final whole-rebuild review must not be inferred from the source or test count.

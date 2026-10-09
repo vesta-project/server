@@ -3,6 +3,7 @@
 //! them under a prior hash. A refresh is bounded, not an atomic tree snapshot.
 mod build;
 mod publish;
+mod releases;
 pub use build::{
     BuiltVestaPack, MAX_VESTA_ARCHIVE_BYTES, MAX_VESTA_ENTRIES, MAX_VESTA_INDEX_BYTES,
     VestaBuildError, VestaBuildLimits, build_vesta,
@@ -10,6 +11,9 @@ pub use build::{
 pub use publish::{
     ArtifactFormat, LoadedArtifact, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_ENTRIES, PackArtifacts,
     PublishedArtifact,
+};
+pub use releases::{
+    PackRelease, PackReleases, ReleaseError, ReleasePlan, UpdatePolicy, UpdateStatus,
 };
 
 use crate::files::{FileError, PackNode, PackRoot, RelativePath};

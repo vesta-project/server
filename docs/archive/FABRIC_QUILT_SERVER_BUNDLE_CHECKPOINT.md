@@ -1,6 +1,6 @@
 # Download-only Fabric/Quilt server bundles (companion launcher)
 
-Date: **2026-10-06**. Provider-plan step 4. The authoritative implementation record is `launcher-server-mvp/docs/FABRIC_QUILT_SERVER_BUNDLE_CHECKPOINT.md`.
+Date: **2026-10-06**. Provider-plan step 4. The authoritative implementation record is `launcher-server-mvp/docs/archive/FABRIC_QUILT_SERVER_BUNDLE_CHECKPOINT.md`.
 
 The companion launcher's backend now installs **Fabric** and **Quilt** dedicated servers by downloading verified files (Vanilla + loader + libraries) into a schema-2 multi-file plan and receipt, with **no installer execution** and no EULA acceptance. Library membership comes from the same Modrinth catalogue/profile the launcher already uses, must equal the official Fabric/Quilt server profile, and is bound into the reviewed plan. Digests come from official metadata or official Maven SHA-256 sidecars, with sizes from official data or a bounded HEAD length; Quilt meta/Maven disagreement fails closed. Main classes, game-jar properties and the generated `@argfile` launch are compiled policy (Java 9+). The frontend supplies only software and version choices. Forge/NeoForge remain unavailable.
 

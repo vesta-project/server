@@ -1777,7 +1777,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_MINECRAFT_IDENTITY_CHECKPOINT.md",
+          "path": "docs/archive/RUST_MINECRAFT_IDENTITY_CHECKPOINT.md",
           "date": "2026-10-08",
           "claim": "Fresh native Windows fmt/check/offline-locked workspace test/strict all-target Clippy passed: 279 Rust tests total, including 40 Minecraft unit tests and two new compile-fail boundary doctests. Controlled provider, actual ureq::Body reader and private agent configuration assertions; no real provider/HTTP/TLS/DNS execution or complete identity/device composition. Independent scoped Sol review corrections and remaining gaps are recorded; no whole requirement/final review promotion."
         }
@@ -1824,7 +1824,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_MINECRAFT_IDENTITY_CHECKPOINT.md",
+          "path": "docs/archive/RUST_MINECRAFT_IDENTITY_CHECKPOINT.md",
           "date": "2026-10-08",
           "claim": "Fresh native Windows fmt/check/offline-locked workspace test/strict all-target Clippy passed: 279 Rust tests total, including 40 Minecraft unit tests and two new compile-fail boundary doctests. Controlled provider, actual ureq::Body reader and private agent configuration assertions; no real provider/HTTP/TLS/DNS execution or complete identity/device composition. Independent scoped Sol review corrections and remaining gaps are recorded; no whole requirement/final review promotion."
         }
@@ -2042,7 +2042,7 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "6d81c2e3173da747d5c48b8b6e39155832a7dc0670029585256da96bf2194826",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-protocol/src/pack/catalogue.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/ManifestBuilderTest.java",
         "core/src/test/java/com/vesta/sync/manifest/VestaPackBuilderTest.java",
@@ -2050,17 +2050,26 @@
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Rust validates embedded/server/platform provenance; URL values remain descriptions, not request authority.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Mutable Gson DTO semantics and route authorization are outside the protocol value type. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-protocol/tests/pack_catalogue_sync.rs",
+        "crates/vesta-protocol/tests/pack_sources.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-protocol/tests/pack_catalogue_sync.rs",
+          "date": "2026-10-09",
+          "claim": "text_and_source_budgets_are_bytes_and_descriptions_are_not_authority and independent_registry_golden_resolves_only_exact_path_and_content cover source values and provenance."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
       }
     },
     {
@@ -2069,24 +2078,33 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "a4058a2782f9372324116832f6b732b7ad796bc9f1a31489b43bd93676b62b9c",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-protocol/src/pack/sources.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/ManifestBuilderTest.java",
         "core/src/test/java/com/vesta/sync/manifest/ModpackStatePlatformTest.java"
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Rust resolves known provenance only for exact path-and-content hash matches and rejects malformed/colliding registries. This deliberately replaces Java path-only mapping with fail-closed content binding.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Java sidecar filename and best-effort filesystem loading/logging are not implemented in the protocol registry. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-protocol/tests/pack_sources.rs",
+        "crates/vesta-control/src/packs/tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-protocol/tests/pack_sources.rs",
+          "date": "2026-10-09",
+          "claim": "independent_registry_golden_resolves_only_exact_path_and_content and a_stale_registered_hash_refuses_instead_of_silently_embedding cover exact lookup and stale provenance."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
       }
     },
     {
@@ -2117,7 +2135,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_PACK_PUBLICATION_CHECKPOINT.md",
+          "path": "docs/archive/RUST_PACK_PUBLICATION_CHECKPOINT.md",
           "date": "2026-10-09",
           "claim": "Opaque archive pinning (existing traversal/extension/opaque tests) plus protected content-addressed publication surviving source replacement; scoped, not archive-mode catalogue or route parity."
         }
@@ -2133,23 +2151,31 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "252034f502b3904d216746b9cb734db4f9962f9970b7d60aa89314b693d77759",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/packs/mod.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/ManifestBuilderTest.java"
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Rust performs a bounded host filesystem snapshot, hashes pinned bytes, validates paths and emits a catalogue. It snapshots the permitted root rather than Java selected directories/private policy.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Selected-directory grouping, absent-directory behavior, path-only known sources and private-path policy have no equivalent; unsafe visible paths/links are rejected. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/packs/tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/packs/tests.rs",
+          "date": "2026-10-09",
+          "claim": "a_scan_is_deterministic_and_hashes_the_retained_bytes and hidden_files_and_directories_never_enter_the_catalogue cover snapshot/hash and hidden exclusion."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
       }
     },
     {
@@ -2158,24 +2184,32 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "ac788e8b5b40e55655e4dcc9ce74996bd2159f6175895e6de9000c9d0e7e5145",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-protocol/src/pack/catalogue.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/VestaPackBuilderTest.java",
         "core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java"
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Rust PackFile validates path, SHA-256, optional SHA-1, size and source and is immutable rather than a mutable DTO.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Direct Java field mutation and Gson serialization are not represented; endpoint composition is separate. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-protocol/tests/pack_catalogue_sync.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-protocol/tests/pack_catalogue_sync.rs",
+          "date": "2026-10-09",
+          "claim": "full_hashes_are_required_and_case_is_canonicalized_as_bytes and file_sizes_total_size_and_file_count_are_bounded cover hash and size validation."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
       }
     },
     {
@@ -2212,24 +2246,32 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "bdb0e62c7dc2627ec1cddc1751853cce976c6cde1621c4af0a46d278da89b777",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-protocol/src/pack/catalogue.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/LocalArchivePackTest.java",
         "core/src/test/java/com/vesta/sync/manifest/ModpackStatePlatformTest.java"
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Rust PackContent models custom/platform/archive content in strict decoding rather than a standalone Gson enum.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Enum serialization details and wrapper mode/source composition are uncovered. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-protocol/tests/pack_catalogue_sync.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-protocol/tests/pack_catalogue_sync.rs",
+          "date": "2026-10-09",
+          "claim": "platform_and_archive_catalogues_are_descriptive_and_never_remove_all covers platform and archive forms; golden_complete_diff_retains_metadata_and_old_hash_preconditions covers custom files."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
       }
     },
     {
@@ -2238,24 +2280,34 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "a715c5f1e61ce4699882d32af43827b5a1936810d167e0d3354c2780f289c026",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/packs/releases.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/LocalArchivePackTest.java",
         "core/src/test/java/com/vesta/sync/manifest/ModpackStatePlatformTest.java"
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Partial host-side Rust equivalent for hosted-pack state: PackReleases records monotonic database-backed releases (revision, minimum revision, display version, content-addressed artifact) under pack.publish/pack.force_update with same-transaction authority recheck and audit, replacing configuration-supplied revisions. Archive-mode manifest derivation (fromArchive) and platform-reference state are not implemented.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "ModpackState.fromArchive archive-mode manifest and platform-reference (createsAPlatformReferenceWithoutHostedFiles) behavior remain unimplemented.",
+        "Sync/status route, artifact pruning tied to releases and signed manifests remain unimplemented.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/packs/releases_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "docs/RUST_INTEGRATED_MIGRATION_PASS.md",
+          "date": "2026-10-09",
+          "claim": "Release ledger tests: monotonic revisions, optional/required minimum, status mapping, stale-plan conflict, authority and revocation recheck, version acknowledgement, embedded-revision check, missing-artifact refusal."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Release ledger tests pass; archive-mode manifest and serving remain unfinished."
       }
     },
     {
@@ -2333,7 +2385,7 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "7aa75d7338e63e9a9dff1bd85aa31e2816afc7ce4cbfc9aadef74602a9ec10cc",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-protocol/src/pack/catalogue.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/LocalArchivePackTest.java",
         "core/src/test/java/com/vesta/sync/manifest/ModpackStatePlatformTest.java",
@@ -2342,17 +2394,25 @@
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Rust Manifest models strict metadata, revision and custom/platform/archive content. It does not reproduce the legacy wrapper DTO or its split mods/overrides fields.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Minecraft/loader/server-info fields, legacy field names and route composition have no equivalent. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-protocol/tests/pack_catalogue_sync.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-protocol/tests/pack_catalogue_sync.rs",
+          "date": "2026-10-09",
+          "claim": "golden_complete_diff_retains_metadata_and_old_hash_preconditions and strict_manifest_schema_rejects_malformed_data_unknown_and_missing_fields cover core manifest metadata/content."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
       }
     },
     {
@@ -2361,21 +2421,29 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "88d11d85451716a02ded185f17eba6b6511722b81ddc176248bb8cba0acde8e6",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-protocol/src/pack/sync.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Rust emits immutable actions with validated paths, desired file data and installed-hash preconditions.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Java string operation names/direct DTO construction and endpoint serialization are outside the planner. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-protocol/tests/pack_catalogue_sync.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-protocol/tests/pack_catalogue_sync.rs",
+          "date": "2026-10-09",
+          "claim": "golden_complete_diff_retains_metadata_and_old_hash_preconditions and explicit_empty_catalogue_proposes_removals_and_empty_union_is_valid cover action forms."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
       }
     },
     {
@@ -2433,12 +2501,12 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_VESTA_BUILD_CHECKPOINT.md",
+          "path": "docs/archive/RUST_VESTA_BUILD_CHECKPOINT.md",
           "date": "2026-10-09",
           "claim": "Scoped builder and two Java assertion-method dispositions, executed Windows evidence, deliberate stricter admission and unresolved required disk effects; not full production-row parity."
         },
         {
-          "path": "docs/RUST_PACK_PUBLICATION_CHECKPOINT.md",
+          "path": "docs/archive/RUST_PACK_PUBLICATION_CHECKPOINT.md",
           "date": "2026-10-09",
           "claim": "Safer replacement for game-root fixed-temp output and replace/atomic-move fallback: unique create-new staging, no-replace content-addressed hard-link publication in protected state, verification on every load; scoped, not whole-row parity."
         }
@@ -2752,23 +2820,31 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "43f0f05db778b28a6cb496a5f193dabe5679686cfde141abd2ba6242a6c957fc",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-protocol/src/pack/sync.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/sync/ManifestDifferTest.java"
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Add/update/remove/keep and hash equality are implemented by the validated, sorted Rust planner. Rust rejects path collisions rather than using Java map overwrite behavior.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Java short hashes, permissive normalization and last-write-wins collision behavior are intentionally not reproduced; filesystem action execution is separate. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-protocol/tests/pack_catalogue_sync.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-protocol/tests/pack_catalogue_sync.rs",
+          "date": "2026-10-09",
+          "claim": "golden_complete_diff_retains_metadata_and_old_hash_preconditions, full_hashes_are_required_and_case_is_canonicalized_as_bytes, same_version_and_revision_never_hide_hash_drift"
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
       }
     },
     {
@@ -2777,23 +2853,31 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "11b79f7af003f5df60868e2d5916ff37f89d96bb5fd3903c2f6482659422a9c8",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-protocol/src/pack/sync.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/sync/SyncCheckServiceTest.java"
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Rust SyncPlan provides immutable target metadata, actions and update predicates. It is revision-aware rather than the Java transport result DTO.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Nullable embedded response manifest and endpoint serialization have no equivalent in SyncPlan. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-protocol/tests/pack_catalogue_sync.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-protocol/tests/pack_catalogue_sync.rs",
+          "date": "2026-10-09",
+          "claim": "golden_complete_diff_retains_metadata_and_old_hash_preconditions, exact_match_keeps_entries_without_needing_update"
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
       }
     },
     {
@@ -2802,23 +2886,31 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "3e0de624960253a2bebaad5621b14b8f4a85e4de9b755ae27f6c27a986fb4abb",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-protocol/src/pack/sync.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/sync/SyncCheckServiceTest.java"
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Rust planning combines exact version comparison, revision policy and validated file differences.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "HTTP response manifest/action omission and route composition are not implemented by the pure planner. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-protocol/tests/pack_catalogue_sync.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-protocol/tests/pack_catalogue_sync.rs",
+          "date": "2026-10-09",
+          "claim": "exact_match_keeps_entries_without_needing_update, same_version_and_revision_never_hide_hash_drift, revision_policy_including_minimum_boundary_and_unknown_is_explicit"
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
       }
     },
     {
@@ -3021,7 +3113,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_MINECRAFT_IDENTITY_CHECKPOINT.md",
+          "path": "docs/archive/RUST_MINECRAFT_IDENTITY_CHECKPOINT.md",
           "date": "2026-10-08",
           "claim": "Fresh native Windows fmt/check/offline-locked workspace test/strict all-target Clippy passed: 279 Rust tests total, including 40 Minecraft unit tests and two new compile-fail boundary doctests. Controlled provider, actual ureq::Body reader and private agent configuration assertions; no real provider/HTTP/TLS/DNS execution or complete identity/device composition. Independent scoped Sol review corrections and remaining gaps are recorded; no whole requirement/final review promotion."
         }
@@ -3154,23 +3246,31 @@
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "9156a2df24063262d3810fdf9c2c8a2c348a08121ef0ba5b8c6118497d12a703",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/packs/mod.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/LocalArchivePackTest.java"
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Archive confinement, supported extension and opaque pinned bytes overlap Rust archive preparation.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Legacy archive manifest construction and resolvedPath identity have no exact equivalent; publication route is separate. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/packs/tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/packs/tests.rs",
+          "date": "2026-10-09",
+          "claim": "Java LocalArchivePackTest#rejectsPathEscape and #rejectsUnsupportedExtension map to traversal_is_refused_and_archives_are_opaque_regardless_of_case; #createsArchiveManifestWithoutExtractingFiles overlaps that archive behavior but its legacy fields are not asserted in Rust."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
       }
     },
     {
@@ -3180,23 +3280,31 @@
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "a431215d0549e0992e74ea262c7247a7c45ca1ae230f2687061a782af10af593",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/packs/mod.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/ManifestBuilderTest.java"
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Rust snapshots permitted host files and hashes pinned bytes with a different source policy.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Missing selected directories, mods/overrides grouping, path-only known sources, unresolved-private behavior and extra-private paths lack equivalent assertions. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/packs/tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/packs/tests.rs",
+          "date": "2026-10-09",
+          "claim": "Java ManifestBuilderTest#scanSkipsHiddenFiles maps to hidden_files_and_directories_never_enter_the_catalogue; #scanCollectsModsAndOverrides partially overlaps a_scan_is_deterministic_and_hashes_the_retained_bytes, but grouping/source assertions do not."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
       }
     },
     {
@@ -3251,12 +3359,12 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_VESTA_BUILD_CHECKPOINT.md",
+          "path": "docs/archive/RUST_VESTA_BUILD_CHECKPOINT.md",
           "date": "2026-10-09",
           "claim": "Explicit disposition of embedsUnknownFilesAndLeavesKnownSourcesExternal assertions, with executed bounded ZIP evidence and the regular-file assertion still open."
         },
         {
-          "path": "docs/RUST_PACK_PUBLICATION_CHECKPOINT.md",
+          "path": "docs/archive/RUST_PACK_PUBLICATION_CHECKPOINT.md",
           "date": "2026-10-09",
           "claim": "The returned-path regular-file assertion maps to publication of a single-link regular content-addressed file in protected state, reloaded and verified; the Java game-root output location is deliberately not reproduced."
         }
@@ -3294,7 +3402,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_VESTA_BUILD_CHECKPOINT.md",
+          "path": "docs/archive/RUST_VESTA_BUILD_CHECKPOINT.md",
           "date": "2026-10-09",
           "claim": "Scoped independent golden-fixture interoperability assertions and explicit optional-hash/application limitations, not whole-family or production launcher verification."
         }
@@ -3337,23 +3445,31 @@
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "329fdf2f976e5506e75cb314d7731b384a1c39a5da5e1c14a3cc3afee2c92194",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-protocol/src/pack/sync.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/sync/ManifestDifferTest.java"
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Rust covers all four diff operations with full-width validated hashes and rejects collisions instead of permissive overwrite/normalization.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Java short hashes and permissive collision/normalization behavior are intentionally not preserved. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-protocol/tests/pack_catalogue_sync.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-protocol/tests/pack_catalogue_sync.rs",
+          "date": "2026-10-09",
+          "claim": "Java ManifestDifferTest#diffDetectsAddUpdateRemoveAndKeep assertions map to golden_complete_diff_retains_metadata_and_old_hash_preconditions; #diffTreatsHashesCaseInsensitively maps to full_hashes_are_required_and_case_is_canonicalized_as_bytes."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
       }
     },
     {
@@ -3363,23 +3479,31 @@
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "ace1ccb88c42e6f511b6c3b74f8d7320fd18ace5eb46ea6bbb4435b4471174b7",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-protocol/src/pack/sync.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/sync/SyncCheckServiceTest.java"
       ],
       "fixturePaths": [],
       "applicableRequirements": [],
-      "disposition": "pending_mapping",
+      "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Rust planning covers exact versions, no-change matches and same-version hash drift with revision-aware state.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Java response DTO semantics and client-version-only inputs are not implemented by the pure planner. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-protocol/tests/pack_catalogue_sync.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-protocol/tests/pack_catalogue_sync.rs",
+          "date": "2026-10-09",
+          "claim": "Java SyncCheckServiceTest#noUpdateWhenVersionAndHashesMatch maps to exact_match_keeps_entries_without_needing_update; #updateWhenVersionDiffers maps to proposals_are_input_order_independent_and_versions_are_exact_labels; #updateWhenHashesDriftOnSameVersion maps to same_version_and_revision_never_hide_hash_drift."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
       }
     },
     {
@@ -4326,7 +4450,7 @@
           "claim": "The frozen interface the identity implementation and tests were written against; it states in its own header that it is in progress and is not parity evidence or a requirement ledger."
         },
         {
-          "path": "docs/RUST_PASSWORD_STATE_CHECKPOINT.md",
+          "path": "docs/archive/RUST_PASSWORD_STATE_CHECKPOINT.md",
           "date": "2026-10-08",
           "claim": "Password metadata/revision/verification observations now exist with private fields and no PHC exposure or inbound authority constructor; production proof/transport remain unavailable."
         }
@@ -4383,7 +4507,7 @@
           "claim": "Independent constants fixture captured by scripts/IdentityConstantsOracle.java from the already-built Java production classes; crates/vesta-control/src/identity/tests/policy.rs asserts that the 6 built-in preset rows this Rust migration actually writes match the Java-seeded presets, id, name, rank, local-grant-only flag and capability list."
         },
         {
-          "path": "docs/RUST_STATE_PROTOCOL_CHECKPOINT.md",
+          "path": "docs/archive/RUST_STATE_PROTOCOL_CHECKPOINT.md",
           "date": "2026-10-07",
           "claim": "Windows 11 checkpoint recording the executed per-target assertion scope for these migration fixtures, including the explicit statement that its evidence does not verify the redesigned state/control identity work."
         }
@@ -4575,7 +4699,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_PASSWORD_STATE_CHECKPOINT.md",
+          "path": "docs/archive/RUST_PASSWORD_STATE_CHECKPOINT.md",
           "date": "2026-10-08",
           "claim": "Server-local singleton/reopen; checked positive revisions and retained tombstones; current canonical authority/revision before KDF and in admitted mutation transaction; deny/reserved/expiry/device facts after hashing; queued-writer expiry; final create conflict; atomic audit/COMMIT failures and separately audited refusal-primary preservation; byte-bounded borrowed PHC before copy; stale matching PHC/rotation/revocation refusal; match never changes authority facts; gate refusals and redaction. Windows execution and exact limitations are recorded in the dated checkpoint; no whole requirement promotion."
         }
@@ -4616,7 +4740,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_PASSWORD_STATE_CHECKPOINT.md",
+          "path": "docs/archive/RUST_PASSWORD_STATE_CHECKPOINT.md",
           "date": "2026-10-08",
           "claim": "Typed PasswordError and fixed secret-free error codes/Display replace Java exception structure; tested redacted secret/verifier Debug and source exclusion. Windows execution and exact limitations are recorded in the dated checkpoint; no whole requirement promotion."
         }
@@ -4658,7 +4782,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_PASSWORD_STATE_CHECKPOINT.md",
+          "path": "docs/archive/RUST_PASSWORD_STATE_CHECKPOINT.md",
           "date": "2026-10-08",
           "claim": "Owned bounded UTF-8 bytes/scalars; exact NUL/whitespace and no normalization/truncation; retained independent Bun ASCII/UTF-8 fixtures, Argon2id v19 production costs/fresh salts, canonical bounded PHC/Base64, six parameter permutations, zero KDF/workspace work on rejected envelopes, rehash observation and concurrent hasher reuse. Caller-owned zeroizing Argon2 workspace; fixed material-free errors. Windows execution and exact limitations are recorded in the dated checkpoint; no whole requirement promotion."
         }
@@ -4724,7 +4848,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md",
+          "path": "docs/archive/RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md",
           "date": "2026-10-09",
           "claim": "Exact literal JAR/argfile/native argv and cwd, explicit/default stop semantics, bounded closed-schema redaction, explicit selected Java, no implicit nogui/PATH/shell/start/authority, and retained-artifact preflight before the real effect guard; executed commands, failed attempts and deliberate Java behavior dispositions are recorded separately from product gaps."
         }
@@ -5407,7 +5531,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_STATE_PROTOCOL_CHECKPOINT.md",
+          "path": "docs/archive/RUST_STATE_PROTOCOL_CHECKPOINT.md",
           "date": "2026-10-07",
           "claim": "Windows 11 checkpoint recording the executed per-target assertion scope for vesta-protocol and vesta-state, the independent contracts (Gson 2.11.0 audit vectors, shared JSON corpus) and the intentional differences from the legacy Java helper; it explicitly does not verify the redesigned state/control identity work."
         },
@@ -5461,7 +5585,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_STATE_PROTOCOL_CHECKPOINT.md",
+          "path": "docs/archive/RUST_STATE_PROTOCOL_CHECKPOINT.md",
           "date": "2026-10-07",
           "claim": "Windows 11 checkpoint recording the executed per-target assertion scope for vesta-protocol and vesta-state, the independent contracts (Gson 2.11.0 audit vectors, shared JSON corpus) and the intentional differences from the legacy Java helper; it explicitly does not verify the redesigned state/control identity work."
         },
@@ -5643,7 +5767,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_PASSWORD_STATE_CHECKPOINT.md",
+          "path": "docs/archive/RUST_PASSWORD_STATE_CHECKPOINT.md",
           "date": "2026-10-08",
           "claim": "Real process factory shares concurrency across same/different databases; private shared accounting, separate continuous integer rate buckets, monotonic clock, rate-before-Busy, bounded nonblocking concurrent ownership, revocation without a KDF slot, unwind/poison/close behavior and reuse of every slot. Windows execution and exact limitations are recorded in the dated checkpoint; no whole requirement promotion."
         }
@@ -5707,21 +5831,30 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "9b62571e55ab42a0aed0aed55166b268583ba78eb7fb2360686a84857b96bbc7",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/whitelist.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Partial host-side Rust equivalent: Whitelist::parse is a pure bounded strict parser of whitelist.json bytes with MinecraftUuid membership. Java silently skipped malformed entries and treated read failures as an empty set; Rust deliberately refuses the whole document (fail closed) and grants no authority.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Protected file loading, reload on change and composition into pack-access policy (whitelist-gated Minecraft-policy access) are not implemented.",
+        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/whitelist_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "docs/RUST_INTEGRATED_MIGRATION_PASS.md",
+          "date": "2026-10-09",
+          "claim": "Strict bounded whitelist parser with malformed/oversized/duplicate/BOM/redaction tests; no loading or policy composition."
+        }
+      ],
       "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+        "status": "unverified",
+        "summary": "Parser tests pass; loading and pack-access policy composition remain unimplemented."
       }
     },
     {
@@ -6551,7 +6684,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_PASSWORD_STATE_CHECKPOINT.md",
+          "path": "docs/archive/RUST_PASSWORD_STATE_CHECKPOINT.md",
           "date": "2026-10-08",
           "claim": "Server-local singleton/reopen; checked positive revisions and retained tombstones; current canonical authority/revision before KDF and in admitted mutation transaction; deny/reserved/expiry/device facts after hashing; queued-writer expiry; final create conflict; atomic audit/COMMIT failures and separately audited refusal-primary preservation; byte-bounded borrowed PHC before copy; stale matching PHC/rotation/revocation refusal; match never changes authority facts; gate refusals and redaction. Windows execution and exact limitations are recorded in the dated checkpoint; no whole requirement promotion."
         }
@@ -6593,7 +6726,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_PASSWORD_STATE_CHECKPOINT.md",
+          "path": "docs/archive/RUST_PASSWORD_STATE_CHECKPOINT.md",
           "date": "2026-10-08",
           "claim": "Owned bounded UTF-8 bytes/scalars; exact NUL/whitespace and no normalization/truncation; retained independent Bun ASCII/UTF-8 fixtures, Argon2id v19 production costs/fresh salts, canonical bounded PHC/Base64, six parameter permutations, zero KDF/workspace work on rejected envelopes, rehash observation and concurrent hasher reuse. Caller-owned zeroizing Argon2 workspace; fixed material-free errors. Windows execution and exact limitations are recorded in the dated checkpoint; no whole requirement promotion."
         }
@@ -6661,7 +6794,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md",
+          "path": "docs/archive/RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md",
           "date": "2026-10-09",
           "claim": "Behavior-disposition table and exact executed Windows commands document parser negatives, native literal shape witnesses, retained-artifact refusal before effect, explicit native stop, fixed redaction and canonical no-authority/no-auto-start composition. Java-only object/JDK/legacy assertions are explicitly dispositioned; no skipped tests or whole-requirement promotion."
         }
@@ -6872,7 +7005,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_STATE_PROTOCOL_CHECKPOINT.md",
+          "path": "docs/archive/RUST_STATE_PROTOCOL_CHECKPOINT.md",
           "date": "2026-10-07",
           "claim": "Windows 11 checkpoint recording the executed per-target assertion scope for vesta-protocol and vesta-state, the independent contracts (Gson 2.11.0 audit vectors, shared JSON corpus) and the intentional differences from the legacy Java helper; it explicitly does not verify the redesigned state/control identity work."
         },
@@ -6920,7 +7053,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_STATE_PROTOCOL_CHECKPOINT.md",
+          "path": "docs/archive/RUST_STATE_PROTOCOL_CHECKPOINT.md",
           "date": "2026-10-07",
           "claim": "Windows 11 checkpoint recording the executed per-target assertion scope for vesta-protocol and vesta-state, the independent contracts (Gson 2.11.0 audit vectors, shared JSON corpus) and the intentional differences from the legacy Java helper; it explicitly does not verify the redesigned state/control identity work."
         },
@@ -6966,7 +7099,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_STATE_PROTOCOL_CHECKPOINT.md",
+          "path": "docs/archive/RUST_STATE_PROTOCOL_CHECKPOINT.md",
           "date": "2026-10-07",
           "claim": "Windows 11 checkpoint recording the executed per-target assertion scope for vesta-protocol and vesta-state, the independent contracts (Gson 2.11.0 audit vectors, shared JSON corpus) and the intentional differences from the legacy Java helper; it explicitly does not verify the redesigned state/control identity work."
         },
@@ -7352,7 +7485,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_PASSWORD_STATE_CHECKPOINT.md",
+          "path": "docs/archive/RUST_PASSWORD_STATE_CHECKPOINT.md",
           "date": "2026-10-08",
           "claim": "Real process factory shares concurrency across same/different databases; private shared accounting, separate continuous integer rate buckets, monotonic clock, rate-before-Busy, bounded nonblocking concurrent ownership, revocation without a KDF slot, unwind/poison/close behavior and reuse of every slot. Windows execution and exact limitations are recorded in the dated checkpoint; no whole requirement promotion."
         }
@@ -7550,7 +7683,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_STATE_PROTOCOL_CHECKPOINT.md",
+          "path": "docs/archive/RUST_STATE_PROTOCOL_CHECKPOINT.md",
           "date": "2026-10-07",
           "claim": "Windows 11 checkpoint recording the executed per-target assertion scope for vesta-protocol and vesta-state, the independent contracts (Gson 2.11.0 audit vectors, shared JSON corpus) and the intentional differences from the legacy Java helper; it explicitly does not verify the redesigned state/control identity work."
         },
@@ -7649,7 +7782,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_STATE_PROTOCOL_CHECKPOINT.md",
+          "path": "docs/archive/RUST_STATE_PROTOCOL_CHECKPOINT.md",
           "date": "2026-10-07",
           "claim": "Windows 11 checkpoint recording the executed per-target assertion scope for vesta-protocol and vesta-state, the independent contracts (Gson 2.11.0 audit vectors, shared JSON corpus) and the intentional differences from the legacy Java helper; it explicitly does not verify the redesigned state/control identity work."
         },
@@ -7690,7 +7823,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_STATE_PROTOCOL_CHECKPOINT.md",
+          "path": "docs/archive/RUST_STATE_PROTOCOL_CHECKPOINT.md",
           "date": "2026-10-07",
           "claim": "Windows 11 checkpoint recording the executed per-target assertion scope for vesta-protocol and vesta-state, the independent contracts (Gson 2.11.0 audit vectors, shared JSON corpus) and the intentional differences from the legacy Java helper; it explicitly does not verify the redesigned state/control identity work."
         },
@@ -7735,7 +7868,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_STATE_PROTOCOL_CHECKPOINT.md",
+          "path": "docs/archive/RUST_STATE_PROTOCOL_CHECKPOINT.md",
           "date": "2026-10-07",
           "claim": "Windows 11 checkpoint recording the executed per-target assertion scope for vesta-protocol and vesta-state, the independent contracts (Gson 2.11.0 audit vectors, shared JSON corpus) and the intentional differences from the legacy Java helper; it explicitly does not verify the redesigned state/control identity work."
         },
@@ -7791,16 +7924,16 @@
     "evidence": [
       {
         "path": "docs/RUST_IDENTITY_API_FREEZE.md",
-        "claim": "Interim independent review record. A non-Anthropic interim review was executed on 2026-10-08 and found no authority bypass and no audit/mutation atomicity break. Its one medium finding (a scope longer than one audit metadata value could insert its row and then fail its own success audit) was fixed by bounding ResourceScope text at MAX_METADATA_VALUE_UNITS and covered by an_unrecordable_scope_is_refused_before_any_row_or_audit_is_attempted; an invalid_request state/domain error-code collision was also fixed. This earlier interim review is explicitly NOT the final full-rebuild GPT-6.1 Sol review. Sol was unavailable at that checkpoint; later scoped Sol password/state source reviews are recorded in docs/RUST_PASSWORD_STATE_CHECKPOINT.md. The final whole-rebuild review remains not_run and must occur after actual implementation, before any completion claim.",
+        "claim": "Interim independent review record. A non-Anthropic interim review was executed on 2026-10-08 and found no authority bypass and no audit/mutation atomicity break. Its one medium finding (a scope longer than one audit metadata value could insert its row and then fail its own success audit) was fixed by bounding ResourceScope text at MAX_METADATA_VALUE_UNITS and covered by an_unrecordable_scope_is_refused_before_any_row_or_audit_is_attempted; an invalid_request state/domain error-code collision was also fixed. This earlier interim review is explicitly NOT the final full-rebuild GPT-6.1 Sol review. Sol was unavailable at that checkpoint; later scoped Sol password/state source reviews are recorded in docs/archive/RUST_PASSWORD_STATE_CHECKPOINT.md. The final whole-rebuild review remains not_run and must occur after actual implementation, before any completion claim.",
         "date": "2026-10-08"
       },
       {
-        "path": "docs/RUST_PASSWORD_STATE_CHECKPOINT.md",
+        "path": "docs/archive/RUST_PASSWORD_STATE_CHECKPOINT.md",
         "claim": "Independent GPT-6.1 Sol scoped source review of password/state fixes and application regressions found no verified production defect; parent fixed weak permit-release and other assertion gaps and reran the fresh Windows suites. This is checkpoint evidence only, not the mandatory final full-rebuild review, which remains not_run.",
         "date": "2026-10-08"
       },
       {
-        "path": "docs/RUST_MINECRAFT_IDENTITY_CHECKPOINT.md",
+        "path": "docs/archive/RUST_MINECRAFT_IDENTITY_CHECKPOINT.md",
         "date": "2026-10-08",
         "claim": "Independent GPT-6.1 Sol scoped Minecraft production/test review confirmed fixes for late provider-error swallowing and the exact ureq body-reader cap; parent strengthened two-slot cleanup, blocked-provider hold and bounded unknown-property assertions, then fresh Windows verification passed. A historical 429 follow-up was later resumed on the same Sol context without fallback. This is not the final whole-rebuild review; its status remains not_run."
       }

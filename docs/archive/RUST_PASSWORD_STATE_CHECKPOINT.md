@@ -4,7 +4,7 @@ Date: **2026-10-08**. Executed platform: **native Windows 11**, Rust/Cargo **1.9
 Status: **bounded development increment; full rebuild and final independent review incomplete**.
 
 This extends, rather than replaces, the historical [state checkpoint](RUST_STATE_PROTOCOL_CHECKPOINT.md)
-and [canonical identity record](RUST_IDENTITY_API_FREEZE.md). Java source/tests/builds remain
+and [canonical identity record](../RUST_IDENTITY_API_FREEZE.md). Java source/tests/builds remain
 available for useful behavior comparison. Rust ownership, validated values, typed transaction
 errors and cohesive domain modules replace Java API/class structure and incidental JDK semantics.
 The 222 Java inventory entries and 370 original normative requirements remain frozen;
@@ -151,7 +151,7 @@ recovery-passphrase integration, authenticated management routes and executable 
 No fake fault injector, proof, session, grant or stub agent is used to claim these gates closed.
 
 Linux/macOS/other architectures and declared Rust **1.85 MSRV execution** remain unverified.
-Dependency pins/features/metadata are recorded in [dependency decisions](DEPENDENCY_DECISIONS.md),
+Dependency pins/features/metadata are recorded in [dependency decisions](../DEPENDENCY_DECISIONS.md),
 not provenance/vulnerability/SBOM/licence-packaging certification. Native ACL/path checks remain
 same-account storage hygiene, not independent game confinement or race-free filesystem resolution.
 Unicode resource scopes, durable operations/runner/replay, game/runtime, installer extraction,

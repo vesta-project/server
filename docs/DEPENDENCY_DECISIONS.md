@@ -37,7 +37,7 @@ The existing BouncyCastle dependency already supplies Argon2id/Ed25519 primitive
 - Cached crate metadata declares `MIT OR Apache-2.0`; upstream repository is `https://github.com/RustCrypto/hashes`. This is local metadata intake, not a complete distribution-license/provenance/vulnerability certification.
 - Version 0.10.6 was already locked transitively and cached. The only Cargo.lock change is adding the piston-lib dependency edge; no package version/source/checksum updates or dependency fetch were needed. Existing sha1/sha2/digest 0.10 infrastructure is retained.
 - Existing pinned `windows-sys 0.61.2` additionally enables `Win32_Storage_FileSystem` and `Win32_System_WindowsProgramming` for read-only `GetDriveTypeW` local-volume admission. No new crate or OS service is introduced, and this does not supply path-handle confinement or mapped-volume alias certification.
-- Release intake remains open: full SBOM, trusted locked-artifact provenance/vulnerability review, licence/notice packaging and clean supported-platform behavior. See [automatic-provider checkpoint](AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md) for fixture scope and remaining gates.
+- Release intake remains open: full SBOM, trusted locked-artifact provenance/vulnerability review, licence/notice packaging and clean supported-platform behavior. See [automatic-provider checkpoint](archive/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md) for fixture scope and remaining gates.
 
 ## Rust host-wrapper state and discovery intake (2026-10-07)
 
@@ -242,7 +242,7 @@ ureq::Body fixtures cover the shared production reader's exact 64 KiB acceptance
 rejection; controlled provider fixtures cover owned work/admission/cleanup, while configuration
 assertions inspect the private production agent without sending a request. These do **not** establish
 real HTTPS/TLS/certificate/DNS/Mojang behavior. No local HTTP/TLS server or real Mojang request ran.
-See [the Minecraft checkpoint](RUST_MINECRAFT_IDENTITY_CHECKPOINT.md) for actual scope and failures.
+See [the Minecraft checkpoint](archive/RUST_MINECRAFT_IDENTITY_CHECKPOINT.md) for actual scope and failures.
 
 Exact ureq 3.3.0 dependency Trace logging exposes username/serverId queries and Location even though
 module errors/Debug are redacted. Full transport-log redaction remains a runtime-composition/upstream
@@ -311,7 +311,7 @@ code. Function-scoped native allowances cover the unchanged read-only volume/fil
 they do not certify native isolation, process-tree containment or path-race resistance. No cached
 crate was modified. Full SBOM, trusted provenance/vulnerability/notice review, clean-platform
 packaging, supported service accounts, MSRV execution, CI sibling-checkout wiring and release
-approval remain open. See [the extraction checkpoint](RUST_INSTALLER_EXTRACTION_CHECKPOINT.md).
+approval remain open. See [the extraction checkpoint](archive/RUST_INSTALLER_EXTRACTION_CHECKPOINT.md).
 
 ## Trusted launch TOML intake (2026-10-09)
 
@@ -343,7 +343,7 @@ an authenticated remote configuration API or a full `WrapperConfig` replacement.
 
 Locked resolution and initial all-target compilation succeeded, followed by actual Windows
 adapter/native-fixture tests. Exact commands and failed-attempt history are in
-[RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md](RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md).
+[RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md](archive/RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md).
 No real Java/Minecraft or argfile execution was used. The adapter introduces no native
 library, service or network listener. Rust 1.96 Windows execution is not Rust 1.76, workspace
 1.85/installer 1.88 MSRV evidence. Full transitive licence/notice review, SBOM, trusted
@@ -366,7 +366,7 @@ Pure pack validation/reconciliation reuses existing `serde`, `serde_json`, `sha2
 `hex`; no regex, archive or networking dependency is introduced. Strict Rust-native
 catalogue schemas do not replace the retained Java/index wire schema. Opaque archive
 metadata authorizes no download/extraction/ZIP construction. The current slice has no
-file writes/deletes or network/process effects. [The scoped checkpoint](RUST_FILE_PACK_CHECKPOINT.md)
+file writes/deletes or network/process effects. [The scoped checkpoint](archive/RUST_FILE_PACK_CHECKPOINT.md)
 records actual tests, review fixes, alias/ancestor race limits and remaining behavior.
 Licence/provenance/SBOM/notice, non-Windows/MSRV, service-account and release gates remain
 open; existing package intake is not refreshed into a new release certification.
@@ -388,7 +388,7 @@ no database preparation, credentials, game start, certificate generation or list
 Peer token-bucket admission, player-output parsing and length-prefixed UTF-8 framing
 use only std and existing workspace support; no regex, async/network/TLS, archive
 or crypto package is introduced. Admission/framing do not implement authentication,
-a route dispatcher or peer-worker lifecycle. [The host checkpoint](RUST_HOST_CONFIGURATION_CHECKPOINT.md)
+a route dispatcher or peer-worker lifecycle. [The host checkpoint](archive/RUST_HOST_CONFIGURATION_CHECKPOINT.md)
 records scope, actual verification history, residual native/transport limitations
 and unfinished full-host composition. All release/platform/MSRV gates remain open.
 
@@ -433,7 +433,7 @@ output-cap failures before creating the writer, and the seekable sink still enfo
 actual output. A real footer-failure fixture exercises Drop's fixed diagnostic. The
 explicit 1.88 declaration also enables MSRV-aware Clippy suggestions in existing control
 code/tests; equivalent let-chains and a multiple test are used without lint suppression.
-[The build checkpoint](RUST_VESTA_BUILD_CHECKPOINT.md) records implementation, failed
+[The build checkpoint](archive/RUST_VESTA_BUILD_CHECKPOINT.md) records implementation, failed
 attempts, executed evidence and remaining application boundaries.
 Full SBOM/notices, trusted registry/release provenance, update
 policy, vulnerability review, minimum-toolchain/non-Windows/native packaging and release

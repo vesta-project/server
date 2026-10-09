@@ -1,6 +1,6 @@
 # Typed launch definition checkpoint
 
-Assessment date: **2026-10-05**. This implements step 2 of the [server software provider plan](SERVER_SOFTWARE_PROVIDER_FRAMEWORK_PLAN.md): a **shell-free launch definition that is not assumed to be `java -jar server.jar`**, wired into the existing generation-bound lifecycle. It prepares the process layer for software providers and native servers. It does **not** download or install any software, certify any server implementation, add a stop/readiness protocol, supervise independently of the agent, or change authority. Schema stays **4**; no launcher source changed.
+Assessment date: **2026-10-05**. This implements step 2 of the [server software provider plan](../SERVER_SOFTWARE_PROVIDER_FRAMEWORK_PLAN.md): a **shell-free launch definition that is not assumed to be `java -jar server.jar`**, wired into the existing generation-bound lifecycle. It prepares the process layer for software providers and native servers. It does **not** download or install any software, certify any server implementation, add a stop/readiness protocol, supervise independently of the agent, or change authority. Schema stays **4**; no launcher source changed.
 
 ## What exists
 

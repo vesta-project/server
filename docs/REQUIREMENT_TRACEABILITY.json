@@ -27,8 +27,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -166,7 +166,7 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Failed stop cannot auto-kill or duplicate the fixture JVM. Supervisor update/activation/readiness and approved restart operation are not implemented.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -219,8 +219,8 @@
       ],
       "evidence": [
         "2026-10-05 Windows: fresh server 687-test suite passed. The typed launch definition (java-jar, java-argfile, native) with an explicit working directory is evidenced with real owned child processes: literal arguments with no shell interpolation, strict value validation without echo, a strict [launch] configuration that fails closed on any conflict with the legacy keys, known no-effect preflight failures and a graceful stop that is never invented (an unsupported stop is rejected before any gate, state change or console write). Authorized remote registration or editing of launch definitions, local-only protection of changes, script presets, Linux/native execution and real server software remain unverified and not implemented.",
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/LAUNCH_DEFINITION_CHECKPOINT.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/LAUNCH_DEFINITION_CHECKPOINT.md"
       ]
     },
     {
@@ -334,8 +334,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -362,8 +362,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -379,8 +379,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -396,8 +396,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -413,8 +413,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -430,8 +430,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -503,10 +503,10 @@
         "wrapper/src/test/java/com/vesta/wrapper/operations/PolicyOperationAuthorityTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only.",
-        "docs/OPERATION_AUTHORITY_PASSWORD_CHECKPOINT.md",
+        "docs/archive/OPERATION_AUTHORITY_PASSWORD_CHECKPOINT.md",
         "2026-10-04 Windows: 30 canonical-submission/authority cases passed against real SQLite/current identity, including all required exact capabilities, denies/reserved tiers/path scopes, source-label non-authority, expiry/revocation and actual runner checks before effects. Trusted bindings preserve canonical target/requirements/locks; request-supplied security fields cannot weaken contracts. Authenticated transport, production handlers, runtime/HTTP composition and replacement of legacy loopback/OP authority remain absent."
       ]
     },
@@ -536,8 +536,8 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Exact principal/device/action/target/payload/revision/expiry, single use, rejection burn and audit rollback passed. Canonical authority and authoritative revision/prepare-confirm handlers/UI remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/DURABLE_LIFECYCLE_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/DURABLE_LIFECYCLE_CHECKPOINT.md",
         "2026-10-05 Windows: Current-policy canonical confirmation transaction, server-owned live-generation revision, exact token ownership/single use/rejection burn and audit rollback are composed. Device possession/transport, user-facing API/UI and non-lifecycle adapters remain absent."
       ]
     },
@@ -553,8 +553,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -581,8 +581,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -598,8 +598,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -615,8 +615,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -632,8 +632,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -649,8 +649,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -666,8 +666,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -683,8 +683,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -700,8 +700,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -717,8 +717,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -734,8 +734,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -751,8 +751,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -768,8 +768,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 41 parent-authored identity/authorization cases passed, covering local-proof/code/recovery, exact-capability role matrices, explicit denies/scopes/reserved tiers, strict delegation/revocation, expiry, binding and atomic audit as applicable. OS proof, authenticated transport/device possession, invitations, notifications and HTTP composition remain absent; this is domain evidence only."
       ]
     },
@@ -841,7 +841,7 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Raw-console validator rejects controls/newlines/Unicode separators before stdin effect. Typed moderation identifiers/arguments and limited-action authority remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -967,7 +967,7 @@
       ],
       "evidence": [
         "2026-10-04 Windows: relevant assertions passed in server (224 tests) and/or piston-lib (161 tests) fresh suites. Distinct revision/minimumRevision retained; negative/inverted headers reject. Publish/access/join enforcement and UI remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -1193,7 +1193,7 @@
       ],
       "evidence": [
         "2026-10-04 Windows: relevant assertions passed in server (224 tests) and/or piston-lib (161 tests) fresh suites. Actual Java builder matches frozen Rust fixture: aliases/hashes/size/loader/revisions/environment. Signing/symlink/optional/instance-state integration remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -1212,7 +1212,7 @@
         "2026-10-04 Windows: relevant assertions passed in server (224 tests) and/or piston-lib (161 tests) fresh suites. Immutable provider IDs/URLs/hashes/provenance survive parsing; provider bytes not embedded. Full install/update provenance and CurseForge declared-path enforcement remain absent.",
         "2026-10-04 subsequent manual-import checkpoint: vesta_manual_import.rs verifies write-free immutable-ID resolution, declared-path enforcement rather than resolver filenames, exact size/every declared hash, persisted provider provenance and two distinct paths for one provider file. Signed publication, trusted update and real provider-download execution remain unverified.",
         "launcher-server-mvp:docs/VESTA_MANUAL_IMPORT_CHECKPOINT.md",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -1228,7 +1228,7 @@
       ],
       "evidence": [
         "2026-10-04 Windows: relevant assertions passed in server (224 tests) and/or piston-lib (161 tests) fresh suites. Invalid/mutable IDs, mismatched URLs and missing installer-required hashes reject. Signed publication/fail-closed provider execution remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -1268,7 +1268,7 @@
       ],
       "evidence": [
         "2026-10-04 Windows: relevant assertions passed in server (224 tests) and/or piston-lib (161 tests) fresh suites. Declared embedded overrides require exact size/every declared hash; undeclared files reject. Server workspace/upload/build and aggregate quotas remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
         "launcher-server-mvp:docs/VESTA_IMPORT_LIMITS_CHECKPOINT.md",
         "2026-10-05 Windows: Manual Vesta import archive/count/index/declared/embedded/header-expansion budgets and declared provider/client totals reject before resolver/base install/writes, with exact boundaries, overflow, owned cleanup and native Windows staging junction coverage. Actual provider download stream ceilings, central-directory allocation cap, global reservations/concurrency and server workspace quotas remain absent."
       ]
@@ -1287,7 +1287,7 @@
       "evidence": [
         "2026-10-04 Windows: manual-import manifest persistence retains revision/minimumRevision, archive digest, unverified trust, signature envelope and declared immutable provider identities; older manifests remain readable. Separate signed hosted manifest/overrides publication and authenticated network sync remain absent.",
         "launcher-server-mvp:docs/VESTA_MANUAL_IMPORT_CHECKPOINT.md",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -1304,7 +1304,7 @@
       "evidence": [
         "2026-10-04 Windows: injected provider-resolution failures aggregate affected-file errors and abort write-free planning; missing/wrong SHA-1 and non-HTTPS responses reject. Declared targets, exact artifact sizes and every declared SHA-1/SHA-256/SHA-512 are checked, bypassing unverified label cache. Real provider downloads, signed/trusted sync, withdrawal behavior and global storage/concurrency quotas remain unverified.",
         "launcher-server-mvp:docs/VESTA_MANUAL_IMPORT_CHECKPOINT.md",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -1323,7 +1323,7 @@
         "2026-10-04 Windows: relevant assertions passed in server (224 tests) and/or piston-lib (161 tests) fresh suites. Java archive wire format and launcher canonical/legacy aliases parse. Vesta export rejects before output mutation. Signed portability/import authority remain absent.",
         "2026-10-04 subsequent manual-import checkpoint: 24 parent Rust import cases plus parent use-install-submit.test.ts and vesta-trust-prompt.test.tsx verify exact reviewed-digest acknowledgement, private snapshots, cancel/no install, metadata bypass rejection, unchanged unverified signature status, concurrent fresh-directory reservation and native Windows link-safe rollback. Canonical/legacy launch-intent coverage added; full Tauri execution, Vesta export and signed portability remain separate gates.",
         "launcher-server-mvp:docs/VESTA_MANUAL_IMPORT_CHECKPOINT.md",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -1372,7 +1372,7 @@
       ],
       "evidence": [
         "2026-10-04 Windows: relevant assertions passed in server (224 tests) and/or piston-lib (161 tests) fresh suites. Executable ZIP modes/extensions and protected/traversal paths reject; existing destination links/junctions checked. Native hostile-ancestor isolation/full signed apply sandbox remain unverified.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -1477,7 +1477,7 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Ordinary dotfiles visible; invariant state/config/custom TLS and linked entries excluded. Per-user filtering/full-route/OS isolation contract remains incomplete.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -1559,9 +1559,9 @@
         "crates/vesta-server-install/src/tests/providers.rs"
       ],
       "evidence": [
-        "docs/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
+        "docs/archive/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
         "2026-10-05 Windows: callable local backend installs new Vanilla/Paper/Folia/Purpur fixture bundles with exact reviewed plans, no-clobber files and verified receipts. Adoption, loaders, launcher/headless wiring, managed Java and agent configuration persistence remain absent; no whole hosting requirement is verified.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -1711,8 +1711,8 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Normal stop/STOPPING, timeout/interruption retention, delayed exit and no-duplicate restart passed. Force Kill authority/UI/workflow settings and supervisor remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/DURABLE_LIFECYCLE_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/DURABLE_LIFECYCLE_CHECKPOINT.md",
         "2026-10-05 Windows: Generation-bound real child-JVM stop times out without kill/relaunch; exact-authorized force kill rejects changed generations before signal. Durable mode disables legacy console/power mutations. No independent supervisor, Stop UI or unattended workflow policy is implemented."
       ]
     },
@@ -2016,7 +2016,7 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Shared file/content invariant/custom-TLS protection, ordinary dotfiles and actual Windows junction rejection passed. Native ancestor races/hard links/all reparse subtypes/separate OS identities/SFTP remain unverified.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -2065,9 +2065,9 @@
         "crates/vesta-server-install/src/tests/installation.rs"
       ],
       "evidence": [
-        "docs/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
+        "docs/archive/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
         "2026-10-05 Windows: closed JAR providers check published digests, actual streamed size, compiled HTTPS sources and redirect-before-request refusal; direct-address policy/pinning and trusted proxy boundary are explicit. Arbitrary URL/content-management routes, native networking certification and artifact authenticity remain unimplemented/unverified.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -2083,9 +2083,9 @@
         "crates/vesta-server-install/src/tests/providers.rs"
       ],
       "evidence": [
-        "docs/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
+        "docs/archive/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
         "2026-10-05 Windows: private artifact transfer requires a validated source-bound digest pin and owned disk sink; hashless, source-escaped and artifact-to-memory calls refuse. Compiled providers are the only exposed local install inputs; an authenticated arbitrary-content API remains not implemented.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -2146,9 +2146,9 @@
         "crates/vesta-server-install/src/tests/plans.rs"
       ],
       "evidence": [
-        "docs/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
+        "docs/archive/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
         "2026-10-05 Windows: local JAR install metadata/artifact/cumulative retry-byte/deadline limits, two process-local slots, local-volume admission, reservations and 512-MiB floor are tested with tiny fixtures and native Windows volume/junction cases. Full upload/archive/extraction quotas, interprocess/alias certification, crash-staging expiry and user-configurable hosting UI remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -2674,12 +2674,12 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Durable IDs/states/progress and exact actor/server/idempotency/safety binding passed. Production actions/executor and persisted requested inputs remain absent at this checkpoint.",
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent.",
-        "docs/OPERATION_AUTHORITY_PASSWORD_CHECKPOINT.md",
+        "docs/archive/OPERATION_AUTHORITY_PASSWORD_CHECKPOINT.md",
         "2026-10-04 Windows: 30 canonical-submission/authority cases passed, including persisted canonical target/lock/contract derivation, semantic round-trip rejection, bounded requirements, fresh policy before idempotent retrieval, unknown/corrupt/unavailable input refusal, transactional acceptance/rejection audit failure and real runner effect gating. Production actions, runtime/HTTP composition, authoritative confirmation revisions and release failure drills remain absent.",
-        "docs/DURABLE_LIFECYCLE_CHECKPOINT.md",
+        "docs/archive/DURABLE_LIFECYCLE_CHECKPOINT.md",
         "2026-10-05 Windows: Opt-in AgentRuntime composes lifecycle bindings and startup reconciliation; interrupted non-idempotent start stays recovery_required with locks, replacement generations reject, and runner close/failed ownership do not release another live worker. No HTTP/event client or complete action catalogue/release failure drill follows."
       ]
     },
@@ -2710,10 +2710,10 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Persistence/reopen/service listing passed. Authorized reconnect/watch API and queue executor remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent.",
-        "docs/DURABLE_LIFECYCLE_CHECKPOINT.md",
+        "docs/archive/DURABLE_LIFECYCLE_CHECKPOINT.md",
         "2026-10-05 Windows: Opt-in AgentRuntime composes lifecycle bindings and startup reconciliation; interrupted non-idempotent start stays recovery_required with locks, replacement generations reject, and runner close/failed ownership do not release another live worker. No HTTP/event client or complete action catalogue/release failure drill follows."
       ]
     },
@@ -2733,10 +2733,10 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Sorted atomic locks, concurrent non-overlap and FIFO conflict fairness passed. Real adapter/resource ownership remains absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent.",
-        "docs/DURABLE_LIFECYCLE_CHECKPOINT.md",
+        "docs/archive/DURABLE_LIFECYCLE_CHECKPOINT.md",
         "2026-10-05 Windows: Opt-in AgentRuntime composes lifecycle bindings and startup reconciliation; interrupted non-idempotent start stays recovery_required with locks, replacement generations reject, and runner close/failed ownership do not release another live worker. No HTTP/event client or complete action catalogue/release failure drill follows."
       ]
     },
@@ -2767,10 +2767,10 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Claimed cancellation holds locks to explicit safe point; queued/awaiting cancellation passed. Real adapter safe points/UI remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent.",
-        "docs/DURABLE_LIFECYCLE_CHECKPOINT.md",
+        "docs/archive/DURABLE_LIFECYCLE_CHECKPOINT.md",
         "2026-10-05 Windows: Opt-in AgentRuntime composes lifecycle bindings and startup reconciliation; interrupted non-idempotent start stays recovery_required with locks, replacement generations reject, and runner close/failed ownership do not release another live worker. No HTTP/event client or complete action catalogue/release failure drill follows."
       ]
     },
@@ -2801,10 +2801,10 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Uncertain non-idempotent effects retain locks in recovery-required; safe work requeues; explicit resolution passed. Real crash/executor integration remains absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: 25 parent-authored persisted-input/migration and runner cases passed: typed contracts, authority rechecks, ownership, safe-point cancellation, durable recovery/locks, private input retention and audit rollback. Production handlers, authority adapter, API/runtime composition and release failure drills remain absent.",
-        "docs/DURABLE_LIFECYCLE_CHECKPOINT.md",
+        "docs/archive/DURABLE_LIFECYCLE_CHECKPOINT.md",
         "2026-10-05 Windows: Opt-in AgentRuntime composes lifecycle bindings and startup reconciliation; interrupted non-idempotent start stays recovery_required with locks, replacement generations reject, and runner close/failed ownership do not release another live worker. No HTTP/event client or complete action catalogue/release failure drill follows."
       ]
     },
@@ -2910,7 +2910,7 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. 10,000-line/2MiB UTF-8 ring and bounded oversized output passed without extra persisted console history. Independent supervisor remains absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -2926,7 +2926,7 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Actual fixture JVM drains without viewers; oversized tails discard and following lines survive. Independent supervisor and real Minecraft gates remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -3030,9 +3030,9 @@
         "crates/vesta-server-install/src/tests/plans.rs"
       ],
       "evidence": [
-        "docs/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
+        "docs/archive/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
         "2026-10-05 Windows: one caller-selected existing Java path/evidence is bound into the new local install plan and fixed recipe. Bounded owned probes clear injection environment variables. Automatic detection/download, signed managed Java, actual host configuration persistence and complete onboarding remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -3049,9 +3049,9 @@
         "crates/vesta-server-install/src/tests/installation.rs"
       ],
       "evidence": [
-        "docs/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
+        "docs/archive/AUTOMATIC_JAR_PROVIDER_CHECKPOINT.md",
         "2026-10-05 Windows: provider Java requirements and selected runtime probes reject missing/unknown/incompatible evidence before new JAR installation; approved path/length/mtime rechecked before effects and commit. Update/launch compatibility integration, real game matrix, cryptographic executable identity and native confinement remain unverified.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -3751,10 +3751,10 @@
         "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimePasswordTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/OPERATION_AUTHORITY_PASSWORD_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/OPERATION_AUTHORITY_PASSWORD_CHECKPOINT.md",
         "2026-10-04 Windows: 43 parent-authored Argon2id primitive cases passed, including independent Bun ASCII/UTF-8 reference hashes, fresh salts, strict bounded PHC/cost parsing, malformed-password rejection, rehash policy and concurrent callers. Credential persistence/rotation, recovery passphrase integration, mTLS/device key possession, sessions, rate/concurrency limits and encrypted vault remain absent; this is not a login or credential-storage implementation.",
-        "docs/PACK_PASSWORD_CREDENTIAL_CHECKPOINT.md",
+        "docs/archive/PACK_PASSWORD_CREDENTIAL_CHECKPOINT.md",
         "2026-10-05 Windows: Server-scoped Argon2id pack-verifier persistence/reopen, exact credentials.manage policy, revision-CAS rotation/revocation/reactivation, audit rollback, secret-bearing SQL/crypto error redaction and bounded JVM-local KDF admission are tested in-process. No device-bound grants, Microsoft/Minecraft proof adapter, mTLS possession, recovery passphrases, sessions, encrypted vault or remotely usable pack policy is implemented. Historical evidence above remains dated; this extends partial evidence only."
       ]
     },
@@ -3884,10 +3884,10 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Actual WAL/FK, identity, rollback, integrity and online pre-migration backup passed. Full migration/repair and local-filesystem gates remain open.",
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/EXECUTION_IDENTITY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/EXECUTION_IDENTITY_CHECKPOINT.md",
         "2026-10-04 Windows: real v1/v2-to-v3 migrations/backups and three lifecycle regressions passed, including six-thread short-lived connections over three reopen rounds, 540 audited writes, WAL/SHM stability and in-flight close. Maintenance queue composition, Linux and service/native isolation remain unverified.",
-        "docs/PACK_PASSWORD_CREDENTIAL_CHECKPOINT.md",
+        "docs/archive/PACK_PASSWORD_CREDENTIAL_CHECKPOINT.md",
         "2026-10-05 Windows: Actual schema-3-to-4 migration preserves canonical server identity and built-in roles; original schema-3 online backup passes integrity verification. Fresh STRICT/FK/active-revoked constraints, failed migration rollback and pre-migration backup collision refusal are tested. Maintenance/snapshot operation-queue composition, Linux and native filesystem isolation remain unverified."
       ]
     },
@@ -3915,7 +3915,7 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Desired/effective/pending/stale-acknowledgement persistence passed. Runtime adapters and all apply modes remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -3955,8 +3955,8 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Corrupt/newer/FK-invalid database rejects. Minecraft launch gating and local repair remain unwired.",
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/DURABLE_LIFECYCLE_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/DURABLE_LIFECYCLE_CHECKPOINT.md",
         "2026-10-05 Windows: Opt-in composition rejects corrupt/overlapping/linked state before child launch, and existing malformed config cannot downgrade to legacy defaults. Missing config still selects legacy defaults; OS recovery, native TOCTOU confinement and full corruption orchestration remain absent."
       ]
     },
@@ -4127,7 +4127,7 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Append-only/hash-chain tamper/startup rejection passed. Export, retention and external checkpoints remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -4155,7 +4155,7 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Bounded actor/device/source/action/target/outcome/operation audit passed. Authentication/source-address provenance and full route coverage remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -4183,7 +4183,7 @@
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Injected audit failure rolls back settings/operations/events/confirmations. Storage monitoring/reserves/export and real disk-full gates remain absent.",
-        "docs/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md"
       ]
     },
     {
@@ -4326,11 +4326,11 @@
       ],
       "evidence": [
         "2026-10-05 Windows: fresh server 579-test suite passed. Only the event-cursor, pagination and stable-error-code slice is evidenced, in-process: current exact tasks.view per page, server-bound canonical cursors over a finite window, explicit retention resync, strict sanitized operation-event projection and fixed redacted errors. The HTTPS/OpenAPI/stream surface, version negotiation, idempotency-key surface, deprecation policy, authenticated transport and snapshot-consistent resync remain unverified and not implemented.",
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/OPERATION_EVENT_REPLAY_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/OPERATION_EVENT_REPLAY_CHECKPOINT.md",
         "2026-10-05 Windows: draft-v1 transport-neutral feature discovery adds highest-common-version negotiation, fixed pre-negotiation errors, strict 16-KiB Java/independent Node codecs and a shared 129-case corpus. Trusted runtime discovery uses the canonical UUID and cannot grant permission or authenticate; exact deny/revocation/confirmation checks still govern actions. The checkpoint records fresh Java/Node results and guard mutations. Complete HTTPS/OpenAPI/versioned event transports, management request idempotency/deprecation windows, authenticated discovery and snapshot-consistent resync remain unverified and not implemented; no phase or compound requirement is complete.",
         "protocol/README.md",
-        "docs/SERVER_FEATURE_PROTOCOL_CHECKPOINT.md"
+        "docs/archive/SERVER_FEATURE_PROTOCOL_CHECKPOINT.md"
       ]
     },
     {
@@ -4389,8 +4389,8 @@
         "wrapper/src/test/java/com/vesta/wrapper/identity/PasswordHasherTest.java"
       ],
       "evidence": [
-        "docs/IMPLEMENTATION_PROGRESS.md",
-        "docs/OPERATION_AUTHORITY_PASSWORD_CHECKPOINT.md",
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/archive/OPERATION_AUTHORITY_PASSWORD_CHECKPOINT.md",
         "2026-10-04 Windows: 43 parent-authored cases verify bounded Argon2id v19 hashing/verification against independent Bun reference fixtures, strict malformed/cost rejection and rehash policy. Production credential/login integration and reviewed native backup-engine orchestration remain absent; no backup format or KDF was changed."
       ]
     },

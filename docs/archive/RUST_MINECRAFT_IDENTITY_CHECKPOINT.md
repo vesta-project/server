@@ -86,7 +86,7 @@ retaining verification ownership while checking the supplied timeout before/afte
 **OS DNS can still overrun the nominal timeout or hang. No hard DNS cancellation or hard
 wall-clock completion bound is claimed.** Saturated/stuck work occupies the fixed slots rather
 than allowing detached lookups to accumulate. Its `unversioned` resolver interface is coupled
-to the reviewed exact dependency version. See [dependency intake](DEPENDENCY_DECISIONS.md).
+to the reviewed exact dependency version. See [dependency intake](../DEPENDENCY_DECISIONS.md).
 
 **Dependency logging gap:** module-owned errors and `Debug` output redact identities, challenge
 IDs, hashes and native causes. However, exact ureq 3.3.0 exposes the username/serverId query and

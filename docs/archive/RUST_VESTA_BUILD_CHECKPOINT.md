@@ -64,7 +64,7 @@ latches the first failure. Failed writes/finalization cannot yield an artifact.
 ZIP Drop can retry finalization and emit a diagnostic on exceptional failure; sink
 errors contain only `Vesta pack buffer failed`. An intentional footer-failure fixture
 exercises that behavior rather than suppressing it. Ordinary cap refusal happens before
-writer creation. See [dependency intake](DEPENDENCY_DECISIONS.md#owned-byte-hybrid-vesta-zip-intake-2026-10-09).
+writer creation. See [dependency intake](../DEPENDENCY_DECISIONS.md#owned-byte-hybrid-vesta-zip-intake-2026-10-09).
 
 ## Independently checked assertions
 

@@ -1,6 +1,6 @@
 # Operation event replay checkpoint
 
-Assessment date: **2026-10-05**. This extends the [pack-password checkpoint](PACK_PASSWORD_CREDENTIAL_CHECKPOINT.md) with a **trusted in-process, canonical-authorized, bounded replay of sanitized operation lifecycle events**. It addresses part of the P1 "event cursors / pagination / stable error codes" gap in the [implementation plan](SERVER_SOFTWARE_IMPLEMENTATION_PLAN.md) §15 and requirement `proxies-and-hosting-extensibility-004`. It is **not** an HTTPS endpoint, WebSocket/SSE stream, OpenAPI contract, version negotiation, console/status/player/notification feed or completed P1. Schema remains **4**; no launcher source changed.
+Assessment date: **2026-10-05**. This extends the [pack-password checkpoint](PACK_PASSWORD_CREDENTIAL_CHECKPOINT.md) with a **trusted in-process, canonical-authorized, bounded replay of sanitized operation lifecycle events**. It addresses part of the P1 "event cursors / pagination / stable error codes" gap in the [implementation plan](../SERVER_SOFTWARE_IMPLEMENTATION_PLAN.md) §15 and requirement `proxies-and-hosting-extensibility-004`. It is **not** an HTTPS endpoint, WebSocket/SSE stream, OpenAPI contract, version negotiation, console/status/player/notification feed or completed P1. Schema remains **4**; no launcher source changed.
 
 ## What exists
 

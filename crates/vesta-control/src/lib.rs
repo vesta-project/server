@@ -11,6 +11,7 @@ pub mod files;
 pub mod identity;
 pub mod operations;
 pub mod packs;
+pub mod whitelist;
 
 mod error;
 

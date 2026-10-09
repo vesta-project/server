@@ -28,7 +28,7 @@ test('partial evidence names real test sources and retains a limitation statemen
   for (const entry of partial) {
     assert.ok(entry.tests.length > 0, entry.id);
     assert.ok(entry.evidence.some((e) => /remain|absent|unverified|not implemented|incomplete/i.test(e)), entry.id);
-    assert.ok(entry.evidence.includes('docs/IMPLEMENTATION_PROGRESS.md'), entry.id);
+    assert.ok(entry.evidence.includes('docs/archive/IMPLEMENTATION_PROGRESS.md'), entry.id);
     for (const source of entry.tests) {
       if (source.startsWith('launcher-server-mvp:')) {
         assert.match(source, /^launcher-server-mvp:crates\/piston-lib\/(tests|src\/game\/server_install\/tests)\/.+\.rs$/);

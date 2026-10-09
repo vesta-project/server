@@ -33,7 +33,7 @@ pub enum ArtifactFormat {
     Mrpack,
 }
 impl ArtifactFormat {
-    const fn extension(self) -> &'static str {
+    pub(crate) const fn extension(self) -> &'static str {
         match self {
             Self::Vesta => "vestapack",
             Self::Zip => "zip",
@@ -50,6 +50,14 @@ pub struct PublishedArtifact {
     size: u64,
 }
 impl PublishedArtifact {
+    /// Rebuilds an identity from a trusted record; loading still verifies the bytes.
+    pub(crate) fn from_parts(format: ArtifactFormat, sha256: Sha256, size: u64) -> Self {
+        Self {
+            format,
+            sha256,
+            size,
+        }
+    }
     pub fn format(&self) -> ArtifactFormat {
         self.format
     }
@@ -181,6 +189,20 @@ impl PackArtifacts {
         // The published name must now be a single-link file holding exactly these bytes.
         self.load(&artifact, MAX_ARTIFACT_BYTES)?;
         Ok(artifact)
+    }
+
+    /// Cheap presence check: a single-link file of the recorded size. Not a digest check.
+    pub(crate) fn present(&self, artifact: &PublishedArtifact) -> Result<(), PackError> {
+        let file = self
+            .directory
+            .open(&artifact.name()?)
+            .map_err(state_error)?
+            .ok_or(PackError::NotPublished)?;
+        let length = file.metadata().map_err(|_| PackError::Unavailable)?.len();
+        if length != artifact.size {
+            return Err(PackError::Conflict);
+        }
+        Ok(())
     }
 
     /// Re-read and verify the published bytes. Absent names are `NotPublished`; a size or

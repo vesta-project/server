@@ -110,6 +110,9 @@ pub struct BuiltVestaPack {
     bytes: Vec<u8>,
     sha256: Sha256,
     entries: usize,
+    version: String,
+    revision: u64,
+    minimum_revision: u64,
 }
 impl BuiltVestaPack {
     pub fn bytes(&self) -> &[u8] {
@@ -123,6 +126,16 @@ impl BuiltVestaPack {
     }
     pub const fn format(&self) -> &'static str {
         FORMAT
+    }
+    /// The display version and revisions embedded in the index.
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub const fn minimum_revision(&self) -> u64 {
+        self.minimum_revision
     }
 }
 impl fmt::Debug for BuiltVestaPack {
@@ -306,6 +319,9 @@ pub fn build_vesta(
         bytes,
         sha256,
         entries,
+        version: metadata.version().to_owned(),
+        revision: metadata.revision(),
+        minimum_revision: metadata.minimum_revision(),
     })
 }
 
