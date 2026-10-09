@@ -412,3 +412,65 @@ remaining assertion-family accounting are still unfinished. This scoped review i
 not the required final independent whole-rebuild review; platform/MSRV/product/release
 gates remain open. The protected launcher manifest retained its exact recorded digest.
 
+
+## Pack preparation and closed player queries — 2026-10-09
+
+Following `49b1e72` (checkpoint `61e2f5a`), explicit trusted pack preparation and a
+closed `list` query are implemented.
+
+**Pack preparation.** `files/pack_root.rs` privately reuses the native file boundary:
+no-follow leaf opens, reparse and hard-link refusal, bounded streaming hashes, growth
+detection against the observed metadata length rather than the budget, and post-read
+size/mtime revalidation. Owned bytes are the artifact identity, never the mutable
+filename. `packs/mod.rs` snapshots a configured root into a deterministic manifest plus
+retained bodies under bounded file/total/scan work; hidden entries and configured/state
+exclusions never enter the catalogue, and unsafe visible links or names refuse the whole
+preparation rather than being catalogued. Local `.zip`/`.mrpack` archives are pinned as
+opaque confined bytes and are never parsed or extracted.
+
+`pack/sources.rs` adds a strict map-only source registry. A registered path whose content
+no longer matches its pinned digest refuses instead of silently embedding bytes under a
+stale provider description; a malformed registry refuses rather than degrading to empty.
+
+**Defect found and fixed during this wave.** `SourceRegistry::source_for` was fail-open.
+It consulted a case-insensitive collision scan *before* reporting a hash mismatch, so an
+exact-path entry whose content differed returned `PathCollision`; a caller treating that
+as "unrecognized" would answer by embedding unverified bytes under a filename the registry
+already claims. The case scan is now a fallback consulted only after the exact key misses.
+The protocol test that should have caught this asserted against a case variant of the
+registered path, so it reached the collision branch for the wrong reason and passed
+regardless — it has been corrected to exercise the exact-path/stale-hash path.
+
+**Player queries.** `operations/players.rs` issues only the literal `list` to this
+runtime's exact running generation. `ConsoleRead` is checked in an admitted current
+snapshot before mailbox/native admission, again by the owned native writer immediately
+before the fixed write, and again immediately before a result is exposed. The API accepts
+no command text, handler or authorization callback. `process::queue_list_guarded` shares
+the existing guarded writer with `stop`, re-checks generation/exit/stopping before the
+guard runs, and does not mark the process stopping. Without request IDs in console output,
+causal correlation is impossible, so a result describes an observed line for the requested
+generation — never authenticated player identity, a causally proven response, server
+readiness, or continued future liveness. Timeout, gap, exit and incomplete console text
+are unavailable, never zero players or a repaired count.
+
+**Fresh settled-source native Windows verification (Windows 11, Rust 1.96.0,
+`--test-threads=1`):** **864 workspace Rust tests across 30 result summaries**, zero
+failed and zero ignored; workspace format, `--all-targets` check and strict Clippy
+`-D warnings` clean; **210 companion `piston-lib` tests** and its all-target check
+(the existing unused `tokio::task` companion warning remains); **159 Node script tests**
+and both accounting checkers valid. The protected launcher manifest retains SHA-256
+`4f0e1eef699c54f1c1ee09007a3eca7e932e7b04a5ed15f4db73ddbfe0d01251`.
+
+Two Windows fixture details are recorded so they are not mistaken for policy results:
+`mklink /J` only accepts its operands as simple relative names under the test process's
+current directory, and its success must be judged by the created reparse point via
+`symlink_metadata`, never by its exit code. Both behaviours were verified in isolation
+before being fixed in the fixture.
+
+Inventory accounting remains **26 migrated / 17 retained Java plugin / 179 not_migrated /
+0 verified**, with 370 frozen requirements and Java/reference bytes unchanged. Durable
+file/content effects, configured catalogue/archive *services*, safe authenticated pack
+sessions/routes, full host composition and remaining assertion-family accounting are still
+unfinished. This wave was not independently reviewed and is not the required final
+independent whole-rebuild review; platform/MSRV/product/release gates remain open. No
+Java, Minecraft, provider, installer or network execution, and no push, occurred.

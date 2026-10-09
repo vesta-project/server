@@ -320,6 +320,17 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   fixes are recorded [at the host checkpoint](RUST_HOST_CONFIGURATION_CHECKPOINT.md).
   Full host/runtime/session/route composition remains unfinished; no family, original
   requirement or final whole-rebuild review status is promoted by this slice.
+- **2026-10-09 pack-preparation and player-query continuation:** explicit trusted pack
+  preparation (bounded deterministic snapshot, retained bodies, opaque archive pinning,
+  strict map-only source registry) and a closed authorized `list` query are implemented,
+  including a fixed fail-open `SourceRegistry::source_for` and the protocol test that had
+  masked it. Fresh settled-source Windows verification passed **864 Rust tests** across
+  30 summaries, format/all-target check/strict Clippy, **159 Node tests**/both accounting
+  checkers and **210 companion tests**/all-target check. Durable file/content effects,
+  configured catalogue/archive *services*, authenticated pack sessions/routes, full host
+  composition and remaining assertion-family accounting are still unfinished; this wave
+  was not independently reviewed and promotes no family, original requirement or
+  final whole-rebuild review status.
 - Owner direction is to design for all intended platform compatibilities while testing
   Windows only in the current increment. Linux, macOS and non-Windows architecture/native
   behavior remain unexecuted and unverified; WSL presence is not platform evidence.
