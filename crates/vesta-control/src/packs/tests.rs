@@ -1,0 +1,776 @@
+//! Windows-owned tests for explicit trusted pack preparation.
+//!
+//! Digests are frozen literals computed independently of the code under test, from the
+//! exact byte strings written as constants below.
+//!
+//! These APIs prepare bytes for a later, separately authorized route. Nothing here is a
+//! route, a session, or permission to publish, and no assertion grants authority.
+use super::{
+    MAX_PINNED_BYTES, MAX_PINNED_FILE_BYTES, MAX_SNAPSHOT_FILES, MAX_SNAPSHOT_SCAN, PackError,
+    PackPreparation, SnapshotLimits,
+};
+use crate::files::{FileError, RelativePath};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tempfile::TempDir;
+use vesta_protocol::pack::catalogue::{
+    ArchiveFormat, CatalogueError, FileSource, ManifestMetadata, PackContent, PackFile, Platform,
+    RelativePath as CataloguePath, SourceKind,
+};
+use vesta_protocol::pack::sources::{KnownSource, SourceRegistry};
+use vesta_state::{Clock, StateDatabase, StateDirectory};
+
+const ALPHA_BYTES: &[u8] = b"mods/alpha.jar";
+const ALPHA_HASH: &str = "0eea8ba7784978ed99f110378e553f21b66a44a80ec3fc4849bee74dd237012b";
+
+const B_TXT_BYTES: &[u8] = b"config/b.txt";
+const B_TXT_HASH: &str = "9921a295a37e55e89b5f62a63a3732cb4f41ee4abec7a26af7d2433a12de5b66";
+
+const EMPTY_HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+const KNOWN_BYTES: &[u8] = b"known-source-file-bytes";
+const KNOWN_HASH: &str = "e4a02243add1acdbd6e286c9e12f89f1e2c742090ccd440c905fe23b07127e71";
+
+const STALE_BYTES: &[u8] = b"stale-source-file-bytes";
+
+struct FixedClock;
+impl Clock for FixedClock {
+    fn millis(&self) -> i64 {
+        1_791_115_200_000
+    }
+}
+
+/// A real temporary tree plus a real state database. No fixture authority is created:
+/// this is trusted local preparation only, and the directory exclusions the host must
+/// apply are passed in explicitly by each test.
+struct Fixture {
+    // Held only to own the temporary tree's lifetime on disk.
+    _temp: TempDir,
+    game: PathBuf,
+    state: PathBuf,
+    db: StateDatabase,
+}
+impl Fixture {
+    fn open() -> Self {
+        let temp = tempfile::tempdir().expect("a temporary tree");
+        let game = temp.path().join("game");
+        std::fs::create_dir(&game).expect("a game directory");
+        let state = temp.path().join("private-state");
+        let directory =
+            StateDirectory::new(&state, Some(&game)).expect("a state directory beside the game");
+        let db = StateDatabase::open(directory, Arc::new(FixedClock)).expect("a state database");
+        Self {
+            _temp: temp,
+            game,
+            state,
+            db,
+        }
+    }
+    fn write(&self, relative: &str, bytes: &[u8]) {
+        let path = self.game.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("a parent directory");
+        }
+        std::fs::write(path, bytes).expect("fixture bytes are written");
+    }
+    fn mkdir(&self, relative: &str) -> PathBuf {
+        let path = self.game.join(relative);
+        std::fs::create_dir_all(&path).expect("a fixture directory");
+        path
+    }
+    fn db_path(&self) -> &Path {
+        &self.state
+    }
+}
+
+fn limits(file_bytes: usize, total_bytes: usize, files: usize, scanned: usize) -> SnapshotLimits {
+    SnapshotLimits::new(file_bytes, total_bytes, files, scanned)
+        .unwrap_or_else(|error| panic!("limits must be valid: {error:?}"))
+}
+
+fn preparation(fixture: &Fixture) -> PackPreparation {
+    PackPreparation::open(
+        &fixture.db,
+        &fixture.game,
+        &[],
+        limits(1_024, 1_024, 32, 256),
+    )
+    .unwrap_or_else(|error| panic!("a plain root opens: {error:?}"))
+}
+
+fn metadata() -> ManifestMetadata {
+    ManifestMetadata::new("prepared", "1.0.0", 4, 2).expect("valid metadata")
+}
+
+fn empty_registry() -> SourceRegistry {
+    SourceRegistry::new(Vec::new()).expect("an explicitly empty registry is valid")
+}
+
+fn catalogue_path(text: &str) -> CataloguePath {
+    CataloguePath::parse(text)
+        .unwrap_or_else(|error| panic!("{text} is a catalogue path: {error:?}"))
+}
+
+fn relative(text: &str) -> RelativePath {
+    RelativePath::parse(text).unwrap_or_else(|error| panic!("{text} is a relative path: {error:?}"))
+}
+
+fn entries(snapshot: &super::PreparedSnapshot) -> Vec<&str> {
+    let PackContent::Custom(files) = snapshot.manifest().content() else {
+        panic!("a file scan produces custom content");
+    };
+    files.iter().map(|file| file.path().as_str()).collect()
+}
+
+fn file_in(snapshot: &super::PreparedSnapshot, name: &str) -> PackFile {
+    let PackContent::Custom(files) = snapshot.manifest().content() else {
+        panic!("a file scan produces custom content");
+    };
+    files
+        .iter()
+        .find(|file| file.path().as_str() == name)
+        .unwrap_or_else(|| panic!("{name} is catalogued"))
+        .clone()
+}
+
+#[track_caller]
+fn assert_pack_error<T: std::fmt::Debug>(result: Result<T, PackError>, expected: PackError) {
+    match result {
+        Err(actual) => assert_eq!(actual, expected),
+        Ok(value) => panic!("expected {expected:?}, produced {value:?}"),
+    }
+}
+
+#[track_caller]
+fn assert_catalogue_error<T: std::fmt::Debug>(
+    result: Result<T, PackError>,
+    expected: CatalogueError,
+) {
+    match result {
+        Err(PackError::Catalogue(actual)) => assert_eq!(actual, expected),
+        Err(other) => panic!("expected catalogue {expected:?}, produced {other:?}"),
+        Ok(value) => panic!("expected catalogue {expected:?}, produced {value:?}"),
+    }
+}
+
+/// A scan of mods and config is deterministic, and every digest is the digest of the
+/// exact bytes the file holds.
+#[test]
+fn a_scan_is_deterministic_and_hashes_the_retained_bytes() {
+    let fixture = Fixture::open();
+    fixture.write("mods/alpha.jar", ALPHA_BYTES);
+    fixture.write("config/b.txt", B_TXT_BYTES);
+    fixture.write("config/empty", b"");
+    let preparation = preparation(&fixture);
+
+    let first = preparation
+        .snapshot(metadata(), &empty_registry())
+        .expect("the first scan succeeds");
+    let second = preparation
+        .snapshot(metadata(), &empty_registry())
+        .expect("a repeated scan succeeds");
+
+    assert_eq!(
+        entries(&first),
+        ["config/b.txt", "config/empty", "mods/alpha.jar"]
+    );
+
+    assert_eq!(
+        file_in(&first, "mods/alpha.jar").sha256().to_hex(),
+        ALPHA_HASH
+    );
+    assert_eq!(
+        file_in(&first, "config/b.txt").sha256().to_hex(),
+        B_TXT_HASH
+    );
+    assert_eq!(
+        file_in(&first, "config/empty").sha256().to_hex(),
+        EMPTY_HASH
+    );
+    assert_eq!(file_in(&first, "config/empty").size(), 0);
+
+    assert_eq!(first.total_bytes(), ALPHA_BYTES.len() + B_TXT_BYTES.len());
+    assert_eq!(
+        first.bytes(&catalogue_path("mods/alpha.jar")),
+        Some(ALPHA_BYTES)
+    );
+    assert_eq!(
+        first.bytes(&catalogue_path("config/b.txt")),
+        Some(B_TXT_BYTES)
+    );
+    assert_eq!(
+        first.bytes(&catalogue_path("config/empty")),
+        Some(b"".as_slice())
+    );
+
+    assert_eq!(
+        first.manifest().content(),
+        second.manifest().content(),
+        "a repeated scan is identical"
+    );
+    assert_eq!(first.total_bytes(), second.total_bytes());
+}
+
+/// Hidden entries never enter the catalogue, and none of them is retained.
+#[test]
+fn hidden_files_and_directories_never_enter_the_catalogue() {
+    let fixture = Fixture::open();
+    fixture.write("mods/alpha.jar", ALPHA_BYTES);
+    fixture.write("mods/.hidden.jar", b"hidden-by-file-name");
+    fixture.write(".hiddendir/inside.jar", b"hidden-by-directory");
+    fixture.write(".hiddendir/nested/deep.jar", b"hidden-by-depth");
+    fixture.write("config/.secret", b"hidden-config");
+    let preparation = preparation(&fixture);
+
+    let snapshot = preparation
+        .snapshot(metadata(), &empty_registry())
+        .expect("hidden entries are excluded rather than fatal");
+    assert_eq!(entries(&snapshot), ["mods/alpha.jar"]);
+    for hidden in [
+        "mods/.hidden.jar",
+        ".hiddendir",
+        ".hiddendir/inside.jar",
+        "config/.secret",
+    ] {
+        assert!(
+            snapshot.bytes(&catalogue_path(hidden)).is_none(),
+            "{hidden}"
+        );
+    }
+}
+
+/// Secrets named by configuration are excluded, and so is the state directory the
+/// canonical root contains.
+#[test]
+fn configured_and_state_paths_are_excluded_from_every_snapshot() {
+    let fixture = Fixture::open();
+    fixture.write("mods/alpha.jar", ALPHA_BYTES);
+    let secret = fixture.mkdir("mods").join("server.properties");
+    std::fs::write(&secret, b"op-password=let-me-in").expect("a secret that really exists");
+    let config = fixture.game.join("wrapper-config.toml");
+    std::fs::write(&config, b"token = \"secret\"\n").expect("a config that really exists");
+    fixture.write("mods/.git/config", b"[core]\n");
+    fixture.write("mods/.vesta/state.db", b"not a real database");
+    let absent = fixture.game.join("mods/never-created.properties");
+
+    let preparation = PackPreparation::open(
+        &fixture.db,
+        &fixture.game,
+        &[&secret, &config, &absent],
+        limits(1_024, 1_024, 32, 256),
+    )
+    .expect("a root with excluded secrets opens");
+
+    let snapshot = preparation
+        .snapshot(metadata(), &empty_registry())
+        .expect("exclusions are skipped rather than fatal");
+    assert_eq!(entries(&snapshot), ["mods/alpha.jar"]);
+    for name in [
+        "mods/server.properties",
+        "wrapper-config.toml",
+        "mods/.git/config",
+        "mods/.vesta/state.db",
+        "mods/never-created.properties",
+    ] {
+        assert!(snapshot.bytes(&catalogue_path(name)).is_none(), "{name}");
+    }
+    assert_eq!(
+        std::fs::read(&secret).expect("the secret is left untouched"),
+        b"op-password=let-me-in"
+    );
+}
+
+/// A root the state directory contains is refused outright rather than scanned.
+#[test]
+fn a_root_inside_the_state_directory_is_refused() {
+    let fixture = Fixture::open();
+    let nested = fixture.db_path().join("inside");
+    std::fs::create_dir_all(&nested).expect("a directory inside the state root");
+    std::fs::write(nested.join("alpha.jar"), ALPHA_BYTES).expect("fixture bytes");
+
+    let error = PackPreparation::open(&fixture.db, &nested, &[], limits(64, 64, 4, 16))
+        .err()
+        .unwrap_or_else(|| panic!("a root inside the state directory must be refused"));
+    assert_eq!(error, PackError::ProtectedPath);
+    assert_eq!(error.code(), "pack_path_protected");
+    assert_eq!(
+        std::fs::read(nested.join("alpha.jar")).expect("bytes survive"),
+        ALPHA_BYTES
+    );
+}
+
+/// A hard link gives one file a second visible name, so preparation refuses rather than
+/// cataloguing the same bytes twice under two entries.
+#[test]
+fn a_visible_hard_link_is_refused_and_the_file_is_left_intact() {
+    let fixture = Fixture::open();
+    fixture.write("mods/alpha.jar", ALPHA_BYTES);
+    let alias = fixture.game.join("mods/alpha-link.jar");
+    std::fs::hard_link(fixture.game.join("mods/alpha.jar"), &alias).expect("a fixture hard link");
+
+    let preparation = preparation(&fixture);
+    assert_pack_error(
+        preparation.snapshot(metadata(), &empty_registry()),
+        PackError::LinkedPath,
+    );
+
+    assert_eq!(
+        std::fs::read(fixture.game.join("mods/alpha.jar")).expect("the original survives"),
+        ALPHA_BYTES
+    );
+    assert_eq!(
+        std::fs::read(&alias).expect("the link survives"),
+        ALPHA_BYTES
+    );
+}
+
+/// A junction exposes a directory the root does not contain. It is refused, and the
+/// directory it points at is neither read nor changed.
+#[cfg(windows)]
+#[test]
+fn a_visible_directory_junction_is_refused_and_the_target_is_left_intact() {
+    let fixture = Fixture::open();
+    fixture.write("mods/alpha.jar", ALPHA_BYTES);
+    // Both mklink operands stay inside the owned temporary tree. This is a refusal
+    // fixture, not an escape test: the crossing-root case is covered by the traversal
+    // test, and pointing mklink outside the root proved only that the fixture could
+    // not be built.
+    let outside = fixture.mkdir("outside");
+    std::fs::write(outside.join("secret.jar"), b"outside the root").expect("bytes outside");
+
+    // The mklink operands must be relative to the test process's current directory.
+    // With absolute operands, Rust's argv quoting plus cmd.exe's /c handling yields
+    // `Parameter format not correct - "junction"` — that is a Windows quoting quirk
+    // and says nothing about path policy, so it must not decide this test.
+    //
+    // Run from the temporary tree itself so both operands are simple relative names.
+    let root = fixture.game.canonicalize().expect("an existing root");
+    let junction = PathBuf::from("mods").join("junction");
+    let target = PathBuf::from("outside");
+    // mklink is a cmd.exe internal, so it must run through cmd.exe. Both operands stay
+    // separate argv entries, which cmd then reads against the current directory.
+    //
+    // This fixture only creates a link to a directory the root already owns. It
+    // creates no file, opens no handle to the target and changes no byte; production
+    // code never creates links and treats one only as a refusal.
+    let made = std::process::Command::new("cmd.exe")
+        .args(["/d", "/c", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&target)
+        .current_dir(&root)
+        .output()
+        .expect("cmd.exe runs");
+    // Judge the fixture by the native object it left behind, never by mklink's exit
+    // code. `exists()` follows the link, so also require a real reparse point: without
+    // one a plain directory would look like a passing fixture and the refusal below
+    // would be testing the wrong thing.
+    let created = root.join(&junction);
+    // symlink_metadata, not metadata: a junction's own attributes, never its target's.
+    let reparse = std::fs::symlink_metadata(&created).is_ok_and(|metadata| {
+        std::os::windows::fs::MetadataExt::file_attributes(&metadata) & 0x400 != 0
+    });
+    assert!(
+        created.exists() && reparse,
+        "create the owned junction fixture: {made:?}"
+    );
+
+    let preparation = preparation(&fixture);
+    assert_pack_error(
+        preparation.snapshot(metadata(), &empty_registry()),
+        PackError::LinkedPath,
+    );
+
+    assert_eq!(
+        std::fs::read(fixture.game.join("mods/alpha.jar")).expect("the original survives"),
+        ALPHA_BYTES
+    );
+    assert_eq!(
+        std::fs::read(outside.join("secret.jar")).expect("the target is untouched"),
+        b"outside the root"
+    );
+}
+
+/// Escaping spellings never become a relative path, so no archive can be pinned through
+/// them. Archives are pinned as opaque bytes, whatever the case of the extension.
+#[test]
+fn traversal_is_refused_and_archives_are_opaque_regardless_of_case() {
+    for escaping in [
+        "../outside.jar",
+        "mods/../../outside.jar",
+        "/absolute.jar",
+        "C:/win.jar",
+    ] {
+        let parsed = RelativePath::parse(escaping);
+        assert_eq!(
+            parsed.as_ref().err(),
+            Some(&FileError::InvalidPath),
+            "{escaping} must not become a relative path"
+        );
+    }
+
+    let fixture = Fixture::open();
+    fixture.write("archive/one.ZIP", ALPHA_BYTES);
+    fixture.write("archive/two.MRPACK", B_TXT_BYTES);
+    fixture.write("archive/three.zip", b"");
+    fixture.write("archive/pack.tar.gz", b"not a supported archive");
+    fixture.write("archive/plain", b"no extension at all");
+    let preparation = preparation(&fixture);
+
+    let upper_zip = preparation
+        .archive(&relative("archive/one.ZIP"))
+        .expect("an uppercase .ZIP is accepted");
+    assert_eq!(upper_zip.bytes(), ALPHA_BYTES, "the bytes are not parsed");
+    assert_eq!(upper_zip.description().sha256().to_hex(), ALPHA_HASH);
+    assert_eq!(upper_zip.description().format(), ArchiveFormat::Zip);
+    assert_eq!(upper_zip.description().size(), ALPHA_BYTES.len() as u64);
+
+    let upper_mrpack = preparation
+        .archive(&relative("archive/two.MRPACK"))
+        .expect("an uppercase .MRPACK is accepted");
+    assert_eq!(upper_mrpack.bytes(), B_TXT_BYTES);
+    assert_eq!(upper_mrpack.description().sha256().to_hex(), B_TXT_HASH);
+    assert_eq!(upper_mrpack.description().format(), ArchiveFormat::Mrpack);
+
+    let empty = preparation
+        .archive(&relative("archive/three.zip"))
+        .expect("an empty archive is still pinned");
+    assert_eq!(empty.bytes(), b"".as_slice());
+    assert_eq!(empty.description().sha256().to_hex(), EMPTY_HASH);
+    assert_eq!(empty.description().size(), 0);
+
+    for refused in [
+        "archive/pack.tar.gz",
+        "archive/plain",
+        "archive/one.ZIP.bak",
+    ] {
+        assert_pack_error(
+            preparation.archive(&relative(refused)),
+            PackError::InvalidArchive,
+        );
+    }
+}
+
+/// Prepared bytes are the artifact. Replacing or deleting the source afterwards must not
+/// change what was already pinned.
+#[test]
+fn prepared_bytes_and_hashes_survive_source_overwrite_and_removal() {
+    let fixture = Fixture::open();
+    fixture.write("mods/alpha.jar", ALPHA_BYTES);
+    fixture.write("archive/one.zip", ALPHA_BYTES);
+    let preparation = preparation(&fixture);
+
+    let snapshot = preparation
+        .snapshot(metadata(), &empty_registry())
+        .expect("the initial scan succeeds");
+    let archive = preparation
+        .archive(&relative("archive/one.zip"))
+        .expect("the initial archive pins");
+
+    fixture.write("mods/alpha.jar", b"replaced-content-that-is-longer");
+    std::fs::remove_file(fixture.game.join("archive/one.zip")).expect("the archive source goes");
+
+    assert_eq!(
+        snapshot.bytes(&catalogue_path("mods/alpha.jar")),
+        Some(ALPHA_BYTES)
+    );
+    assert_eq!(
+        file_in(&snapshot, "mods/alpha.jar").sha256().to_hex(),
+        ALPHA_HASH
+    );
+    assert_eq!(archive.bytes(), ALPHA_BYTES);
+    assert_eq!(archive.description().sha256().to_hex(), ALPHA_HASH);
+
+    let rescan = preparation
+        .snapshot(metadata(), &empty_registry())
+        .expect("a rescan after the change succeeds");
+    assert_ne!(
+        file_in(&rescan, "mods/alpha.jar").sha256().to_hex(),
+        ALPHA_HASH,
+        "a rescan reflects the new content"
+    );
+}
+
+/// Each documented limit is inclusive, and one unit past it refuses the preparation.
+#[test]
+fn every_documented_work_limit_is_inclusive_and_refuses_one_more() {
+    // File bytes: a body of exactly the limit is accepted, one byte more refuses.
+    let fixture = Fixture::open();
+    fixture.write("mods/alpha.jar", &[b'x'; 8]);
+    let preparation = PackPreparation::open(&fixture.db, &fixture.game, &[], limits(8, 8, 4, 16))
+        .expect("a root opens");
+    assert_eq!(
+        preparation
+            .snapshot(metadata(), &empty_registry())
+            .expect("a body of exactly the file limit is accepted")
+            .total_bytes(),
+        8
+    );
+    fixture.write("mods/alpha.jar", &[b'x'; 9]);
+    assert_pack_error(
+        preparation.snapshot(metadata(), &empty_registry()),
+        PackError::TooLarge,
+    );
+
+    // Total bytes: two files that each fit the file limit but jointly exceed the total.
+    let fixture = Fixture::open();
+    fixture.write("mods/a.jar", &[b'x'; 6]);
+    fixture.write("config/b.txt", &[b'y'; 5]);
+    let preparation = PackPreparation::open(&fixture.db, &fixture.game, &[], limits(6, 10, 4, 16))
+        .expect("a root opens");
+    assert_pack_error(
+        preparation.snapshot(metadata(), &empty_registry()),
+        PackError::TooLarge,
+    );
+
+    // File count: exactly the count is accepted, one more refuses.
+    let fixture = Fixture::open();
+    for index in 0..3 {
+        fixture.write(&format!("mods/{index}.jar"), b"n");
+    }
+    let preparation = PackPreparation::open(&fixture.db, &fixture.game, &[], limits(4, 64, 3, 32))
+        .expect("a root opens");
+    assert_eq!(
+        preparation
+            .snapshot(metadata(), &empty_registry())
+            .expect("exactly the file count is accepted")
+            .total_bytes(),
+        3
+    );
+    fixture.write("mods/extra.jar", b"n");
+    assert_pack_error(
+        preparation.snapshot(metadata(), &empty_registry()),
+        PackError::TooLarge,
+    );
+
+    // Scan budget: every directory entry the tree offers is charged, including the two
+    // visible directory names, the two visible files and the four hidden files. That is
+    // eight entries, so a budget of eight accepts this tree and seven refuses.
+    let fixture = Fixture::open();
+    fixture.write("mods/alpha.jar", b"n");
+    fixture.write("config/b.txt", b"n");
+    for index in 0..4 {
+        fixture.write(&format!("mods/.hidden{index}"), b"n");
+    }
+    let exact = PackPreparation::open(&fixture.db, &fixture.game, &[], limits(4, 64, 4, 8))
+        .expect("a root opens");
+    let accepted = exact
+        .snapshot(metadata(), &empty_registry())
+        .expect("a budget of exactly the entry count is accepted");
+    assert_eq!(entries(&accepted), ["config/b.txt", "mods/alpha.jar"]);
+    assert_eq!(accepted.total_bytes(), 2);
+
+    let short = PackPreparation::open(&fixture.db, &fixture.game, &[], limits(4, 64, 4, 7))
+        .expect("a root opens");
+    assert_pack_error(
+        short.snapshot(metadata(), &empty_registry()),
+        PackError::TooLarge,
+    );
+
+    // The smallest legal budget is one entry, which an empty directory never uses.
+    let empty = Fixture::open();
+    let zero = PackPreparation::open(&empty.db, &empty.game, &[], limits(4, 64, 4, 1))
+        .expect("a root opens");
+    let untouched = zero
+        .snapshot(metadata(), &empty_registry())
+        .expect("an empty tree has nothing to read");
+    assert_eq!(untouched.total_bytes(), 0);
+    assert!(untouched.bytes(&catalogue_path("mods/alpha.jar")).is_none());
+
+    // The documented maxima are the values the limits are checked against.
+    assert_eq!(MAX_PINNED_FILE_BYTES, 16_777_216);
+    assert_eq!(MAX_PINNED_BYTES, 67_108_864);
+    assert_eq!(MAX_SNAPSHOT_FILES, 4_096);
+    assert_eq!(MAX_SNAPSHOT_SCAN, 16_384);
+    assert_pack_error(
+        SnapshotLimits::new(0, MAX_PINNED_BYTES, 1, 1),
+        PackError::InvalidLimit,
+    );
+    assert_pack_error(
+        SnapshotLimits::new(MAX_PINNED_FILE_BYTES + 1, MAX_PINNED_BYTES, 1, 1),
+        PackError::InvalidLimit,
+    );
+    assert_pack_error(SnapshotLimits::new(16, 8, 1, 1), PackError::InvalidLimit);
+}
+
+/// A malformed registry is refused outright. Treating it as empty would let a known file
+/// fall back to embedding its bytes, which is exactly what must not happen.
+#[test]
+fn a_malformed_source_registry_is_refused_rather_than_treated_as_empty() {
+    let malformed: &[&[u8]] = &[
+        b"",
+        b"{",
+        b"[]",
+        b"null",
+        br#"{"schemaVersion":1}"#,
+        br#"{"schemaVersion":99,"files":[]}"#,
+        br#"{"schemaVersion":1,"files":{}}"#,
+        br#"{"schemaVersion":1,"files":[],"extra":true}"#,
+        br#"{"schemaVersion":1,"files":[{"path":"mods/a.jar","sha256":"nope","platform":"modrinth","projectId":"A","versionId":"B"}]}"#,
+        br#"{"schemaVersion":1,"files":[{"path":"../escape","sha256":"0000000000000000000000000000000000000000000000000000000000000000","platform":"modrinth","projectId":"A","versionId":"B"}]}"#,
+        br#"{"schemaVersion":1,"files":[{"path":"mods/a.jar","sha256":"0000000000000000000000000000000000000000000000000000000000000000","platform":"http","projectId":"A","versionId":"B"}]}"#,
+    ];
+    for bytes in malformed {
+        assert!(
+            SourceRegistry::decode(bytes).is_err(),
+            "{:?} must not decode as a registry",
+            String::from_utf8_lossy(bytes)
+        );
+    }
+}
+
+/// A known file whose content no longer matches its registered digest refuses, instead of
+/// silently embedding bytes under a stale provider description.
+#[test]
+fn a_stale_registered_hash_refuses_instead_of_silently_embedding() {
+    let fixture = Fixture::open();
+    // The file holds STALE_BYTES, but the registry pins the *known* content for this
+    // path: the on-disk bytes are stale relative to what the registry vouches for.
+    fixture.write("mods/stale.jar", STALE_BYTES);
+    let registry = SourceRegistry::new(vec![
+        KnownSource::new(
+            "mods/stale.jar",
+            KNOWN_HASH,
+            FileSource::platform(Platform::Modrinth, "Abcd1234", "Efgh5678", None)
+                .expect("a valid platform source"),
+        )
+        .expect("a valid known source"),
+    ])
+    .expect("a valid registry");
+
+    assert_catalogue_error(
+        preparation(&fixture).snapshot(metadata(), &registry),
+        CatalogueError::InvalidHash,
+    );
+}
+
+/// An exact path and content match keeps its platform description; an unmatched file is
+/// embedded, with no invented provider identity.
+#[test]
+fn an_exact_platform_match_is_kept_and_an_unmatched_file_is_embedded() {
+    let fixture = Fixture::open();
+    fixture.write("mods/known.jar", KNOWN_BYTES);
+    fixture.write("mods/unknown.jar", ALPHA_BYTES);
+    let registry = SourceRegistry::new(vec![
+        KnownSource::new(
+            "mods/known.jar",
+            KNOWN_HASH,
+            FileSource::platform(
+                Platform::Modrinth,
+                "Abcd1234",
+                "Efgh5678",
+                Some("https://cdn.modrinth.com/data/Abcd1234/versions/Efgh5678/known.jar"),
+            )
+            .expect("a valid platform source"),
+        )
+        .expect("a valid known source"),
+    ])
+    .expect("a valid registry");
+
+    let snapshot = preparation(&fixture)
+        .snapshot(metadata(), &registry)
+        .expect("a mixed snapshot succeeds");
+    let known = file_in(&snapshot, "mods/known.jar");
+    let unknown = file_in(&snapshot, "mods/unknown.jar");
+
+    assert_eq!(known.sha256().to_hex(), KNOWN_HASH);
+    assert_eq!(known.source().kind(), SourceKind::Platform);
+    assert_eq!(known.source().platform_name(), Some(Platform::Modrinth));
+    assert_eq!(known.source().project_id(), Some("Abcd1234"));
+    assert_eq!(known.source().version_id(), Some("Efgh5678"));
+
+    assert_eq!(unknown.source().kind(), SourceKind::Embedded);
+    assert_eq!(unknown.source().platform_name(), None);
+    assert_eq!(unknown.source().project_id(), None);
+    assert_eq!(unknown.source().url(), None);
+    assert_eq!(
+        snapshot.bytes(&catalogue_path("mods/unknown.jar")),
+        Some(ALPHA_BYTES)
+    );
+}
+
+/// A registered path that differs only by ASCII case must not match, and must not produce
+/// a second entry.
+#[test]
+fn a_case_variant_of_a_registered_path_does_not_match() {
+    let fixture = Fixture::open();
+    fixture.write("mods/Known.jar", KNOWN_BYTES);
+    let registry = SourceRegistry::new(vec![
+        KnownSource::new(
+            "mods/known.jar",
+            KNOWN_HASH,
+            FileSource::platform(Platform::Curseforge, "123456", "1234567", None)
+                .expect("a valid platform source"),
+        )
+        .expect("a valid known source"),
+    ])
+    .expect("a valid registry");
+
+    assert_catalogue_error(
+        preparation(&fixture).snapshot(metadata(), &registry),
+        CatalogueError::PathCollision,
+    );
+}
+
+/// Debug output and errors describe structure and codes only. No path, byte, digest or
+/// secret from the tree may appear.
+#[test]
+fn debug_and_errors_leak_no_paths_bytes_or_digests() {
+    let fixture = Fixture::open();
+    fixture.write("mods/alpha.jar", ALPHA_BYTES);
+    fixture.write("config/b.txt", B_TXT_BYTES);
+    let preparation = preparation(&fixture);
+
+    let rendered = format!("{preparation:?}");
+    assert_eq!(rendered, "PackPreparation[<redacted>]");
+    for secret in [
+        "alpha",
+        "b.txt",
+        ALPHA_HASH,
+        fixture.game.to_str().unwrap_or(""),
+    ] {
+        assert!(
+            !rendered.contains(secret),
+            "{secret} leaked into {rendered}"
+        );
+    }
+
+    let snapshot = preparation
+        .snapshot(metadata(), &empty_registry())
+        .expect("a snapshot succeeds");
+    let snapshot_debug = format!("{snapshot:?}");
+    for secret in ["alpha", "b.txt", ALPHA_HASH, B_TXT_HASH] {
+        assert!(
+            !snapshot_debug.contains(secret),
+            "{secret} leaked into {snapshot_debug}"
+        );
+    }
+
+    let archive = preparation
+        .archive(&relative("config/b.txt"))
+        .expect_err("a .txt is not an archive");
+    assert_eq!(archive, PackError::InvalidArchive);
+    assert_eq!(archive.to_string(), "pack_archive_invalid");
+    assert!(std::error::Error::source(&archive).is_none());
+
+    let path_error = PackPreparation::open(&fixture.db, &fixture.state, &[], limits(64, 64, 4, 16))
+        .err()
+        .unwrap_or_else(|| panic!("the state root itself must be refused as a pack root"));
+    assert_eq!(path_error.to_string(), "pack_path_protected");
+    assert!(
+        !path_error.to_string().contains("private-state"),
+        "{path_error}"
+    );
+
+    for error in [
+        PackError::InvalidLimit,
+        PackError::InvalidPath,
+        PackError::ProtectedPath,
+        PackError::LinkedPath,
+        PackError::Unavailable,
+        PackError::TooLarge,
+        PackError::InvalidArchive,
+    ] {
+        assert_eq!(error.to_string(), error.code());
+        assert!(error.code().starts_with("pack_"), "{}", error.code());
+    }
+}

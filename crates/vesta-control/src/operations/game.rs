@@ -70,15 +70,18 @@ fn revision(snapshot: ProcessSnapshot) -> SourceRevision {
 pub(super) struct GameLifecycle {
     // No caller can access mutable process ownership, launch paths or stdin.
     pub(super) process: GameProcess,
+    pub(super) console: ConsoleCapture,
     launch: LaunchSpec,
     pub(super) view: Arc<LiveGameView>,
 }
 impl GameLifecycle {
     pub(super) fn new(launch: LaunchSpec) -> Self {
-        let process = GameProcess::new(ConsoleCapture::new());
+        let console = ConsoleCapture::new();
+        let process = GameProcess::new(console.clone());
         let view = Arc::new(LiveGameView::new(process.snapshot()));
         Self {
             process,
+            console,
             launch,
             view,
         }

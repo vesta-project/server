@@ -8,6 +8,7 @@ use super::{
     Claim, FinishOutcome, GameCommand, OperationError, OperationErrorCode, OperationId, Operations,
     OperationsResult, OwnerSession, SourceRevision,
     game::{GameLifecycle, LiveGameView},
+    players::{QueryDriver, QueryEndpoint},
 };
 use std::{
     fmt,
@@ -66,8 +67,27 @@ struct DriverState {
     stopping: Arc<AtomicBool>,
     observation: Mutex<Observation>,
     view: Arc<LiveGameView>,
+    players: QueryEndpoint,
 }
 impl DriverState {
+    fn new(owner: &OwnerSession, game: &GameLifecycle) -> (Arc<Self>, QueryDriver) {
+        let stopping = owner.stop_flag();
+        let (players, queries) = QueryDriver::new(
+            owner.operations().clone(),
+            stopping.clone(),
+            game.view.clone(),
+            game.console.clone(),
+        );
+        (
+            Arc::new(Self {
+                stopping,
+                observation: Mutex::new(Observation::default()),
+                view: game.view.clone(),
+                players,
+            }),
+            queries,
+        )
+    }
     fn error(&self, code: &'static str) {
         let mut observation = self
             .observation
@@ -130,14 +150,11 @@ impl OperationRuntime {
         let owner = operations.open_owner()?;
         let operations = owner.operations().clone();
         let game = GameLifecycle::new(launch);
-        let shared = Arc::new(DriverState {
-            stopping: owner.stop_flag(),
-            observation: Mutex::new(Observation::default()),
-            view: game.view.clone(),
-        });
+        let (shared, players) = DriverState::new(&owner, &game);
         let mut worker = Driver {
             owner,
             game,
+            players,
             active: None,
             shared: shared.clone(),
             stop_wait,
@@ -169,6 +186,9 @@ impl OperationRuntime {
         })
     }
 
+    pub(super) fn player_queries(&self) -> &QueryEndpoint {
+        &self.shared.players
+    }
     pub(super) fn operations(&self) -> &Operations {
         &self.operations
     }
@@ -260,6 +280,7 @@ impl Active {
 struct Driver {
     owner: OwnerSession,
     game: GameLifecycle,
+    players: QueryDriver,
     active: Option<Active>,
     shared: Arc<DriverState>,
     stop_wait: Duration,
@@ -304,6 +325,14 @@ impl Driver {
                 self.shared.stop();
                 first_failure.get_or_insert(error);
             }
+            if let Some(error) = self.players.advance(
+                &mut self.game,
+                self.active.is_none(),
+                self.observation_uncertain.is_some(),
+            ) {
+                self.note_observation_failure(error);
+                first_failure.get_or_insert_with(|| OperationError::from(error));
+            }
             self.shared
                 .active(self.active.as_ref().map(|active| active.id().clone()));
             if !self.owner.healthy() {
@@ -314,7 +343,7 @@ impl Driver {
                 if self.active.is_none() && !self.game.has_owned_generation() {
                     return first_failure.map_or(Ok(()), Err);
                 }
-            } else if self.active.is_none() {
+            } else if self.active.is_none() && !self.players.writer_pending() {
                 match self.owner.claim_next_with_revision(&self.game.revision()) {
                     Ok(Some(claim)) => {
                         self.shared.active(Some(claim.id().clone()));

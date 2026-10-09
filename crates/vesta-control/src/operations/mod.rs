@@ -10,6 +10,7 @@ mod confirmation_repository;
 mod domain;
 mod game;
 mod input;
+mod players;
 mod queue;
 mod replay;
 mod repository;
@@ -24,6 +25,10 @@ pub(crate) use domain::PurgeReport;
 pub use domain::{
     CancelOutcome, MAX_PAGE, OperationError, OperationErrorCode, OperationId, OperationPage,
     OperationState, OperationSummary, OperationsResult,
+};
+pub use players::{
+    MAX_PLAYER_QUERY_BYTES, MAX_PLAYER_QUERY_LINES, MAX_PLAYER_QUERY_WAIT, PlayerObservation,
+    PlayerQueryError, PlayerQueryResult,
 };
 pub(crate) use queue::{Claim, FinishOutcome, OwnerSession};
 pub use replay::{

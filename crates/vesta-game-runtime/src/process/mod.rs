@@ -374,6 +374,26 @@ impl GameProcess {
         owned.io.guarded_stop(guard)
     }
 
+    /// Admit only the literal player-list command to the existing owned writer.
+    /// The guard runs immediately before write; ACK means delivery, not a causal
+    /// console response or readiness. This does not mark the process stopping.
+    pub fn queue_list_guarded<E, F>(
+        &mut self,
+        generation: GenerationId,
+        guard: F,
+    ) -> Result<GuardedInput<E>, RuntimeError>
+    where
+        E: Send + 'static,
+        F: FnMut() -> Result<(), E> + Send + 'static,
+    {
+        self.poll()?;
+        let owned = self.current(generation)?;
+        if owned.exit.is_some() || owned.stopping {
+            return Err(RuntimeError::StaleGeneration);
+        }
+        owned.io.guarded_list(guard)
+    }
+
     /// Record actual guarded-write acknowledgement without dispatching anything.
     /// A guard denial leaves graceful admission and phase unchanged.
     pub fn acknowledge_guarded_stop(

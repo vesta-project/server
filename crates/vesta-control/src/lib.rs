@@ -10,6 +10,7 @@ pub mod config;
 pub mod files;
 pub mod identity;
 pub mod operations;
+pub mod packs;
 
 mod error;
 

@@ -263,6 +263,114 @@ fn naturally_exited_generation_is_no_effect_guarded_kill_not_synthetic_success()
 }
 
 #[test]
+fn guarded_list_delivers_only_literal_list_without_marking_stopping() {
+    let cwd = TempDir::new().unwrap();
+    let mut process = GameProcess::new(ConsoleCapture::new());
+    let generation = process.start(launch(&cwd)).unwrap();
+    wait_for(|| cwd.path().join("guarded-ready").exists());
+    let mut ack = process
+        .queue_list_guarded(generation, || Ok::<(), Refusal>(()))
+        .unwrap();
+    assert_eq!(receipt(&mut ack), Ok(()));
+    wait_for(|| fs::read_to_string(cwd.path().join("guarded-commands")).unwrap() == "list\n");
+    assert_eq!(process.poll().unwrap().phase, ProcessPhase::Running);
+    assert!(!process.owned.as_ref().unwrap().graceful_admitted);
+    assert!(matches!(
+        process.force_kill(generation, WAIT).unwrap(),
+        WaitOutcome::Exited(_)
+    ));
+    assert!(
+        process
+            .queue_list_guarded(generation, || Ok::<(), Refusal>(()))
+            .is_err()
+    );
+}
+
+#[test]
+fn delayed_list_writer_refuses_revocation_without_command_or_phase_change() {
+    let cwd = TempDir::new().unwrap();
+    let spec = launch(&cwd);
+    let mut process = GameProcess::new(ConsoleCapture::new());
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let io = io::IoThreads::gated_stdin_for_test(&process.console, entered_tx, release_rx).unwrap();
+    entered_rx.recv_timeout(WAIT).unwrap();
+    let generation = process.new_generation().unwrap();
+    process
+        .own_spawned(spec.command().spawn().unwrap(), generation, spec.stop(), io)
+        .unwrap();
+    wait_for(|| cwd.path().join("guarded-ready").exists());
+    let allowed = Arc::new(AtomicBool::new(true));
+    let gate_allowed = allowed.clone();
+    let mut ack = process
+        .queue_list_guarded(generation, move || {
+            if gate_allowed.load(Ordering::Acquire) {
+                Ok(())
+            } else {
+                Err(Refusal::Revoked)
+            }
+        })
+        .unwrap();
+    assert_eq!(ack.try_result(), None);
+    assert_eq!(
+        process
+            .owned
+            .as_ref()
+            .unwrap()
+            .io
+            .retained_workers_for_test(),
+        3
+    );
+    allowed.store(false, Ordering::Release);
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        receipt(&mut ack),
+        Err(GuardedError::Guard(Refusal::Revoked))
+    );
+    assert_eq!(
+        fs::read_to_string(cwd.path().join("guarded-commands")).unwrap(),
+        ""
+    );
+    assert_eq!(process.poll().unwrap().phase, ProcessPhase::Running);
+    assert!(matches!(
+        process.force_kill(generation, WAIT).unwrap(),
+        WaitOutcome::Exited(_)
+    ));
+}
+
+#[test]
+fn guarded_list_stale_or_stopping_admission_never_invokes_the_guard() {
+    let cwd = TempDir::new().unwrap();
+    let mut process = GameProcess::new(ConsoleCapture::new());
+    let generation = process.start(launch(&cwd)).unwrap();
+    wait_for(|| cwd.path().join("guarded-ready").exists());
+    for unavailable in [GenerationId([0; 16]), generation] {
+        if unavailable == generation {
+            // Set only owned phase evidence, without issuing an arbitrary command.
+            process.owned.as_mut().unwrap().stopping = true;
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        assert!(matches!(
+            process.queue_list_guarded(unavailable, move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+                Ok::<(), Refusal>(())
+            }),
+            Err(RuntimeError::StaleGeneration)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+    assert_eq!(
+        fs::read_to_string(cwd.path().join("guarded-commands")).unwrap(),
+        ""
+    );
+    assert!(matches!(
+        process.force_kill(generation, WAIT).unwrap(),
+        WaitOutcome::Exited(_)
+    ));
+}
+
+#[test]
 fn guarded_kill_denial_and_stale_preflight_do_not_kill_current_generation() {
     let cwd = TempDir::new().unwrap();
     let spec = launch(&cwd);

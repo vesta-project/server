@@ -7,10 +7,12 @@
 //! Mutations are deliberately absent until composed with durable effect ownership.
 mod local_document;
 mod native;
+mod pack_root;
 mod path;
 mod root;
 
 pub(crate) use local_document::read_local_document;
+pub(crate) use pack_root::{PackNode, PackRoot};
 pub use path::{MAX_COMPONENT_BYTES, MAX_PATH_BYTES, RelativePath};
 
 use crate::{

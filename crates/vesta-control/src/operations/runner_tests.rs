@@ -475,15 +475,12 @@ fn returned_stop_ack_with_second_owned_writer_draining_retains_lock_until_actual
     second_entered_rx.recv_timeout(WAIT).unwrap();
     assert_eq!(second_receipt.try_result(), None);
     let operations = owner.operations().clone();
-    let shared = Arc::new(DriverState {
-        stopping: owner.stop_flag(),
-        observation: Mutex::new(Observation::default()),
-        view: game.view.clone(),
-    });
+    let (shared, players) = DriverState::new(&owner, &game);
     let mut driver = FixtureDriver {
         driver: Driver {
             owner,
             game,
+            players,
             active: Some(Active::StopWrite {
                 claim,
                 generation,
@@ -605,15 +602,12 @@ fn delayed_stop(
         })
         .unwrap();
     let operations = owner.operations().clone();
-    let shared = Arc::new(DriverState {
-        stopping: owner.stop_flag(),
-        observation: Mutex::new(Observation::default()),
-        view: game.view.clone(),
-    });
+    let (shared, players) = DriverState::new(&owner, &game);
     let driver = FixtureDriver {
         driver: Driver {
             owner,
             game,
+            players,
             active: Some(Active::StopWrite {
                 claim,
                 generation,
@@ -799,15 +793,12 @@ fn delayed_stop_ack(
     assert_eq!(receipt.try_result(), None);
     assert!(harness.facts(&stop).0);
     let operations = owner.operations().clone();
-    let shared = Arc::new(DriverState {
-        stopping: owner.stop_flag(),
-        observation: Mutex::new(Observation::default()),
-        view: game.view.clone(),
-    });
+    let (shared, players) = DriverState::new(&owner, &game);
     let mut driver = FixtureDriver {
         driver: Driver {
             owner,
             game,
+            players,
             active: Some(Active::StopWrite {
                 claim,
                 generation,
@@ -845,16 +836,13 @@ fn delayed_stop_ack(
 fn dispatch_driver(harness: &Harness, probe: Option<fn(&mut Driver)>) -> FixtureDriver {
     let owner = harness.operations.open_owner().unwrap();
     let game = GameLifecycle::new(harness.launch());
-    let shared = Arc::new(DriverState {
-        stopping: owner.stop_flag(),
-        observation: Mutex::new(Observation::default()),
-        view: game.view.clone(),
-    });
+    let (shared, players) = DriverState::new(&owner, &game);
     let (release, _) = mpsc::channel();
     FixtureDriver {
         driver: Driver {
             owner,
             game,
+            players,
             active: None,
             shared,
             stop_wait: Duration::from_millis(25),
