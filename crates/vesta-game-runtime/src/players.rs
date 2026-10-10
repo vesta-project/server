@@ -132,7 +132,10 @@ pub fn parse_player_list_line(line: &str) -> Result<PlayerList> {
     // would swallow a trailing carriage return, so a caller could hand this a whole
     // block of output and have it read as one line. Control scalars are refused here,
     // before any trim or grammar step can hide one.
-    if stripped.chars().any(char::is_control) {
+    // Console decoding preserves invalid bytes as U+FFFD for display. The string
+    // API cannot distinguish that marker from a literal U+FFFD, so refuse both:
+    // neither can safely establish an intact player-list response.
+    if stripped.chars().any(|c| c.is_control() || c == '\u{fffd}') {
         return Err(PlayerListError::Malformed);
     }
     let trimmed = stripped.trim();
@@ -447,6 +450,18 @@ fn check_name(name: &str) -> Result<()> {
     if name
         .chars()
         .any(|c| c.is_control() || c == '\u{a7}' || c == '\u{1b}')
+    {
+        return Err(PlayerListError::Malformed);
+    }
+    // A second response can arrive before the first writer's newline. Do not
+    // reinterpret its header or log/body separator as part of one composite name.
+    if ["There are ", "players online:", "]: "]
+        .iter()
+        .any(|marker| {
+            name.as_bytes()
+                .windows(marker.len())
+                .any(|part| part.eq_ignore_ascii_case(marker.as_bytes()))
+        })
     {
         return Err(PlayerListError::Malformed);
     }

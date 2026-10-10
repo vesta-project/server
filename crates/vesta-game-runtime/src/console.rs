@@ -129,7 +129,8 @@ impl ConsoleCapture {
 
     /// Drain to EOF regardless of whether a viewer exists. LF, CR and CRLF are
     /// delimiters; empty lines are retained and a final unterminated line is flushed.
-    /// Invalid UTF-8 is replaced explicitly, never interpreted as commands.
+    /// Invalid UTF-8 is replaced explicitly with U+FFFD for display. Consumers that
+    /// parse this text must refuse that marker rather than invent names from it.
     ///
     /// A raw line retains at most MAX_LINE_BYTES + 3 even without a delimiter;
     /// the lookahead completes a boundary scalar. Excess bytes are drained/discarded

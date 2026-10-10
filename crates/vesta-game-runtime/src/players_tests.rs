@@ -706,6 +706,36 @@ fn debug_output_redacts_names_but_keeps_the_shape() {
     assert!(entry.contains("has_uuid"), "{entry}");
 }
 
+#[test]
+fn replacement_markers_are_refused_even_outside_the_name() {
+    for line in [
+        "There are 1/20 players online: Al\u{fffd}ice",
+        "There are 1/20 players online: Al\u{fffd}ice (00000000-0000-0000-0000-000000000001)",
+        "[\u{fffd}]: There are 1/20 players online: Alice",
+        "There are 0/20 players online: \u{fffd}",
+    ] {
+        assert_refused(line, PlayerListError::Malformed);
+    }
+}
+
+#[test]
+fn embedded_response_markers_are_not_player_names() {
+    for name in [
+        "AliceThere are 1/20 players online: Bob",
+        "AliceTHERE ARE 1 of a max of 20 players online: Bob",
+        "Aliceplayers online: Bob",
+        "AlicePLAYERS ONLINE: Bob",
+        "Alice[INFO]: Bob",
+        "AliceThere \u{a7}aare 1/20 players online: Bob",
+        "Alice]: Bob (00000000-0000-0000-0000-000000000001)",
+    ] {
+        assert_refused(
+            &format!("There are 1/20 players online: {name}"),
+            PlayerListError::Malformed,
+        );
+    }
+}
+
 /// Error rendering is fixed and input-free: no line text, no name, no source detail.
 #[test]
 fn error_rendering_is_fixed_and_carries_no_input() {
