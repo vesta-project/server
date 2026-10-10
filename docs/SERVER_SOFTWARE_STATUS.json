@@ -27,12 +27,14 @@
       "phase": 1,
       "current": "Existing roots, config and instance registry exist; independent process/control-plane identities and tested Windows/Linux parity do not.",
       "evidence": [
-        "scripts/install.ps1",
-        "wrapper/src/main/java/com/vesta/wrapper/config/ConfigLoader.java"
+        "scripts/install.ps1"
       ],
       "acceptance": "Install alongside an existing server without moving its data; preserve server_id across restart.",
       "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
+      "javaEvidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/config/ConfigLoader.java"
+      ]
     },
     {
       "id": "F02",
@@ -62,13 +64,14 @@
       "status": "not_started",
       "phase": 3,
       "current": "No separate supervisor executable or durable process/save-lease protocol found. Agent shutdown currently stops Minecraft.",
-      "evidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/VestaWrapper.java",
-        "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java"
-      ],
+      "evidence": [],
       "acceptance": "Kill/restart agent while Minecraft stays alive; recover control and journals without replay.",
       "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
+      "javaEvidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/VestaWrapper.java",
+        "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java"
+      ]
     },
     {
       "id": "F04",
@@ -89,12 +92,13 @@
       "status": "prototype",
       "phase": 3,
       "current": "Process-alive state exists, but it is not world readiness; no durable bounded crash-restart controller found.",
-      "evidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java"
-      ],
+      "evidence": [],
       "acceptance": "Expose starting/ready/degraded accurately; bounded configurable restart after crash, opt-in.",
       "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
+      "javaEvidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java"
+      ]
     },
     {
       "id": "F06",
@@ -102,13 +106,14 @@
       "status": "prototype",
       "phase": 2,
       "current": "Link codes and bearers exist; canonical device principals, local owner bootstrap and device certificates are missing.",
-      "evidence": [
-        "core/src/main/java/com/vesta/sync/auth/TokenService.java",
-        "wrapper/src/main/java/com/vesta/wrapper/ipc/ControlIpcServer.java"
-      ],
+      "evidence": [],
       "acceptance": "Single-use owner pairing, per-device revocation, OS-authorized local recovery.",
       "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
+      "javaEvidence": [
+        "core/src/main/java/com/vesta/sync/auth/TokenService.java",
+        "wrapper/src/main/java/com/vesta/wrapper/ipc/ControlIpcServer.java"
+      ]
     },
     {
       "id": "F07",
@@ -226,13 +231,14 @@
       "status": "partial",
       "phase": 2,
       "current": "HTTP/auth token buckets exist; transfer/storage quotas and coordinated resource budgets are incomplete.",
-      "evidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/security/TokenBucketRateLimiter.java",
-        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
-      ],
+      "evidence": [],
       "acceptance": "Bound input, memory, CPU, concurrent work and staging; recovery remains reachable.",
       "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
+      "javaEvidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/security/TokenBucketRateLimiter.java",
+        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+      ]
     },
     {
       "id": "F13",
@@ -262,13 +268,14 @@
       "status": "verified",
       "phase": 3,
       "current": "Bounded in-memory console ring is present; focused existing ConsoleBuffer tests passed. This does not verify supervisor continuity.",
-      "evidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/console/ConsoleBuffer.java",
-        "wrapper/src/test/java/com/vesta/wrapper/console/ConsoleBufferTest.java"
-      ],
+      "evidence": [],
       "acceptance": "10,000-line cap, bounded bytes and slow-viewer protection; no retained duplicate game logs.",
       "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
+      "javaEvidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/console/ConsoleBuffer.java",
+        "wrapper/src/test/java/com/vesta/wrapper/console/ConsoleBufferTest.java"
+      ]
     },
     {
       "id": "F15",
@@ -276,12 +283,13 @@
       "status": "partial",
       "phase": 3,
       "current": "Live list-command parsing exists; persistent log offsets, rotation/gap reconciliation and reliable absence are missing.",
-      "evidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java"
-      ],
+      "evidence": [],
       "acceptance": "Missing logs mark unknown; uncertain count never triggers sleep or replayed moderation.",
       "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
+      "javaEvidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java"
+      ]
     },
     {
       "id": "F16",
@@ -388,13 +396,14 @@
       "status": "partial",
       "phase": 5,
       "current": "Vesta index builder includes revision/minimum revision and external references; launcher-compatible schema fixtures need expansion.",
-      "evidence": [
-        "core/src/main/java/com/vesta/sync/manifest/VestaPackBuilder.java",
-        "core/src/main/java/com/vesta/sync/manifest/ServerModpackManifest.java"
-      ],
+      "evidence": [],
       "acceptance": "Existing VestaIndex compatible; fixed provider IDs/hashes; clear unavailable-source failure.",
       "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
+      "javaEvidence": [
+        "core/src/main/java/com/vesta/sync/manifest/VestaPackBuilder.java",
+        "core/src/main/java/com/vesta/sync/manifest/ServerModpackManifest.java"
+      ]
     },
     {
       "id": "F22",
@@ -426,13 +435,14 @@
       "status": "partial",
       "phase": 5,
       "current": "Capabilities and revision fields exist; complete independent pack policy and minimum-version lifecycle remain.",
-      "evidence": [
-        "core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java",
-        "core/src/main/java/com/vesta/sync/manifest/ServerModpackManifest.java"
-      ],
+      "evidence": [],
       "acceptance": "Optional/required release choices; revoked management falls back to public pack policy only.",
       "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
+      "javaEvidence": [
+        "core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java",
+        "core/src/main/java/com/vesta/sync/manifest/ServerModpackManifest.java"
+      ]
     },
     {
       "id": "F24",
@@ -526,12 +536,13 @@
       "status": "not_started",
       "phase": 7,
       "current": "Push update events exist, but no durable per-account inbox/delivery subsystem found.",
-      "evidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/server/ServerState.java"
-      ],
+      "evidence": [],
       "acceptance": "Per-principal read state; offline retrieval; bounded optional email/Discord/webhook retries.",
       "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
+      "javaEvidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/server/ServerState.java"
+      ]
     },
     {
       "id": "F31",
@@ -539,12 +550,13 @@
       "status": "not_started",
       "phase": 7,
       "current": "Whitelist read adapter exists; temporary maintenance restrictions and crash-safe reconciliation are absent.",
-      "evidence": [
-        "core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java"
-      ],
+      "evidence": [],
       "acceptance": "Connector overlay or journalled whitelist reconciliation; no stale overwrite of owner edits.",
       "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
+      "javaEvidence": [
+        "core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java"
+      ]
     },
     {
       "id": "F32",
@@ -563,12 +575,13 @@
       "status": "prototype",
       "phase": 7,
       "current": "Static descriptor/status exists; structured live/offline templates and state-aware game responses are absent.",
-      "evidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
-      ],
+      "evidence": [],
       "acceptance": "Online/offline templates; status in launcher; live changes state reload/restart requirements.",
       "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
+      "javaEvidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+      ]
     },
     {
       "id": "F34",
@@ -576,13 +589,14 @@
       "status": "partial",
       "phase": 7,
       "current": "Online players and unrestricted console exist; separate safe moderation endpoints/history remain.",
-      "evidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java",
-        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
-      ],
+      "evidence": [],
       "acceptance": "Moderator typed actions only by default; console authority never impersonates player.",
       "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
+      "javaEvidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java",
+        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+      ]
     },
     {
       "id": "F35",
@@ -590,13 +604,14 @@
       "status": "prototype",
       "phase": 7,
       "current": "Basic process/status/list snapshots exist; TPS adapters, storage-limited retention and redacted bundles remain.",
-      "evidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java",
-        "wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java"
-      ],
+      "evidence": [],
       "acceptance": "Unknown metrics labelled; 24h/30d/1y retention tiers configurable; redacted manual export.",
       "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
+      "javaEvidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java",
+        "wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java"
+      ]
     },
     {
       "id": "F36",
@@ -604,12 +619,13 @@
       "status": "prototype",
       "phase": 4,
       "current": "Security TOML editor exists; server.properties/JVM/ban/loader schema-backed edits and apply modes are incomplete.",
-      "evidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/config/SecuritySettingsService.java"
-      ],
+      "evidence": [],
       "acceptance": "Validate and preserve edits; report live/reload/restart; no external database provisioning.",
       "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
+      "javaEvidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/config/SecuritySettingsService.java"
+      ]
     },
     {
       "id": "F37",
@@ -650,12 +666,14 @@
       "phase": 3,
       "current": "Custom Java/JVM arguments and loader release matrix exist; guided game-runtime provisioning and 1.7+ test matrix remain.",
       "evidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java",
         "scripts/install.ps1"
       ],
       "acceptance": "Game runtime independent of agent runtime; adapter capabilities match tested combinations.",
       "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
+      "javaEvidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java"
+      ]
     },
     {
       "id": "F40",
@@ -664,12 +682,14 @@
       "phase": 8,
       "current": "Server descriptor/address utilities exist; end-to-end reachability diagnostics, ACME and reviewed proxy setup remain.",
       "evidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java",
         "scripts/install.ps1"
       ],
       "acceptance": "Local/LAN/direct/VPN/proxy coexist; CGNAT diagnosed; probe consent; no required relay.",
       "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
+      "javaEvidence": [
+        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+      ]
     },
     {
       "id": "F41",

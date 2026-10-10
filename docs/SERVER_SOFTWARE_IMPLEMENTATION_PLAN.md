@@ -469,6 +469,8 @@ distribution URL is HTTPS. Optional telemetry is off and nonessential.
 
 ## 13. Current implementation assessment
 
+> Historical: this assessment is the 2026-10-04 Java audit and cites Java files. Current Rust status is in section 20.
+
 Audit date: 2026-10-04. Server commit:
 6dd558e7bef1a5f6afd3ba84994820ec3ccc82ab. No server/launcher source changed.
 
