@@ -467,3 +467,24 @@ never production defaults. Rejected: handwritten HTTP/TLS, generated trust, plai
 fallback, Java authority shortcuts, unbounded queues and detaching synchronous work on
 shutdown. SBOM, provenance/vulnerability review, notices and cross-platform validation
 remain release gates.
+
+## Pack-only realtime WebSocket — offline intake (2026-10-10)
+
+- Added `tokio-tungstenite = 0.20.1` (MIT) and its `tungstenite = 0.20.1`
+  codec (MIT OR Apache-2.0), with defaults disabled and only `handshake` enabled.
+  Both pinned crates and all required transitives were already in the local Cargo
+  registry cache; resolution and compilation used `--offline`. Cargo.lock records
+  the selected transitives and registry checksums. No source was fetched.
+- Added a direct `futures-util = 0.3.32` dependency (already locked;
+  MIT OR Apache-2.0), with only `sink` and `std` features, for bounded async IO.
+  Control uses the existing pinned Tokio dependency for latest-state `watch` signals.
+- Hyper 1's existing HTTP/1 upgrade support owns the handshake transition. The
+  cached Tungstenite handshake API uses http 0.2, so only validated handshake
+  headers are copied into that API. TLS stays on the existing Tokio-rustls 0.26 /
+  Rustls 0.23 connection; no older TLS stack or extra TLS features are enabled.
+- Alternative rejected: a handwritten WebSocket frame codec or handshake. The
+  library enforces masking, fragmentation, control frames and bounded frame/message
+  parsing. Transport further permits only Ping/Pong/Close from clients.
+- Intake is not a security advisory/provenance audit or release license bundle.
+  Before distribution, verify current advisories for these cached versions and
+  retain applicable codec, random-number, encoding and futures transitive notices.

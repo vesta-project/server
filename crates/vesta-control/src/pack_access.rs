@@ -189,9 +189,28 @@ impl Default for SessionLimits {
 }
 
 type Key = [u8; 32];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TicketPurpose {
+    Download,
+    Realtime,
+}
+
+/// Opaque server-local session reference. Not a client bearer credential or authority.
+#[derive(Clone, Copy, Eq, PartialEq, Hash)]
+pub struct RealtimeSession {
+    key: Key,
+    server: ServerUuid,
+}
+impl fmt::Debug for RealtimeSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RealtimeSession[<redacted>]")
+    }
+}
 struct Ticket {
     session: Key,
     expires_at: Instant,
+    purpose: TicketPurpose,
 }
 #[derive(Default)]
 struct State {
@@ -264,11 +283,21 @@ impl PackSessions {
         Ok(state.sessions.remove(&key).is_some())
     }
 
-    /// A single-use ticket (for a realtime connection) bound to a live session. It
-    /// never outlives that session.
+    /// Compatibility helper: issue a download ticket, never a realtime ticket.
     pub fn issue_ticket(
         &self,
         secret: &str,
+        now: Instant,
+        policy: &PackAccessPolicy<'_>,
+    ) -> Result<PackSecret, PackAccessError> {
+        self.issue_ticket_for(secret, TicketPurpose::Download, now, policy)
+    }
+
+    /// Purpose-bound single-use ticket. It never outlives its session.
+    pub fn issue_ticket_for(
+        &self,
+        secret: &str,
+        purpose: TicketPurpose,
         now: Instant,
         policy: &PackAccessPolicy<'_>,
     ) -> Result<PackSecret, PackAccessError> {
@@ -289,6 +318,7 @@ impl PackSessions {
             Ticket {
                 session: session_key,
                 expires_at,
+                purpose,
             },
         );
         Ok(ticket)
@@ -301,13 +331,55 @@ impl PackSessions {
         now: Instant,
         policy: &PackAccessPolicy<'_>,
     ) -> Result<PackSession, PackAccessError> {
+        self.redeem_for(ticket, TicketPurpose::Download, now, policy)
+            .map(|(_, session)| session)
+    }
+
+    pub fn redeem_realtime(
+        &self,
+        ticket: &str,
+        now: Instant,
+        policy: &PackAccessPolicy<'_>,
+    ) -> Result<(RealtimeSession, PackSession), PackAccessError> {
+        self.redeem_for(ticket, TicketPurpose::Realtime, now, policy)
+    }
+
+    fn redeem_for(
+        &self,
+        ticket: &str,
+        purpose: TicketPurpose,
+        now: Instant,
+        policy: &PackAccessPolicy<'_>,
+    ) -> Result<(RealtimeSession, PackSession), PackAccessError> {
         let key = self.key(ticket)?;
         let mut state = self.lock()?;
         let ticket = state.tickets.remove(&key).ok_or(PackAccessError::Invalid)?;
-        if now >= ticket.expires_at {
+        if now >= ticket.expires_at || ticket.purpose != purpose {
             return Err(PackAccessError::Invalid);
         }
-        live_session(&mut state, &ticket.session, now, policy)
+        let session = live_session(&mut state, &ticket.session, now, policy)?;
+        Ok((
+            RealtimeSession {
+                key: ticket.session,
+                server: self.server,
+            },
+            session,
+        ))
+    }
+
+    /// Every realtime push must consult the live store and current policy, not a
+    /// cached grant: revocation must also terminate already connected sockets.
+    pub fn recheck_realtime(
+        &self,
+        reference: RealtimeSession,
+        now: Instant,
+        policy: &PackAccessPolicy<'_>,
+    ) -> Result<PackSession, PackAccessError> {
+        if reference.server != self.server {
+            return Err(PackAccessError::Invalid);
+        }
+        let mut state = self.lock()?;
+        live_session(&mut state, &reference.key, now, policy)
     }
 
     pub fn len(&self) -> Result<(usize, usize), PackAccessError> {

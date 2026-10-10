@@ -722,8 +722,10 @@ fn bearer_domains_duplicate_headers_and_cookie_query_credentials_are_refused() {
     let f = Fixture::new("minecraft-or-password", 8, 4096, 10);
     let owner = f.owner();
     let session = f.password_session(&owner);
+    // Download tickets are now usable for artifacts; realtime tickets must
+    // remain outside both the session and download credential domains.
     let ticket = f
-        .request("POST", "/api/v2/pack/ticket", b"", Some(&session))
+        .request("POST", "/api/v2/realtime/ticket", b"", Some(&session))
         .json()["ticket"]
         .as_str()
         .unwrap()
@@ -872,3 +874,6 @@ fn replaced_artifact_aborts_https_and_wrong_length_is_refused_before_headers() {
     f.request("GET", "/api/v2/pack/artifact", b"", Some(&session))
         .error(503, "pack_unavailable");
 }
+
+#[path = "support/realtime.rs"]
+mod realtime;

@@ -53,10 +53,17 @@ pub(super) async fn route(request: Request<Incoming>, state: Arc<Shared>) -> Rep
                 | "/api/v2/auth/minecraft/challenge"
                 | "/api/v2/auth/minecraft/complete"
                 | "/api/v2/pack/ticket"
-        ) | ("GET", "/api/v2/pack/status" | "/api/v2/pack/artifact")
+                | "/api/v2/realtime/ticket"
+        ) | (
+            "GET",
+            "/api/v2/pack/status" | "/api/v2/pack/artifact" | "/api/v2/realtime"
+        )
     );
     if !recognized {
         return error(StatusCode::NOT_FOUND, "endpoint_not_found");
+    }
+    if path == "/api/v2/realtime" {
+        return super::realtime::upgrade(request, state).await;
     }
     let query = request.uri().query().map(str::to_owned);
     if path != "/api/v2/pack/status" && query.is_some() {
@@ -80,13 +87,16 @@ pub(super) async fn route(request: Request<Incoming>, state: Arc<Shared>) -> Rep
     };
     if matches!(
         path.as_str(),
-        "/api/v2/pack/ticket" | "/api/v2/pack/artifact"
+        "/api/v2/pack/ticket" | "/api/v2/realtime/ticket" | "/api/v2/pack/artifact"
     ) && authorization.is_none()
     {
         return error(StatusCode::UNAUTHORIZED, "pack_session_invalid");
     }
     if method == Method::POST
-        && path != "/api/v2/pack/ticket"
+        && !matches!(
+            path.as_str(),
+            "/api/v2/pack/ticket" | "/api/v2/realtime/ticket"
+        )
         && request
             .headers()
             .get("content-type")
@@ -123,7 +133,13 @@ pub(super) async fn route(request: Request<Incoming>, state: Arc<Shared>) -> Rep
             return error(StatusCode::BAD_REQUEST, "invalid_request");
         }
     }
-    if (method == Method::GET || path == "/api/v2/pack/ticket") && !bytes.is_empty() {
+    if (method == Method::GET
+        || matches!(
+            path.as_str(),
+            "/api/v2/pack/ticket" | "/api/v2/realtime/ticket"
+        ))
+        && !bytes.is_empty()
+    {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
     state.jobs.reap(false).await;
@@ -252,9 +268,20 @@ fn dispatch(
                 Err(e) => minecraft_error(e.code()),
             }
         }
-        "/api/v2/pack/ticket" => {
+        "/api/v2/pack/ticket" | "/api/v2/realtime/ticket" => {
             let secret = authorization.unwrap_or("");
-            match host.with_policy(|p| host.sessions().issue_ticket(secret, Instant::now(), p)) {
+            match host.with_policy(|p| {
+                host.sessions().issue_ticket_for(
+                    secret,
+                    if path == "/api/v2/realtime/ticket" {
+                        vesta_control::pack_access::TicketPurpose::Realtime
+                    } else {
+                        vesta_control::pack_access::TicketPurpose::Download
+                    },
+                    Instant::now(),
+                    p,
+                )
+            }) {
                 Ok(Ok(ticket)) => json(serde_json::json!({"ticket": ticket.expose()})),
                 Ok(Err(vesta_control::pack_access::PackAccessError::Invalid)) => {
                     error(StatusCode::UNAUTHORIZED, "pack_session_invalid")
@@ -265,7 +292,10 @@ fn dispatch(
         "/api/v2/pack/artifact" => {
             let secret = authorization.unwrap_or("");
             if !matches!(
-                host.with_policy(|p| host.sessions().authenticate(secret, Instant::now(), p)),
+                host.with_policy(|p| host
+                    .sessions()
+                    .authenticate(secret, Instant::now(), p)
+                    .or_else(|_| host.sessions().redeem_ticket(secret, Instant::now(), p))),
                 Ok(Ok(_))
             ) {
                 return error(StatusCode::UNAUTHORIZED, "pack_session_invalid");

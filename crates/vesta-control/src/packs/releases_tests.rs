@@ -567,3 +567,30 @@ fn an_unrecorded_publication_removed_by_pruning_fails_its_recording_safely() {
         .unwrap();
     assert_eq!(retried.revision(), 2);
 }
+
+#[test]
+fn release_notifications_coalesce_to_latest_committed_revision_only() {
+    let f = Fixture::open();
+    let independent = PackReleases::open(&f.db).unwrap();
+    let mut changes = independent.subscribe();
+    assert!(!changes.has_changed().unwrap());
+    f.publish(&f.owner, UpdatePolicy::Optional, "1", b"first")
+        .unwrap();
+    f.publish(&f.owner, UpdatePolicy::Optional, "2", b"second")
+        .unwrap();
+    f.publish(&f.owner, UpdatePolicy::Required, "3", b"third")
+        .unwrap();
+    // A reader which missed intermediate commits gets one latest state, not a queue.
+    assert_eq!(*changes.borrow_and_update(), 3);
+    assert!(!changes.has_changed().unwrap());
+    assert_eq!(
+        independent.current().unwrap().unwrap().minimum_revision(),
+        3
+    );
+    assert!(
+        f.publish(&f.owner, UpdatePolicy::Optional, "1", b"refused")
+            .is_err()
+    );
+    assert!(!changes.has_changed().unwrap());
+    assert_eq!(*changes.borrow(), 3);
+}

@@ -12,7 +12,14 @@ use crate::ControlError;
 use crate::config::PackMetadata;
 use crate::identity::{self, Capability, Decision, EpochMillis, Subject};
 use rusqlite::{Connection, OptionalExtension, params};
-use std::{cmp::Ordering, fmt};
+use std::{
+    cmp::Ordering,
+    collections::HashMap,
+    fmt,
+    path::PathBuf,
+    sync::{Arc, Mutex, OnceLock, Weak},
+};
+use tokio::sync::watch;
 use vesta_protocol::pack::catalogue::{
     CatalogueError, MAX_REVISION, MAX_TEXT_BYTES, ManifestMetadata, Sha256,
 };
@@ -212,6 +219,7 @@ pub struct PackReleases {
     db: StateDatabase,
     audit: AuditLog,
     artifacts: PackArtifacts,
+    changes: Arc<watch::Sender<u64>>,
 }
 impl fmt::Debug for PackReleases {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -224,7 +232,14 @@ impl PackReleases {
             audit: AuditLog::new(db.clone())?,
             artifacts: PackArtifacts::open(db)?,
             db: db.clone(),
+            changes: release_notifications(db)?,
         })
+    }
+
+    /// Latest committed revision signal, shared by local stores for this database.
+    /// Subscribe before reading `current` to avoid losing a concurrent publication.
+    pub fn subscribe(&self) -> watch::Receiver<u64> {
+        self.changes.subscribe()
     }
 
     pub fn artifacts(&self) -> &PackArtifacts {
@@ -365,7 +380,17 @@ impl PackReleases {
                 published_at: now,
             })
         });
-        self.audit_refusal(subject, PUBLISH, result.map_err(ReleaseError::from))
+        let release = self.audit_refusal(subject, PUBLISH, result.map_err(ReleaseError::from))?;
+        // Publish only after commit. Concurrent completions cannot regress the signal.
+        self.changes.send_if_modified(|revision| {
+            if *revision < release.revision {
+                *revision = release.revision;
+                true
+            } else {
+                false
+            }
+        });
+        Ok(release)
     }
 
     /// Remove published artifacts other than the hosted release's, plus abandoned stages.
@@ -589,3 +614,23 @@ fn corrupt() -> ReleaseError {
 #[cfg(test)]
 #[path = "releases_tests.rs"]
 mod tests;
+
+// Weak registry shares notifications even when trusted local composition opens a
+// second PackReleases handle. Entries die with their stores; no release queue is kept.
+fn release_notifications(db: &StateDatabase) -> Result<Arc<watch::Sender<u64>>, ReleaseError> {
+    type Registry = HashMap<PathBuf, Weak<watch::Sender<u64>>>;
+    static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
+    let mut registry = REGISTRY
+        .get_or_init(Mutex::default)
+        .lock()
+        .map_err(|_| corrupt())?;
+    registry.retain(|_, sender| sender.strong_count() != 0);
+    let key = db.directory().path().to_owned();
+    if let Some(sender) = registry.get(&key).and_then(Weak::upgrade) {
+        return Ok(sender);
+    }
+    let (sender, _) = watch::channel(0);
+    let sender = Arc::new(sender);
+    registry.insert(key, Arc::downgrade(&sender));
+    Ok(sender)
+}

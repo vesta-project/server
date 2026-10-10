@@ -9,9 +9,7 @@ fn bounded_blocking_work_is_retained_after_request_cancellation_and_joined() {
         .build()
         .unwrap();
     runtime.block_on(async {
-        let jobs = Arc::new(BlockingJobs {
-            handles: Mutex::new(Vec::with_capacity(WORKERS)),
-        });
+        let jobs = Arc::new(BlockingJobs::new(tokio::runtime::Handle::current()));
         let (started_tx, started_rx) = mpsc::channel();
         let mut release = Vec::new();
         let mut requests = Vec::new();
@@ -313,4 +311,81 @@ fn disk_stream_truncation_growth_and_same_size_rewrite_abort_before_final_chunk(
             assert_eq!(budget.available_permits(), DOWNLOADS);
         }
     });
+}
+
+#[test]
+fn realtime_blocking_pool_saturation_cannot_consume_http_workers() {
+    let http_runtime = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(WORKERS)
+        .enable_all()
+        .build()
+        .unwrap();
+    let realtime_runtime = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(WORKERS)
+        .build()
+        .unwrap();
+    http_runtime.block_on(async {
+        let realtime = Arc::new(BlockingJobs::new(realtime_runtime.handle().clone()));
+        let http = BlockingJobs::new(tokio::runtime::Handle::current());
+        let (started_tx, started_rx) = mpsc::channel();
+        let mut release = Vec::new();
+        let mut requests = Vec::new();
+        for _ in 0..WORKERS {
+            let (tx, rx) = mpsc::channel();
+            release.push(tx);
+            let started = started_tx.clone();
+            let jobs = realtime.clone();
+            requests.push(tokio::spawn(async move {
+                jobs.run(move || {
+                    started.send(()).unwrap();
+                    rx.recv().unwrap();
+                })
+                .await
+                .unwrap();
+            }));
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut started = 0;
+        while started < WORKERS {
+            while started_rx.try_recv().is_ok() {
+                started += 1;
+            }
+            assert!(Instant::now() < deadline);
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            realtime
+                .run(|| panic!("realtime budget exceeded"))
+                .await
+                .is_err()
+        );
+        // This action must complete while every realtime worker remains blocked.
+        let result = tokio::time::timeout(Duration::from_secs(1), http.run(|| 42)).await;
+        for tx in release {
+            tx.send(()).unwrap();
+        }
+        for request in requests {
+            request.await.unwrap();
+        }
+        realtime.reap(true).await;
+        http.reap(true).await;
+        assert_eq!(result.unwrap().unwrap(), 42);
+    });
+}
+
+#[test]
+fn realtime_control_rate_has_bounded_burst_and_no_accumulated_idle_credit() {
+    let now = Instant::now();
+    let mut rate = realtime::ControlRate::new(now);
+    for _ in 0..8 {
+        assert!(rate.admit(now));
+    }
+    assert!(!rate.admit(now));
+    assert!(rate.admit(now + Duration::from_secs(1)));
+    assert!(!rate.admit(now + Duration::from_secs(1)));
+    let later = now + Duration::from_secs(3600);
+    for _ in 0..8 {
+        assert!(rate.admit(later));
+    }
+    assert!(!rate.admit(later));
 }

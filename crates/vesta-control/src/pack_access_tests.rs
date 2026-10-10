@@ -440,3 +440,92 @@ fn limits_are_validated_and_output_is_redacted() {
     assert!(!text.contains(PLAYER));
     assert_eq!(PackAccessError::Invalid.to_string(), "pack_session_invalid");
 }
+
+#[test]
+fn realtime_tickets_are_purpose_bound_single_use_and_recheck_live_sessions() {
+    let admission = Admission::new(&[], &[]);
+    let policy = admission.policy(
+        PackAccessMode::Minecraft,
+        Some(properties(false, true)),
+        None,
+    );
+    let sessions = PackSessions::new(server(), SessionLimits::default());
+    let now = Instant::now();
+    let (secret, session) = sessions
+        .issue(PackGrant::Minecraft(player(PLAYER)), now)
+        .unwrap();
+    let download = sessions
+        .issue_ticket(secret.expose(), now, &policy)
+        .unwrap();
+    assert_eq!(
+        sessions.redeem_realtime(download.expose(), now, &policy),
+        Err(PackAccessError::Invalid)
+    );
+    assert_eq!(
+        sessions.redeem_ticket(download.expose(), now, &policy),
+        Err(PackAccessError::Invalid)
+    );
+    let wrong = sessions
+        .issue_ticket_for(secret.expose(), TicketPurpose::Realtime, now, &policy)
+        .unwrap();
+    assert_eq!(
+        sessions.redeem_ticket(wrong.expose(), now, &policy),
+        Err(PackAccessError::Invalid)
+    );
+    assert_eq!(
+        sessions.redeem_realtime(wrong.expose(), now, &policy),
+        Err(PackAccessError::Invalid)
+    );
+    let ticket = sessions
+        .issue_ticket_for(secret.expose(), TicketPurpose::Realtime, now, &policy)
+        .unwrap();
+    let (reference, redeemed) = sessions
+        .redeem_realtime(ticket.expose(), now, &policy)
+        .unwrap();
+    assert_eq!(redeemed, session);
+    assert_eq!(
+        sessions.redeem_realtime(ticket.expose(), now, &policy),
+        Err(PackAccessError::Invalid)
+    );
+    assert_eq!(
+        sessions.recheck_realtime(reference, now, &policy).unwrap(),
+        session
+    );
+    assert_eq!(
+        sessions.recheck_realtime(reference, session.expires_at(), &policy),
+        Err(PackAccessError::Invalid)
+    );
+    let (secret, _) = sessions
+        .issue(PackGrant::Minecraft(player(PLAYER)), now)
+        .unwrap();
+    let ticket = sessions
+        .issue_ticket_for(secret.expose(), TicketPurpose::Realtime, now, &policy)
+        .unwrap();
+    let (reference, _) = sessions
+        .redeem_realtime(ticket.expose(), now, &policy)
+        .unwrap();
+    sessions.revoke(secret.expose()).unwrap();
+    assert_eq!(
+        sessions.recheck_realtime(reference, now, &policy),
+        Err(PackAccessError::Invalid)
+    );
+    let (secret, _) = sessions
+        .issue(PackGrant::Minecraft(player(PLAYER)), now)
+        .unwrap();
+    let ticket = sessions
+        .issue_ticket_for(secret.expose(), TicketPurpose::Realtime, now, &policy)
+        .unwrap();
+    let (reference, _) = sessions
+        .redeem_realtime(ticket.expose(), now, &policy)
+        .unwrap();
+    let banned = Admission::new(&[], &[PLAYER]);
+    let denied = banned.policy(
+        PackAccessMode::Minecraft,
+        Some(properties(false, true)),
+        None,
+    );
+    assert_eq!(
+        sessions.recheck_realtime(reference, now, &denied),
+        Err(PackAccessError::Invalid)
+    );
+}

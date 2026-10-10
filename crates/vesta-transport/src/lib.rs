@@ -1,5 +1,15 @@
 //! Owned, bounded HTTPS transport for descriptive discovery and pack-only access.
 //! There is deliberately no canonical management authentication boundary here.
+//!
+//! A session bearer can mint a single-use realtime ticket with an empty
+//! `POST /api/v2/realtime/ticket`. Upgrade `GET /api/v2/realtime?installed=N`
+//! with that ticket in exactly one `Authorization: Bearer` header. Credentials
+//! are never accepted in cookies or URLs. Application messages use a `type` tag:
+//! `hello` and `pack_update` carry revision, minimum_revision and status;
+//! `heartbeat` has no payload. Unpublished hello has zero revisions and null
+//! status. Clients may send only WebSocket Ping, Pong and Close control frames.
+//! Download tickets from `POST /api/v2/pack/ticket` cannot upgrade realtime;
+//! realtime tickets cannot authenticate a session or download an artifact.
 use http::{Request, Response, StatusCode};
 use hyper::{
     body::{Body, Bytes, Frame, Incoming, SizeHint},
@@ -36,6 +46,7 @@ use vesta_control::{
     host::{NetworkHost, read_tls_document},
 };
 
+mod realtime;
 mod routes;
 type Reply = Response<ReplyBody>;
 const DOWNLOADS: usize = 2;
@@ -258,6 +269,13 @@ impl Transport {
             .thread_name("vesta-https-worker")
             .build()
             .map_err(|_| TransportError::Runtime)?;
+        // Realtime policy/release reads must never occupy HTTP blocking workers.
+        // This owned runtime supplies only a separate two-thread blocking pool.
+        let realtime_runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(WORKERS)
+            .thread_name("vesta-realtime-check")
+            .build()
+            .map_err(|_| TransportError::Runtime)?;
         let refresh = host
             .start_admission_refresh()
             .map_err(|_| TransportError::Runtime)?;
@@ -273,8 +291,10 @@ impl Transport {
                     listener,
                     TlsAcceptor::from(Arc::new(tls)),
                     stopped,
+                    realtime_runtime.handle().clone(),
                 ));
                 drop(refresh);
+                drop(realtime_runtime);
                 drop(runtime);
                 let _ = done.send(());
             })
@@ -325,28 +345,45 @@ struct Shared {
     timeout: Duration,
     limiter: Mutex<PeerRateLimiter>,
     jobs: BlockingJobs,
+    realtime_jobs: BlockingJobs,
     downloads: Arc<Semaphore>,
+    realtime: realtime::Sockets,
+    stop: watch::Receiver<bool>,
 }
 struct BlockingJobs {
+    runtime: tokio::runtime::Handle,
     handles: Mutex<Vec<JoinHandle<()>>>,
 }
 impl BlockingJobs {
+    fn new(runtime: tokio::runtime::Handle) -> Self {
+        Self {
+            runtime,
+            handles: Mutex::new(Vec::with_capacity(WORKERS)),
+        }
+    }
     /// Two synchronous operations maximum, including abandoned HTTP requests.
     async fn execute(&self, action: impl FnOnce() -> Reply + Send + 'static) -> Reply {
+        self.run(action)
+            .await
+            .unwrap_or_else(|_| error(StatusCode::SERVICE_UNAVAILABLE, "transport_busy"))
+    }
+    async fn run<T: Send + 'static>(
+        &self,
+        action: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<T, ()> {
         let (tx, rx) = oneshot::channel();
         {
             let Ok(mut jobs) = self.handles.lock() else {
-                return error(StatusCode::SERVICE_UNAVAILABLE, "transport_unavailable");
+                return Err(());
             };
             if jobs.len() >= WORKERS {
-                return error(StatusCode::SERVICE_UNAVAILABLE, "transport_busy");
+                return Err(());
             }
-            jobs.push(tokio::task::spawn_blocking(move || {
+            jobs.push(self.runtime.spawn_blocking(move || {
                 let _ = tx.send(action());
             }));
         }
-        rx.await
-            .unwrap_or_else(|_| error(StatusCode::SERVICE_UNAVAILABLE, "transport_unavailable"))
+        rx.await.map_err(|_| ())
     }
     async fn reap(&self, all: bool) {
         let handles = {
@@ -376,6 +413,7 @@ async fn serve(
     config: TlsListener,
     tls: TlsAcceptor,
     mut stop: watch::Receiver<bool>,
+    realtime_runtime: tokio::runtime::Handle,
 ) {
     let Ok(listener) = TcpListener::from_std(socket) else {
         return;
@@ -389,9 +427,10 @@ async fn serve(
                 .expect("fixed rate policy"),
         )),
         downloads: Arc::new(Semaphore::new(DOWNLOADS)),
-        jobs: BlockingJobs {
-            handles: Mutex::new(Vec::with_capacity(WORKERS)),
-        },
+        realtime: realtime::Sockets::new(),
+        stop: stop.clone(),
+        jobs: BlockingJobs::new(tokio::runtime::Handle::current()),
+        realtime_jobs: BlockingJobs::new(realtime_runtime),
     });
     let handshakes = Arc::new(Semaphore::new(HANDSHAKES));
     let mut connection_limiter = PeerRateLimiter::new(
@@ -407,7 +446,7 @@ async fn serve(
             accepted = listener.accept() => {
                 // Transient accept failures (e.g. descriptor exhaustion) must not stop serving.
                 let Ok((socket, peer)) = accepted else { tokio::time::sleep(Duration::from_millis(50)).await; continue; };
-                if connections.len() >= usize::from(config.max_connections()) { drop(socket); continue; }
+                if connections.len() + shared.realtime.active() >= usize::from(config.max_connections()) { drop(socket); continue; }
                 if !matches!(connection_limiter.try_acquire(peer.ip()), AdmissionDecision::Allowed) { drop(socket); continue; }
                 let Ok(handshake) = handshakes.clone().try_acquire_owned() else { drop(socket); continue; };
                 let tls = tls.clone(); let state = shared.clone();
@@ -417,16 +456,20 @@ async fn serve(
                         let Ok(stream) = tls.accept(socket).await else { return; };
                         drop(handshake);
                         let service = service_fn(move |request| handle(request, peer, state.clone()));
-                        let _ = http1::Builder::new().timer(TokioTimer::new()).header_read_timeout(limit).max_headers(64).max_buf_size(HEADER_BYTES).serve_connection(TokioIo::new(stream), service).await;
+                        let _ = http1::Builder::new().timer(TokioTimer::new()).header_read_timeout(limit).max_headers(64).max_buf_size(HEADER_BYTES).serve_connection(TokioIo::new(stream), service).with_upgrades().await;
                     }).await;
                 });
             }
         }
         shared.jobs.reap(false).await;
+        shared.realtime.reap(false).await;
+        shared.realtime_jobs.reap(false).await;
     }
     drop(listener);
     connections.abort_all();
     while connections.join_next().await.is_some() {}
+    shared.realtime.reap(true).await;
+    shared.realtime_jobs.reap(true).await;
     shared.jobs.reap(true).await;
 }
 
