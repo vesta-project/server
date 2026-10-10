@@ -147,9 +147,13 @@ pub struct PlayerObservation {
     generation: GenerationId,
     after_cursor: u64,
     response_cursor: u64,
+    observed_at_ms: i64,
     list: PlayerList,
 }
 impl PlayerObservation {
+    pub fn observed_at_ms(&self) -> i64 {
+        self.observed_at_ms
+    }
     pub fn generation(&self) -> GenerationId {
         self.generation
     }
@@ -171,7 +175,23 @@ impl fmt::Debug for PlayerObservation {
     }
 }
 
-impl OperationRuntime {
+impl super::RuntimeHandle {
+    pub fn query_management_players(
+        &self,
+        subject: &Subject,
+        expected_generation: GenerationId,
+        timeout: Duration,
+    ) -> PlayerQueryResult<PlayerObservation> {
+        let observation = self.player_queries().query_with_capability(
+            subject,
+            expected_generation,
+            timeout,
+            Capability::PlayersView,
+        )?;
+        self.remember_players(&observation);
+        Ok(observation)
+    }
+
     /// Issue only `list` to this concrete runtime's exact running generation. The
     /// caller must supply a trusted authenticated application Subject, not fabricate
     /// it from a header/UUID. Timeout is an observation failure, never zero players.
@@ -181,14 +201,18 @@ impl OperationRuntime {
         expected_generation: GenerationId,
         timeout: Duration,
     ) -> PlayerQueryResult<PlayerObservation> {
-        self.player_queries()
-            .query(subject, expected_generation, timeout)
+        let observation = self
+            .player_queries()
+            .query(subject, expected_generation, timeout)?;
+        self.remember_players(&observation);
+        Ok(observation)
     }
 }
 
 fn with_console_access<T>(
     operations: &Operations,
     subject: &Subject,
+    capability: Capability,
     work: impl FnOnce() -> PlayerQueryResult<T>,
 ) -> PlayerQueryResult<T> {
     operations
@@ -201,7 +225,7 @@ fn with_console_access<T>(
                 Some(subject),
             )
             .map_err(OperationError::from)?;
-            let result = match policy.check(Capability::ConsoleRead, None) {
+            let result = match policy.check(capability, None) {
                 identity::Decision::Allow => work()?,
                 identity::Decision::Deny(reason) => {
                     return Err(OperationError::forbidden(reason).into());
@@ -236,6 +260,7 @@ fn ensure_view(view: &LiveGameView, generation: GenerationId) -> PlayerQueryResu
 }
 
 struct Request {
+    capability: Capability,
     subject: Subject,
     generation: GenerationId,
     deadline: Instant,
@@ -278,6 +303,15 @@ impl QueryEndpoint {
         generation: GenerationId,
         timeout: Duration,
     ) -> PlayerQueryResult<PlayerObservation> {
+        self.query_with_capability(subject, generation, timeout, Capability::ConsoleRead)
+    }
+    fn query_with_capability(
+        &self,
+        subject: &Subject,
+        generation: GenerationId,
+        timeout: Duration,
+        capability: Capability,
+    ) -> PlayerQueryResult<PlayerObservation> {
         if timeout.is_zero() || timeout > MAX_PLAYER_QUERY_WAIT {
             return Err(PlayerQueryError::InvalidRequest);
         }
@@ -287,6 +321,7 @@ impl QueryEndpoint {
         let cancelled = Arc::new(AtomicBool::new(false));
         let (reply, receiver) = mpsc::sync_channel(1);
         let request = Request {
+            capability,
             subject: subject.clone(),
             generation,
             deadline,
@@ -299,7 +334,7 @@ impl QueryEndpoint {
             .mailbox
             .lock()
             .map_err(|_| PlayerQueryError::Unavailable)?;
-        with_console_access(&self.operations, subject, || {
+        with_console_access(&self.operations, subject, capability, || {
             request.alive(&self.stopping)?;
             ensure_view(&self.view, generation)?;
             if mailbox.busy {
@@ -314,17 +349,19 @@ impl QueryEndpoint {
         drop(mailbox);
         let result = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()));
         match result {
-            Ok(Ok(observation)) => with_console_access(&self.operations, subject, || {
-                if self.stopping.load(Ordering::Acquire) {
-                    return Err(PlayerQueryError::ShuttingDown);
-                }
-                ensure_view(&self.view, generation)?;
-                // Receiving a result after this caller's deadline does not revive it.
-                if Instant::now() >= deadline {
-                    return Err(PlayerQueryError::TimedOut);
-                }
-                Ok(observation)
-            }),
+            Ok(Ok(observation)) => {
+                with_console_access(&self.operations, subject, capability, || {
+                    if self.stopping.load(Ordering::Acquire) {
+                        return Err(PlayerQueryError::ShuttingDown);
+                    }
+                    ensure_view(&self.view, generation)?;
+                    // Receiving a result after this caller's deadline does not revive it.
+                    if Instant::now() >= deadline {
+                        return Err(PlayerQueryError::TimedOut);
+                    }
+                    Ok(observation)
+                })
+            }
             Ok(Err(error)) => Err(error),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 cancelled.store(true, Ordering::Release);
@@ -502,18 +539,23 @@ impl QueryDriver {
                     self.clear_busy();
                     return None;
                 }
-                let found = with_console_access(&self.operations, &pending.request.subject, || {
-                    pending.request.alive(&self.stopping)?;
-                    ensure_live(game.process.snapshot(), pending.request.generation)?;
-                    scan(
-                        &self.console,
-                        after,
-                        &mut cursor,
-                        &mut lines,
-                        &mut bytes,
-                        pending.request.generation,
-                    )
-                });
+                let found = with_console_access(
+                    &self.operations,
+                    &pending.request.subject,
+                    pending.request.capability,
+                    || {
+                        pending.request.alive(&self.stopping)?;
+                        ensure_live(game.process.snapshot(), pending.request.generation)?;
+                        scan(
+                            &self.console,
+                            after,
+                            &mut cursor,
+                            &mut lines,
+                            &mut bytes,
+                            pending.request.generation,
+                        )
+                    },
+                );
                 match found {
                     Ok(Some(observation)) => {
                         pending.request.respond(Ok(observation));
@@ -553,39 +595,46 @@ impl QueryDriver {
         let cancelled = request.cancelled.clone();
         let deadline = request.deadline;
         let generation = request.generation;
+        let capability = request.capability;
         let view = game.view.clone();
         let console = self.console.clone();
         // Own the receipt outside the transaction's return value. read_with can fail
         // while finalizing an otherwise successful callback, after native admission.
         let mut admitted = None;
-        let checked = with_console_access(&self.operations, &request.subject, || {
-            request.alive(&self.stopping)?;
-            if uncertain {
-                return Err(RuntimeError::ObserveFailed.into());
-            }
-            ensure_live(game.process.snapshot(), generation)?;
-            admitted = Some(
-                game.process
-                    .queue_list_guarded(generation, move || {
-                        with_console_access(&operations, &subject, || {
-                            if stopping.load(Ordering::Acquire) {
-                                return Err(PlayerQueryError::ShuttingDown);
-                            }
-                            if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
-                                return Err(PlayerQueryError::TimedOut);
-                            }
-                            ensure_view(&view, generation)?;
-                            // Horizon immediately before the fixed write, not request acceptance
-                            // or its later ACK. An immediate response cannot be skipped.
-                            let latest = console.snapshot(0, 1)?.latest_cursor;
-                            *mark.lock().map_err(|_| PlayerQueryError::Unavailable)? = Some(latest);
-                            Ok(())
+        let checked = with_console_access(
+            &self.operations,
+            &request.subject,
+            request.capability,
+            || {
+                request.alive(&self.stopping)?;
+                if uncertain {
+                    return Err(RuntimeError::ObserveFailed.into());
+                }
+                ensure_live(game.process.snapshot(), generation)?;
+                admitted = Some(
+                    game.process
+                        .queue_list_guarded(generation, move || {
+                            with_console_access(&operations, &subject, capability, || {
+                                if stopping.load(Ordering::Acquire) {
+                                    return Err(PlayerQueryError::ShuttingDown);
+                                }
+                                if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+                                    return Err(PlayerQueryError::TimedOut);
+                                }
+                                ensure_view(&view, generation)?;
+                                // Horizon immediately before the fixed write, not request acceptance
+                                // or its later ACK. An immediate response cannot be skipped.
+                                let latest = console.snapshot(0, 1)?.latest_cursor;
+                                *mark.lock().map_err(|_| PlayerQueryError::Unavailable)? =
+                                    Some(latest);
+                                Ok(())
+                            })
                         })
-                    })
-                    .map_err(PlayerQueryError::from)?,
-            );
-            Ok(())
-        });
+                        .map_err(PlayerQueryError::from)?,
+                );
+                Ok(())
+            },
+        );
         match (checked, admitted) {
             (Ok(()), Some(receipt)) => Ok(Phase::Writing { receipt, marker }),
             (Err(error), Some(receipt)) => {
@@ -633,6 +682,12 @@ fn scan(
                     generation,
                     after_cursor: after,
                     response_cursor: line.cursor,
+                    observed_at_ms: line
+                        .observed_at
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis()
+                        .min(i64::MAX as u128) as i64,
                     list,
                 }));
             }
@@ -648,3 +703,15 @@ fn scan(
 #[cfg(test)]
 #[path = "players_tests.rs"]
 mod tests;
+
+impl OperationRuntime {
+    pub fn query_players(
+        &self,
+        subject: &Subject,
+        expected_generation: GenerationId,
+        timeout: Duration,
+    ) -> PlayerQueryResult<PlayerObservation> {
+        self.network_handle()
+            .query_players(subject, expected_generation, timeout)
+    }
+}

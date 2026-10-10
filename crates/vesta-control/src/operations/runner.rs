@@ -69,6 +69,8 @@ struct DriverState {
     observation: Mutex<Observation>,
     view: Arc<LiveGameView>,
     players: QueryEndpoint,
+    console: vesta_game_runtime::console::ConsoleCapture,
+    player_count: Mutex<Option<(GenerationId, u32, i64, u64)>>,
 }
 impl DriverState {
     fn new(owner: &OwnerSession, game: &GameLifecycle) -> (Arc<Self>, QueryDriver) {
@@ -85,6 +87,8 @@ impl DriverState {
                 observation: Mutex::new(Observation::default()),
                 view: game.view.clone(),
                 players,
+                console: game.console.clone(),
+                player_count: Mutex::new(None),
             }),
             queries,
         )
@@ -109,11 +113,12 @@ impl DriverState {
 
 /// Concrete trusted host composition. Only the literal LaunchSpec passed by
 /// trusted host code is executable; operation input cannot select executable,
-/// argv, cwd, URL, stdin text, handler or authority. Opening never starts a game
+/// argv, cwd, URL, handler or authority. Console text is a bounded desired command,
+/// not a launch option or authorization proof. Opening never starts a game
 /// except by executing an already-admitted, currently authorized queued Start.
 ///
 /// No manual tick is required. The bounded driver observes/polls and dispatches
-/// the closed Start/Stop/ForceKill enum. There is no arbitrary public registry.
+/// the closed lifecycle/console enum. There is no arbitrary public registry.
 pub struct OperationRuntime {
     operations: Operations,
     shared: Arc<DriverState>,
@@ -166,7 +171,87 @@ impl fmt::Debug for OperationRuntime {
             .finish_non_exhaustive()
     }
 }
+/// Cloneable observations/admission, without local-owner commands or process ownership.
+#[derive(Clone)]
+pub struct RuntimeHandle {
+    operations: Operations,
+    shared: Arc<DriverState>,
+}
+impl RuntimeHandle {
+    /// Check the server-owned live generation in the same admission writer,
+    /// after exact retry retrieval and before creating a new operation.
+    pub fn submit_game(
+        &self,
+        subject: &crate::identity::Subject,
+        command: GameCommand,
+        idempotency_key: &str,
+    ) -> OperationsResult<super::Admission> {
+        self.operations.admit_with_view(
+            subject,
+            command.operation_type(),
+            &command.canonical_input()?,
+            Some(idempotency_key),
+            Some(&self.shared.view),
+        )
+    }
+
+    pub(super) fn operations(&self) -> &Operations {
+        &self.operations
+    }
+    pub(super) fn source_revision(&self) -> OperationsResult<SourceRevision> {
+        self.shared.view.revision()
+    }
+    pub(super) fn player_queries(&self) -> &QueryEndpoint {
+        &self.shared.players
+    }
+    pub fn last_player_count(&self, generation: Option<GenerationId>) -> Option<(u32, i64)> {
+        let generation = generation?;
+        self.shared
+            .player_count
+            .lock()
+            .ok()?
+            .filter(|v| v.0 == generation)
+            .map(|v| (v.1, v.2))
+    }
+    pub(super) fn remember_players(&self, value: &super::players::PlayerObservation) {
+        if let Ok(mut count) = self.shared.player_count.lock()
+            && self.shared.view.snapshot().ok().and_then(|v| v.generation)
+                == Some(value.generation())
+            && count.is_none_or(|v| v.0 != value.generation() || v.3 <= value.response_cursor())
+        {
+            *count = Some((
+                value.generation(),
+                value.list().online(),
+                value.observed_at_ms(),
+                value.response_cursor(),
+            ));
+        }
+    }
+    pub fn game_snapshot(&self) -> OperationsResult<ProcessSnapshot> {
+        self.shared.view.snapshot()
+    }
+    pub fn game_observation(&self) -> OperationsResult<(ProcessSnapshot, Option<u64>)> {
+        self.shared.view.observation()
+    }
+    pub fn operations_service(&self) -> &Operations {
+        &self.operations
+    }
+    pub fn console_snapshot(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<vesta_game_runtime::console::ConsolePage, vesta_game_runtime::console::ConsoleError>
+    {
+        self.shared.console.snapshot(after, limit)
+    }
+}
 impl OperationRuntime {
+    pub fn network_handle(&self) -> RuntimeHandle {
+        RuntimeHandle {
+            operations: self.operations.clone(),
+            shared: self.shared.clone(),
+        }
+    }
     pub fn open(operations: Operations, launch: LaunchSpec) -> OperationsResult<Self> {
         Self::open_with_stop_timeout(operations, launch, DEFAULT_STOP_WAIT)
     }
@@ -231,12 +316,11 @@ impl OperationRuntime {
         self.local.clone()
     }
 
+    #[cfg(test)]
     pub(super) fn player_queries(&self) -> &QueryEndpoint {
         &self.shared.players
     }
-    pub(super) fn operations(&self) -> &Operations {
-        &self.operations
-    }
+    #[cfg(test)]
     pub(super) fn source_revision(&self) -> OperationsResult<SourceRevision> {
         self.shared.view.revision()
     }
@@ -303,22 +387,30 @@ impl Drop for OperationRuntime {
 }
 
 enum Active {
+    CommandWrite {
+        claim: Claim,
+        receipt: GuardedInput<OperationError>,
+    },
     StopWrite {
         claim: Claim,
         generation: GenerationId,
         receipt: GuardedInput<OperationError>,
+        restart: bool,
     },
     Exit {
         claim: Claim,
         generation: GenerationId,
         uncertain: Option<&'static str>,
         stop_deadline: Option<Instant>,
+        restart: bool,
     },
 }
 impl Active {
     fn id(&self) -> &OperationId {
         match self {
-            Self::StopWrite { claim, .. } | Self::Exit { claim, .. } => claim.id(),
+            Self::CommandWrite { claim, .. }
+            | Self::StopWrite { claim, .. }
+            | Self::Exit { claim, .. } => claim.id(),
         }
     }
 }
@@ -546,6 +638,27 @@ impl Driver {
             Err(error) => return self.refused(claim, error),
         };
         match command {
+            GameCommand::Console {
+                expected_generation,
+                line,
+            } => {
+                let native = self.owner.native_effect_guard(&claim)?;
+                let view = self.game.view.clone();
+                match self.game.process.queue_command_guarded(
+                    expected_generation,
+                    &line,
+                    move || native.begin_effect(&view.revision()?),
+                ) {
+                    Ok(receipt) => self.active = Some(Active::CommandWrite { claim, receipt }),
+                    Err(error) => {
+                        if error == RuntimeError::ObserveFailed {
+                            self.note_observation_failure(error);
+                        }
+                        self.owner
+                            .finish(claim, FinishOutcome::Failed { code: error.code() })?;
+                    }
+                }
+            }
             GameCommand::Start => {
                 let result = self
                     .game
@@ -569,6 +682,7 @@ impl Driver {
                                 generation,
                                 uncertain: Some(RuntimeError::StartupUncertain.code()),
                                 stop_deadline: None,
+                                restart: false,
                             });
                         } else {
                             self.owner.finish(
@@ -588,7 +702,11 @@ impl Driver {
             }
             GameCommand::Stop {
                 expected_generation,
+            }
+            | GameCommand::Restart {
+                expected_generation,
             } => {
+                let restart = matches!(command, GameCommand::Restart { .. });
                 let native = match self.owner.native_effect_guard(&claim) {
                     Ok(native) => native,
                     Err(error) => return self.refused(claim, error),
@@ -608,6 +726,7 @@ impl Driver {
                             claim,
                             generation: expected_generation,
                             receipt,
+                            restart,
                         })
                     }
                     Err(error) => {
@@ -646,6 +765,7 @@ impl Driver {
                             generation: expected_generation,
                             uncertain: None,
                             stop_deadline: None,
+                            restart: false,
                         })
                     }
                     Err(GuardedError::Guard(error)) => self.refused(claim, error)?,
@@ -658,6 +778,7 @@ impl Driver {
                                 generation: expected_generation,
                                 uncertain: Some(error.code()),
                                 stop_deadline: None,
+                                restart: false,
                             });
                         } else {
                             self.owner
@@ -676,16 +797,34 @@ impl Driver {
             return Ok(());
         };
         match active {
+            Active::CommandWrite { claim, mut receipt } => match receipt.try_result() {
+                None => self.active = Some(Active::CommandWrite { claim, receipt }),
+                Some(Ok(())) => {
+                    self.owner.finish(
+                        claim,
+                        FinishOutcome::Succeeded {
+                            result_json: Some("{\"delivery\":\"sent\"}".into()),
+                        },
+                    )?;
+                }
+                Some(Err(GuardedError::Guard(error))) => self.refused(claim, error)?,
+                Some(Err(GuardedError::Runtime(error))) => {
+                    self.owner
+                        .finish(claim, FinishOutcome::Uncertain { code: error.code() })?;
+                }
+            },
             Active::StopWrite {
                 claim,
                 generation,
                 mut receipt,
+                restart,
             } => match receipt.try_result() {
                 None => {
                     self.active = Some(Active::StopWrite {
                         claim,
                         generation,
                         receipt,
+                        restart,
                     });
                 }
                 Some(Ok(())) => {
@@ -700,6 +839,7 @@ impl Driver {
                         claim,
                         generation,
                         uncertain,
+                        restart,
                         stop_deadline: if uncertain.is_none() {
                             Instant::now().checked_add(self.stop_wait)
                         } else {
@@ -716,6 +856,7 @@ impl Driver {
                         generation,
                         uncertain: Some(error.code()),
                         stop_deadline: None,
+                        restart: false,
                     });
                 }
             },
@@ -724,6 +865,7 @@ impl Driver {
                 generation,
                 uncertain,
                 stop_deadline,
+                restart,
             } => {
                 let uncertain = self
                     .observation_uncertain
@@ -758,6 +900,7 @@ impl Driver {
                             generation,
                             uncertain,
                             stop_deadline,
+                            restart,
                         });
                     }
                 } else if snapshot
@@ -767,6 +910,22 @@ impl Driver {
                     if let Some(code) = uncertain {
                         self.owner
                             .finish(claim, FinishOutcome::Uncertain { code })?;
+                    } else if restart {
+                        let result = self
+                            .game
+                            .start(|revision| self.owner.continue_restart(&claim, revision));
+                        let publication = self.game.publish();
+                        match result {
+                            Ok(next_generation) => self.succeeded(claim, next_generation)?,
+                            Err(GuardedError::Guard(error)) => self.refused(claim, error)?,
+                            Err(GuardedError::Runtime(error)) => {
+                                self.owner.finish(
+                                    claim,
+                                    FinishOutcome::Uncertain { code: error.code() },
+                                )?;
+                            }
+                        }
+                        publication?;
                     } else {
                         self.succeeded(claim, generation)?;
                     }

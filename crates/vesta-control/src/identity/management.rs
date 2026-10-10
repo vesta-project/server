@@ -453,6 +453,55 @@ impl ManagementAccess {
     }
     /// Authenticated lookup, not reusable policy authority. Future mutations must
     /// reload/authorize current policy inside their own write transaction.
+    /// Deterministic recognition of currently retained agent-issued credentials.
+    /// Hash lookup avoids retaining extra plaintext tokens for redaction.
+    pub fn redact_console_secrets(&self, text: &str) -> Result<String> {
+        let pairs = self.db.read(|c| {
+            let mut statement = c.prepare("SELECT code_hash FROM management_pairing_codes WHERE server_id=? AND expires_at>? LIMIT 32")?;
+            let rows = statement.query_map(params![self.server_id(),self.now()], |row| row.get::<_,Vec<u8>>(0))?;
+            Ok(rows.collect::<std::result::Result<Vec<_>,_>>()?)
+        })?;
+        let stores = self.stores.lock().unwrap_or_else(|p| p.into_inner());
+        let bytes = text.as_bytes();
+        let mut out = String::with_capacity(text.len());
+        let mut last = 0;
+        let mut at = 0;
+        while at + 43 <= bytes.len() {
+            let candidate = &bytes[at..at + 43];
+            if candidate
+                .iter()
+                .all(|v| v.is_ascii_alphanumeric() || *v == b'_' || *v == b'-')
+            {
+                let candidate = std::str::from_utf8(candidate).expect("ASCII");
+                if (!stores.sessions.is_empty()
+                    && stores.sessions.contains_key(&bound_hash(
+                        b"session",
+                        self.server_id(),
+                        candidate,
+                    )))
+                    || (!stores.challenges.is_empty()
+                        && stores.challenges.contains_key(&bound_hash(
+                            b"challenge",
+                            self.server_id(),
+                            candidate,
+                        )))
+                    || (!pairs.is_empty() && {
+                        let hash = bound_hash(b"pair", self.server_id(), candidate);
+                        pairs.iter().any(|v| v.as_slice() == hash.as_slice())
+                    })
+                {
+                    out.push_str(&text[last..at]);
+                    out.push_str("[redacted]");
+                    at += 43;
+                    last = at;
+                    continue;
+                }
+            }
+            at += 1;
+        }
+        out.push_str(&text[last..]);
+        Ok(out)
+    }
     pub fn authenticate(&self, token: &str) -> Result<Subject> {
         decode::<32>(token).map_err(|_| ManagementError::SessionInvalid)?;
         let mut stores = self

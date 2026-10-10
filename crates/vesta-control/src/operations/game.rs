@@ -21,12 +21,14 @@ use vesta_state::StateError;
 pub(super) struct LiveGameView {
     snapshot: RwLock<ProcessSnapshot>,
     revision_usable: AtomicBool,
+    started: RwLock<Option<(GenerationId, std::time::Instant)>>,
 }
 impl LiveGameView {
     fn new(snapshot: ProcessSnapshot) -> Self {
         Self {
             snapshot: RwLock::new(snapshot),
             revision_usable: AtomicBool::new(true),
+            started: RwLock::new(None),
         }
     }
     pub(super) fn snapshot(&self) -> OperationsResult<ProcessSnapshot> {
@@ -48,7 +50,31 @@ impl LiveGameView {
         // proof cannot mint/consume destructive confirmations from a stale view.
         self.revision_usable.store(false, Ordering::Release);
     }
+    pub(super) fn observation(&self) -> OperationsResult<(ProcessSnapshot, Option<u64>)> {
+        let started = self
+            .started
+            .read()
+            .map_err(|_| StateError::new("state_game_view_unavailable"))?;
+        let snapshot = self.snapshot()?;
+        Ok((
+            snapshot,
+            started
+                .as_ref()
+                .map(|(_, instant)| instant.elapsed().as_secs()),
+        ))
+    }
     fn publish(&self, snapshot: ProcessSnapshot) -> OperationsResult<()> {
+        let mut started = self
+            .started
+            .write()
+            .map_err(|_| StateError::new("state_game_view_unavailable"))?;
+        match snapshot.generation {
+            Some(generation) if started.as_ref().is_none_or(|(old, _)| *old != generation) => {
+                *started = Some((generation, std::time::Instant::now()))
+            }
+            None => *started = None,
+            _ => {}
+        }
         *self
             .snapshot
             .write()

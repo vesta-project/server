@@ -11,24 +11,58 @@ pub(super) const GAME_LOCK: &str = "game.generation";
 
 /// A generation is an opaque lookup key, not a PID, authenticated identity or authority.
 /// Launch paths, arguments, capability/lock/safety declarations and revisions are server-owned.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum GameCommand {
     Start,
-    Stop { expected_generation: GenerationId },
-    ForceKill { expected_generation: GenerationId },
+    Console {
+        expected_generation: GenerationId,
+        line: String,
+    },
+    Stop {
+        expected_generation: GenerationId,
+    },
+    Restart {
+        expected_generation: GenerationId,
+    },
+    ForceKill {
+        expected_generation: GenerationId,
+    },
+}
+impl std::fmt::Debug for GameCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.operation_type())
+    }
 }
 impl GameCommand {
-    pub(super) const fn operation_type(self) -> &'static str {
+    pub(super) const fn operation_type(&self) -> &'static str {
         match self {
             Self::Start => "game.start",
+            Self::Console { .. } => "game.console",
             Self::Stop { .. } => "game.stop",
+            Self::Restart { .. } => "game.restart",
             Self::ForceKill { .. } => "game.force_kill",
         }
     }
-    pub(super) fn canonical_input(self) -> OperationsResult<String> {
+    pub(super) fn canonical_input(&self) -> OperationsResult<String> {
         match self {
             Self::Start => Ok("{}".to_owned()),
+            Self::Console {
+                expected_generation,
+                line,
+            } => {
+                if line.is_empty() || line.len() > 1024 || line.chars().any(char::is_control) {
+                    return Err(invalid());
+                }
+                serde_json::to_string(&ConsoleInput {
+                    expected_generation: expected_generation.to_hex(),
+                    line: line.clone(),
+                })
+                .map_err(|_| invalid())
+            }
             Self::Stop {
+                expected_generation,
+            }
+            | Self::Restart {
                 expected_generation,
             }
             | Self::ForceKill {
@@ -72,6 +106,13 @@ struct GenerationInput {
     expected_generation: String,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ConsoleInput {
+    expected_generation: String,
+    line: String,
+}
+
 // Serde's derived struct visitors can also accept positional sequences. The
 // durable lifecycle contract is an object, never a second array representation.
 // This is only a root-shape guard; serde still validates the whole JSON text,
@@ -85,16 +126,28 @@ fn object_input<T: serde::de::DeserializeOwned>(raw: &str) -> OperationsResult<T
 
 pub(super) fn derive(kind: &str, raw: &str) -> OperationsResult<Option<PreparedOperation>> {
     let command = match kind {
+        "game.console" => {
+            let input: ConsoleInput = object_input(raw)?;
+            GameCommand::Console {
+                expected_generation: GenerationId::parse_hex(&input.expected_generation)
+                    .map_err(|_| invalid())?,
+                line: input.line,
+            }
+        }
         "game.start" => {
             let _: StartInput = object_input(raw)?;
             GameCommand::Start
         }
-        "game.stop" | "game.force_kill" => {
+        "game.stop" | "game.restart" | "game.force_kill" => {
             let input: GenerationInput = object_input(raw)?;
             let expected_generation =
                 GenerationId::parse_hex(&input.expected_generation).map_err(|_| invalid())?;
             if kind == "game.stop" {
                 GameCommand::Stop {
+                    expected_generation,
+                }
+            } else if kind == "game.restart" {
+                GameCommand::Restart {
                     expected_generation,
                 }
             } else {
@@ -106,7 +159,16 @@ pub(super) fn derive(kind: &str, raw: &str) -> OperationsResult<Option<PreparedO
         _ => return Ok(None),
     };
     let canonical_input = command.canonical_input()?;
-    let (capability, target, effect_idempotent, requires_confirmation) = match command {
+    let (capability, target, effect_idempotent, requires_confirmation) = match &command {
+        GameCommand::Console {
+            expected_generation,
+            ..
+        } => (
+            Capability::ConsoleWrite,
+            format!("game:generation:{}", expected_generation.to_hex()),
+            false,
+            false,
+        ),
         GameCommand::Start => (Capability::LifecycleStart, "game".to_owned(), false, false),
         GameCommand::Stop {
             expected_generation,
@@ -114,6 +176,14 @@ pub(super) fn derive(kind: &str, raw: &str) -> OperationsResult<Option<PreparedO
             Capability::LifecycleStop,
             format!("game:generation:{}", expected_generation.to_hex()),
             true,
+            false,
+        ),
+        GameCommand::Restart {
+            expected_generation,
+        } => (
+            Capability::LifecycleRestart,
+            format!("game:generation:{}", expected_generation.to_hex()),
+            false,
             false,
         ),
         GameCommand::ForceKill {
@@ -231,7 +301,7 @@ mod tests {
             assert!(again.requirements == plan.requirements);
         }
         assert!(
-            derive("game.restart", "{}")
+            derive("game.unknown", "{}")
                 .expect("unknown inventory")
                 .is_none()
         );

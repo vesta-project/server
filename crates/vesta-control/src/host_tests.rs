@@ -686,7 +686,7 @@ fn host_startup_upgrades_original_v8_without_upload_table_and_purges_orphan_stag
         .execute_batch(&format!("DROP TABLE pack_releases; {legacy_release_sql};"))
         .unwrap();
     offline
-        .execute_batch("BEGIN IMMEDIATE; DROP TABLE file_intents; DROP TABLE file_uploads; DROP TABLE management_device_keys; DROP TABLE management_pairing_codes; DROP TABLE management_owner_links; DROP TABLE user_minecraft_accounts; DROP TABLE user_default_roles; DROP TABLE device_password_grants; DROP TABLE access_role_sources; DELETE FROM role_capabilities WHERE role_id IN ('public','player'); DELETE FROM roles WHERE id IN ('public','player'); PRAGMA user_version=8; COMMIT;")
+        .execute_batch("BEGIN IMMEDIATE; DROP TABLE management_pack_outcomes; DROP TABLE pack_minimum_policy; DROP TABLE file_intents; DROP TABLE file_uploads; DROP TABLE management_device_keys; DROP TABLE management_pairing_codes; DROP TABLE management_owner_links; DROP TABLE user_minecraft_accounts; DROP TABLE user_default_roles; DROP TABLE device_password_grants; DROP TABLE access_role_sources; DELETE FROM role_capabilities WHERE role_id IN ('public','player'); DELETE FROM roles WHERE id IN ('public','player'); PRAGMA user_version=8; COMMIT;")
         .unwrap();
     assert_eq!(
         offline

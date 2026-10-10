@@ -28,6 +28,9 @@ use vesta_state::{StateDatabase, StateError, TransactionError};
 
 use super::publish::ArtifactFormat;
 
+mod management;
+pub use management::{PackMutation, PackOutcome};
+
 const SOURCE: &str = "pack-release";
 const TARGET: &str = "pack-release";
 const PUBLISH: &str = "pack_release.publish";
@@ -37,6 +40,7 @@ const PRUNE: &str = "pack_release.prune";
 pub enum ReleaseError {
     /// The expected current revision no longer matches.
     Conflict,
+    IdempotencyConflict,
     RevisionExhausted,
     /// The built pack does not embed the planned revision and minimum revision.
     RevisionMismatch,
@@ -57,6 +61,7 @@ impl ReleaseError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::Conflict => "pack_release_conflict",
+            Self::IdempotencyConflict => "idempotency_conflict",
             Self::RevisionExhausted => "pack_release_revision_exhausted",
             Self::RevisionMismatch => "pack_release_revision_mismatch",
             Self::VersionNotIncreasing => "pack_release_version_not_increasing",
@@ -306,6 +311,7 @@ impl PackReleases {
             (artifact, created),
             pack.version(),
             acknowledge_lower_version,
+            None,
         )
     }
 
@@ -326,6 +332,7 @@ impl PackReleases {
             (artifact, created),
             display_version,
             acknowledge_lower_version,
+            None,
         )
     }
 
@@ -364,6 +371,7 @@ impl PackReleases {
                     published,
                     metadata.version(),
                     acknowledge_lower_version,
+                    None,
                 )
             }
         }
@@ -419,6 +427,7 @@ impl PackReleases {
         publication: (PublishedArtifact, bool),
         display_version: &str,
         acknowledge_lower_version: bool,
+        request: Option<&PackMutation>,
     ) -> Result<PackRelease, ReleaseError> {
         let (artifact, created) = publication;
         let result = self.record(
@@ -427,6 +436,7 @@ impl PackReleases {
             artifact.clone(),
             display_version,
             acknowledge_lower_version,
+            request,
         );
         if created && let Err(primary) = result {
             // The immediate transaction excludes successful recording while checking
@@ -460,6 +470,7 @@ impl PackReleases {
         artifact: PublishedArtifact,
         display_version: &str,
         acknowledge_lower_version: bool,
+        request: Option<&PackMutation>,
     ) -> Result<PackRelease, ReleaseError> {
         validate_version(display_version)?;
         let result = self.db.write_with(|transaction| {
@@ -505,6 +516,7 @@ impl PackReleases {
                     ],
                 )?,
             )?;
+            if let Some(request) = request { self.record_remote(connection, subject, request, plan.revision, plan.minimum_revision)?; }
             Ok(PackRelease {
                 revision: plan.revision,
                 minimum_revision: plan.minimum_revision,
@@ -699,7 +711,15 @@ fn current(connection: &Connection, server: &str) -> Result<Option<PackRelease>,
         _ => return Err(corrupt()),
     };
     let revision = u64::try_from(revision).map_err(|_| corrupt())?;
-    let minimum_revision = u64::try_from(minimum).map_err(|_| corrupt())?;
+    let policy: Option<i64> = connection
+        .query_row(
+            "SELECT minimum_revision FROM pack_minimum_policy WHERE server_id=?",
+            [server],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let minimum_revision =
+        u64::try_from(minimum.max(policy.unwrap_or(0))).map_err(|_| corrupt())?;
     if revision == 0 || minimum_revision == 0 || minimum_revision > revision {
         return Err(corrupt());
     }

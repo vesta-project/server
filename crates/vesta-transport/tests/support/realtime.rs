@@ -504,3 +504,48 @@ fn realtime_two_ping_floods_do_not_starve_http_requests() {
         "fixture did not overlap flood and HTTP traffic"
     );
 }
+
+pub(super) fn console_websocket(f: &Fixture, token: &str) -> Result<RealtimePeer, u16> {
+    let mut request = format!(
+        "wss://localhost:{}/api/v3/manage/console/stream",
+        f.address.port()
+    )
+    .into_client_request()
+    .unwrap();
+    request
+        .headers_mut()
+        .insert("authorization", format!("Bearer {token}").parse().unwrap());
+    match tungstenite::client(request, f.stream()) {
+        Ok((peer, reply)) => {
+            assert_eq!(reply.status().as_u16(), 101);
+            Ok(peer)
+        }
+        Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(reply))) => {
+            Err(reply.status().as_u16())
+        }
+        Err(error) => panic!("owned console upgrade failed: {error}"),
+    }
+}
+
+#[test]
+fn console_stream_checks_capability_bounds_connections_and_rechecks_revocation() {
+    let f = Fixture::new("minecraft", 8, 4096, 3);
+    let pack = f.device_session();
+    assert_eq!(console_websocket(&f, &pack).unwrap_err(), 403);
+    assert_eq!(console_websocket(&f, &"a".repeat(43)).unwrap_err(), 401);
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    let mut first = console_websocket(&f, &token).unwrap();
+    let mut second = console_websocket(&f, &token).unwrap();
+    for peer in [&mut first, &mut second] {
+        let hello = realtime_json(peer);
+        assert_eq!(hello["type"], "console.available");
+        assert!(hello.to_string().len() < 1024);
+        assert!(hello.get("text").is_none());
+        assert!(!hello.to_string().contains(&token));
+    }
+    assert_eq!(console_websocket(&f, &token).unwrap_err(), 503);
+    f.host().management().revoke_local(&device).unwrap();
+    realtime_close(&mut first, CloseCode::Policy);
+    realtime_close(&mut second, CloseCode::Policy);
+}

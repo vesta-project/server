@@ -4,6 +4,10 @@
 //! Only the concrete game lifecycle composition can execute the closed production
 //! bindings. There is no public handler/authority registry, local-proof issuer or
 //! network route. Private ownership is retained through genuine execution lifetime.
+mod audit_view;
+pub use audit_view::AuditNotice;
+pub use vesta_game_runtime::console::ConsoleStream;
+pub use vesta_game_runtime::process::{GenerationId, ProcessPhase};
 mod bindings;
 mod confirmation;
 mod confirmation_repository;
@@ -35,7 +39,9 @@ pub use replay::{
     MAX_REPLAY_RETURN, MAX_REPLAY_SCAN, ReplayCursor, ReplayEvent, ReplayEventKind, ReplayPage,
     ReplayStatus,
 };
-pub use runner::{LocalAction, LocalRuntime, OperationRuntime, RunnerStatus, ShutdownOutcome};
+pub use runner::{
+    LocalAction, LocalRuntime, OperationRuntime, RunnerStatus, RuntimeHandle, ShutdownOutcome,
+};
 
 use crate::identity::{self, Capability, PolicySnapshot, Subject};
 use domain::{ENGINE_SOURCE, text};
@@ -208,6 +214,16 @@ impl Operations {
         raw_input: &str,
         idempotency_key: Option<&str>,
     ) -> OperationsResult<Admission> {
+        self.admit_with_view(subject, operation_type, raw_input, idempotency_key, None)
+    }
+    fn admit_with_view(
+        &self,
+        subject: &Subject,
+        operation_type: &str,
+        raw_input: &str,
+        idempotency_key: Option<&str>,
+        view: Option<&game::LiveGameView>,
+    ) -> OperationsResult<Admission> {
         if idempotency_key.is_some_and(|key| !text(key, 128)) {
             let error = invalid();
             return Err(self.refusal(subject, "operation.submit", None, error));
@@ -252,6 +268,19 @@ impl Operations {
                     self.verify_binding(&repo, &existing)?;
                 }
                 return Ok(Admission::Existing(existing.summary));
+            }
+            if let Some(view) = view {
+                queue::check_revision(
+                    plan.command.as_ref().ok_or_else(invalid)?,
+                    &view.revision()?,
+                )?;
+                if matches!(plan.command, Some(GameCommand::Console { .. }))
+                    && view.snapshot()?.phase != ProcessPhase::Running
+                {
+                    return Err(OperationError::rejected(
+                        OperationErrorCode::BindingMismatch,
+                    ));
+                }
             }
             let op = repo.insert(subject, &plan, idempotency_key)?;
             self.audit.append(
@@ -442,6 +471,18 @@ impl Operations {
         before: OperationState,
         authority_denial: Option<&'static str>,
     ) -> OperationsResult<()> {
+        if after.operation_type == "game.console" {
+            self.audit.append(
+                repo.connection(),
+                &AuditRecord::of(
+                    engine_actor()?,
+                    "console.command".into(),
+                    operation_target(&after.summary.id),
+                    after.summary.state.as_str().into(),
+                    Some(after.summary.id.as_str().into()),
+                )?,
+            )?;
+        }
         self.audit.append(
             repo.connection(),
             &AuditRecord::new(

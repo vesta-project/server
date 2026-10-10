@@ -202,7 +202,7 @@ impl IoThreads {
         E: Send + 'static,
         F: FnMut() -> Result<(), E> + Send + 'static,
     {
-        self.guarded_fixed(b"stop\n", guard)
+        self.guarded_fixed(b"stop\n".to_vec(), guard)
     }
 
     pub(super) fn guarded_list<E, F>(&self, guard: F) -> Result<GuardedInput<E>, RuntimeError>
@@ -210,12 +210,26 @@ impl IoThreads {
         E: Send + 'static,
         F: FnMut() -> Result<(), E> + Send + 'static,
     {
-        self.guarded_fixed(b"list\n", guard)
+        self.guarded_fixed(b"list\n".to_vec(), guard)
+    }
+
+    pub(super) fn guarded_command<E, F>(
+        &self,
+        line: &str,
+        guard: F,
+    ) -> Result<GuardedInput<E>, RuntimeError>
+    where
+        E: Send + 'static,
+        F: FnMut() -> Result<(), E> + Send + 'static,
+    {
+        let mut bytes = line.as_bytes().to_vec();
+        bytes.push(b'\n');
+        self.guarded_fixed(bytes, guard)
     }
 
     fn guarded_fixed<E, F>(
         &self,
-        line: &'static [u8],
+        line: Vec<u8>,
         mut guard: F,
     ) -> Result<GuardedInput<E>, RuntimeError>
     where
@@ -232,7 +246,7 @@ impl IoThreads {
                 // The fixed native call directly follows the fresh guard. No
                 // cached permit, allocation, dispatch or external callback here.
                 Ok(()) => pipe
-                    .write_all(line)
+                    .write_all(&line)
                     .map_err(|_| GuardedError::Runtime(RuntimeError::StdinUnavailable)),
             };
             let native_failed = matches!(&result, Err(GuardedError::Runtime(_)));

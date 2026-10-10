@@ -105,7 +105,7 @@ pub struct Host {
     sessions: Arc<PackSessions>,
     network_admission: Arc<RwLock<AdmissionData>>,
     files: FileBrowser,
-    preparations: Vec<PackPreparation>,
+    preparations: Arc<Vec<PackPreparation>>,
     releases: Arc<PackReleases>,
     graceful_stop: GracefulStop,
     runtime: OperationRuntime,
@@ -270,8 +270,8 @@ impl Host {
         discover_components(self.db.server_id(), self.graceful_stop, request)
     }
 
-    /// Authentication/pack facade with capability-checked management placeholders;
-    /// it exposes no operational runtime mutation route.
+    /// Cloneable device-session management facade; runtime admission is available,
+    /// but OS-local bypass authority and native process ownership are not exposed.
     pub fn network_handle(&self) -> NetworkHost {
         NetworkHost {
             config: self.config.clone(),
@@ -284,6 +284,8 @@ impl Host {
             sessions: self.sessions.clone(),
             releases: self.releases.clone(),
             graceful_stop: self.graceful_stop,
+            runtime: self.runtime().network_handle(),
+            preparations: self.preparations.clone(),
         }
     }
 
@@ -386,7 +388,7 @@ fn compose(
         admission,
         sessions,
         files,
-        preparations,
+        preparations: Arc::new(preparations),
         releases,
         graceful_stop,
         runtime,
@@ -461,7 +463,7 @@ fn discover_components(
     )
 }
 
-/// Cloneable authentication/pack facade; operational admission remains unavailable.
+/// Cloneable management/pack facade; never exposes OS-local owner authority.
 #[derive(Clone)]
 pub struct NetworkHost {
     management: ManagementAccess,
@@ -474,6 +476,8 @@ pub struct NetworkHost {
     sessions: Arc<PackSessions>,
     releases: Arc<PackReleases>,
     graceful_stop: GracefulStop,
+    runtime: crate::operations::RuntimeHandle,
+    preparations: Arc<Vec<PackPreparation>>,
 }
 /// Owned local refresh composition. Dropping it signals and joins the worker,
 /// including any in-progress bounded document read. No remote management route.
@@ -492,6 +496,43 @@ impl Drop for AdmissionRefresh {
     }
 }
 impl NetworkHost {
+    pub fn prepare_pack(
+        &self,
+        plan: &ReleasePlan,
+        sources: &vesta_protocol::pack::sources::SourceRegistry,
+    ) -> Result<PreparedPack, HostError> {
+        let metadata = plan
+            .manifest_metadata(self.config.pack())
+            .map_err(HostError::Release)?;
+        match self.config.pack_source() {
+            Some(PackSource::Platform(reference)) => {
+                PreparedPack::platform(reference.clone(), metadata).map_err(HostError::Pack)
+            }
+            Some(PackSource::Archive { path, .. }) => {
+                let archive = self.preparations[0]
+                    .archive(path)
+                    .map_err(HostError::Pack)?;
+                PreparedPack::archive(archive, metadata).map_err(HostError::Pack)
+            }
+            Some(PackSource::Scanned { .. }) | None => {
+                if self.preparations.len() != 1 {
+                    return Err(HostError::Pack(PackError::InvalidPath));
+                }
+                let snapshot = self.preparations[0]
+                    .snapshot(metadata, sources)
+                    .map_err(HostError::Pack)?;
+                PreparedPack::scanned(snapshot, &plan.pack_metadata(self.config.pack()))
+                    .map_err(HostError::PackBuild)
+            }
+        }
+    }
+
+    pub fn runtime(&self) -> &crate::operations::RuntimeHandle {
+        &self.runtime
+    }
+    pub fn database(&self) -> &StateDatabase {
+        &self.db
+    }
     pub fn management(&self) -> &ManagementAccess {
         &self.management
     }

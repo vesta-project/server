@@ -16,6 +16,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         10 => apply_v10(c),
         11 => apply_v11(c),
         12 => apply_v12(c),
+        13 => apply_v13(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -710,4 +711,25 @@ fn seed_access_default(
         )?;
     }
     Ok(id)
+}
+
+fn apply_v13(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(
+        r#"
+        CREATE TABLE management_pack_outcomes (
+            server_id TEXT NOT NULL REFERENCES server_identity(server_id),
+            principal_id TEXT NOT NULL,
+            request_key TEXT NOT NULL CHECK(length(request_key) BETWEEN 1 AND 128),
+            input_json TEXT NOT NULL CHECK(length(input_json) BETWEEN 1 AND 512),
+            revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 9007199254740991),
+            minimum_revision INTEGER NOT NULL CHECK(minimum_revision BETWEEN 1 AND revision),
+            PRIMARY KEY(server_id,principal_id,request_key)
+        ) STRICT;
+        CREATE TABLE pack_minimum_policy (
+            server_id TEXT PRIMARY KEY REFERENCES server_identity(server_id),
+            minimum_revision INTEGER NOT NULL CHECK(minimum_revision BETWEEN 1 AND 9007199254740991)
+        ) STRICT;
+    "#,
+    )?;
+    Ok(())
 }

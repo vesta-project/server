@@ -60,6 +60,7 @@ use vesta_control::{
     host::NetworkHost,
 };
 
+mod manage;
 mod realtime;
 mod routes;
 mod tls;
@@ -714,10 +715,22 @@ impl BlockingJobs {
         }
     }
     /// Two synchronous operations maximum, including abandoned HTTP requests.
+    #[cfg(test)]
     async fn execute(&self, action: impl FnOnce() -> Reply + Send + 'static) -> Reply {
-        self.run(action)
-            .await
-            .unwrap_or_else(|_| error(StatusCode::SERVICE_UNAVAILABLE, "transport_busy"))
+        self.execute_for(false, action).await
+    }
+    async fn execute_for(
+        &self,
+        operational: bool,
+        action: impl FnOnce() -> Reply + Send + 'static,
+    ) -> Reply {
+        self.run(action).await.unwrap_or_else(|_| {
+            if operational {
+                manage::error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable")
+            } else {
+                error(StatusCode::SERVICE_UNAVAILABLE, "transport_busy")
+            }
+        })
     }
     async fn run<T: Send + 'static>(
         &self,
@@ -860,6 +873,7 @@ async fn handle(
     peer: SocketAddr,
     state: Arc<Shared>,
 ) -> Result<Reply, Infallible> {
+    let operational = manage::implemented(request.uri().path());
     let rate = state
         .limiter
         .lock()
@@ -870,20 +884,29 @@ async fn handle(
     }
     let denial = match rate {
         Ok(AdmissionDecision::Allowed) => None,
-        Ok(AdmissionDecision::RateLimited { retry_after }) => {
-            Some(rate_limited("peer_rate_limited", retry_after))
-        }
-        _ => Some(error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "peer_capacity_unavailable",
-        )),
+        Ok(AdmissionDecision::RateLimited { retry_after }) => Some(if operational {
+            manage::error(StatusCode::TOO_MANY_REQUESTS, "rate_limited")
+        } else {
+            rate_limited("peer_rate_limited", retry_after)
+        }),
+        _ => Some(if operational {
+            manage::error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable")
+        } else {
+            error(StatusCode::SERVICE_UNAVAILABLE, "peer_capacity_unavailable")
+        }),
     };
     if let Some(reply) = denial {
         return Ok(reply);
     }
     let timeout = state.timeout;
     let result = tokio::time::timeout(timeout, routes::route(request, state, peer)).await;
-    Ok(result.unwrap_or_else(|_| error(StatusCode::REQUEST_TIMEOUT, "request_timeout")))
+    Ok(result.unwrap_or_else(|_| {
+        if operational {
+            manage::error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable")
+        } else {
+            error(StatusCode::REQUEST_TIMEOUT, "request_timeout")
+        }
+    }))
 }
 fn response(status: StatusCode, bytes: impl Into<Bytes>, content_type: &'static str) -> Reply {
     let bytes = bytes.into();

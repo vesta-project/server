@@ -130,6 +130,22 @@ impl Sockets {
 }
 
 pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) -> Reply {
+    let console = request.uri().path() == "/api/v3/manage/console/stream";
+    let error = |status, code| {
+        if console {
+            super::manage::error(
+                status,
+                match code {
+                    "pack_session_invalid" => "management_session_invalid",
+                    "realtime_busy" => "temporarily_unavailable",
+                    "browser_origin_forbidden" => "management_forbidden",
+                    other => other,
+                },
+            )
+        } else {
+            error(status, code)
+        }
+    };
     // Native clients only until an explicit browser-origin policy exists. CORS
     // does not protect WebSocket upgrades; never reflect or trust a caller's
     // Origin (including null/loopback), and refuse before consuming a ticket.
@@ -142,6 +158,11 @@ pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) 
         .and_then(|q| q.strip_prefix("installed="))
         .filter(|s| !s.is_empty() && s.len() <= 20 && s.bytes().all(|b| b.is_ascii_digit()))
         .and_then(|s| s.parse::<u64>().ok());
+    let installed = if console && request.uri().query().is_none() {
+        Some(0)
+    } else {
+        installed
+    };
     let Some(installed) = installed else {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     };
@@ -209,18 +230,43 @@ pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) 
     state.jobs.reap(false).await;
     state.realtime.reap(false).await;
     let host = state.host.clone();
-    let redeemed = state
-        .jobs
-        .run(move || {
-            host.with_policy(|p| {
-                host.sessions()
-                    .redeem_realtime(secret.as_str(), Instant::now(), p)
+    let console_secret = console.then(|| zeroize::Zeroizing::new(secret.as_str().to_owned()));
+    let session = if console {
+        let admitted = state
+            .jobs
+            .run(move || {
+                host.management().authorize(
+                    secret.as_str(),
+                    vesta_control::identity::Capability::ConsoleRead,
+                    None,
+                )?;
+                host.management().pack_reference(Some(secret.as_str()))
             })
-        })
-        .await;
-    let Ok(Ok(Ok((reference, session)))) = redeemed else {
-        return error(StatusCode::UNAUTHORIZED, "pack_session_invalid");
+            .await;
+        let reference = match admitted {
+            Ok(Ok(reference)) => reference,
+            Ok(Err(vesta_control::identity::management::ManagementError::Forbidden)) => {
+                return error(StatusCode::FORBIDDEN, "management_forbidden");
+            }
+            _ => return error(StatusCode::UNAUTHORIZED, "management_session_invalid"),
+        };
+        (reference, None)
+    } else {
+        let redeemed = state
+            .jobs
+            .run(move || {
+                host.with_policy(|p| {
+                    host.sessions()
+                        .redeem_realtime(secret.as_str(), Instant::now(), p)
+                })
+            })
+            .await;
+        let Ok(Ok(Ok((reference, session)))) = redeemed else {
+            return error(StatusCode::UNAUTHORIZED, "pack_session_invalid");
+        };
+        (reference, Some(session.expires_at()))
     };
+    let (reference, expires) = session;
     let Ok(permit) = state.realtime.acquire(reference) else {
         return error(StatusCode::SERVICE_UNAVAILABLE, "realtime_busy");
     };
@@ -263,7 +309,7 @@ pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) 
         };
         let config = WebSocketConfig {
             write_buffer_size: 0,
-            max_write_buffer_size: FRAME_BYTES * 2,
+            max_write_buffer_size: if console { 128 * 1024 } else { FRAME_BYTES * 2 },
             max_message_size: Some(FRAME_BYTES),
             max_frame_size: Some(FRAME_BYTES),
             ..WebSocketConfig::default()
@@ -271,7 +317,18 @@ pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) 
         let socket =
             WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, Some(config))
                 .await;
-        connected(socket, owned, reference, session.expires_at(), installed).await;
+        if let Some(secret) = console_secret {
+            connected_console(socket, owned, secret).await;
+        } else {
+            connected(
+                socket,
+                owned,
+                reference,
+                expires.expect("pack session"),
+                installed,
+            )
+            .await;
+        }
     }));
     reply
 }
@@ -449,6 +506,75 @@ async fn connected(
     }.await;
     // Close is best effort and bounded; do not wait for an uncooperative peer's
     // reply. The owned task and permits finish after the send deadline at latest.
+    let _ = send(
+        &mut socket,
+        Message::Close(Some(CloseFrame {
+            code: close,
+            reason: "".into(),
+        })),
+    )
+    .await;
+}
+
+/// Structural console notices only. No raw log content, no unbounded queue;
+/// one sampled cursor and the existing codec/send/control/admission budgets.
+async fn connected_console(
+    mut socket: Socket,
+    state: Arc<Shared>,
+    secret: zeroize::Zeroizing<String>,
+) {
+    let mut stop = state.stop.clone();
+    let close = async {
+        let mut poll = tokio::time::interval(Duration::from_millis(250));
+        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last = None;
+        let mut activity = Instant::now();
+        let mut controls = ControlRate::new(activity);
+        loop {
+            tokio::select! {
+                biased;
+                _ = stop.changed() => return CloseCode::Away,
+                _ = tokio::time::sleep_until((activity + IDLE).into()) => return CloseCode::Policy,
+                _ = poll.tick() => {
+                    let latest = admitted(&state.realtime_jobs, &state.stop, SEND_TIMEOUT.min(state.timeout), || {
+                        let host = state.host.clone();
+                        let secret = zeroize::Zeroizing::new(secret.as_str().to_owned());
+                        move || {
+                            host.management().authorize(secret.as_str(), vesta_control::identity::Capability::ConsoleRead, None).map_err(|_| Refusal::Revoked)?;
+                            let after = match last { Some(cursor) => cursor, None => host.runtime().console_snapshot(0,1).map_err(|_| Refusal::Unavailable)?.latest_cursor.saturating_sub(16) };
+                            let page = host.runtime().console_snapshot(after,16).map_err(|_| Refusal::Unavailable)?;
+                            let lines = page.lines.iter().map(|line| Ok(serde_json::json!({"type":"console.line","api_version":"3","cursor":format!("{}.console.{}",host.management().server_id(),line.cursor),"text":super::manage::redact_console(&host,&line.text).map_err(|_| Refusal::Unavailable)?,"truncated":line.truncated}))).collect::<Result<Vec<_>,Refusal>>()?;
+                            Ok::<_,Refusal>((page.latest_cursor,page.next_cursor,page.gap,lines))
+                        }
+                    }).await;
+                    let (latest,next,gap,lines) = match latest { Ok(value) => value, Err(refusal) => return refusal.close_code() };
+                    if last != Some(latest) {
+                        let notice = serde_json::json!({"type":"console.available", "api_version":"3", "cursor":format!("{}.console.{}", state.host.management().server_id(), latest)});
+                        if send(&mut socket, Message::Text(notice.to_string())).await.is_err() { return CloseCode::Away; }
+                    }
+                    if gap {
+                        let notice = serde_json::json!({"type":"console.gap","api_version":"3","cursor":format!("{}.console.{}",state.host.management().server_id(),next)});
+                        if send(&mut socket,Message::Text(notice.to_string())).await.is_err() { return CloseCode::Away; }
+                    }
+                    for line in lines { if send(&mut socket,Message::Text(line.to_string())).await.is_err() { return CloseCode::Away; } }
+                    last = Some(next);
+                }
+                message = socket.next() => match message {
+                    Some(Ok(Message::Ping(_) | Message::Pong(_))) => {
+                        if !controls.admit(Instant::now()) { return CloseCode::Policy; }
+                        activity = Instant::now();
+                        if !matches!(tokio::time::timeout(SEND_TIMEOUT, socket.flush()).await, Ok(Ok(()))) { return CloseCode::Away; }
+                    }
+                    Some(Ok(Message::Close(_))) => {
+                        let _ = tokio::time::timeout(SEND_TIMEOUT, socket.flush()).await;
+                        return CloseCode::Normal;
+                    }
+                    None => return CloseCode::Normal,
+                    _ => return CloseCode::Policy,
+                }
+            }
+        }
+    }.await;
     let _ = send(
         &mut socket,
         Message::Close(Some(CloseFrame {

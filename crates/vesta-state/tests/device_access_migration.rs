@@ -8,14 +8,14 @@ fn original_v11_upgrades_access_defaults_without_weakening_builtin_protection() 
     let server = f.db.server_id().to_owned();
     let directory = f.db.directory().clone();
     f.db.write(|c| {
-        c.execute_batch("DROP TABLE management_device_keys; DROP TABLE management_pairing_codes; DROP TABLE management_owner_links; DROP TABLE user_minecraft_accounts; DROP TABLE user_default_roles; DROP TABLE device_password_grants; DROP TABLE access_role_sources; DELETE FROM role_capabilities WHERE role_id IN ('public','player'); DELETE FROM roles WHERE id IN ('public','player'); DROP TRIGGER role_capabilities_builtin_no_delete; DELETE FROM role_capabilities WHERE capability IN ('public.info','pack.download','pack.realtime'); CREATE TRIGGER role_capabilities_builtin_no_delete BEFORE DELETE ON role_capabilities WHEN (SELECT builtin FROM roles WHERE id=OLD.role_id)=1 BEGIN SELECT RAISE(ABORT,'builtin roles are immutable'); END; PRAGMA user_version=11;")?;
+        c.execute_batch("DROP TABLE management_pack_outcomes; DROP TABLE pack_minimum_policy; DROP TABLE management_device_keys; DROP TABLE management_pairing_codes; DROP TABLE management_owner_links; DROP TABLE user_minecraft_accounts; DROP TABLE user_default_roles; DROP TABLE device_password_grants; DROP TABLE access_role_sources; DELETE FROM role_capabilities WHERE role_id IN ('public','player'); DELETE FROM roles WHERE id IN ('public','player'); DROP TRIGGER role_capabilities_builtin_no_delete; DELETE FROM role_capabilities WHERE capability IN ('public.info','pack.download','pack.realtime'); CREATE TRIGGER role_capabilities_builtin_no_delete BEFORE DELETE ON role_capabilities WHEN (SELECT builtin FROM roles WHERE id=OLD.role_id)=1 BEGIN SELECT RAISE(ABORT,'builtin roles are immutable'); END; PRAGMA user_version=11;")?;
         Ok(())
     }).unwrap();
     f.db.close().unwrap();
     let upgraded = StateDatabase::open(directory, f.clock.clone()).unwrap();
     assert_eq!(upgraded.server_id(), server);
     upgraded.read(|c| {
-        let version:u32=c.query_row("PRAGMA user_version",[],|r|r.get(0))?;assert_eq!(version,12);
+        let version:u32=c.query_row("PRAGMA user_version",[],|r|r.get(0))?;assert_eq!(version,vesta_state::CURRENT_SCHEMA_VERSION);
         let settings:String=c.query_row("SELECT settings_json FROM access_role_sources",[],|r|r.get(0))?;
         assert_eq!(settings,"{\"anonymous\":\"public\",\"new_user\":\"public\",\"whitelist\":\"player\",\"whitelist_enabled\":true,\"password\":\"player\"}");
         let grants:u32=c.query_row("SELECT count(*) FROM role_capabilities WHERE role_id='owner' AND capability IN ('public.info','pack.download','pack.realtime')",[],|r|r.get(0))?;assert_eq!(grants,3);

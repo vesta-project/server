@@ -22,7 +22,6 @@ fn v10_upgrade_preserves_pending_trash_and_adds_constrained_intents() {
     drop(old);
     let upgraded = StateDatabase::open(directory.clone(), f.clock.clone()).unwrap();
     assert_eq!(upgraded.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 12);
     assert_eq!(upgraded.server_id(), server);
     upgraded.write(|c| {
         assert_eq!(c.query_row("SELECT path,status FROM file_trash WHERE id=?", [&trash], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?, ("config/legacy.txt".into(),"pending".into()));

@@ -374,6 +374,28 @@ impl GameProcess {
         owned.io.guarded_stop(guard)
     }
 
+    /// Guarded single-line console delivery; ACK proves write completion only.
+    pub fn queue_command_guarded<E, F>(
+        &mut self,
+        generation: GenerationId,
+        line: &str,
+        guard: F,
+    ) -> Result<GuardedInput<E>, RuntimeError>
+    where
+        E: Send + 'static,
+        F: FnMut() -> Result<(), E> + Send + 'static,
+    {
+        if !valid_command(line) || line.len() > 1024 {
+            return Err(RuntimeError::InvalidCommand);
+        }
+        self.poll()?;
+        let owned = self.current(generation)?;
+        if owned.exit.is_some() || owned.stopping {
+            return Err(RuntimeError::StaleGeneration);
+        }
+        owned.io.guarded_command(line, guard)
+    }
+
     /// Admit only the literal player-list command to the existing owned writer.
     /// The guard runs immediately before write; ACK means delivery, not a causal
     /// console response or readiness. This does not mark the process stopping.

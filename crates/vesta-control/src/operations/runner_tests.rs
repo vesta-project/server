@@ -486,6 +486,7 @@ fn returned_stop_ack_with_second_owned_writer_draining_retains_lock_until_actual
                 claim,
                 generation,
                 receipt,
+                restart: false,
             }),
             shared: shared.clone(),
             stop_wait: Duration::from_millis(25),
@@ -712,6 +713,7 @@ fn delayed_stop(
                 claim,
                 generation,
                 receipt,
+                restart: false,
             }),
             shared: shared.clone(),
             stop_wait: Duration::from_millis(25),
@@ -1013,6 +1015,7 @@ fn delayed_stop_ack(
                 claim,
                 generation,
                 receipt,
+                restart: false,
             }),
             shared: shared.clone(),
             stop_wait: Duration::from_millis(25),
@@ -1194,5 +1197,51 @@ fn delayed_native_stdin_gate_rechecks_current_policy_and_refuses_revoked_stop_wi
     assert_eq!(
         owned.runtime.shutdown(WAIT).unwrap(),
         ShutdownOutcome::Complete
+    );
+}
+
+#[test]
+fn explicit_restart_waits_for_exit_then_owns_distinct_generation() {
+    let harness = Harness::new(false);
+    let mut owned = harness.runtime(Duration::from_secs(1));
+    let generation = start(&harness, &owned.runtime);
+    let restart = harness.submit(GameCommand::Restart {
+        expected_generation: generation,
+    });
+    harness.wait_state(&restart, super::super::OperationState::Succeeded);
+    let next = owned.runtime.game_snapshot().unwrap().generation.unwrap();
+    assert_ne!(generation, next);
+    assert_eq!(harness.facts(&restart), (true, None, 0, None));
+    assert_eq!(
+        fs::read_to_string(harness.cwd.join("operation-commands")).unwrap(),
+        "stop\n"
+    );
+    let stop = harness.submit(GameCommand::Stop {
+        expected_generation: next,
+    });
+    harness.wait_state(&stop, super::super::OperationState::Succeeded);
+    assert_eq!(
+        owned.runtime.shutdown(WAIT).unwrap(),
+        ShutdownOutcome::Complete
+    );
+    assert!(harness.operations.audit.verify_chain().unwrap().valid);
+}
+
+#[test]
+fn explicit_restart_timeout_never_starts_a_second_generation() {
+    let harness = Harness::new(true);
+    let owned = harness.runtime(Duration::from_millis(25));
+    let generation = start(&harness, &owned.runtime);
+    let restart = harness.submit(GameCommand::Restart {
+        expected_generation: generation,
+    });
+    harness.wait_state(&restart, super::super::OperationState::Failed);
+    assert_eq!(
+        owned.runtime.game_snapshot().unwrap().generation,
+        Some(generation)
+    );
+    assert_eq!(
+        harness.facts(&restart).3.as_deref(),
+        Some("game_stop_timeout")
     );
 }

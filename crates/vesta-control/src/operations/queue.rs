@@ -235,7 +235,7 @@ impl OwnerSession {
             let command = plan
                 .command
                 .ok_or_else(|| rejected(OperationErrorCode::UnknownType))?;
-            check_revision(command, revision)?;
+            check_revision(&command, revision)?;
             let after = repo.mark_running(&op)?;
             self.core.ops.record_state(
                 repo,
@@ -245,6 +245,40 @@ impl OwnerSession {
                 op.summary.state,
             )?;
             Ok(command)
+        })
+    }
+    /// Second native step of one explicit restart, under its original exact claim.
+    pub(crate) fn continue_restart(
+        &mut self,
+        claim: &Claim,
+        revision: &SourceRevision,
+    ) -> OperationsResult<()> {
+        self.core.check_claim(claim)?;
+        self.core.require_dispatch()?;
+        self.core.write(|repo| {
+            self.core.require_dispatch()?;
+            let op = self
+                .core
+                .owned(repo, &claim.id, &claim.token, &claim.session)?;
+            if op.summary.cancel_requested
+                || op.summary.state != OperationState::Running
+                || !op.effect_started
+                || *revision != SourceRevision::for_game(None)
+            {
+                return Err(rejected(OperationErrorCode::InvalidTransition));
+            }
+            let plan = self.core.ops.verify_binding(repo, &op)?;
+            if !matches!(plan.command, Some(GameCommand::Restart { .. })) {
+                return Err(rejected(OperationErrorCode::BindingMismatch));
+            }
+            self.core.ops.record_state(
+                repo,
+                engine_actor()?,
+                "operation.restart_start",
+                &op,
+                op.summary.state,
+            )?;
+            Ok(())
         })
     }
     pub(crate) fn begin_effect(
@@ -493,7 +527,7 @@ impl OwnerCore {
             let command = plan
                 .command
                 .ok_or_else(|| rejected(OperationErrorCode::UnknownType))?;
-            check_revision(command, revision)?;
+            check_revision(&command, revision)?;
             self.require_dispatch()?;
             let after = repo.mark_effect(&op)?;
             self.ops.record_state(
@@ -524,15 +558,25 @@ fn receipt(
     }
     verify_receipt_in(repo.connection(), repo.server, op, revision, repo.now)
 }
-fn check_revision(command: GameCommand, revision: &SourceRevision) -> OperationsResult<()> {
+pub(super) fn check_revision(
+    command: &GameCommand,
+    revision: &SourceRevision,
+) -> OperationsResult<()> {
     let expected = match command {
         GameCommand::Start => SourceRevision::for_game(None),
         GameCommand::Stop {
             expected_generation,
         }
+        | GameCommand::Restart {
+            expected_generation,
+        }
+        | GameCommand::Console {
+            expected_generation,
+            ..
+        }
         | GameCommand::ForceKill {
             expected_generation,
-        } => SourceRevision::for_game(Some(expected_generation)),
+        } => SourceRevision::for_game(Some(*expected_generation)),
     };
     if *revision != expected {
         return Err(rejected(OperationErrorCode::BindingMismatch));

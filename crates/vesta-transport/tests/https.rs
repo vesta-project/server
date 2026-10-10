@@ -47,6 +47,12 @@ struct Fixture {
 }
 impl Fixture {
     fn new(mode: &str, connections: u16, max_body: u32, timeout: u16) -> Self {
+        Self::configured(mode, connections, max_body, timeout, false)
+    }
+    fn inert() -> Self {
+        Self::configured("minecraft", 8, 4096, 5, true)
+    }
+    fn configured(mode: &str, connections: u16, max_body: u32, timeout: u16, inert: bool) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let base = temp.path();
         for dir in ["game/config", "bin", "private"] {
@@ -54,10 +60,23 @@ impl Fixture {
         }
         std::fs::write(base.join("bin/inert-placeholder"), b"").unwrap();
         std::fs::write(base.join("private/launch.toml"), "[minecraft]\nworking-directory = 'game'\n[launch]\nkind = 'native'\nexecutable = '../bin/inert-placeholder'\nstop = 'console-stop'\n").unwrap();
+        if inert {
+            std::fs::copy(
+                std::env::current_exe().unwrap(),
+                base.join("bin/owned-inert.exe"),
+            )
+            .unwrap();
+            std::fs::write(
+                base.join("game/tls-inert-enabled"),
+                b"vesta-owned-tls-inert-v1",
+            )
+            .unwrap();
+            std::fs::write(base.join("private/launch.toml"),"[minecraft]\nworking-directory = 'game'\n[launch]\nkind = 'native'\nexecutable = '../bin/owned-inert.exe'\nargs = ['--exact','management_inert_child','--nocapture','--test-threads=1']\nstop = 'console-stop'\n").unwrap();
+        }
         std::fs::write(base.join("private/cert.pem"), CERT).unwrap();
         std::fs::write(base.join("private/key.pem"), KEY).unwrap();
         let document = format!(
-            "schema-version = 1\n[paths]\nstate = 'private-state'\ngame = 'game'\nscan-roots = ['game/config']\nlaunch-definition = 'private/launch.toml'\n[pack]\nname = 'Hosted'\nversion = '1.0.0'\nrevision = 1\nminimum-revision = 1\nminecraft-version = '1.21.1'\n[pack-access]\nmode = '{mode}'\n[listener]\nmode = 'tls'\nbind = '127.0.0.1'\nport = 25567\ncertificate = 'private/cert.pem'\nprivate-key = 'private/key.pem'\nmax-connections = {connections}\nmax-request-bytes = {max_body}\nrequest-timeout-seconds = {timeout}\n"
+            "schema-version = 1\n[paths]\nstate = 'private-state'\ngame = 'game'\nscan-roots = ['game/config']\nlaunch-definition = 'private/launch.toml'\n[pack]\nname = 'Hosted'\nversion = '1.0.0'\nrevision = 1\nminimum-revision = 1\nminecraft-version = '1.21.1'\nunresolved-disposition = 'embed-public'\n[pack-access]\nmode = '{mode}'\n[listener]\nmode = 'tls'\nbind = '127.0.0.1'\nport = 25567\ncertificate = 'private/cert.pem'\nprivate-key = 'private/key.pem'\nmax-connections = {connections}\nmax-request-bytes = {max_body}\nrequest-timeout-seconds = {timeout}\n"
         );
         let config =
             HostConfiguration::parse_toml(document.as_bytes(), base, Path::new("host.toml"))
@@ -149,6 +168,7 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        let _ = std::fs::write(self.temp.path().join("game/tls-inert-release"), b"release");
         self.finish();
     }
 }
@@ -1532,8 +1552,12 @@ fn roleless_device_https_session_is_refused_on_every_management_placeholder() {
         ("POST", "/api/v3/manage/operations", b"{}"),
         ("DELETE", "/api/v3/manage/files/unknown", b""),
     ] {
-        f.request(method, path, body, Some(&token))
-            .error(403, "management_forbidden");
+        let reply = f.request(method, path, body, Some(&token));
+        if path == "/api/v3/manage/operations" {
+            management_reply_error(&reply, 403, "management_forbidden");
+        } else {
+            reply.error(403, "management_forbidden");
+        }
     }
     assert!(f.host().management().links_local().unwrap().is_empty());
 }
@@ -1820,4 +1844,907 @@ fn unreadable_or_malformed_current_admission_disables_only_whitelist_source() {
             .body,
         bytes
     );
+}
+
+fn management_reply_error(reply: &WireReply, status: u16, code: &str) {
+    assert_eq!(reply.status, status);
+    let value = reply.json();
+    assert_eq!(value["api_version"], "3");
+    assert!(value["request_id"].as_str().unwrap().len() < 128);
+    assert_eq!(value["error"]["code"], code);
+    assert!(value.get("data").is_none());
+}
+
+#[test]
+fn management_read_projections_are_bounded_and_do_not_invent_players() {
+    let f = Fixture::new("minecraft", 8, 4096, 3);
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    let status = f.request("GET", "/api/v3/manage/server/status", b"", Some(&token));
+    assert_eq!(status.status, 200);
+    let data = status.json()["data"].clone();
+    assert_eq!(data["state"], "stopped");
+    assert!(data["generation"].is_null());
+    assert!(data["player_count"].is_null());
+    assert_eq!(data["player_count_known"], false);
+    assert!(data["uptime_seconds"].is_null());
+    let players = f.request("GET", "/api/v3/manage/players", b"", Some(&token));
+    assert_eq!(players.status, 200);
+    assert_eq!(players.json()["data"]["known"], false);
+    assert!(players.json()["data"]["player_count"].is_null());
+    let pack = f.request("GET", "/api/v3/manage/pack", b"", Some(&token));
+    assert_eq!(pack.json()["data"]["status"], "unpublished");
+    let server = f.request("GET", "/api/v3/manage/server", b"", Some(&token));
+    assert_eq!(server.json()["data"]["name"], "Hosted");
+    for path in ["console", "audit", "operations"] {
+        let reply = f.request(
+            "GET",
+            &format!("/api/v3/manage/{path}?limit=1"),
+            b"",
+            Some(&token),
+        );
+        assert_eq!(reply.status, 200);
+        assert!(reply.json()["data"]["items"].as_array().unwrap().len() <= 1);
+        reply.hides(&f.temp.path().to_string_lossy());
+        reply.hides(&token);
+        management_reply_error(
+            &f.request(
+                "GET",
+                &format!("/api/v3/manage/{path}?limit=201"),
+                b"",
+                Some(&token),
+            ),
+            400,
+            "invalid_request",
+        );
+        management_reply_error(
+            &f.request(
+                "GET",
+                &format!("/api/v3/manage/{path}?cursor=another-server.audit.0"),
+                b"",
+                Some(&token),
+            ),
+            400,
+            "invalid_request",
+        );
+    }
+    let audit = f.request("GET", "/api/v3/manage/audit", b"", Some(&token));
+    for item in audit.json()["data"]["items"].as_array().unwrap() {
+        assert!(item.get("target").is_none());
+        assert!(item.get("metadata").is_none());
+        assert!(item.get("principal_id").is_none());
+        assert!(item.get("device_id").is_none());
+    }
+}
+
+#[test]
+fn management_operational_endpoints_refuse_anonymous_and_pack_only_devices() {
+    let f = Fixture::new("minecraft", 8, 4096, 3);
+    let mut sources = f.host().management().access_local().unwrap();
+    sources.new_user = "player".into();
+    f.host().management().set_access_local(sources).unwrap();
+    let token = f.device_session();
+    for (method, path) in [
+        ("GET", "server"),
+        ("GET", "server/status"),
+        ("POST", "lifecycle/start"),
+        ("POST", "lifecycle/stop"),
+        ("POST", "lifecycle/restart"),
+        ("POST", "lifecycle/kill"),
+        ("GET", "operations"),
+        ("GET", "operations/00000000-0000-4000-8000-000000000000"),
+        ("GET", "console"),
+        ("GET", "players"),
+        ("GET", "pack"),
+        ("GET", "audit"),
+        ("POST", "console/command"),
+        ("POST", "pack/publish"),
+        ("POST", "pack/minimum"),
+    ] {
+        let path = format!("/api/v3/manage/{path}");
+        let body: &[u8] = if method == "POST" { b"{}" } else { b"" };
+        management_reply_error(
+            &f.request(method, &path, body, None),
+            401,
+            "management_session_invalid",
+        );
+        management_reply_error(
+            &f.request(method, &path, body, Some(&token)),
+            403,
+            "management_forbidden",
+        );
+    }
+}
+
+#[test]
+fn management_each_endpoint_checks_its_exact_capability_not_status_gate() {
+    use vesta_control::identity::{BuiltinRole, Capability};
+    for (method, path, capability) in [
+        ("GET", "server", Capability::StatusView),
+        ("GET", "server/status", Capability::StatusView),
+        ("POST", "lifecycle/start", Capability::LifecycleStart),
+        ("POST", "lifecycle/stop", Capability::LifecycleStop),
+        ("POST", "lifecycle/restart", Capability::LifecycleRestart),
+        ("POST", "lifecycle/kill", Capability::LifecycleForceKill),
+        ("GET", "operations", Capability::TasksView),
+        (
+            "GET",
+            "operations/00000000-0000-4000-8000-000000000000",
+            Capability::TasksView,
+        ),
+        ("GET", "console", Capability::ConsoleRead),
+        ("GET", "players", Capability::PlayersView),
+        ("GET", "pack", Capability::StatusView),
+        ("GET", "audit", Capability::AuditView),
+        ("POST", "console/command", Capability::ConsoleWrite),
+        ("POST", "pack/publish", Capability::PackPublish),
+        ("POST", "pack/minimum", Capability::PackForceUpdate),
+    ] {
+        let f = Fixture::new("minecraft", 8, 4096, 3);
+        let (device, key) = enroll_management(&f, BuiltinRole::Owner);
+        let token = management_session(&f, &device, &key);
+        let db = f.host().database();
+        db.write(|c| {
+            c.execute("INSERT INTO principal_overrides (id,principal_id,capability,scope,effect,granted_by,created_at) VALUES ('11111111-2222-4333-8444-555555555555',(SELECT principal_id FROM devices WHERE id=?),?,'*','deny','fixture',?)", rusqlite::params![device, capability.id(), db.clock().millis()])?;
+            Ok(())
+        }).unwrap();
+        management_reply_error(
+            &f.request(
+                method,
+                &format!("/api/v3/manage/{path}"),
+                if method == "POST" { b"{}" } else { b"" },
+                Some(&token),
+            ),
+            403,
+            "management_forbidden",
+        );
+        db.write(|c| {
+            c.execute("DELETE FROM principal_overrides", [])?;
+            c.execute("INSERT INTO roles (id,name,rank,builtin,created_by,created_at) VALUES ('capability-absence','Capability absence',1,0,'fixture',?)", [db.clock().millis()])?;
+            c.execute("INSERT INTO role_capabilities (role_id,capability,scope) SELECT 'capability-absence',capability,scope FROM role_capabilities WHERE role_id='owner' AND capability<>?", [capability.id()])?;
+            c.execute("UPDATE role_assignments SET role_id='capability-absence' WHERE principal_id=(SELECT principal_id FROM devices WHERE id=?)", [&device])?;
+            Ok(())
+        })
+        .unwrap();
+        management_reply_error(
+            &f.request(
+                method,
+                &format!("/api/v3/manage/{path}"),
+                if method == "POST" { b"{}" } else { b"" },
+                Some(&token),
+            ),
+            403,
+            "management_forbidden",
+        );
+    }
+}
+
+#[test]
+fn management_lifecycle_admission_is_idempotent_and_inputs_are_not_launch_authority() {
+    let f = Fixture::new("minecraft", 8, 4096, 3);
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    let send = |body: &[u8]| {
+        let mut stream = f.stream();
+        write!(stream, "POST /api/v3/manage/lifecycle/start HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nAuthorization: Bearer {token}\r\nIdempotency-Key: test-mutation-0001\r\n\r\n", body.len()).unwrap();
+        stream.write_all(body).unwrap();
+        stream.flush().unwrap();
+        read_reply(stream).unwrap()
+    };
+    management_reply_error(
+        &f.request(
+            "POST",
+            "/api/v3/manage/lifecycle/start",
+            b"{}",
+            Some(&token),
+        ),
+        400,
+        "invalid_request",
+    );
+    for body in [
+        br#"{"argv":[]}"#.as_slice(),
+        b"[]",
+        br#"{"executable":"java"}"#,
+    ] {
+        management_reply_error(&send(body), 400, "invalid_request");
+    }
+    let first = send(b"{}");
+    assert_eq!(first.status, 202);
+    let second = send(b"{}");
+    assert_eq!(second.status, 202);
+    assert_eq!(
+        first.json()["data"]["operation_id"],
+        second.json()["data"]["operation_id"]
+    );
+    let id = first.json()["data"]["operation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let outcome = f.request(
+        "GET",
+        &format!("/api/v3/manage/operations/{id}"),
+        b"",
+        Some(&token),
+    );
+    assert_eq!(outcome.status, 200);
+    assert!(outcome.json()["data"]["progress_percent"].as_u64().unwrap() <= 100);
+    outcome.hides(&f.temp.path().to_string_lossy());
+}
+
+#[test]
+fn management_audit_tail_withholds_untrusted_actor_target_and_payload_fields() {
+    use vesta_state::audit::{AuditActor, AuditLog, AuditRecord};
+    let f = Fixture::new("minecraft", 8, 4096, 3);
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    let marker = "private-path-and-sensitive-value";
+    let audit = AuditLog::new(f.host().database().clone()).unwrap();
+    audit
+        .append_record(
+            &AuditRecord::new(
+                AuditActor::system(marker.into()).unwrap(),
+                marker.into(),
+                marker.into(),
+                marker.into(),
+                None,
+                [("detail".into(), Some(marker.into()))],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let reply = f.request("GET", "/api/v3/manage/audit?limit=1", b"", Some(&token));
+    assert_eq!(reply.status, 200);
+    reply.hides(marker);
+    let value = reply.json();
+    let item = &value["data"]["items"][0];
+    assert_eq!(item["action"], "other");
+    assert_eq!(item["outcome"], "other");
+    let next = value["data"]["next_cursor"].as_str().unwrap();
+    let empty = f.request(
+        "GET",
+        &format!("/api/v3/manage/audit?cursor={next}&limit=1"),
+        b"",
+        Some(&token),
+    );
+    assert_eq!(empty.status, 200);
+    assert!(empty.json()["data"]["items"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn management_stale_kill_and_stop_refuse_before_operation_admission() {
+    let f = Fixture::new("minecraft", 8, 4096, 3);
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    let send = |action: &str, body: &[u8]| {
+        let mut stream = f.stream();
+        write!(stream, "POST /api/v3/manage/lifecycle/{action} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nAuthorization: Bearer {token}\r\nIdempotency-Key: test-stale-kill-0001\r\n\r\n", body.len()).unwrap();
+        stream.write_all(body).unwrap();
+        stream.flush().unwrap();
+        read_reply(stream).unwrap()
+    };
+    let generation = "00112233445566778899aabbccddeeff";
+    management_reply_error(
+        &send(
+            "kill",
+            &serde_json::to_vec(
+                &serde_json::json!({"expected_generation":generation,"acknowledgement":"yes"}),
+            )
+            .unwrap(),
+        ),
+        400,
+        "confirmation_required",
+    );
+    management_reply_error(&send("kill", &serde_json::to_vec(&serde_json::json!({"expected_generation":generation,"acknowledgement":format!("kill game:generation:{generation}")})).unwrap()), 412, "precondition_failed");
+    for action in ["stop", "restart"] {
+        management_reply_error(
+            &send(
+                action,
+                &serde_json::to_vec(&serde_json::json!({"expected_generation":generation}))
+                    .unwrap(),
+            ),
+            412,
+            "precondition_failed",
+        );
+    }
+    let count: i64 = f
+        .host()
+        .database()
+        .read(|c| Ok(c.query_row("SELECT count(*) FROM operations", [], |row| row.get(0))?))
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn management_inert_child() {
+    if std::fs::read("tls-inert-enabled").ok().as_deref() != Some(b"vesta-owned-tls-inert-v1") {
+        return;
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lock().lines() {
+            if sender.send(line.unwrap()).is_err() {
+                break;
+            }
+        }
+    });
+    println!("owned-tls-child-ready");
+    std::io::stdout().flush().unwrap();
+    std::fs::write("tls-inert-ready", b"ready").unwrap();
+    loop {
+        if std::fs::read("tls-inert-release").is_ok() {
+            std::process::exit(0);
+        }
+        match receiver.recv_timeout(Duration::from_millis(10)) {
+            Ok(line) if line == "stop" => std::process::exit(0),
+            Ok(line) if line == "list" => {
+                println!("There are 2 of a max of 20 players online: OwnedAlpha, OwnedBeta");
+                std::io::stdout().flush().unwrap();
+            }
+            Ok(line) if line.starts_with("owned-credential-boundaries ") => {
+                let token = line.strip_prefix("owned-credential-boundaries ").unwrap();
+                assert_eq!(token.len(), 43);
+                for offset in [1, 7, 21, 42] {
+                    let marker = format!(" boundary-{offset}: ");
+                    let fill = ".".repeat(16_384 - marker.len() - offset);
+                    println!("{marker}{fill}{token} :discarded-after-boundary");
+                    println!(" split-{offset}: {}", &token[..offset]);
+                    println!("{} :split-end-{offset} ", &token[offset..]);
+                }
+                std::io::stdout().flush().unwrap();
+                std::fs::write("tls-inert-boundaries-ready", b"ready").unwrap();
+            }
+            Ok(line) => {
+                println!("received {line}");
+                std::io::stdout().flush().unwrap();
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (),
+            Err(_) => std::process::exit(0),
+        }
+    }
+}
+fn management_mutation(
+    f: &Fixture,
+    token: &str,
+    path: &str,
+    key: &str,
+    body: &serde_json::Value,
+) -> WireReply {
+    let body = serde_json::to_vec(body).unwrap();
+    let mut stream = f.stream();
+    write!(stream,"POST /api/v3/manage/{path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nAuthorization: Bearer {token}\r\nIdempotency-Key: {key}\r\n\r\n",body.len()).unwrap();
+    stream.write_all(&body).unwrap();
+    stream.flush().unwrap();
+    read_reply(stream).unwrap()
+}
+fn management_wait_operation(f: &Fixture, token: &str, id: &str) {
+    let until = Instant::now() + Duration::from_secs(15);
+    loop {
+        let reply = f.request(
+            "GET",
+            &format!("/api/v3/manage/operations/{id}"),
+            b"",
+            Some(token),
+        );
+        assert_eq!(reply.status, 200);
+        let value = reply.json();
+        let state = value["data"]["state"].as_str().unwrap();
+        if state == "succeeded" {
+            return;
+        }
+        assert!(
+            !matches!(state, "failed" | "recovery_required" | "cancelled"),
+            "unexpected operation outcome {state}"
+        );
+        assert!(Instant::now() < until, "operation timeout");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+fn management_start_inert(f: &Fixture, token: &str) -> String {
+    let start = management_mutation(
+        f,
+        token,
+        "lifecycle/start",
+        "owned-tls-start-0001",
+        &serde_json::json!({}),
+    );
+    assert_eq!(start.status, 202);
+    management_wait_operation(
+        f,
+        token,
+        start.json()["data"]["operation_id"].as_str().unwrap(),
+    );
+    let until = Instant::now() + Duration::from_secs(10);
+    while !f.temp.path().join("game/tls-inert-ready").exists() {
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let status = f.request("GET", "/api/v3/manage/server/status", b"", Some(token));
+    assert_eq!(status.json()["data"]["state"], "running");
+    status.json()["data"]["generation"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+fn assert_credential_boundary_lines(lines: &[serde_json::Value]) {
+    for offset in [1, 7, 21, 42] {
+        let marker = format!(" boundary-{offset}: ");
+        let line = lines
+            .iter()
+            .find(|line| {
+                line["text"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with(&marker))
+            })
+            .unwrap();
+        assert_eq!(line["truncated"], true);
+        let expected = format!(
+            "{marker}{}[redacted]",
+            ".".repeat(16_384 - marker.len() - offset)
+        );
+        assert_eq!(line["text"].as_str().unwrap(), expected);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line["text"] == format!(" split-{offset}: [redacted]"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line["text"] == format!("[redacted] :split-end-{offset} "))
+        );
+    }
+}
+
+#[test]
+fn management_console_redacts_truncated_and_split_live_credentials_over_tls_and_websocket() {
+    let f = Fixture::inert();
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    let generation = management_start_inert(&f, &token);
+    let command = management_mutation(
+        &f,
+        &token,
+        "console/command",
+        "owned-boundary-command-0001",
+        &serde_json::json!({"expected_generation":generation,"line":format!("owned-credential-boundaries {token}")}),
+    );
+    assert_eq!(command.status, 202);
+    management_wait_operation(
+        &f,
+        &token,
+        command.json()["data"]["operation_id"].as_str().unwrap(),
+    );
+    let until = Instant::now() + Duration::from_secs(10);
+    let lines = loop {
+        let reply = f.request("GET", "/api/v3/manage/console?limit=200", b"", Some(&token));
+        assert_eq!(reply.status, 200);
+        reply.hides(&token);
+        let lines = reply.json()["data"]["items"].as_array().unwrap().clone();
+        if lines
+            .iter()
+            .filter(|line| {
+                line["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("boundary-") || text.contains("split-"))
+            })
+            .count()
+            == 12
+        {
+            break lines;
+        }
+        assert!(Instant::now() < until, "boundary capture timeout");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_credential_boundary_lines(&lines);
+    let mut peer = realtime::console_websocket(&f, &token).unwrap();
+    let mut streamed = Vec::new();
+    for _ in 0..32 {
+        match peer.read().unwrap() {
+            tokio_tungstenite::tungstenite::Message::Text(text) => {
+                assert!(!text.contains(&token));
+                let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                if value["type"] == "console.line" {
+                    streamed.push(value);
+                    if streamed
+                        .iter()
+                        .filter(|line| {
+                            line["text"].as_str().is_some_and(|text| {
+                                text.contains("boundary-") || text.contains("split-")
+                            })
+                        })
+                        .count()
+                        == 12
+                    {
+                        break;
+                    }
+                }
+            }
+            tokio_tungstenite::tungstenite::Message::Ping(payload) => peer
+                .send(tokio_tungstenite::tungstenite::Message::Pong(payload))
+                .unwrap(),
+            _ => (),
+        }
+    }
+    assert_credential_boundary_lines(&streamed);
+    peer.close(None).unwrap();
+    let stop = management_mutation(
+        &f,
+        &token,
+        "lifecycle/stop",
+        "owned-boundary-stop-0001",
+        &serde_json::json!({"expected_generation":generation}),
+    );
+    assert_eq!(stop.status, 202);
+    management_wait_operation(
+        &f,
+        &token,
+        stop.json()["data"]["operation_id"].as_str().unwrap(),
+    );
+}
+
+#[test]
+fn management_tls_inert_lifecycle_command_console_and_known_players() {
+    let f = Fixture::inert();
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    let generation = management_start_inert(&f, &token);
+    let players = f.request("GET", "/api/v3/manage/players", b"", Some(&token));
+    assert_eq!(players.json()["data"]["player_count"], 2);
+    let status = f.request("GET", "/api/v3/manage/server/status", b"", Some(&token));
+    assert_eq!(status.json()["data"]["player_count"], 2);
+    assert!(
+        status.json()["data"]["player_count_observed_at_ms"]
+            .as_i64()
+            .unwrap()
+            > 0
+    );
+    for line in ["", "say first\nstop", "say first\rstop", &"x".repeat(1025)] {
+        management_reply_error(
+            &management_mutation(
+                &f,
+                &token,
+                "console/command",
+                "owned-tls-invalid-001",
+                &serde_json::json!({"expected_generation":generation,"line":line}),
+            ),
+            400,
+            "invalid_request",
+        );
+    }
+    let local_code = f
+        .host()
+        .management()
+        .issue_local(vesta_control::identity::BuiltinRole::Viewer, 1)
+        .unwrap();
+    let code = local_code.secret.expose().to_owned();
+    let path = f
+        .host()
+        .configuration()
+        .state()
+        .to_string_lossy()
+        .into_owned();
+    let body = serde_json::json!({"expected_generation":generation,"line":format!("say marker-actual-output {token} {path} {code}")});
+    let command = management_mutation(
+        &f,
+        &token,
+        "console/command",
+        "owned-tls-command-001",
+        &body,
+    );
+    assert_eq!(command.status, 202);
+    let id = command.json()["data"]["operation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    management_wait_operation(&f, &token, &id);
+    let retry = management_mutation(
+        &f,
+        &token,
+        "console/command",
+        "owned-tls-command-001",
+        &body,
+    );
+    assert_eq!(retry.json()["data"]["operation_id"], id);
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        let console = f.request("GET", "/api/v3/manage/console?limit=200", b"", Some(&token));
+        console.hides(&token);
+        console.hides(&path);
+        console.hides(&code);
+        if console.json()["data"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| {
+                v["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("marker-actual-output [redacted] [redacted]")
+            })
+        {
+            break;
+        }
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let audit = f.request("GET", "/api/v3/manage/audit?limit=200", b"", Some(&token));
+    audit.hides(&token);
+    audit.hides("marker-actual-output");
+    assert!(
+        audit.json()["data"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["action"] == "console.command" && v["outcome"] == "succeeded")
+    );
+    let raw_count=f.host().database().read(|c| Ok(c.query_row("SELECT count(*) FROM audit_events WHERE instr(metadata_json,'marker-actual-output') > 0",[],|r|r.get::<_,i64>(0))?)).unwrap();
+    assert_eq!(raw_count, 0, "command text must not enter audit metadata");
+    let mut peer = realtime::console_websocket(&f, &token).unwrap();
+    let mut saw_line = false;
+    for _ in 0..24 {
+        let message = peer.read().unwrap();
+        if let tokio_tungstenite::tungstenite::Message::Text(text) = message {
+            assert!(!text.contains(&token));
+            assert!(!text.contains(&path));
+            assert!(!text.contains(&code));
+            assert!(text.len() <= 128 * 1024);
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            if value["type"] == "console.line"
+                && value["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("marker-actual-output [redacted] [redacted]")
+            {
+                saw_line = true;
+                break;
+            }
+        }
+    }
+    assert!(saw_line, "stream must expose actual redacted console text");
+    peer.close(None).unwrap();
+    drop(peer);
+    let stop = management_mutation(
+        &f,
+        &token,
+        "lifecycle/stop",
+        "owned-tls-stop-00001",
+        &serde_json::json!({"expected_generation":generation}),
+    );
+    assert_eq!(stop.status, 202);
+    management_wait_operation(
+        &f,
+        &token,
+        stop.json()["data"]["operation_id"].as_str().unwrap(),
+    );
+    let status = f.request("GET", "/api/v3/manage/server/status", b"", Some(&token));
+    assert_eq!(status.json()["data"]["state"], "stopped");
+    assert!(status.json()["data"]["player_count"].is_null());
+    management_reply_error(
+        &management_mutation(
+            &f,
+            &token,
+            "console/command",
+            "owned-tls-stopped-001",
+            &body,
+        ),
+        412,
+        "precondition_failed",
+    );
+}
+#[test]
+fn management_tls_inert_kill_requires_exact_confirmation() {
+    let f = Fixture::inert();
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    let generation = management_start_inert(&f, &token);
+    let mut body = serde_json::json!({"expected_generation":generation,"acknowledgement":format!("kill game:generation:{generation}")});
+    let preview = management_mutation(&f, &token, "lifecycle/kill", "owned-tls-kill-00001", &body);
+    assert_eq!(preview.status, 202);
+    assert_eq!(
+        f.request("GET", "/api/v3/manage/server/status", b"", Some(&token))
+            .json()["data"]["state"],
+        "running"
+    );
+    body["confirmation_token"] = preview.json()["data"]["confirmation_token"].clone();
+    let confirmed =
+        management_mutation(&f, &token, "lifecycle/kill", "owned-tls-kill-00001", &body);
+    assert_eq!(confirmed.status, 202);
+    let id = confirmed.json()["data"]["operation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    management_wait_operation(&f, &token, &id);
+    assert_eq!(
+        f.request("GET", "/api/v3/manage/server/status", b"", Some(&token))
+            .json()["data"]["state"],
+        "stopped"
+    );
+    assert_eq!(
+        management_mutation(&f, &token, "lifecycle/kill", "owned-tls-kill-00001", &body).json()["data"]
+            ["operation_id"],
+        id
+    );
+}
+#[test]
+fn management_pack_mutations_are_authorized_atomic_and_idempotent() {
+    let f = Fixture::new("minecraft", 8, 4096, 5);
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    std::fs::write(
+        f.temp.path().join("game/config/owned.cfg"),
+        b"owned pack bytes",
+    )
+    .unwrap();
+    let subject = f
+        .host()
+        .management()
+        .authorize(
+            &token,
+            vesta_control::identity::Capability::PackPublish,
+            None,
+        )
+        .unwrap();
+    let plan = f
+        .host()
+        .releases()
+        .plan(&subject, 0, UpdatePolicy::Optional)
+        .unwrap();
+    f.host()
+        .prepare_pack(
+            &plan,
+            &vesta_protocol::pack::sources::SourceRegistry::default(),
+        )
+        .unwrap();
+    let publish = serde_json::json!({"expected_revision":"0"});
+    let first = management_mutation(
+        &f,
+        &token,
+        "pack/publish",
+        "owned-pack-publish-01",
+        &publish,
+    );
+    assert_eq!(first.status, 200);
+    assert_eq!(first.json()["data"]["hosted_revision"], "1");
+    assert_eq!(
+        management_mutation(
+            &f,
+            &token,
+            "pack/publish",
+            "owned-pack-publish-01",
+            &publish
+        )
+        .json()["data"],
+        first.json()["data"]
+    );
+    let second = management_mutation(
+        &f,
+        &token,
+        "pack/publish",
+        "owned-pack-publish-02",
+        &serde_json::json!({"expected_revision":"1"}),
+    );
+    assert_eq!(second.status, 200);
+    f.host().database().write(|c| { c.execute("INSERT INTO principal_overrides(id,principal_id,capability,scope,effect,granted_by,created_at) VALUES(?,?,?,'*','deny','owned-test',?)",["owned-pack-publish-deny".to_owned(),subject.principal.as_str().to_owned(),vesta_control::identity::Capability::PackPublish.id().to_owned(),f.host().database().clock().millis().to_string()])?; Ok(()) }).unwrap();
+    management_reply_error(
+        &management_mutation(
+            &f,
+            &token,
+            "pack/publish",
+            "owned-pack-denied-001",
+            &serde_json::json!({"expected_revision":"2"}),
+        ),
+        403,
+        "management_forbidden",
+    );
+    let minimum = serde_json::json!({"expected_revision":"2","minimum_revision":"2"});
+    f.host().database().write(|c| { c.execute_batch("CREATE TRIGGER owned_minimum_audit_failure BEFORE INSERT ON audit_events WHEN NEW.action='pack_release.minimum' BEGIN SELECT RAISE(ABORT,'owned fixture'); END;")?; Ok(()) }).unwrap();
+    management_reply_error(
+        &management_mutation(
+            &f,
+            &token,
+            "pack/minimum",
+            "owned-pack-minimum-01",
+            &minimum,
+        ),
+        503,
+        "temporarily_unavailable",
+    );
+    assert_eq!(
+        f.host()
+            .releases()
+            .current()
+            .unwrap()
+            .unwrap()
+            .minimum_revision(),
+        1
+    );
+    let before = f
+        .host()
+        .database()
+        .read(|c| {
+            Ok(
+                c.query_row("SELECT count(*) FROM management_pack_outcomes", [], |r| {
+                    r.get::<_, i64>(0)
+                })?,
+            )
+        })
+        .unwrap();
+    assert_eq!(before, 2);
+    f.host()
+        .database()
+        .write(|c| {
+            c.execute_batch("DROP TRIGGER owned_minimum_audit_failure;")?;
+            Ok(())
+        })
+        .unwrap();
+    let raised = management_mutation(
+        &f,
+        &token,
+        "pack/minimum",
+        "owned-pack-minimum-01",
+        &minimum,
+    );
+    assert_eq!(raised.status, 200);
+    assert_eq!(raised.json()["data"]["minimum_revision"], "2");
+    assert_eq!(
+        management_mutation(
+            &f,
+            &token,
+            "pack/minimum",
+            "owned-pack-minimum-01",
+            &minimum
+        )
+        .json()["data"],
+        raised.json()["data"]
+    );
+    assert_eq!(
+        f.request("GET", "/api/v3/manage/pack", b"", Some(&token))
+            .json()["data"]["minimum_revision"],
+        "2"
+    );
+    let audit = f.request("GET", "/api/v3/manage/audit?limit=200", b"", Some(&token));
+    assert!(
+        audit.json()["data"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["action"] == "pack_release.minimum" && v["outcome"] == "success")
+    );
+    management_reply_error(
+        &management_mutation(
+            &f,
+            &token,
+            "pack/minimum",
+            "owned-pack-minimum-01",
+            &serde_json::json!({"expected_revision":"2","minimum_revision":"1"}),
+        ),
+        409,
+        "idempotency_conflict",
+    );
+    management_reply_error(
+        &management_mutation(
+            &f,
+            &token,
+            "pack/minimum",
+            "owned-pack-minimum-02",
+            &serde_json::json!({"expected_revision":"2","minimum_revision":"1"}),
+        ),
+        412,
+        "precondition_failed",
+    );
+    let counts = f
+        .host()
+        .database()
+        .read(|c| {
+            Ok((
+                c.query_row("SELECT count(*) FROM pack_releases", [], |r| {
+                    r.get::<_, i64>(0)
+                })?,
+                c.query_row("SELECT count(*) FROM management_pack_outcomes", [], |r| {
+                    r.get::<_, i64>(0)
+                })?,
+            ))
+        })
+        .unwrap();
+    assert_eq!(counts, (2, 3));
 }

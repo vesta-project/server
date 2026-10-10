@@ -69,6 +69,16 @@ pub(super) async fn route(
         original_path.to_owned()
     };
     let method = request.method().clone();
+    let operational = super::manage::implemented(&path);
+    let idempotency = if request.headers().get_all("idempotency-key").iter().count() == 1 {
+        request
+            .headers()
+            .get("idempotency-key")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+    } else {
+        None
+    };
     let management = path == "/api/v3/manage" || path.starts_with("/api/v3/manage/");
     let management_public = method == Method::POST
         && matches!(
@@ -100,11 +110,21 @@ pub(super) async fn route(
     if !recognized {
         return error(StatusCode::NOT_FOUND, "endpoint_not_found");
     }
+    if path == "/api/v3/manage/console/stream" && method == Method::GET {
+        return super::realtime::upgrade(request, state).await;
+    }
     if path == "/api/v2/realtime" {
         return super::realtime::upgrade(request, state).await;
     }
+    let error = |status, code| {
+        if operational {
+            super::manage::error(status, code)
+        } else {
+            error(status, code)
+        }
+    };
     let query = request.uri().query().map(str::to_owned);
-    if path != "/api/v2/pack/status" && query.is_some() {
+    if !operational && path != "/api/v2/pack/status" && query.is_some() {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
     // Exactly one observed Authorization field; never accept query/cookie secrets.
@@ -185,7 +205,20 @@ pub(super) async fn route(
     let tls = state.tls.clone();
     state
         .jobs
-        .execute(move || {
+        .execute_for(operational, move || {
+            if operational {
+                return super::manage::dispatch(
+                    &host,
+                    super::manage::Request {
+                        method: &method,
+                        path: &path,
+                        query: query.as_deref(),
+                        authorization: authorization.as_ref().map(|secret| secret.as_str()),
+                        idempotency: idempotency.as_deref(),
+                        bytes: &bytes,
+                    },
+                );
+            }
             if management {
                 return manage_dispatch(
                     &host,

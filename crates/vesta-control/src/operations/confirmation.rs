@@ -8,7 +8,7 @@ use super::{
     operation_target,
     repository::{Repository, StoredOperation},
     request_actor,
-    runner::OperationRuntime,
+    runner::{OperationRuntime, RuntimeHandle},
 };
 use crate::identity::Subject;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -102,7 +102,7 @@ enum ConfirmationDecision {
     Refused(OperationError),
 }
 
-impl OperationRuntime {
+impl RuntimeHandle {
     /// Issue from the current native published game view and current canonical
     /// policy in one admitted writer. Subject is a trusted application lookup key,
     /// not transport authentication. Reissue supersedes every earlier live token.
@@ -250,7 +250,7 @@ fn require_current_target(
 }
 
 fn check_acceptance(
-    runtime: &OperationRuntime,
+    runtime: &RuntimeHandle,
     repo: &Repository<'_>,
     confirmations: &ConfirmationRepository<'_>,
     subject: &Subject,
@@ -316,3 +316,22 @@ pub(super) fn verify_receipt_in(
 #[cfg(test)]
 #[path = "confirmation_tests.rs"]
 mod tests;
+
+impl OperationRuntime {
+    pub fn issue_confirmation(
+        &self,
+        subject: &Subject,
+        id: &OperationId,
+        ttl: Duration,
+    ) -> OperationsResult<IssuedConfirmation> {
+        self.network_handle().issue_confirmation(subject, id, ttl)
+    }
+    pub fn confirm(
+        &self,
+        subject: &Subject,
+        id: &OperationId,
+        token: ConfirmationToken,
+    ) -> OperationsResult<OperationSummary> {
+        self.network_handle().confirm(subject, id, token)
+    }
+}

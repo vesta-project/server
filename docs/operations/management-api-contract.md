@@ -1,11 +1,12 @@
 # Remote management API contract — DRAFT 0.1
 
-**P2 authentication core is implemented as specified in section 2. Everything
-else remains DRAFT and NOT IMPLEMENTED.** This is not an available operational
-management API: authenticated management placeholders return 501. Sections 3
-onward describe proposals, not deployed endpoint shapes or permissions. The
-implemented P2 shapes in section 2 override conflicting draft authentication,
-response-envelope and timestamp proposals elsewhere in this document.
+**P2 authentication and operational management in section 2.1 are implemented.**
+This includes real deterministically redacted console text/streaming, durable
+console command delivery and authorized pack publish/minimum mutations. Sections
+3 onward remain draft proposals except where section 2.1 freezes an implemented
+shape. This is not completion of every P3 supervisor/release gate. Implemented
+shapes override conflicting draft envelopes, timestamps, generations, redaction
+and endpoint proposals.
 
 Binding sources:
 - [Implementation plan](../SERVER_SOFTWARE_IMPLEMENTATION_PLAN.md), sections 5,
@@ -26,7 +27,7 @@ specification and event schemas must freeze the reviewed wire contract first.
 `management_unavailable`. V2 authenticates pack access, not canonical management
 principals/devices/sessions; neither an alias nor a redirect may upgrade it.
 V3 authentication and authenticated placeholder refusals are implemented as
-described in section 2; operational management endpoints remain unavailable.
+described in section 2; the implemented operational subset is specified in section 2.1.
 
 A future authenticated `/capabilities` response negotiates API/schema version,
 stable server identity, supported adapters/features and effective request limits.
@@ -257,6 +258,181 @@ bodies, timeouts, blocking admission and the peer-IP limiter (60 requests/minute
 1024 peers), with 429 `peer_rate_limited`. Secrets, SQL, rejected values and provider
 diagnostics are never reflected in errors.
 
+## 2.1 Operational management — implemented wire contract
+
+All paths below are relative to `/api/v3/manage`. Every endpoint requires exactly
+one valid canonical device bearer and its listed current capability. Pack-only
+and anonymous users cannot operate this surface. No owner-link, role-source,
+role-management or pairing-code creation HTTP route has been added.
+
+Success is `{"api_version":"3","request_id":"request-N","data":...}`;
+errors are `{"api_version":"3","request_id":"request-N","error":{"code":"..."}}`.
+Request IDs are bounded process-local correlation labels, not credentials or
+persistent globally unique IDs. Operational errors are fixed: 400 `invalid_request`
+or `confirmation_required`; 401 `management_session_invalid`; 403
+`management_forbidden`; 404 `resource_not_found`; 409 `idempotency_conflict`,
+`confirmation_invalid`, `operation_conflict`, `cursor_gap`; 412
+`precondition_failed`; 413 `request_too_large`; 429 `rate_limited`; 503
+`temporarily_unavailable`. Authentication aliases and future placeholders retain
+section 2's legacy errors. Cookies, query credentials, unknown fields, duplicate
+bearer/key headers, non-object mutation JSON and bodies on GET are refused.
+No client path, executable, argv, URL or hash is accepted as authority.
+
+### Exact endpoints and data shapes
+
+`Operation` is the safe projection below. Input/result/log text is not exposed:
+
+```json
+{"operation_id":"opaque-id","state":"queued","progress_percent":0,
+ "cancel_requested":false,"created_at_ms":1791115200000,
+ "updated_at_ms":1791115200000,"finished_at_ms":null}
+```
+
+States: `queued`, `validating`, `awaiting_confirmation`, `running`, `cancelling`,
+`succeeded`, `failed`, `cancelled`, `recovery_required`. Terminal state represents
+outcome; detailed engine result/error payloads are not projected. Timestamps are
+integer epoch milliseconds. Generations are opaque canonical nonzero 32-character
+lowercase hexadecimal identities, not PIDs or decimal counters. Stopped generation
+is null; persistent monotonic stopped-control generations are not introduced.
+
+| Method / path | Exact request | Exact `data` / status | Capability |
+| --- | --- | --- | --- |
+| GET `/server` | no body/query | 200 `{server_id,name,agent_version,minecraft_version,pack_version,configured_mode:"same_account"}`; other fields strings | `status.view` |
+| GET `/server/status` | no body/query | 200 `{state:"stopped\|running\|stopping\|draining",generation:hex-or-null,player_count:integer-or-null,player_count_known:boolean,player_count_observed_at_ms:integer-or-null,uptime_seconds:decimal-string-or-null}` | `status.view` |
+| POST `/lifecycle/start` | `{}` + `Idempotency-Key` | 202 `Operation` | `lifecycle.start` |
+| POST `/lifecycle/stop` | `{"expected_generation":"<hex>"}` + key | 202 `Operation` | `lifecycle.stop` |
+| POST `/lifecycle/restart` | same generation request + key | 202 `Operation` | `lifecycle.restart` |
+| POST `/lifecycle/kill` | `{"expected_generation":"<hex>","acknowledgement":"kill game:generation:<same hex>"}` + key; final submission adds `confirmation_token` string | preparation 202 `{operation_id,state:"awaiting_confirmation",confirmation_token,expires_at_ms}`; final 202 `Operation` | `lifecycle.force_kill` |
+| GET `/operations/{id}` | no body/query | 200 `Operation`, 404 if absent | `tasks.view` |
+| GET `/operations` | optional `limit`, `cursor` | 200 `{items:[Operation],next_cursor:string-or-null}` | `tasks.view` |
+| GET `/console` | optional `limit`, `cursor` | 200 `{items:[{cursor,text:string,truncated:boolean}],next_cursor:string,latest_cursor:string}` | `console.read` |
+| GET `/console/stream` | native WebSocket upgrade, bearer, no body/query/cookie/Origin | 101; availability, line and gap messages below | `console.read` |
+| POST `/console/command` | `{"expected_generation":"<hex>","line":"say hello"}` + key | 202 `Operation` | existing `console.write` |
+| GET `/players` | no body/query | 200 unknown `{known:false,player_count:null,items:null}`; known `{known:true,generation:hex,player_count:integer,items:[{name:string}]}` | `players.view` |
+| GET `/pack` | no body/query | 200 `{hosted_revision:decimal-string-or-null,minimum_revision:decimal-string-or-null,status:"published\|unpublished"}` | `status.view` |
+| POST `/pack/publish` | `{"expected_revision":"0"}` + key; zero means unpublished | 200 `{outcome:"succeeded",hosted_revision:decimal-string,minimum_revision:decimal-string}` | `pack.publish` |
+| POST `/pack/minimum` | `{"expected_revision":"2","minimum_revision":"2"}` + key | same synchronous 200 outcome shape | `pack.force_update` only |
+| GET `/audit` | optional `limit`, `cursor` | 200 `{items:[{cursor,at_ms:integer,action:string,outcome:string}],next_cursor:string-or-null}` | `audit.view` |
+
+### Mutation ownership and idempotency
+
+Mutations require 16–128 visible-ASCII keys, scoped to canonical
+server/principal/device/POST/path. Lifecycle and console commands use the durable
+operation engine. Current policy, canonical intent, idempotency association and
+success audit commit together; authority is checked again immediately before the
+native effect. Exact retries return the same operation, including after a failure
+or generation exit. Changed intent returns `idempotency_conflict`.
+
+Kill preparation cannot kill. The server derives the exact target and issues the
+existing 120-second generation/actor/device-bound receipt. Repeat preparation
+supersedes the prior token without changing operation ID. Final submission uses
+the same endpoint/key/target. Receipt consumption, queue transition and success
+audit/event commit together. Stop never force-kills. Restart retains one claim and
+resource lock through graceful write, actual exit and all I/O joins, and rechecks
+policy before replacement launch. Failed stop never launches a replacement.
+No automatic restart or world restore is added.
+
+Console command lines are nonempty UTF-8, at most 1,024 bytes, and contain no
+Unicode control characters (including CR, LF and NUL). They are never shell or OS
+commands. Fresh admission requires the exact running incarnation; a stopped or
+stale target is 412. The existing bounded, exclusively owned stdin writer runs
+the fresh operation guard immediately before writing and retains its receipt and
+claim until acknowledgement. `succeeded` means the line was sent to stdin, not
+that Minecraft accepted/executed it. Partial/lost native write proof is
+`recovery_required`, not a retry permit. A dedicated `console.command` audit
+records the fixed terminal outcome, never command text. Canonical command text is
+retained privately as operation input under existing engine retention/purge rules,
+so commands should not be used to transmit secrets unnecessarily.
+
+Pack publish prepares only the configured local scanned/archive/platform source,
+using the existing authorized prepared-publish path. It accepts no source choice,
+path, URL, hash, provider resolution, or lower-version override. Scanned sources
+use an explicit empty provider registry and retain the configured unresolved-file
+policy: unresolved files refuse unless the operator configured a permitted
+alternative. A stale revision is 412. Publication, current policy, its existing
+success audit and the exact-key outcome record commit in the same writer. Minimum
+updates monotonically raise the server compatibility policy within the hosted
+revision; they do not rewrite immutable release artifacts/history and do not
+require `pack.publish`. Policy, minimum mutation, durable outcome and success audit
+commit together. Both pack endpoints return synchronous durable outcomes, not
+background task IDs; retries do not republish or append another success audit.
+Revision strings are canonical decimal values in 0..9007199254740991 (minimum must
+be positive and cannot decrease). Retention remains existing operation/input and
+pack ledger retention, with no new 90-day promise.
+
+### Console content, deterministic redaction and streaming
+
+Authorized readers receive actual captured text. Complete credentials and paths
+use deterministic known-material matching. Exact known configured absolute
+base/state/config/launch/protected paths, in forward- and backslash forms, are
+replaced longest-first by `[redacted]`. Matching is literal and case-sensitive.
+Currently retained agent-issued management session tokens, challenge nonces and unexpired local pairing codes
+are recognized by their server-bound hashes and replaced by `[redacted]`, without
+retaining additional plaintext credentials. Password plaintext is deliberately
+not retained by the agent, so arbitrary user-entered passwords, third-party
+secrets, unknown/expired credentials and differently rendered paths cannot be
+reliably identified by this rule. `console.read` is consequently a powerful grant
+for real server logs, not a promise that arbitrary game output is secret-free.
+Hash-only credential stores cannot recognize an incomplete token after capture
+truncation or a physical line split. As a conservative boundary rule, up to 42
+consecutive ASCII base64url bytes (`A-Z`, `a-z`, `0-9`, `_`, `-`) at **each** line
+edge are replaced with `[redacted]`, after complete known-material replacement.
+The rule applies to every line, including nontruncated lines, so both sides of
+newline splits remain protected independently of page/socket boundaries, stream
+interleaving and retention gaps. It can redact ordinary words at line edges, or
+all of a short ASCII-only line; it does not guess at interior text. This protects
+all incomplete fragments of the agent's 43-byte credentials without retaining
+plaintext tokens or exposing 42 bytes of a truncated token. Interior content and
+the original ring's truncation flag are preserved. HTTP and WebSocket use the
+same projection, and JSON escapes the resulting text.
+
+The existing capture limits remain 16,384 bytes per line, 10,000 retained lines,
+and 2 MiB of retained text. HTTP pages max 200 lines. Console continuation eviction
+returns `cursor_gap`. The stream retains one cursor and at most one 16-line sampled
+page, not an accumulating subscriber queue. It reuses owned workers/tasks and the
+32-global/two-per-device-session socket budget shared with pack realtime. Inbound
+frame/message ceilings remain 1,024 bytes; the outbound write buffer is bounded to
+128 KiB to permit one escaped retained line. Each send has a two-second deadline;
+slow sends disconnect. Current session/identity/console-read authority is checked
+at every 250-ms sample. Initial delivery includes the most recent 16 lines;
+subsequent pages follow the last delivered cursor. Eviction emits a gap notice
+before the available retained lines. Exact messages:
+
+```json
+{"type":"console.available","api_version":"3","cursor":"<scoped-cursor>"}
+{"type":"console.line","api_version":"3","cursor":"<line-cursor>","text":"actual redacted text","truncated":false}
+{"type":"console.gap","api_version":"3","cursor":"<sample-continuation>"}
+```
+
+Native clients must service Ping/Pong and reconnect after idle/authorization
+closure. No management ticket-minting route is introduced.
+
+### Collections, observations and audit
+
+Collection defaults are 50; operations max 100, console/audit max 200. Cursors are
+bounded server/surface-scoped continuation references, maximum 512 bytes, treated
+as opaque by clients. Operations use live pages, not retained expiring snapshots.
+Console/audit start at a bounded retained tail. Audit exposes only cursor,
+timestamp and allowlisted action/outcome labels, with `other` for unrecognized
+labels; raw actors, source, targets, metadata, hashes and payloads are withheld.
+
+Players uses the existing bounded live `list` driver with `players.view` checks at
+admission, write and response. Stopped/unavailable/timed-out queries are unknown,
+never fabricated zero. Names outside the Minecraft ASCII-name projection are
+withheld. Successful authorized observations cache the actual count and original
+console observation time for the matching incarnation. Status returns this last
+known count/time, which may be stale; no count is carried into a new/stopped
+incarnation. Status itself does not issue a player query. Uptime measures
+in-process monotonic incarnation observation, not readiness.
+
+Remaining gaps: detailed operation result/error projection, retained expiring
+pagination snapshots, persistent stopped-control generations and paginated player
+collections. Files/config and every other operational path remain authenticated
+501 placeholders. No capabilities were added or admitted into automatic role
+sources. TLS inert-child tests cover start → running → graceful stop → stopped,
+confirmed kill, command delivery, real redacted HTTP/stream content, known players,
+and durable pack publish/minimum outcomes.
+
 ## 3. Common protocol
 
 ### Envelopes and fixed errors
@@ -371,7 +547,8 @@ before expanding this draft; explicit capability checks alone do not sanitize th
 
 ## 4. Resources and endpoints
 
-**Every row: NOT IMPLEMENTED.** Phase labels are prerequisites, not implementation
+**The multi-server paths in this table remain NOT IMPLEMENTED.** Singular-server
+implemented paths are listed in section 2.1. Phase labels are prerequisites, not implementation
 claims or delivery promises. All resource routes also depend on P2 authorization
 and P1 durable operations/audit. `S` below means `/servers/{server_id}`.
 Only authorized resource IDs are visible. No endpoint grants roles implicitly.

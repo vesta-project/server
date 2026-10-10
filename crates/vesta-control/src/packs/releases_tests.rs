@@ -456,7 +456,8 @@ fn an_artifact_removed_before_recording_is_never_made_the_hosted_release() {
     let name = format!("{}.zip", artifact.sha256().to_hex());
     std::fs::remove_file(f.db.directory().path().join("artifacts").join(name)).unwrap();
     refused(
-        f.releases.record(&f.owner, &plan, artifact, "1", false),
+        f.releases
+            .record(&f.owner, &plan, artifact, "1", false, None),
         "pack_artifact_not_published",
     );
     assert_eq!(f.rows(), 0);
@@ -584,7 +585,8 @@ fn an_unrecorded_publication_removed_by_pruning_fails_its_recording_safely() {
         .unwrap();
     assert_eq!(f.releases.prune(&f.owner).unwrap().removed(), 1);
     refused(
-        f.releases.record(&f.owner, &plan, pending, "2", false),
+        f.releases
+            .record(&f.owner, &plan, pending, "2", false, None),
         "pack_artifact_not_published",
     );
     assert_eq!(f.releases.current().unwrap().unwrap(), hosted);
@@ -681,7 +683,7 @@ fn recording_denial_after_publication_removes_only_the_new_unreferenced_name() {
     f.grant(&maintainer, Capability::PackPublish, "deny");
     refused(
         f.releases
-            .record_publication(&maintainer, &plan, publication, "1", false),
+            .record_publication(&maintainer, &plan, publication, "1", false, None),
         "forbidden",
     );
     assert!(artifact_names(&f).is_empty());
@@ -747,7 +749,7 @@ fn losing_publication_never_removes_a_concurrent_winners_historical_artifact() {
         .unwrap();
     refused(
         f.releases
-            .record_publication(&f.owner, &plan, publication, "1", false),
+            .record_publication(&f.owner, &plan, publication, "1", false, None),
         "pack_release_conflict",
     );
     assert_eq!(

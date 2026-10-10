@@ -15,7 +15,8 @@ pub use publish::{
     PruneReport, PublishedArtifact,
 };
 pub use releases::{
-    PackRelease, PackReleases, ReleaseError, ReleasePlan, UpdatePolicy, UpdateStatus,
+    PackMutation, PackOutcome, PackRelease, PackReleases, ReleaseError, ReleasePlan, UpdatePolicy,
+    UpdateStatus,
 };
 
 use crate::config::UnresolvedDisposition;
