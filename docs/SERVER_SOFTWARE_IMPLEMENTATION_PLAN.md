@@ -749,3 +749,21 @@ installer execution is part of completing this plan. A later implementation task
 should begin with P0/P1 against the agreed baseline rather than restart product
 discovery or implement all subsystems in one unreviewable patch.
 
+
+## 20. Current status against the phases (2026-10-10)
+
+Audit at commit 94fb98a. The Java-to-Rust migration gate has not passed: the change-only review since a3dda06 is still pending. The feature registry (`SERVER_SOFTWARE_STATUS.json`) now carries the Rust re-audit for 15 features; the rest are carried from 2026-10-04 and marked for re-audit.
+
+| Phase | Where it stands |
+|---|---|
+| P0 Baseline | Mostly complete. Requirements, inventory and parity checks exist. |
+| P1 Durable foundation | Largely in Rust: migrations to v11, operations, audit, confirmations, file intents and recovery, all tested. |
+| P2 Identity and remote security | Not met. No remote management login, device certificates or owner recovery. Management routes are refused by design. |
+| P3 Supervisor and adoption | Not met. The agent still owns the game process; no separate supervisor or crash continuity. |
+| P4 Files and content | Built as library code, not reachable remotely until P2. SFTP not started. |
+| P5 Client-pack hosting | Mostly built. Scheduled release and a trusted publish path from the running server remain open. |
+| P6 Backups and recovery | Not started. Outside the Java scope; future work. |
+| P7 Automation | Not started, except pieces of moderation and player queries. |
+| P8 Distribution | Partial installer. Signed updates not started. |
+
+Recommended direction: P2 (remote management identity), then P3 (a separate supervisor), then the remote parts of P4 and P5.
