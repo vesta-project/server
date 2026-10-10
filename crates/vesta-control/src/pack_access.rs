@@ -274,6 +274,26 @@ impl PackSessions {
         live_session(&mut state, &key, now, policy)
     }
 
+    /// Like `authenticate`, plus the opaque reference used for per-session admission
+    /// (for example, concurrent download caps). The reference is not a credential.
+    pub fn authenticate_reference(
+        &self,
+        secret: &str,
+        now: Instant,
+        policy: &PackAccessPolicy<'_>,
+    ) -> Result<(RealtimeSession, PackSession), PackAccessError> {
+        let key = self.key(secret)?;
+        let mut state = self.lock()?;
+        let session = live_session(&mut state, &key, now, policy)?;
+        Ok((
+            RealtimeSession {
+                key,
+                server: self.server,
+            },
+            session,
+        ))
+    }
+
     pub fn revoke(&self, secret: &str) -> Result<bool, PackAccessError> {
         let Ok(key) = self.key(secret) else {
             return Ok(false);
@@ -333,6 +353,17 @@ impl PackSessions {
     ) -> Result<PackSession, PackAccessError> {
         self.redeem_for(ticket, TicketPurpose::Download, now, policy)
             .map(|(_, session)| session)
+    }
+
+    /// `redeem_ticket` returning the owning session's reference, so a download
+    /// ticket and its session bearer share one per-session admission slot.
+    pub fn redeem_download(
+        &self,
+        ticket: &str,
+        now: Instant,
+        policy: &PackAccessPolicy<'_>,
+    ) -> Result<(RealtimeSession, PackSession), PackAccessError> {
+        self.redeem_for(ticket, TicketPurpose::Download, now, policy)
     }
 
     pub fn redeem_realtime(

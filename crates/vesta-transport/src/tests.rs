@@ -176,7 +176,7 @@ fn chunked_response_holds_download_permit_until_completion_or_cancel() {
             StatusCode::OK,
             Bytes::from_owner(DownloadOwner {
                 data: vec![0; BODY_CHUNK * 3],
-                _permit: Arc::new(budget.clone().try_acquire_owned().unwrap()),
+                _permit: Arc::new(budget.clone().try_acquire_owned().unwrap().into()),
             }),
             "application/zip",
         );
@@ -200,7 +200,7 @@ fn chunked_response_holds_download_permit_until_completion_or_cancel() {
             StatusCode::OK,
             Bytes::from_owner(DownloadOwner {
                 data: vec![0; BODY_CHUNK * 3],
-                _permit: Arc::new(budget.clone().try_acquire_owned().unwrap()),
+                _permit: Arc::new(budget.clone().try_acquire_owned().unwrap().into()),
             }),
             "application/zip",
         );
@@ -252,9 +252,10 @@ impl DiskFixture {
                 expected_hash: self.digest,
                 size: self.size,
                 remaining: self.size,
-                permit: Arc::new(budget.clone().try_acquire_owned().unwrap()),
+                permit: Arc::new(budget.clone().try_acquire_owned().unwrap().into()),
             }),
             pending: None,
+            deadline: None,
         }))
     }
 }
@@ -435,4 +436,206 @@ fn realtime_control_rate_has_bounded_burst_and_no_accumulated_idle_credit() {
         assert!(rate.admit(later));
     }
     assert!(!rate.admit(later));
+}
+
+#[test]
+fn downloads_are_capped_per_session_per_peer_and_globally_and_slots_are_cleaned() {
+    let runtime = disk_runtime();
+    let _guard = runtime.enter();
+    let a: std::net::IpAddr = "192.0.2.1".parse().unwrap();
+    let b: std::net::IpAddr = "192.0.2.2".parse().unwrap();
+    let c: std::net::IpAddr = "192.0.2.3".parse().unwrap();
+    let downloads = Downloads::<u32>::new(DOWNLOADS);
+    let first = downloads.acquire(1, a).unwrap();
+    // One session cannot hold a second slot, even from another address.
+    assert!(downloads.acquire(1, b).is_none());
+    // One address cannot hold a second slot, even with another session.
+    assert!(downloads.acquire(2, a).is_none());
+    // IPv4-mapped IPv6 spelling is the same peer.
+    assert!(
+        downloads
+            .acquire(3, "::ffff:192.0.2.1".parse().unwrap())
+            .is_none()
+    );
+    let second = downloads.acquire(2, b).unwrap();
+    // Distinct sessions and peers still cannot exceed the global budget.
+    assert!(downloads.acquire(3, c).is_none());
+    assert_eq!(downloads.global.available_permits(), 0);
+    let held = Arc::new(first);
+    let chunk = held.clone();
+    drop(held);
+    // A chunk still owned by Hyper keeps the session and peer slots.
+    assert!(downloads.acquire(1, c).is_none());
+    drop(chunk);
+    assert_eq!(downloads.global.available_permits(), 1);
+    {
+        let holders = downloads.holders.lock().unwrap();
+        assert_eq!((holders.sessions.len(), holders.peers.len()), (1, 1));
+    }
+    let third = downloads.acquire(1, a).unwrap();
+    drop((second, third));
+    let holders = downloads.holders.lock().unwrap();
+    assert!(holders.sessions.is_empty() && holders.peers.is_empty());
+    assert_eq!(downloads.global.available_permits(), DOWNLOADS);
+}
+
+#[test]
+fn connection_deadline_bounds_heads_but_streams_by_throughput_floor() {
+    let limit = Duration::from_secs(2);
+    let deadline = ConnectionDeadline::new(limit);
+    let start = Instant::now();
+    // Handshake, head and routing are bounded by request_timeout.
+    assert!(deadline.check(start).is_some());
+    assert!(
+        deadline
+            .check(start + limit + Duration::from_millis(1))
+            .is_none()
+    );
+    // A body that keeps above the floor outlives request_timeout many times over.
+    deadline.stream();
+    let mut now = Instant::now();
+    for _ in 0..10 {
+        deadline.progress(deadline.floor() as usize);
+        now += limit;
+        assert!(deadline.check(now).is_some(), "steady download cut off");
+    }
+    // A window below the floor (a stall or trickle) closes the connection.
+    deadline.progress(deadline.floor() as usize - 1);
+    now += limit;
+    assert!(deadline.check(now).is_none());
+    // Body completion re-arms a bounded head deadline including the drain allowance.
+    deadline.finish();
+    let finished = Instant::now();
+    assert!(deadline.check(finished + limit).is_some());
+    assert!(
+        deadline
+            .check(finished + limit + DRAIN + Duration::from_millis(5))
+            .is_none()
+    );
+}
+
+#[test]
+fn realtime_worker_saturation_closes_with_try_again_not_policy() {
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+    let http_runtime = disk_runtime();
+    let realtime_runtime = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(WORKERS)
+        .build()
+        .unwrap();
+    http_runtime.block_on(async {
+        let jobs = Arc::new(BlockingJobs::new(realtime_runtime.handle().clone()));
+        let (stop_tx, stop) = watch::channel(false);
+        let (started_tx, started_rx) = mpsc::channel();
+        let mut release = Vec::new();
+        let mut holders = Vec::new();
+        for _ in 0..WORKERS {
+            let (tx, rx) = mpsc::channel::<()>();
+            release.push(tx);
+            let started = started_tx.clone();
+            let pool = jobs.clone();
+            holders.push(tokio::spawn(async move {
+                pool.run(move || {
+                    started.send(()).unwrap();
+                    rx.recv().unwrap();
+                })
+                .await
+                .unwrap();
+            }));
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut started = 0;
+        while started < WORKERS {
+            while started_rx.try_recv().is_ok() {
+                started += 1;
+            }
+            assert!(Instant::now() < deadline);
+            tokio::task::yield_now().await;
+        }
+        let busy = realtime::admitted(&jobs, &stop, Duration::from_millis(100), || {
+            || -> Result<(), realtime::Refusal> { panic!("saturated pool must not run") }
+        })
+        .await;
+        assert_eq!(busy, Err(realtime::Refusal::Busy));
+        let code = realtime::Refusal::Busy.close_code();
+        assert_eq!(code, CloseCode::Again);
+        assert_eq!(u16::from(code), 1013);
+        for tx in release {
+            tx.send(()).unwrap();
+        }
+        for holder in holders {
+            holder.await.unwrap();
+        }
+        jobs.reap(true).await;
+        // Authority failures remain policy closes; free workers run the check.
+        let revoked = realtime::admitted(&jobs, &stop, Duration::from_secs(1), || {
+            || -> Result<(), realtime::Refusal> { Err(realtime::Refusal::Revoked) }
+        })
+        .await;
+        assert_eq!(revoked, Err(realtime::Refusal::Revoked));
+        assert_eq!(realtime::Refusal::Revoked.close_code(), CloseCode::Policy);
+        assert_eq!(
+            realtime::Refusal::Unavailable.close_code(),
+            CloseCode::Error
+        );
+        stop_tx.send(true).unwrap();
+        let stopping = realtime::admitted(&jobs, &stop, Duration::from_secs(1), || {
+            || -> Result<(), realtime::Refusal> { Ok(()) }
+        })
+        .await;
+        assert_eq!(stopping, Err(realtime::Refusal::Stopping));
+        assert_eq!(realtime::Refusal::Stopping.close_code(), CloseCode::Away);
+        jobs.reap(true).await;
+    });
+}
+
+#[test]
+fn tls_reload_reads_and_validates_without_holding_the_handshake_lock() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("cert.pem"),
+        include_bytes!("../tests/fixtures/test-only-server.pem"),
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("key.pem"),
+        include_bytes!("../tests/fixtures/test-only-server-key.pem"),
+    )
+    .unwrap();
+    let config = vesta_control::config::HostConfiguration::parse_toml(
+        b"schema-version = 1\n[paths]\nstate = 'state'\ngame = 'game'\nscan-roots = ['game']\nlaunch-definition = 'launch.toml'\n[pack]\nname = 'Fixture'\nversion = '1'\nrevision = 1\nminimum-revision = 1\nminecraft-version = '1.21.1'\n[pack-access]\nmode = 'minecraft'\n[listener]\nmode = 'tls'\nbind = '127.0.0.1'\nport = 25567\ncertificate = 'cert.pem'\nprivate-key = 'key.pem'\nmax-connections = 1\nmax-request-bytes = 1024\nrequest-timeout-seconds = 1\n",
+        temp.path(),
+        std::path::Path::new("host.toml"),
+    )
+    .unwrap();
+    let vesta_control::config::ListenerDescription::Tls(listener) = config.listener() else {
+        panic!("TLS fixture");
+    };
+    let material = tls::Material::new(listener).unwrap();
+    let before = material.fingerprint().unwrap();
+    let mut observed = false;
+    // The accept loop takes the state lock for every handshake. While the reload
+    // reads and parses PEM files, that lock must be free.
+    let changed = material
+        .reload_with(|listener| {
+            assert!(
+                material.state.try_lock().is_ok(),
+                "state locked during read"
+            );
+            assert!(material.config().is_ok());
+            observed = true;
+            tls::load(listener)
+        })
+        .unwrap();
+    assert!(observed && !changed);
+    // A failed read is still recorded and retains the previous identity.
+    assert!(
+        material
+            .reload_with(|_| {
+                assert!(material.state.try_lock().is_ok());
+                Err(TransportError::TlsMaterial)
+            })
+            .is_err()
+    );
+    assert_eq!(material.last_error(), Some(TransportError::TlsMaterial));
+    assert_eq!(material.fingerprint().unwrap(), before);
 }

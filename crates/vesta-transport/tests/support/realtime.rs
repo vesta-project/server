@@ -348,6 +348,47 @@ fn realtime_heartbeat_rechecks_policy_even_without_publication() {
 }
 
 #[test]
+fn realtime_heartbeat_delivers_releases_committed_outside_this_process_watch() {
+    let f = Fixture::new("minecraft-or-password", 8, 4096, 10);
+    let owner = f.owner();
+    let session = f.password_session(&owner);
+    let first = f.publish(&owner, UpdatePolicy::Optional, b"first", "1");
+    let mut peer = f.websocket(&f.ticket(&session, true), 1).unwrap();
+    assert_eq!(realtime_json(&mut peer)["revision"], 1);
+    // Another process commits through its own handle: the row appears in the shared
+    // database but this process's in-memory watch never fires.
+    let changes = f.host().releases().subscribe();
+    let db = f.host().database();
+    db.write(|c| {
+        c.execute(
+            "INSERT INTO pack_releases (server_id,revision,minimum_revision,display_version,format,sha256,size,published_at) VALUES (?,2,2,'2','zip',?,?,?)",
+            rusqlite::params![
+                db.server_id(),
+                first.artifact().sha256().to_hex(),
+                first.artifact().size() as i64,
+                db.clock().millis()
+            ],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(!changes.has_changed().unwrap());
+    peer.get_mut()
+        .sock
+        .set_read_timeout(Some(Duration::from_secs(12)))
+        .unwrap();
+    // Delivered on the next heartbeat, before the heartbeat notice itself.
+    assert_eq!(
+        realtime_json(&mut peer),
+        serde_json::json!({"type":"pack_update", "revision":2, "minimum_revision":2, "status":"update_required"})
+    );
+    assert_eq!(
+        realtime_json(&mut peer),
+        serde_json::json!({"type":"heartbeat"})
+    );
+}
+
+#[test]
 fn realtime_upgraded_socket_still_counts_against_listener_connection_limit() {
     let f = Fixture::new("minecraft-or-password", 1, 4096, 10);
     let owner = f.owner();

@@ -600,3 +600,23 @@ fn release_notifications_coalesce_to_latest_committed_revision_only() {
     assert!(!changes.has_changed().unwrap());
     assert_eq!(*changes.borrow(), 3);
 }
+
+#[test]
+fn release_notifications_are_keyed_by_the_canonical_state_directory() {
+    let f = Fixture::open();
+    let canonical = f.db.directory().path().to_owned();
+    let spelled = f
+        .temp
+        .path()
+        .join("game")
+        .join("..")
+        .join(".")
+        .join("private-state");
+    assert_ne!(canonical, spelled);
+    let one = notification_sender(&canonical).unwrap();
+    let two = notification_sender(&spelled).unwrap();
+    assert!(Arc::ptr_eq(&one, &two), "spellings must share one signal");
+    assert!(Arc::ptr_eq(&one, &f.releases.changes));
+    // A missing directory has no canonical identity and is refused, not keyed raw.
+    assert!(notification_sender(&f.temp.path().join("absent")).is_err());
+}

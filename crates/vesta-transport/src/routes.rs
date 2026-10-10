@@ -44,7 +44,11 @@ pub(super) fn fixed_refusal(path: &str) -> Option<Reply> {
     None
 }
 
-pub(super) async fn route(request: Request<Incoming>, state: Arc<Shared>) -> Reply {
+pub(super) async fn route(
+    request: Request<Incoming>,
+    state: Arc<Shared>,
+    peer: std::net::SocketAddr,
+) -> Reply {
     let path = request.uri().path().to_owned();
     let method = request.method().clone();
     let recognized = matches!(
@@ -147,7 +151,10 @@ pub(super) async fn route(request: Request<Incoming>, state: Arc<Shared>) -> Rep
     }
     state.jobs.reap(false).await;
     let host = state.host.clone();
-    let downloads = state.downloads.clone();
+    let downloads = Requester {
+        downloads: state.downloads.clone(),
+        peer: peer.ip(),
+    };
     let tls = state.tls.clone();
     state
         .jobs
@@ -165,6 +172,12 @@ pub(super) async fn route(request: Request<Incoming>, state: Arc<Shared>) -> Rep
         .await
 }
 
+/// Download admission for one request: the shared limiter and the socket peer.
+struct Requester {
+    downloads: Arc<super::Downloads<vesta_control::pack_access::RealtimeSession>>,
+    peer: std::net::IpAddr,
+}
+
 fn json(value: serde_json::Value) -> Reply {
     response(
         StatusCode::OK,
@@ -178,7 +191,7 @@ fn dispatch(
     query: Option<&str>,
     authorization: Option<&str>,
     bytes: &[u8],
-    downloads: Arc<tokio::sync::Semaphore>,
+    downloads: Requester,
     tls: Arc<crate::tls::Material>,
 ) -> Reply {
     match path {
@@ -311,21 +324,20 @@ fn dispatch(
         }
         "/api/v2/pack/artifact" => {
             let secret = authorization.unwrap_or("");
-            if !matches!(
-                host.with_policy(|p| host
-                    .sessions()
-                    .authenticate(secret, Instant::now(), p)
-                    .or_else(|_| host.sessions().redeem_ticket(secret, Instant::now(), p))),
-                Ok(Ok(_))
-            ) {
+            // A session bearer and its download tickets share one session reference.
+            let Ok(Ok((reference, _))) = host.with_policy(|p| {
+                host.sessions()
+                    .authenticate_reference(secret, Instant::now(), p)
+                    .or_else(|_| host.sessions().redeem_download(secret, Instant::now(), p))
+            }) else {
                 return error(StatusCode::UNAUTHORIZED, "pack_session_invalid");
-            }
+            };
             let release = match host.releases().current() {
                 Ok(Some(r)) => r,
                 Ok(None) => return error(StatusCode::NOT_FOUND, "pack_not_published"),
                 Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "pack_unavailable"),
             };
-            let Ok(permit) = downloads.try_acquire_owned() else {
+            let Some(permit) = downloads.downloads.acquire(reference, downloads.peer) else {
                 return error(StatusCode::SERVICE_UNAVAILABLE, "download_busy");
             };
             let artifact = release.artifact();

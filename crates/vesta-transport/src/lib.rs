@@ -66,6 +66,162 @@ type Reply = Response<ReplyBody>;
 const DOWNLOADS: usize = 2;
 const BODY_CHUNK: usize = 64 * 1024;
 const HANDSHAKES: usize = 8;
+/// Bytes per second a streaming artifact body must sustain, measured over each
+/// `request_timeout` window. A stalled or trickling peer loses its connection and
+/// with it every download permit held by its body and buffered chunks.
+const MIN_DOWNLOAD_RATE: u64 = 8 * 1024;
+/// After the final chunk is handed to Hyper, up to two chunks may still be queued
+/// for the peer; allow them to drain at the floor rate before the head deadline.
+const DRAIN: Duration = Duration::from_secs(2 * BODY_CHUNK as u64 / MIN_DOWNLOAD_RATE);
+
+/// Per-connection deadline. `request_timeout` bounds the TLS handshake, request
+/// heads and route handling; once an artifact body is streaming, total duration is
+/// unbounded but each window of `request_timeout` must deliver the floor rate.
+struct ConnectionDeadline {
+    limit: Duration,
+    phase: Mutex<Phase>,
+}
+enum Phase {
+    Request {
+        deadline: std::time::Instant,
+    },
+    Streaming {
+        window: std::time::Instant,
+        bytes: u64,
+    },
+}
+impl ConnectionDeadline {
+    fn new(limit: Duration) -> Self {
+        Self {
+            limit,
+            phase: Mutex::new(Phase::Request {
+                deadline: std::time::Instant::now() + limit,
+            }),
+        }
+    }
+    fn set(&self, phase: Phase) {
+        if let Ok(mut current) = self.phase.lock() {
+            *current = phase;
+        }
+    }
+    fn stream(&self) {
+        self.set(Phase::Streaming {
+            window: std::time::Instant::now(),
+            bytes: 0,
+        });
+    }
+    fn progress(&self, count: usize) {
+        if let Ok(mut phase) = self.phase.lock()
+            && let Phase::Streaming { bytes, .. } = &mut *phase
+        {
+            *bytes = bytes.saturating_add(count as u64);
+        }
+    }
+    fn finish(&self) {
+        self.set(Phase::Request {
+            deadline: std::time::Instant::now() + self.limit + DRAIN,
+        });
+    }
+    fn floor(&self) -> u64 {
+        let millis = u64::try_from(self.limit.as_millis()).unwrap_or(u64::MAX);
+        MIN_DOWNLOAD_RATE.saturating_mul(millis) / 1000
+    }
+    /// The next instant to re-check, or `None` once the connection must close.
+    fn check(&self, now: std::time::Instant) -> Option<std::time::Instant> {
+        let floor = self.floor();
+        let mut phase = self.phase.lock().ok()?;
+        match &mut *phase {
+            Phase::Request { deadline } => (now < *deadline).then_some(*deadline),
+            Phase::Streaming { window, bytes } => {
+                let end = *window + self.limit;
+                if now < end {
+                    return Some(end);
+                }
+                if *bytes < floor {
+                    return None;
+                }
+                *window = now;
+                *bytes = 0;
+                Some(now + self.limit)
+            }
+        }
+    }
+    async fn expired(&self) {
+        while let Some(wake) = self.check(std::time::Instant::now()) {
+            tokio::time::sleep_until(wake.into()).await;
+        }
+    }
+}
+
+/// Concurrent artifact downloads: a global cap plus one per pack session and one
+/// per peer IP, so a single player or address cannot hold the whole budget. The
+/// holder sets only contain entries backed by a live global permit, so they are
+/// bounded by `DOWNLOADS` and cleaned up when the permit drops.
+struct Downloads<S> {
+    global: Arc<Semaphore>,
+    holders: Arc<Mutex<Holders<S>>>,
+}
+struct Holders<S> {
+    sessions: std::collections::HashSet<S>,
+    peers: std::collections::HashSet<std::net::IpAddr>,
+}
+struct Holder<S: Eq + std::hash::Hash> {
+    holders: Arc<Mutex<Holders<S>>>,
+    session: S,
+    peer: std::net::IpAddr,
+}
+impl<S: Eq + std::hash::Hash> Drop for Holder<S> {
+    fn drop(&mut self) {
+        if let Ok(mut holders) = self.holders.lock() {
+            holders.sessions.remove(&self.session);
+            holders.peers.remove(&self.peer);
+        }
+    }
+}
+/// Held by the body and every chunk still owned by Hyper or the socket buffer.
+struct DownloadPermit {
+    // Declared first: holder slots are released before the global permit.
+    _holder: Option<Box<dyn Send + Sync>>,
+    _global: OwnedSemaphorePermit,
+}
+impl From<OwnedSemaphorePermit> for DownloadPermit {
+    fn from(global: OwnedSemaphorePermit) -> Self {
+        Self {
+            _holder: None,
+            _global: global,
+        }
+    }
+}
+impl<S: Clone + Eq + std::hash::Hash + Send + Sync + 'static> Downloads<S> {
+    fn new(global: usize) -> Self {
+        Self {
+            global: Arc::new(Semaphore::new(global)),
+            holders: Arc::new(Mutex::new(Holders {
+                sessions: std::collections::HashSet::with_capacity(global),
+                peers: std::collections::HashSet::with_capacity(global),
+            })),
+        }
+    }
+    fn acquire(&self, session: S, peer: std::net::IpAddr) -> Option<DownloadPermit> {
+        let peer = peer.to_canonical();
+        let mut holders = self.holders.lock().ok()?;
+        if holders.sessions.contains(&session) || holders.peers.contains(&peer) {
+            return None;
+        }
+        let global = self.global.clone().try_acquire_owned().ok()?;
+        holders.sessions.insert(session.clone());
+        holders.peers.insert(peer);
+        drop(holders);
+        Some(DownloadPermit {
+            _holder: Some(Box::new(Holder {
+                holders: self.holders.clone(),
+                session,
+                peer,
+            })),
+            _global: global,
+        })
+    }
+}
 
 enum ReplyBody {
     Bytes(Bytes),
@@ -74,6 +230,21 @@ enum ReplyBody {
 struct ArtifactBody {
     stream: Option<ArtifactStream>,
     pending: Option<JoinHandle<(ArtifactStream, io::Result<Bytes>)>>,
+    deadline: Option<Arc<ConnectionDeadline>>,
+}
+impl ArtifactBody {
+    /// Switch the connection from the request deadline to the throughput floor.
+    fn watch(&mut self, deadline: Arc<ConnectionDeadline>) {
+        deadline.stream();
+        self.deadline = Some(deadline);
+    }
+}
+impl Drop for ArtifactBody {
+    fn drop(&mut self) {
+        if let Some(deadline) = &self.deadline {
+            deadline.finish();
+        }
+    }
 }
 struct ArtifactStream {
     file: File,
@@ -81,13 +252,13 @@ struct ArtifactStream {
     expected_hash: [u8; 32],
     size: u64,
     remaining: u64,
-    permit: Arc<OwnedSemaphorePermit>,
+    permit: Arc<DownloadPermit>,
 }
 impl ArtifactBody {
     fn new(
         file: File,
         artifact: &vesta_control::packs::PublishedArtifact,
-        permit: OwnedSemaphorePermit,
+        permit: DownloadPermit,
     ) -> io::Result<Self> {
         // Hyper may never poll a zero-length body. Validate that identity now.
         if artifact.size() == 0 && Sha256::digest([])[..] != artifact.sha256().as_bytes()[..] {
@@ -103,6 +274,7 @@ impl ArtifactBody {
                 permit: Arc::new(permit),
             }),
             pending: None,
+            deadline: None,
         })
     }
 }
@@ -171,6 +343,11 @@ impl Body for ReplyBody {
                         if stream.remaining != 0 {
                             body.stream = Some(stream);
                         }
+                        // Hyper polls for another chunk only once its bounded write
+                        // buffer has room, so hand-off approximates peer progress.
+                        if let Some(deadline) = &body.deadline {
+                            deadline.progress(bytes.len());
+                        }
                         Poll::Ready(Some(Ok(Frame::data(bytes))))
                     }
                     Ok((_, Err(error))) => Poll::Ready(Some(Err(error))),
@@ -198,7 +375,7 @@ impl Body for ReplyBody {
 }
 struct DownloadOwner<T> {
     data: T,
-    _permit: Arc<OwnedSemaphorePermit>,
+    _permit: Arc<DownloadPermit>,
 }
 impl<T: AsRef<[u8]>> AsRef<[u8]> for DownloadOwner<T> {
     fn as_ref(&self) -> &[u8] {
@@ -360,7 +537,7 @@ struct Shared {
     limiter: Mutex<PeerRateLimiter>,
     jobs: BlockingJobs,
     realtime_jobs: BlockingJobs,
-    downloads: Arc<Semaphore>,
+    downloads: Arc<Downloads<vesta_control::pack_access::RealtimeSession>>,
     realtime: realtime::Sockets,
     stop: watch::Receiver<bool>,
 }
@@ -441,7 +618,7 @@ async fn serve(
             RatePolicy::new(60, Duration::from_secs(60), 1024, Duration::from_secs(120))
                 .expect("fixed rate policy"),
         )),
-        downloads: Arc::new(Semaphore::new(DOWNLOADS)),
+        downloads: Arc::new(Downloads::new(DOWNLOADS)),
         realtime: realtime::Sockets::new(),
         stop: stop.clone(),
         jobs: BlockingJobs::new(tokio::runtime::Handle::current()),
@@ -468,12 +645,21 @@ async fn serve(
                 let tls = TlsAcceptor::from(config); let state = shared.clone();
                 connections.spawn(async move {
                     let limit = state.timeout;
-                    let _ = tokio::time::timeout(limit, async move {
+                    // Handshake, heads and routing get `limit`; streamed artifact
+                    // bodies are bounded by the throughput floor instead. Expiry drops
+                    // the connection, its body and every download permit it holds.
+                    let deadline = Arc::new(ConnectionDeadline::new(limit));
+                    let watchdog = deadline.clone();
+                    let work = async move {
                         let Ok(stream) = tls.accept(socket).await else { return; };
                         drop(handshake);
-                        let service = service_fn(move |request| handle(request, peer, state.clone()));
+                        let service = service_fn(move |request| handle(request, peer, state.clone(), deadline.clone()));
                         let _ = http1::Builder::new().timer(TokioTimer::new()).header_read_timeout(limit).max_headers(64).max_buf_size(HEADER_BYTES).serve_connection(TokioIo::new(stream), service).with_upgrades().await;
-                    }).await;
+                    };
+                    tokio::select! {
+                        () = work => {}
+                        () = watchdog.expired() => {}
+                    }
                 });
             }
         }
@@ -493,6 +679,7 @@ async fn handle(
     request: Request<Incoming>,
     peer: SocketAddr,
     state: Arc<Shared>,
+    deadline: Arc<ConnectionDeadline>,
 ) -> Result<Reply, Infallible> {
     let rate = state
         .limiter
@@ -516,8 +703,13 @@ async fn handle(
         return Ok(reply);
     }
     let timeout = state.timeout;
-    let result = tokio::time::timeout(timeout, routes::route(request, state)).await;
-    Ok(result.unwrap_or_else(|_| error(StatusCode::REQUEST_TIMEOUT, "request_timeout")))
+    let result = tokio::time::timeout(timeout, routes::route(request, state, peer)).await;
+    let mut reply =
+        result.unwrap_or_else(|_| error(StatusCode::REQUEST_TIMEOUT, "request_timeout"));
+    if let ReplyBody::Artifact(body) = reply.body_mut() {
+        body.watch(deadline);
+    }
+    Ok(reply)
 }
 fn response(status: StatusCode, bytes: impl Into<Bytes>, content_type: &'static str) -> Reply {
     let bytes = bytes.into();

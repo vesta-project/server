@@ -38,23 +38,25 @@ use std::{
 use vesta_control::{config::TlsListener, host::read_tls_document};
 
 type Identity = (Option<SystemTime>, u64, [u8; 32]);
-struct Snapshot {
+pub(crate) struct Snapshot {
     config: Arc<rustls::ServerConfig>,
     fingerprint: String,
     documents: (Identity, Identity),
 }
-struct State {
+pub(crate) struct State {
     current: Snapshot,
     last_error: Option<TransportError>,
 }
 pub(crate) struct Material {
     listener: TlsListener,
-    state: Mutex<State>,
+    reload: Mutex<()>,
+    pub(crate) state: Mutex<State>,
 }
 impl Material {
     pub(crate) fn new(listener: &TlsListener) -> Result<Self, TransportError> {
         Ok(Self {
             listener: listener.clone(),
+            reload: Mutex::new(()),
             state: Mutex::new(State {
                 current: load(listener)?,
                 last_error: None,
@@ -72,11 +74,24 @@ impl Material {
             .map_or(Some(TransportError::TlsMaterial), |s| s.last_error)
     }
     // Serialize reloads so an older read cannot overwrite a newer successful reload.
-    // The protected reader caps each document at 256 KiB. No network/runtime work is
-    // held here; established TLS streams own their original configuration.
+    // The protected reader caps each document at 256 KiB. File reads and parsing run
+    // under the reload lock only; the state lock (taken by every accepted handshake)
+    // is held just to swap the validated snapshot. Established TLS streams own their
+    // original configuration.
     pub(crate) fn reload(&self) -> Result<bool, TransportError> {
+        self.reload_with(load)
+    }
+    pub(crate) fn reload_with(
+        &self,
+        load: impl FnOnce(&TlsListener) -> Result<Snapshot, TransportError>,
+    ) -> Result<bool, TransportError> {
+        let _serial = self
+            .reload
+            .lock()
+            .map_err(|_| TransportError::TlsMaterial)?;
+        let next = load(&self.listener);
         let mut state = self.lock()?;
-        match load(&self.listener) {
+        match next {
             Ok(next) => {
                 let changed = next.documents != state.current.documents;
                 if changed {
@@ -106,7 +121,7 @@ fn document(path: &Path) -> Result<(zeroize::Zeroizing<Vec<u8>>, Identity), Tran
     );
     Ok((bytes, identity))
 }
-fn load(listener: &TlsListener) -> Result<Snapshot, TransportError> {
+pub(crate) fn load(listener: &TlsListener) -> Result<Snapshot, TransportError> {
     let (certificates, certificate_identity) = document(listener.certificate())?;
     let (key, key_identity) = document(listener.private_key())?;
     if !complete_pem(&certificates, "CERTIFICATE", true)

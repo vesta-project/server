@@ -639,3 +639,58 @@ fn realtime_tickets_are_purpose_bound_single_use_and_recheck_live_sessions() {
         Err(PackAccessError::Invalid)
     );
 }
+
+#[test]
+fn download_admission_references_bind_session_and_its_tickets_to_one_slot() {
+    let admission = Admission::new(&[], &[]);
+    let policy = admission.policy(
+        PackAccessMode::Minecraft,
+        Some(properties(false, true)),
+        None,
+    );
+    let sessions = PackSessions::new(server(), SessionLimits::default());
+    let now = Instant::now();
+    let (secret, session) = sessions
+        .issue(PackGrant::Minecraft(player(PLAYER)), now)
+        .unwrap();
+    let (other, _) = sessions
+        .issue(PackGrant::Minecraft(player(STRANGER)), now)
+        .unwrap();
+    let (bearer, authenticated) = sessions
+        .authenticate_reference(secret.expose(), now, &policy)
+        .unwrap();
+    assert_eq!(authenticated, session);
+    let ticket = sessions
+        .issue_ticket(secret.expose(), now, &policy)
+        .unwrap();
+    let (redeemed, _) = sessions
+        .redeem_download(ticket.expose(), now, &policy)
+        .unwrap();
+    assert_eq!(bearer, redeemed);
+    assert_ne!(
+        bearer,
+        sessions
+            .authenticate_reference(other.expose(), now, &policy)
+            .unwrap()
+            .0
+    );
+    // Single use, purpose bound, and never a session bearer itself.
+    assert_eq!(
+        sessions.redeem_download(ticket.expose(), now, &policy),
+        Err(PackAccessError::Invalid)
+    );
+    let realtime = sessions
+        .issue_ticket_for(secret.expose(), TicketPurpose::Realtime, now, &policy)
+        .unwrap();
+    assert_eq!(
+        sessions.redeem_download(realtime.expose(), now, &policy),
+        Err(PackAccessError::Invalid)
+    );
+    let ticket = sessions
+        .issue_ticket(secret.expose(), now, &policy)
+        .unwrap();
+    assert_eq!(
+        sessions.authenticate_reference(ticket.expose(), now, &policy),
+        Err(PackAccessError::Invalid)
+    );
+}

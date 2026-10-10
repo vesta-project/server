@@ -16,7 +16,7 @@ use std::{
     cmp::Ordering,
     collections::HashMap,
     fmt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock, Weak},
 };
 use tokio::sync::watch;
@@ -617,15 +617,23 @@ mod tests;
 
 // Weak registry shares notifications even when trusted local composition opens a
 // second PackReleases handle. Entries die with their stores; no release queue is kept.
+// Keyed by the canonical directory (as file mutation admission is) so alternative
+// spellings of one database share a signal. Other processes are not covered here;
+// realtime sockets also compare the hosted release on every heartbeat.
 fn release_notifications(db: &StateDatabase) -> Result<Arc<watch::Sender<u64>>, ReleaseError> {
+    notification_sender(db.directory().path())
+}
+
+fn notification_sender(directory: &Path) -> Result<Arc<watch::Sender<u64>>, ReleaseError> {
     type Registry = HashMap<PathBuf, Weak<watch::Sender<u64>>>;
     static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
+    let key = std::fs::canonicalize(directory)
+        .map_err(|_| ReleaseError::from(StateError::new("state_dir_invalid")))?;
     let mut registry = REGISTRY
         .get_or_init(Mutex::default)
         .lock()
         .map_err(|_| corrupt())?;
     registry.retain(|_, sender| sender.strong_count() != 0);
-    let key = db.directory().path().to_owned();
     if let Some(sender) = registry.get(&key).and_then(Weak::upgrade) {
         return Ok(sender);
     }

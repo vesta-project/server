@@ -753,6 +753,28 @@ impl Fixture {
             .unwrap()
             .to_owned()
     }
+    /// A live password-grant session without an HTTP KDF round trip, for fixtures
+    /// whose request timeout is shorter than a debug-build password verification.
+    fn direct_session(&self, owner: &Subject) -> String {
+        self.host()
+            .pack_passwords()
+            .unwrap()
+            .set(
+                owner,
+                PasswordRevision::new(0).unwrap(),
+                &SecretPassword::try_from(PASSWORD.as_bytes().to_vec()).unwrap(),
+            )
+            .unwrap();
+        let (session, _) = self
+            .host()
+            .pack_sessions()
+            .issue(
+                vesta_control::pack_access::PackGrant::Password(PasswordRevision::new(1).unwrap()),
+                Instant::now(),
+            )
+            .unwrap();
+        session.expose().to_owned()
+    }
     fn raw(&self, request: &[u8]) -> WireReply {
         let mut stream = self.stream();
         stream.write_all(request).unwrap();
@@ -761,8 +783,32 @@ impl Fixture {
     }
 }
 
+/// Send an artifact request and consume the head; returns the body reader.
+fn artifact_head(f: &Fixture, credential: &str) -> (BufReader<TlsStream>, u16, usize) {
+    let mut stream = f.stream();
+    write!(stream, "GET /api/v2/pack/artifact HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {credential}\r\nConnection: close\r\n\r\n").unwrap();
+    stream.flush().unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let status = line.split_whitespace().nth(1).unwrap().parse().unwrap();
+    let mut length = 0;
+    loop {
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        if line == "\r\n" {
+            break;
+        }
+        assert!(!line.is_empty());
+        if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+            length = value.trim().parse().unwrap();
+        }
+    }
+    (reader, status, length)
+}
+
 #[test]
-fn slow_large_downloads_are_globally_bounded_and_cancel_releases_budget() {
+fn slow_large_downloads_are_bounded_and_cancel_releases_budget() {
     let f = Fixture::new("minecraft-or-password", 8, 4096, 30);
     let owner = f.owner();
     let session = f.password_session(&owner);
@@ -772,28 +818,34 @@ fn slow_large_downloads_are_globally_bounded_and_cancel_releases_budget() {
         &vec![b'x'; 16 * 1024 * 1024],
         "large",
     );
-    let mut receivers = Vec::new();
-    for _ in 0..2 {
-        let mut stream = f.stream();
-        write!(stream, "GET /api/v2/pack/artifact HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {session}\r\n\r\n").unwrap();
-        stream.flush().unwrap();
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        assert!(line.starts_with("HTTP/1.1 200"), "{line}");
-        loop {
-            line.clear();
-            reader.read_line(&mut line).unwrap();
-            if line == "\r\n" {
-                break;
-            }
-            assert!(!line.is_empty());
-        }
-        receivers.push(reader);
-    }
+    let (held, status, _) = artifact_head(&f, &session);
+    assert_eq!(status, 200);
+    // The same session (via bearer or its download ticket) cannot take a second slot.
     f.request("GET", "/api/v2/pack/artifact", b"", Some(&session))
         .error(503, "download_busy");
-    drop(receivers.pop());
+    let ticket = f
+        .request("POST", "/api/v2/pack/ticket", b"", Some(&session))
+        .json()["ticket"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.request("GET", "/api/v2/pack/artifact", b"", Some(&ticket))
+        .error(503, "download_busy");
+    // Another player's session from the same address is refused by the peer cap.
+    let other = f
+        .request(
+            "POST",
+            "/api/v2/auth/password",
+            &serde_json::to_vec(&serde_json::json!({"password":PASSWORD})).unwrap(),
+            None,
+        )
+        .json()["session"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.request("GET", "/api/v2/pack/artifact", b"", Some(&other))
+        .error(503, "download_busy");
+    drop(held);
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let mut stream = f.stream();
@@ -812,6 +864,78 @@ fn slow_large_downloads_are_globally_bounded_and_cancel_releases_budget() {
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+#[test]
+fn steady_download_outlives_request_timeout_and_completes() {
+    // request_timeout is 1s; the throttled reader needs several seconds.
+    let f = Fixture::new("minecraft-or-password", 8, 4096, 1);
+    let owner = f.owner();
+    let session = f.direct_session(&owner);
+    let payload: Vec<u8> = (0..4 * 1024 * 1024).map(|n| (n % 253) as u8).collect();
+    f.publish(&owner, UpdatePolicy::Optional, &payload, "slow-link");
+    let started = Instant::now();
+    let (mut reader, status, length) = artifact_head(&f, &session);
+    assert_eq!((status, length), (200, payload.len()));
+    let mut body = Vec::with_capacity(length);
+    let mut chunk = vec![0; 64 * 1024];
+    while body.len() < length {
+        let count = reader.read(&mut chunk).unwrap();
+        assert_ne!(count, 0, "download cut at {} of {length}", body.len());
+        body.extend_from_slice(&chunk[..count]);
+        // About 1 MiB/s: far above the floor, far below loopback speed.
+        std::thread::sleep(Duration::from_millis(60));
+    }
+    assert!(
+        started.elapsed() > Duration::from_secs(2),
+        "fixture did not outlast request_timeout"
+    );
+    assert_eq!(body, payload);
+}
+
+#[test]
+fn stalled_download_is_dropped_and_releases_its_session_slot() {
+    let f = Fixture::new("minecraft-or-password", 8, 4096, 1);
+    let owner = f.owner();
+    let session = f.direct_session(&owner);
+    // The largest pinned archive; the final read proves it never fully buffered.
+    let payload = vec![b's'; 16 * 1024 * 1024];
+    f.publish(&owner, UpdatePolicy::Optional, &payload, "stalled");
+    let (mut stalled, status, length) = artifact_head(&f, &session);
+    assert_eq!((status, length), (200, payload.len()));
+    f.request("GET", "/api/v2/pack/artifact", b"", Some(&session))
+        .error(503, "download_busy");
+    // Without reading, the throughput floor must drop the connection and permits.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (mut reader, status, _) = artifact_head(&f, &session);
+        if status == 200 {
+            drop(reader);
+            break;
+        }
+        let mut rest = Vec::new();
+        let _ = reader.read_to_end(&mut rest);
+        assert_eq!(status, 503);
+        assert!(
+            Instant::now() < deadline,
+            "stalled download retained its session slot"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    stalled
+        .get_mut()
+        .sock
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut received = 0;
+    let mut chunk = vec![0; 256 * 1024];
+    loop {
+        match stalled.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(count) => received += count,
+        }
+    }
+    assert!(received < length, "stalled response must not complete");
 }
 
 #[test]

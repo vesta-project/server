@@ -283,41 +283,87 @@ async fn send(socket: &mut Socket, message: Message) -> Result<(), ()> {
         .map_err(|_| ())?
         .map_err(|_| ())
 }
-async fn snapshot(
-    state: &Arc<Shared>,
-    reference: RealtimeSession,
-) -> Result<Option<PackRelease>, ()> {
-    // A broadcast wakes up to CONNECTIONS tasks at once. Wait within a fixed
-    // deadline for the shared two-worker budget instead of dropping healthy
-    // clients just because the other sockets are checking the same publication.
-    // These waiters are bounded by socket admission; no work queue is allocated.
-    tokio::time::timeout(SEND_TIMEOUT.min(state.timeout), async {
+/// Why a socket check could not produce a snapshot. Only an authority failure
+/// is a policy close; saturation and transient state errors are retryable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Refusal {
+    Stopping,
+    /// No realtime worker became free within the deadline (1013 Try Again Later).
+    Busy,
+    /// The session expired, was revoked or the policy no longer grants it.
+    Revoked,
+    /// Policy or release state could not be read (1011 Internal Error).
+    Unavailable,
+}
+impl Refusal {
+    pub(super) const fn close_code(self) -> CloseCode {
+        match self {
+            Self::Stopping => CloseCode::Away,
+            Self::Busy => CloseCode::Again,
+            Self::Revoked => CloseCode::Policy,
+            Self::Unavailable => CloseCode::Error,
+        }
+    }
+}
+
+/// Run `make()`'s action on the bounded realtime pool, waiting up to `deadline`
+/// for a free worker. A broadcast wakes up to CONNECTIONS tasks at once; waiting
+/// briefly avoids dropping healthy clients just because the other sockets are
+/// checking the same publication. Waiters are bounded by socket admission; no
+/// work queue is allocated.
+pub(super) async fn admitted<T, F>(
+    jobs: &super::BlockingJobs,
+    stop: &tokio::sync::watch::Receiver<bool>,
+    deadline: Duration,
+    make: impl Fn() -> F,
+) -> Result<T, Refusal>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, Refusal> + Send + 'static,
+{
+    tokio::time::timeout(deadline, async {
         loop {
-            if *state.stop.borrow() {
-                return Err(());
+            if *stop.borrow() {
+                return Err(Refusal::Stopping);
             }
-            state.realtime_jobs.reap(false).await;
-            let host = state.host.clone();
-            if let Ok(result) = state
-                .realtime_jobs
-                .run(move || {
-                    host.with_policy(|policy| {
-                        host.sessions()
-                            .recheck_realtime(reference, Instant::now(), policy)
-                    })
-                    .map_err(|_| ())?
-                    .map_err(|_| ())?;
-                    host.releases().current().map_err(|_| ())
-                })
-                .await
-            {
+            jobs.reap(false).await;
+            if let Ok(result) = jobs.run(make()).await {
                 return result;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
-    .map_err(|_| ())?
+    .map_err(|_| Refusal::Busy)?
+}
+
+async fn snapshot(
+    state: &Arc<Shared>,
+    reference: RealtimeSession,
+) -> Result<Option<PackRelease>, Refusal> {
+    admitted(
+        &state.realtime_jobs,
+        &state.stop,
+        SEND_TIMEOUT.min(state.timeout),
+        || {
+            let host = state.host.clone();
+            move || {
+                host.with_policy(|policy| {
+                    host.sessions()
+                        .recheck_realtime(reference, Instant::now(), policy)
+                })
+                .map_err(|_| Refusal::Unavailable)?
+                .map_err(|_| Refusal::Revoked)?;
+                host.releases().current().map_err(|_| Refusal::Unavailable)
+            }
+        },
+    )
+    .await
+}
+
+/// What a client acts on: a change to either value is a `pack_update`.
+fn observed(release: Option<&PackRelease>) -> (u64, u64) {
+    release.map_or((0, 0), |r| (r.revision(), r.minimum_revision()))
 }
 fn notice(kind: &str, release: Option<&PackRelease>, installed: u64) -> Message {
     // No hosted release has revision zero; the null status explicitly represents
@@ -343,8 +389,8 @@ async fn connected(
     let mut stop = state.stop.clone();
     let close = async {
         if *stop.borrow() { return CloseCode::Away; }
-        let Ok(release) = snapshot(&state, reference).await else { return CloseCode::Policy; };
-        let mut last_revision = release.as_ref().map_or(0, PackRelease::revision);
+        let release = match snapshot(&state, reference).await { Ok(release) => release, Err(refusal) => return refusal.close_code() };
+        let mut last = observed(release.as_ref());
         if send(&mut socket, notice("hello", release.as_ref(), installed)).await.is_err() { return CloseCode::Away; }
         let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + HEARTBEAT, HEARTBEAT);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -358,15 +404,21 @@ async fn connected(
                 _ = tokio::time::sleep_until((activity + IDLE).into()) => return CloseCode::Policy,
                 change = changes.changed() => {
                     if change.is_err() { return CloseCode::Away; }
-                    let Ok(release) = snapshot(&state, reference).await else { return CloseCode::Policy; };
-                    let revision = release.as_ref().map_or(0, PackRelease::revision);
-                    if revision != last_revision {
+                    let release = match snapshot(&state, reference).await { Ok(release) => release, Err(refusal) => return refusal.close_code() };
+                    if observed(release.as_ref()) != last {
                         if send(&mut socket, notice("pack_update", release.as_ref(), installed)).await.is_err() { return CloseCode::Away; }
-                        last_revision = revision;
+                        last = observed(release.as_ref());
                     }
                 }
                 _ = heartbeat.tick() => {
-                    if snapshot(&state, reference).await.is_err() { return CloseCode::Policy; }
+                    // The watch only covers publications in this process. Compare
+                    // the hosted release here too so another process's publish is
+                    // delivered within one heartbeat.
+                    let release = match snapshot(&state, reference).await { Ok(release) => release, Err(refusal) => return refusal.close_code() };
+                    if observed(release.as_ref()) != last {
+                        if send(&mut socket, notice("pack_update", release.as_ref(), installed)).await.is_err() { return CloseCode::Away; }
+                        last = observed(release.as_ref());
+                    }
                     if send(&mut socket, Message::Text("{\"type\":\"heartbeat\"}".to_owned())).await.is_err()
                         || send(&mut socket, Message::Ping(Vec::new())).await.is_err() { return CloseCode::Away; }
                 }
