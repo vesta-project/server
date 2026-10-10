@@ -128,7 +128,12 @@ impl fmt::Debug for LoadedArtifact {
 /// Trusted local composition over the canonical state directory.
 pub struct PackArtifacts {
     directory: ArtifactDirectory,
+    path: std::path::PathBuf,
 }
+
+#[path = "quarantine.rs"]
+mod quarantine;
+pub(super) use quarantine::recovery_required;
 impl fmt::Debug for PackArtifacts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("PackArtifacts[<redacted>]")
@@ -138,6 +143,10 @@ impl PackArtifacts {
     pub fn open(db: &StateDatabase) -> Result<Self, PackError> {
         Ok(Self {
             directory: db.directory().artifacts().map_err(state_error)?,
+            path: db
+                .directory()
+                .path()
+                .join(vesta_state::artifacts::ARTIFACTS_DIR),
         })
     }
 
@@ -256,31 +265,6 @@ impl PackArtifacts {
             .remove(&artifact.name()?)
             .map(|_| ())
             .map_err(state_error)
-    }
-
-    /// Remove every name this module created except `keep`. Foreign names are never
-    /// touched. Callers must serialize this against recording which artifact is hosted.
-    pub(crate) fn prune_except(
-        &self,
-        keep: Option<&PublishedArtifact>,
-    ) -> Result<PruneReport, PackError> {
-        let keep = keep.map(PublishedArtifact::name).transpose()?;
-        let mut report = PruneReport::default();
-        for name in self
-            .directory
-            .list(MAX_ARTIFACT_ENTRIES)
-            .map_err(state_error)?
-        {
-            if Some(&name) == keep.as_ref() || !owned_name(name.as_str()) {
-                continue;
-            }
-            match self.directory.remove(&name) {
-                Ok(true) => report.removed += 1,
-                Ok(false) => {}
-                Err(_) => report.retained += 1,
-            }
-        }
-        Ok(report)
     }
 
     /// Cheap presence check: a single-link file of the recorded size. Not a digest check.

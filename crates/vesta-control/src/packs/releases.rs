@@ -43,6 +43,8 @@ pub enum ReleaseError {
     /// The display version is lower than, or not comparable with, the hosted one.
     VersionNotIncreasing,
     InvalidVersion,
+    /// Quarantined bytes require retry on open or explicit operator recovery.
+    RecoveryRequired,
     Pack(PackError),
     Control(ControlError),
     State(StateError),
@@ -59,6 +61,7 @@ impl ReleaseError {
             Self::RevisionMismatch => "pack_release_revision_mismatch",
             Self::VersionNotIncreasing => "pack_release_version_not_increasing",
             Self::InvalidVersion => "pack_release_version_invalid",
+            Self::RecoveryRequired => "pack_prune_recovery_required",
             Self::Pack(error) => error.code(),
             Self::Control(error) => error.code(),
             Self::State(error) => error.code(),
@@ -228,12 +231,27 @@ impl fmt::Debug for PackReleases {
 }
 impl PackReleases {
     pub fn open(db: &StateDatabase) -> Result<Self, ReleaseError> {
-        Ok(Self {
+        let releases = Self {
             audit: AuditLog::new(db.clone())?,
             artifacts: PackArtifacts::open(db)?,
             db: db.clone(),
             changes: release_notifications(db)?,
-        })
+        };
+        // Verified committed audit + current hosted state decide crash recovery; the
+        // writer excludes an active prune from being mistaken for leftover work.
+        releases
+            .db
+            .write_with(|transaction| {
+                let connection = transaction.connection();
+                let hosted = current(connection, db.server_id())?;
+                releases.artifacts.recover_prunes(
+                    connection,
+                    db.server_id(),
+                    hosted.as_ref().map(PackRelease::artifact),
+                )
+            })
+            .map_err(ReleaseError::from)?;
+        Ok(releases)
     }
 
     /// Latest committed revision signal, shared by local stores for this database.
@@ -509,33 +527,60 @@ impl PackReleases {
     }
 
     /// Remove published artifacts other than the hosted release's, plus abandoned stages.
-    /// Runs inside a write transaction so no release can be recorded concurrently; an
-    /// unrecorded publication that loses its artifact here fails its own recording safely.
+    /// The writer only renames candidates to owned, no-replace quarantine names and
+    /// appends the success audit. Bytes are deleted only after commit. Failed audits or
+    /// commits restore this call's moved names; any failed restoration/completion is
+    /// explicit `pack_prune_recovery_required`, with leftover bytes recoverable on open.
+    /// An unrecorded publication moved here fails its own recording safely.
     pub fn prune(&self, subject: &Subject) -> Result<PruneReport, ReleaseError> {
-        let result = self.db.write_with(|transaction| {
-            let connection = transaction.connection();
-            self.authorize(connection, subject, false)?;
-            let current = current(connection, self.db.server_id())?;
-            let report = self
-                .artifacts
-                .prune_except(current.as_ref().map(PackRelease::artifact))?;
-            self.audit.append(
-                connection,
-                &AuditRecord::new(
-                    actor(subject)?,
-                    PRUNE.to_owned(),
-                    TARGET.to_owned(),
-                    "success".to_owned(),
-                    None,
-                    [
-                        ("removed".to_owned(), Some(report.removed.to_string())),
-                        ("retained".to_owned(), Some(report.retained.to_string())),
-                    ],
-                )?,
-            )?;
-            Ok(report)
-        });
-        self.audit_refusal(subject, PRUNE, result.map_err(ReleaseError::from))
+        let mut moved = Vec::new();
+        let result = self
+            .db
+            .write_with(|transaction| {
+                let connection = transaction.connection();
+                self.authorize(connection, subject, false)?;
+                let current = current(connection, self.db.server_id())?;
+                let operation = self.artifacts.prune_operation(connection)?;
+                let report = self.artifacts.quarantine_except(
+                    current.as_ref().map(PackRelease::artifact),
+                    &operation,
+                    &mut moved,
+                )?;
+                self.audit.append(
+                    connection,
+                    &AuditRecord::new(
+                        actor(subject)?,
+                        PRUNE.to_owned(),
+                        TARGET.to_owned(),
+                        "success".to_owned(),
+                        Some(operation),
+                        [
+                            ("removed".to_owned(), Some(report.removed.to_string())),
+                            ("retained".to_owned(), Some(report.retained.to_string())),
+                        ],
+                    )?,
+                )?;
+                Ok(report)
+            })
+            .map_err(ReleaseError::from);
+        match result {
+            Ok(report) => {
+                self.artifacts.complete_quarantines(&moved)?;
+                Ok(report)
+            }
+            Err(primary) => {
+                // Serialize restoration against startup recovery and new release writes.
+                // If rollback itself failed the outcome is ambiguous: leave all bytes
+                // quarantined for recovery from committed state, never guess or delete.
+                if matches!(primary, ReleaseError::Rollback { .. }) && !moved.is_empty() {
+                    return Err(super::publish::recovery_required());
+                }
+                self.db
+                    .write_with(|_| self.artifacts.restore_quarantines(&moved))
+                    .map_err(|_| super::publish::recovery_required())?;
+                self.audit_refusal(subject, PRUNE, Err(primary))
+            }
+        }
     }
 
     fn authorize(

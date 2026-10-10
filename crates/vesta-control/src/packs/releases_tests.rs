@@ -785,3 +785,226 @@ fn commit_failure_rolls_back_release_and_removes_its_new_artifact() {
     assert!(f.audit().is_empty());
     assert!(!changes.has_changed().unwrap());
 }
+
+fn prune_failure_candidates(f: &Fixture) -> PackRelease {
+    let historical = f
+        .publish(&f.owner, UpdatePolicy::Optional, "1", b"historical")
+        .unwrap();
+    f.publish(&f.owner, UpdatePolicy::Optional, "2", b"hosted")
+        .unwrap();
+    let directory = f.db.directory().path().join("artifacts");
+    std::fs::write(
+        directory.join(format!("stage-{}.tmp", "ab".repeat(16))),
+        b"abandoned",
+    )
+    .unwrap();
+    f.releases
+        .artifacts
+        .publish_archive(&f.archive(b"unrecorded"))
+        .unwrap();
+    historical
+}
+
+#[test]
+fn prune_audit_failure_restores_historical_unreferenced_and_stage_bytes() {
+    let f = Fixture::open();
+    let historical = prune_failure_candidates(&f);
+    let before = artifact_names(&f);
+    f.db.write(|c| {
+        c.execute_batch("CREATE TRIGGER fail_prune_audit BEFORE INSERT ON audit_events WHEN NEW.action='pack_release.prune' BEGIN SELECT RAISE(ABORT, 'fixture'); END;")?;
+        Ok(())
+    }).unwrap();
+    assert!(f.releases.prune(&f.owner).is_err());
+    assert_eq!(artifact_names(&f), before);
+    assert_eq!(
+        f.releases
+            .artifacts
+            .load(historical.artifact(), 64)
+            .unwrap()
+            .bytes(),
+        b"historical"
+    );
+    assert_eq!(
+        f.releases
+            .artifacts
+            .load(f.releases.current().unwrap().unwrap().artifact(), 64)
+            .unwrap()
+            .bytes(),
+        b"hosted"
+    );
+    assert!(
+        !AuditLog::new(f.db.clone())
+            .unwrap()
+            .page(0, 100)
+            .unwrap()
+            .iter()
+            .any(|entry| entry.action == PRUNE)
+    );
+}
+
+#[test]
+fn prune_deferred_commit_failure_restores_all_candidates_and_rolls_back_audit() {
+    let f = Fixture::open();
+    let historical = prune_failure_candidates(&f);
+    let before = artifact_names(&f);
+    f.db.write(|c| {
+        c.execute_batch(
+            "CREATE TABLE prune_commit_failure (principal TEXT REFERENCES principals(id) DEFERRABLE INITIALLY DEFERRED);
+             CREATE TRIGGER fail_prune_commit AFTER INSERT ON audit_events WHEN NEW.action='pack_release.prune' BEGIN
+                 INSERT INTO prune_commit_failure VALUES ('missing-fixture-principal');
+             END;",
+        )?;
+        Ok(())
+    }).unwrap();
+    refused(f.releases.prune(&f.owner), "state_commit_failed");
+    assert_eq!(artifact_names(&f), before);
+    assert_eq!(
+        f.releases
+            .artifacts
+            .load(historical.artifact(), 64)
+            .unwrap()
+            .bytes(),
+        b"historical"
+    );
+    assert!(
+        !AuditLog::new(f.db.clone())
+            .unwrap()
+            .page(0, 100)
+            .unwrap()
+            .iter()
+            .any(|entry| entry.action == PRUNE)
+    );
+}
+
+/// Deliberately skip the ordinary post-transaction completion/restoration to model
+/// process death. Filesystem moves survive, while SQL either commits or rolls back.
+fn crash_prune(f: &Fixture, commit: bool, include_hosted: bool) -> String {
+    let mut operation = String::new();
+    let mut moved = Vec::new();
+    let result = f.db.write_with(|transaction| {
+        let c = transaction.connection();
+        operation = f.releases.artifacts.prune_operation(c)?;
+        let hosted = current(c, f.db.server_id())?;
+        let report = f.releases.artifacts.quarantine_except(
+            if include_hosted {
+                None
+            } else {
+                hosted.as_ref().map(PackRelease::artifact)
+            },
+            &operation,
+            &mut moved,
+        )?;
+        if !commit {
+            return Err(ReleaseError::Conflict);
+        }
+        f.releases.audit.append(
+            c,
+            &AuditRecord::new(
+                actor(&f.owner)?,
+                PRUNE.to_owned(),
+                TARGET.to_owned(),
+                "success".to_owned(),
+                Some(operation.clone()),
+                [("removed".to_owned(), Some(report.removed.to_string()))],
+            )?,
+        )?;
+        Ok(())
+    });
+    assert_eq!(result.is_ok(), commit);
+    operation
+}
+
+#[test]
+fn reopen_restores_uncommitted_prune_including_unreferenced_bytes_and_stages() {
+    let f = Fixture::open();
+    let historical = prune_failure_candidates(&f);
+    let before = artifact_names(&f);
+    crash_prune(&f, false, false);
+    assert!(artifact_names(&f).iter().any(|name| name.starts_with("q-")));
+    let reopened = PackReleases::open(&f.db).unwrap();
+    assert_eq!(artifact_names(&f), before);
+    assert_eq!(
+        reopened
+            .artifacts
+            .load(historical.artifact(), 64)
+            .unwrap()
+            .bytes(),
+        b"historical"
+    );
+    PackReleases::open(&f.db).unwrap(); // recovery is idempotent
+    assert_eq!(artifact_names(&f), before);
+}
+
+#[test]
+fn reopen_completes_committed_prune_and_keeps_hosted_bytes() {
+    let f = Fixture::open();
+    let historical = prune_failure_candidates(&f);
+    crash_prune(&f, true, false);
+    let reopened = PackReleases::open(&f.db).unwrap();
+    assert_eq!(artifact_names(&f).len(), 1);
+    assert_eq!(
+        reopened
+            .artifacts
+            .load(historical.artifact(), 64)
+            .unwrap_err(),
+        PackError::NotPublished
+    );
+    assert_eq!(
+        reopened
+            .artifacts
+            .load(reopened.current().unwrap().unwrap().artifact(), 64)
+            .unwrap()
+            .bytes(),
+        b"hosted"
+    );
+    PackReleases::open(&f.db).unwrap();
+    assert_eq!(artifact_names(&f).len(), 1);
+}
+
+#[test]
+fn reopen_never_deletes_hosted_bytes_even_if_a_committed_leftover_names_them() {
+    let f = Fixture::open();
+    let hosted = f
+        .publish(&f.owner, UpdatePolicy::Optional, "1", b"hosted")
+        .unwrap();
+    crash_prune(&f, true, true);
+    let reopened = PackReleases::open(&f.db).unwrap();
+    assert_eq!(
+        reopened
+            .artifacts
+            .load(hosted.artifact(), 64)
+            .unwrap()
+            .bytes(),
+        b"hosted"
+    );
+    assert_eq!(artifact_names(&f).len(), 1);
+}
+
+#[test]
+fn reopen_reports_recovery_required_without_replacing_an_occupied_restore_target() {
+    let f = Fixture::open();
+    let historical = prune_failure_candidates(&f);
+    let operation = crash_prune(&f, false, false);
+    let original = format!("{}.zip", historical.artifact().sha256().to_hex());
+    let directory = f.db.directory().path().join("artifacts");
+    std::fs::write(directory.join(&original), b"conflicting replacement").unwrap();
+    refused(PackReleases::open(&f.db), "pack_prune_recovery_required");
+    assert_eq!(
+        std::fs::read(directory.join(&original)).unwrap(),
+        b"conflicting replacement"
+    );
+    assert_eq!(
+        std::fs::read(directory.join(format!("q-{operation}-{original}"))).unwrap(),
+        b"historical"
+    );
+    std::fs::remove_file(directory.join(&original)).unwrap();
+    let reopened = PackReleases::open(&f.db).unwrap();
+    assert_eq!(
+        reopened
+            .artifacts
+            .load(historical.artifact(), 64)
+            .unwrap()
+            .bytes(),
+        b"historical"
+    );
+}

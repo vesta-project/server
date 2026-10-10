@@ -6,6 +6,13 @@ use std::{fmt, net::IpAddr};
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "WireJoin")]
 pub struct JoinDescriptor {
+    // Legacy Java ServerInfo.required is intentionally not mapped. This descriptor
+    // only describes where a player may join; there is no backend-configured advisory
+    // requirement in the current model. Inventing a default would convey no useful
+    // information and could be mistaken for client enforcement or access authority.
+    // Pack compatibility is instead described by the release's minimum_revision;
+    // neither that signal nor join information grants authority. A future meaningful
+    // advisory requires an explicit backend configuration, not a client-supplied flag.
     address: String,
     port: u16,
     minecraft_version: String,
@@ -135,6 +142,7 @@ mod tests {
     fn decoding_rejects_unknown_duplicate_and_ambiguous_fields() {
         for input in [
             r#"{"address":"example.org","port":1,"minecraft_version":"1","url":"https://evil.org"}"#,
+            r#"{"address":"example.org","port":1,"minecraft_version":"1","required":true}"#,
             r#"{"address":"example.org","address":"evil.org","port":1,"minecraft_version":"1"}"#,
             r#"{"address":"example.org:1","port":1,"minecraft_version":"1"}"#,
             r#"{"address":"example.org","port":0,"minecraft_version":"1"}"#,
