@@ -231,6 +231,60 @@ impl FileBrowser {
         })
     }
 
+    /// Refuse provider work unless a current subject can write an eligible mod
+    /// leaf. The unknown provider filename does not justify unscoped authority.
+    pub(crate) fn check_content_admission(
+        &self,
+        subject: &Subject,
+        precondition: &WritePrecondition,
+    ) -> Result<()> {
+        let capability = match precondition {
+            WritePrecondition::Absent => Capability::FilesCreate,
+            WritePrecondition::Matches(_) => Capability::FilesOverwrite,
+        };
+        let directory = RelativePath::parse("mods")?;
+        self.db
+            .read_with(|snapshot| {
+                let policy = identity::policy_in(
+                    snapshot.connection(),
+                    self.db.server_id(),
+                    self.db.clock().millis(),
+                    Some(subject),
+                )?;
+                let check = |resource: &Resource| match policy
+                    .check_any_direct_child(capability, resource, ".jar")
+                {
+                    identity::Decision::Allow => Ok(()),
+                    identity::Decision::Deny(reason) => {
+                        Err(FileError::from(ControlError::forbidden(reason)))
+                    }
+                };
+                check(&directory.resource())?;
+                let checked = self.root.resolve(Some(&directory))?;
+                if !checked.metadata.is_dir() {
+                    return Err(FileError::NotDirectory);
+                }
+                check(&checked.resource)
+            })
+            .map_err(FileError::from)
+    }
+
+    /// Early download admission only; `write` rechecks authority in its completion
+    /// transaction. This grants no durable authority across a network fetch.
+    pub(crate) fn check_write_authority(
+        &self,
+        subject: &Subject,
+        path: &RelativePath,
+        precondition: &WritePrecondition,
+    ) -> Result<()> {
+        let capability = match precondition {
+            WritePrecondition::Absent => Capability::FilesCreate,
+            WritePrecondition::Matches(_) => Capability::FilesOverwrite,
+        };
+        self.authorized_parent(subject, path, capability)
+            .map(|_| ())
+    }
+
     pub fn with_trash_policy(mut self, policy: TrashPolicy) -> Self {
         self.trash_policy = policy;
         self

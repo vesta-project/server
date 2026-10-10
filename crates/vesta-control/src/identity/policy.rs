@@ -182,6 +182,50 @@ impl PolicySnapshot {
         }
         Decision::Deny(DenyReason::NotGranted)
     }
+    /// Network admission before a server-resolved leaf name is known. Establishes
+    /// only that at least one direct child with this suffix is currently writable;
+    /// the resolved name must still pass the ordinary exact-resource check.
+    pub(crate) fn check_any_direct_child(
+        &self,
+        capability: Capability,
+        directory: &Resource,
+        suffix: &str,
+    ) -> Decision {
+        if !self.has_current_identity() {
+            return Decision::Deny(DenyReason::NoIdentity);
+        }
+        let prefix = if directory.is_root() {
+            String::new()
+        } else {
+            format!("{}/", directory.as_str())
+        };
+        for grant in self.allows.iter().filter(|g| g.capability() == capability) {
+            let text = grant.scope().text();
+            // Exact leaf grants must not be lost by checking only the directory.
+            if let Some(leaf) = text.strip_prefix(&prefix)
+                && !leaf.contains('/')
+                && leaf.to_ascii_lowercase().ends_with(suffix)
+                && let Ok(resource) = Resource::parse(&text)
+                && self.check(capability, Some(&resource)).allowed()
+            {
+                return Decision::Allow;
+            }
+        }
+        // A broad grant permits every child. Each non-covering deny can rule out
+        // at most one of these distinct direct-child witnesses; N+1 is sufficient.
+        // Covering subtree/all denies will refuse every witness through `check`.
+        for index in 0..=self.denies.len() {
+            let Ok(resource) = Resource::parse(&format!("{prefix}vesta-admission-{index}{suffix}"))
+            else {
+                return Decision::Deny(DenyReason::InvalidResource);
+            };
+            if self.check(capability, Some(&resource)).allowed() {
+                return Decision::Allow;
+            }
+        }
+        Decision::Deny(DenyReason::NotGranted)
+    }
+
     pub fn holds_entirely(&self, capability: Capability, scope: &ResourceScope) -> bool {
         if !self.has_current_identity()
             || !self.tier_permits(capability)

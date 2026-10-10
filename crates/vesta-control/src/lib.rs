@@ -7,6 +7,7 @@
 
 pub mod admission;
 pub mod config;
+pub mod content;
 pub mod files;
 pub mod host;
 pub mod identity;
