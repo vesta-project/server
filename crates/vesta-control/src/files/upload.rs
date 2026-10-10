@@ -175,6 +175,12 @@ impl FileBrowser {
     }
 
     /// Returns current staged length, including on a byte-identical duplicate range.
+    ///
+    /// The staged length is always the stage file's actual length, never a separately
+    /// recorded counter. If a write fails partway, the persisted prefix stays; a retry
+    /// at an offset at or below that length is accepted only when every overlapping
+    /// byte matches, and then only the remainder is appended and synced. A mismatch
+    /// is a conflict; a gap (offset beyond the length) is a conflict.
     pub fn append(
         &self,
         subject: &Subject,
@@ -205,24 +211,35 @@ impl FileBrowser {
                 if length > upload.total {
                     return Err(FileError::TooLarge);
                 }
-                if offset != length {
-                    if offset < length && end <= length {
-                        file.seek(SeekFrom::Start(offset))
-                            .map_err(super::io_error)?;
-                        let mut previous = vec![0; bytes.len()];
-                        file.read_exact(&mut previous).map_err(super::io_error)?;
-                        if previous == bytes {
-                            // A previous append may have written bytes but failed its flush.
-                            file.sync_all().map_err(super::io_error)?;
-                            return Ok(length);
-                        }
-                    }
+                if offset > length {
                     return Err(FileError::Conflict(None));
                 }
-                require_space(self.db.directory().path(), bytes.len() as u64)?;
+                // Bytes already staged in [offset, min(end, length)) must match exactly.
+                // This covers byte-identical duplicates and a retry after an earlier
+                // append persisted only a prefix of its chunk before failing.
+                let overlap =
+                    usize::try_from(length.min(end) - offset).map_err(|_| FileError::TooLarge)?;
+                if overlap > 0 {
+                    file.seek(SeekFrom::Start(offset))
+                        .map_err(super::io_error)?;
+                    let mut previous = vec![0; overlap];
+                    file.read_exact(&mut previous).map_err(super::io_error)?;
+                    if previous != bytes[..overlap] {
+                        return Err(FileError::Conflict(None));
+                    }
+                }
+                let remainder = &bytes[overlap..];
+                if remainder.is_empty() {
+                    // A previous append may have written bytes but failed its flush.
+                    file.sync_all().map_err(super::io_error)?;
+                    return Ok(length);
+                }
+                require_space(self.db.directory().path(), remainder.len() as u64)?;
                 file.seek(SeekFrom::Start(length))
                     .map_err(super::io_error)?;
-                file.write_all(bytes).map_err(super::io_error)?;
+                // On failure no truncation is attempted: the next call re-reads the
+                // file's actual length and verifies any persisted prefix above.
+                file.write_all(remainder).map_err(super::io_error)?;
                 file.sync_all().map_err(super::io_error)?;
                 Ok(end)
             })

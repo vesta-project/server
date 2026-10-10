@@ -73,6 +73,25 @@ impl Fixture {
             .unwrap()
             .unwrap()
     }
+    fn stage_path(&self, id: &UploadId) -> PathBuf {
+        self.db
+            .directory()
+            .path()
+            .join("uploads")
+            .join(id.name().unwrap().as_str())
+    }
+    fn stage_bytes(&self, id: &UploadId) -> Vec<u8> {
+        fs::read(self.stage_path(id)).unwrap()
+    }
+    /// Writes bytes directly to the end of the stage, as a failed partial append would.
+    fn persist_prefix(&self, id: &UploadId, bytes: &[u8]) {
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(self.stage_path(id))
+            .unwrap();
+        file.write_all(bytes).unwrap();
+        file.sync_all().unwrap();
+    }
 }
 fn path() -> RelativePath {
     RelativePath::parse("config/upload.toml").unwrap()
@@ -131,9 +150,76 @@ fn wrong_offset_and_different_duplicates_conflict_identical_duplicates_succeed()
     assert_eq!(f.files.append(&f.owner, &id, 0, b"abc").unwrap(), 3);
     assert_eq!(f.files.append(&f.owner, &id, 1, b"b").unwrap(), 3);
     code(f.files.append(&f.owner, &id, 0, b"xyz"), "file_conflict");
-    code(f.files.append(&f.owner, &id, 2, b"cd"), "file_conflict");
+    // An overlapping chunk whose staged bytes differ conflicts without writing.
+    code(f.files.append(&f.owner, &id, 2, b"xd"), "file_conflict");
+    assert_eq!(f.stage_bytes(&id), b"abc");
     f.files.append(&f.owner, &id, 3, b"def").unwrap();
     f.files.finish(&f.owner, &id).unwrap();
+}
+
+#[test]
+fn retry_after_partially_persisted_chunk_appends_only_the_remainder() {
+    let f = Fixture::open();
+    let id = f.begin(b"abcdef");
+    assert_eq!(f.files.append(&f.owner, &id, 0, b"ab").unwrap(), 2);
+    // Simulate write_all failing after persisting a prefix of chunk "cdef".
+    f.persist_prefix(&id, b"cd");
+    assert_eq!(f.files.append(&f.owner, &id, 2, b"cdef").unwrap(), 6);
+    assert_eq!(f.stage_bytes(&id), b"abcdef");
+    f.files.finish(&f.owner, &id).unwrap();
+    assert_eq!(
+        fs::read(f.game.join("config/upload.toml")).unwrap(),
+        b"abcdef"
+    );
+    assert_eq!((f.rows(), f.stages()), (0, 0));
+}
+
+#[test]
+fn retry_after_partial_first_chunk_resumes_from_offset_zero() {
+    let f = Fixture::open();
+    let id = f.begin(b"abcdef");
+    f.persist_prefix(&id, b"a");
+    assert_eq!(f.files.append(&f.owner, &id, 0, b"abc").unwrap(), 3);
+    assert_eq!(f.files.append(&f.owner, &id, 3, b"def").unwrap(), 6);
+    f.files.finish(&f.owner, &id).unwrap();
+    assert_eq!(
+        fs::read(f.game.join("config/upload.toml")).unwrap(),
+        b"abcdef"
+    );
+}
+
+#[test]
+fn retry_over_mismatched_partial_prefix_conflicts_without_writing() {
+    let f = Fixture::open();
+    let id = f.begin(b"abcdef");
+    f.files.append(&f.owner, &id, 0, b"ab").unwrap();
+    f.persist_prefix(&id, b"cd");
+    code(f.files.append(&f.owner, &id, 2, b"cXef"), "file_conflict");
+    code(f.files.append(&f.owner, &id, 1, b"Xcde"), "file_conflict");
+    assert_eq!(f.stage_bytes(&id), b"abcd");
+    // A gap past the staged length still conflicts; past total is still too large.
+    code(f.files.append(&f.owner, &id, 5, b"f"), "file_conflict");
+    code(f.files.append(&f.owner, &id, 2, b"cdefg"), "file_too_large");
+    assert_eq!(f.stage_bytes(&id), b"abcd");
+    // The correct retry still completes the upload.
+    assert_eq!(f.files.append(&f.owner, &id, 2, b"cdef").unwrap(), 6);
+    f.files.finish(&f.owner, &id).unwrap();
+}
+
+#[test]
+fn partial_prefix_retry_still_requires_ownership_and_live_upload() {
+    let f = Fixture::open();
+    let id = f.begin(b"abcdef");
+    f.persist_prefix(&id, b"abc");
+    let other = seed(&f.db);
+    code(f.files.append(&other, &id, 0, b"abcdef"), "file_not_found");
+    assert_eq!(f.stage_bytes(&id), b"abc");
+    f.clock.0.store(START + 3_600_000, Ordering::SeqCst);
+    code(
+        f.files.append(&f.owner, &id, 0, b"abcdef"),
+        "file_not_found",
+    );
+    assert_eq!(f.stage_bytes(&id), b"abc");
 }
 
 #[test]
