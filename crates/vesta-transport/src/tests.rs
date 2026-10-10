@@ -484,7 +484,7 @@ fn connection_deadline_bounds_heads_but_streams_by_throughput_floor() {
     let limit = Duration::from_secs(2);
     let deadline = ConnectionDeadline::new(limit);
     let start = Instant::now();
-    // Handshake, head and routing are bounded by request_timeout.
+    // Handshake and first head are bounded by request_timeout.
     assert!(deadline.check(start).is_some());
     assert!(
         deadline
@@ -503,7 +503,7 @@ fn connection_deadline_bounds_heads_but_streams_by_throughput_floor() {
     deadline.progress(deadline.floor() as usize - 1);
     now += limit;
     assert!(deadline.check(now).is_none());
-    // Body completion re-arms a bounded head deadline including the drain allowance.
+    // Body completion arms a bounded final-flush deadline with a drain allowance.
     deadline.finish();
     let finished = Instant::now();
     assert!(deadline.check(finished + limit).is_some());
@@ -512,6 +512,68 @@ fn connection_deadline_bounds_heads_but_streams_by_throughput_floor() {
             .check(finished + limit + DRAIN + Duration::from_millis(5))
             .is_none()
     );
+}
+
+#[test]
+fn ordinary_response_stays_timed_until_flush_and_partial_heads_do_not_rearm() {
+    let deadline = ConnectionDeadline::new(Duration::from_secs(2));
+    deadline.request();
+    let request_end = deadline.check(Instant::now()).unwrap();
+    deadline.flushed();
+    assert_eq!(deadline.check(Instant::now()), Some(request_end));
+    deadline.response_complete();
+    assert!(matches!(
+        *deadline.phase.lock().unwrap(),
+        Phase::Request { .. }
+    ));
+    deadline.flushed();
+    assert!(matches!(
+        *deadline.phase.lock().unwrap(),
+        Phase::Idle { .. }
+    ));
+    deadline.read();
+    let head_end = deadline.check(Instant::now()).unwrap();
+    deadline.read();
+    deadline.request();
+    assert_eq!(deadline.check(Instant::now()), Some(head_end));
+    assert!(deadline.check(head_end).is_none());
+}
+
+#[test]
+fn expired_idle_or_head_cannot_be_revived_by_reads_dispatch_or_streaming() {
+    let deadline = ConnectionDeadline::new(Duration::from_secs(1));
+    let past = Instant::now() - Duration::from_secs(1);
+    for phase in [
+        Phase::Idle { deadline: past },
+        Phase::Request {
+            deadline: past,
+            complete: true,
+        },
+    ] {
+        *deadline.phase.lock().unwrap() = phase;
+        deadline.read();
+        deadline.request();
+        deadline.stream();
+        deadline.finish();
+        deadline.flushed();
+        assert!(deadline.check(Instant::now()).is_none());
+    }
+}
+
+#[tokio::test]
+async fn watchdog_wakes_when_artifact_drain_changes_to_shorter_idle_deadline() {
+    let deadline = Arc::new(ConnectionDeadline::new(Duration::from_millis(40)));
+    deadline.stream();
+    deadline.finish();
+    let watched = deadline.clone();
+    let watchdog = tokio::spawn(async move { watched.expired().await });
+    // Let it start sleeping on the much longer artifact-drain allowance.
+    tokio::task::yield_now().await;
+    deadline.flushed();
+    tokio::time::timeout(Duration::from_secs(1), watchdog)
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 #[test]

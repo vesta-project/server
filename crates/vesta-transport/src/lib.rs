@@ -30,7 +30,7 @@ use hyper::{
     server::conn::http1,
     service::service_fn,
 };
-use hyper_util::rt::{TokioIo, TokioTimer};
+use hyper_util::rt::TokioIo;
 use sha2::{Digest, Sha256};
 use std::{
     convert::Infallible,
@@ -48,8 +48,9 @@ use std::{
     io::{self, Read},
 };
 use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpListener,
-    sync::{OwnedSemaphorePermit, Semaphore, oneshot, watch},
+    sync::{Notify, OwnedSemaphorePermit, Semaphore, oneshot, watch},
     task::{JoinHandle, JoinSet},
 };
 use tokio_rustls::TlsAcceptor;
@@ -71,18 +72,33 @@ const HANDSHAKES: usize = 8;
 /// with it every download permit held by its body and buffered chunks.
 const MIN_DOWNLOAD_RATE: u64 = 8 * 1024;
 /// After the final chunk is handed to Hyper, up to two chunks may still be queued
-/// for the peer; allow them to drain at the floor rate before the head deadline.
+/// for the peer; allow them to drain at the floor rate before the flush deadline.
 const DRAIN: Duration = Duration::from_secs(2 * BODY_CHUNK as u64 / MIN_DOWNLOAD_RATE);
 
-/// Per-connection deadline. `request_timeout` bounds the TLS handshake, request
-/// heads and route handling; once an artifact body is streaming, total duration is
-/// unbounded but each window of `request_timeout` must deliver the floor rate.
+/// Bound reuse even when every request and idle interval stays within its limit.
+const MAX_REQUESTS: usize = 32;
+
+/// Separate handshake/first-head, request, idle and artifact throughput budgets.
+/// Each uses `request_timeout`; downloads have no total-duration cap. Later
+/// requests start at their first read, not at head completion: partial reads never
+/// refresh that budget. Responses stay timed until their final socket flush.
 struct ConnectionDeadline {
     limit: Duration,
     phase: Mutex<Phase>,
+    changed: Notify,
 }
 enum Phase {
+    FirstHead {
+        deadline: std::time::Instant,
+    },
+    Idle {
+        deadline: std::time::Instant,
+    },
     Request {
+        deadline: std::time::Instant,
+        complete: bool,
+    },
+    Drain {
         deadline: std::time::Instant,
     },
     Streaming {
@@ -94,21 +110,71 @@ impl ConnectionDeadline {
     fn new(limit: Duration) -> Self {
         Self {
             limit,
-            phase: Mutex::new(Phase::Request {
+            phase: Mutex::new(Phase::FirstHead {
                 deadline: std::time::Instant::now() + limit,
             }),
+            changed: Notify::new(),
         }
     }
-    fn set(&self, phase: Phase) {
-        if let Ok(mut current) = self.phase.lock() {
-            *current = phase;
+    fn read(&self) {
+        if let Ok(mut phase) = self.phase.lock()
+            && let Phase::Idle { deadline } = *phase
+            && std::time::Instant::now() < deadline
+        {
+            *phase = Phase::Request {
+                deadline: std::time::Instant::now() + self.limit,
+                complete: false,
+            };
+            self.changed.notify_one();
+        }
+    }
+    fn request(&self) {
+        if let Ok(mut phase) = self.phase.lock() {
+            // Hyper can already have the next head buffered (pipelining). That
+            // request starts when dispatched; a head read from the socket keeps
+            // the earlier read deadline. Never revive an expired head or idle slot.
+            let now = std::time::Instant::now();
+            if matches!(*phase, Phase::FirstHead { deadline } | Phase::Idle { deadline } if now < deadline)
+            {
+                *phase = Phase::Request {
+                    deadline: now + self.limit,
+                    complete: false,
+                };
+                self.changed.notify_one();
+            }
+        }
+    }
+    fn response_complete(&self) {
+        if let Ok(mut phase) = self.phase.lock()
+            && let Phase::Request { complete, .. } = &mut *phase
+        {
+            *complete = true;
+        }
+    }
+    fn flushed(&self) {
+        if let Ok(mut phase) = self.phase.lock() {
+            let now = std::time::Instant::now();
+            if matches!(*phase, Phase::Request { deadline, complete: true } | Phase::Drain { deadline } if now < deadline)
+            {
+                *phase = Phase::Idle {
+                    deadline: now + self.limit,
+                };
+                self.changed.notify_one();
+            }
         }
     }
     fn stream(&self) {
-        self.set(Phase::Streaming {
-            window: std::time::Instant::now(),
-            bytes: 0,
-        });
+        if let Ok(mut phase) = self.phase.lock() {
+            let now = std::time::Instant::now();
+            if matches!(*phase, Phase::FirstHead { deadline } | Phase::Request { deadline, .. } if now < deadline)
+            {
+                *phase = Phase::Streaming {
+                    window: now,
+                    bytes: 0,
+                };
+                self.changed.notify_one();
+            }
+        }
     }
     fn progress(&self, count: usize) {
         if let Ok(mut phase) = self.phase.lock()
@@ -118,9 +184,14 @@ impl ConnectionDeadline {
         }
     }
     fn finish(&self) {
-        self.set(Phase::Request {
-            deadline: std::time::Instant::now() + self.limit + DRAIN,
-        });
+        if let Ok(mut phase) = self.phase.lock()
+            && matches!(*phase, Phase::Streaming { .. })
+        {
+            *phase = Phase::Drain {
+                deadline: std::time::Instant::now() + self.limit + DRAIN,
+            };
+            self.changed.notify_one();
+        }
     }
     fn floor(&self) -> u64 {
         let millis = u64::try_from(self.limit.as_millis()).unwrap_or(u64::MAX);
@@ -131,7 +202,10 @@ impl ConnectionDeadline {
         let floor = self.floor();
         let mut phase = self.phase.lock().ok()?;
         match &mut *phase {
-            Phase::Request { deadline } => (now < *deadline).then_some(*deadline),
+            Phase::FirstHead { deadline }
+            | Phase::Idle { deadline }
+            | Phase::Request { deadline, .. }
+            | Phase::Drain { deadline } => (now < *deadline).then_some(*deadline),
             Phase::Streaming { window, bytes } => {
                 let end = *window + self.limit;
                 if now < end {
@@ -148,8 +222,51 @@ impl ConnectionDeadline {
     }
     async fn expired(&self) {
         while let Some(wake) = self.check(std::time::Instant::now()) {
-            tokio::time::sleep_until(wake.into()).await;
+            tokio::select! {
+                () = tokio::time::sleep_until(wake.into()) => {},
+                () = self.changed.notified() => {},
+            }
         }
+    }
+}
+
+/// Observe plaintext reads and final response flushes without parsing HTTP here.
+/// Hyper still owns head parsing, buffering, backpressure and protocol upgrades.
+struct DeadlineIo<T> {
+    inner: T,
+    deadline: Arc<ConnectionDeadline>,
+}
+impl<T: AsyncRead + Unpin> AsyncRead for DeadlineIo<T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if matches!(result, Poll::Ready(Ok(()))) && buf.filled().len() > before {
+            self.deadline.read();
+        }
+        result
+    }
+}
+impl<T: AsyncWrite + Unpin> AsyncWrite for DeadlineIo<T> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let result = Pin::new(&mut self.inner).poll_flush(cx);
+        if matches!(result, Poll::Ready(Ok(()))) {
+            self.deadline.flushed();
+        }
+        result
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }
 
@@ -225,7 +342,28 @@ impl<S: Clone + Eq + std::hash::Hash + Send + Sync + 'static> Downloads<S> {
 
 enum ReplyBody {
     Bytes(Bytes),
+    TimedBytes {
+        bytes: Bytes,
+        deadline: Arc<ConnectionDeadline>,
+    },
     Artifact(Box<ArtifactBody>),
+}
+impl ReplyBody {
+    fn watch(&mut self, deadline: Arc<ConnectionDeadline>) {
+        match self {
+            Self::Bytes(bytes) => {
+                if bytes.is_empty() {
+                    deadline.response_complete();
+                }
+                *self = Self::TimedBytes {
+                    bytes: std::mem::take(bytes),
+                    deadline,
+                };
+            }
+            Self::Artifact(body) => body.watch(deadline),
+            Self::TimedBytes { .. } => unreachable!("response is watched once"),
+        }
+    }
 }
 struct ArtifactBody {
     stream: Option<ArtifactStream>,
@@ -318,6 +456,16 @@ impl Body for ReplyBody {
                 let count = bytes.len().min(BODY_CHUNK);
                 Poll::Ready(Some(Ok(Frame::data(bytes.split_to(count)))))
             }
+            Self::TimedBytes { bytes, deadline } => {
+                let frame = (!bytes.is_empty()).then(|| {
+                    let count = bytes.len().min(BODY_CHUNK);
+                    Frame::data(bytes.split_to(count))
+                });
+                if bytes.is_empty() {
+                    deadline.response_complete();
+                }
+                Poll::Ready(frame.map(Ok))
+            }
             Self::Artifact(body) => {
                 if body.pending.is_none() {
                     let Some(mut stream) = body.stream.take() else {
@@ -358,7 +506,7 @@ impl Body for ReplyBody {
     }
     fn is_end_stream(&self) -> bool {
         match self {
-            Self::Bytes(bytes) => bytes.is_empty(),
+            Self::Bytes(bytes) | Self::TimedBytes { bytes, .. } => bytes.is_empty(),
             Self::Artifact(body) => {
                 body.pending.is_none() && body.stream.as_ref().is_none_or(|s| s.remaining == 0)
             }
@@ -366,7 +514,9 @@ impl Body for ReplyBody {
     }
     fn size_hint(&self) -> SizeHint {
         match self {
-            Self::Bytes(bytes) => SizeHint::with_exact(bytes.len() as u64),
+            Self::Bytes(bytes) | Self::TimedBytes { bytes, .. } => {
+                SizeHint::with_exact(bytes.len() as u64)
+            }
             // Content-Length is set from the checked published size. Do not claim
             // completion while an unverified read is in flight.
             Self::Artifact(_) => SizeHint::default(),
@@ -653,8 +803,27 @@ async fn serve(
                     let work = async move {
                         let Ok(stream) = tls.accept(socket).await else { return; };
                         drop(handshake);
-                        let service = service_fn(move |request| handle(request, peer, state.clone(), deadline.clone()));
-                        let _ = http1::Builder::new().timer(TokioTimer::new()).header_read_timeout(limit).max_headers(64).max_buf_size(HEADER_BYTES).serve_connection(TokioIo::new(stream), service).with_upgrades().await;
+                        let stream = DeadlineIo { inner: stream, deadline: deadline.clone() };
+                        let requests = std::sync::atomic::AtomicUsize::new(0);
+                        let service = service_fn(move |request| {
+                            let last = requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 >= MAX_REQUESTS;
+                            let state = state.clone();
+                            let deadline = deadline.clone();
+                            async move {
+                                deadline.request();
+                                let mut reply = handle(request, peer, state).await?;
+                                reply.body_mut().watch(deadline);
+                                // An upgrade hands ownership to the separately bounded
+                                // realtime transport; do not replace Connection: upgrade.
+                                if last && reply.status() != StatusCode::SWITCHING_PROTOCOLS {
+                                    reply.headers_mut().insert(http::header::CONNECTION, http::HeaderValue::from_static("close"));
+                                }
+                                Ok::<_, Infallible>(reply)
+                            }
+                        });
+                        // Hyper's head timer includes idle time before the first
+                        // byte; our watchdog bounds those phases independently.
+                        let _ = http1::Builder::new().header_read_timeout(None).max_headers(64).max_buf_size(HEADER_BYTES).serve_connection(TokioIo::new(stream), service).with_upgrades().await;
                     };
                     tokio::select! {
                         () = work => {}
@@ -679,7 +848,6 @@ async fn handle(
     request: Request<Incoming>,
     peer: SocketAddr,
     state: Arc<Shared>,
-    deadline: Arc<ConnectionDeadline>,
 ) -> Result<Reply, Infallible> {
     let rate = state
         .limiter
@@ -704,12 +872,7 @@ async fn handle(
     }
     let timeout = state.timeout;
     let result = tokio::time::timeout(timeout, routes::route(request, state, peer)).await;
-    let mut reply =
-        result.unwrap_or_else(|_| error(StatusCode::REQUEST_TIMEOUT, "request_timeout"));
-    if let ReplyBody::Artifact(body) = reply.body_mut() {
-        body.watch(deadline);
-    }
-    Ok(reply)
+    Ok(result.unwrap_or_else(|_| error(StatusCode::REQUEST_TIMEOUT, "request_timeout")))
 }
 fn response(status: StatusCode, bytes: impl Into<Bytes>, content_type: &'static str) -> Reply {
     let bytes = bytes.into();

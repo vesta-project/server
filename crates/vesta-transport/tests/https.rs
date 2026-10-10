@@ -188,7 +188,9 @@ impl WireReply {
     }
 }
 fn read_reply(stream: impl Read) -> std::io::Result<WireReply> {
-    let mut reader = BufReader::new(stream);
+    read_buffered_reply(&mut BufReader::new(stream))
+}
+fn read_buffered_reply(reader: &mut impl BufRead) -> std::io::Result<WireReply> {
     let mut line = String::new();
     reader.read_line(&mut line)?;
     let status = line
@@ -610,6 +612,108 @@ fn connection_cap_and_slow_client_timeout_fail_closed() {
     // The slot is released after the timeout; fresh peers can handshake again.
     f.request("GET", "/api/v2/pack/status?installed=0", b"", None)
         .error_if_unpublished();
+}
+
+#[test]
+fn successive_keepalive_requests_get_independent_head_and_response_budgets() {
+    let f = Fixture::new("minecraft", 8, 1024, 1);
+    let mut stream = f.stream();
+    let started = Instant::now();
+    for index in 0..3 {
+        if index != 0 {
+            // Near the end of the idle budget, begin a new request. Reading its
+            // head takes a separate, bounded budget, not the old idle remainder.
+            std::thread::sleep(Duration::from_millis(600));
+        }
+        stream
+            .write_all(b"GET /api/v2/pack/status?installed=0 HTTP/1.1\r\n")
+            .unwrap();
+        stream.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(600));
+        stream.write_all(b"Host: localhost\r\n\r\n").unwrap();
+        stream.flush().unwrap();
+        let reply = read_reply(&mut stream).unwrap();
+        reply.error_if_unpublished();
+        assert_ne!(
+            reply.headers.get("connection").map(String::as_str),
+            Some("close")
+        );
+    }
+    assert!(started.elapsed() > Duration::from_secs(2));
+}
+
+#[test]
+fn keepalive_idle_slot_expires_and_releases_connection_capacity() {
+    let f = Fixture::new("minecraft", 1, 1024, 1);
+    let mut stream = f.stream();
+    stream
+        .write_all(b"GET /api/v2/pack/status?installed=0 HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .unwrap();
+    stream.flush().unwrap();
+    read_reply(&mut stream).unwrap().error_if_unpublished();
+    let started = Instant::now();
+    let mut byte = [0; 1];
+    assert!(!matches!(stream.read(&mut byte), Ok(1)));
+    assert!(started.elapsed() < Duration::from_secs(2));
+    f.request("GET", "/api/v2/pack/status?installed=0", b"", None)
+        .error_if_unpublished();
+}
+
+#[test]
+fn keepalive_trickled_partial_head_does_not_extend_request_deadline() {
+    let f = Fixture::new("minecraft", 8, 1024, 1);
+    let mut stream = f.stream();
+    stream
+        .write_all(b"GET /api/v2/pack/status?installed=0 HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .unwrap();
+    stream.flush().unwrap();
+    read_reply(&mut stream).unwrap().error_if_unpublished();
+    std::thread::sleep(Duration::from_millis(500));
+    let started = Instant::now();
+    stream.write_all(b"GET /api/v2/").unwrap();
+    stream.flush().unwrap();
+    for _ in 0..4 {
+        std::thread::sleep(Duration::from_millis(250));
+        if stream
+            .write_all(b"x")
+            .and_then(|()| stream.flush())
+            .is_err()
+        {
+            break;
+        }
+    }
+    let mut byte = [0; 1];
+    assert!(!matches!(stream.read(&mut byte), Ok(1)));
+    assert!(
+        started.elapsed() < Duration::from_millis(1650),
+        "partial reads refreshed the head deadline"
+    );
+}
+
+#[test]
+fn keepalive_request_count_is_bounded_including_pipelined_heads() {
+    let f = Fixture::new("minecraft", 8, 1024, 3);
+    let mut stream = f.stream();
+    // Preserve read-ahead across pipelined replies with a single BufReader.
+    let request = b"GET /api/v2/pack/status?installed=0 HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    for _ in 0..33 {
+        stream.write_all(request).unwrap();
+    }
+    stream.flush().unwrap();
+    let mut reader = BufReader::new(stream);
+    for index in 0..32 {
+        let reply = read_buffered_reply(&mut reader).unwrap();
+        reply.error_if_unpublished();
+        assert_eq!(
+            reply.headers.get("connection").map(String::as_str),
+            (index == 31).then_some("close")
+        );
+    }
+    let mut byte = [0; 1];
+    assert!(
+        !matches!(reader.read(&mut byte), Ok(1)),
+        "request cap did not close the connection"
+    );
 }
 
 #[test]
