@@ -504,8 +504,8 @@ async fn handle(
     }
     let denial = match rate {
         Ok(AdmissionDecision::Allowed) => None,
-        Ok(AdmissionDecision::RateLimited { .. }) => {
-            Some(error(StatusCode::TOO_MANY_REQUESTS, "peer_rate_limited"))
+        Ok(AdmissionDecision::RateLimited { retry_after }) => {
+            Some(rate_limited("peer_rate_limited", retry_after))
         }
         _ => Some(error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -538,6 +538,21 @@ fn error(status: StatusCode, code: &'static str) -> Reply {
     reply
         .headers_mut()
         .insert("connection", http::HeaderValue::from_static("close"));
+    reply
+}
+
+/// Delta-seconds must round up: a fractional refill interval must not tell a
+/// caller to retry before the next token. Other clients may consume that token.
+fn rate_limited(code: &'static str, retry_after: Duration) -> Reply {
+    let seconds = retry_after
+        .as_secs()
+        .saturating_add(u64::from(retry_after.subsec_nanos() != 0))
+        .max(1);
+    let mut reply = error(StatusCode::TOO_MANY_REQUESTS, code);
+    reply.headers_mut().insert(
+        http::header::RETRY_AFTER,
+        seconds.to_string().parse().expect("decimal retry duration"),
+    );
     reply
 }
 

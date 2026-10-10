@@ -69,6 +69,38 @@ fn realtime_close(peer: &mut RealtimePeer, code: CloseCode) {
 }
 
 #[test]
+fn realtime_browser_origins_are_refused_before_consuming_native_ticket() {
+    let f = Fixture::new("minecraft-or-password", 8, 4096, 10);
+    let owner = f.owner();
+    let session = f.password_session(&owner);
+    let ticket = f.ticket(&session, true);
+    for origin in [
+        "https://untrusted.invalid",
+        "null",
+        "https://localhost",
+        "",
+        "https://first.invalid\r\nOrigin: https://second.invalid",
+    ] {
+        let request = format!(
+            "GET /api/v2/realtime?installed=0 HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: Bearer {ticket}\r\nOrigin: {origin}\r\n\r\n"
+        );
+        let reply = f.raw(request.as_bytes());
+        reply.error(403, "browser_origin_forbidden");
+        reply.hides(&ticket);
+        assert!(
+            !reply
+                .headers
+                .keys()
+                .any(|name| name.starts_with("access-control-"))
+        );
+        assert_eq!(f.host().pack_sessions().len().unwrap(), (1, 1));
+    }
+    let mut native = f.websocket(&ticket, 0).unwrap();
+    assert_eq!(realtime_json(&mut native)["type"], "hello");
+    assert_eq!(f.websocket(&ticket, 0).err(), Some(401));
+}
+
+#[test]
 fn realtime_ticket_single_use_purpose_binding_and_download_ticket_redemption() {
     let f = Fixture::new("minecraft-or-password", 16, 4096, 10);
     let owner = f.owner();

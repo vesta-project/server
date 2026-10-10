@@ -130,6 +130,12 @@ impl Sockets {
 }
 
 pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) -> Reply {
+    // Native clients only until an explicit browser-origin policy exists. CORS
+    // does not protect WebSocket upgrades; never reflect or trust a caller's
+    // Origin (including null/loopback), and refuse before consuming a ticket.
+    if request.headers().contains_key("origin") {
+        return error(StatusCode::FORBIDDEN, "browser_origin_forbidden");
+    }
     let installed = request
         .uri()
         .query()

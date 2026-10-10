@@ -423,6 +423,97 @@ fn password_session_artifact_ticket_and_revocation_are_pack_only() {
 }
 
 #[test]
+fn legacy_management_mutations_are_refused_on_loopback_without_credentials_or_effects() {
+    let f = Fixture::new("minecraft", 8, 1024, 3);
+    for method in ["GET", "POST", "PUT", "DELETE"] {
+        for path in [
+            "/api/v1/server/power",
+            "/api/v1/console",
+            "/api/v1/admin/security",
+            "/api/v1/private/files",
+            "/api/v1/files/upload",
+            "/api/v1/content/remove",
+            "/api/v1/fs/read",
+        ] {
+            f.request(method, path, b"{\"action\":\"start\"}", None)
+                .error(410, "legacy_endpoint_removed");
+        }
+        for path in [
+            "/api/v2/manage/power",
+            "/api/v2/manage/console",
+            "/api/v2/manage/security",
+            "/api/v2/manage/fs",
+        ] {
+            f.request(method, path, b"{\"action\":\"start\"}", None)
+                .error(403, "management_unavailable");
+        }
+    }
+    assert_eq!(f.host().runtime().game_snapshot().unwrap().generation, None);
+    let principals: i64 = f
+        .host()
+        .database()
+        .read(|connection| {
+            Ok(connection.query_row("SELECT COUNT(*) FROM principals", [], |row| row.get(0))?)
+        })
+        .unwrap();
+    assert_eq!(principals, 0);
+    assert!(!f.temp.path().join("game/server.properties").exists());
+}
+
+#[test]
+fn password_rotation_applies_to_http_sessions_and_preserves_pack_publication() {
+    let f = Fixture::new("minecraft-or-password", 8, 4096, 10);
+    let owner = f.owner();
+    let session = f.password_session(&owner);
+    let payload = b"unchanged publication after pack password rotation";
+    let release = f.publish(&owner, UpdatePolicy::Optional, payload, "1.0");
+    let pending = f.request("POST", "/api/v2/pack/ticket", b"", Some(&session));
+    assert_eq!(pending.status, 200);
+    let ticket = pending.json()["ticket"].as_str().unwrap().to_owned();
+    let rotated_password = "replacement transport fixture password";
+    f.host()
+        .pack_passwords()
+        .unwrap()
+        .set(
+            &owner,
+            PasswordRevision::new(1).unwrap(),
+            &SecretPassword::try_from(rotated_password.as_bytes().to_vec()).unwrap(),
+        )
+        .unwrap();
+    f.request("GET", "/api/v2/pack/artifact", b"", Some(&session))
+        .error(401, "pack_session_invalid");
+    f.request("POST", "/api/v2/realtime/ticket", b"", Some(&session))
+        .error(401, "pack_session_invalid");
+    assert!(
+        f.host()
+            .pack_sessions()
+            .redeem_ticket(&ticket, Instant::now(), &f.host().pack_policy().unwrap())
+            .is_err()
+    );
+    f.request(
+        "POST",
+        "/api/v2/auth/password",
+        &serde_json::to_vec(&serde_json::json!({"password":PASSWORD})).unwrap(),
+        None,
+    )
+    .error(403, "pack_access_denied");
+    let fresh = f.request(
+        "POST",
+        "/api/v2/auth/password",
+        &serde_json::to_vec(&serde_json::json!({"password":rotated_password})).unwrap(),
+        None,
+    );
+    assert_eq!(fresh.status, 200);
+    let fresh_session = fresh.json()["session"].as_str().unwrap().to_owned();
+    assert_ne!(fresh_session, session);
+    let artifact = f.request("GET", "/api/v2/pack/artifact", b"", Some(&fresh_session));
+    assert_eq!(artifact.status, 200);
+    assert_eq!(artifact.body, payload);
+    assert_eq!(f.host().releases().current().unwrap(), Some(release));
+    assert_eq!(f.host().runtime().game_snapshot().unwrap().generation, None);
+}
+
+#[test]
 fn minecraft_mode_password_refusal_and_unknown_completion_never_contact_provider() {
     let f = Fixture::new("minecraft", 8, 1024, 3);
     f.request(
@@ -487,6 +578,7 @@ fn peer_rate_limit_uses_socket_not_forwarding_headers() {
         let reply = read_reply(stream).unwrap();
         if reply.status == 429 {
             reply.error(429, "peer_rate_limited");
+            assert!(reply.headers["retry-after"].parse::<u64>().unwrap() >= 1);
             limited = true;
             break;
         }

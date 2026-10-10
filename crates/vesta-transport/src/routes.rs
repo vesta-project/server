@@ -1,9 +1,12 @@
-use super::{Reply, Shared, error, response};
+use super::{Reply, Shared, error, rate_limited, response};
 use http::{Method, Request, StatusCode};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use serde::Deserialize;
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use vesta_control::{
     host::NetworkHost,
     identity::{
@@ -238,7 +241,9 @@ fn dispatch(
             };
             match verification.status() {
                 PasswordVerificationStatus::RateLimited => {
-                    return error(StatusCode::TOO_MANY_REQUESTS, "password_rate_limited");
+                    // The composed production KDF gate refills verification at
+                    // one token per second; this is a retry hint, not a reservation.
+                    return rate_limited("password_rate_limited", Duration::from_secs(1));
                 }
                 PasswordVerificationStatus::Busy => {
                     return error(StatusCode::SERVICE_UNAVAILABLE, "password_busy");
@@ -362,7 +367,8 @@ fn issue_session(host: &NetworkHost, grant: vesta_control::pack_access::PackGran
 }
 fn minecraft_error(code: &'static str) -> Reply {
     match code {
-        "minecraft_rate_limited" => error(StatusCode::TOO_MANY_REQUESTS, "minecraft_rate_limited"),
+        // Production challenge issuance/completion refill one token per second.
+        "minecraft_rate_limited" => rate_limited("minecraft_rate_limited", Duration::from_secs(1)),
         "minecraft_busy" => error(StatusCode::SERVICE_UNAVAILABLE, "minecraft_busy"),
         _ => error(StatusCode::SERVICE_UNAVAILABLE, "minecraft_unavailable"),
     }

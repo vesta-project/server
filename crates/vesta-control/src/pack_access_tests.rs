@@ -201,6 +201,54 @@ fn sessions_authenticate_until_expiry_and_secrets_are_single_purpose() {
 }
 
 #[test]
+fn new_session_store_never_restores_previous_session_or_ticket_secrets() {
+    let admission = Admission::new(&[], &[]);
+    let policy = admission.policy(
+        PackAccessMode::MinecraftOrPassword,
+        Some(properties(false, true)),
+        Some(revision(2)),
+    );
+    let now = Instant::now();
+    for grant in [
+        PackGrant::Minecraft(player(PLAYER)),
+        PackGrant::Password(revision(2)),
+    ] {
+        let (secret, download, realtime) = {
+            let old = PackSessions::new(server(), SessionLimits::default());
+            let (secret, _) = old.issue(grant, now).unwrap();
+            let download = old.issue_ticket(secret.expose(), now, &policy).unwrap();
+            let realtime = old
+                .issue_ticket_for(secret.expose(), TicketPurpose::Realtime, now, &policy)
+                .unwrap();
+            (secret, download, realtime)
+        };
+        // Even on the same server with unchanged admission/password revision,
+        // a newly composed store needs fresh sign-in, not restored bearer hashes.
+        let fresh = PackSessions::new(server(), SessionLimits::default());
+        assert_eq!(
+            fresh.authenticate(secret.expose(), now, &policy),
+            Err(PackAccessError::Invalid)
+        );
+        assert_eq!(
+            fresh.redeem_ticket(download.expose(), now, &policy),
+            Err(PackAccessError::Invalid)
+        );
+        assert_eq!(
+            fresh.redeem_realtime(realtime.expose(), now, &policy),
+            Err(PackAccessError::Invalid)
+        );
+        assert_eq!(fresh.len().unwrap(), (0, 0));
+        let (replacement, _) = fresh.issue(grant, now).unwrap();
+        assert_ne!(replacement.expose(), secret.expose());
+        assert!(
+            fresh
+                .authenticate(replacement.expose(), now, &policy)
+                .is_ok()
+        );
+    }
+}
+
+#[test]
 fn a_ban_whitelist_removal_or_password_rotation_ends_existing_sessions() {
     let sessions = PackSessions::new(server(), SessionLimits::default());
     let now = Instant::now();
@@ -261,6 +309,68 @@ fn a_ban_whitelist_removal_or_password_rotation_ends_existing_sessions() {
         sessions.authenticate(unlisted.expose(), now, &after_removal),
         Err(PackAccessError::Invalid)
     );
+}
+
+#[test]
+fn password_setting_changes_invalidate_sessions_and_tickets_without_reviving_old_access() {
+    let admission = Admission::new(&[], &[]);
+    let now = Instant::now();
+    for (mode, active) in [
+        (PackAccessMode::MinecraftOrPassword, Some(revision(3))),
+        (PackAccessMode::MinecraftOrPassword, None),
+        (PackAccessMode::Minecraft, Some(revision(2))),
+    ] {
+        let sessions = PackSessions::new(server(), SessionLimits::default());
+        let before = admission.policy(
+            PackAccessMode::MinecraftOrPassword,
+            Some(properties(false, true)),
+            Some(revision(2)),
+        );
+        let (password, _) = sessions
+            .issue(PackGrant::Password(revision(2)), now)
+            .unwrap();
+        let download = sessions
+            .issue_ticket(password.expose(), now, &before)
+            .unwrap();
+        let realtime = sessions
+            .issue_ticket_for(password.expose(), TicketPurpose::Realtime, now, &before)
+            .unwrap();
+        let pending_realtime = sessions
+            .issue_ticket_for(password.expose(), TicketPurpose::Realtime, now, &before)
+            .unwrap();
+        let (reference, _) = sessions
+            .redeem_realtime(realtime.expose(), now, &before)
+            .unwrap();
+        let (minecraft, _) = sessions
+            .issue(PackGrant::Minecraft(player(PLAYER)), now)
+            .unwrap();
+        let after = admission.policy(mode, Some(properties(false, true)), active);
+        // Rotation, clearing the password, and disabling password access all end
+        // existing password access, including an already connected realtime peer.
+        assert_eq!(
+            sessions.recheck_realtime(reference, now, &after),
+            Err(PackAccessError::Invalid)
+        );
+        assert_eq!(sessions.len().unwrap(), (1, 0));
+        assert!(
+            sessions
+                .authenticate(minecraft.expose(), now, &after)
+                .is_ok()
+        );
+        // Restoring the old policy cannot resurrect revoked sessions or tickets.
+        assert_eq!(
+            sessions.authenticate(password.expose(), now, &before),
+            Err(PackAccessError::Invalid)
+        );
+        assert_eq!(
+            sessions.redeem_ticket(download.expose(), now, &before),
+            Err(PackAccessError::Invalid)
+        );
+        assert_eq!(
+            sessions.redeem_realtime(pending_realtime.expose(), now, &before),
+            Err(PackAccessError::Invalid)
+        );
+    }
 }
 
 #[test]

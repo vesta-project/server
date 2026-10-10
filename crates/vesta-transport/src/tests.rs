@@ -126,6 +126,31 @@ fn shutdown_timeout_returns_the_still_owning_runtime_then_reobservation_joins() 
 }
 
 #[test]
+fn rate_limit_retry_after_rounds_up_and_never_advertises_immediate_retry() {
+    for (duration, seconds) in [
+        (Duration::ZERO, "1"),
+        (Duration::from_nanos(1), "1"),
+        (Duration::from_millis(500), "1"),
+        (Duration::from_secs(1), "1"),
+        (Duration::from_millis(1001), "2"),
+        (Duration::from_secs(60), "60"),
+        (Duration::MAX, "18446744073709551615"),
+    ] {
+        let reply = rate_limited("peer_rate_limited", duration);
+        assert_eq!(reply.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(reply.headers()["retry-after"], seconds);
+        assert_eq!(reply.headers()["cache-control"], "no-store");
+        assert_eq!(reply.headers()["connection"], "close");
+        assert!(
+            !reply
+                .headers()
+                .keys()
+                .any(|name| name.as_str().starts_with("access-control-"))
+        );
+    }
+}
+
+#[test]
 fn fixed_error_headers_do_not_contain_cors() {
     let response = error(StatusCode::UNAUTHORIZED, "pack_session_invalid");
     assert_eq!(response.headers()["content-type"], "application/json");
