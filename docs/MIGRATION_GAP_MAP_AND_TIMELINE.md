@@ -52,7 +52,7 @@ design), Plugin-side (retained Java), or Unknown.
 | Config loading and host composition | `config/ConfigLoader`, `WrapperConfig`, `runtime/AgentRuntime` | Partial | `host.rs`: `Host::open` composes database, identity, pack passwords, Minecraft challenges, whitelist, files, pack preparation, releases and the operation runtime; no owner bootstrap, no game start, rollback on failure, observation-only shutdown. No transport; CLI still only `check-config`. |
 | Discovery | `runtime/ServerFeatureDiscovery` | Partial | `Host::discover` reports composed mechanisms honestly. No transport serves it. |
 | Installer | `ContentInstaller`, `AgentRuntime` | Unknown | `vesta-server-install` exists. Capability not inspected. |
-| Connector and plugin protocol | `ipc/ControlIpcServer`, `src/main/java/com/vesta/loader` | Missing (host side) | No Rust IPC endpoint. Plugin and mod remain Java. |
+| Connector and plugin protocol | `ipc/ControlIpcServer`, `src/main/java/com/vesta/loader` | Replaced / forbidden legacy authority | Control IPC has no pack/status messages; do not add a Rust endpoint (see Control IPC disposition below). Plugin/mod remain Java; adapting their detection and embedded v1 HTTP behavior is separate retained-client work, not completed compatibility. |
 
 ## 3. Requirement families with no recorded Rust counterpart
 
@@ -174,6 +174,102 @@ truncated, oversized or invalid-UTF-8 frames. No listener or JSON message regist
 is implied. This documentation-only decision ran no Rust tests or clippy (0 tests);
 no dependencies, launcher files or transport code changed. External/uninspected
 clients could require revisiting the decision.
+
+## Control IPC disposition (2026-10-10)
+
+**Decision: stop after the inventory; do not implement a Rust ControlCodec message
+registry, local IPC listener, IPC secret, or agent configuration switch.** The useful
+pack/status subset is empty. The retained plugin does not receive pack metadata,
+revisions, update status, or push notifications through this channel. Existing Rust
+pack-only HTTPS and WebSocket cover those product functions; the old IPC instead
+supports connector detection and legacy permission/link-code authority. This
+supersedes the host-side IPC gap in section 2, not the retained plugin's compatibility
+work or any other migration gate.
+
+### Complete message inventory
+
+The six message constructors are defined in
+`core/src/main/java/com/vesta/sync/ipc/ControlCodec.java:37-82`. Framing is four-byte
+big-endian length plus UTF-8 Gson JSON, with the Java reader admitting only
+`1..=1048576` body bytes (`:20-34`). It is not the separate TCP pack-sync codec.
+Classes below: **(a)** useful pack/status, **(b)** management/authority (forbidden),
+**(c)** obsolete connector plumbing. **There are no class (a) messages.**
+
+| Message / fields | Retained plugin behavior and evidence | Classification / disposition |
+|---|---|---|
+| `heartbeat {ts}` | Sends periodically from `src/main/java/com/vesta/loader/ipc/ControlIpcClient.java:76-87`; no pack payload. Wrapper acknowledges it (`wrapper/src/main/java/com/vesta/wrapper/ipc/ControlIpcServer.java:129-135`) and tracks connector presence (`:48-51`). | **(c)** Legacy connector liveness, not pack/status; omit. |
+| `heartbeat_ack {ts}` | Only receive handling is an ignored acknowledgement (`ControlIpcClient.java:101-103`); it updates no plugin state. Constructor: `ControlCodec.java:44-48`. | **(c)** Companion to obsolete heartbeat; omit. |
+| `permission_check {uuid, permission, request_id?}` | Parses UUID/node, invokes permission callback, and echoes `request_id` (`ControlIpcClient.java:92-100`). Callback special-cases `vesta.ping`, otherwise uses `PermissionBridge.check` (`VestaSyncManager.java:71-78,85-92`); bridge delegates to a platform permission backend (`PermissionBridge.java:6-8,20-25`). Wrapper initiates correlated checks (`ControlIpcServer.java:54-75`). | **(b)** Arbitrary permission/authority bridge, not pack status; refuse by omission. |
+| `permission_result {allowed, reason?, request_id?}` | Builds `allowed` response with no `reason` and echoes request ID (`ControlIpcClient.java:95-100`); plugin does not consume results. Wrapper completes the permission future (`ControlIpcServer.java:145-153`). `core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java:145-149` raises effective access level on ALLOW. | **(b)** Legacy authority elevation; refuse by omission, even if some nodes historically enabled pack access. |
+| `link_code {code, uuid}` | Sends the in-game code and UUID (`ControlIpcClient.java:52-60`; `VestaSyncManager.java:110-118`). Wrapper trusts it via `LinkCodeService.noteExternal` (`ControlIpcServer.java:137-143`); `/api/v1/auth/link` redeems a linked bearer (`docs/JAVA_NETWORK_SURFACE.md:38,62-64`). Linked UUIDs inherit configured people, OP and permission-node levels (`CapabilityEngine.java:135-149`). | **(b)** Connector-possession identity/authority shortcut; do not reproduce, including as a nominally pack-only compatibility feature. Minecraft proof remains the normal pack identity flow. |
+| `error {message}` | Constructor exists (`ControlCodec.java:77-82`), but the plugin receive loop has no error branch (`ControlIpcClient.java:90-103`) and wrapper dispatch has no error handler (`ControlIpcServer.java:131-156`). | **(c)** Unused message helper; omit. |
+
+Power and console are **not** ControlCodec message types. They are legacy HTTP and
+WebSocket management surfaces listed in `docs/JAVA_NETWORK_SURFACE.md:32-34,55-58`;
+permission/link-code authority can indirectly authorize them. Bukkit explicitly
+answers `vesta.op` from OP status and allows `vesta.*` nodes for OPs
+(`src/main/java/com/vesta/loader/platform/BukkitEntrypoint.java:47-59`; Paper has
+the same OP shortcut at `platform/PaperEntrypoint.java:49-65`). Elevation depends
+on configured grants; a permission ALLOW or linked bearer does **not automatically**
+mean level 4. The problem is trusting the unauthenticated connector to assert a
+UUID or permission result which can acquire those grants. No power, console,
+OP-level, UUID-assertion, loopback, or connector-possession grant is introduced.
+
+### Authentication and compatibility boundary
+
+Java has **no IPC authentication handshake, token, shared secret file, or named
+pipe**. It binds TCP to `127.0.0.1`, replaces the active peer on a new connection,
+and immediately accepts frames (`ControlIpcServer.java:91-108,120-156`); the client
+connects directly and starts heartbeats (`ControlIpcClient.java:67-90`). Loopback
+location is not authenticated identity. There is therefore no legacy secret to
+reproduce or retain hash-only, and adding one would not create a pack-data need.
+
+The retained plugin's mode selection is **not pack status**. It probes either the
+control port or the default HTTP port using a plain socket connection
+(`VestaSyncManager.java:141-151`), then selects control-only wrapper mode or starts
+its own embedded HTTP server (`:39-64`). A subsequent IPC connection stops the
+embedded server and sets a sticky `wrapperMode` (`:99-108,131-133`). Neither TCP
+connection success nor this local flag verifies Rust API compatibility.
+
+In particular, “standalone HTTP fallback” is an **embedded plaintext legacy v1
+server**, not a client of Rust HTTPS (`src/main/java/com/vesta/loader/server/ModHttpServer.java:94-107`;
+`core/src/main/java/com/vesta/sync/VestaSync.java:6-11`). Leaving IPC absent does not adapt that server or prevent an
+HTTP-port probe from entering wrapper mode with an endlessly retrying control
+client (`ControlIpcClient.java:105-115`). Retained-plugin mode detection and v2
+integration need separate client work; do not add an empty IPC endpoint just to
+satisfy its probe or suppress retries. This disposition does not claim the retained
+plugin works unchanged under the Rust agent.
+
+Rust replacements already present (semantic, not Java-wire compatibility):
+
+- `crates/vesta-transport/src/routes.rs:47-60,179-208`: HTTPS discovery and
+  published pack revision/minimum/status; pack-auth and artifact endpoints.
+- `crates/vesta-transport/src/realtime.rs:336-359`: subscribe-before-snapshot
+  release watch, WebSocket `hello` and `pack_update`. The plugin has no corresponding
+  ControlCodec receive handler to preserve.
+- `routes.rs:34-40`: management unavailable, all legacy v1 endpoints removed.
+
+Java test evidence: `core/src/test/java/com/vesta/sync/ipc/ControlCodecTest.java:15-24`
+round-trips a permission request and checks its type/node, not golden bytes or
+partial-read semantics. `wrapper/src/test/java/com/vesta/wrapper/ipc/ControlIpcContractTest.java:47-82`
+connects an ordinary unauthenticated socket, sends heartbeats and answers a correlated
+permission request to obtain ALLOW. It does not establish authenticated pack/status
+IPC functionality.
+
+The reusable framing module stays unchanged. No new ControlCodec golden fixtures,
+IPC malformed-message/refusal tests, release-push tests, connection-cap tests or
+shutdown tests are added because there is no new codec registry/listener to test.
+Validation on Windows for this documentation-only disposition:
+
+- `cargo fmt --all -- --check`: passed; no Rust files formatted or edited.
+- `cargo clippy --workspace --all-targets --offline --locked -- -D warnings`: passed.
+- `cargo test -p vesta-protocol -p vesta-transport -p vesta-agent --offline --locked -- --test-threads=1`:
+  **132 passed, 0 failed** (protocol 83; transport 42; agent 7; 0 doctests).
+- Both clippy and test used `CARGO_TARGET_DIR=target/sol-transport` and
+  `CARGO_INCREMENTAL=0`. These are existing-code regression checks, not certification
+  of an IPC implementation; **0 new tests**. Concurrent content/files-agent changes
+  were present and left untouched. Java sources/tests are reference evidence only,
+  not executed in this disposition. No dependencies, commits, stash or clean.
 
 ## 7. Repository and documentation cleanup
 
