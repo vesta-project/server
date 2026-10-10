@@ -124,6 +124,57 @@ Product and platform gates stay separate and are not part of this timeline: Linu
 macOS execution, MSRV, OS-local bootstrap and device authentication, durable installer
 activation, real Java and loader matrix, services and distribution, and release.
 
+## TCP sync disposition (2026-10-10)
+
+**Decision (b): superseded by pack-only HTTPS + WebSocket; do not add a Rust TCP
+sync listener.** Static searches of the retained mod/plugin (`src/main/java`, not
+separate `plugin/` or `mod/` directories), `core/`, and the read-only launcher at
+`V:/launcher-server-mvp/vesta-launcher` found no production client of the Java pack
+TCP protocol. This disposition supersedes the TCP-sync gap in section 2 and the
+TCP-sync work item in wave 6; it does not certify the other transport work.
+
+Evidence:
+- `src/main/java/com/vesta/loader/VestaSyncManager.java:39-64` selects loopback
+  control IPC or standalone HTTP; `ipc/ControlIpcClient.java:67-90` uses
+  `ControlCodec`, **not** `TcpMessageCodec`. `server/ModHttpServer.java:103-107`
+  registers HTTP info/manifest/sync/file routes. Control IPC remains a separate gap.
+- `core/src/main/java/com/vesta/sync/protocol/TcpMessageCodec.java:21-31` defines
+  the message registry, not a client. Searches for protocol imports, message
+  construction and socket use found wrapper server handlers and tests, including
+  `wrapper/src/test/java/com/vesta/wrapper/server/TcpPushUpdateAvailableTest.java:79-92`,
+  rather than a retained mod/plugin consumer.
+- Launcher paths below are relative to the external launcher root:
+  `src/utils/modpacks.ts:152-165` invokes URL metadata retrieval;
+  `src-tauri/src/commands/modpacks.rs:1843-1865` downloads over HTTP, while
+  `:2302-2306` clears Vesta linkage without canonical server identity.
+  `src-tauri/src/commands/sync.rs:24-49,75-81` polls Modrinth/CurseForge versions.
+  Searches of launcher-owned frontend/backend source found neither TCP-sync framing
+  or messages nor server-pack WebSocket consumption. Launcher integration with v2
+  remains future client work; its external `piston-lib` dependency was not inspected.
+
+Replacement mapping (semantic replacement, **not** legacy wire compatibility):
+
+| Java message | Rust replacement |
+|---|---|
+| `Handshake` | HTTPS `/api/v2/discovery`, Minecraft challenge/complete (normal identity flow) or alternative pack-password sign-in, then purpose-bound tickets; v2 API boundary instead of TCP version negotiation. |
+| `HandshakeResponse` | HTTPS discovery/auth responses and WebSocket `hello`; pack sessions grant no management authority. |
+| `Heartbeat` | WebSocket heartbeat plus Ping/Pong, bounded idle/session expiry (`crates/vesta-transport/src/realtime.rs:343-377`). |
+| `SyncCheck` | `GET /api/v2/pack/status?installed=N`, using monotonic installed revision rather than Java installed-hash/version DTOs. |
+| `SyncCheckResponse` | `PackReleases` revision/minimum/status response (`crates/vesta-transport/src/routes.rs:193-208`); catalogue/artifact-based installation replaces server-generated per-file action lists. |
+| `FileRequest` | Authenticated `GET /api/v2/pack/artifact`, optionally with a single-use download ticket; no arbitrary file path. |
+| `FileResponse` | Pinned artifact stream with size/SHA-256 verification and digest ETag (`routes.rs:292-334`, `lib.rs:95-112`), not a legacy per-file URL response. |
+| `PushUpdateAvailable` | Release-watch WebSocket `pack_update` (`realtime.rs:336-359`), authorized by a separate realtime ticket. |
+| `SyncComplete` | Client persists its installed revision, then rechecks status/reconnects with that revision; no server acknowledgement endpoint. Java registered the DTO but no handler (`wrapper/src/main/java/com/vesta/wrapper/server/MessageRouter.java:40-44,85-88`). |
+| `Disconnect` | WebSocket Close / HTTPS connection termination; no TCP session to remove (`realtime.rs:379-400`). |
+
+Framing remains a reusable foundation: Java's four-byte big-endian UTF-8 body
+(`core/.../protocol/TcpMessageCodec.java:42-80`) is covered by
+`crates/vesta-protocol/src/framing.rs:128-178`, deliberately rejecting empty,
+truncated, oversized or invalid-UTF-8 frames. No listener or JSON message registry
+is implied. This documentation-only decision ran no Rust tests or clippy (0 tests);
+no dependencies, launcher files or transport code changed. External/uninspected
+clients could require revisiting the decision.
+
 ## 7. Repository and documentation cleanup
 
 - **Java plugin and mod:** the source is under `src/main`, in the same Gradle build as
