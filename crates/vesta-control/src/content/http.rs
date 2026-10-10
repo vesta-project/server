@@ -1,6 +1,9 @@
 //! One-hop HTTP seam. Policy and redirects live in the installer, not the adapter.
 use super::{ContentError, Result};
-use std::{io::Read, time::Duration};
+use std::{
+    io::Read,
+    time::{Duration, Instant},
+};
 use url::Url;
 
 pub struct HttpResponse {
@@ -14,6 +17,12 @@ pub struct HttpResponse {
 /// does not follow redirects. Bodies must have bounded read timeouts.
 pub trait DownloadHttp {
     fn get(&self, url: &Url) -> Result<HttpResponse>;
+    fn get_with_deadline(&self, url: &Url, deadline: Instant) -> Result<HttpResponse> {
+        super::deadline_check(deadline)?;
+        let response = self.get(url)?;
+        super::deadline_check(deadline)?;
+        Ok(response)
+    }
 }
 
 pub struct UreqDownloadHttp {
@@ -25,12 +34,15 @@ impl Default for UreqDownloadHttp {
     }
 }
 pub(super) fn agent() -> ureq::Agent {
+    agent_with_timeout(Duration::from_secs(60))
+}
+pub(super) fn agent_with_timeout(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
         .https_only(true)
         .proxy(None)
         .max_redirects(0)
         .http_status_as_error(false)
-        .timeout_global(Some(Duration::from_secs(60)))
+        .timeout_global(Some(timeout))
         .timeout_connect(Some(Duration::from_secs(10)))
         .timeout_recv_body(Some(Duration::from_secs(10)))
         .max_response_header_size(16 * 1_024)
@@ -40,6 +52,15 @@ pub(super) fn agent() -> ureq::Agent {
         .into()
 }
 impl DownloadHttp for UreqDownloadHttp {
+    fn get_with_deadline(&self, url: &Url, deadline: Instant) -> Result<HttpResponse> {
+        super::deadline_check(deadline)?;
+        let http = Self {
+            agent: agent_with_timeout(deadline.saturating_duration_since(Instant::now())),
+        };
+        let response = http.get(url)?;
+        super::deadline_check(deadline)?;
+        Ok(response)
+    }
     fn get(&self, url: &Url) -> Result<HttpResponse> {
         // Defense in depth; provider-specific host validation is before this call.
         if url.scheme() != "https" {

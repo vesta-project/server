@@ -17,12 +17,66 @@ use crate::{
 };
 use sha1::Sha1;
 use sha2::{Digest, Sha512};
-use std::{collections::BTreeMap, error::Error, fmt, io::Read};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    fmt,
+    io::Read,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::{Duration, Instant},
+};
 use url::Url;
 
 pub type Result<T> = std::result::Result<T, ContentError>;
 const MAX_REDIRECTS: usize = 5;
 const MAX_URL_BYTES: usize = 8_192;
+pub const REMOTE_INSTALL_TIMEOUT: Duration = Duration::from_secs(120);
+static INSTALLS: AtomicUsize = AtomicUsize::new(0);
+struct InstallPermit;
+impl InstallPermit {
+    fn acquire() -> Result<Self> {
+        INSTALLS
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < 2).then_some(n + 1)
+            })
+            .map_err(|_| ContentError::DownloadFailed)?;
+        Ok(Self)
+    }
+}
+impl Drop for InstallPermit {
+    fn drop(&mut self) {
+        INSTALLS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+pub(super) fn deadline_check(deadline: Instant) -> Result<()> {
+    if Instant::now() >= deadline {
+        Err(ContentError::DownloadFailed)
+    } else {
+        Ok(())
+    }
+}
+struct DeadlineRead {
+    reader: Box<dyn Read>,
+    deadline: Instant,
+}
+impl Read for DeadlineRead {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let check = || {
+            if Instant::now() >= self.deadline {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "install deadline",
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        check()?;
+        let n = self.reader.read(bytes)?;
+        check()?;
+        Ok(n)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Provider {
@@ -84,6 +138,19 @@ pub trait ProviderClient {
         project_id: &str,
         version_id: &str,
     ) -> Result<ResolvedSource>;
+    /// Trusted adapters must bound blocking work by this whole-install deadline.
+    fn resolve_with_deadline(
+        &self,
+        provider: Provider,
+        project_id: &str,
+        version_id: &str,
+        deadline: Instant,
+    ) -> Result<ResolvedSource> {
+        deadline_check(deadline)?;
+        let result = self.resolve(provider, project_id, version_id)?;
+        deadline_check(deadline)?;
+        Ok(result)
+    }
 }
 
 /// Populated only by trusted pack catalogue/manifest composition, never by requests.
@@ -129,7 +196,51 @@ impl<'a> ContentInstaller<'a> {
         request: &InstallRequest,
         precondition: &WritePrecondition,
     ) -> Result<FileChange> {
-        self.files
+        self.install_with_files(self.files, subject, request, precondition, None)
+    }
+    /// Remote requests are create-only, provider identifiers only. The provider
+    /// intent and exact resource authority survive completion in the file ledger.
+    pub fn install_remote(
+        &self,
+        subject: &Subject,
+        request: &InstallRequest,
+        key: &str,
+    ) -> Result<serde_json::Value> {
+        let InstallRequest::Provider {
+            provider,
+            project_id,
+            version_id,
+        } = request
+        else {
+            return Err(ContentError::InvalidRequest);
+        };
+        validate_id(project_id)?;
+        validate_id(version_id)?;
+        let provider = match provider {
+            Provider::Modrinth => "modrinth",
+            Provider::Curseforge => "curseforge",
+        };
+        let input = serde_json::json!(["install", provider, project_id, version_id]);
+        let deadline = Instant::now() + REMOTE_INSTALL_TIMEOUT;
+        self.files.for_content(deadline).execute_remote(subject,key,input,|| {
+            self.files.check_content_admission(subject,&WritePrecondition::Absent)?;
+            Ok(vec![(crate::identity::Capability::ContentInstall.id().into(),String::new())])
+        },|files| {
+            let _permit = InstallPermit::acquire().map_err(|_| FileError::Unavailable)?;
+            self.install_with_files(files,subject,request,&WritePrecondition::Absent,Some(deadline))
+                .map(|v| serde_json::json!({"outcome":"succeeded","sha256":v.sha256,"size":v.size.to_string(),"trash_id":v.trash}))
+                .map_err(|e| match e { ContentError::File(e) => e, ContentError::TooLarge => FileError::TooLarge, _ => FileError::Unavailable })
+        }).map_err(ContentError::File)
+    }
+    fn install_with_files(
+        &self,
+        files: &FileBrowser,
+        subject: &Subject,
+        request: &InstallRequest,
+        precondition: &WritePrecondition,
+        deadline: Option<Instant>,
+    ) -> Result<FileChange> {
+        files
             .check_content_admission(subject, precondition)
             .map_err(ContentError::File)?;
         let source = match request {
@@ -140,7 +251,12 @@ impl<'a> ContentInstaller<'a> {
             } => {
                 validate_id(project_id)?;
                 validate_id(version_id)?;
-                let source = self.providers.resolve(*provider, project_id, version_id)?;
+                let source = match deadline {
+                    Some(d) => self
+                        .providers
+                        .resolve_with_deadline(*provider, project_id, version_id, d)?,
+                    None => self.providers.resolve(*provider, project_id, version_id)?,
+                };
                 if source.provider != *provider {
                     return Err(ContentError::InvalidMetadata);
                 }
@@ -161,13 +277,19 @@ impl<'a> ContentInstaller<'a> {
             }
         };
         let (path, mut url) = validate_source(&source)?;
-        self.files
+        files
             .check_write_authority(subject, &path, precondition)
+            .map_err(ContentError::File)?;
+        files
+            .remote_content_authority(subject, &path)
             .map_err(ContentError::File)?;
         for redirects in 0..=MAX_REDIRECTS {
             // Never let the HTTP adapter follow redirects implicitly.
             validate_download_url(source.provider, &url)?;
-            let response = self.http.get(&url)?;
+            let response = match deadline {
+                Some(d) => self.http.get_with_deadline(&url, d)?,
+                None => self.http.get(&url)?,
+            };
             if matches!(response.status, 301 | 302 | 303 | 307 | 308) {
                 if redirects == MAX_REDIRECTS {
                     return Err(ContentError::TooManyRedirects);
@@ -196,9 +318,21 @@ impl<'a> ContentInstaller<'a> {
             {
                 return Err(ContentError::TooLarge);
             }
-            let bytes = verified_bytes(response.body, &source.expected_hash)?;
-            return self
-                .files
+            let body: Box<dyn Read> = match deadline {
+                Some(d) => Box::new(DeadlineRead {
+                    reader: response.body,
+                    deadline: d,
+                }),
+                None => response.body,
+            };
+            let bytes = verified_bytes(body, &source.expected_hash)?;
+            let _admission = files
+                .remote_effect_admission()
+                .map_err(ContentError::File)?;
+            if let Some(deadline) = deadline {
+                deadline_check(deadline)?;
+            }
+            return files
                 .write(subject, &path, precondition, &bytes)
                 .map_err(ContentError::File);
         }

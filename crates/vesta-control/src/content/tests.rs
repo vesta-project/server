@@ -646,3 +646,208 @@ fn interrupted_reads_retry_without_changing_hash_or_size_cap() {
     );
     f.no_effect();
 }
+
+#[test]
+fn remote_provider_installs_are_durable_idempotent_and_audited() {
+    for provider in [Provider::Modrinth, Provider::Curseforge] {
+        let f = Fixture::new();
+        let bytes = b"verified remote artifact";
+        let client = FakeProvider {
+            source: source(provider, bytes),
+            calls: Cell::new(0),
+        };
+        let http = FakeHttp::new(vec![response(bytes)]);
+        let registry = TrustedSourceRegistry::default();
+        let installer = ContentInstaller::new(&f.files, &client, &http, &registry);
+        let first = installer
+            .install_remote(&f.owner, &request(provider), "remote-provider-key-01")
+            .unwrap();
+        assert_eq!(first["sha256"], hex::encode(Sha256::digest(bytes)));
+        assert_eq!(
+            first,
+            installer
+                .install_remote(&f.owner, &request(provider), "remote-provider-key-01")
+                .unwrap()
+        );
+        assert_eq!(client.calls.get(), 1);
+        assert_eq!(http.urls.borrow().len(), 1);
+        assert_eq!(f.audits(), 1);
+        let changed = InstallRequest::Provider {
+            provider,
+            project_id: "project1".into(),
+            version_id: "changed".into(),
+        };
+        assert_eq!(
+            installer.install_remote(&f.owner, &changed, "remote-provider-key-01"),
+            Err(ContentError::File(FileError::IdempotencyConflict))
+        );
+        let notices:i64=f.db.read(|c| Ok(c.query_row("SELECT count(*) FROM audit_events WHERE action='content.install' AND outcome='success'",[],|r|r.get(0))?)).unwrap();
+        assert_eq!(notices, 1);
+        f.db.write(|c| { c.execute("INSERT INTO principal_overrides (id,principal_id,capability,scope,effect,granted_by,created_at) VALUES ('aaaaaaaa-2222-4333-8444-555555555555',?,'content.install','*','deny','fixture',?)",params![f.owner.principal.as_str(),f.db.clock().millis()])?; Ok(()) }).unwrap();
+        assert!(matches!(
+            installer.install_remote(&f.owner, &request(provider), "remote-provider-key-01"),
+            Err(ContentError::File(FileError::Control(_)))
+        ));
+        assert_eq!(client.calls.get(), 1);
+    }
+}
+#[test]
+fn remote_provider_allowlist_and_hash_refusals_have_no_effect() {
+    for invalid in ["host", "hash"] {
+        let f = Fixture::new();
+        let mut metadata = source(Provider::Modrinth, b"expected");
+        if invalid == "host" {
+            metadata.download_url = "https://untrusted.invalid/mod.jar".into();
+        }
+        let client = FakeProvider {
+            source: metadata,
+            calls: Cell::new(0),
+        };
+        let http = FakeHttp::new(vec![response(b"wrong")]);
+        let registry = TrustedSourceRegistry::default();
+        let installer = ContentInstaller::new(&f.files, &client, &http, &registry);
+        assert!(
+            installer
+                .install_remote(
+                    &f.owner,
+                    &request(Provider::Modrinth),
+                    "remote-provider-key-02"
+                )
+                .is_err()
+        );
+        if invalid == "host" {
+            assert!(http.urls.borrow().is_empty());
+        }
+        f.no_effect();
+        let outcomes: i64 =
+            f.db.read(|c| {
+                Ok(
+                    c.query_row("SELECT count(*) FROM management_file_outcomes", [], |r| {
+                        r.get(0)
+                    })?,
+                )
+            })
+            .unwrap();
+        assert_eq!(outcomes, 0);
+    }
+}
+
+#[test]
+fn slow_remote_provider_does_not_block_an_unrelated_file_write() {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    struct Slow {
+        source: ResolvedSource,
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+    impl ProviderClient for Slow {
+        fn resolve(&self, _: Provider, _: &str, _: &str) -> Result<ResolvedSource> {
+            self.entered.send(()).unwrap();
+            self.release.recv_timeout(Duration::from_secs(3)).unwrap();
+            Ok(self.source.clone())
+        }
+    }
+    let f = Fixture::new();
+    let files = f.files.clone();
+    let owner = f.owner.clone();
+    let (entered, waiting) = mpsc::channel();
+    let (release, blocked) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let client = Slow {
+            source: source(Provider::Modrinth, b"verified"),
+            entered,
+            release: blocked,
+        };
+        let http = FakeHttp::new(vec![response(b"verified")]);
+        let registry = TrustedSourceRegistry::default();
+        ContentInstaller::new(&files, &client, &http, &registry).install_remote(
+            &owner,
+            &request(Provider::Modrinth),
+            "slow-install-key-0001",
+        )
+    });
+    waiting.recv_timeout(Duration::from_secs(3)).unwrap();
+    let start = Instant::now();
+    let changed = f.files.mutate_remote(
+        &f.owner,
+        "unrelated-write-key1",
+        crate::files::RemoteFileMutation::Write {
+            path: &RelativePath::parse("mods/unrelated.txt").unwrap(),
+            precondition: &WritePrecondition::Absent,
+            bytes: b"unrelated",
+        },
+    );
+    let elapsed = start.elapsed();
+    let _ = release.send(());
+    let installed = worker.join().unwrap();
+    changed.unwrap();
+    installed.unwrap();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "file write waited for provider"
+    );
+}
+#[test]
+fn whole_install_deadline_refuses_expired_metadata_body_and_effect() {
+    use std::time::{Duration, Instant};
+    let f = Fixture::new();
+    let client = FakeProvider {
+        source: source(Provider::Modrinth, b"verified"),
+        calls: Cell::new(0),
+    };
+    let http = FakeHttp::new(vec![response(b"verified")]);
+    let registry = TrustedSourceRegistry::default();
+    let installer = ContentInstaller::new(&f.files, &client, &http, &registry);
+    assert!(
+        installer
+            .install_with_files(
+                &f.files,
+                &f.owner,
+                &request(Provider::Modrinth),
+                &WritePrecondition::Absent,
+                Some(Instant::now() - Duration::from_secs(1))
+            )
+            .is_err()
+    );
+    assert_eq!(client.calls.get(), 0);
+    assert!(http.urls.borrow().is_empty());
+    f.no_effect();
+    let mut body = DeadlineRead {
+        reader: Box::new(std::io::Cursor::new(b"verified")),
+        deadline: Instant::now() - Duration::from_secs(1),
+    };
+    assert!(body.read(&mut [0u8; 8]).is_err());
+    let files = f.files.for_content(Instant::now() - Duration::from_secs(1));
+    let installed = files.execute_remote(
+        &f.owner,
+        "expired-effect-key01",
+        serde_json::json!(["fixture"]),
+        || {
+            Ok(vec![(
+                crate::identity::Capability::FilesCreate.id().into(),
+                "mods/demo.jar".into(),
+            )])
+        },
+        |files| {
+            files.write(
+                &f.owner,
+                &RelativePath::parse("mods/demo.jar").unwrap(),
+                &WritePrecondition::Absent,
+                b"verified",
+            )?;
+            Ok(serde_json::json!({}))
+        },
+    );
+    assert!(installed.is_err());
+    f.no_effect();
+}
+#[test]
+fn separate_install_admission_is_bounded_and_released() {
+    let first = InstallPermit::acquire().unwrap();
+    let second = InstallPermit::acquire().unwrap();
+    assert!(InstallPermit::acquire().is_err());
+    drop(first);
+    assert!(InstallPermit::acquire().is_ok());
+    drop(second);
+}

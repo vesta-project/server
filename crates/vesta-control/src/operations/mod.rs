@@ -11,6 +11,11 @@ pub use vesta_game_runtime::process::{GenerationId, ProcessPhase};
 mod bindings;
 mod confirmation;
 mod confirmation_repository;
+mod properties_confirmation;
+pub(crate) use properties_confirmation::{
+    PropertiesApproval, accept_properties_confirmation, check_properties_intent,
+    prepare_properties_confirmation, refuse_properties_confirmation,
+};
 mod domain;
 mod game;
 mod input;

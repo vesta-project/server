@@ -686,7 +686,7 @@ fn host_startup_upgrades_original_v8_without_upload_table_and_purges_orphan_stag
         .execute_batch(&format!("DROP TABLE pack_releases; {legacy_release_sql};"))
         .unwrap();
     offline
-        .execute_batch("BEGIN IMMEDIATE; DROP TABLE management_pack_outcomes; DROP TABLE pack_minimum_policy; DROP TABLE file_intents; DROP TABLE file_uploads; DROP TABLE management_device_keys; DROP TABLE management_pairing_codes; DROP TABLE management_owner_links; DROP TABLE user_minecraft_accounts; DROP TABLE user_default_roles; DROP TABLE device_password_grants; DROP TABLE access_role_sources; DELETE FROM role_capabilities WHERE role_id IN ('public','player'); DELETE FROM roles WHERE id IN ('public','player'); PRAGMA user_version=8; COMMIT;")
+        .execute_batch("BEGIN IMMEDIATE; DROP TABLE management_file_outcomes; DROP TABLE management_pack_outcomes; DROP TABLE pack_minimum_policy; DROP TABLE file_intents; DROP TABLE file_uploads; DROP TABLE management_device_keys; DROP TABLE management_pairing_codes; DROP TABLE management_owner_links; DROP TABLE user_minecraft_accounts; DROP TABLE user_default_roles; DROP TABLE device_password_grants; DROP TABLE access_role_sources; DELETE FROM role_capabilities WHERE role_id IN ('public','player'); DELETE FROM roles WHERE id IN ('public','player'); PRAGMA user_version=8; COMMIT;")
         .unwrap();
     assert_eq!(
         offline
@@ -1134,6 +1134,49 @@ fn platform_publication_rechecks_authority_and_revision_and_preserves_native_ref
             .code(),
         "pack_release_revision_mismatch"
     );
+    assert!(matches!(
+        host.shutdown(Duration::from_secs(5)).unwrap(),
+        HostShutdown::Complete
+    ));
+}
+
+#[test]
+fn unfinished_properties_confirmation_is_invalidated_on_host_restart_without_effect() {
+    let f = Fixture::new();
+    let initial = b"online-mode=true\n";
+    std::fs::write(f.temp.path().join("game/server.properties"), initial).unwrap();
+    let host = f.open("minecraft").unwrap();
+    let owner = seed_owner(host.database());
+    let expected = hex::encode(Sha256::digest(initial));
+    let intent = serde_json::json!({"changes":{"online-mode":false},"expected_sha256":expected});
+    let issued = crate::config::ServerPropertiesEditor::new(host.files())
+        .patch(
+            &owner,
+            "restart-properties-key01",
+            serde_json::from_value(intent.clone()).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(issued["state"], "awaiting_confirmation");
+    assert!(matches!(
+        host.shutdown(Duration::from_secs(5)).unwrap(),
+        HostShutdown::Complete
+    ));
+    let host = f.open("minecraft").unwrap();
+    assert_eq!(
+        std::fs::read(f.temp.path().join("game/server.properties")).unwrap(),
+        initial
+    );
+    let mut approved = intent;
+    approved["confirmation_token"] = issued["confirmation_token"].clone();
+    assert!(matches!(
+        crate::config::ServerPropertiesEditor::new(host.files()).patch(
+            &owner,
+            "restart-properties-key01",
+            serde_json::from_value(approved).unwrap()
+        ),
+        Err(crate::files::FileError::ConfirmationInvalid)
+    ));
+    assert_eq!(host.runtime().game_snapshot().unwrap().generation, None);
     assert!(matches!(
         host.shutdown(Duration::from_secs(5)).unwrap(),
         HostShutdown::Complete

@@ -15,8 +15,10 @@ mod mutation;
 mod native;
 mod pack_root;
 mod path;
+mod remote;
 mod root;
 mod upload;
+pub use remote::RemoteFileMutation;
 
 pub(crate) use local_document::read_local_document;
 pub use mutation::{
@@ -60,6 +62,9 @@ pub enum FileError {
     TrashFull,
     IntentsFull,
     UploadFull,
+    IdempotencyConflict,
+    ConfirmationRequired,
+    ConfirmationInvalid,
     InsufficientSpace,
     /// A change was applied but neither recorded nor reversed; inspect before retrying.
     RecoveryRequired(Box<FileError>),
@@ -86,6 +91,9 @@ impl FileError {
             Self::Conflict(_) => "file_conflict",
             Self::TrashFull => "file_trash_full",
             Self::IntentsFull => "file_intents_full",
+            Self::ConfirmationRequired => "confirmation_required",
+            Self::ConfirmationInvalid => "confirmation_invalid",
+            Self::IdempotencyConflict => "idempotency_conflict",
             Self::UploadFull => "file_upload_full",
             Self::InsufficientSpace => "file_insufficient_space",
             Self::RecoveryRequired(_) => "file_recovery_required",
@@ -206,12 +214,18 @@ impl fmt::Debug for FileRead {
     }
 }
 
+#[derive(Clone)]
 pub struct FileBrowser {
     db: StateDatabase,
     root: root::Root,
     audit: vesta_state::audit::AuditLog,
     trash_policy: TrashPolicy,
     upload_policy: UploadPolicy,
+    remote_key: Option<String>,
+    properties_write: bool,
+    content_write: bool,
+    remote_deadline: Option<std::time::Instant>,
+    properties_approval: Option<crate::operations::PropertiesApproval>,
 }
 impl fmt::Debug for FileBrowser {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -231,6 +245,11 @@ impl FileBrowser {
             root,
             trash_policy: TrashPolicy::default(),
             upload_policy: UploadPolicy::default(),
+            remote_key: None,
+            properties_write: false,
+            content_write: false,
+            remote_deadline: None,
+            properties_approval: None,
         })
     }
 
@@ -416,6 +435,16 @@ impl FileBrowser {
     /// A fresh snapshot covers path scope checks and a bounded read of the opened
     /// regular file. Returning bytes does not create a renewable read grant.
     pub fn read(&self, subject: &Subject, path: &RelativePath, limit: usize) -> Result<FileRead> {
+        self.read_with_capability(subject, path, limit, None)
+    }
+
+    pub(crate) fn read_with_capability(
+        &self,
+        subject: &Subject,
+        path: &RelativePath,
+        limit: usize,
+        extra: Option<Capability>,
+    ) -> Result<FileRead> {
         if limit == 0 || limit > MAX_READ_BYTES {
             return Err(FileError::InvalidLimit);
         }
@@ -427,6 +456,11 @@ impl FileBrowser {
                     self.db.clock().millis(),
                     Some(subject),
                 )?;
+                if let Some(capability) = extra
+                    && !policy.check(capability, None).allowed()
+                {
+                    return Err(ControlError::forbidden(identity::DenyReason::NotGranted).into());
+                }
                 authorize(&policy, Capability::FilesRead, &path.resource())?;
                 let checked = self.root.resolve(Some(path))?;
                 authorize(&policy, Capability::FilesRead, &checked.resource)?;

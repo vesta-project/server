@@ -195,14 +195,17 @@ fn utf8_document(bytes: &[u8], limit: usize) -> Result<&str, AdmissionDataError>
     Ok(text)
 }
 
-fn is_ignored(line: &str) -> bool {
+pub(crate) fn is_ignored(line: &str) -> bool {
     let line = line.trim_ascii_start();
     line.is_empty() || line.starts_with(['#', '!'])
 }
 
 /// Joins backslash continuations as `java.util.Properties` does. The flag reports whether
 /// any were joined, so a continued line can never silently set one of the keys we read.
-fn logical_line<'a>(first: &'a str, rest: &mut impl Iterator<Item = &'a str>) -> (String, bool) {
+pub(crate) fn logical_line<'a>(
+    first: &'a str,
+    rest: &mut impl Iterator<Item = &'a str>,
+) -> (String, bool) {
     let mut logical = String::new();
     let mut current = first;
     let mut continued = false;
@@ -226,7 +229,7 @@ fn ends_with_continuation(line: &str) -> bool {
 }
 
 /// The key ends at the first unescaped separator (`=`, `:` or whitespace), as in Java.
-fn split_pair(line: &str) -> (&str, &str) {
+pub(crate) fn split_pair(line: &str) -> (&str, &str) {
     let mut escaped = false;
     let key_end = line
         .char_indices()
@@ -250,7 +253,7 @@ fn split_pair(line: &str) -> (&str, &str) {
     (key, rest)
 }
 
-fn unescape(raw: &str) -> Result<String, AdmissionDataError> {
+pub(crate) fn unescape(raw: &str) -> Result<String, AdmissionDataError> {
     let mut out = String::with_capacity(raw.len());
     let mut chars = raw.chars();
 

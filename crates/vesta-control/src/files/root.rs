@@ -5,10 +5,13 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+#[derive(Clone)]
 pub(super) struct Root {
     raw: PathBuf,
     canonical: PathBuf,
     protected: Vec<PathBuf>,
+    pub(super) remote_documents: bool,
+    properties_exception: bool,
 }
 pub(super) struct CheckedPath {
     pub(super) path: PathBuf,
@@ -42,9 +45,16 @@ impl Root {
             raw: root.to_path_buf(),
             canonical,
             protected,
+            remote_documents: false,
+            properties_exception: false,
         };
         result.resource(&result.canonical)?;
         Ok(result)
+    }
+    pub(super) fn remote(mut self, properties_exception: bool) -> Self {
+        self.remote_documents = true;
+        self.properties_exception = properties_exception;
+        self
     }
     pub(super) fn resolve(&self, relative: Option<&RelativePath>) -> Result<CheckedPath> {
         let requested = relative
@@ -111,6 +121,9 @@ impl Root {
             parts.push(text);
         }
         let text = parts.join("/");
+        if self.remote_documents {
+            remote_document(&text, self.properties_exception)?;
+        }
         if text.is_empty() {
             Ok(Resource::ROOT)
         } else {
@@ -250,4 +263,51 @@ fn within(path: &Path, parent: &Path) -> bool {
         }
     }
     true
+}
+
+/// Applies to both submitted and native/opened-handle canonical resources.
+pub(super) fn remote_document(text: &str, properties_exception: bool) -> Result<()> {
+    if properties_exception && text.eq_ignore_ascii_case("server.properties") {
+        return Ok(());
+    }
+    if text.split('/').any(|part| {
+        [
+            "server.properties",
+            "whitelist.json",
+            "banned-players.json",
+            "banned-ips.json",
+            "ops.json",
+        ]
+        .iter()
+        .any(|name| part.eq_ignore_ascii_case(name))
+    }) {
+        return Err(FileError::ProtectedPath);
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod remote_document_tests {
+    use super::*;
+    #[test]
+    fn canonical_documents_are_excluded_and_exception_is_root_properties_only() {
+        for name in [
+            "server.properties",
+            "SERVER.PROPERTIES",
+            "whitelist.json",
+            "OPS.JSON",
+            "banned-players.json",
+            "banned-ips.json",
+            "config/server.properties",
+        ] {
+            assert_eq!(remote_document(name, false), Err(FileError::ProtectedPath));
+        }
+        assert!(remote_document("server.properties", true).is_ok());
+        for name in [
+            "ops.json",
+            "config/server.properties",
+            "server.properties/child",
+        ] {
+            assert_eq!(remote_document(name, true), Err(FileError::ProtectedPath));
+        }
+    }
 }

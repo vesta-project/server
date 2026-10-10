@@ -610,6 +610,11 @@ impl Transport {
             .thread_name("vesta-realtime-check")
             .build()
             .map_err(|_| TransportError::Runtime)?;
+        let install_runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(WORKERS)
+            .thread_name("vesta-content-install")
+            .build()
+            .map_err(|_| TransportError::Runtime)?;
         let refresh = host
             .start_admission_refresh()
             .map_err(|_| TransportError::Runtime)?;
@@ -627,9 +632,11 @@ impl Transport {
                     serving_tls,
                     stopped,
                     realtime_runtime.handle().clone(),
+                    install_runtime.handle().clone(),
                 ));
                 drop(refresh);
                 drop(realtime_runtime);
+                drop(install_runtime);
                 drop(runtime);
                 let _ = done.send(());
             })
@@ -699,6 +706,7 @@ struct Shared {
     limiter: Mutex<PeerRateLimiter>,
     jobs: BlockingJobs,
     realtime_jobs: BlockingJobs,
+    install_jobs: BlockingJobs,
     downloads: Arc<Downloads<vesta_control::pack_access::RealtimeSession>>,
     realtime: realtime::Sockets,
     stop: watch::Receiver<bool>,
@@ -779,6 +787,7 @@ async fn serve(
     tls: Arc<tls::Material>,
     mut stop: watch::Receiver<bool>,
     realtime_runtime: tokio::runtime::Handle,
+    install_runtime: tokio::runtime::Handle,
 ) {
     let Ok(listener) = TcpListener::from_std(socket) else {
         return;
@@ -797,6 +806,7 @@ async fn serve(
         stop: stop.clone(),
         jobs: BlockingJobs::new(tokio::runtime::Handle::current()),
         realtime_jobs: BlockingJobs::new(realtime_runtime),
+        install_jobs: BlockingJobs::new(install_runtime),
     });
     let handshakes = Arc::new(Semaphore::new(HANDSHAKES));
     let mut connection_limiter = PeerRateLimiter::new(
@@ -857,6 +867,7 @@ async fn serve(
             }
         }
         shared.jobs.reap(false).await;
+        shared.install_jobs.reap(false).await;
         shared.realtime.reap(false).await;
         shared.realtime_jobs.reap(false).await;
     }
@@ -866,6 +877,7 @@ async fn serve(
     shared.realtime.reap(true).await;
     shared.realtime_jobs.reap(true).await;
     shared.jobs.reap(true).await;
+    shared.install_jobs.reap(true).await;
 }
 
 async fn handle(

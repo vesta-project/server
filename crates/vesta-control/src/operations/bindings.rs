@@ -80,6 +80,9 @@ impl GameCommand {
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) struct SourceRevision(String);
 impl SourceRevision {
+    pub(super) fn for_properties(hash: &str) -> Self {
+        Self(format!("properties-sha256:{hash}"))
+    }
     pub(super) fn for_game(generation: Option<GenerationId>) -> Self {
         Self(format!(
             "game-generation:{}",

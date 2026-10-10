@@ -958,3 +958,6 @@ enum WireListener {
 
 #[cfg(test)]
 mod tests;
+
+mod properties;
+pub use properties::{PropertiesPatch, ServerPropertiesEditor};

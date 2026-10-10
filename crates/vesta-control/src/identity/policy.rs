@@ -182,6 +182,18 @@ impl PolicySnapshot {
         }
         Decision::Deny(DenyReason::NotGranted)
     }
+    /// Surface admission only, before a server-resolved resource is known. Every
+    /// actual resource still requires `check`; this is never an effect grant.
+    pub(crate) fn has_scoped_grant(&self, capability: Capability) -> bool {
+        self.has_current_identity()
+            && capability.scoped()
+            && self.tier_permits(capability)
+            && self.allows.iter().any(|g| g.capability() == capability)
+            && !self
+                .denies
+                .iter()
+                .any(|g| g.capability() == capability && g.scope().is_all())
+    }
     /// Network admission before a server-resolved leaf name is known. Establishes
     /// only that at least one direct child with this suffix is currently writable;
     /// the resolved name must still pass the ordinary exact-resource check.

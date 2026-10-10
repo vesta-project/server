@@ -701,3 +701,61 @@ fn tls_reload_reads_and_validates_without_holding_the_handshake_lock() {
     assert_eq!(material.last_error(), Some(TransportError::TlsMaterial));
     assert_eq!(material.fingerprint().unwrap(), before);
 }
+
+#[test]
+fn saturated_install_workers_leave_ordinary_http_workers_available() {
+    let http_runtime = disk_runtime();
+    let install_runtime = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(WORKERS)
+        .build()
+        .unwrap();
+    http_runtime.block_on(async {
+        let installs = Arc::new(BlockingJobs::new(install_runtime.handle().clone()));
+        let http = BlockingJobs::new(tokio::runtime::Handle::current());
+        let (started_tx, started_rx) = mpsc::channel();
+        let mut release = Vec::new();
+        let mut holders = Vec::new();
+        for _ in 0..WORKERS {
+            let (tx, rx) = mpsc::channel::<()>();
+            release.push(tx);
+            let started = started_tx.clone();
+            let pool = installs.clone();
+            holders.push(tokio::spawn(async move {
+                pool.run(move || {
+                    started.send(()).unwrap();
+                    let _ = rx.recv_timeout(Duration::from_secs(3));
+                })
+                .await
+                .unwrap();
+            }));
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut started = 0;
+        while started < WORKERS {
+            while started_rx.try_recv().is_ok() {
+                started += 1;
+            }
+            assert!(Instant::now() < deadline);
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            installs.run(|| ()).await.is_err(),
+            "install admission must remain bounded"
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), http.run(|| 42))
+                .await
+                .unwrap()
+                .unwrap(),
+            42
+        );
+        for tx in release {
+            tx.send(()).unwrap();
+        }
+        for holder in holders {
+            holder.await.unwrap();
+        }
+        installs.reap(true).await;
+        http.reap(true).await;
+    });
+}

@@ -59,12 +59,12 @@ impl ConfirmationToken {
         // Construction admits only the ASCII base64url alphabet.
         std::str::from_utf8(&self.bytes).expect("validated confirmation token is ASCII")
     }
-    fn random() -> OperationsResult<Self> {
+    pub(super) fn random() -> OperationsResult<Self> {
         let mut raw = Zeroizing::new([0_u8; 32]);
         getrandom::fill(&mut *raw).map_err(|_| StateError::new("state_random_unavailable"))?;
         Self::try_from(URL_SAFE_NO_PAD.encode(raw.as_slice()))
     }
-    fn hash(&self) -> Zeroizing<String> {
+    pub(crate) fn hash(&self) -> Zeroizing<String> {
         Zeroizing::new(hex::encode(Sha256::digest(self.bytes.as_slice())))
     }
 }

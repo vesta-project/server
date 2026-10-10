@@ -133,10 +133,21 @@ impl Reason {
 }
 
 impl FileBrowser {
+    pub(super) fn mutation_guard<'a>(
+        &self,
+        admission: &'a Mutex<()>,
+    ) -> Result<std::sync::MutexGuard<'a, ()>> {
+        let deadline = self.remote_deadline.or_else(|| {
+            self.root
+                .remote_documents
+                .then(|| std::time::Instant::now() + super::remote::REMOTE_MUTATION_TIMEOUT)
+        });
+        super::remote::lock_admission(admission, deadline)
+    }
     /// Creates exactly one directory level; the existing parent must be authorized.
     pub fn mkdir(&self, subject: &Subject, path: &RelativePath) -> Result<()> {
         let admission = mutation_admission(self.db.directory().path())?;
-        let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
+        let _guard = self.mutation_guard(&admission)?;
         let intent = self.begin_intent(subject, "mkdir", path, &Intent::default())?;
         let mut target = None;
         let result = self
@@ -191,7 +202,18 @@ impl FileBrowser {
     ) -> Result<FileChange> {
         check_hex(expected_sha256)?;
         let admission = mutation_admission(self.db.directory().path())?;
-        let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
+        let _guard = self.mutation_guard(&admission)?;
+        let size = self
+            .db
+            .read_with(|snapshot| {
+                let c = snapshot.connection();
+                self.authorize(c, subject, from, Capability::FilesRename)?;
+                self.authorize_destination(c, subject, to, Capability::FilesRename)?;
+                let checked = self.root.resolve(Some(from))?;
+                require_hash(&checked.path, Some(expected_sha256))?;
+                Ok::<_, FileError>(checked.metadata.len())
+            })
+            .map_err(FileError::from)?;
         let intent = self.begin_intent(
             subject,
             "rename",
@@ -200,6 +222,7 @@ impl FileBrowser {
                 to: Some(to.as_str().into()),
                 previous: Some(expected_sha256.into()),
                 effect: Some(expected_sha256.into()),
+                size,
                 ..Intent::default()
             },
         )?;
@@ -251,7 +274,7 @@ impl FileBrowser {
         bytes: &[u8],
     ) -> Result<FileChange> {
         let admission = mutation_admission(self.db.directory().path())?;
-        let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
+        let _guard = self.mutation_guard(&admission)?;
         self.write_locked(subject, path, precondition, bytes, None)
     }
 
@@ -349,6 +372,7 @@ impl FileBrowser {
                 }
             }
             self.authorize(connection, subject, path, capability)?;
+            self.before_remote_write(connection, subject)?;
             crash_point("before")?;
             match precondition {
                 WritePrecondition::Absent => stage.link_absent(&target)?,
@@ -410,7 +434,7 @@ impl FileBrowser {
     ) -> Result<TrashEntry> {
         check_hex(expected_sha256)?;
         let admission = mutation_admission(self.db.directory().path())?;
-        let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
+        let _guard = self.mutation_guard(&admission)?;
         let parent = self.authorized_parent(subject, path, Capability::FilesDelete)?;
         let target = parent.join(leaf(path));
         let id = random_id()?;
@@ -474,11 +498,14 @@ impl FileBrowser {
     /// Puts a trashed copy back at its original path, which must now be absent.
     pub fn restore(&self, subject: &Subject, id: &str) -> Result<FileChange> {
         let admission = mutation_admission(self.db.directory().path())?;
-        let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
+        let _guard = self.mutation_guard(&admission)?;
         let name = trash_name(id)?;
         let entry = self
             .db
-            .read_with(|snapshot| load_entry(snapshot.connection(), self.db.server_id(), id))
+            .read_with(|snapshot| {
+                self.check_remote_trash_owner(snapshot.connection(), subject, id)?;
+                load_entry(snapshot.connection(), self.db.server_id(), id)
+            })
             .map_err(FileError::from)?
             .ok_or(FileError::NotFound)?;
         let parent = self.authorized_parent(subject, &entry.path, Capability::FilesCreate)?;
@@ -530,6 +557,7 @@ impl FileBrowser {
             let connection = transaction.connection();
             require_hash(&stage.path, Some(&entry.sha256))?;
             self.authorize(connection, subject, &entry.path, Capability::FilesCreate)?;
+            self.check_remote_trash_owner(connection, subject, id)?;
             let current = load_entry(connection, self.db.server_id(), id)?;
             if current.as_ref() != Some(&entry) {
                 return Err(FileError::NotFound);
@@ -588,6 +616,15 @@ impl FileBrowser {
     }
 
     /// Entries whose original path the subject may currently read.
+    fn check_remote_trash_owner(&self, c: &Connection, subject: &Subject, id: &str) -> Result<()> {
+        if self.root.remote_documents {
+            let owned: i64 = c.query_row("SELECT count(*) FROM file_trash WHERE server_id=? AND id=? AND principal_id=? AND device_id=?",params![self.db.server_id(),id,subject.principal.as_str(),subject.device.as_str()],|r|r.get(0))?;
+            if owned != 1 {
+                return Err(FileError::NotFound);
+            }
+        }
+        Ok(())
+    }
     pub fn trash_entries(&self, subject: &Subject) -> Result<Vec<TrashEntry>> {
         self.db
             .read_with(|snapshot| {
@@ -599,15 +636,16 @@ impl FileBrowser {
                     Some(subject),
                 )?;
                 let mut statement = connection.prepare(
-                    "SELECT id FROM file_trash WHERE server_id=? AND status!='restored' ORDER BY trashed_at, id LIMIT 10001",
+                    "SELECT id FROM file_trash WHERE server_id=? AND status!='restored' AND (?=0 OR (principal_id=? AND device_id=?)) ORDER BY trashed_at, id LIMIT 10001",
                 )?;
                 let ids = statement
-                    .query_map([self.db.server_id()], |row| row.get::<_, String>(0))?
+                    .query_map(params![self.db.server_id(),self.root.remote_documents as i64,subject.principal.as_str(),subject.device.as_str()], |row| row.get::<_, String>(0))?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 let mut entries = Vec::new();
                 for id in ids {
                     let entry =
                         load_entry(connection, self.db.server_id(), &id)?.ok_or(FileError::Unavailable)?;
+                    if self.root.remote_documents && (super::root::remote_document(entry.path.as_str(), false).is_err() || matches!(self.root.resolve(Some(&entry.path)),Err(FileError::ProtectedPath | FileError::LinkedPath))) { continue; }
                     if policy.check(Capability::FilesRead, Some(&entry.path.resource()))
                         == identity::Decision::Allow
                     {
@@ -623,7 +661,7 @@ impl FileBrowser {
     /// retired only after copy removal succeeds (absent copies are also safe to retire).
     pub fn purge_expired_trash(&self) -> Result<usize> {
         let admission = mutation_admission(self.db.directory().path())?;
-        let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
+        let _guard = self.mutation_guard(&admission)?;
         let trash = self.trash_dir()?;
         let ids = self.db.read_with(|snapshot| {
             let mut statement = snapshot.connection().prepare(
@@ -650,7 +688,7 @@ impl FileBrowser {
     /// Call again if a legacy backlog exceeds the per-call work bound.
     pub fn reconcile_pending(&self) -> Result<usize> {
         let admission = mutation_admission(self.db.directory().path())?;
-        let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
+        let _guard = self.mutation_guard(&admission)?;
         let mut total = self.reconcile_intents()?;
         for _ in 0..MAX_RECONCILE_BATCHES {
             let count = self.db.write_with(|transaction| {
@@ -876,7 +914,7 @@ impl FileBrowser {
             trash.sync().map_err(state_io)?;
             let retention = i64::try_from(self.trash_policy.retention.as_millis()).map_err(|_| FileError::InvalidLimit)?;
             connection.execute("INSERT INTO file_trash (id,server_id,path,sha256,size,reason,principal_id,device_id,status,effect_sha256,unix_mode,readonly,trashed_at,expires_at) VALUES (?,?,?,?,?,?,?,?,'pending',?,?,?,?,?)", params![
-                id,self.db.server_id(),path.as_str(),current,i64::try_from(size).map_err(|_| FileError::TooLarge)?,reason.wire(),subject.principal.as_str(),subject.device.as_str(),effect,unix_mode(&metadata.permissions()),i64::from(metadata.permissions().readonly()),now,now.saturating_add(retention)
+                id,self.db.server_id(),resource.as_str(),current,i64::try_from(size).map_err(|_| FileError::TooLarge)?,reason.wire(),subject.principal.as_str(),subject.device.as_str(),effect,unix_mode(&metadata.permissions()),i64::from(metadata.permissions().readonly()),now,now.saturating_add(retention)
             ])?;
             Ok(id.to_owned())
         }).map_err(FileError::from);

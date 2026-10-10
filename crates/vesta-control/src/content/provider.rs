@@ -3,7 +3,7 @@ use super::{
     ContentError, ExpectedHash, Provider, ProviderClient, ResolvedSource, Result, http, validate_id,
 };
 use serde::Deserialize;
-use std::io::Read;
+use std::{io::Read, time::Instant};
 
 const MAX_METADATA_BYTES: usize = 1_024 * 1_024;
 
@@ -55,6 +55,22 @@ impl UreqProviderClient {
     }
 }
 impl ProviderClient for UreqProviderClient {
+    fn resolve_with_deadline(
+        &self,
+        provider: Provider,
+        project_id: &str,
+        version_id: &str,
+        deadline: Instant,
+    ) -> Result<ResolvedSource> {
+        super::deadline_check(deadline)?;
+        let client = Self {
+            agent: http::agent_with_timeout(deadline.saturating_duration_since(Instant::now())),
+            curseforge_api_key: self.curseforge_api_key.clone(),
+        };
+        let source = client.resolve(provider, project_id, version_id)?;
+        super::deadline_check(deadline)?;
+        Ok(source)
+    }
     fn resolve(
         &self,
         provider: Provider,

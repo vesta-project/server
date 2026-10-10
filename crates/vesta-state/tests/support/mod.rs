@@ -150,10 +150,11 @@ pub fn remove_directory_link(link: &Path) -> io::Result<()> {
     }
 }
 
-/// Remove current pack-management and unified-auth additions before constructing an owned
+/// Remove current file/pack-management and unified-auth additions before constructing an owned
 /// pre-V12 migration fixture. Marker-only downgrades are not old schemas.
 pub fn remove_v12_schema(connection: &rusqlite::Connection) {
     connection.execute_batch("BEGIN IMMEDIATE;
+        DROP TABLE management_file_outcomes;
         DROP TABLE management_pack_outcomes;
         DROP TABLE pack_minimum_policy;
         DROP TABLE management_device_keys;

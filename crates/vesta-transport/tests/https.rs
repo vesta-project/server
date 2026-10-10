@@ -2748,3 +2748,6 @@ fn management_pack_mutations_are_authorized_atomic_and_idempotent() {
         .unwrap();
     assert_eq!(counts, (2, 3));
 }
+
+#[path = "support/management_files.rs"]
+mod management_files;

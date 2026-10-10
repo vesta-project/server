@@ -16,28 +16,36 @@ use vesta_control::{
     },
 };
 
+#[path = "manage_files.rs"]
+mod files;
+
 static REQUEST: AtomicU64 = AtomicU64::new(1);
+pub(super) fn file_endpoint(path: &str) -> bool {
+    files::implemented(path)
+}
 pub(super) fn implemented(path: &str) -> bool {
-    matches!(
-        path,
-        "/api/v3/manage/server"
-            | "/api/v3/manage/server/status"
-            | "/api/v3/manage/lifecycle/start"
-            | "/api/v3/manage/lifecycle/stop"
-            | "/api/v3/manage/lifecycle/restart"
-            | "/api/v3/manage/lifecycle/kill"
-            | "/api/v3/manage/operations"
-            | "/api/v3/manage/console"
-            | "/api/v3/manage/console/stream"
-            | "/api/v3/manage/players"
-            | "/api/v3/manage/pack"
-            | "/api/v3/manage/audit"
-            | "/api/v3/manage/console/command"
-            | "/api/v3/manage/pack/publish"
-            | "/api/v3/manage/pack/minimum"
-    ) || path
-        .strip_prefix("/api/v3/manage/operations/")
-        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+    files::implemented(path)
+        || matches!(
+            path,
+            "/api/v3/manage/server"
+                | "/api/v3/manage/server/status"
+                | "/api/v3/manage/lifecycle/start"
+                | "/api/v3/manage/lifecycle/stop"
+                | "/api/v3/manage/lifecycle/restart"
+                | "/api/v3/manage/lifecycle/kill"
+                | "/api/v3/manage/operations"
+                | "/api/v3/manage/console"
+                | "/api/v3/manage/console/stream"
+                | "/api/v3/manage/players"
+                | "/api/v3/manage/pack"
+                | "/api/v3/manage/audit"
+                | "/api/v3/manage/console/command"
+                | "/api/v3/manage/pack/publish"
+                | "/api/v3/manage/pack/minimum"
+        )
+        || path
+            .strip_prefix("/api/v3/manage/operations/")
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
 }
 fn envelope(status: StatusCode, payload: Value) -> Reply {
     let mut value = json!({"api_version":"3", "request_id":format!("request-{}", REQUEST.fetch_add(1, Ordering::Relaxed))});
@@ -313,8 +321,13 @@ pub(super) struct Request<'a> {
     pub authorization: Option<&'a str>,
     pub idempotency: Option<&'a str>,
     pub bytes: &'a [u8],
+    pub if_match: Option<&'a str>,
+    pub if_none_match: Option<&'a str>,
 }
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
+    if files::implemented(request.path) {
+        return files::dispatch(host, request);
+    }
     let Request {
         method,
         path,
@@ -322,6 +335,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         authorization,
         idempotency,
         bytes,
+        ..
     } = request;
     let action = path
         .strip_prefix("/api/v3/manage/")

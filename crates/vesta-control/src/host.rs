@@ -286,6 +286,7 @@ impl Host {
             graceful_stop: self.graceful_stop,
             runtime: self.runtime().network_handle(),
             preparations: self.preparations.clone(),
+            files: self.files.for_remote(),
         }
     }
 
@@ -478,6 +479,7 @@ pub struct NetworkHost {
     graceful_stop: GracefulStop,
     runtime: crate::operations::RuntimeHandle,
     preparations: Arc<Vec<PackPreparation>>,
+    files: FileBrowser,
 }
 /// Owned local refresh composition. Dropping it signals and joins the worker,
 /// including any in-progress bounded document read. No remote management route.
@@ -525,6 +527,10 @@ impl NetworkHost {
                     .map_err(HostError::PackBuild)
             }
         }
+    }
+
+    pub fn files(&self) -> &FileBrowser {
+        &self.files
     }
 
     pub fn runtime(&self) -> &crate::operations::RuntimeHandle {

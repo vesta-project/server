@@ -17,6 +17,8 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         11 => apply_v11(c),
         12 => apply_v12(c),
         13 => apply_v13(c),
+        14 => apply_v14(c),
+        15 => apply_v15(c, now_ms),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -730,6 +732,33 @@ fn apply_v13(c: &Connection) -> crate::Result<()> {
             minimum_revision INTEGER NOT NULL CHECK(minimum_revision BETWEEN 1 AND 9007199254740991)
         ) STRICT;
     "#,
+    )?;
+    Ok(())
+}
+
+fn apply_v14(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(
+        r#"
+        CREATE TABLE management_file_outcomes (
+            server_id TEXT NOT NULL REFERENCES server_identity(server_id),
+            principal_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            request_key TEXT NOT NULL CHECK(length(request_key) BETWEEN 1 AND 128),
+            input_sha256 TEXT NOT NULL CHECK(length(input_sha256)=64),
+            authority_json TEXT NOT NULL CHECK(length(authority_json)<=16384),
+            outcome_json TEXT CHECK(length(outcome_json)<=4096),
+            PRIMARY KEY(server_id,principal_id,device_id,request_key)
+        ) STRICT;
+    "#,
+    )?;
+    Ok(())
+}
+
+fn apply_v15(c: &Connection, now_ms: i64) -> crate::Result<()> {
+    c.execute_batch("ALTER TABLE management_file_outcomes ADD COLUMN completed_at INTEGER CHECK(completed_at IS NULL OR completed_at>=0); CREATE INDEX management_file_outcomes_retention ON management_file_outcomes(server_id,completed_at) WHERE outcome_json IS NOT NULL;")?;
+    c.execute(
+        "UPDATE management_file_outcomes SET completed_at=? WHERE outcome_json IS NOT NULL",
+        [now_ms],
     )?;
     Ok(())
 }

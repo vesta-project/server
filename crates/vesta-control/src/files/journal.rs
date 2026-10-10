@@ -80,7 +80,52 @@ impl FileBrowser {
             "success",
             false,
         )?;
+        self.check_remote_completion_authority(c, &subject)?;
         self.audit.append(c, &record)?;
+        let mut outcome = match kind.as_str() {
+            "mkdir" => serde_json::json!({"outcome":"succeeded"}),
+            "delete" => serde_json::json!({"outcome":"succeeded","trash_id":intent.trash}),
+            _ => {
+                serde_json::json!({"outcome":"succeeded","sha256":intent.effect,"size":intent.size.to_string(),"trash_id":if kind == "write" { intent.trash } else { None }})
+            }
+        };
+        if self.properties_write {
+            outcome["restart_needed"] = serde_json::json!(true);
+            self.audit.append(
+                c,
+                &AuditRecord::new(
+                    AuditActor::new(
+                        subject.principal.as_str().into(),
+                        subject.device.as_str().into(),
+                        "config".into(),
+                    )?,
+                    "config.server_properties".into(),
+                    "server-properties".into(),
+                    "success".into(),
+                    None,
+                    [],
+                )?,
+            )?;
+        }
+        if self.content_write {
+            self.audit.append(
+                c,
+                &AuditRecord::new(
+                    AuditActor::new(
+                        subject.principal.as_str().into(),
+                        subject.device.as_str().into(),
+                        "content".into(),
+                    )?,
+                    "content.install".into(),
+                    "provider-content".into(),
+                    "success".into(),
+                    None,
+                    [],
+                )?,
+            )?;
+        }
+        self.remote_complete(c, &subject, outcome)?;
+
         let count = c.execute("UPDATE file_intents SET status='complete' WHERE server_id=? AND id=? AND status='pending'", params![self.db.server_id(), id])?;
         if count != 1 {
             return Err(FileError::Unavailable);

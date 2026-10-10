@@ -131,7 +131,7 @@ impl FileBrowser {
             check_hex(hash)?;
         }
         let admission = mutation_admission(self.db.directory().path())?;
-        let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
+        let _guard = self.mutation_guard(&admission)?;
         // Authorize before maintenance or inspecting quota. Recheck in reservation transaction.
         self.authorized_parent(subject, path, capability(precondition))?;
         self.purge_uploads_locked()?;
@@ -163,6 +163,7 @@ impl FileBrowser {
             let expected = match precondition { WritePrecondition::Absent => None, WritePrecondition::Matches(s) => Some(s.as_str()) };
             c.execute("INSERT INTO file_uploads (id,server_id,principal_id,device_id,path,expected_sha256,total_size,final_sha256,expires_at) VALUES (?,?,?,?,?,?,?,?,?)",
                 params![id.as_str(), self.db.server_id(), subject.principal.as_str(), subject.device.as_str(), path.as_str(), expected, total_size as i64, final_sha256, expires])?;
+            self.remote_upload_complete(c, subject, "files.upload.begin", serde_json::json!({"upload_id":id.as_str(),"offset":"0"}))?;
             Ok(id.clone())
         }).map_err(FileError::from);
         if let Err(error) = &result
@@ -192,7 +193,7 @@ impl FileBrowser {
             return Err(FileError::TooLarge);
         }
         let admission = mutation_admission(self.db.directory().path())?;
-        let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
+        let _guard = self.mutation_guard(&admission)?;
         self.db
             .write_with(|tx| {
                 let upload = self.owned_upload(tx.connection(), subject, id)?;
@@ -232,6 +233,12 @@ impl FileBrowser {
                 if remainder.is_empty() {
                     // A previous append may have written bytes but failed its flush.
                     file.sync_all().map_err(super::io_error)?;
+                    self.remote_upload_complete(
+                        tx.connection(),
+                        subject,
+                        "files.upload.append",
+                        serde_json::json!({"offset":length.to_string()}),
+                    )?;
                     return Ok(length);
                 }
                 require_space(self.db.directory().path(), remainder.len() as u64)?;
@@ -241,6 +248,12 @@ impl FileBrowser {
                 // file's actual length and verifies any persisted prefix above.
                 file.write_all(remainder).map_err(super::io_error)?;
                 file.sync_all().map_err(super::io_error)?;
+                self.remote_upload_complete(
+                    tx.connection(),
+                    subject,
+                    "files.upload.append",
+                    serde_json::json!({"offset":end.to_string()}),
+                )?;
                 Ok(end)
             })
             .map_err(FileError::from)
@@ -248,7 +261,7 @@ impl FileBrowser {
 
     pub fn finish(&self, subject: &Subject, id: &UploadId) -> Result<FileChange> {
         let admission = mutation_admission(self.db.directory().path())?;
-        let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
+        let _guard = self.mutation_guard(&admission)?;
         let upload = self
             .db
             .read_with(|s| self.owned_upload(s.connection(), subject, id))
@@ -292,7 +305,7 @@ impl FileBrowser {
 
     pub fn abort(&self, subject: &Subject, id: &UploadId) -> Result<()> {
         let admission = mutation_admission(self.db.directory().path())?;
-        let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
+        let _guard = self.mutation_guard(&admission)?;
         self.db
             .write_with(|tx| {
                 let connection = tx.connection();
@@ -318,6 +331,7 @@ impl FileBrowser {
                     "DELETE FROM file_uploads WHERE server_id=? AND id=?",
                     params![self.db.server_id(), id.as_str()],
                 )?;
+                self.remote_upload_complete(connection, subject, "files.upload.abort", serde_json::json!({"outcome":"succeeded"}))?;
                 Ok(())
             })
             .map_err(FileError::from)
@@ -326,7 +340,7 @@ impl FileBrowser {
     /// Trusted host maintenance: purge expired rows, missing stages and owned orphan names.
     pub fn purge_expired_uploads(&self) -> Result<usize> {
         let admission = mutation_admission(self.db.directory().path())?;
-        let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
+        let _guard = self.mutation_guard(&admission)?;
         self.purge_uploads_locked()
     }
     fn purge_uploads_locked(&self) -> Result<usize> {
@@ -364,6 +378,18 @@ impl FileBrowser {
         let upload = self.owned_upload_record(c, subject, id, true)?;
         self.authorize(c, subject, &upload.path, upload.capability())?;
         Ok(upload)
+    }
+    pub(super) fn upload_authority(
+        &self,
+        subject: &Subject,
+        id: &UploadId,
+    ) -> Result<(RelativePath, Capability)> {
+        self.db
+            .read_with(|snapshot| {
+                let upload = self.owned_upload_record(snapshot.connection(), subject, id, false)?;
+                Ok((upload.path.clone(), upload.capability()))
+            })
+            .map_err(FileError::from)
     }
     fn owned_upload_record(
         &self,

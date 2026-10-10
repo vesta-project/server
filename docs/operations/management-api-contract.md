@@ -1,9 +1,10 @@
 # Remote management API contract — DRAFT 0.1
 
-**P2 authentication and operational management in section 2.1 are implemented.**
+**P2 authentication and operational management in sections 2.1–2.2 are implemented.**
 This includes real deterministically redacted console text/streaming, durable
-console command delivery and authorized pack publish/minimum mutations. Sections
-3 onward remain draft proposals except where section 2.1 freezes an implemented
+console command delivery, authorized pack publish/minimum mutations and bounded
+game-root files/provider installs/server.properties editing. Sections
+3 onward remain draft proposals except where sections 2.1–2.2 freeze an implemented
 shape. This is not completion of every P3 supervisor/release gate. Implemented
 shapes override conflicting draft envelopes, timestamps, generations, redaction
 and endpoint proposals.
@@ -27,7 +28,7 @@ specification and event schemas must freeze the reviewed wire contract first.
 `management_unavailable`. V2 authenticates pack access, not canonical management
 principals/devices/sessions; neither an alias nor a redirect may upgrade it.
 V3 authentication and authenticated placeholder refusals are implemented as
-described in section 2; the implemented operational subset is specified in section 2.1.
+described in section 2; the implemented operational subset is specified in sections 2.1–2.2.
 
 A future authenticated `/capabilities` response negotiates API/schema version,
 stable server identity, supported adapters/features and effective request limits.
@@ -276,7 +277,9 @@ or `confirmation_required`; 401 `management_session_invalid`; 403
 `temporarily_unavailable`. Authentication aliases and future placeholders retain
 section 2's legacy errors. Cookies, query credentials, unknown fields, duplicate
 bearer/key headers, non-object mutation JSON and bodies on GET are refused.
-No client path, executable, argv, URL or hash is accepted as authority.
+No client executable, argv or URL is accepted as authority. Section 2.2 accepts
+validated game-root-relative resources and optimistic SHA-256 validators; neither
+grants authority or selects an agent/native executable.
 
 ### Exact endpoints and data shapes
 
@@ -427,11 +430,217 @@ in-process monotonic incarnation observation, not readiness.
 
 Remaining gaps: detailed operation result/error projection, retained expiring
 pagination snapshots, persistent stopped-control generations and paginated player
-collections. Files/config and every other operational path remain authenticated
-501 placeholders. No capabilities were added or admitted into automatic role
+collections. Section 2.2 implements a bounded files/content/server-properties
+subset. Other unimplemented management paths remain authenticated 501
+placeholders. No capabilities were added or admitted into automatic role
 sources. TLS inert-child tests cover start → running → graceful stop → stopped,
 confirmed kill, command delivery, real redacted HTTP/stream content, known players,
 and durable pack publish/minimum outcomes.
+
+## 2.2 Implemented game-root files, provider installs and server.properties
+
+Only the exact routes below are added to the implemented subset; unrelated
+management placeholders stay authenticated 501. All requests require a canonical
+**device session** and current existing capabilities. Pack passwords, pack-only
+roles and anonymous access grant no administrative file authority. No new
+capabilities or automatic-role grants are introduced.
+
+JSON uses section 2.1's success/error envelope. File-content GET is the explicit
+binary-success exception. All mutations require exactly one `Idempotency-Key`
+(16–128 visible ASCII bytes). JSON must be objects with no unknown fields and
+`Content-Type: application/json`. POST/document PATCH bodies are at most 65,536
+bytes, also subject to the configured listener body ceiling. Unknown/duplicate
+query keys, cookies, query credentials and GET bodies are refused.
+
+### Resources and validators
+
+Paths are portable ASCII `RelativePath` resources confined to the configured
+**game root**, never native/absolute paths. Traversal, backslashes, drive/UNC
+paths, ADS, Windows device/trailing-dot aliases, links/reparse points/hardlinks
+and protected state/config/TLS paths are refused. Exact resolved resources must
+pass live scope policy. Generic file/upload paths and restored original paths
+also refuse components named `server.properties`, `whitelist.json`,
+`banned-players.json`, `banned-ips.json`, `ops.json` (case-insensitive), preventing
+structured-admission confirmation bypass. This exclusion is enforced against
+submitted paths, canonical resolved resources and opened-handle resources, so
+Windows 8.3 short names and case variants cannot bypass it. It applies to reads,
+all mutations, uploads (including staged finish), rename source/destination,
+trash restore and provider install targets. The structured properties editor
+has a narrow exception for the exact root `server.properties` resource only,
+not nested properties files or other admission documents.
+
+Create requires **`If-None-Match: *`**; overwrite/delete requires
+**`If-Match: <sha256>`** (unquoted exact lowercase 64-character hex). Missing,
+weak/quoted/multiple/simultaneous conditionals return 400 `invalid_request`.
+Create never upserts; rename/restore never replace. Stale/existing-target
+preconditions return 412 `precondition_failed`, with `error.current_sha256`
+(digest or null). Hashes are optimistic validators, never authority. Responses
+contain only relative resources, never native roots/state paths.
+
+### Exact shapes and capabilities
+
+Paths are relative to `/api/v3/manage`. Byte sizes/offsets are canonical unsigned
+decimal **strings**; hashes are lowercase hex. `Change` is
+`{outcome:"succeeded",sha256,size,trash_id}`, where `trash_id` is null except for
+an overwrite's recoverable original. All synchronous mutations return 200.
+
+| Method / path | Exact request | Exact `data` / status | Existing capabilities |
+| --- | --- | --- | --- |
+| GET `/files` | Optional `path`, `cursor`, `limit`; absent/empty path selects root | 200 `{items:[{name,kind:"file"\|"directory",size,modified_at}],next_cursor}` | `files.list` on directory and visible children |
+| GET `/files/content` | Required `path`, no body/conditional | 200 raw octet-stream, headers below | `files.read` exact file |
+| PUT `/files/content` | Required `path`, raw bytes, create/overwrite conditional | `Change` | `files.create` or `files.overwrite` exact path |
+| POST `/files/uploads` | `{path,total_size,sha256}`, create/overwrite conditional | `{upload_id,offset:"0"}` | Same destination create/overwrite authority |
+| PUT `/files/uploads/{id}` | Required `offset` query, raw chunk; no conditional | `{offset}` actual staged length | Original upload create/overwrite authority, same principal/device |
+| POST `/files/uploads/{id}/finish` | `{}`, no query/conditional | `Change` | Same upload authority, checked again at final effect |
+| DELETE `/files/uploads/{id}` | Empty body, no query/conditional | `{outcome:"succeeded"}` | Same upload authority and subject |
+| DELETE `/files` | Required `path`, If-Match, empty body | `{outcome:"succeeded",trash_id}` | `files.delete` exact file |
+| GET `/trash` | Optional `cursor`, `limit` | 200 `{items:[{id,path,sha256,size,trashed_at_ms,expires_at_ms}],next_cursor}` | `files.read` original paths; only this principal/device's unprotected entries |
+| POST `/trash/{id}/restore` | `{}`, no query/conditional | `Change`, null trash_id | `files.read` and `files.create` original path, same principal/device owner |
+| POST `/files/mkdir` | `{path}`, no query/conditional | `{outcome:"succeeded"}` | `files.mkdir` exact new directory |
+| POST `/files/rename` | `{from,to,expected_sha256}`, no query/conditional | `Change`, null trash_id | `files.rename` both paths |
+| POST `/content/install` | `{provider:"modrinth"\|"curseforge",project_id,version_id}`, no query/conditional | `Change`, null trash_id | `content.install` and exact resolved `files.create` |
+| GET `/config/server-properties` | No body/query/conditional | 200 `{values:{key:typed_value},sha256}` | `config.view` plus `files.read` server.properties, one read snapshot |
+| PATCH `/config/server-properties` | `{changes:{key:typed_value},expected_sha256,confirmation_token?}`, no query/conditional | `Change` plus `restart_needed:true`; weakening preparation 202 below | `config.edit`, `files.read`, `files.overwrite` server.properties |
+
+Binary GET headers are `X-Vesta-Sha256: <hash>`, quoted `ETag: "<hash>"`,
+`X-Vesta-Api-Version: 3`, `X-Vesta-Request-Id: request-N`. Errors remain JSON.
+Reads are bounded/buffered to 1,048,576 bytes; larger files return 413. Existing
+64-KiB response frames and connection deadline handle accepted larger reads, not
+an unbounded/range stream. Listings omit SHA-256 (no content hashing);
+`modified_at` is epoch milliseconds or null.
+
+Pages default 50, maximum 100. Directory order is ASCII case-insensitive name,
+then exact name; bounds remain 1000 returned/4000 scanned entries. Trash retains
+existing deterministic order. Cursors bind server/device/collection/directory,
+all observed metadata and offset; changed fingerprints return 409 `cursor_gap`.
+They are **not retained snapshots**; changes preserving observed metadata are
+not detected. Cursors max 512 bytes; query max 8192 bytes with strict percent
+decoding. IDs grant no authority.
+
+### Journal, retries, uploads and limitations
+
+Game-root effects use existing journaled FileBrowser policy/native mutation/
+success-audit completion. Durable HTTP success commits with audit/journal status.
+No endpoint restarts the game. Delete/overwrite use recoverable trash; no purge,
+permanent or recursive delete. Default trash: seven days, 10 GiB/10% volume,
+10,000 entries; deletion max 256 MiB, space reserve 64 MiB. Rename is regular-file
+only; mkdir creates one directory. Remote trash list/restore are strictly bound
+to both creating principal and device; even full file grants do not confer
+cross-owner restore. Trash records preserve the opened-handle canonical original
+relative resource. Ambiguous legacy original paths containing `~` are refused
+on remote restore; no cross-owner or alias override capability is added.
+Native checks are not a hostile same-account,
+handle-relative ancestor-walk confinement guarantee.
+
+Writes/upload totals max 16 MiB, chunks max 1 MiB, additionally limited by listener
+configuration. Upload defaults: four per subject, 64 global, 256 MiB reserved,
+fixed one-hour expiry. Gaps/mismatched overlap return 412 with null current hash;
+identical overlaps are accepted. Persisted actual stage length permits reconnect
+resume. Finish verifies full size/SHA-256, rechecks original precondition and
+atomically retires upload metadata with journaled completion. Abort affects
+staging only. Failed staging may retain an identical prefix; replay validates it,
+never installs unchecked staging.
+
+Schema 14's durable outcomes bind server/principal/device and a digest of HTTP
+method/route/key. Canonical intent covers paths, validators, offsets and byte
+digests. Exact successful retries return original outcomes without effect/audit/
+provider work, even after rename, trash restore or upload retirement, but always
+reauthorize **current stored exact capability/resource requirements**. Changed
+intent returns 409 `idempotency_conflict`. Keys are per route/method. Safe ordinary
+failures release pending reservations. Interrupted/uncertain pending records
+return 409 `recovery_required`; native journal recovery does not currently resolve
+the HTTP outcome ledger. No blind replay. Schema 15 adds terminal completion
+timestamps and an indexed seven-day retention window. Each remote admission
+purges at most 128 terminal outcomes older than seven days before lookup/reserve;
+pending/recovery rows are never purged. Existing terminal rows are dated at
+migration time. A purged key no longer promises its original outcome; retries
+outside retention are new requests and must satisfy current preconditions.
+At 10,000 retained rows/server new mutations still fail 503: sufficient pending
+interruptions can exhaust capacity and require operator remediation.
+A process-wide admission mutex serializes ordinary remote mutations and install
+reservation/final admission, but is released throughout provider resolution and
+download. These are explicit MVP limits, not automatic reconciliation promises.
+
+Fixed errors: 400 `invalid_request`; 401 `management_session_invalid`; 403
+`management_forbidden`; 404 `resource_not_found`; 409 `idempotency_conflict`,
+`confirmation_invalid`, `cursor_gap`, `recovery_required`; 412
+`precondition_failed`; 413 `request_too_large`; 503 `temporarily_unavailable`.
+No native errors, provider URLs, paths outside the root or secrets are exposed.
+
+### Provider installs
+
+Only provider/project/version identifiers are accepted (nonempty ASCII
+alphanumeric/hyphen/underscore, max 128 bytes each). No request URL, executable,
+filename/path, hash, catalogue source or overwrite choice. Existing resolution
+derives a safe mods/plugins `.jar` destination, enforces fixed metadata/CDN HTTPS
+host allowlists and redirect policy, verifies provider SHA-512 (Modrinth) or SHA-1
+(CurseForge), then create-only journaled write/audit. Returned SHA-256 covers the
+installed bytes. Synchronous install is privileged trusted-operator code-content
+management, not caller-selected native execution; never auto-restarts.
+Production CurseForge requires trusted operator environment
+`VESTA_CURSEFORGE_API_KEY` (nonempty visible ASCII, max 1024 bytes); missing/invalid
+credentials fail closed 503. Credentials never come from request fields or
+responses. Remote installs have separate two-install admission and a dedicated
+two-worker transport blocking pool, not the ordinary HTTP file/config workers.
+After durable actor/request reservation, bounded provider metadata/download work
+runs outside global mutation admission. The narrow final admission rechecks live
+authority and create-only precondition before journaled effect. The whole remote
+install budget is 120 seconds, including admission waits, metadata and body;
+production HTTP adapters use the remaining budget, body/effect checks reject
+expired work. Native mutation-slot acquisition uses bounded try-lock with that
+same remaining deadline, including after final global admission. Expiry returns
+503 `temporarily_unavailable`, releases both admission scopes, and safely removes
+the pending HTTP reservation when no uncertain effect occurred. All ordinary
+remote mutations also share a 120-second request/global/native admission budget;
+trusted local mutation APIs retain their existing lock behavior. An abandoned HTTP request can leave admitted work until this bound,
+not indefinitely. Trusted custom provider/download adapters must bound their
+blocking calls to the supplied deadline; wrappers cannot interrupt arbitrary
+trusted Rust implementations. Tests use existing fakes, no real provider network.
+
+### Properties schema and confirmation
+
+Known valid values are typed; `rcon.password`, unknown values and malformed known
+projections are always `"[redacted]"`. Source max 65,536 bytes, 256 decoded keys,
+4096 bytes/original value. Duplicate decoded keys/escaped aliases are refused.
+PATCH accepts 1–32 unique known keys, rejecting unknown/duplicate changes and wrong
+types/ranges. Untouched physical blocks retain comments, unknown lines, escapes
+and line endings; changed keys serialize safely and final admission is revalidated.
+This is a limited UTF-8/ASCII editor, not arbitrary Java properties emulation or
+agent host configuration editing.
+
+- Boolean: `online-mode`, `white-list`, `enforce-whitelist`,
+  `enforce-secure-profile`, `prevent-proxy-connections`, `enable-rcon`,
+  `enable-query`, `enable-command-block`, `pvp`, `allow-flight`, `spawn-monsters`,
+  `spawn-animals`, `spawn-npcs`, `allow-nether`, `force-gamemode`, `hardcore`,
+  `hide-online-players`, `log-ips`, `enable-status`.
+- Integer: `max-players` 1–1000; `view-distance`/`simulation-distance` 2–32;
+  `server-port`/`rcon.port`/`query.port` 1–65535; `spawn-protection` 0–1024;
+  `player-idle-timeout` 0–10080; `op-permission-level`/
+  `function-permission-level` 1–4.
+- String enums: difficulty peaceful/easy/normal/hard; gamemode
+  survival/creative/adventure/spectator.
+- Strings: `motd` max 256 ASCII bytes; `rcon.password` 1–128 ASCII bytes.
+  Controls, slash and backslash refused; secrets never enter success outcomes.
+
+Weakening includes disabling online-mode/enforce-secure-profile (default true),
+disabling enabled whitelist/enforce-whitelist/proxy prevention, enabling
+RCON/query/command blocks or allow-flight (default false), raising permission
+levels (defaults op=4/function=2), and any spawn-protection reduction (effective
+default 16 when absent or malformed). Other listed schema keys are not classified
+as security weakening. Exact source hash and exact proposed changes bind the
+receipt. Without a receipt, no file effect and **202** data is
+`{operation_id,state:"awaiting_confirmation",confirmation_token,expires_at_ms}`.
+Explicit second submission repeats the **same key, changes and expected hash**,
+adding `confirmation_token`. Existing one-time repository receipts bind server,
+subject/device, operation type/target, intent and source revision; expire after
+120 seconds. Repreparation supersedes prior receipt. Acceptance, approval-operation
+success, file effect, audit and HTTP outcome commit together; failed completion
+compensates effect and rolls back receipt consumption. Refusals burn receipts
+with denial audit in a separate transaction after effect rollback. Tokens are not
+in audits/durable HTTP outcomes. A changed safe intent cannot reuse a prepared
+weakening key. Exact committed retries need no second receipt. Incomplete approvals
+have no game-runner binding and existing restart recovery invalidates them, not
+executes them. `restart_needed:true` reports desired/effective divergence only.
 
 ## 3. Common protocol
 
@@ -642,8 +851,7 @@ Backups/restoration, SFTP, Discord integration, scheduling, sleep/MOTD automatio
 and metrics are future work per owner; no routes or promises are defined here.
 Also excluded: web UI hosting/proxying, shell/script execution, arbitrary downloads,
 remote bootstrap via bearer/config, automated recovery/restart, server creation/
-adoption/deletion, signed binary updates, file archives/resumable transfer, trash
-restore/purge, role-management routes and an alternative raw TCP management path.
+adoption/deletion, signed binary updates, file archives, trash purge, role-management routes and an alternative raw TCP management path.
 Local CLI capabilities do not imply remotely available counterparts.
 
 ## 7. Open questions for the owner

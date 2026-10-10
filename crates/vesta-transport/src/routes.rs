@@ -79,6 +79,28 @@ pub(super) async fn route(
     } else {
         None
     };
+    let conditional_header = |name: &str| -> Result<Option<String>, ()> {
+        if !super::manage::file_endpoint(&path) {
+            return Ok(None);
+        }
+        let count = request.headers().get_all(name).iter().count();
+        match count {
+            0 => Ok(None),
+            1 => request
+                .headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(|v| Some(v.to_owned()))
+                .ok_or(()),
+            _ => Err(()),
+        }
+    };
+    let (Ok(if_match), Ok(if_none_match)) = (
+        conditional_header("if-match"),
+        conditional_header("if-none-match"),
+    ) else {
+        return super::manage::error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
     let management = path == "/api/v3/manage" || path.starts_with("/api/v3/manage/");
     let management_public = method == Method::POST
         && matches!(
@@ -146,7 +168,8 @@ pub(super) async fn route(
     if management && !management_public && authorization.is_none() {
         return error(StatusCode::UNAUTHORIZED, "management_session_invalid");
     }
-    if method == Method::POST
+    if (method == Method::POST
+        || (method == Method::PATCH && path == "/api/v3/manage/config/server-properties"))
         && !matches!(
             path.as_str(),
             "/api/v2/pack/ticket" | "/api/v2/realtime/ticket"
@@ -203,42 +226,48 @@ pub(super) async fn route(
         peer: peer.ip(),
     };
     let tls = state.tls.clone();
-    state
-        .jobs
-        .execute_for(operational, move || {
-            if operational {
-                return super::manage::dispatch(
-                    &host,
-                    super::manage::Request {
-                        method: &method,
-                        path: &path,
-                        query: query.as_deref(),
-                        authorization: authorization.as_ref().map(|secret| secret.as_str()),
-                        idempotency: idempotency.as_deref(),
-                        bytes: &bytes,
-                    },
-                );
-            }
-            if management {
-                return manage_dispatch(
-                    &host,
-                    &path,
-                    management_public,
-                    authorization.as_ref().map(|secret| secret.as_str()),
-                    &bytes,
-                );
-            }
-            dispatch(
+    let jobs = if path == "/api/v3/manage/content/install" && method == Method::POST {
+        state.install_jobs.reap(false).await;
+        &state.install_jobs
+    } else {
+        &state.jobs
+    };
+    jobs.execute_for(operational, move || {
+        if operational {
+            return super::manage::dispatch(
+                &host,
+                super::manage::Request {
+                    method: &method,
+                    path: &path,
+                    query: query.as_deref(),
+                    authorization: authorization.as_ref().map(|secret| secret.as_str()),
+                    idempotency: idempotency.as_deref(),
+                    bytes: &bytes,
+                    if_match: if_match.as_deref(),
+                    if_none_match: if_none_match.as_deref(),
+                },
+            );
+        }
+        if management {
+            return manage_dispatch(
                 &host,
                 &path,
-                query.as_deref(),
+                management_public,
                 authorization.as_ref().map(|secret| secret.as_str()),
                 &bytes,
-                downloads,
-                tls,
-            )
-        })
-        .await
+            );
+        }
+        dispatch(
+            &host,
+            &path,
+            query.as_deref(),
+            authorization.as_ref().map(|secret| secret.as_str()),
+            &bytes,
+            downloads,
+            tls,
+        )
+    })
+    .await
 }
 
 /// Download admission for one request: the shared limiter and the socket peer.

@@ -1957,3 +1957,518 @@ fn pending_restore_keeps_its_original_copy_even_when_trash_expired() {
 
 #[path = "intent_tests.rs"]
 mod intent_tests;
+
+#[test]
+fn remote_outcome_commit_failure_compensates_and_exact_retry_survives_reopen() {
+    use crate::files::RemoteFileMutation;
+    let mut f = Fixture::open();
+    let path = Fixture::path("config/remote.txt");
+    f.db.write(|c| { c.execute_batch("CREATE TRIGGER fail_remote_outcome BEFORE UPDATE OF outcome_json ON management_file_outcomes BEGIN SELECT RAISE(ABORT,'fixture'); END;")?; Ok(()) }).unwrap();
+    assert!(
+        f.files
+            .mutate_remote(
+                &f.owner,
+                "remote-file-key-0001",
+                RemoteFileMutation::Write {
+                    path: &path,
+                    precondition: &WritePrecondition::Absent,
+                    bytes: b"remote"
+                }
+            )
+            .is_err()
+    );
+    assert!(f.get(path.as_str()).is_none());
+    assert_eq!(f.stages("config"), 0);
+    let completed: i64 =
+        f.db.read(|c| {
+            Ok(c.query_row(
+                "SELECT count(*) FROM management_file_outcomes WHERE outcome_json IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(completed, 0);
+    f.db.write(|c| {
+        c.execute_batch("DROP TRIGGER fail_remote_outcome")?;
+        Ok(())
+    })
+    .unwrap();
+    let first = f
+        .files
+        .mutate_remote(
+            &f.owner,
+            "remote-file-key-0001",
+            RemoteFileMutation::Write {
+                path: &path,
+                precondition: &WritePrecondition::Absent,
+                bytes: b"remote",
+            },
+        )
+        .unwrap();
+    reopen(&mut f);
+    assert_eq!(
+        first,
+        f.files
+            .mutate_remote(
+                &f.owner,
+                "remote-file-key-0001",
+                RemoteFileMutation::Write {
+                    path: &path,
+                    precondition: &WritePrecondition::Absent,
+                    bytes: b"remote"
+                }
+            )
+            .unwrap()
+    );
+    let successes:i64=f.db.read(|c| Ok(c.query_row("SELECT count(*) FROM audit_events WHERE action='files.write' AND outcome='success'",[],|r|r.get(0))?)).unwrap();
+    assert_eq!(successes, 1);
+    assert!(
+        AuditLog::new(f.db.clone())
+            .unwrap()
+            .verify_chain()
+            .unwrap()
+            .valid
+    );
+}
+#[test]
+fn remote_pending_request_after_interruption_never_blindly_replays() {
+    use crate::files::RemoteFileMutation;
+    let mut f = Fixture::open();
+    let path = Fixture::path("config/interrupted.txt");
+    journal::interrupt_at("after");
+    assert!(matches!(
+        f.files.mutate_remote(
+            &f.owner,
+            "remote-file-key-0002",
+            RemoteFileMutation::Write {
+                path: &path,
+                precondition: &WritePrecondition::Absent,
+                bytes: b"retained"
+            }
+        ),
+        Err(FileError::RecoveryRequired(_))
+    ));
+    reopen(&mut f);
+    f.files.reconcile_pending().unwrap();
+    assert!(matches!(
+        f.files.mutate_remote(
+            &f.owner,
+            "remote-file-key-0002",
+            RemoteFileMutation::Write {
+                path: &path,
+                precondition: &WritePrecondition::Absent,
+                bytes: b"retained"
+            }
+        ),
+        Err(FileError::RecoveryRequired(_))
+    ));
+    assert_eq!(f.get(path.as_str()).unwrap(), b"retained");
+}
+
+#[test]
+fn remote_trash_is_principal_and_device_owned_even_with_full_file_grants() {
+    use crate::files::RemoteFileMutation;
+    let f = Fixture::open();
+    let path = Fixture::path("config/owned.txt");
+    f.put(path.as_str(), b"owned");
+    let first = f
+        .files
+        .mutate_remote(
+            &f.owner,
+            "owned-trash-delete-01",
+            RemoteFileMutation::Delete {
+                path: &path,
+                expected_sha256: &sha(b"owned"),
+            },
+        )
+        .unwrap();
+    let id = first["trash_id"].as_str().unwrap();
+    let remote = f.files.for_remote();
+    assert_eq!(remote.trash_entries(&f.owner).unwrap().len(), 1);
+    for different in ["principal", "device"] {
+        let other = if different == "principal" {
+            seed(&f.db, false)
+        } else {
+            let device =
+                crate::identity::DeviceId::parse("cccccccc-2222-4333-8444-555555555555").unwrap();
+            f.db.write(|c| { c.execute("INSERT INTO devices (id,server_id,principal_id,label,public_key_sha256,created_at) VALUES (?,?,?,'Other device',?,?)",params![device.as_str(),f.db.server_id(),f.owner.principal.as_str(),"0".repeat(64),f.db.clock().millis()])?; Ok(()) }).unwrap();
+            Subject {
+                principal: f.owner.principal.clone(),
+                device,
+            }
+        };
+        for cap in [Capability::FilesRead, Capability::FilesCreate] {
+            f.grant(&other, cap, "*");
+        }
+        assert!(remote.trash_entries(&other).unwrap().is_empty());
+        assert!(matches!(
+            remote.mutate_remote(
+                &other,
+                "owned-trash-restore1",
+                RemoteFileMutation::Restore { id }
+            ),
+            Err(FileError::NotFound)
+        ));
+        assert!(f.get(path.as_str()).is_none());
+    }
+    remote
+        .mutate_remote(
+            &f.owner,
+            "owned-trash-restore1",
+            RemoteFileMutation::Restore { id },
+        )
+        .unwrap();
+    assert_eq!(f.get(path.as_str()).unwrap(), b"owned");
+}
+#[test]
+fn remote_outcome_retention_is_bounded_and_never_purges_pending_rows() {
+    use crate::files::RemoteFileMutation;
+    let f = Fixture::open();
+    let now = f.db.clock().millis();
+    f.db.write(|c| {
+        let sql = "INSERT INTO management_file_outcomes VALUES (?,?,?,?,?,?,?,?)";
+        for i in 0..130 {
+            c.execute(
+                sql,
+                params![
+                    f.db.server_id(),
+                    f.owner.principal.as_str(),
+                    f.owner.device.as_str(),
+                    format!("expired-{i}"),
+                    "a".repeat(64),
+                    "[]",
+                    "{}",
+                    now - 8 * 24 * 60 * 60 * 1000
+                ],
+            )?;
+        }
+        c.execute(
+            sql,
+            params![
+                f.db.server_id(),
+                f.owner.principal.as_str(),
+                f.owner.device.as_str(),
+                "pending-retained",
+                "a".repeat(64),
+                "[]",
+                Option::<String>::None,
+                Option::<i64>::None
+            ],
+        )?;
+        c.execute(
+            sql,
+            params![
+                f.db.server_id(),
+                f.owner.principal.as_str(),
+                f.owner.device.as_str(),
+                "recent-retained",
+                "a".repeat(64),
+                "[]",
+                "{}",
+                now
+            ],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let counts = || {
+        f.db.read(|c| Ok(c.query_row("SELECT count(*),sum(request_key LIKE 'expired-%'),sum(request_key='pending-retained'),sum(request_key='recent-retained') FROM management_file_outcomes",[],|r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?)))?)).unwrap()
+    };
+    let path = Fixture::path("config/retained.txt");
+    f.files
+        .mutate_remote(
+            &f.owner,
+            "retention-write-key1",
+            RemoteFileMutation::Write {
+                path: &path,
+                precondition: &WritePrecondition::Absent,
+                bytes: b"ok",
+            },
+        )
+        .unwrap();
+    assert_eq!(counts(), (5, 2, 1, 1));
+    f.files
+        .mutate_remote(
+            &f.owner,
+            "retention-write-key1",
+            RemoteFileMutation::Write {
+                path: &path,
+                precondition: &WritePrecondition::Absent,
+                bytes: b"ok",
+            },
+        )
+        .unwrap();
+    assert_eq!(counts(), (3, 0, 1, 1));
+}
+
+#[test]
+fn remote_canonical_admission_documents_refuse_all_effects_and_uploads() {
+    use crate::files::RemoteFileMutation;
+    let f = Fixture::open();
+    f.put("config/source.txt", b"source");
+    let remote = f.files.for_remote();
+    for name in [
+        "server.properties",
+        "SERVER.PROPERTIES",
+        "whitelist.json",
+        "OPS.JSON",
+        "banned-players.json",
+        "banned-ips.json",
+    ] {
+        f.put(name, b"secret");
+        let path = Fixture::path(name);
+        let to = Fixture::path("config/destination.txt");
+        let source = Fixture::path("config/source.txt");
+        assert!(matches!(
+            remote.read(&f.owner, &path, 1024),
+            Err(FileError::ProtectedPath)
+        ));
+        for request in [
+            RemoteFileMutation::Write {
+                path: &path,
+                precondition: &WritePrecondition::Matches(sha(b"secret")),
+                bytes: b"unsafe",
+            },
+            RemoteFileMutation::Delete {
+                path: &path,
+                expected_sha256: &sha(b"secret"),
+            },
+            RemoteFileMutation::Mkdir { path: &path },
+            RemoteFileMutation::Rename {
+                from: &path,
+                to: &to,
+                expected_sha256: &sha(b"secret"),
+            },
+            RemoteFileMutation::Rename {
+                from: &source,
+                to: &path,
+                expected_sha256: &sha(b"source"),
+            },
+            RemoteFileMutation::Begin {
+                path: &path,
+                precondition: &WritePrecondition::Matches(sha(b"secret")),
+                total_size: 0,
+                sha256: &sha(b""),
+            },
+        ] {
+            assert!(matches!(
+                remote.mutate_remote(&f.owner, "canonical-refusal-key", request),
+                Err(FileError::ProtectedPath)
+            ));
+        }
+        assert_eq!(f.get(name).unwrap(), b"secret");
+    }
+}
+#[cfg(windows)]
+#[test]
+fn real_short_admission_aliases_refuse_remote_reads_mutations_uploads_and_restore() {
+    use crate::files::RemoteFileMutation;
+    let f = Fixture::open();
+    f.put("config/source.txt", b"source");
+    let remote = f.files.for_remote();
+    for name in [
+        "server.properties",
+        "whitelist.json",
+        "ops.json",
+        "banned-players.json",
+        "banned-ips.json",
+    ] {
+        f.put(name, b"secret");
+        let Some(alias) = short_leaf(&f.game.join(name)) else {
+            continue;
+        };
+        let path = Fixture::path(&alias);
+        let source = Fixture::path("config/source.txt");
+        let to = Fixture::path("config/destination.txt");
+        assert!(matches!(
+            remote.read(&f.owner, &path, 1024),
+            Err(FileError::ProtectedPath)
+        ));
+        for request in [
+            RemoteFileMutation::Write {
+                path: &path,
+                precondition: &WritePrecondition::Matches(sha(b"secret")),
+                bytes: b"unsafe",
+            },
+            RemoteFileMutation::Delete {
+                path: &path,
+                expected_sha256: &sha(b"secret"),
+            },
+            RemoteFileMutation::Mkdir { path: &path },
+            RemoteFileMutation::Rename {
+                from: &path,
+                to: &to,
+                expected_sha256: &sha(b"secret"),
+            },
+            RemoteFileMutation::Rename {
+                from: &source,
+                to: &path,
+                expected_sha256: &sha(b"source"),
+            },
+            RemoteFileMutation::Begin {
+                path: &path,
+                precondition: &WritePrecondition::Matches(sha(b"secret")),
+                total_size: 0,
+                sha256: &sha(b""),
+            },
+        ] {
+            assert!(matches!(
+                remote.mutate_remote(&f.owner, "short-alias-refuse-01", request),
+                Err(FileError::ProtectedPath)
+            ));
+        }
+        let staged = f
+            .files
+            .begin(
+                &f.owner,
+                &path,
+                &WritePrecondition::Matches(sha(b"secret")),
+                0,
+                &sha(b""),
+            )
+            .unwrap();
+        assert!(matches!(
+            remote.mutate_remote(
+                &f.owner,
+                "short-alias-finish-01",
+                RemoteFileMutation::Finish { id: &staged }
+            ),
+            Err(FileError::ProtectedPath)
+        ));
+        f.files.abort(&f.owner, &staged).unwrap();
+        let entry = f.files.delete(&f.owner, &path, &sha(b"secret")).unwrap();
+        assert_eq!(entry.path.as_str(), name);
+        assert!(matches!(
+            remote.mutate_remote(
+                &f.owner,
+                "short-alias-restore1",
+                RemoteFileMutation::Restore { id: &entry.id }
+            ),
+            Err(FileError::NotFound | FileError::ProtectedPath)
+        ));
+        assert!(f.get(name).is_none());
+    }
+}
+
+#[test]
+fn stalled_native_mutation_expires_install_releases_global_and_allows_exact_retry() {
+    use std::time::{Duration, Instant};
+    let f = Fixture::open();
+    let admission = mutation_admission(f.db.directory().path()).unwrap();
+    let (entered, waiting) = std::sync::mpsc::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let _guard = admission.lock().unwrap();
+        entered.send(()).unwrap();
+        let _ = blocked.recv_timeout(Duration::from_secs(5));
+    });
+    waiting.recv_timeout(Duration::from_secs(1)).unwrap();
+    let path = RelativePath::parse("deadline.jar").unwrap();
+    let start = Instant::now();
+    let installed = f
+        .files
+        .for_content(start + Duration::from_millis(100))
+        .execute_remote(
+            &f.owner,
+            "native-deadline-install",
+            serde_json::json!(["install-fixture"]),
+            || {
+                Ok(vec![(
+                    Capability::FilesCreate.id().into(),
+                    path.as_str().into(),
+                )])
+            },
+            |files| {
+                let _global = files.remote_effect_admission()?;
+                let change =
+                    files.write(&f.owner, &path, &WritePrecondition::Absent, b"verified")?;
+                Ok(serde_json::json!({"sha256":change.sha256}))
+            },
+        );
+    assert!(matches!(installed, Err(FileError::Unavailable)));
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "native wait exceeded install deadline"
+    );
+    assert!(!f.game.join(path.as_str()).exists());
+    f.db.read(|c| {
+        let outcomes: i64 =
+            c.query_row("SELECT count(*) FROM management_file_outcomes", [], |r| {
+                r.get(0)
+            })?;
+        let intents: i64 = c.query_row("SELECT count(*) FROM file_intents", [], |r| r.get(0))?;
+        assert_eq!((outcomes, intents), (0, 0));
+        Ok(())
+    })
+    .unwrap();
+    // The other database has an independent native slot. Check global admission
+    // while the competing native lock above is still held.
+    let other = Fixture::open();
+    let start = Instant::now();
+    other
+        .files
+        .mutate_remote(
+            &other.owner,
+            "unrelated-after-expiry",
+            crate::files::RemoteFileMutation::Write {
+                path: &RelativePath::parse("unrelated.txt").unwrap(),
+                precondition: &WritePrecondition::Absent,
+                bytes: b"unrelated",
+            },
+        )
+        .unwrap();
+    assert!(start.elapsed() < Duration::from_secs(1));
+    release.send(()).unwrap();
+    holder.join().unwrap();
+    f.files
+        .for_content(Instant::now() + Duration::from_secs(1))
+        .execute_remote(
+            &f.owner,
+            "native-deadline-install",
+            serde_json::json!(["install-fixture"]),
+            || {
+                Ok(vec![(
+                    Capability::FilesCreate.id().into(),
+                    path.as_str().into(),
+                )])
+            },
+            |files| {
+                let _global = files.remote_effect_admission()?;
+                let change =
+                    files.write(&f.owner, &path, &WritePrecondition::Absent, b"verified")?;
+                Ok(serde_json::json!({"sha256":change.sha256}))
+            },
+        )
+        .unwrap();
+    assert_eq!(fs::read(f.game.join(path.as_str())).unwrap(), b"verified");
+}
+
+#[test]
+fn ordinary_remote_native_admission_shares_the_request_deadline() {
+    use std::time::{Duration, Instant};
+    let f = Fixture::open();
+    let admission = mutation_admission(f.db.directory().path()).unwrap();
+    let _guard = admission.lock().unwrap();
+    let mut files = f.files.for_remote();
+    files.remote_deadline = Some(Instant::now() + Duration::from_millis(25));
+    assert!(matches!(
+        files.mutate_remote(
+            &f.owner,
+            "ordinary-native-deadline",
+            crate::files::RemoteFileMutation::Mkdir {
+                path: &RelativePath::parse("no-effect").unwrap(),
+            }
+        ),
+        Err(FileError::Unavailable)
+    ));
+    assert!(!f.game.join("no-effect").exists());
+    f.db.read(|c| {
+        let count: i64 = c.query_row("SELECT count(*) FROM management_file_outcomes", [], |r| {
+            r.get(0)
+        })?;
+        assert_eq!(count, 0);
+        Ok(())
+    })
+    .unwrap();
+}
