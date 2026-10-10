@@ -908,10 +908,13 @@
     {
       "id": "F42",
       "name": "Installer, CLI and nonintrusive uninstall",
-      "status": "not_started",
+      "status": "partial",
       "phase": 8,
-      "current": "The Rust agent exposes configuration-check and serve commands, not an agent installer/uninstaller or connector setup; preserving existing worlds/scripts/settings and a secure installation walkthrough remain unimplemented.",
-      "evidence": [],
+      "current": "Rust server-install library (crates/vesta-server-install) provides approval-gated installs for Vanilla, Paper, Folia and Purpur, download-only Fabric and Quilt bundles, verified transfers, a bounded execution workspace and receipts. Forge and NeoForge, managed Java, the setup walkthrough and uninstall are not implemented, and the Java one-liner scripts still perform the real install.",
+      "evidence": [
+        "crates/vesta-server-install/src",
+        "apps/vesta-agent/src"
+      ],
       "acceptance": "Preserve worlds/scripts/settings; opt-in connector; secure defaults and advanced answers.",
       "auditDate": "2026-10-10",
       "previous": {
