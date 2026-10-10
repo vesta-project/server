@@ -89,7 +89,7 @@ fn serve(source: &std::path::Path, base: &std::path::Path) -> ExitCode {
         }
     };
     println!("serving; bound_address={}", transport.local_addr());
-    let signal_failed = wait_for_ctrl_c().is_err();
+    let signal_failed = wait_for_ctrl_c(&transport).is_err();
     if signal_failed {
         eprintln!("signal_wait_failed");
     }
@@ -116,12 +116,32 @@ fn serve(source: &std::path::Path, base: &std::path::Path) -> ExitCode {
     }
 }
 
-fn wait_for_ctrl_c() -> Result<(), ()> {
+fn wait_for_ctrl_c(transport: &Transport) -> Result<(), ()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|_| ())?;
-    runtime.block_on(tokio::signal::ctrl_c()).map_err(|_| ())
+    runtime.block_on(async {
+        let signal = tokio::signal::ctrl_c();
+        tokio::pin!(signal);
+        // One bounded synchronous read/validation at a time; no watcher queue or
+        // unbounded background jobs. Metadata plus content digest detect changes.
+        let mut poll = tokio::time::interval(Duration::from_secs(5));
+        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        poll.tick().await;
+        loop {
+            tokio::select! {
+                result = &mut signal => return result.map_err(|_| ()),
+                _ = poll.tick() => {
+                    match transport.reload_tls() {
+                        Ok(true) => println!("tls_material_reloaded"),
+                        Ok(false) => {},
+                        Err(error) => eprintln!("tls_reload_failed: {}", error.code()),
+                    }
+                }
+            }
+        }
+    })
 }
 
 fn shutdown_host(mut host: Host) -> ExitCode {

@@ -145,6 +145,7 @@ pub(super) async fn route(request: Request<Incoming>, state: Arc<Shared>) -> Rep
     state.jobs.reap(false).await;
     let host = state.host.clone();
     let downloads = state.downloads.clone();
+    let tls = state.tls.clone();
     state
         .jobs
         .execute(move || {
@@ -155,6 +156,7 @@ pub(super) async fn route(request: Request<Incoming>, state: Arc<Shared>) -> Rep
                 authorization.as_ref().map(|secret| secret.as_str()),
                 &bytes,
                 downloads,
+                tls,
             )
         })
         .await
@@ -174,6 +176,7 @@ fn dispatch(
     authorization: Option<&str>,
     bytes: &[u8],
     downloads: Arc<tokio::sync::Semaphore>,
+    tls: Arc<crate::tls::Material>,
 ) -> Reply {
     match path {
         "/api/v2/discovery" => {
@@ -181,7 +184,19 @@ fn dispatch(
                 .and_then(|request| host.discover(&request))
                 .and_then(|manifest| discovery::encode_manifest(&manifest));
             match manifest {
-                Ok(bytes) => response(StatusCode::OK, bytes, "application/json"),
+                Ok(bytes) => {
+                    let Ok(fingerprint) = tls.fingerprint() else {
+                        return error(StatusCode::SERVICE_UNAVAILABLE, "tls_material_unavailable");
+                    };
+                    let mut reply = response(StatusCode::OK, bytes, "application/json");
+                    // Keep the strict versioned manifest unchanged. This is descriptive
+                    // leaf DER SHA-256, not a trust grant or an SPKI identity.
+                    reply.headers_mut().insert(
+                        "x-vesta-tls-sha256-fingerprint",
+                        http::HeaderValue::from_str(&fingerprint).expect("hex fingerprint"),
+                    );
+                    reply
+                }
                 Err(e) => response(
                     StatusCode::BAD_REQUEST,
                     discovery::encode_failure(&Failure { error: e.code() })

@@ -62,6 +62,27 @@ fn bounded_blocking_work_is_retained_after_request_cancellation_and_joined() {
 
 #[test]
 fn shutdown_timeout_returns_the_still_owning_runtime_then_reobservation_joins() {
+    let tls_temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tls_temp.path().join("cert.pem"),
+        include_bytes!("../tests/fixtures/test-only-server.pem"),
+    )
+    .unwrap();
+    std::fs::write(
+        tls_temp.path().join("key.pem"),
+        include_bytes!("../tests/fixtures/test-only-server-key.pem"),
+    )
+    .unwrap();
+    let config = vesta_control::config::HostConfiguration::parse_toml(
+        b"schema-version = 1\n[paths]\nstate = 'state'\ngame = 'game'\nscan-roots = ['game']\nlaunch-definition = 'launch.toml'\n[pack]\nname = 'Fixture'\nversion = '1'\nrevision = 1\nminimum-revision = 1\nminecraft-version = '1.21.1'\n[pack-access]\nmode = 'minecraft'\n[listener]\nmode = 'tls'\nbind = '127.0.0.1'\nport = 25567\ncertificate = 'cert.pem'\nprivate-key = 'key.pem'\nmax-connections = 1\nmax-request-bytes = 1024\nrequest-timeout-seconds = 1\n",
+        tls_temp.path(),
+        std::path::Path::new("host.toml"),
+    )
+    .unwrap();
+    let vesta_control::config::ListenerDescription::Tls(listener) = config.listener() else {
+        panic!("TLS fixture");
+    };
+    let tls = Arc::new(tls::Material::new(listener).unwrap());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -85,6 +106,7 @@ fn shutdown_timeout_returns_the_still_owning_runtime_then_reobservation_joins() 
     started_rx.recv_timeout(Duration::from_secs(3)).unwrap();
     let owner = Transport {
         address: "127.0.0.1:1".parse().unwrap(),
+        tls,
         stop,
         complete,
         thread: Some(thread),

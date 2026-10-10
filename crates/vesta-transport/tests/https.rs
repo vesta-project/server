@@ -23,6 +23,8 @@ use vesta_state::{StateDatabase, StateDirectory, SystemClock};
 use vesta_transport::{Transport, TransportShutdown};
 
 const CERT: &[u8] = include_bytes!("fixtures/test-only-server.pem");
+const ROTATED_CERT: &[u8] = include_bytes!("fixtures/test-only-rotated-server.pem");
+const ROTATED_KEY: &[u8] = include_bytes!("fixtures/test-only-mismatched-key.pem");
 const KEY: &[u8] = include_bytes!("fixtures/test-only-server-key.pem");
 const CA: &[u8] = include_bytes!("fixtures/test-only-ca.pem");
 const PASSWORD: &str = "transport test password only";
@@ -147,6 +149,9 @@ fn connect(address: SocketAddr, trusted: bool) -> std::io::Result<TlsStream> {
     if trusted {
         roots
             .add(rustls_pki_types::CertificateDer::from_pem_slice(CA).unwrap())
+            .unwrap();
+        roots
+            .add(rustls_pki_types::CertificateDer::from_pem_slice(ROTATED_CERT).unwrap())
             .unwrap();
     }
     let config =
@@ -877,3 +882,150 @@ fn replaced_artifact_aborts_https_and_wrong_length_is_refused_before_headers() {
 
 #[path = "support/realtime.rs"]
 mod realtime;
+
+fn fingerprint(pem: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let der = rustls_pki_types::CertificateDer::from_pem_slice(pem).unwrap();
+    hex::encode(Sha256::digest(der.as_ref()))
+}
+fn peer_fingerprint(stream: &TlsStream) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(
+        stream.conn.peer_certificates().unwrap()[0].as_ref(),
+    ))
+}
+fn discovery_on(stream: &mut TlsStream) -> WireReply {
+    let request = discovery::encode_request(&DiscoveryRequest::new(vec![1]).unwrap()).unwrap();
+    write!(
+        stream,
+        "POST /api/v2/discovery HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        request.len()
+    )
+    .unwrap();
+    stream.write_all(&request).unwrap();
+    stream.flush().unwrap();
+    let reply = read_reply(stream).unwrap();
+    assert_eq!(
+        reply.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&reply.body)
+    );
+    reply
+}
+
+#[test]
+fn rotation_changes_new_handshakes_and_discovery_but_preserves_open_stream() {
+    let f = Fixture::new("minecraft", 8, 1024, 30);
+    let transport = f.transport.as_ref().unwrap();
+    assert!(!transport.reload_tls().unwrap());
+    let old = fingerprint(CERT);
+    let new = fingerprint(ROTATED_CERT);
+    assert_ne!(old, new);
+    let mut existing = f.stream();
+    assert_eq!(peer_fingerprint(&existing), old);
+    assert_eq!(
+        discovery_on(&mut existing).headers["x-vesta-tls-sha256-fingerprint"],
+        old
+    );
+    std::fs::write(f.temp.path().join("private/cert.pem"), ROTATED_CERT).unwrap();
+    // A half-installed pair is rejected and remains retryable.
+    assert_eq!(
+        transport.reload_tls().unwrap_err().code(),
+        "tls_material_unavailable"
+    );
+    assert_eq!(transport.tls_fingerprint().unwrap(), old);
+    std::fs::write(f.temp.path().join("private/key.pem"), ROTATED_KEY).unwrap();
+    assert!(transport.reload_tls().unwrap());
+    assert!(transport.last_tls_reload_error().is_none());
+    assert_eq!(transport.tls_fingerprint().unwrap(), new);
+    assert!(!transport.reload_tls().unwrap());
+    assert_eq!(peer_fingerprint(&f.stream()), new);
+    let reply = discovery_on(&mut existing);
+    assert_eq!(reply.status, 200);
+    discovery::decode_manifest(&reply.body).unwrap();
+    assert_eq!(reply.headers["x-vesta-tls-sha256-fingerprint"], new);
+    assert_eq!(peer_fingerprint(&existing), old);
+    let mut fresh = f.stream();
+    assert_eq!(
+        discovery_on(&mut fresh).headers["x-vesta-tls-sha256-fingerprint"],
+        new
+    );
+}
+
+#[test]
+fn invalid_replacements_retain_last_good_certificate_and_redacted_error() {
+    let f = Fixture::new("minecraft", 8, 1024, 30);
+    let transport = f.transport.as_ref().unwrap();
+    let old = fingerprint(CERT);
+    let partial_chain = [
+        CERT,
+        b"-----BEGIN CERTIFICATE-----
+YWJj
+",
+    ]
+    .concat();
+    let oversized = vec![b'x'; 256 * 1024 + 1];
+    let cases: &[(&[u8], &[u8])] = &[
+        (CERT, b"not a private key"),
+        (CERT, ROTATED_KEY),
+        (&CERT[..CERT.len() / 2], KEY),
+        (CERT, &KEY[..KEY.len() / 2]),
+        (&partial_chain, KEY),
+        (&oversized, KEY),
+        (
+            b"-----BEGIN CERTIFICATE-----
+YWJj
+-----END CERTIFICATE-----
+",
+            KEY,
+        ),
+    ];
+    for (cert, key) in cases {
+        std::fs::write(f.temp.path().join("private/cert.pem"), cert).unwrap();
+        std::fs::write(f.temp.path().join("private/key.pem"), key).unwrap();
+        let error = transport.reload_tls().unwrap_err();
+        assert_eq!(error.to_string(), "tls_material_unavailable");
+        assert_eq!(transport.last_tls_reload_error(), Some(error));
+        assert_eq!(transport.tls_fingerprint().unwrap(), old);
+        let mut stream = f.stream();
+        assert_eq!(peer_fingerprint(&stream), old);
+        assert_eq!(
+            discovery_on(&mut stream).headers["x-vesta-tls-sha256-fingerprint"],
+            old
+        );
+    }
+    std::fs::remove_file(f.temp.path().join("private/cert.pem")).unwrap();
+    assert!(transport.reload_tls().is_err());
+    assert_eq!(peer_fingerprint(&f.stream()), old);
+    std::fs::write(f.temp.path().join("private/cert.pem"), CERT).unwrap();
+    std::fs::write(f.temp.path().join("private/key.pem"), KEY).unwrap();
+    transport.reload_tls().unwrap();
+    assert!(transport.last_tls_reload_error().is_none());
+}
+
+#[test]
+fn reload_hash_detects_change_even_with_unchanged_size_and_mtime() {
+    let f = Fixture::new("minecraft", 8, 1024, 30);
+    let transport = f.transport.as_ref().unwrap();
+    let path = f.temp.path().join("private/key.pem");
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let mut changed = KEY.to_vec();
+    assert_eq!(changed.pop(), Some(b'\n'));
+    changed.push(b' ');
+    std::fs::write(&path, &changed).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().modified().unwrap(),
+        modified
+    );
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), KEY.len() as u64);
+    assert!(transport.reload_tls().unwrap());
+    assert!(!transport.reload_tls().unwrap());
+    assert_eq!(peer_fingerprint(&f.stream()), fingerprint(CERT));
+}

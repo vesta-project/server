@@ -10,6 +10,20 @@
 //! status. Clients may send only WebSocket Ping, Pong and Close control frames.
 //! Download tickets from `POST /api/v2/pack/ticket` cannot upgrade realtime;
 //! realtime tickets cannot authenticate a session or download an artifact.
+//!
+//! TLS rotation is explicit via [`Transport::reload_tls`]. `vesta-agent serve`
+//! invokes it every five seconds, using protected reads capped at 256 KiB per file
+//! and comparing mtime, size and SHA-256 (including content with unchanged metadata).
+//! Install a complete PEM chain and matching key at the original configured paths.
+//! Invalid replacements retain the previous identity and record a fixed error;
+//! there is no plaintext/generated-certificate fallback. Accepted connections retain
+//! their snapshot, while subsequently accepted handshakes use the replacement.
+//! Discovery returns the active leaf DER SHA-256 in the lowercase-hex HTTP header
+//! `X-Vesta-TLS-SHA256-Fingerprint`, leaving the strict JSON manifest unchanged.
+//! That header describes the current listener, even on a pre-rotation connection;
+//! it does not grant trust. Existing dependencies expose no standalone validity
+//! window accessor, so expiry/not-before and issuer-chain validation remain the
+//! client's responsibility. Reads are byte-bounded, not filesystem-time-bounded.
 use http::{Request, Response, StatusCode};
 use hyper::{
     body::{Body, Bytes, Frame, Incoming, SizeHint},
@@ -17,7 +31,6 @@ use hyper::{
     service::service_fn,
 };
 use hyper_util::rt::{TokioIo, TokioTimer};
-use rustls_pki_types::pem::PemObject;
 use sha2::{Digest, Sha256};
 use std::{
     convert::Infallible,
@@ -43,11 +56,12 @@ use tokio_rustls::TlsAcceptor;
 use vesta_control::{
     admission::{AdmissionDecision, PeerRateLimiter, RatePolicy},
     config::TlsListener,
-    host::{NetworkHost, read_tls_document},
+    host::NetworkHost,
 };
 
 mod realtime;
 mod routes;
+mod tls;
 type Reply = Response<ReplyBody>;
 const DOWNLOADS: usize = 2;
 const BODY_CHUNK: usize = 64 * 1024;
@@ -225,6 +239,7 @@ pub enum TransportShutdown {
 }
 pub struct Transport {
     address: SocketAddr,
+    tls: Arc<tls::Material>,
     stop: watch::Sender<bool>,
     complete: mpsc::Receiver<()>,
     thread: Option<thread::JoinHandle<()>>,
@@ -238,24 +253,7 @@ impl fmt::Debug for Transport {
 }
 impl Transport {
     pub fn start(host: NetworkHost, listener: &TlsListener) -> Result<Self, TransportError> {
-        let certificates =
-            read_tls_document(listener.certificate()).map_err(|_| TransportError::TlsMaterial)?;
-        let key = zeroize::Zeroizing::new(
-            read_tls_document(listener.private_key()).map_err(|_| TransportError::TlsMaterial)?,
-        );
-        let certificates = rustls_pki_types::CertificateDer::pem_slice_iter(&certificates)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| TransportError::TlsMaterial)?;
-        let key = rustls_pki_types::PrivateKeyDer::from_pem_slice(&key)
-            .map_err(|_| TransportError::TlsMaterial)?;
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let mut tls = rustls::ServerConfig::builder_with_provider(provider)
-            .with_safe_default_protocol_versions()
-            .map_err(|_| TransportError::TlsMaterial)?
-            .with_no_client_auth()
-            .with_single_cert(certificates, key)
-            .map_err(|_| TransportError::TlsMaterial)?;
-        tls.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let tls = Arc::new(tls::Material::new(listener)?);
         let socket = std::net::TcpListener::bind((listener.bind(), listener.port()))
             .map_err(|_| TransportError::Bind)?;
         socket
@@ -282,6 +280,7 @@ impl Transport {
         let (stop, stopped) = watch::channel(false);
         let (done, complete) = mpsc::sync_channel(1);
         let listener = listener.clone();
+        let serving_tls = tls.clone();
         let thread = thread::Builder::new()
             .name("vesta-https-owner".into())
             .spawn(move || {
@@ -289,7 +288,7 @@ impl Transport {
                     socket,
                     host,
                     listener,
-                    TlsAcceptor::from(Arc::new(tls)),
+                    serving_tls,
                     stopped,
                     realtime_runtime.handle().clone(),
                 ));
@@ -301,10 +300,24 @@ impl Transport {
             .map_err(|_| TransportError::Runtime)?;
         Ok(Self {
             address,
+            tls,
             stop,
             complete,
             thread: Some(thread),
         })
+    }
+    /// Re-read configured paths through the protected bounded reader. New accepted
+    /// handshakes use the replacement; established streams retain their identity.
+    /// Returns false when mtime, size and SHA-256 are unchanged. A failed reload
+    /// retains the old configuration and records only `tls_material_unavailable`.
+    pub fn reload_tls(&self) -> Result<bool, TransportError> {
+        self.tls.reload()
+    }
+    pub fn tls_fingerprint(&self) -> Result<String, TransportError> {
+        self.tls.fingerprint()
+    }
+    pub fn last_tls_reload_error(&self) -> Option<TransportError> {
+        self.tls.last_error()
     }
     pub fn local_addr(&self) -> SocketAddr {
         self.address
@@ -340,6 +353,7 @@ impl Drop for Transport {
 }
 
 struct Shared {
+    tls: Arc<tls::Material>,
     host: NetworkHost,
     max_body: usize,
     timeout: Duration,
@@ -411,7 +425,7 @@ async fn serve(
     socket: std::net::TcpListener,
     host: NetworkHost,
     config: TlsListener,
-    tls: TlsAcceptor,
+    tls: Arc<tls::Material>,
     mut stop: watch::Receiver<bool>,
     realtime_runtime: tokio::runtime::Handle,
 ) {
@@ -419,6 +433,7 @@ async fn serve(
         return;
     };
     let shared = Arc::new(Shared {
+        tls,
         host,
         max_body: config.max_request_bytes() as usize,
         timeout: Duration::from_secs(config.request_timeout_seconds().into()),
@@ -449,7 +464,8 @@ async fn serve(
                 if connections.len() + shared.realtime.active() >= usize::from(config.max_connections()) { drop(socket); continue; }
                 if !matches!(connection_limiter.try_acquire(peer.ip()), AdmissionDecision::Allowed) { drop(socket); continue; }
                 let Ok(handshake) = handshakes.clone().try_acquire_owned() else { drop(socket); continue; };
-                let tls = tls.clone(); let state = shared.clone();
+                let Ok(config) = shared.tls.config() else { drop(socket); continue; };
+                let tls = TlsAcceptor::from(config); let state = shared.clone();
                 connections.spawn(async move {
                     let limit = state.timeout;
                     let _ = tokio::time::timeout(limit, async move {
