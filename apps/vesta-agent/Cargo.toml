@@ -9,6 +9,9 @@ publish.workspace = true
 [dependencies]
 vesta-control = { path = "../../crates/vesta-control" }
 vesta-state.workspace = true
+rusqlite.workspace = true
+url.workspace = true
+uuid.workspace = true
 vesta-transport = { path = "../../crates/vesta-transport" }
 tokio = { workspace = true, features = ["rt", "signal"] }
 

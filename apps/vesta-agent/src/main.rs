@@ -7,7 +7,9 @@ use vesta_control::{
 use vesta_state::SystemClock;
 use vesta_transport::{Transport, TransportShutdown};
 
-const USAGE: &str = "Usage: vesta-agent check-config <path>";
+mod status;
+
+const USAGE: &str = "Usage: vesta-agent <check-config|status|serve> <path>";
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn main() -> ExitCode {
@@ -21,7 +23,7 @@ fn main() -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    if command != "check-config" && command != "serve" {
+    if command != "check-config" && command != "serve" && command != "status" {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     }
@@ -29,7 +31,7 @@ fn main() -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
-    if args.next().is_some() {
+    if args.next().is_some() || source.as_os_str().to_string_lossy().starts_with('-') {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     }
@@ -39,6 +41,9 @@ fn main() -> ExitCode {
     };
     if command == "check-config" {
         return check_config(&source, &base);
+    }
+    if command == "status" {
+        return status::run(&source, &base);
     }
     serve(&source, &base)
 }

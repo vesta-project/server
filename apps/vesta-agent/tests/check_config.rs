@@ -165,11 +165,17 @@ fn unsupported_host_commands_and_extra_arguments_do_not_load_configuration() {
             .unwrap();
         assert_eq!(output.status.code(), Some(2));
         assert!(output.stdout.is_empty());
-        assert_eq!(output.stderr, b"Usage: vesta-agent check-config <path>\n");
+        assert_eq!(
+            output.stderr,
+            b"Usage: vesta-agent <check-config|status|serve> <path>\n"
+        );
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
     }
     let output = command().arg("--help").output().unwrap();
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
-    assert_eq!(output.stdout, b"Usage: vesta-agent check-config <path>\n");
+    assert_eq!(
+        output.stdout,
+        b"Usage: vesta-agent <check-config|status|serve> <path>\n"
+    );
 }
