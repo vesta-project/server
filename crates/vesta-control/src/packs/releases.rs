@@ -280,11 +280,12 @@ impl PackReleases {
         if pack.revision() != plan.revision || pack.minimum_revision() != plan.minimum_revision {
             return Err(ReleaseError::RevisionMismatch);
         }
-        let artifact = self.artifacts.publish_vesta(pack)?;
-        self.record(
+        self.preflight(subject, plan, pack.version(), acknowledge_lower_version)?;
+        let (artifact, created) = self.artifacts.publish_vesta_tracked(pack)?;
+        self.record_publication(
             subject,
             plan,
-            artifact,
+            (artifact, created),
             pack.version(),
             acknowledge_lower_version,
         )
@@ -299,15 +300,99 @@ impl PackReleases {
         display_version: &str,
         acknowledge_lower_version: bool,
     ) -> Result<PackRelease, ReleaseError> {
-        validate_version(display_version)?;
-        let artifact = self.artifacts.publish_archive(archive)?;
-        self.record(
+        self.preflight(subject, plan, display_version, acknowledge_lower_version)?;
+        let (artifact, created) = self.artifacts.publish_archive_tracked(archive)?;
+        self.record_publication(
             subject,
             plan,
-            artifact,
+            (artifact, created),
             display_version,
             acknowledge_lower_version,
         )
+    }
+
+    fn preflight(
+        &self,
+        subject: &Subject,
+        plan: &ReleasePlan,
+        display_version: &str,
+        acknowledge_lower_version: bool,
+    ) -> Result<(), ReleaseError> {
+        validate_version(display_version)?;
+        let result = self.db.read_with(|snapshot| {
+            self.check_publication(
+                snapshot.connection(),
+                subject,
+                plan,
+                display_version,
+                acknowledge_lower_version,
+            )?;
+            Ok(())
+        });
+        self.audit_refusal(subject, PUBLISH, result.map_err(ReleaseError::from))
+    }
+
+    fn check_publication(
+        &self,
+        connection: &Connection,
+        subject: &Subject,
+        plan: &ReleasePlan,
+        display_version: &str,
+        acknowledge_lower_version: bool,
+    ) -> Result<EpochMillis, ReleaseError> {
+        let now = self.authorize(connection, subject, plan.raises_minimum())?;
+        let current = current(connection, self.db.server_id())?;
+        if plan_from(current.as_ref(), plan.previous, plan.policy)? != *plan {
+            return Err(ReleaseError::Conflict);
+        }
+        if let Some(current) = &current
+            && !acknowledge_lower_version
+            && !version_not_lower(display_version, &current.display_version)
+        {
+            return Err(ReleaseError::VersionNotIncreasing);
+        }
+        Ok(now)
+    }
+
+    fn record_publication(
+        &self,
+        subject: &Subject,
+        plan: &ReleasePlan,
+        publication: (PublishedArtifact, bool),
+        display_version: &str,
+        acknowledge_lower_version: bool,
+    ) -> Result<PackRelease, ReleaseError> {
+        let (artifact, created) = publication;
+        let result = self.record(
+            subject,
+            plan,
+            artifact.clone(),
+            display_version,
+            acknowledge_lower_version,
+        );
+        if created && let Err(primary) = result {
+            // The immediate transaction excludes successful recording while checking
+            // every historical release reference, including a concurrent winner's.
+            let cleanup = self.db.write_with(|transaction| {
+                let referenced: bool = transaction.connection().query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pack_releases WHERE format=? AND sha256=?)",
+                    params![artifact.format().extension(), artifact.sha256().to_hex()],
+                    |row| row.get(0),
+                )?;
+                if !referenced {
+                    self.artifacts.remove_unreferenced(&artifact)?;
+                }
+                Ok::<_, ReleaseError>(())
+            });
+            return match cleanup {
+                Ok(()) => Err(primary),
+                Err(_) => Err(ReleaseError::Rollback {
+                    primary: Box::new(primary),
+                    failure: StateError::new("pack_release_artifact_cleanup_failed"),
+                }),
+            };
+        }
+        result
     }
 
     fn record(
@@ -322,17 +407,7 @@ impl PackReleases {
         let result = self.db.write_with(|transaction| {
             let connection = transaction.connection();
             let server = self.db.server_id();
-            let current = current(connection, server)?;
-            if plan_from(current.as_ref(), plan.previous, plan.policy)? != *plan {
-                return Err(ReleaseError::Conflict);
-            }
-            let now = self.authorize(connection, subject, plan.raises_minimum())?;
-            if let Some(current) = &current
-                && !acknowledge_lower_version
-                && !version_not_lower(display_version, &current.display_version)
-            {
-                return Err(ReleaseError::VersionNotIncreasing);
-            }
+            let now = self.check_publication(connection, subject, plan, display_version, acknowledge_lower_version)?;
             // Publication was verified before this transaction; a concurrent prune or
             // tamper since then must not leave the hosted release pointing at nothing.
             self.artifacts.present(&artifact)?;

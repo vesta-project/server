@@ -172,6 +172,12 @@ impl LaunchConfiguration {
         })
     }
 
+    /// Resolved working directory; host composition must bind this to its game root
+    /// and validate protected-state separation before opening state or runtime ownership.
+    pub fn working_directory(&self) -> &Path {
+        &self.cwd
+    }
+
     pub fn kind(&self) -> LaunchKind {
         self.kind
     }

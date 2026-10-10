@@ -715,3 +715,125 @@ fn host_startup_upgrades_original_v8_without_upload_table_and_purges_orphan_stag
         HostShutdown::Complete
     ));
 }
+
+#[test]
+fn a_mismatched_launch_directory_refuses_without_creating_state_or_runtime_files() {
+    for directory in ["different-game", "private-state/game", "private-state", "."] {
+        let f = Fixture::new();
+        std::fs::write(
+            f.base().join("private/launch.toml"),
+            NATIVE_LAUNCH.replace(
+                "working-directory = 'game'",
+                &format!("working-directory = '{directory}'"),
+            ),
+        )
+        .unwrap();
+        refused(f.open("minecraft"), "host_launch_directory_invalid");
+        assert!(!f.database_file().exists());
+        assert!(!f.base().join("different-game").exists());
+        assert!(!f.base().join("game/operation-runner.lock").exists());
+    }
+}
+
+#[test]
+fn alias_spelling_of_the_launch_game_directory_is_accepted() {
+    let f = Fixture::new();
+    #[cfg(windows)]
+    let spelling = "GAME";
+    #[cfg(not(windows))]
+    let spelling = "./game";
+    std::fs::write(
+        f.base().join("private/launch.toml"),
+        NATIVE_LAUNCH.replace(
+            "working-directory = 'game'",
+            &format!("working-directory = '{spelling}'"),
+        ),
+    )
+    .unwrap();
+    let host = f.open("minecraft").unwrap();
+    assert_eq!(host.runtime().game_snapshot().unwrap().generation, None);
+    assert!(matches!(
+        host.shutdown(Duration::from_secs(5)).unwrap(),
+        HostShutdown::Complete
+    ));
+}
+
+#[test]
+fn launch_directory_errors_are_fixed_and_redacted() {
+    let error = HostError::LaunchDirectory;
+    assert_eq!(error.to_string(), "host_launch_directory_invalid");
+    assert_eq!(
+        format!("{error:?}"),
+        "HostError { code: \"host_launch_directory_invalid\", .. }"
+    );
+}
+
+#[test]
+fn existing_mismatched_and_state_nested_launch_directories_are_unchanged_on_refusal() {
+    for directory in ["different-game", "private-state/game"] {
+        let f = Fixture::new();
+        let launch_directory = f.base().join(directory);
+        std::fs::create_dir_all(&launch_directory).unwrap();
+        std::fs::write(launch_directory.join("sentinel"), b"unchanged").unwrap();
+        std::fs::write(
+            f.base().join("private/launch.toml"),
+            NATIVE_LAUNCH.replace(
+                "working-directory = 'game'",
+                &format!("working-directory = '{directory}'"),
+            ),
+        )
+        .unwrap();
+        refused(f.open("minecraft"), "host_launch_directory_invalid");
+        assert_eq!(
+            std::fs::read(launch_directory.join("sentinel")).unwrap(),
+            b"unchanged"
+        );
+        assert_eq!(std::fs::read_dir(&launch_directory).unwrap().count(), 1);
+        if directory.starts_with("private-state") {
+            assert_eq!(std::fs::read_dir(f.database_file()).unwrap().count(), 1);
+        } else {
+            assert!(!f.database_file().exists());
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+#[allow(unsafe_code)]
+fn native_short_name_spelling_of_the_launch_game_directory_is_accepted_when_available() {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+    let f = Fixture::new();
+    let game = f.base().join("game");
+    let wide: Vec<u16> = game.as_os_str().encode_wide().chain([0]).collect();
+    let mut output = vec![0_u16; 32768];
+    // SAFETY: stable NUL-terminated input and correctly sized owned output.
+    let written =
+        unsafe { GetShortPathNameW(wide.as_ptr(), output.as_mut_ptr(), output.len() as u32) }
+            as usize;
+    if written == 0 || written >= output.len() {
+        eprintln!("8.3 host alias assertion skipped: GetShortPathNameW unavailable");
+        return;
+    }
+    output.truncate(written);
+    let short = std::ffi::OsString::from_wide(&output)
+        .into_string()
+        .unwrap();
+    if !short.contains('~') {
+        eprintln!("8.3 host alias assertion skipped: temporary volume supplied no short name");
+        return;
+    }
+    std::fs::write(
+        f.base().join("private/launch.toml"),
+        NATIVE_LAUNCH.replace(
+            "working-directory = 'game'",
+            &format!("working-directory = '{short}'"),
+        ),
+    )
+    .unwrap();
+    let host = f.open("minecraft").unwrap();
+    assert!(matches!(
+        host.shutdown(Duration::from_secs(5)).unwrap(),
+        HostShutdown::Complete
+    ));
+}

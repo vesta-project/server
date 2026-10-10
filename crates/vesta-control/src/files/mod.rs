@@ -25,6 +25,7 @@ pub use mutation::{
 };
 pub(crate) use pack_root::{PackNode, PackRoot};
 pub use path::{MAX_COMPONENT_BYTES, MAX_PATH_BYTES, RelativePath};
+pub(crate) use root::same_directory;
 pub use upload::{MAX_UPLOAD_CHUNK_BYTES, UploadId, UploadPolicy};
 
 use crate::{

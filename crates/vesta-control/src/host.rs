@@ -42,6 +42,9 @@ pub enum HostError {
     Config(ConfigError),
     Launch(LaunchConfigError),
     LaunchDocument(FileError),
+    /// Launch cwd is not the configured game root, overlaps state, or cannot be
+    /// safely observed. No native path or OS diagnostic is exposed.
+    LaunchDirectory,
     State(StateError),
     Identity(ControlError),
     Minecraft(MinecraftError),
@@ -58,6 +61,7 @@ impl HostError {
             Self::Config(error) => error.code(),
             Self::Launch(error) => error.code(),
             Self::LaunchDocument(_) => "host_launch_definition_unavailable",
+            Self::LaunchDirectory => "host_launch_directory_invalid",
             Self::State(error) => error.code(),
             Self::Identity(error) => error.code(),
             Self::Minecraft(error) => error.code(),
@@ -121,11 +125,18 @@ pub enum HostShutdown {
 
 impl Host {
     pub fn open(config: HostConfiguration, clock: Arc<dyn Clock>) -> Result<Self, HostError> {
-        let state = config
-            .validate_host_paths()
-            .map_err(HostError::Config)?
-            .into_state_directory();
+        config.validate_host_paths().map_err(HostError::Config)?;
         let launch = read_launch_definition(&config)?;
+        // Both checks observe only: refuse before database preparation or ownership.
+        // Retain the launch cwd in StateDirectory's later overlap rechecks as well.
+        let state =
+            vesta_state::StateDirectory::new(config.state(), Some(launch.working_directory()))
+                .map_err(|_| HostError::LaunchDirectory)?;
+        if !files::same_directory(config.game(), launch.working_directory())
+            .map_err(|_| HostError::LaunchDirectory)?
+        {
+            return Err(HostError::LaunchDirectory);
+        }
         let db = StateDatabase::open(state, clock).map_err(HostError::State)?;
         match compose(config, &db, launch) {
             Ok(host) => Ok(host),

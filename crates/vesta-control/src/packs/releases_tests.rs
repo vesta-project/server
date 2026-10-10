@@ -219,6 +219,7 @@ fn a_stale_expected_revision_conflicts_without_recording_anything() {
         "pack_release_conflict",
     );
     assert_eq!(f.rows(), 1);
+    assert_eq!(artifact_names(&f).len(), 1);
     let current = f.releases.current().unwrap().unwrap();
     assert_eq!(
         f.releases
@@ -279,6 +280,7 @@ fn authority_revoked_after_planning_is_rechecked_in_the_recording_transaction() 
     );
     assert_eq!(f.rows(), 0);
     assert_eq!(f.audit().last().unwrap().0, "denied");
+    assert!(artifact_names(&f).is_empty());
 }
 
 #[test]
@@ -299,6 +301,7 @@ fn a_lower_or_incomparable_display_version_needs_explicit_acknowledgement() {
         "pack_release_version_not_increasing",
     );
     assert_eq!(f.rows(), 3);
+    assert_eq!(artifact_names(&f).len(), 3);
     let plan = f
         .releases
         .plan(&f.owner, 3, UpdatePolicy::Optional)
@@ -409,6 +412,25 @@ mode = 'disabled'
         plan.revision()
     );
     let built = build(&metadata);
+    let stranger = seed(&f.db, false);
+    refused(
+        f.releases.publish_vesta(&stranger, &plan, &built, false),
+        "forbidden",
+    );
+    assert!(artifact_names(&f).is_empty());
+    let maintainer = seed(&f.db, false);
+    f.grant(&maintainer, Capability::PackPublish, "allow");
+    let revoked_plan = f
+        .releases
+        .plan(&maintainer, 0, UpdatePolicy::Optional)
+        .unwrap();
+    f.grant(&maintainer, Capability::PackPublish, "deny");
+    refused(
+        f.releases
+            .publish_vesta(&maintainer, &revoked_plan, &built, false),
+        "forbidden",
+    );
+    assert!(artifact_names(&f).is_empty());
     let release = f
         .releases
         .publish_vesta(&f.owner, &plan, &built, false)
@@ -619,4 +641,147 @@ fn release_notifications_are_keyed_by_the_canonical_state_directory() {
     assert!(Arc::ptr_eq(&one, &f.releases.changes));
     // A missing directory has no canonical identity and is refused, not keyed raw.
     assert!(notification_sender(&f.temp.path().join("absent")).is_err());
+}
+
+#[test]
+fn borrowed_archive_plans_do_not_grant_authority_or_create_artifacts() {
+    let f = Fixture::open();
+    let plan = f
+        .releases
+        .plan(&f.owner, 0, UpdatePolicy::Optional)
+        .unwrap();
+    let stranger = seed(&f.db, false);
+    refused(
+        f.releases
+            .publish_archive(&stranger, &plan, &f.archive(b"borrowed"), "1", false),
+        "forbidden",
+    );
+    assert!(artifact_names(&f).is_empty());
+    assert_eq!(f.rows(), 0);
+}
+
+#[test]
+fn recording_denial_after_publication_removes_only_the_new_unreferenced_name() {
+    let f = Fixture::open();
+    let maintainer = seed(&f.db, false);
+    f.grant(&maintainer, Capability::PackPublish, "allow");
+    let plan = f
+        .releases
+        .plan(&maintainer, 0, UpdatePolicy::Optional)
+        .unwrap();
+    f.releases
+        .preflight(&maintainer, &plan, "1", false)
+        .unwrap();
+    let publication = f
+        .releases
+        .artifacts
+        .publish_archive_tracked(&f.archive(b"pending"))
+        .unwrap();
+    assert!(publication.1);
+    f.grant(&maintainer, Capability::PackPublish, "deny");
+    refused(
+        f.releases
+            .record_publication(&maintainer, &plan, publication, "1", false),
+        "forbidden",
+    );
+    assert!(artifact_names(&f).is_empty());
+    assert_eq!(f.rows(), 0);
+}
+
+#[test]
+fn failed_recording_cleans_new_artifacts_but_preserves_existing_names() {
+    let f = Fixture::open();
+    let plan = f
+        .releases
+        .plan(&f.owner, 0, UpdatePolicy::Optional)
+        .unwrap();
+    let existing = f
+        .releases
+        .artifacts
+        .publish_archive(&f.archive(b"existing"))
+        .unwrap();
+    let before = artifact_names(&f);
+    f.db.write(|c| {
+        c.execute_batch("CREATE TRIGGER refuse_release BEFORE INSERT ON pack_releases BEGIN SELECT RAISE(ABORT, 'fixture'); END;")?;
+        Ok(())
+    }).unwrap();
+    assert!(
+        f.releases
+            .publish_archive(&f.owner, &plan, &f.archive(b"new"), "1", false)
+            .is_err()
+    );
+    assert_eq!(artifact_names(&f), before);
+    assert!(
+        f.releases
+            .publish_archive(&f.owner, &plan, &f.archive(b"existing"), "1", false)
+            .is_err()
+    );
+    assert_eq!(artifact_names(&f), before);
+    assert_eq!(
+        f.releases.artifacts.load(&existing, 64).unwrap().bytes(),
+        b"existing"
+    );
+    assert_eq!(f.rows(), 0);
+}
+
+#[test]
+fn losing_publication_never_removes_a_concurrent_winners_historical_artifact() {
+    let f = Fixture::open();
+    let plan = f
+        .releases
+        .plan(&f.owner, 0, UpdatePolicy::Optional)
+        .unwrap();
+    let archive = f.archive(b"shared");
+    let publication = f
+        .releases
+        .artifacts
+        .publish_archive_tracked(&archive)
+        .unwrap();
+    assert!(publication.1);
+    // Another publication reuses the newly created name and commits first.
+    let winner = f
+        .releases
+        .publish_archive(&f.owner, &plan, &archive, "1", false)
+        .unwrap();
+    f.publish(&f.owner, UpdatePolicy::Optional, "2", b"latest")
+        .unwrap();
+    refused(
+        f.releases
+            .record_publication(&f.owner, &plan, publication, "1", false),
+        "pack_release_conflict",
+    );
+    assert_eq!(
+        f.releases
+            .artifacts
+            .load(winner.artifact(), 64)
+            .unwrap()
+            .bytes(),
+        b"shared"
+    );
+    assert_eq!(artifact_names(&f).len(), 2);
+    assert_eq!(f.rows(), 2);
+}
+
+#[test]
+fn commit_failure_rolls_back_release_and_removes_its_new_artifact() {
+    let f = Fixture::open();
+    let changes = f.releases.subscribe();
+    f.db.write(|c| {
+        c.execute_batch(
+            "CREATE TABLE release_commit_failure (principal TEXT REFERENCES principals(id) DEFERRABLE INITIALLY DEFERRED);
+             CREATE TRIGGER fail_release_commit AFTER INSERT ON pack_releases BEGIN
+                 INSERT INTO release_commit_failure VALUES ('missing-fixture-principal');
+             END;",
+        )?;
+        Ok(())
+    }).unwrap();
+    refused(
+        f.publish(&f.owner, UpdatePolicy::Optional, "1", b"commit-failure"),
+        "state_commit_failed",
+    );
+    assert_eq!(f.rows(), 0);
+    assert!(f.releases.current().unwrap().is_none());
+    assert!(artifact_names(&f).is_empty());
+    assert!(f.audit().is_empty());
+    assert!(!changes.has_changed().unwrap());
 }

@@ -118,6 +118,18 @@ impl Root {
         }
     }
 }
+/// Observe directory identity with the same native alias and plain-ancestor checks
+/// used for file roots. This creates nothing and does not pin future path edits.
+pub(crate) fn same_directory(left: &Path, right: &Path) -> Result<bool> {
+    absolute(left)?;
+    absolute(right)?;
+    plain_ancestors(left)?;
+    plain_ancestors(right)?;
+    let left = fs::canonicalize(left).map_err(io_error)?;
+    let right = fs::canonicalize(right).map_err(io_error)?;
+    Ok(within(&left, &right) && within(&right, &left))
+}
+
 fn exclusion(path: &Path) -> Result<PathBuf> {
     #[cfg(windows)]
     for component in path.components() {

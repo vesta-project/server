@@ -139,7 +139,15 @@ impl PackArtifacts {
     }
 
     pub fn publish_vesta(&self, pack: &BuiltVestaPack) -> Result<PublishedArtifact, PackError> {
-        self.publish(ArtifactFormat::Vesta, pack.bytes(), pack.sha256())
+        self.publish_vesta_tracked(pack)
+            .map(|(artifact, _)| artifact)
+    }
+
+    pub(crate) fn publish_vesta_tracked(
+        &self,
+        pack: &BuiltVestaPack,
+    ) -> Result<(PublishedArtifact, bool), PackError> {
+        self.publish_tracked(ArtifactFormat::Vesta, pack.bytes(), pack.sha256())
     }
 
     /// The opaque archive is stored as pinned; it is never parsed or extracted.
@@ -147,19 +155,39 @@ impl PackArtifacts {
         &self,
         archive: &PreparedArchive,
     ) -> Result<PublishedArtifact, PackError> {
+        self.publish_archive_tracked(archive)
+            .map(|(artifact, _)| artifact)
+    }
+
+    pub(crate) fn publish_archive_tracked(
+        &self,
+        archive: &PreparedArchive,
+    ) -> Result<(PublishedArtifact, bool), PackError> {
         let format = match archive.description().format() {
             ArchiveFormat::Zip => ArtifactFormat::Zip,
             ArchiveFormat::Mrpack => ArtifactFormat::Mrpack,
         };
-        self.publish(format, archive.bytes(), archive.description().sha256())
+        self.publish_tracked(format, archive.bytes(), archive.description().sha256())
     }
 
+    #[cfg(test)]
     fn publish(
         &self,
         format: ArtifactFormat,
         bytes: &[u8],
         sha256: &Sha256,
     ) -> Result<PublishedArtifact, PackError> {
+        self.publish_tracked(format, bytes, sha256)
+            .map(|(artifact, _)| artifact)
+    }
+
+    // `created` is true only when this call won the no-replacement link.
+    fn publish_tracked(
+        &self,
+        format: ArtifactFormat,
+        bytes: &[u8],
+        sha256: &Sha256,
+    ) -> Result<(PublishedArtifact, bool), PackError> {
         if bytes.len() > MAX_ARTIFACT_BYTES {
             return Err(PackError::TooLarge);
         }
@@ -176,7 +204,7 @@ impl PackArtifacts {
         if self.directory.open(&name).map_err(state_error)?.is_some() {
             // Identical content is idempotent; anything else stays untouched and refuses.
             self.load(&artifact, MAX_ARTIFACT_BYTES)?;
-            return Ok(artifact);
+            return Ok((artifact, false));
         }
         // Stale stages count, so failed attempts cannot grow the directory without bound.
         match self
@@ -196,7 +224,7 @@ impl PackArtifacts {
                 // A concurrent identical publication won; verify rather than trust it.
                 drop(stage);
                 self.load(&artifact, MAX_ARTIFACT_BYTES)?;
-                return Ok(artifact);
+                return Ok((artifact, false));
             }
             Err(error) => return Err(state_error(error)),
         }
@@ -204,7 +232,19 @@ impl PackArtifacts {
         stage.retire()?;
         // The published name must now be a single-link file holding exactly these bytes.
         self.load(&artifact, MAX_ARTIFACT_BYTES)?;
-        Ok(artifact)
+        Ok((artifact, true))
+    }
+
+    /// Only for the caller that created this name, while a database write transaction
+    /// proves no release references it. Existing names are never rollback-owned.
+    pub(crate) fn remove_unreferenced(
+        &self,
+        artifact: &PublishedArtifact,
+    ) -> Result<(), PackError> {
+        self.directory
+            .remove(&artifact.name()?)
+            .map(|_| ())
+            .map_err(state_error)
     }
 
     /// Remove every name this module created except `keep`. Foreign names are never
