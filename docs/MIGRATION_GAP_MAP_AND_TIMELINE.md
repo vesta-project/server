@@ -1,14 +1,6 @@
 # Java-to-Rust migration: gap map and timeline
 
-Status: **not complete.** The migration gate has not passed: 179 inventory rows are
-`not_migrated`, no row is `verified`, and the completed whole-rebuild review did not pass.
-The owner-approved gate is that review plus delta reviews; the review at `a3dda06` found
-3 P2 findings and an accounting issue, and the delta review at `1250533` confirmed the
-three P2s resolved while finding a new P2 (unbounded file-intent retention) and an
-accounting issue. A fix-delta review is pending. Historical baseline: branch
-`feat/server-software-foundation`, commit `e4a6e2c`. Current-source accounting below was
-checked at HEAD `a3dda06`; historical checkpoint statements are labeled and are not
-descriptions of current gaps.
+Status: **migration gate passed for the agreed scope; no inventory row is verified.** The owner-approved gate is the complete whole-rebuild review at `a3dda06` plus delta reviews. The delta review at `1250533` found three P2s, all now fixed, and a fix-delta review of `1250533..cbaf1ab` at Sol found no new P1, P2 or P3 findings. Known limits: 179 inventory rows are `not_migrated`, several Java assertion families have no line-by-line Rust equivalent recorded, and 41 rows have no counterpart pointer. Passing the gate does not mean every Java assertion is translated or that any row is verified.
 
 Sources: `docs/RUST_WRAPPER_PARITY.json`, `docs/SERVER_SOFTWARE_REQUIREMENTS.md`,
 `docs/archive/RUST_WRAPPER_MIGRATION_PLAN.md`, `docs/archive/RUST_INTEGRATED_MIGRATION_PASS.md`, and a
