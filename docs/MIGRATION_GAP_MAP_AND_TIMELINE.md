@@ -2,8 +2,9 @@
 
 Status: **not complete.** The migration gate has not passed: 179 inventory rows are
 `not_migrated`, no row is `verified`, and the independent whole-rebuild review by a
-separately configured Sol has not run. Baseline: branch `feat/server-software-foundation`,
-commit `e4a6e2c`.
+separately configured Sol has not run. Historical baseline: branch `feat/server-software-foundation`,
+commit `e4a6e2c`. Current-source accounting below was checked at HEAD `a3dda06`; historical
+checkpoint statements are labeled and are not descriptions of current gaps.
 
 Sources: `docs/RUST_WRAPPER_PARITY.json`, `docs/SERVER_SOFTWARE_REQUIREMENTS.md`,
 `docs/RUST_WRAPPER_MIGRATION_PLAN.md`, `docs/RUST_INTEGRATED_MIGRATION_PASS.md`, and a
@@ -40,18 +41,18 @@ design), Plugin-side (retained Java), or Unknown.
 | Operations and confirmations | `operations/` | Partial | Closed lifecycle driver exists. Confirmation coverage is unverified. |
 | Process and console | `runtime/MinecraftServerProcess`, `console/ConsoleBuffer` | Partial | Owned direct-child control and console capture exist. No supervisor, no crash policy. |
 | Player query | `runtime/PlayersQuery`, `PlayerListParser` | Partial | Literal `list` query is composed through the operation driver (`QueryDriver`). An authenticated management transport for player queries is missing. |
-| File browser | `files/FileBrowserService`, `ServerPathPolicy` | Partial | List/read plus `files/mutation.rs`: create/overwrite/delete/restore, scoped capabilities, bounded recoverable trash (10 GiB / 10 % / 7 days), disk-space preflight and audited transactions. One-level mkdir and file rename with If-Match hashes, and resumable uploads (bounded on-disk staging in protected state, reservations, fresh authority checks), are implemented as library APIs only; no CLI or network entry point (management surface refused until the device boundary exists). Expired uploads are purged at host startup and during upload creation (`crates/vesta-control/src/host.rs:273`, `crates/vesta-control/src/files/upload.rs:137`). Operation-journal integration remains. |
+| File browser | `files/FileBrowserService`, `ServerPathPolicy` | Partial | List/read plus `files/mutation.rs`: create/overwrite/delete/restore, scoped capabilities, bounded recoverable trash (10 GiB / 10 % / 7 days), disk-space preflight and audited transactions. One-level mkdir and file rename with If-Match hashes, and resumable uploads (bounded on-disk staging in protected state, reservations, fresh authority checks), are implemented as library APIs only; no CLI or network entry point (management surface refused until the device boundary exists). Expired uploads are purged at host startup and during upload creation (`crates/vesta-control/src/host.rs:273`, `crates/vesta-control/src/files/upload.rs:137`). Durable file intent/outcome operation-journal integration is required by the plan and is being implemented (in progress). Non-ASCII file/resource names remain unsupported although Java accepted them. |
 | Content install | `content/ContentInstaller` | Partial | Library APIs only; no CLI or network entry point. Recoverable file mutations cover upload/remove; provider-sourced Modrinth/CurseForge installs resolve trusted metadata and verify bytes before writing. Uploads and installs are capped at 16 MiB (`MAX_WRITE_BYTES`, `files/mutation.rs:35`). Broader arbitrary URL installation is not implied. |
-| Pack catalogue, manifest, archive | `core/manifest/ServerModpackManifest`, `LocalArchivePack` | Partial (Replaced format) | Rust-native catalogue schema, stored ZIP builder and content-addressed publication exist. Implemented: strict backend `[pack.source]` selects provider/project/version reference, confined local archive, or scanned content through explicit `Host::prepare_pack` / authorized `PackReleases::publish_prepared`. Selected directories share one root-relative namespace, skip/report absent selections, reject overlaps/case aliases, and retain exclusions, unresolved dispositions and global budgets. No live auto-scan, provider fetching or archive extraction. Whole-family independent parity review remains pending. |
-| Pack revisions and update policy | `manifest/ModpackState` | Partial | `packs/releases.rs`: database-backed monotonic releases, optional/required minimum (`pack.force_update`), `current`/`update_available`/`update_required`, display-version acknowledgement. Reference-aware artifact pruning (`prune`) exists. No signing. |
+| Pack catalogue, manifest, archive | `core/manifest/ServerModpackManifest`, `LocalArchivePack` | Partial (Replaced format) | Rust-native catalogue schema, stored ZIP builder and content-addressed publication exist. Implemented: strict backend `[pack.source]` selects provider/project/version reference, confined local archive, or scanned content through explicit `Host::prepare_pack` / authorized `PackReleases::publish_prepared`; configured archive preparation pins bytes through the protected reader and protected publication/authenticated artifact serving are implemented. Selected directories share one root-relative namespace, skip/report absent selections, reject overlaps/case aliases, and retain exclusions, unresolved dispositions and global budgets. No live auto-scan, provider fetching or archive extraction. Exact legacy archive-manifest parity remains an open question; whole-family independent parity review remains pending. `vesta-agent serve` has no trusted pack-publication entry point. |
+| Pack revisions and update policy | `manifest/ModpackState` | Partial | `packs/releases.rs`: database-backed monotonic releases, optional/required minimum (`pack.force_update`), `current`/`update_available`/`update_required`, display-version acknowledgement. Reference-aware artifact pruning (`prune`) exists; its recovery fix is in progress. No signing. |
 | Sync and status | `core/sync` | Partial | Pure proposal types. No I/O in the core. `GET /api/v2/pack/status` exists (`crates/vesta-transport/src/routes.rs:211`). |
 | HTTP, TCP, realtime | `server/VestaHttpServer`, `TcpSyncServer`, `VestaRealtimeSocket`, `SessionManager` | Partial | `vesta-transport`: bounded HTTPS (hyper + tokio-rustls) serves `POST /api/v2/discovery`, pack status, password/Minecraft pack sign-in, tickets and disk-streamed artifact downloads; authenticated pack realtime uses WebSocket. Management remains refused and legacy v1 removed; `vesta-agent serve`. TCP sync is superseded/forbidden by the disposition below. Realtime heartbeat rereads the database-hosted release and compares revision and minimum revision, detecting cross-process release changes within one heartbeat; the test commits a database row directly, not via a second process. Download throughput floor and global/per-session/per-peer caps are implemented (`crates/vesta-transport/src/lib.rs`, `routes.rs`). `vesta-agent serve` still has no realtime publish entry point. |
 | TLS | `security/TlsMaterial` | Partial | Configured PEM via the protected reader, TLS 1.2+, rotation that retains the last good certificate on invalid replacement, and SHA-256 fingerprint response header. No generation or plaintext fallback; mTLS management is not implemented. |
 | Rate limiting | `security/TokenBucketRateLimiter` | Partial | `admission.rs` peer limiter. Equivalence is unverified. |
-| Whitelist and admission data | `security/WhitelistService` | Partial | `whitelist.rs`, `minecraft_admission.rs` (`server.properties`, `banned-players.json`), composed into pack-access policy with explicit reload. No file watching. |
+| Whitelist and admission data | `security/WhitelistService` | Partial | `whitelist.rs`, `minecraft_admission.rs` (`server.properties`, `banned-players.json`), evaluated by `pack_access.rs` and composed/reloaded by `host.rs`; offline-player association and authenticated management remain open. No file watching. |
 | Config loading and host composition | `config/ConfigLoader`, `WrapperConfig`, `runtime/AgentRuntime` | Partial | `host.rs`: `Host::open` composes database, identity, pack passwords, Minecraft challenges, whitelist, files, pack preparation, releases and the operation runtime; no owner bootstrap, no game start, rollback on failure, observation-only shutdown. CLI entrypoint exists (`vesta-agent serve`, `check-config`; `apps/vesta-agent/src/main.rs`). |
 | Discovery | `runtime/ServerFeatureDiscovery` | Partial | `Host::discover` reports composed mechanisms honestly. Served by `POST /api/v2/discovery` (`crates/vesta-transport/src/routes.rs:185`). |
-| Installer | `ContentInstaller`, `AgentRuntime` | Unknown | `vesta-server-install` exists. Capability not inspected. |
+| Installer | `ContentInstaller`, `AgentRuntime` | Partial | `crates/vesta-server-install` implements an installer library for transfer, staging, bundle assembly and runtime probing; product activation/adoption remain a separate gate and are not claimed as complete. |
 | Connector and plugin protocol | `ipc/ControlIpcServer`, `src/main/java/com/vesta/loader` | Replaced / forbidden legacy authority | Control IPC has no pack/status messages; do not add a Rust endpoint (see Control IPC disposition below). Retained plugin/mod remain Java; they still need a v2 HTTPS client and detection update in the plugin repository. |
 
 ## 3. Requirement families with no recorded Rust counterpart
@@ -94,10 +95,11 @@ These are proposals for the owner, not approved dispositions.
 
 Each wave ends with focused tests, a fresh full suite and an unsigned local commit.
 
-0. **Done:** protected content-addressed pack publication (`2709401`); release ledger, whitelist parser,
+0. **Historical checkpoint evidence (not a current-HEAD gap list):** protected content-addressed pack publication (`2709401`); release ledger, whitelist parser,
    accounting report and checkpoint-doc archive (`dbbefab`); reference-aware artifact pruning and
    protected whitelist loading, host composition and discovery (`52773b0`); pack-access policy,
-   sessions/tickets and Minecraft admission data (next commit).
+   sessions/tickets and Minecraft admission data (recorded as the next commit at that checkpoint).
+   At current HEAD these capabilities exist; prune recovery remains in progress.
 1. **Accounting pass:** script-based recount of requirement links; classify the 179 rows by
    kind and boundary; record dispositions with evidence. No promotion without tests.
 2. **Catalogue and revisions:** configured whole-pack acquisition mode selection and selected-directory
@@ -107,14 +109,13 @@ Each wave ends with focused tests, a fresh full suite and an unsigned local comm
    state schema v10 migration preserves existing releases while admitting the `catalogue` artifact format.
    Remaining: configuration still needs to drop its non-authoritative revision fields; sync/status and
    release-aware pruning are implemented.
-3. **Archive-mode manifest and snapshot (remaining):** pinned snapshot, refresh and serve for `.zip`
-   and `.mrpack` artifacts.
+3. **Archive mode:** configured pinned archive preparation, protected publication and authenticated artifact serving are implemented. Exact legacy archive-manifest parity remains an open question; archive refresh semantics are not claimed.
 4. **Protected file and content services:** Implemented as library APIs only, verified pending final
    review: mkdir/rename, resumable chunked uploads staged on disk in protected state, and provider-sourced
    Modrinth/CurseForge content installation. No CLI or network entry point (management surface refused
    until the device boundary exists). Expired uploads are purged at host startup and during upload
-   creation. Uploads and installs are capped at 16 MiB (`MAX_WRITE_BYTES`). Remaining: optional
-   operation-journal integration for file effects.
+   creation. Uploads and installs are capped at 16 MiB (`MAX_WRITE_BYTES`). Required durable file
+   intent/outcome operation-journal integration is being implemented (in progress).
 5. **Host composition (remaining):** the CLI entrypoint exists (`vesta-agent serve`, `check-config`);
    `serve` has no realtime publish entry point. Player-query runtime composition is wired through
    `QueryDriver`; an authenticated management transport for player queries and console exposure

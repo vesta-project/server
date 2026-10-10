@@ -1797,7 +1797,7 @@
         "ureq 3.3.0 dependency Trace exposes username/serverId query and Location. Module-owned error/Debug redaction does not establish end-to-end transport-log redaction; runtime composition/upstream correction remains pending.",
         "Synchronous OS DNS can hang or overrun nominal timeouts. Owned verification slots remain occupied until actual return; no hard duration/cancellation guarantee is claimed.",
         "Random collision retry/exhaustion/no-overwrite, RNG/allocation failure and poisoned-store admission have source inspection only, not deterministic fault execution. Fresh random draws are not collision-branch coverage.",
-        "Full minecraft-policy whitelist/ban evaluation, offline-player mapping, pack admission, optional in-game linking, authenticated remote handlers and application composition remain absent. Online proof never automatically confers management or a joining offline-player identity.",
+        "Whitelist/ban evaluation and pack admission are implemented in minecraft_admission.rs and pack_access.rs, and composed/reloaded by host.rs; pack-only sessions and authenticated pack routes exist. Offline-player association and authenticated management remain open, as does optional in-game linking. Online proof never automatically confers management or a joining offline-player identity.",
         "Native Windows 11 / Rust 1.96.0 only. Linux/macOS/other architectures, declared Rust 1.85, packaging/provenance/vulnerability/SBOM/notices remain unverified. Scoped Sol review is not the mandatory final whole-rebuild review, which remains not_run."
       ],
       "rustTests": [
@@ -1844,7 +1844,7 @@
         "ureq 3.3.0 dependency Trace exposes username/serverId query and Location. Module-owned error/Debug redaction does not establish end-to-end transport-log redaction; runtime composition/upstream correction remains pending.",
         "Synchronous OS DNS can hang or overrun nominal timeouts. Owned verification slots remain occupied until actual return; no hard duration/cancellation guarantee is claimed.",
         "Random collision retry/exhaustion/no-overwrite, RNG/allocation failure and poisoned-store admission have source inspection only, not deterministic fault execution. Fresh random draws are not collision-branch coverage.",
-        "Full minecraft-policy whitelist/ban evaluation, offline-player mapping, pack admission, optional in-game linking, authenticated remote handlers and application composition remain absent. Online proof never automatically confers management or a joining offline-player identity.",
+        "Whitelist/ban evaluation and pack admission are implemented in minecraft_admission.rs and pack_access.rs, and composed/reloaded by host.rs; pack-only sessions and authenticated pack routes exist. Offline-player association and authenticated management remain open, as does optional in-game linking. Online proof never automatically confers management or a joining offline-player identity.",
         "Native Windows 11 / Rust 1.96.0 only. Linux/macOS/other architectures, declared Rust 1.85, packaging/provenance/vulnerability/SBOM/notices remain unverified. Scoped Sol review is not the mandatory final whole-rebuild review, which remains not_run."
       ],
       "rustTests": [
@@ -2184,10 +2184,10 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Partial host-side Rust equivalent: PackPreparation::archive pins confined opaque .zip/.mrpack bytes (case-insensitive extension, traversal/link refusal, never extracted) and PackArtifacts publishes them content-addressed in protected state. Java resolvedPath re-reading of a mutable server-root file is deliberately replaced by pinned, verified bytes.",
+      "rationale": "Configured PackPreparation::archive pins confined opaque .zip/.mrpack bytes through the protected reader (case-insensitive extension, traversal/link refusal, never extracted); authorized PackReleases publication stores verified content-addressed bytes in protected state, and authenticated artifact serving exists. Java resolvedPath re-reading of a mutable server-root file is deliberately replaced by pinned, verified bytes. Exact legacy archive-manifest parity remains an open question.",
       "gaps": [
-        "ModpackState.fromArchive archive-mode manifest/catalogue selection and authenticated download route remain unimplemented.",
-        "Absolute configured archive paths are not accepted; the configured-host archive selection contract is still to be composed.",
+        "Exact legacy archive-manifest parity remains an open question; this is distinct from configured pinned preparation, protected publication and authenticated artifact serving, which exist.",
+        "Absolute configured archive paths are not accepted; archive paths remain confined relative paths.",
         "Whole-family applicable-requirement accounting and separate final independent review remain pending."
       ],
       "rustTests": [
@@ -2364,9 +2364,9 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Partial host-side Rust equivalent for hosted-pack state: PackReleases records monotonic database-backed releases (revision, minimum revision, display version, content-addressed artifact) under pack.publish/pack.force_update with same-transaction authority recheck and audit, replacing configuration-supplied revisions. GET /api/v2/pack/status projects hosted releases, and release-aware artifact pruning is implemented by PackReleases::prune. Archive-mode manifest derivation (fromArchive) and platform-reference state are not implemented.",
+      "rationale": "Partial host-side Rust equivalent for hosted-pack state: PackReleases records monotonic database-backed releases (revision, minimum revision, display version, content-addressed artifact) under pack.publish/pack.force_update with same-transaction authority recheck and audit, replacing configuration-supplied revisions. GET /api/v2/pack/status projects hosted releases; configured archive preparation, protected publication and authenticated artifact serving exist, as does native platform-reference catalogue state. Release-aware artifact pruning exists; its recovery fix is in progress. Exact legacy archive-manifest parity remains an open question.",
       "gaps": [
-        "ModpackState.fromArchive archive-mode manifest and platform-reference (createsAPlatformReferenceWithoutHostedFiles) behavior remain unimplemented.",
+        "Configured platform-reference catalogue behavior exists; exact legacy `fromArchive` manifest parity remains an open question, separate from implemented configured pinned archive preparation/publication/serving.",
         "Signed manifests remain unimplemented.",
         "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
@@ -2468,7 +2468,7 @@
       "applicableRequirements": [],
       "disposition": "pending_mapping",
       "status": "not_migrated",
-      "rationale": "No direct Rust equivalent: Java server join descriptor (host, port, description, required flag) is not represented by the Rust pack catalogue or server-feature discovery manifest.",
+      "rationale": "Rust provides the descriptive JoinDescriptor in crates/vesta-protocol/src/pack/join.rs, and configured pack-index projection carries join metadata (`crates/vesta-control/src/packs/build_tests.rs::trusted_join_descriptor_is_in_the_player_index_but_not_file_entries`). The Java required flag's disposition is still being handled; this row remains pending mapping/review, not an assertion that no join representation exists.",
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
@@ -3331,7 +3331,7 @@
         "ureq 3.3.0 dependency Trace exposes username/serverId query and Location. Module-owned error/Debug redaction does not establish end-to-end transport-log redaction; runtime composition/upstream correction remains pending.",
         "Synchronous OS DNS can hang or overrun nominal timeouts. Owned verification slots remain occupied until actual return; no hard duration/cancellation guarantee is claimed.",
         "Random collision retry/exhaustion/no-overwrite, RNG/allocation failure and poisoned-store admission have source inspection only, not deterministic fault execution. Fresh random draws are not collision-branch coverage.",
-        "Full minecraft-policy whitelist/ban evaluation, offline-player mapping, pack admission, optional in-game linking, authenticated remote handlers and application composition remain absent. Online proof never automatically confers management or a joining offline-player identity.",
+        "Whitelist/ban evaluation and pack admission are implemented in minecraft_admission.rs and pack_access.rs, and composed/reloaded by host.rs; pack-only sessions and authenticated pack routes exist. Offline-player association and authenticated management remain open, as does optional in-game linking. Online proof never automatically confers management or a joining offline-player identity.",
         "Native Windows 11 / Rust 1.96.0 only. Linux/macOS/other architectures, declared Rust 1.85, packaging/provenance/vulnerability/SBOM/notices remain unverified. Scoped Sol review is not the mandatory final whole-rebuild review, which remains not_run."
       ],
       "rustTests": [
@@ -6551,9 +6551,9 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Partial Rust equivalent: Host::open validates host paths, reads the protected launch definition, opens the canonical database and composes identity, pack-password (password access mode only), Minecraft challenge, whitelist, file, pack preparation, release and operation-runtime services without binding listeners, bootstrapping an owner or starting the game; startup failures release the database and shutdown is observation-only.",
+      "rationale": "Partial Rust equivalent: Host::open validates host paths, reads the protected launch definition, opens the canonical database and composes identity, pack-password (password access mode only), Minecraft challenge/admission, file, pack preparation, release and operation-runtime services. `vesta-agent serve` also composes the existing HTTPS pack/discovery transport; startup failures release the database and shutdown is observation-only, without owner bootstrap or game start.",
       "gaps": [
-        "No network transport, pack-only session or route composition; Java HTTP/TCP/realtime wiring has no Rust equivalent yet.",
+        "Pack-only sessions and HTTPS discovery/status/authenticated artifact routes are implemented and composed by `vesta-agent serve`; authenticated management routes, event replay and lifecycle command submission remain unavailable.",
         "Event replay, lifecycle command submission and password verification are composed as services but not exposed through any authenticated channel.",
         "Java AgentRuntime lifecycle/kill/generation assertions are covered by operations runner tests, which are not re-verified for this row.",
         "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
@@ -7408,7 +7408,7 @@
       "status": "not_migrated",
       "rationale": "Rust migrations implement forward-only schema evolution in the real state database, retaining legacy constraints and producing verified pre-migration SQLite backups before applying supported upgrades.",
       "gaps": [
-        "Rust and Java schema versions and migration ownership differ (Rust current v8 versus Java v4, with identity/pack-password tables migrated through separate Rust modules); their SQL histories are not interchangeable and this mapping is behavioral, not version-for-version parity.",
+        "Rust and Java schema versions and migration ownership differ (Rust current v10 versus Java v4, with identity/pack-password tables migrated through separate Rust modules); their SQL histories are not interchangeable and this mapping is behavioral, not version-for-version parity. Rust current version is defined in crates/vesta-state/src/migrations.rs.",
         "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
       "rustTests": [
@@ -7936,7 +7936,7 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "The Java list and traversal cases have Rust counterparts in files/tests.rs. The Java write-then-delete round trip has no Rust counterpart because the Rust files module has no write or delete operation.",
+      "rationale": "The Java list/traversal cases have Rust counterparts in files/tests.rs; create/overwrite and delete/restore mutations are implemented and covered by files/mutation_tests.rs (including creation_requires_absence_and_never_replaces, overwrites_need_the_current_hash_and_keep_a_recoverable_copy, and deletes_go_to_the_trash_and_restore_only_into_an_empty_path). Java writes create missing parent directories; Rust requires the parent to exist.",
       "gaps": [
         "Java writes create missing parent directories; Rust requires the parent to exist.",
         "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
