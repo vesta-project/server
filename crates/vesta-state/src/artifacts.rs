@@ -21,6 +21,7 @@ use std::{
 
 pub const ARTIFACTS_DIR: &str = "artifacts";
 pub const TRASH_DIR: &str = "trash";
+pub const UPLOADS_DIR: &str = "uploads";
 pub const MAX_ARTIFACT_NAME_BYTES: usize = 96;
 
 /// Flat lowercase ASCII names: alphanumerics, `-` and `.`, starting and ending with an
@@ -76,6 +77,11 @@ impl StateDirectory {
     /// The owner-only flat directory holding recoverable copies of replaced/deleted files.
     pub fn trash(&self) -> Result<ArtifactDirectory> {
         self.flat_directory(TRASH_DIR)
+    }
+
+    /// Owner-only resumable upload staging, never inside the game root.
+    pub fn uploads(&self) -> Result<ArtifactDirectory> {
+        self.flat_directory(UPLOADS_DIR)
     }
 
     fn flat_directory(&self, name: &str) -> Result<ArtifactDirectory> {

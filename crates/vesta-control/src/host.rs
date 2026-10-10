@@ -270,6 +270,7 @@ fn compose(
     let files =
         FileBrowser::open(db.clone(), config.game(), &protected).map_err(HostError::Files)?;
     files.reconcile_pending().map_err(HostError::Files)?;
+    files.purge_expired_uploads().map_err(HostError::Files)?;
     let limits = SnapshotLimits::new(
         MAX_PINNED_FILE_BYTES,
         MAX_PINNED_BYTES,

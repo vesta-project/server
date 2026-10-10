@@ -221,6 +221,20 @@ impl FileBrowser {
         precondition: &WritePrecondition,
         bytes: &[u8],
     ) -> Result<FileChange> {
+        let admission = mutation_admission(self.db.directory().path())?;
+        let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
+        self.write_locked(subject, path, precondition, bytes, None)
+    }
+
+    /// Upload retirement and the success audit commit together. Caller holds admission.
+    pub(super) fn write_locked(
+        &self,
+        subject: &Subject,
+        path: &RelativePath,
+        precondition: &WritePrecondition,
+        bytes: &[u8],
+        upload: Option<&str>,
+    ) -> Result<FileChange> {
         if bytes.len() > MAX_WRITE_BYTES {
             return Err(FileError::TooLarge);
         }
@@ -232,8 +246,6 @@ impl FileBrowser {
             WritePrecondition::Matches(_) => Capability::FilesOverwrite,
         };
         let sha256 = hex::encode(Sha256::digest(bytes));
-        let admission = mutation_admission(self.db.directory().path())?;
-        let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
         let parent = self.authorized_parent(subject, path, capability)?;
         let target = parent.join(leaf(path));
         let incoming = match precondition {
@@ -273,6 +285,15 @@ impl FileBrowser {
                 effect: Some(sha256.clone()),
             }));
             complete(connection, self.db.server_id(), trash.as_deref())?;
+            if let Some(id) = upload {
+                let removed = connection.execute(
+                    "DELETE FROM file_uploads WHERE server_id=? AND id=? AND principal_id=? AND device_id=? AND expires_at>?",
+                    params![self.db.server_id(), id, subject.principal.as_str(), subject.device.as_str(), self.db.clock().millis()],
+                )?;
+                if removed != 1 {
+                    return Err(FileError::NotFound);
+                }
+            }
             self.audit(
                 connection,
                 subject,
@@ -543,7 +564,7 @@ impl FileBrowser {
         }
     }
 
-    fn authorized_parent(
+    pub(super) fn authorized_parent(
         &self,
         subject: &Subject,
         path: &RelativePath,
@@ -568,7 +589,7 @@ impl FileBrowser {
         Ok(checked.path)
     }
 
-    fn authorize(
+    pub(super) fn authorize(
         &self,
         connection: &Connection,
         subject: &Subject,
@@ -699,7 +720,12 @@ impl FileBrowser {
         result
     }
 
-    fn require_mutation_space(&self, parent: &Path, stage: u64, trash: u64) -> Result<()> {
+    pub(super) fn require_mutation_space(
+        &self,
+        parent: &Path,
+        stage: u64,
+        trash: u64,
+    ) -> Result<()> {
         let state = self.db.directory().path();
         let same = native::same_volume(parent, state)?;
         let (target_need, state_need) = space_footprints(stage, trash, same);
@@ -946,7 +972,7 @@ fn require_absent(target: &Path) -> Result<()> {
     }
 }
 
-fn require_space(parent: &Path, incoming: u64) -> Result<()> {
+pub(super) fn require_space(parent: &Path, incoming: u64) -> Result<()> {
     let (available, _) = native::volume_space(parent)?;
     require_available(available, incoming)
 }
@@ -1061,7 +1087,7 @@ fn leaf(path: &RelativePath) -> &str {
         .map_or(path.as_str(), |(_, leaf)| leaf)
 }
 
-fn check_hex(text: &str) -> Result<()> {
+pub(super) fn check_hex(text: &str) -> Result<()> {
     if text.len() != 64
         || !text
             .bytes()
@@ -1072,7 +1098,7 @@ fn check_hex(text: &str) -> Result<()> {
     Ok(())
 }
 
-fn random_id() -> Result<String> {
+pub(super) fn random_id() -> Result<String> {
     let mut random = [0_u8; 16];
     getrandom::fill(&mut random).map_err(|_| FileError::Unavailable)?;
     Ok(hex::encode(random))
@@ -1089,7 +1115,7 @@ fn trash_name(id: &str) -> Result<ArtifactName> {
     ArtifactName::new(&format!("{id}.bin")).map_err(|_| FileError::NotFound)
 }
 
-fn state_io(error: vesta_state::StateError) -> FileError {
+pub(super) fn state_io(error: vesta_state::StateError) -> FileError {
     match error.code() {
         "state_artifact_linked" | "state_dir_linked" | "state_file_linked" => FileError::LinkedPath,
         _ => FileError::Unavailable,
@@ -1098,7 +1124,7 @@ fn state_io(error: vesta_state::StateError) -> FileError {
 
 /// Process-wide admission keyed by canonical database directory, deliberately broader
 /// than a single root. Separate browsers and separately opened databases share it.
-fn mutation_admission(directory: &Path) -> Result<Arc<Mutex<()>>> {
+pub(super) fn mutation_admission(directory: &Path) -> Result<Arc<Mutex<()>>> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
     let key = fs::canonicalize(directory).map_err(io_error)?;
     let mut locks = LOCKS

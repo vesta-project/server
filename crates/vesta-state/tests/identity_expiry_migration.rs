@@ -369,7 +369,7 @@ fn schema_four_to_current_preserves_data_backup_and_pending_expiry_plans() {
         db.schema_version().expect("read schema version"),
         CURRENT_SCHEMA_VERSION
     );
-    assert_eq!(CURRENT_SCHEMA_VERSION, 8);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 9);
     seed_v4_data(&db);
     let expected_rows = db
         .read(|connection| Ok(persisted_rows(connection)?))
@@ -386,7 +386,7 @@ fn schema_four_to_current_preserves_data_backup_and_pending_expiry_plans() {
     let raw = Connection::open(directory.database_file()).expect("open local fixture database");
     raw.execute_batch(
         "BEGIN IMMEDIATE;\
-         DROP TABLE file_trash;
+         DROP TABLE file_uploads; DROP TABLE file_trash;
             DROP TABLE pack_releases;\
          DROP INDEX role_assignments_pending_expiry;\
          DROP INDEX principal_overrides_pending_expiry;\

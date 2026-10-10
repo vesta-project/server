@@ -657,3 +657,61 @@ fn host_startup_reconciles_pending_file_rows_before_runtime_admission() {
         HostShutdown::Complete
     ));
 }
+
+#[test]
+fn host_startup_upgrades_original_v8_without_upload_table_and_purges_orphan_staging() {
+    let f = Fixture::new();
+    let db = f.reopen();
+    let directory = db.directory().clone();
+    let server = db.server_id().to_owned();
+    let uploads = directory.uploads().unwrap();
+    let orphan =
+        vesta_state::artifacts::ArtifactName::new(&format!("{}.bin", "d".repeat(32))).unwrap();
+    let file = uploads.create_new(&orphan).unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    db.close().unwrap();
+
+    // v9 only adds file_uploads. Removing it leaves the unchanged original v8
+    // schema from b950e75, rather than a v8 fixture that already has uploads.
+    let offline = rusqlite::Connection::open(directory.database_file()).unwrap();
+    offline
+        .execute_batch("BEGIN IMMEDIATE; DROP TABLE file_uploads; PRAGMA user_version=8; COMMIT;")
+        .unwrap();
+    assert_eq!(
+        offline
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        8
+    );
+    assert!(
+        !offline
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='file_uploads')",
+                [],
+                |row| row.get::<_, bool>(0)
+            )
+            .unwrap()
+    );
+    drop(offline);
+    assert_eq!(uploads.count(10).unwrap(), Some(1));
+
+    let host = f.open("minecraft").unwrap();
+    assert_eq!(host.database().schema_version().unwrap(), 9);
+    assert_eq!(host.database().server_id(), server);
+    assert_eq!(
+        host.database()
+            .read(|c| Ok(
+                c.query_row("SELECT count(*) FROM file_uploads", [], |row| row
+                    .get::<_, i64>(0))?
+            ))
+            .unwrap(),
+        0
+    );
+    assert_eq!(uploads.count(10).unwrap(), Some(0));
+    assert_eq!(host.files().purge_expired_uploads().unwrap(), 0);
+    assert!(matches!(
+        host.shutdown(Duration::from_secs(5)).unwrap(),
+        HostShutdown::Complete
+    ));
+}

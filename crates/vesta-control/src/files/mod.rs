@@ -16,6 +16,7 @@ mod native;
 mod pack_root;
 mod path;
 mod root;
+mod upload;
 
 pub(crate) use local_document::read_local_document;
 pub use mutation::{
@@ -24,6 +25,7 @@ pub use mutation::{
 };
 pub(crate) use pack_root::{PackNode, PackRoot};
 pub use path::{MAX_COMPONENT_BYTES, MAX_PATH_BYTES, RelativePath};
+pub use upload::{MAX_UPLOAD_CHUNK_BYTES, UploadId, UploadPolicy};
 
 use crate::{
     ControlError,
@@ -55,6 +57,7 @@ pub enum FileError {
     /// The precondition no longer holds; carries the current SHA-256 when one exists.
     Conflict(Option<String>),
     TrashFull,
+    UploadFull,
     InsufficientSpace,
     /// A change was applied but neither recorded nor reversed; inspect before retrying.
     RecoveryRequired(Box<FileError>),
@@ -80,6 +83,7 @@ impl FileError {
             Self::Unavailable => "file_unavailable",
             Self::Conflict(_) => "file_conflict",
             Self::TrashFull => "file_trash_full",
+            Self::UploadFull => "file_upload_full",
             Self::InsufficientSpace => "file_insufficient_space",
             Self::RecoveryRequired(_) => "file_recovery_required",
             Self::Control(error) => error.code(),
@@ -204,6 +208,7 @@ pub struct FileBrowser {
     root: root::Root,
     audit: vesta_state::audit::AuditLog,
     trash_policy: TrashPolicy,
+    upload_policy: UploadPolicy,
 }
 impl fmt::Debug for FileBrowser {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -222,6 +227,7 @@ impl FileBrowser {
             db,
             root,
             trash_policy: TrashPolicy::default(),
+            upload_policy: UploadPolicy::default(),
         })
     }
 

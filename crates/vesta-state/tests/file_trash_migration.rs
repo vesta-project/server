@@ -5,7 +5,7 @@ use support::{DEFAULT_TEST_TIME_MS, Fixture};
 use vesta_state::StateDatabase;
 
 #[test]
-fn populated_v7_migrates_to_v8_without_losing_rows_and_enforces_trash_constraints() {
+fn populated_v7_migrates_to_v9_without_losing_rows_and_enforces_trash_constraints() {
     let fixture = Fixture::open();
     let directory = fixture.db.directory().clone();
     let server = fixture.db.server_id().to_owned();
@@ -17,11 +17,11 @@ fn populated_v7_migrates_to_v8_without_losing_rows_and_enforces_trash_constraint
     fixture.db.close().unwrap();
     let offline = Connection::open(directory.database_file()).unwrap();
     offline
-        .execute_batch("BEGIN IMMEDIATE; DROP TABLE file_trash; PRAGMA user_version=7; COMMIT;")
+        .execute_batch("BEGIN IMMEDIATE; DROP TABLE file_uploads; DROP TABLE file_trash; PRAGMA user_version=7; COMMIT;")
         .unwrap();
     drop(offline);
     let migrated = StateDatabase::open(directory, fixture.clock.clone()).unwrap();
-    assert_eq!(migrated.schema_version().unwrap(), 8);
+    assert_eq!(migrated.schema_version().unwrap(), 9);
     migrated.write(|c| {
         assert_eq!(c.query_row("SELECT display_name FROM principals WHERE id='legacy-principal'", [], |row| row.get::<_, String>(0))?, "Preserved");
         assert_eq!(c.query_row("SELECT role_id FROM role_assignments WHERE id='legacy-role'", [], |row| row.get::<_, String>(0))?, "owner");

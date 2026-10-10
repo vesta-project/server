@@ -12,6 +12,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         6 => apply_v6(c),
         7 => apply_v7(c),
         8 => apply_v8(c),
+        9 => apply_v9(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -356,6 +357,26 @@ fn apply_v8(c: &Connection) -> crate::Result<()> {
             CHECK ((reason = 'replace' AND effect_sha256 IS NOT NULL) OR (reason = 'delete' AND effect_sha256 IS NULL))
         ) STRICT;
         CREATE INDEX file_trash_expiry ON file_trash(server_id, expires_at);
+        "#,
+    )?;
+    Ok(())
+}
+
+/// Bounded resumable upload reservations. Byte staging lives in `<state>/uploads`.
+fn apply_v9(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(
+        r#"
+        CREATE TABLE file_uploads (
+            id TEXT PRIMARY KEY CHECK (length(id) = 32 AND id NOT GLOB '*[^0-9a-f]*'),
+            server_id TEXT NOT NULL REFERENCES server_identity(server_id),
+            principal_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            path TEXT NOT NULL CHECK (length(CAST(path AS BLOB)) BETWEEN 1 AND 4096),
+            expected_sha256 TEXT CHECK (expected_sha256 IS NULL OR (length(expected_sha256) = 64 AND expected_sha256 NOT GLOB '*[^0-9a-f]*')),
+            total_size INTEGER NOT NULL CHECK (total_size BETWEEN 0 AND 16777216),
+            final_sha256 TEXT NOT NULL CHECK (length(final_sha256) = 64 AND final_sha256 NOT GLOB '*[^0-9a-f]*'),
+            expires_at INTEGER NOT NULL
+        ) STRICT;
         "#,
     )?;
     Ok(())
