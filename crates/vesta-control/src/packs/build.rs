@@ -3,7 +3,7 @@
 //! This is not publication, installation authority, a provider resolver or a route.
 //! Every byte comes from the retained snapshot; paths are never reopened. Provider
 //! descriptions undergo admission here because the protocol projection is data-only.
-use super::{MAX_PINNED_BYTES, MAX_PINNED_FILE_BYTES, PreparedSnapshot};
+use super::{MAX_PINNED_BYTES, MAX_PINNED_FILE_BYTES, PreparedSnapshot, PrivateFileEntry};
 use crate::config::{LoaderKind, PackMetadata};
 use sha1::Sha1;
 use sha2::{Digest, Sha256 as DigestSha256};
@@ -107,6 +107,7 @@ impl Error for VestaBuildError {}
 
 /// Immutable local preparation, never permission to publish or download.
 pub struct BuiltVestaPack {
+    private_files: Vec<PrivateFileEntry>,
     bytes: Vec<u8>,
     sha256: Sha256,
     entries: usize,
@@ -115,6 +116,10 @@ pub struct BuiltVestaPack {
     minimum_revision: u64,
 }
 impl BuiltVestaPack {
+    /// Backend-local build report, never part of the served artifact/index.
+    pub fn private_files(&self) -> &[PrivateFileEntry] {
+        &self.private_files
+    }
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
@@ -251,7 +256,8 @@ pub fn build_vesta(
         mods: Some(index_files),
         overrides: None,
     };
-    let index = project_index(&manifest).map_err(|_| VestaBuildError::InvalidSnapshot)?;
+    let mut index = project_index(&manifest).map_err(|_| VestaBuildError::InvalidSnapshot)?;
+    index.join = metadata.join().cloned();
     let mut index_sink = BoundedBuffer::new(limits.index_bytes);
     let encoded = serde_json::to_writer(&mut index_sink, &index);
     if encoded.is_err() {
@@ -316,6 +322,7 @@ pub fn build_vesta(
     let sha256 = Sha256::parse(&hex::encode(DigestSha256::digest(&bytes)))
         .map_err(|_| VestaBuildError::Unavailable)?;
     Ok(BuiltVestaPack {
+        private_files: snapshot.private_files.clone(),
         bytes,
         sha256,
         entries,

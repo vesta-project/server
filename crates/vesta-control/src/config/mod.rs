@@ -31,7 +31,30 @@ use std::{
     net::IpAddr,
     path::{Component, Path, PathBuf},
 };
+use vesta_protocol::pack::join::JoinDescriptor;
 use vesta_state::{StateDirectory, StateError};
+
+/// Trusted backend choice for files without a hash-bound provider reference.
+/// No permissive legacy aliases or case/whitespace normalization.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum UnresolvedDisposition {
+    #[default]
+    Refuse,
+    EmbedPublic,
+    ExcludePrivate,
+}
+impl<'de> Deserialize<'de> for UnresolvedDisposition {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        // A derived enum also accepts table-form unit variants in TOML. The host
+        // contract deliberately permits only exact string values.
+        match String::deserialize(deserializer)?.as_str() {
+            "refuse" => Ok(Self::Refuse),
+            "embed-public" => Ok(Self::EmbedPublic),
+            "exclude-private" => Ok(Self::ExcludePrivate),
+            _ => Err(de::Error::custom("invalid unresolved disposition")),
+        }
+    }
+}
 
 pub const SCHEMA_VERSION: u16 = 1;
 pub const MAX_CONFIG_BYTES: usize = 65_536;
@@ -143,6 +166,8 @@ pub struct PackMetadata {
     minecraft_version: String,
     description: Option<String>,
     loader: Option<LoaderDescription>,
+    unresolved_disposition: UnresolvedDisposition,
+    join: Option<JoinDescriptor>,
 }
 impl PackMetadata {
     pub fn name(&self) -> &str {
@@ -165,6 +190,13 @@ impl PackMetadata {
     }
     pub fn loader(&self) -> Option<&LoaderDescription> {
         self.loader.as_ref()
+    }
+    pub fn unresolved_disposition(&self) -> UnresolvedDisposition {
+        self.unresolved_disposition
+    }
+    /// Descriptive player join information, never transport or access authority.
+    pub fn join(&self) -> Option<&JoinDescriptor> {
+        self.join.as_ref()
     }
     /// The release ledger, not configuration, is authoritative for published revisions.
     pub(crate) fn with_revisions(&self, revision: u64, minimum_revision: u64) -> Self {
@@ -719,7 +751,19 @@ struct WirePack {
     minecraft_version: String,
     description: Option<String>,
     loader: Option<Table<WireLoader>>,
+    #[serde(default)]
+    unresolved_disposition: UnresolvedDisposition,
+    join: Option<Table<WireJoin>>,
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireJoin {
+    address: String,
+    port: u16,
+    description: Option<String>,
+}
+
 impl WirePack {
     fn validate(self) -> Result<PackMetadata> {
         if self.minimum_revision == 0
@@ -728,7 +772,21 @@ impl WirePack {
         {
             return Err(ConfigError::InvalidRevision);
         }
+        let join = self
+            .join
+            .map(|Table(join)| {
+                JoinDescriptor::new(
+                    &join.address,
+                    join.port,
+                    &self.minecraft_version,
+                    join.description.as_deref(),
+                )
+                .map_err(|_| ConfigError::InvalidDocument)
+            })
+            .transpose()?;
         Ok(PackMetadata {
+            join,
+            unresolved_disposition: self.unresolved_disposition,
             name: validated_text(self.name, MAX_TEXT_BYTES)?,
             version: validated_text(self.version, MAX_TEXT_BYTES)?,
             revision: self.revision,

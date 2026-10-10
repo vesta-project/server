@@ -68,6 +68,95 @@ fn roots_document(roots: &[String]) -> String {
 }
 
 #[test]
+fn unresolved_dispositions_are_strict_and_default_to_refuse() {
+    let temp = tempfile::tempdir().unwrap();
+    assert_eq!(
+        parse(GOLDEN, temp.path())
+            .unwrap()
+            .pack()
+            .unresolved_disposition(),
+        UnresolvedDisposition::Refuse
+    );
+    for (value, expected) in [
+        ("refuse", UnresolvedDisposition::Refuse),
+        ("embed-public", UnresolvedDisposition::EmbedPublic),
+        ("exclude-private", UnresolvedDisposition::ExcludePrivate),
+    ] {
+        let text = GOLDEN.replace(
+            "[pack]\n",
+            &format!("[pack]\nunresolved-disposition = '{value}'\n"),
+        );
+        assert_eq!(
+            parse(&text, temp.path())
+                .unwrap()
+                .pack()
+                .unresolved_disposition(),
+            expected
+        );
+    }
+    for value in [
+        "",
+        "server",
+        "private",
+        "embed",
+        "EmbedPublic",
+        "EMBED-PUBLIC",
+        " embed-public",
+        "exclude-private ",
+        "unknown",
+    ] {
+        let text = GOLDEN.replace(
+            "[pack]\n",
+            &format!("[pack]\nunresolved-disposition = '{value}'\n"),
+        );
+        refused(parse(&text, temp.path()), ConfigError::InvalidDocument);
+    }
+    for fields in [
+        "unresolved-policy = 'server'",
+        "unresolved-disposition = true",
+        "unresolved-disposition = ['embed-public']",
+        "unresolved-disposition = {embed-public = {}}",
+        "unresolved-disposition = {embed-public = []}",
+        "unresolved-disposition = {refuse = {}, embed-public = {}}",
+        "unresolved-disposition = 'refuse'\nunresolved-disposition = 'embed-public'",
+    ] {
+        let text = GOLDEN.replace("[pack]\n", &format!("[pack]\n{fields}\n"));
+        refused(parse(&text, temp.path()), ConfigError::InvalidDocument);
+    }
+}
+
+#[test]
+fn join_description_comes_only_from_strict_trusted_config() {
+    let temp = tempfile::tempdir().unwrap();
+    assert!(parse(GOLDEN, temp.path()).unwrap().pack().join().is_none());
+    let text = format!(
+        "{GOLDEN}\n[pack.join]\naddress = 'play.example.org'\nport = 25565\ndescription = 'Player server'\n"
+    );
+    let config = parse(&text, temp.path()).unwrap();
+    let join = config.pack().join().unwrap();
+    assert_eq!(join.address(), "play.example.org");
+    assert_eq!(join.port(), 25565);
+    assert_eq!(join.minecraft_version(), config.pack().minecraft_version());
+    assert_eq!(join.description(), Some("Player server"));
+    for fields in [
+        "address = 'https://example.org'\nport = 25565",
+        "address = 'example.org:25565'\nport = 25565",
+        "address = ' example.org'\nport = 25565",
+        "address = 'example.org'\nport = 0",
+        "address = 'example.org'\nport = 65536",
+        "address = 'example.org'",
+        "address = 'example.org'\nport = 25565\nurl = 'https://evil.org'",
+        "address = 'example.org'\nport = 25565\nminecraft-version = 'client-controlled'",
+        "address = 'example.org'\naddress = 'evil.org'\nport = 25565",
+    ] {
+        refused(
+            parse(&format!("{GOLDEN}\n[pack.join]\n{fields}\n"), temp.path()),
+            ConfigError::InvalidDocument,
+        );
+    }
+}
+
+#[test]
 fn independent_toml_golden_has_explicit_paths_metadata_and_minecraft_access() {
     let temp = tempfile::tempdir().unwrap();
     let config = parse(GOLDEN, temp.path()).unwrap();

@@ -98,6 +98,185 @@ fn preparation(fixture: &Fixture) -> PackPreparation {
     .unwrap_or_else(|error| panic!("a plain root opens: {error:?}"))
 }
 
+#[test]
+fn unresolved_refuses_by_default_and_public_embedding_requires_explicit_selection() {
+    use crate::config::UnresolvedDisposition;
+    let fixture = Fixture::open();
+    fixture.write("config/unresolved.txt", B_TXT_BYTES);
+    let prepare = preparation(&fixture);
+    assert!(matches!(
+        prepare.snapshot(metadata(), &empty_registry()),
+        Err(PackError::UnresolvedFile)
+    ));
+    let registry = SourceRegistry::new(vec![
+        KnownSource::new(
+            "config/unresolved.txt",
+            B_TXT_HASH,
+            FileSource::platform(Platform::Curseforge, "1", "2", None).unwrap(),
+        )
+        .unwrap(),
+    ])
+    .unwrap();
+    let known = prepare.snapshot(metadata(), &registry).unwrap();
+    assert_eq!(entries(&known), ["config/unresolved.txt"]);
+    assert_eq!(
+        file_in(&known, "config/unresolved.txt").source().kind(),
+        SourceKind::Platform
+    );
+    let snapshot = prepare
+        .snapshot_with_disposition(
+            UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        )
+        .unwrap();
+    assert_eq!(entries(&snapshot), ["config/unresolved.txt"]);
+    assert_eq!(
+        snapshot.bytes(&catalogue_path("config/unresolved.txt")),
+        Some(B_TXT_BYTES)
+    );
+    assert!(snapshot.private_files().is_empty());
+    let configured =
+        preparation(&fixture).with_unresolved_disposition(UnresolvedDisposition::ExcludePrivate);
+    let excluded = configured.snapshot(metadata(), &empty_registry()).unwrap();
+    assert!(entries(&excluded).is_empty());
+    assert_eq!(excluded.private_files().len(), 1);
+}
+
+#[test]
+fn excluded_private_files_are_reported_but_never_retained_or_built_or_indexed() {
+    use crate::config::{HostConfiguration, UnresolvedDisposition};
+    use std::io::{Cursor, Read};
+    let fixture = Fixture::open();
+    fixture.write("config/private.txt", B_TXT_BYTES);
+    fixture.write("mods/provider.jar", KNOWN_BYTES);
+    let registry = SourceRegistry::new(vec![
+        KnownSource::new(
+            "mods/provider.jar",
+            KNOWN_HASH,
+            FileSource::platform(Platform::Curseforge, "1", "2", None).unwrap(),
+        )
+        .unwrap(),
+    ])
+    .unwrap();
+    let snapshot = preparation(&fixture)
+        .snapshot_with_disposition(UnresolvedDisposition::ExcludePrivate, metadata(), &registry)
+        .unwrap();
+    assert_eq!(entries(&snapshot), ["mods/provider.jar"]);
+    assert_eq!(snapshot.total_bytes(), KNOWN_BYTES.len());
+    assert!(
+        snapshot
+            .bytes(&catalogue_path("config/private.txt"))
+            .is_none()
+    );
+    let private = &snapshot.private_files()[0];
+    assert_eq!(private.path().as_str(), "config/private.txt");
+    assert_eq!(private.sha256().to_hex(), B_TXT_HASH);
+    assert_eq!(private.size(), B_TXT_BYTES.len() as u64);
+    assert_eq!(format!("{private:?}"), "PrivateFileEntry[<redacted>]");
+    let config = HostConfiguration::parse_toml(
+        br#"schema-version = 1
+[paths]
+state = 'state'
+game = 'game'
+scan-roots = ['game']
+launch-definition = 'private/launch.toml'
+[pack]
+name = 'prepared'
+version = '1.0.0'
+revision = 4
+minimum-revision = 2
+minecraft-version = '1.21.1'
+unresolved-disposition = 'exclude-private'
+[pack-access]
+mode = 'minecraft'
+[listener]
+mode = 'disabled'
+"#,
+        fixture._temp.path(),
+        Path::new("host.toml"),
+    )
+    .unwrap();
+    let artifact =
+        super::build_vesta(&snapshot, config.pack(), super::VestaBuildLimits::default()).unwrap();
+    assert_eq!(artifact.private_files(), snapshot.private_files());
+    let mut archive = zip::ZipArchive::new(Cursor::new(artifact.bytes())).unwrap();
+    assert_eq!(archive.len(), 1); // Provider-only public content needs just the index.
+    let mut index = String::new();
+    archive
+        .by_name(vesta_protocol::pack::INDEX_NAME)
+        .unwrap()
+        .read_to_string(&mut index)
+        .unwrap();
+    assert!(!index.contains("private.txt"));
+    assert!(!index.contains(B_TXT_HASH));
+    assert!(!index.contains("private_files"));
+    assert!(
+        !artifact
+            .bytes()
+            .windows(B_TXT_BYTES.len())
+            .any(|bytes| bytes == B_TXT_BYTES)
+    );
+    assert!(archive.by_name("overrides/config/private.txt").is_err());
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&index).unwrap()["files"][0]["path"],
+        "mods/provider.jar"
+    );
+}
+
+#[test]
+fn private_exclusion_keeps_scan_file_and_byte_budgets_and_stale_registry_refusal() {
+    use crate::config::UnresolvedDisposition;
+    let fixture = Fixture::open();
+    fixture.write("config/a.txt", B_TXT_BYTES);
+    fixture.write("config/b.txt", B_TXT_BYTES);
+    let prepare =
+        PackPreparation::open(&fixture.db, &fixture.game, &[], limits(64, 64, 1, 256)).unwrap();
+    assert!(matches!(
+        prepare.snapshot_with_disposition(
+            UnresolvedDisposition::ExcludePrivate,
+            metadata(),
+            &empty_registry()
+        ),
+        Err(PackError::TooLarge)
+    ));
+    let prepare = PackPreparation::open(
+        &fixture.db,
+        &fixture.game,
+        &[],
+        limits(B_TXT_BYTES.len(), B_TXT_BYTES.len(), 32, 256),
+    )
+    .unwrap();
+    assert!(matches!(
+        prepare.snapshot_with_disposition(
+            UnresolvedDisposition::ExcludePrivate,
+            metadata(),
+            &empty_registry()
+        ),
+        Err(PackError::TooLarge)
+    ));
+    let registry = SourceRegistry::new(vec![
+        KnownSource::new(
+            "config/a.txt",
+            KNOWN_HASH,
+            FileSource::platform(Platform::Curseforge, "1", "2", None).unwrap(),
+        )
+        .unwrap(),
+    ])
+    .unwrap();
+    std::fs::remove_file(fixture.game.join("config/b.txt")).unwrap();
+    for disposition in [
+        UnresolvedDisposition::Refuse,
+        UnresolvedDisposition::EmbedPublic,
+        UnresolvedDisposition::ExcludePrivate,
+    ] {
+        assert_catalogue_error(
+            preparation(&fixture).snapshot_with_disposition(disposition, metadata(), &registry),
+            CatalogueError::InvalidHash,
+        );
+    }
+}
+
 fn metadata() -> ManifestMetadata {
     ManifestMetadata::new("prepared", "1.0.0", 4, 2).expect("valid metadata")
 }
@@ -236,7 +415,13 @@ mode = 'disabled'
         .unwrap(),
     ])
     .unwrap();
-    let snapshot = preparation.snapshot(metadata, &sources).unwrap();
+    let snapshot = preparation
+        .snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata,
+            &sources,
+        )
+        .unwrap();
     assert_eq!(
         entries(&snapshot),
         [
@@ -309,10 +494,18 @@ fn a_scan_is_deterministic_and_hashes_the_retained_bytes() {
     let preparation = preparation(&fixture);
 
     let first = preparation
-        .snapshot(metadata(), &empty_registry())
+        .snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        )
         .expect("the first scan succeeds");
     let second = preparation
-        .snapshot(metadata(), &empty_registry())
+        .snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        )
         .expect("a repeated scan succeeds");
 
     assert_eq!(
@@ -368,7 +561,11 @@ fn hidden_files_and_directories_never_enter_the_catalogue() {
     let preparation = preparation(&fixture);
 
     let snapshot = preparation
-        .snapshot(metadata(), &empty_registry())
+        .snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        )
         .expect("hidden entries are excluded rather than fatal");
     assert_eq!(entries(&snapshot), ["mods/alpha.jar"]);
     for hidden in [
@@ -407,7 +604,11 @@ fn configured_and_state_paths_are_excluded_from_every_snapshot() {
     .expect("a root with excluded secrets opens");
 
     let snapshot = preparation
-        .snapshot(metadata(), &empty_registry())
+        .snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        )
         .expect("exclusions are skipped rather than fatal");
     assert_eq!(entries(&snapshot), ["mods/alpha.jar"]);
     for name in [
@@ -455,7 +656,11 @@ fn a_visible_hard_link_is_refused_and_the_file_is_left_intact() {
 
     let preparation = preparation(&fixture);
     assert_pack_error(
-        preparation.snapshot(metadata(), &empty_registry()),
+        preparation.snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        ),
         PackError::LinkedPath,
     );
 
@@ -533,7 +738,11 @@ fn a_visible_directory_junction_is_refused_and_the_target_is_left_intact() {
 
     let preparation = preparation(&fixture);
     assert_pack_error(
-        preparation.snapshot(metadata(), &empty_registry()),
+        preparation.snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        ),
         PackError::LinkedPath,
     );
 
@@ -617,7 +826,11 @@ fn prepared_bytes_and_hashes_survive_source_overwrite_and_removal() {
     let preparation = preparation(&fixture);
 
     let snapshot = preparation
-        .snapshot(metadata(), &empty_registry())
+        .snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        )
         .expect("the initial scan succeeds");
     let archive = preparation
         .archive(&relative("archive/one.zip"))
@@ -638,7 +851,11 @@ fn prepared_bytes_and_hashes_survive_source_overwrite_and_removal() {
     assert_eq!(archive.description().sha256().to_hex(), ALPHA_HASH);
 
     let rescan = preparation
-        .snapshot(metadata(), &empty_registry())
+        .snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        )
         .expect("a rescan after the change succeeds");
     assert_ne!(
         file_in(&rescan, "mods/alpha.jar").sha256().to_hex(),
@@ -657,14 +874,22 @@ fn every_documented_work_limit_is_inclusive_and_refuses_one_more() {
         .expect("a root opens");
     assert_eq!(
         preparation
-            .snapshot(metadata(), &empty_registry())
+            .snapshot_with_disposition(
+                crate::config::UnresolvedDisposition::EmbedPublic,
+                metadata(),
+                &empty_registry()
+            )
             .expect("a body of exactly the file limit is accepted")
             .total_bytes(),
         8
     );
     fixture.write("mods/alpha.jar", &[b'x'; 9]);
     assert_pack_error(
-        preparation.snapshot(metadata(), &empty_registry()),
+        preparation.snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        ),
         PackError::TooLarge,
     );
 
@@ -675,7 +900,11 @@ fn every_documented_work_limit_is_inclusive_and_refuses_one_more() {
     let preparation = PackPreparation::open(&fixture.db, &fixture.game, &[], limits(6, 10, 4, 16))
         .expect("a root opens");
     assert_pack_error(
-        preparation.snapshot(metadata(), &empty_registry()),
+        preparation.snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        ),
         PackError::TooLarge,
     );
 
@@ -688,14 +917,22 @@ fn every_documented_work_limit_is_inclusive_and_refuses_one_more() {
         .expect("a root opens");
     assert_eq!(
         preparation
-            .snapshot(metadata(), &empty_registry())
+            .snapshot_with_disposition(
+                crate::config::UnresolvedDisposition::EmbedPublic,
+                metadata(),
+                &empty_registry()
+            )
             .expect("exactly the file count is accepted")
             .total_bytes(),
         3
     );
     fixture.write("mods/extra.jar", b"n");
     assert_pack_error(
-        preparation.snapshot(metadata(), &empty_registry()),
+        preparation.snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        ),
         PackError::TooLarge,
     );
 
@@ -711,7 +948,11 @@ fn every_documented_work_limit_is_inclusive_and_refuses_one_more() {
     let exact = PackPreparation::open(&fixture.db, &fixture.game, &[], limits(4, 64, 4, 8))
         .expect("a root opens");
     let accepted = exact
-        .snapshot(metadata(), &empty_registry())
+        .snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        )
         .expect("a budget of exactly the entry count is accepted");
     assert_eq!(entries(&accepted), ["config/b.txt", "mods/alpha.jar"]);
     assert_eq!(accepted.total_bytes(), 2);
@@ -719,7 +960,11 @@ fn every_documented_work_limit_is_inclusive_and_refuses_one_more() {
     let short = PackPreparation::open(&fixture.db, &fixture.game, &[], limits(4, 64, 4, 7))
         .expect("a root opens");
     assert_pack_error(
-        short.snapshot(metadata(), &empty_registry()),
+        short.snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        ),
         PackError::TooLarge,
     );
 
@@ -728,7 +973,11 @@ fn every_documented_work_limit_is_inclusive_and_refuses_one_more() {
     let zero = PackPreparation::open(&empty.db, &empty.game, &[], limits(4, 64, 4, 1))
         .expect("a root opens");
     let untouched = zero
-        .snapshot(metadata(), &empty_registry())
+        .snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        )
         .expect("an empty tree has nothing to read");
     assert_eq!(untouched.total_bytes(), 0);
     assert!(untouched.bytes(&catalogue_path("mods/alpha.jar")).is_none());
@@ -795,7 +1044,11 @@ fn a_stale_registered_hash_refuses_instead_of_silently_embedding() {
     .expect("a valid registry");
 
     assert_catalogue_error(
-        preparation(&fixture).snapshot(metadata(), &registry),
+        preparation(&fixture).snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &registry,
+        ),
         CatalogueError::InvalidHash,
     );
 }
@@ -824,7 +1077,11 @@ fn an_exact_platform_match_is_kept_and_an_unmatched_file_is_embedded() {
     .expect("a valid registry");
 
     let snapshot = preparation(&fixture)
-        .snapshot(metadata(), &registry)
+        .snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &registry,
+        )
         .expect("a mixed snapshot succeeds");
     let known = file_in(&snapshot, "mods/known.jar");
     let unknown = file_in(&snapshot, "mods/unknown.jar");
@@ -863,7 +1120,11 @@ fn a_case_variant_of_a_registered_path_does_not_match() {
     .expect("a valid registry");
 
     assert_catalogue_error(
-        preparation(&fixture).snapshot(metadata(), &registry),
+        preparation(&fixture).snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &registry,
+        ),
         CatalogueError::PathCollision,
     );
 }
@@ -892,7 +1153,11 @@ fn debug_and_errors_leak_no_paths_bytes_or_digests() {
     }
 
     let snapshot = preparation
-        .snapshot(metadata(), &empty_registry())
+        .snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        )
         .expect("a snapshot succeeds");
     let snapshot_debug = format!("{snapshot:?}");
     for secret in ["alpha", "b.txt", ALPHA_HASH, B_TXT_HASH] {

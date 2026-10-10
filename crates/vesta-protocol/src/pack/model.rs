@@ -75,6 +75,9 @@ pub struct BuilderFileSource {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VestaIndexV1 {
+    /// Optional backend-authored player information, not installation authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<super::join::JoinDescriptor>,
     pub format_version: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

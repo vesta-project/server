@@ -76,11 +76,42 @@ fn snapshot(entries: Vec<(PackFile, Vec<u8>)>) -> PreparedSnapshot {
         files.push(file);
     }
     PreparedSnapshot {
+        private_files: Vec::new(),
         manifest: Manifest::new(catalogue_metadata(), PackContent::Custom(files)).unwrap(),
         bodies,
         total,
     }
 }
+#[test]
+fn trusted_join_descriptor_is_in_the_player_index_but_not_file_entries() {
+    let text = format!(
+        "{HOST}\n[pack.join]\naddress = 'play.example.org'\nport = 25565\ndescription = 'Player server'\n"
+    );
+    let pack = build_vesta(
+        &embedded_snapshot(),
+        &host(&text),
+        VestaBuildLimits::default(),
+    )
+    .unwrap();
+    let index: serde_json::Value = serde_json::from_slice(index_bytes(&pack)).unwrap();
+    assert_eq!(
+        index["join"],
+        serde_json::json!({"address":"play.example.org", "port":25565, "minecraft_version":"1.21.1", "description":"Player server"})
+    );
+    let typed: vesta_protocol::pack::model::VestaIndexV1 =
+        serde_json::from_slice(index_bytes(&pack)).unwrap();
+    assert_eq!(typed.join.as_ref().unwrap().address(), "play.example.org");
+    assert_eq!(typed.files.len(), 1);
+    let ordinary = build_vesta(
+        &embedded_snapshot(),
+        &metadata(),
+        VestaBuildLimits::default(),
+    )
+    .unwrap();
+    let index: serde_json::Value = serde_json::from_slice(index_bytes(&ordinary)).unwrap();
+    assert!(index.get("join").is_none());
+}
+
 fn embedded_snapshot() -> PreparedSnapshot {
     snapshot(vec![(
         descriptor("config/owned.txt", ABC, FileSource::embedded()),
@@ -409,6 +440,7 @@ fn all_four_snapshot_metadata_fields_must_match_exactly() {
         ManifestMetadata::new("Golden Build", "v1", 7, 2).unwrap(),
     ] {
         let prepared = PreparedSnapshot {
+            private_files: Vec::new(),
             manifest: Manifest::new(observed, PackContent::Custom(Vec::new())).unwrap(),
             bodies: BTreeMap::new(),
             total: 0,
@@ -429,6 +461,7 @@ fn whole_platform_and_archive_descriptions_are_not_prepared_custom_snapshots() {
         ),
     ] {
         let prepared = PreparedSnapshot {
+            private_files: Vec::new(),
             manifest: Manifest::new(catalogue_metadata(), content).unwrap(),
             bodies: BTreeMap::new(),
             total: 0,

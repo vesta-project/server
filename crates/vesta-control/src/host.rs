@@ -281,7 +281,11 @@ fn compose(
     let preparations = config
         .scan_roots()
         .iter()
-        .map(|root| PackPreparation::open(db, root, &protected, limits))
+        .map(|root| {
+            PackPreparation::open(db, root, &protected, limits).map(|preparation| {
+                preparation.with_unresolved_disposition(config.pack().unresolved_disposition())
+            })
+        })
         .collect::<Result<Vec<_>, _>>()
         .map_err(HostError::Pack)?;
     let releases = Arc::new(PackReleases::open(db).map_err(HostError::Release)?);

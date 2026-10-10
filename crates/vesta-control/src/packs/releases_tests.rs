@@ -369,7 +369,13 @@ mode = 'disabled'
             metadata.minimum_revision(),
         )
         .unwrap();
-        let snapshot = preparation.snapshot(manifest, &registry).unwrap();
+        let snapshot = preparation
+            .snapshot_with_disposition(
+                crate::config::UnresolvedDisposition::EmbedPublic,
+                manifest,
+                &registry,
+            )
+            .unwrap();
         build_vesta(&snapshot, metadata, VestaBuildLimits::production()).unwrap()
     };
     let plan = f

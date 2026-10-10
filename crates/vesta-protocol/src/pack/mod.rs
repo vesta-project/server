@@ -3,6 +3,7 @@
 //! Paths, hashes and URLs are descriptive inputs here, never executable/install policy.
 
 pub mod catalogue;
+pub mod join;
 pub mod model;
 pub mod sources;
 pub mod sync;
@@ -112,6 +113,7 @@ pub fn project_index(manifest: &BuilderManifest) -> Result<VestaIndexV1, PackPro
         })
         .collect();
     Ok(VestaIndexV1 {
+        join: None, // Only the trusted backend build may attach join configuration.
         format_version: FORMAT_VERSION,
         name: manifest.name.clone(),
         version: manifest.version.clone(),

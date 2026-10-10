@@ -16,6 +16,7 @@ pub use releases::{
     PackRelease, PackReleases, ReleaseError, ReleasePlan, UpdatePolicy, UpdateStatus,
 };
 
+use crate::config::UnresolvedDisposition;
 use crate::files::{FileError, PackNode, PackRoot, RelativePath};
 use std::{collections::BTreeMap, fmt, path::Path};
 use vesta_protocol::pack::{
@@ -84,6 +85,7 @@ pub enum PackError {
     Unavailable,
     TooLarge,
     InvalidArchive,
+    UnresolvedFile,
     /// A published name or bytes disagree with the expected content identity.
     Conflict,
     NotPublished,
@@ -99,6 +101,7 @@ impl PackError {
             Self::Unavailable => "pack_unavailable",
             Self::TooLarge => "pack_too_large",
             Self::InvalidArchive => "pack_archive_invalid",
+            Self::UnresolvedFile => "pack_unresolved_file",
             Self::Conflict => "pack_artifact_conflict",
             Self::NotPublished => "pack_artifact_not_published",
             Self::Catalogue(_) => "pack_catalogue_invalid",
@@ -134,6 +137,7 @@ impl From<FileError> for PackError {
 pub struct PackPreparation {
     root: PackRoot,
     limits: SnapshotLimits,
+    unresolved: UnresolvedDisposition,
 }
 impl PackPreparation {
     pub fn open(
@@ -147,7 +151,14 @@ impl PackPreparation {
         Ok(Self {
             root: PackRoot::open(root, &exclusions)?,
             limits,
+            unresolved: UnresolvedDisposition::Refuse,
         })
+    }
+
+    /// Trusted local composition only, not a frontend-selectable policy.
+    pub fn with_unresolved_disposition(mut self, disposition: UnresolvedDisposition) -> Self {
+        self.unresolved = disposition;
+        self
     }
 
     /// Called explicitly by the trusted backend. Never a live-server auto scanner.
@@ -158,10 +169,23 @@ impl PackPreparation {
         metadata: ManifestMetadata,
         sources: &SourceRegistry,
     ) -> Result<PreparedSnapshot, PackError> {
+        self.snapshot_with_disposition(self.unresolved, metadata, sources)
+    }
+
+    /// Explicit backend-selected alternative, bounded exactly like configured snapshots.
+    pub fn snapshot_with_disposition(
+        &self,
+        disposition: UnresolvedDisposition,
+        metadata: ManifestMetadata,
+        sources: &SourceRegistry,
+    ) -> Result<PreparedSnapshot, PackError> {
         let mut remaining = self.limits.scanned;
         let mut pending = vec![None];
         let mut files = Vec::new();
+        let mut checked_files = Vec::new();
+        let mut private_files = Vec::new();
         let mut bodies = BTreeMap::new();
+        let mut observed_bytes = 0;
         let mut total = 0;
         while let Some(directory) = pending.pop() {
             for node in self.root.children(directory.as_ref(), &mut remaining)? {
@@ -172,24 +196,42 @@ impl PackPreparation {
                         pending.push(Some(path));
                     }
                     PackNode::File(path) => {
-                        if files.len() == self.limits.files {
+                        if checked_files.len() == self.limits.files {
                             return Err(PackError::TooLarge);
                         }
                         let name = CataloguePath::parse(path.as_str())?;
-                        let limit = self.limits.file_bytes.min(self.limits.total_bytes - total);
+                        let limit = self
+                            .limits
+                            .file_bytes
+                            .min(self.limits.total_bytes - observed_bytes);
                         let (bytes, digest) = self.root.pin(&path, limit)?;
-                        total += bytes.len();
+                        observed_bytes += bytes.len();
                         let hash = Sha256::parse(&digest)?;
-                        let source = sources
-                            .source_for(&name, &hash)?
-                            .cloned()
-                            .unwrap_or_else(FileSource::embedded);
-                        files.push(PackFile::new(
+                        // A stale known hash refuses even under ExcludePrivate; it must
+                        // never be reclassified by a permissive unresolved fallback.
+                        let known = sources.source_for(&name, &hash)?;
+                        if known.is_none() && disposition == UnresolvedDisposition::Refuse {
+                            return Err(PackError::UnresolvedFile);
+                        }
+                        let file = PackFile::new(
                             path.as_str(),
                             &digest,
                             bytes.len() as u64,
-                            source,
-                        )?);
+                            known.cloned().unwrap_or_else(FileSource::embedded),
+                        )?;
+                        checked_files.push(file.clone());
+                        if known.is_none() && disposition == UnresolvedDisposition::ExcludePrivate {
+                            private_files.push(PrivateFileEntry {
+                                path: name,
+                                sha256: hash,
+                                size: bytes.len() as u64,
+                            });
+                            // No retained body and no public catalogue row. The metadata
+                            // remains local report data, never private download authority.
+                            continue;
+                        }
+                        total += bytes.len();
+                        files.push(file);
                         if bodies.insert(name, bytes.into_boxed_slice()).is_some() {
                             return Err(CatalogueError::PathCollision.into());
                         }
@@ -197,11 +239,16 @@ impl PackPreparation {
                 }
             }
         }
+        // Validate the entire observed namespace, including excluded private rows,
+        // so collisions do not depend on which disposition was selected.
+        Manifest::new(metadata.clone(), PackContent::Custom(checked_files))?;
+        private_files.sort_by(|left, right| left.path.cmp(&right.path));
         let manifest = Manifest::new(metadata, PackContent::Custom(files))?;
         Ok(PreparedSnapshot {
             manifest,
             bodies,
             total,
+            private_files,
         })
     }
 
@@ -229,14 +276,42 @@ impl fmt::Debug for PackPreparation {
     }
 }
 
-/// Preparation is not permission to publish/read. A future pack-only route must
-/// enforce current pack policy before exposing this owned immutable snapshot.
+/// Backend-local excluded-file report. No bytes, URLs, serialization or read grant.
+#[derive(Clone, Eq, PartialEq)]
+pub struct PrivateFileEntry {
+    path: CataloguePath,
+    sha256: Sha256,
+    size: u64,
+}
+impl PrivateFileEntry {
+    pub fn path(&self) -> &CataloguePath {
+        &self.path
+    }
+    pub fn sha256(&self) -> &Sha256 {
+        &self.sha256
+    }
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+}
+impl fmt::Debug for PrivateFileEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("PrivateFileEntry[<redacted>]")
+    }
+}
+
+/// Preparation is not permission to publish/read. A pack-only route must enforce
+/// current pack policy before exposing this owned immutable public snapshot.
 pub struct PreparedSnapshot {
     manifest: Manifest,
     bodies: BTreeMap<CataloguePath, Box<[u8]>>,
     total: usize,
+    private_files: Vec<PrivateFileEntry>,
 }
 impl PreparedSnapshot {
+    pub fn private_files(&self) -> &[PrivateFileEntry] {
+        &self.private_files
+    }
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
     }

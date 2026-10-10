@@ -351,7 +351,8 @@ mode = 'disabled'
     .unwrap();
     let pack = host.pack();
     let snapshot = preparation
-        .snapshot(
+        .snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
             ManifestMetadata::new(
                 pack.name(),
                 pack.version(),
