@@ -202,9 +202,10 @@ fn strict_arguments_refuse_unknown_flags_and_design_only_mutations() {
         let output = command(temp.path(), &args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
         assert!(output.stdout.is_empty());
-        assert_eq!(
-            output.stderr,
-            b"Usage: vesta-agent <check-config|status|serve> <path>\n"
+        assert!(
+            output
+                .stderr
+                .starts_with(b"Usage: vesta-agent version | update | check-config <path>")
         );
         assert_eq!(tree(temp.path()), before);
     }

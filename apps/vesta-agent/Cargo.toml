@@ -15,8 +15,22 @@ uuid.workspace = true
 vesta-transport = { path = "../../crates/vesta-transport" }
 tokio = { workspace = true, features = ["rt", "signal"] }
 
+socket2 = "=0.6.3"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+fs2.workspace = true
+vesta-server-install = { path = "../../crates/vesta-server-install" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Pipes"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
+vesta-game-runtime.workspace = true
 
 [lints]
 workspace = true

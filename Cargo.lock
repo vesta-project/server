@@ -1948,14 +1948,23 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vesta-agent"
 version = "0.1.0"
 dependencies = [
+ "fs2",
+ "libc",
  "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "socket2 0.6.3",
  "tempfile",
  "tokio",
  "url",
  "uuid",
  "vesta-control",
+ "vesta-game-runtime",
+ "vesta-server-install",
  "vesta-state",
  "vesta-transport",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

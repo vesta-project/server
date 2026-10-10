@@ -478,6 +478,7 @@ fn returned_stop_ack_with_second_owned_writer_draining_retains_lock_until_actual
     let (shared, players) = DriverState::new(&owner, &game);
     let mut driver = FixtureDriver {
         driver: Driver {
+            local_receiver: mpsc::sync_channel(1).1,
             owner,
             game,
             players,
@@ -515,6 +516,9 @@ fn returned_stop_ack_with_second_owned_writer_draining_retains_lock_until_actual
         runtime: OperationRuntime {
             operations,
             shared,
+            local: LocalRuntime {
+                sender: mpsc::sync_channel(1).0,
+            },
             driver: Some(handle),
         },
         cwd: harness.cwd.clone(),
@@ -558,6 +562,101 @@ fn returned_stop_ack_with_second_owned_writer_draining_retains_lock_until_actual
     assert_eq!(
         owned.runtime.game_snapshot().unwrap().phase,
         ProcessPhase::Stopped
+    );
+}
+
+#[test]
+fn os_local_lifecycle_uses_owned_inert_child_without_minting_policy() {
+    let harness = Harness::new(false);
+    // Local OS-account decisions must not bootstrap canonical remote authority.
+    harness
+        .db
+        .write(|c| {
+            c.execute_batch(
+                "DELETE FROM role_assignments; DELETE FROM devices; DELETE FROM principals;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let mut owned = harness.runtime(Duration::from_secs(5));
+    let local = owned.runtime.local_handle();
+    assert_eq!(
+        local.request(LocalAction::Stop),
+        Err("local_game_not_running")
+    );
+    local.request(LocalAction::Start).unwrap();
+    let first = owned.runtime.game_snapshot().unwrap().generation.unwrap();
+    wait_for(|| harness.cwd.join("operation-ready").exists());
+    assert_eq!(
+        local.request(LocalAction::Start),
+        Err("local_start_refused")
+    );
+    local.request(LocalAction::Restart).unwrap();
+    let second = owned.runtime.game_snapshot().unwrap().generation.unwrap();
+    assert_ne!(first, second);
+    local.request(LocalAction::Stop).unwrap();
+    assert_eq!(
+        owned.runtime.game_snapshot().unwrap().phase,
+        ProcessPhase::Stopped
+    );
+    assert_eq!(
+        fs::read(harness.cwd.join("operation-commands")).unwrap(),
+        b"stop\nstop\n"
+    );
+    harness
+        .db
+        .read(|c| {
+            for table in ["principals", "devices", "role_assignments"] {
+                let count: i64 =
+                    c.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))?;
+                assert_eq!(count, 0);
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert!(harness.operations.audit.verify_chain().unwrap().valid);
+    assert_eq!(
+        owned.runtime.shutdown(WAIT).unwrap(),
+        ShutdownOutcome::Complete
+    );
+    assert_eq!(
+        local.request(LocalAction::Start),
+        Err("local_runtime_unavailable")
+    );
+}
+
+#[test]
+fn os_local_restart_timeout_retains_child_and_never_force_kills_or_restarts() {
+    let harness = Harness::new(true);
+    let mut owned = harness.runtime(Duration::from_millis(100));
+    let local = owned.runtime.local_handle();
+    local.request(LocalAction::Start).unwrap();
+    wait_for(|| harness.cwd.join("operation-ready").exists());
+    let generation = owned.runtime.game_snapshot().unwrap().generation;
+    assert_eq!(
+        local.request(LocalAction::Restart),
+        Err("local_stop_timed_out_no_force_kill")
+    );
+    assert_eq!(
+        owned.runtime.game_snapshot().unwrap().generation,
+        generation
+    );
+    assert_eq!(
+        owned.runtime.game_snapshot().unwrap().phase,
+        ProcessPhase::Stopping
+    );
+    assert_eq!(
+        fs::read(harness.cwd.join("operation-commands")).unwrap(),
+        b"stop\n"
+    );
+    assert!(matches!(
+        owned.runtime.shutdown(Duration::ZERO).unwrap(),
+        ShutdownOutcome::TimedOut(_)
+    ));
+    fs::write(harness.cwd.join("release-game"), b"release").unwrap();
+    assert_eq!(
+        owned.runtime.shutdown(WAIT).unwrap(),
+        ShutdownOutcome::Complete
     );
 }
 
@@ -605,6 +704,7 @@ fn delayed_stop(
     let (shared, players) = DriverState::new(&owner, &game);
     let driver = FixtureDriver {
         driver: Driver {
+            local_receiver: mpsc::sync_channel(1).1,
             owner,
             game,
             players,
@@ -625,6 +725,9 @@ fn delayed_stop(
     let runtime = OperationRuntime {
         operations,
         shared,
+        local: LocalRuntime {
+            sender: mpsc::sync_channel(1).0,
+        },
         driver: Some(handle),
     };
     (
@@ -663,6 +766,7 @@ fn pending_player_query_timeout_retains_driver_database_and_lifecycle_exclusion(
     let (shared, players) = DriverState::new(&owner, &game);
     let driver = FixtureDriver {
         driver: Driver {
+            local_receiver: mpsc::sync_channel(1).1,
             owner,
             game,
             players,
@@ -680,6 +784,9 @@ fn pending_player_query_timeout_retains_driver_database_and_lifecycle_exclusion(
         runtime: OperationRuntime {
             operations: harness.operations.clone(),
             shared,
+            local: LocalRuntime {
+                sender: mpsc::sync_channel(1).0,
+            },
             driver: Some(handle),
         },
         cwd: harness.cwd.clone(),
@@ -898,6 +1005,7 @@ fn delayed_stop_ack(
     let (shared, players) = DriverState::new(&owner, &game);
     let mut driver = FixtureDriver {
         driver: Driver {
+            local_receiver: mpsc::sync_channel(1).1,
             owner,
             game,
             players,
@@ -927,6 +1035,9 @@ fn delayed_stop_ack(
         runtime: OperationRuntime {
             operations,
             shared,
+            local: LocalRuntime {
+                sender: mpsc::sync_channel(1).0,
+            },
             driver: Some(handle),
         },
         cwd: harness.cwd.clone(),
@@ -942,6 +1053,7 @@ fn dispatch_driver(harness: &Harness, probe: Option<fn(&mut Driver)>) -> Fixture
     let (release, _) = mpsc::channel();
     FixtureDriver {
         driver: Driver {
+            local_receiver: mpsc::sync_channel(1).1,
             owner,
             game,
             players,
@@ -976,6 +1088,9 @@ fn late_dispatch_observation_failure_survives_successful_later_polls_and_real_ex
         runtime: OperationRuntime {
             operations,
             shared,
+            local: LocalRuntime {
+                sender: mpsc::sync_channel(1).0,
+            },
             driver: Some(handle),
         },
         cwd: harness.cwd.clone(),

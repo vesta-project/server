@@ -12,6 +12,7 @@ use super::{
 };
 use std::{
     fmt,
+    sync::mpsc,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -118,6 +119,41 @@ pub struct OperationRuntime {
     shared: Arc<DriverState>,
     // Never detached on timeout. Taking this is allowed only for actual join.
     driver: Option<JoinHandle<OperationsResult<()>>>,
+    local: LocalRuntime,
+}
+
+/// Trusted OS-local host adapter only. Not a Subject, credential or remote grant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalAction {
+    Start,
+    Stop,
+    Restart,
+}
+
+struct LocalRequest {
+    action: LocalAction,
+    reply: mpsc::SyncSender<Result<(), &'static str>>,
+}
+
+/// A bounded mailbox into the existing sole process owner. Host code must expose
+/// this only through an authenticated same-account native local channel.
+#[derive(Clone)]
+pub struct LocalRuntime {
+    sender: mpsc::SyncSender<LocalRequest>,
+}
+impl LocalRuntime {
+    pub fn request(&self, action: LocalAction) -> Result<(), &'static str> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .try_send(LocalRequest { action, reply })
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => "local_runtime_busy",
+                mpsc::TrySendError::Disconnected(_) => "local_runtime_unavailable",
+            })?;
+        // Once queued the request is not cancelled by a caller timeout. Only the
+        // sole owner produces an outcome; channel clients may lose that outcome.
+        receiver.recv().map_err(|_| "local_runtime_unavailable")?
+    }
 }
 impl fmt::Debug for OperationRuntime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -151,7 +187,9 @@ impl OperationRuntime {
         let operations = owner.operations().clone();
         let game = GameLifecycle::new(launch);
         let (shared, players) = DriverState::new(&owner, &game);
+        let (local_sender, local_receiver) = mpsc::sync_channel(1);
         let mut worker = Driver {
+            local_receiver,
             owner,
             game,
             players,
@@ -183,7 +221,14 @@ impl OperationRuntime {
             operations,
             shared,
             driver: Some(driver),
+            local: LocalRuntime {
+                sender: local_sender,
+            },
         })
+    }
+
+    pub fn local_handle(&self) -> LocalRuntime {
+        self.local.clone()
     }
 
     pub(super) fn player_queries(&self) -> &QueryEndpoint {
@@ -278,6 +323,7 @@ impl Active {
     }
 }
 struct Driver {
+    local_receiver: mpsc::Receiver<LocalRequest>,
     owner: OwnerSession,
     game: GameLifecycle,
     players: QueryDriver,
@@ -338,6 +384,20 @@ impl Driver {
             if !self.owner.healthy() {
                 self.shared.stop();
             }
+            if let Ok(request) = self.local_receiver.try_recv() {
+                let result = if self.shared.stopping.load(Ordering::Acquire)
+                    || self.observation_uncertain.is_some()
+                {
+                    Err("local_runtime_unavailable")
+                } else if self.active.is_some() || self.players.writer_pending() {
+                    Err("local_runtime_busy")
+                } else {
+                    self.execute_local(request.action)
+                };
+                let _ = request.reply.send(result);
+                // Do not dispatch another effect in the same observation cycle.
+                continue;
+            }
             if self.shared.stopping.load(Ordering::Acquire) {
                 self.owner.stop_claiming();
                 if self.active.is_none() && !self.game.has_owned_generation() {
@@ -385,6 +445,99 @@ impl Driver {
             }
             thread::sleep(DRIVER_INTERVAL);
         }
+    }
+
+    fn execute_local(&mut self, action: LocalAction) -> Result<(), &'static str> {
+        use vesta_state::audit::{AuditActor, AuditRecord};
+        let audit = |outcome: &str| {
+            let record = AuditRecord::of(
+                AuditActor::system("os-local-cli".into()).map_err(|_| "local_audit_failed")?,
+                match action {
+                    LocalAction::Start => "local.game.start",
+                    LocalAction::Stop => "local.game.stop",
+                    LocalAction::Restart => "local.game.restart",
+                }
+                .into(),
+                "configured-game".into(),
+                outcome.into(),
+                None,
+            )
+            .map_err(|_| "local_audit_failed")?;
+            self.owner
+                .operations()
+                .audit
+                .append_record(&record)
+                .map_err(|_| "local_audit_failed")?;
+            Ok::<(), &'static str>(())
+        };
+        audit("admitted")?;
+        let result = self.local_effect(action);
+        // Audit failures after an effect are explicitly uncertain, never a retry permit.
+        let record = AuditRecord::of(
+            AuditActor::system("os-local-cli".into()).map_err(|_| "local_audit_failed")?,
+            "local.game.outcome".into(),
+            "configured-game".into(),
+            if result.is_ok() {
+                "succeeded"
+            } else {
+                "refused_or_failed"
+            }
+            .into(),
+            None,
+        )
+        .map_err(|_| "local_audit_failed")?;
+        self.owner
+            .operations()
+            .audit
+            .append_record(&record)
+            .map_err(|_| "local_outcome_uncertain")?;
+        result
+    }
+
+    fn local_effect(&mut self, action: LocalAction) -> Result<(), &'static str> {
+        if !self.owner.healthy() {
+            return Err("local_runtime_unavailable");
+        }
+        if action != LocalAction::Start {
+            let generation = self
+                .game
+                .process
+                .snapshot()
+                .generation
+                .ok_or("local_game_not_running")?;
+            match self.game.process.stop(generation, self.stop_wait) {
+                Ok(WaitOutcome::Exited(_)) => {}
+                Ok(WaitOutcome::TimedOut(_)) => {
+                    let _ = self.game.publish();
+                    return Err("local_stop_timed_out_no_force_kill");
+                }
+                Err(error) => {
+                    if error == RuntimeError::ObserveFailed {
+                        self.note_observation_failure(error);
+                    }
+                    let _ = self.game.publish();
+                    return Err("local_graceful_stop_failed");
+                }
+            }
+        }
+        if action != LocalAction::Stop {
+            let result = self.game.start(|_| {
+                if self.shared.stopping.load(Ordering::Acquire) || !self.owner.healthy() {
+                    Err(OperationError::rejected(OperationErrorCode::OwnerStopping))
+                } else {
+                    Ok(())
+                }
+            });
+            if matches!(
+                result,
+                Err(GuardedError::Runtime(RuntimeError::ObserveFailed))
+            ) {
+                self.note_observation_failure(RuntimeError::ObserveFailed);
+            }
+            self.game.publish().map_err(|_| "local_outcome_uncertain")?;
+            result.map_err(|_| "local_start_refused")?;
+        }
+        self.game.publish().map_err(|_| "local_outcome_uncertain")
     }
 
     fn execute(&mut self, claim: Claim) -> OperationsResult<()> {

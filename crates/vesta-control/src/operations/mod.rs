@@ -35,7 +35,7 @@ pub use replay::{
     MAX_REPLAY_RETURN, MAX_REPLAY_SCAN, ReplayCursor, ReplayEvent, ReplayEventKind, ReplayPage,
     ReplayStatus,
 };
-pub use runner::{OperationRuntime, RunnerStatus, ShutdownOutcome};
+pub use runner::{LocalAction, LocalRuntime, OperationRuntime, RunnerStatus, ShutdownOutcome};
 
 use crate::identity::{self, Capability, PolicySnapshot, Subject};
 use domain::{ENGINE_SOURCE, text};
