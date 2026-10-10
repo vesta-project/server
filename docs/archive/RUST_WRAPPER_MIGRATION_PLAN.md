@@ -4,8 +4,8 @@ Owner direction and implementation approval: **2026-10-07**.
 Status: **implementation in progress; not parity complete**.
 
 This plan guides the owner's Rust-native rebuild, not a new product specification or an
-API-by-API Java port. [SERVER_SOFTWARE_REQUIREMENTS.md](SERVER_SOFTWARE_REQUIREMENTS.md),
-the **370** original indexed normative bullets in [REQUIREMENT_TRACEABILITY.json](REQUIREMENT_TRACEABILITY.json),
+API-by-API Java port. [SERVER_SOFTWARE_REQUIREMENTS.md](../SERVER_SOFTWARE_REQUIREMENTS.md),
+the **370** original indexed normative bullets in [REQUIREMENT_TRACEABILITY.json](../REQUIREMENT_TRACEABILITY.json),
 and their dated evidence remain authoritative. Original requirement statuses are not
 promoted by implementation or tests. Historical Java/provider checkpoints and the
 roadmap/status assessment are retained as historical evidence.
@@ -50,7 +50,7 @@ Do not switch/reset/stash worktrees or remove Java comparison code.
 - OP/permission plugins, connector possession, loopback/LAN location, software support
   and local review consent do not confer management authority.
 
-See section 0 of [the implementation plan](SERVER_SOFTWARE_IMPLEMENTATION_PLAN.md)
+See section 0 of [the implementation plan](../SERVER_SOFTWARE_IMPLEMENTATION_PLAN.md)
 and [the provider plan](SERVER_SOFTWARE_PROVIDER_FRAMEWORK_PLAN.md).
 
 ## Cohesive workspace boundaries
@@ -63,10 +63,10 @@ All new workspace packages are non-publishable development packages.
 | --- | --- |
 | `crates/vesta-protocol` | Bounded discovery/negotiation and eventual pack/wire contracts. No authority, process control or network listener. **Admitted; executed tests.** |
 | `crates/vesta-state` | Protected state, SQLite schema/transactions/migrations/backup, audit, events, desired/effective settings. Trusted in-process persistence, not a remote API. **Admitted; executed tests.** |
-| `crates/vesta-control` | Identity/policy/password/proof components; operations/confirmations/runner/replay; protected file/content/pack services and runtime composition, split into cohesive modules. **Admitted 2026-10-08; canonical identity, bounded pack-password primitives/service and one-time Minecraft hasJoined challenges executed and tested.** The 2026-10-09 closed game-operation/confirmation/replay slice is implemented and Windows-tested in [its API](RUST_GAME_OPERATIONS_API.md) and [integration record](RUST_INTEGRATED_MIGRATION_PASS.md); the latest driver correction passed fresh integrated verification and scoped rereview, not whole-migration approval. Authenticated device/claim linking, complete Microsoft identity flow, file/content and full pack/host composition remain unfinished. |
-| `crates/vesta-game-runtime` | **Admitted 2026-10-08: bounded console and owned direct-child component**, with native inert-process tests. Literal argv/cwd, generation-bound stdin/stop/kill, timeout retention and actual exit/drain ownership are implemented. The 2026-10-09 concrete lifecycle driver and trusted launch-only TOML adapter are tracked separately in [the integration record](RUST_INTEGRATED_MIGRATION_PASS.md) and [launch checkpoint](archive/RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md); independent supervisor/IPC/process-tree control remain unfinished. No network listener or administrative policy. |
+| `crates/vesta-control` | Identity/policy/password/proof components; operations/confirmations/runner/replay; protected file/content/pack services and runtime composition, split into cohesive modules. **Admitted 2026-10-08; canonical identity, bounded pack-password primitives/service and one-time Minecraft hasJoined challenges executed and tested.** The 2026-10-09 closed game-operation/confirmation/replay slice is implemented and Windows-tested in [its API](../operations/game-operations-api.md) and [integration record](RUST_INTEGRATED_MIGRATION_PASS.md); the latest driver correction passed fresh integrated verification and scoped rereview, not whole-migration approval. Authenticated device/claim linking, complete Microsoft identity flow, file/content and full pack/host composition remain unfinished. |
+| `crates/vesta-game-runtime` | **Admitted 2026-10-08: bounded console and owned direct-child component**, with native inert-process tests. Literal argv/cwd, generation-bound stdin/stop/kill, timeout retention and actual exit/drain ownership are implemented. The 2026-10-09 concrete lifecycle driver and trusted launch-only TOML adapter are tracked separately in [the integration record](RUST_INTEGRATED_MIGRATION_PASS.md) and [launch checkpoint](RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md); independent supervisor/IPC/process-tree control remain unfinished. No network listener or administrative policy. |
 | `crates/vesta-server-install` | **Admitted 2026-10-08; extracted and verified**, with all installer test families and a narrow Piston adapter. Explicit private transport configuration/live progress, no Tauri/full Piston. Authenticated install/activation/launch composition remains unfinished. |
-| `apps/vesta-agent` | **Added 2026-10-09: passive `check-config` CLI only**, the sixth non-publishable member. Strict trusted host descriptions/protected loading, bounded player parsing, peer admission and framing are tracked in [the host checkpoint](archive/RUST_HOST_CONFIGURATION_CHECKPOINT.md). Full startup/runtime/transport composition remains unfinished; no listener, bootstrap or game start is supplied. |
+| `apps/vesta-agent` | **Added 2026-10-09: passive `check-config` CLI only**, the sixth non-publishable member. Strict trusted host descriptions/protected loading, bounded player parsing, peer admission and framing are tracked in [the host checkpoint](RUST_HOST_CONFIGURATION_CHECKPOINT.md). Full startup/runtime/transport composition remains unfinished; no listener, bootstrap or game start is supplied. |
 
 The current Java game process is an in-process wrapper child. Keep the future
 independent supervisor at the runtime boundary, but do not add a stub binary or claim
@@ -75,7 +75,7 @@ replacement for OS identities, permissions, process ownership and network policy
 
 ## Checked accounting and evidence
 
-[The parity inventory](RUST_WRAPPER_PARITY.json) freezes Java file byte hashes and
+[The parity inventory](../RUST_WRAPPER_PARITY.json) freezes Java file byte hashes and
 requirement ID/text pairs independently of changing evidence. The checker validates
 explicit inventory accounting rather than automatically regenerating away new files.
 
@@ -124,17 +124,17 @@ node --test scripts/requirements-ledger.test.mjs scripts/server-feature-protocol
    and Unicode file scopes remain an explicit gap. Do not emulate Java casing or timestamp
    formatting. Production local-authority proof stays unavailable without real
    OS-authenticated implementation. No fake enrollment/session/vault completion.
-   **Done 2026-10-08** — see [the identity increment record](RUST_IDENTITY_API_FREEZE.md).
+   **Done 2026-10-08** — see [the identity increment record](../operations/identity-api.md).
    Unicode file scopes remain an open gap and no identity row is `verified`.
    **Password increment 2026-10-08:** owned UTF-8 secret buffers, bounded Argon2id, caller-owned
    zeroized KDF workspace, process-wide nonblocking admission and server-local audited credential
    lifecycle are implemented. Authority/revision are checked before derivation and in the final
    admitted writer; matches create no identity or management authority. See
-   [the password/state checkpoint](archive/RUST_PASSWORD_STATE_CHECKPOINT.md) for exact execution,
+   [the password/state checkpoint](RUST_PASSWORD_STATE_CHECKPOINT.md) for exact execution,
    intentional differences and remaining proof/device-grant/runtime gaps.
    **Minecraft challenge increment 2026-10-08:** one-time bounded server-bound online-profile
    verification and the fixed hasJoined adapter are implemented and covered by controlled fixtures.
-   [The Minecraft checkpoint](archive/RUST_MINECRAFT_IDENTITY_CHECKPOINT.md) distinguishes the fresh
+   [The Minecraft checkpoint](RUST_MINECRAFT_IDENTITY_CHECKPOINT.md) distinguishes the fresh
    Windows result from real transport, device/claim linking and full Microsoft login composition.
 5. **Durable operations.** Implement the required behavior with Rust-native domain APIs:
    bounded canonical inputs, exact idempotency, all-or-none sorted locks/FIFO fairness,
@@ -142,11 +142,11 @@ node --test scripts/requirements-ledger.test.mjs scripts/server-feature-protocol
    safe-point cancellation, revision-bound single-use confirmation, per-read authorized
    sanitized replay and recovery-required uncertain outcomes. Keep ownership/database/locks
    until an uncooperative worker actually exits; dropping a handle is not termination.
-   The next bounded slice is the [durable-operations kernel](archive/RUST_OPERATIONS_KERNEL_PLAN.md):
+   The next bounded slice is the [durable-operations kernel](RUST_OPERATIONS_KERNEL_PLAN.md):
    canonical admission/idempotency, owned fair claiming/locks, cancellation journaling and
    conservative reconciliation over the existing schema. Its narrow API has been frozen by Sol;
    **ordinary observation and a staged test-only private kernel are integrated and verified** —
-   see [the bounded operations checkpoint](archive/RUST_OPERATIONS_OBSERVATION_CHECKPOINT.md) for corrected
+   see [the bounded operations checkpoint](RUST_OPERATIONS_OBSERVATION_CHECKPOINT.md) for corrected
    execution, failed-attempt history and the explicit production/test staging boundary. The useful public facade
    observes sanitized summaries under current task access; cancellation additionally requires the
    exact initiating actor/device and current action requirements of a verified binding. There is
@@ -161,10 +161,10 @@ node --test scripts/requirements-ledger.test.mjs scripts/server-feature-protocol
    lifecycle types are start/stop/force-kill, not a new durable restart. Required behavior
    and legacy transports must be accounted for, not reproduced by copying Java APIs or
    weakening trust paths. **Bounded console capture is admitted and verified 2026-10-08** —
-   see [the console checkpoint](archive/RUST_CONSOLE_CAPTURE_CHECKPOINT.md). Inert readers, ring retention
+   see [the console checkpoint](RUST_CONSOLE_CAPTURE_CHECKPOINT.md). Inert readers, ring retention
    and paging alone do not establish process-pipe draining, lifecycle ownership or authenticated output.
    **Later 2026-10-08 owned direct-child increment admitted and verified** — see
-   [the process checkpoint](archive/RUST_GAME_PROCESS_CHECKPOINT.md) for native literal argv/cwd, bounded
+   [the process checkpoint](RUST_GAME_PROCESS_CHECKPOINT.md) for native literal argv/cwd, bounded
    stdin, actual exit/drain ownership, timeout retention and error-path recovery evidence. This
    ordinary component does not activate the staged operations kernel, install production lifecycle
    bindings or establish authenticated management, artifact/Java-plan composition, readiness,
@@ -174,7 +174,7 @@ node --test scripts/requirements-ledger.test.mjs scripts/server-feature-protocol
    Base/cwd/executable are explicit; no PATH/shell/legacy/missing-config/auto-start fallback.
    Required JAR/argfile references are rechecked at real spawn before its effect guard. One real
    canonical composition fixture witnesses no automatic start or config-derived authority.
-   [The launch checkpoint](archive/RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md) records exact executed
+   [The launch checkpoint](RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md) records exact executed
    evidence, failed attempts, deliberate Rust-native changes and remaining full-config/file-opening
    gaps. This does not supply Java discovery, real loader execution or a host executable.
 7. **Installer extraction/reuse.** Extract the reviewed installer and all tests, with
@@ -184,7 +184,7 @@ node --test scripts/requirements-ledger.test.mjs scripts/server-feature-protocol
    Keep six automatic providers and explicit Forge/NeoForge unavailability. No broad
    launcher engine feature split, managed-JRE import, JNI or unselected sidecar.
    **Later 2026-10-08 extraction integrated and verified** — see
-   [the installer checkpoint](archive/RUST_INSTALLER_EXTRACTION_CHECKPOINT.md). All test families moved;
+   [the installer checkpoint](RUST_INSTALLER_EXTRACTION_CHECKPOINT.md). All test families moved;
    Piston retains a borrowed progress/proxy adapter, not duplicate implementation. Six requirement
    rows relocate test pointers only, without changing claims/statuses/history. Relative sibling
    checkouts need revision-pinned CI wiring before publication; local-only references are not
@@ -238,13 +238,13 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   At that checkpoint the mandated independent **GPT-6.1 Sol** review was **`not_run`** and
   that model was unavailable; nothing was silently substituted. Later scoped Sol source reviews
   are recorded in the password/state checkpoint, not as the pending final full-rebuild review.
-  This remains neither whole-product completion nor final sign-off. See [the identity increment record](RUST_IDENTITY_API_FREEZE.md).
+  This remains neither whole-product completion nor final sign-off. See [the identity increment record](../operations/identity-api.md).
 - **Later 2026-10-08 password/state review increment, native Windows 11 / Rust 1.96.0:** fresh
   format check, all-target offline locked check, **237 passing Rust tests** and strict all-target
   Clippy passed after review-driven assertions; **159 Node tests** and both accounting checks passed.
   Bounded password mappings bring the unchanged 222-row inventory to **21 migrated, 17 retained
   Java plugin, 184 not migrated, 0 verified**. Independent Sol checkpoint source review and regression
-  strengthening are recorded in [the password/state checkpoint](archive/RUST_PASSWORD_STATE_CHECKPOINT.md).
+  strengthening are recorded in [the password/state checkpoint](RUST_PASSWORD_STATE_CHECKPOINT.md).
   This does not satisfy the pending final whole-rebuild review or promote original requirement statuses.
 - **Later 2026-10-08 Minecraft challenge increment, native Windows 11 / Rust 1.96.0:** fresh
   format/check/offline-locked workspace tests/strict all-target Clippy passed: **279 Rust tests**,
@@ -252,7 +252,7 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   Only three bounded Java reference rows are mapped: **24 migrated, 17 retained Java plugin,
   181 not migrated, 0 verified**, with all 222 hashes and 370 requirements preserved. Scoped
   independent Sol source/test review and parent corrections are recorded in
-  [the Minecraft checkpoint](archive/RUST_MINECRAFT_IDENTITY_CHECKPOINT.md). Real transport/Mojang,
+  [the Minecraft checkpoint](RUST_MINECRAFT_IDENTITY_CHECKPOINT.md). Real transport/Mojang,
   authenticated-device/canonical-claim composition, dependency Trace redaction, hard DNS
   cancellation, other platforms/MSRV and final whole-rebuild review remain unfinished.
 - **Later 2026-10-08 operations/console increment, native Windows 11 / Rust 1.96.0:** fresh
@@ -271,7 +271,7 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   now includes literal native launch, bounded stdin, generation-bound stop/kill/wait, timeout
   ownership and actual exit/drain finalization. Scoped independent Sol source review identified
   two corrected error-path defects; parent executed real inert-process and private fault witnesses.
-  [The process checkpoint](archive/RUST_GAME_PROCESS_CHECKPOINT.md) retains earlier failed attempts and
+  [The process checkpoint](RUST_GAME_PROCESS_CHECKPOINT.md) retains earlier failed attempts and
   the exact assertion limits. All 222 hashes/370 requirements and the protected launcher digest
   remain unchanged; parity stays **24 migrated, 17 retained Java plugin, 181 not migrated,
   0 verified**. Production lifecycle bindings, authenticated/Java-plan composition, process-tree
@@ -282,7 +282,7 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   **159 Node tests**, zero failed/ignored/skipped. Old Piston count is intentionally reduced
   by the moved 164 cases, with two new adapter tests; no family was dropped. Sol's scoped
   extraction/follow-up source review and parent's inert-failure correction/cleanup are recorded
-  [at the checkpoint](archive/RUST_INSTALLER_EXTRACTION_CHECKPOINT.md), including earlier lint/accounting
+  [at the checkpoint](RUST_INSTALLER_EXTRACTION_CHECKPOINT.md), including earlier lint/accounting
   failures. All 222 Java hashes/370 frozen requirements and original statuses/history remain;
   six rows change only 14 live test pointers. Parity stays **24 migrated, 17 retained Java plugin,
   181 not migrated, 0 verified**; final whole-rebuild review stays `not_run`. Core Rust minimum
@@ -293,7 +293,7 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   runtime tests**, **2 canonical-composition tests** and **14 passing focused driver tests**;
   the separate fresh settled-source integrated rerun passed **658 Rust tests**, whole-workspace
   format/check/strict Clippy, **210 companion tests** and **159 Node tests** plus both checkers.
-  [The launch checkpoint](archive/RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md) records those results and
+  [The launch checkpoint](RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md) records those results and
   failed attempts separately from the component results. Scoped Sol review corrected mid-dispatch observation-result loss and a new
   test readiness race. Only LaunchSpec/LaunchSpecTest receive migrated-not-verified mappings:
   **26 migrated, 17 retained Java plugin, 179 not_migrated, 0 verified**. Full config/application,
@@ -307,7 +307,7 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   them and added actual junction/missing-suffix/pre-probe regressions. Fresh final corrected-source
   verification passed **710 Rust tests**, format/all-target check/strict Clippy; fresh Node and
   accounting/preservation checks also passed. Exact commands and the Windows concurrent-linker
-  failed attempt are recorded [at the checkpoint](archive/RUST_FILE_PACK_CHECKPOINT.md). No complete Java family or original requirement is promoted:
+  failed attempt are recorded [at the checkpoint](RUST_FILE_PACK_CHECKPOINT.md). No complete Java family or original requirement is promoted:
   **26 migrated, 17 retained Java plugin, 179 not_migrated, 0 verified**, with final whole-rebuild
   review still `not_run`. Durable file/content mutations, host catalogue/archive services,
   full configuration/application and safe transport/session composition remain unfinished.
@@ -317,7 +317,7 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   implemented. Fresh settled-source Windows verification passed **816 Rust tests**,
   format/all-target check/strict Clippy, **159 Node tests**/both accounting checkers
   and **210 companion tests**/all-target check. Scoped Sol review and parent regression
-  fixes are recorded [at the host checkpoint](archive/RUST_HOST_CONFIGURATION_CHECKPOINT.md).
+  fixes are recorded [at the host checkpoint](RUST_HOST_CONFIGURATION_CHECKPOINT.md).
   Full host/runtime/session/route composition remains unfinished; no family, original
   requirement or final whole-rebuild review status is promoted by this slice.
 - **2026-10-09 pack-preparation and player-query continuation:** explicit trusted pack
@@ -350,7 +350,7 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   strict provider references, fixed ZIP metadata and no reopening/download/extraction or
   publication authority. Parent review, independent header/CRC/JSON assertions, actual
   footer-failure and native host/snapshot/golden-index integration are recorded
-  [at the checkpoint](archive/RUST_VESTA_BUILD_CHECKPOINT.md). Fresh final-source verification
+  [at the checkpoint](RUST_VESTA_BUILD_CHECKPOINT.md). Fresh final-source verification
   passed **881 workspace tests / 42 full summaries**, format/all-target check/strict Clippy,
   **210 companion tests / 9 summaries** (existing warning), **159 Node tests** and both
   accounting checkers. Protected launcher digest and frozen Java/requirement bytes are
@@ -361,7 +361,7 @@ Historical Windows foundation checkpoint on 2026-10-07, preceding the current st
   and the deliberate dependency intake are not minimum-toolchain/platform execution.
 - **2026-10-09 protected publication continuation:** content-addressed, never-replacing
   publication of built packs and pinned archives into owner-only protected state, with
-  verification on every load, is recorded [at its checkpoint](archive/RUST_PACK_PUBLICATION_CHECKPOINT.md).
+  verification on every load, is recorded [at its checkpoint](RUST_PACK_PUBLICATION_CHECKPOINT.md).
   Fresh Windows verification passed **896 workspace tests / 42 summaries**, format/check/
   strict Clippy, **159 Node tests** and both checkers. Three rows gain scoped evidence but
   remain `not_migrated`; catalogue/routes/sessions/composition and final review stay open.

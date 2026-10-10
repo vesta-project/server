@@ -21,7 +21,7 @@ The Cargo workspace coexists with the retained Java/Gradle/Minecraft plugin/mod 
 - Prospective CI while retaining Java checks; CI definitions are not executed Linux evidence.
 
 See the [state/protocol](RUST_STATE_PROTOCOL_CHECKPOINT.md),
-[identity](../RUST_IDENTITY_API_FREEZE.md), [password/state](RUST_PASSWORD_STATE_CHECKPOINT.md)
+[identity](../operations/identity-api.md), [password/state](RUST_PASSWORD_STATE_CHECKPOINT.md)
 and [Minecraft](RUST_MINECRAFT_IDENTITY_CHECKPOINT.md) records for exact scope, replacements,
 scoped reviews, historical failures and pending work. The [operations kernel plan](RUST_OPERATIONS_KERNEL_PLAN.md)
 is design only in this foundations checkpoint; there is no implemented operations runner or execution handler.
@@ -65,7 +65,7 @@ Durable operations/confirmation/runner/replay; game/runtime/supervisor/IPC; prot
 packs; installer extraction/integration; agent executable/onboarding; real OS-local authority;
 authenticated devices/claims/mTLS/sessions/vault and remote handlers. The Java plugin/mod remains
 intentionally retained. Unknown/unsafe legacy trust routes must receive safe replacements or explicit
-dispositions, not compatibility bypasses. See [the migration plan](../RUST_WRAPPER_MIGRATION_PLAN.md).
+dispositions, not compatibility bypasses. See [the migration plan](RUST_WRAPPER_MIGRATION_PLAN.md).
 
 Dependency Trace query redaction, hard DNS cancellation, real Mojang/TLS/DNS/certificate evidence,
 stronger native isolation, declared Rust 1.85 execution, non-Windows platforms/architectures and

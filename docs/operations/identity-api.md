@@ -68,7 +68,7 @@ Recorded so they are not mistaken for accidental drift. Each fails closed or is 
 | Custom role rank ≥ Administrator | rejected by `CustomRank::new` at construction | relied on a schema `CHECK` |
 | Path/scope text | rejected if ambiguous or unrecordable | trimmed, separator-rewritten, cased |
 
-These are also recorded per row in `gaps[]` of [the parity inventory](RUST_WRAPPER_PARITY.json).
+These are also recorded per row in `gaps[]` of [the parity inventory](../RUST_WRAPPER_PARITY.json).
 
 ## Typed application commands
 
@@ -194,13 +194,13 @@ increment is not the final file API and does not claim full scope equivalence.
 
 ## Later bounded password and Minecraft components
 
-[The password/state checkpoint](archive/RUST_PASSWORD_STATE_CHECKPOINT.md) records the later typed
+[The password/state checkpoint](../archive/RUST_PASSWORD_STATE_CHECKPOINT.md) records the later typed
 `PackPasswords` service and bounded Argon2id/process-wide KDF gate. Password matching is only
 pack-access evidence and creates no principal/device/grant/session/management authority. KDF work
 runs outside database transactions; current policy and expected revisions are rechecked in the
 final writer with atomic audit.
 
-[The Minecraft checkpoint](archive/RUST_MINECRAFT_IDENTITY_CHECKPOINT.md) records the later
+[The Minecraft checkpoint](../archive/RUST_MINECRAFT_IDENTITY_CHECKPOINT.md) records the later
 `identity::minecraft` one-time online-profile challenge/hasJoined module, private fixed HTTPS
 adapter and bounded process-wide admission. A private non-Clone verified-profile receipt is
 observation only, with no Subject/device/session/role/grant conversion or canonical persistence.
@@ -236,7 +236,7 @@ behavioral reference — not an API blueprint.
 
 The following run and counts are retained as historical evidence only. They predate the review fixes
 recorded below and are **not** fresh post-fix verification. Later post-fix Windows evidence is
-recorded in [the password/state checkpoint](archive/RUST_PASSWORD_STATE_CHECKPOINT.md); no requirement
+recorded in [the password/state checkpoint](../archive/RUST_PASSWORD_STATE_CHECKPOINT.md); no requirement
 or whole-platform status is promoted by either bounded run.
 
 Run from the server repository on **Windows 11**, cargo/rustc **1.96.0**, **2026-10-08**:
@@ -284,7 +284,7 @@ installer; `apps/vesta-agent`. Pairing codes are **not** rate limited, so
 satisfied. `PolicyOperationAuthority`-style operation authority is not implemented.
 
 Per-row accounting, honest gap lists and Rust evidence live in
-[the parity inventory](RUST_WRAPPER_PARITY.json). The pre-password identity checkpoint had 222 Java
+[the parity inventory](../RUST_WRAPPER_PARITY.json). The pre-password identity checkpoint had 222 Java
 rows, 14 `migrated`, 17 `retained_java_plugin`, 191 `not_migrated`, and **0 `verified`**; the linked
 password/state checkpoint records the later bounded mappings. No original requirement status is
 promoted. Linux, macOS and non-Windows execution remain unverified; `rust-version = 1.85` is a
@@ -296,7 +296,7 @@ declared floor and not verified MSRV evidence; WSL presence is not platform evid
 full rebuild receives its mandatory independent **GPT-6.1 Sol** review. At the earlier identity
 checkpoint Sol was unavailable, and no model was silently substituted. Sol later became available
 and reviewed the password/state corrections and strengthened regression sources, recorded in
-[the later checkpoint](archive/RUST_PASSWORD_STATE_CHECKPOINT.md). Those scoped source reviews do not
+[the later checkpoint](../archive/RUST_PASSWORD_STATE_CHECKPOINT.md). Those scoped source reviews do not
 satisfy the final whole-rebuild gate. No Anthropic-model helper/fallback is permitted for this migration.
 
 What *was* run is an **interim** independent review on a different, non-Anthropic model, recorded

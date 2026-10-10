@@ -194,7 +194,7 @@ The stop policy is explicit: an unanswered native callback retains the operation
 returned successful stop request plus reliable live-child observation permits bounded
 `game_stop_timeout`; the task then fails but exact game/IO/OS/database ownership remains. This
 allows a later authorized, confirmed force-kill without releasing an unreturned worker or
-pretending a draining generation has finished. See [the API](RUST_GAME_OPERATIONS_API.md).
+pretending a draining generation has finished. See [the API](../operations/game-operations-api.md).
 
 ### Stable-source verification and review follow-up
 
@@ -329,7 +329,7 @@ complete: the propagation defect and one new unsupported-stop fixture-readiness 
 with no remaining concrete scoped defect found. Parent's fresh settled-source whole-workspace
 format/check/tests/strict Clippy then passed **658 tests**, zero failed/ignored. Fresh companion
 check/**210 tests** and Node/**159 tests** plus both accounting checkers passed. The protected
-manifest digest remains exact. See [the launch checkpoint](archive/RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md)
+manifest digest remains exact. See [the launch checkpoint](RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md)
 for failed attempts, exact commands and limitations; final whole-rebuild review remains unfinished.
 
 The owner now requests fewer helpers, with bounded Luna or explicitly requested/verified Haiku
@@ -349,7 +349,7 @@ The operation checkpoint left the inventory at **181 not_migrated, 24 migrated, 
 Java plugin, 0 verified**. No row or whole requirement was advanced by that partial slice.
 The subsequent bounded launch-definition increment maps only `LaunchSpec`/`LaunchSpecTest`,
 with explicit Rust-native behavior dispositions: **179 not_migrated, 26 migrated, 17 retained
-Java plugin, 0 verified**. See [the launch checkpoint](archive/RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md)
+Java plugin, 0 verified**. See [the launch checkpoint](RUST_LAUNCH_CONFIGURATION_CHECKPOINT.md)
 for the scoped review, exact execution and unresolved behavior; no whole requirement is promoted. In particular,
 `OperationService`, `OperationSubmissionService`, `OperationRunner` and their test families still
 need complete behavior-by-behavior disposition, including non-game domain composition and staged
@@ -373,7 +373,7 @@ workspace format/all-target check/strict Clippy, **159 Node tests**/both account
 and **210 companion tests**. Scoped Sol review then identified missing configured-secret
 ancestor alias loss and existence-probe gaps; parent source/regression corrections are
 recorded with the exact final verification and failed attempts in
-[RUST_FILE_PACK_CHECKPOINT.md](archive/RUST_FILE_PACK_CHECKPOINT.md). Fresh final corrected-source
+[RUST_FILE_PACK_CHECKPOINT.md](RUST_FILE_PACK_CHECKPOINT.md). Fresh final corrected-source
 verification passed **710 Rust tests**, zero failed/ignored, workspace format/all-target
 check/strict Clippy and fresh Node/accounting/preservation checks. The earlier pre-correction
 pass is not final-source evidence, and the scoped review is not the mandatory whole-rebuild review.
@@ -404,7 +404,7 @@ all-target check. The existing companion unused `tokio::task` warning remains. T
 prior 811-test run predates five review-suggested regressions and is not final evidence.
 Scoped Sol review, parent fixes (including recursive partial-write stack safety),
 failed-attempt history, exact commands, native limitations and missing functionality
-are recorded in [the host checkpoint](archive/RUST_HOST_CONFIGURATION_CHECKPOINT.md).
+are recorded in [the host checkpoint](RUST_HOST_CONFIGURATION_CHECKPOINT.md).
 
 Inventory accounting remains **26 migrated / 17 retained Java plugin / 179 not_migrated /
 0 verified**, with 370 frozen requirements and Java/reference bytes unchanged. Full
@@ -536,7 +536,7 @@ and `embedded` literal vectors match frozen fixture hashes; the final integratio
 provider fingerprint fields unchanged, omitting only optional embedded SHA-1. Three
 builder/test inventory rows now carry explicit **partial** mappings and assertion/gap
 dispositions without changing their `not_migrated` status. See
-[the checkpoint](archive/RUST_VESTA_BUILD_CHECKPOINT.md) for exact assertions, attempts and commands.
+[the checkpoint](RUST_VESTA_BUILD_CHECKPOINT.md) for exact assertions, attempts and commands.
 
 Dependency intake pins companion `zip 8.2.0` with defaults disabled and adds only its
 three missing registry packages, preserving retained identities/checksums. Control/agent
@@ -567,7 +567,7 @@ publishes built Vesta packs and pinned opaque archives under their SHA-256 using
 create-new staging plus no-replace hard links, and re-verifies size/digest on every load.
 Earlier artifacts are never replaced or removed; injected failures before/after linking,
 conflicting names, tampering, extra links and real Windows junctions are tested. See
-[the checkpoint](archive/RUST_PACK_PUBLICATION_CHECKPOINT.md), including the failed first Clippy
+[the checkpoint](RUST_PACK_PUBLICATION_CHECKPOINT.md), including the failed first Clippy
 attempt. Fresh Windows verification passed **896 workspace tests / 42 summaries**, format,
 all-target check, strict Clippy, **159 Node tests** and both accounting checkers.
 Catalogue selection, pack-only sessions/routes, host composition, stage/artifact

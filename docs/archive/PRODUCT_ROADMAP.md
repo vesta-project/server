@@ -1,7 +1,7 @@
 # Vesta Server Sync — Product Roadmap
 
 Durable product and architecture decisions for Vesta sync (wrapper + mod/plugin + launcher).  
-Protocol details remain in [`SERVER_SYNC_SPEC.md`](../SERVER_SYNC_SPEC.md). Build/publish details remain in [`PUBLISHING.md`](PUBLISHING.md).
+Protocol details remain in [`SERVER_SYNC_SPEC.md`](../../SERVER_SYNC_SPEC.md). Build/publish details remain in [`PUBLISHING.md`](PUBLISHING.md).
 
 **Status:** Design locked via product grilling (2026-07). Backend implementation phased below. **Launcher UI postponed** until architecture cleanup and backend are ready. Do **not** reset the launcher `server-import` branch for experiments — use it as-is.
 
@@ -438,7 +438,7 @@ npm run tauri dev
 # Install Source → Server → localhost:9090 → preview only
 ```
 
-Protocol smoke: [`run.ps1`](../run.ps1) (TCP `0x00` prefix when multiplexed).
+Protocol smoke: [`run.ps1`](../../run.ps1) (TCP `0x00` prefix when multiplexed).
 
 CI keeps `:core:test` + `:wrapper:test`. Full `smoke-wrapper` (Paper start) is manual / operator — not a CI gate.
 
@@ -448,5 +448,5 @@ CI keeps `:core:test` + `:wrapper:test`. Full `smoke-wrapper` (Paper start) is m
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — layout, tech, loaders
 - [`PUBLISHING.md`](PUBLISHING.md) — wrapper vs tiered mod JARs
-- [`../RUNNING.md`](../RUNNING.md) — run the wrapper
-- [`../SERVER_SYNC_SPEC.md`](../SERVER_SYNC_SPEC.md) — wire protocol (superset of implementation)
+- [`../RUNNING.md`](../../RUNNING.md) — run the wrapper
+- [`../SERVER_SYNC_SPEC.md`](../../SERVER_SYNC_SPEC.md) — wire protocol (superset of implementation)

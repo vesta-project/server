@@ -52,7 +52,7 @@ No activation, EULA acceptance, world/config mutation, automatic stop/restart/re
 listener or administrative authority was added. Clients still signal desired changes; trusted
 backend application code—not clients—supplies executable/source/transport policy.
 
-See [the host API](../RUST_SERVER_INSTALL_API.md) and
+See [the host API](../operations/installer-api.md) and
 [dependency intake](../DEPENDENCY_DECISIONS.md#extracted-server-installer-intake-2026-10-08).
 The extracted crate keeps edition 2021 and declares Rust **1.88** for preserved sysinfo 0.38.4.
 The expanded graph is not certified for the foundation's 1.85 declaration. Both MSRVs,

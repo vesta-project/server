@@ -72,7 +72,7 @@ V:\server\
 
 - **Wrapper** has no MC version matrix — one build serves all servers.
 - **Mod** ships **release lines** (~12 JARs), not per-patch builds. Each line covers an MC generation (e.g. `fabric-1.21` supports 1.21.1–1.21.4).
-- Release lines are defined in [`versions-matrix.toml`](../versions-matrix.toml). Gradle sync generates `versions/{id}/gradle.properties` (gitignored).
+- Release lines are defined in [`versions-matrix.toml`](../../versions-matrix.toml). Gradle sync generates `versions/{id}/gradle.properties` (gitignored).
 - JARs are named `vesta-sync-{version}+{release-id}.jar` and declare MC ranges in mod metadata.
 - See [`docs/PUBLISHING.md`](PUBLISHING.md) for build commands.
 

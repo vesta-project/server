@@ -4,9 +4,9 @@ Date: **2026-10-09**. Status: **implemented and Windows-tested bounded compositi
 
 This is a Rust-native trusted host composition over the existing state, identity and
 owned game-process components. It supersedes the staged-only execution scope in
-[RUST_OPERATIONS_KERNEL_PLAN.md](archive/RUST_OPERATIONS_KERNEL_PLAN.md) for these three
+[RUST_OPERATIONS_KERNEL_PLAN.md](../archive/RUST_OPERATIONS_KERNEL_PLAN.md) for these three
 closed actions, not for arbitrary handlers or the complete Java wrapper rebuild.
-Executed results belong to [the integration record](RUST_INTEGRATED_MIGRATION_PASS.md),
+Executed results belong to [the integration record](../archive/RUST_INTEGRATED_MIGRATION_PASS.md),
 not to this API description.
 
 ## Trusted application boundary

@@ -71,4 +71,4 @@ listener is added.
 The extracted source keeps edition 2021. Its pinned sysinfo dependency declares Rust 1.88;
 the other foundation crates retain their declarations. Neither MSRV is executed here. Design
 remains portable; only native Windows tests are authorized in this increment. See
-[the checkpoint](archive/RUST_INSTALLER_EXTRACTION_CHECKPOINT.md) for actual evidence and remaining gates.
+[the checkpoint](../archive/RUST_INSTALLER_EXTRACTION_CHECKPOINT.md) for actual evidence and remaining gates.

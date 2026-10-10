@@ -4,9 +4,9 @@ Date: **2026-10-08**, native **Windows 11 / Rust and Cargo 1.96.0**.
 Status: **ordinary-library direct-child component integrated; scoped source follow-ups and fresh
 workspace verification complete**. This is not final whole-rebuild review or migration completion.
 
-This is the approved [runtime migration slice](../RUST_WRAPPER_MIGRATION_PLAN.md), over the
+This is the approved [runtime migration slice](RUST_WRAPPER_MIGRATION_PLAN.md), over the
 previous [console component](RUST_CONSOLE_CAPTURE_CHECKPOINT.md). The useful ordinary-library
-boundary is `vesta_game_runtime::process`, described by [its API contract](../RUST_GAME_PROCESS_API.md).
+boundary is `vesta_game_runtime::process`, described by [its API contract](../operations/game-process-api.md).
 It is not a remote route, authenticated management worker, independent supervisor or Java API port.
 Java comparison code/builds remain. All 222 inventory hashes and 370 requirements/status/history
 are preserved; this checkpoint does not promote a parity row or a whole requirement.

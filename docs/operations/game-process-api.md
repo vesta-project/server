@@ -1,7 +1,7 @@
 # Rust owned game-process increment — frozen test interface
 
 Date: 2026-10-08. Status: **implemented ordinary-library contract; not itself executed evidence**.
-See [the process checkpoint](archive/RUST_GAME_PROCESS_CHECKPOINT.md) for actual Windows commands/results,
+See [the process checkpoint](../archive/RUST_GAME_PROCESS_CHECKPOINT.md) for actual Windows commands/results,
 review fixes, failed-attempt history and remaining gaps.
 
 This continues the approved migration using an owned direct-child process and bounded console
@@ -11,8 +11,8 @@ trusted host application code, not authenticated remote authority. Activation/in
 never call stop/restart automatically. This component alone is not independent supervisor/IPC/crash
 continuity, process-tree confinement, readiness, durable operation/effect composition, or signed
 distribution. The subsequently approved closed host operation composition is documented in
-[RUST_GAME_OPERATIONS_API.md](RUST_GAME_OPERATIONS_API.md), with executed scope recorded separately
-in [RUST_INTEGRATED_MIGRATION_PASS.md](RUST_INTEGRATED_MIGRATION_PASS.md).
+[game-operations-api.md](game-operations-api.md), with executed scope recorded separately
+in [../archive/RUST_INTEGRATED_MIGRATION_PASS.md](../archive/RUST_INTEGRATED_MIGRATION_PASS.md).
 
 ## Public API (`vesta_game_runtime::process`)
 

@@ -7,7 +7,7 @@ commit `e4a6e2c`. Current-source accounting below was checked at HEAD `a3dda06`;
 checkpoint statements are labeled and are not descriptions of current gaps.
 
 Sources: `docs/RUST_WRAPPER_PARITY.json`, `docs/SERVER_SOFTWARE_REQUIREMENTS.md`,
-`docs/RUST_WRAPPER_MIGRATION_PLAN.md`, `docs/RUST_INTEGRATED_MIGRATION_PASS.md`, and a
+`docs/archive/RUST_WRAPPER_MIGRATION_PLAN.md`, `docs/archive/RUST_INTEGRATED_MIGRATION_PASS.md`, and a
 read-only review of the Rust crates and Java sources. Rust status below comes from module
 docs and code search, not from re-running tests. Treat it as a map to verify, not a
 verdict.

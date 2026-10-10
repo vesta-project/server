@@ -5,7 +5,7 @@ wrapper from the GitHub **`dist`** branch, optionally download a Minecraft jar,
 coach port forwarding, and register an OS autostart service.
 
 The multi-instance registry contract used by installers and `vesta-wrapperctl` is
-defined in [`INSTANCE_REGISTRY.md`](./INSTANCE_REGISTRY.md).
+defined in [`instance-registry.md`](./instance-registry.md).
 
 The instance registry is identity/discovery only. Port numbers are **not** stored there —
 installers/CLI always resolve `http-port` / `control-port` from each instance's
@@ -98,11 +98,11 @@ After `:wrapper:installDist`, exercise console/fs/players against `demo-server` 
 ./scripts/smoke-wrapper.sh --skip-minecraft
 ```
 
-See [`RUNNING.md`](../RUNNING.md) for endpoint examples and rate-limit notes.
+See [`RUNNING.md`](../../RUNNING.md) for endpoint examples and rate-limit notes.
 
 ## Dist branch layout
 
-Published by [`.github/workflows/publish-dist.yml`](../.github/workflows/publish-dist.yml)
+Published by [`.github/workflows/publish-dist.yml`](../../.github/workflows/publish-dist.yml)
 or locally via `./scripts/package-dist.sh` / `.\scripts\package-dist.ps1`:
 
 ```
@@ -135,6 +135,6 @@ when a Minecraft `server.jar` is present), then loops until you confirm `y` or
 
 ## Dev-from-repo helpers
 
-[`install-wrapper.ps1`](../install-wrapper.ps1) / [`install-wrapper.sh`](../install-wrapper.sh)
+[`install-wrapper.ps1`](../../install-wrapper.ps1) / [`install-wrapper.sh`](../../install-wrapper.sh)
 still install a locally built wrapper into an existing server. Prefer the
 one-liners for end users.

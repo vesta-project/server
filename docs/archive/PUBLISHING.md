@@ -7,7 +7,7 @@
 | **Wrapper** (primary) | `:wrapper:installDist` | Every server host — MC-agnostic sync sidecar |
 | **Mod release-line JARs** (optional) | `:fabric-1.21:build`, etc. | Mod/plugin-only installs; future auth and join control |
 
-The wrapper is the main distribution. Mod JARs are tiered by **loader + MC generation** (not per patch). See [`versions-matrix.toml`](../versions-matrix.toml).
+The wrapper is the main distribution. Mod JARs are tiered by **loader + MC generation** (not per patch). See [`versions-matrix.toml`](../../versions-matrix.toml).
 
 ## Build wrapper (always)
 
@@ -20,7 +20,7 @@ Output: `wrapper\build\install\wrapper\`
 
 ## Build mod release lines
 
-All release lines are defined in [`versions-matrix.toml`](../versions-matrix.toml). Generated `versions/{id}/gradle.properties` files are created at Gradle sync and are gitignored.
+All release lines are defined in [`versions-matrix.toml`](../../versions-matrix.toml). Generated `versions/{id}/gradle.properties` files are created at Gradle sync and are gitignored.
 
 Build every release line:
 
@@ -55,7 +55,7 @@ Each JAR declares a supported MC **range** in mod metadata (e.g. 1.21.1–1.21.4
 
 1. `:core:test` — always
 2. `:wrapper:installDist` — every release
-3. `scripts/package-dist.*` / `packageDist` — publish `dist` branch (see [`INSTALLER.md`](INSTALLER.md))
+3. `scripts/package-dist.*` / `packageDist` — publish `dist` branch (see [`INSTALLER.md`](../operations/installer-scripts.md))
 4. Mod `:build` — when `src/` or `versions-matrix.toml` changes, or on tagged releases
 
 Connector mod/plugin JARs (when published) belong on **GitHub Releases**, not the

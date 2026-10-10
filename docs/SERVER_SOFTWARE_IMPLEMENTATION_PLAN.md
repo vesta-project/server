@@ -49,7 +49,7 @@ older text below, this section wins.
    download/verification reference; the Rust agent should reuse a transport-neutral
    library rather than require the whole launcher engine or an unselected Java/Rust
    sidecar. Crate extraction and Rust parity must earn fresh regression evidence.
-   See [the Rust migration plan](RUST_WRAPPER_MIGRATION_PLAN.md) and its checked
+   See [the Rust migration plan](archive/RUST_WRAPPER_MIGRATION_PLAN.md) and its checked
    file/test accounting; Java-to-Rust translation does not promote the original ledger.
 8. **Migration model allocation and review.** Use GPT-6 Luna for bounded mechanical
    work, including existing-test translations, with clear file ownership and parent

@@ -4,7 +4,7 @@ Date: **2026-10-08**. Native **Windows 11 / Rust and Cargo 1.96.0** only.
 Status: **selected package and fresh four-member workspace verification passed;
 scoped independent Sol source review completed**. This is not the required final whole-rebuild review.
 
-This is one component from the approved [Rust migration](../RUST_WRAPPER_MIGRATION_PLAN.md), not
+This is one component from the approved [Rust migration](RUST_WRAPPER_MIGRATION_PLAN.md), not
 completion of game/runtime supervision, authenticated console delivery, or the Java rebuild.
 The dependency-free `vesta-game-runtime` crate is now admitted alongside the three foundation
 members. Cargo.lock adds only that local package; no external dependency was added or repinned.

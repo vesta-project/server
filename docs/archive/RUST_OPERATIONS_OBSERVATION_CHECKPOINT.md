@@ -4,7 +4,7 @@ Date: **2026-10-08**, native **Windows 11 / Rust and Cargo 1.96.0**.
 Status: **selected control and fresh four-member workspace verification passed;
 scoped independent source review completed**. This is not the final whole-rebuild review.
 
-This is a bounded increment of the approved [migration](../RUST_WRAPPER_MIGRATION_PLAN.md) and
+This is a bounded increment of the approved [migration](RUST_WRAPPER_MIGRATION_PLAN.md) and
 [operations plan](RUST_OPERATIONS_KERNEL_PLAN.md), not Java API emulation or completion of durable
 workers, effects, confirmations, replay, or authenticated management. Schema version 5 is reused;
 no database migration or dependency change was needed for operations. Java remains available.

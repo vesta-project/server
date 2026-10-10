@@ -2391,7 +2391,7 @@
           "claim": "Rust test function evidence: status_tracks_published_revisions_without_sensitive_configuration validates GET /api/v2/pack/status."
         },
         {
-          "path": "docs/RUST_INTEGRATED_MIGRATION_PASS.md",
+          "path": "docs/archive/RUST_INTEGRATED_MIGRATION_PASS.md",
           "date": "2026-10-09",
           "claim": "Release ledger tests: monotonic revisions, optional/required minimum, status mapping, stale-plan conflict, authority and revocation recheck, version acknowledgement, embedded-revision check, missing-artifact refusal."
         }
@@ -5024,7 +5024,7 @@
           "claim": "Independent constants fixture captured by scripts/IdentityConstantsOracle.java from the already-built Java production classes; crates/vesta-control/src/identity/tests/policy.rs asserts the Rust 51 capability ids and flags, the 6 built-in presets and the rows this database actually migrated against it."
         },
         {
-          "path": "docs/RUST_IDENTITY_API_FREEZE.md",
+          "path": "docs/operations/identity-api.md",
           "date": "2026-10-07",
           "claim": "The frozen interface the identity implementation and tests were written against; it states in its own header that it is in progress and is not parity evidence or a requirement ledger."
         },
@@ -5153,7 +5153,7 @@
           "claim": "Independent constants fixture captured by scripts/IdentityConstantsOracle.java from the already-built Java production classes; crates/vesta-control/src/identity/tests/policy.rs asserts the Rust 51 capability ids and flags, the 6 built-in presets and the rows this database actually migrated against it."
         },
         {
-          "path": "docs/RUST_IDENTITY_API_FREEZE.md",
+          "path": "docs/operations/identity-api.md",
           "date": "2026-10-07",
           "claim": "The frozen interface the identity implementation and tests were written against; it states in its own header that it is in progress and is not parity evidence or a requirement ledger."
         }
@@ -5215,7 +5215,7 @@
           "claim": "Independent constants fixture captured by scripts/IdentityConstantsOracle.java from the already-built Java production classes; crates/vesta-control/src/identity/tests/policy.rs asserts the Rust 51 capability ids and flags, the 6 built-in presets and the rows this database actually migrated against it."
         },
         {
-          "path": "docs/RUST_IDENTITY_API_FREEZE.md",
+          "path": "docs/operations/identity-api.md",
           "date": "2026-10-07",
           "claim": "The frozen interface the identity implementation and tests were written against; it states in its own header that it is in progress and is not parity evidence or a requirement ledger."
         }
@@ -6866,7 +6866,7 @@
       ],
       "evidence": [
         {
-          "path": "docs/RUST_INTEGRATED_MIGRATION_PASS.md",
+          "path": "docs/archive/RUST_INTEGRATED_MIGRATION_PASS.md",
           "date": "2026-10-09",
           "claim": "Strict bounded whitelist parser with malformed/oversized/duplicate/BOM/redaction tests; no loading or policy composition."
         },
@@ -8085,7 +8085,7 @@
           "claim": "Independent constants fixture captured by scripts/IdentityConstantsOracle.java from the already-built Java production classes; crates/vesta-control/src/identity/tests/policy.rs asserts the Rust 51 capability ids and flags, the 6 built-in presets and the rows this database actually migrated against it."
         },
         {
-          "path": "docs/RUST_IDENTITY_API_FREEZE.md",
+          "path": "docs/operations/identity-api.md",
           "date": "2026-10-07",
           "claim": "The frozen interface the identity implementation and tests were written against; it states in its own header that it is in progress and is not parity evidence or a requirement ledger."
         }
@@ -9703,7 +9703,7 @@
     "date": null,
     "evidence": [
       {
-        "path": "docs/RUST_IDENTITY_API_FREEZE.md",
+        "path": "docs/operations/identity-api.md",
         "claim": "Interim independent review record. A non-Anthropic interim review was executed on 2026-10-08 and found no authority bypass and no audit/mutation atomicity break. Its one medium finding (a scope longer than one audit metadata value could insert its row and then fail its own success audit) was fixed by bounding ResourceScope text at MAX_METADATA_VALUE_UNITS and covered by an_unrecordable_scope_is_refused_before_any_row_or_audit_is_attempted; an invalid_request state/domain error-code collision was also fixed. This earlier interim review is explicitly NOT the final full-rebuild GPT-6.1 Sol review. Sol was unavailable at that checkpoint; later scoped Sol password/state source reviews are recorded in docs/archive/RUST_PASSWORD_STATE_CHECKPOINT.md. The final whole-rebuild review remains not_run and must occur after actual implementation, before any completion claim.",
         "date": "2026-10-08"
       },
