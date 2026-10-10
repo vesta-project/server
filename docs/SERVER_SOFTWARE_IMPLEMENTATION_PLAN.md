@@ -769,3 +769,29 @@ Audit at commit 94fb98a. The Java-to-Rust migration gate has not passed: the cha
 | P8 Distribution | Partial installer. Signed updates not started. |
 
 Recommended direction: P2 (remote management identity), then P3 (a separate supervisor), then the remote parts of P4 and P5.
+
+## 21. Decisions and next work (2026-10-10)
+
+**Process model**
+- Default: the agent, server and game run under the normal account, with process-tree ownership and strict folder permissions. This works on Windows and Linux. It gives no isolation between the game and the control software. macOS stays same-account and is outside the release gate.
+- Optional isolated mode, later: each server's game runs under its own unprivileged account, switched by a small privileged helper (Linux first, Windows later with restricted service accounts, ACLs and job objects). The agent itself never needs to run as root.
+- Docker: optional, Linux only, later. It does not solve admin authentication, because control of the Docker service is effectively root.
+- Per-server supervisor processes (Amp-style) belong to the P3 supervisor work.
+
+**Installation and authority**
+- The install account and the admin account may differ. Installs can run under a chosen account.
+- Local CLI commands use the operating-system account for now, as the owner decided. This is local only. It grants no remote, pack, connector or Minecraft authority, and remote management stays refused.
+- Owner bootstrap (recording the owner's SID or uid) remains the design for remote management and any stronger local authority.
+
+**Local CLI scope (basic)**
+- Commands: status, version, start, stop, restart, config, create, delete, update.
+- config opens the file in $EDITOR, or nano/vi on Linux, or notepad on Windows.
+- create stays mostly non-interactive: flags, local port checks, and the installer library. The Minecraft EULA is never accepted automatically.
+- delete needs a typed confirmation and a stopped server, and moves files to a recoverable location instead of erasing them.
+- start, stop and restart talk to a running agent over a local control channel restricted to the owning account. This is the first piece of the P3 protected IPC. Without a running agent they refuse with a clear message.
+- update does not replace binaries until signed updates exist (F41). It reports versions only.
+- No web UI hosting and no web proxy.
+
+**Frontend readiness**
+- Players and launchers: usable now. The pack HTTPS API and realtime notices are implemented.
+- Admin UI: not ready. Remote management is refused (/api/v2/manage returns 403). There is no written management API contract, no remote device authentication, and no remote files, status, or console. P2 and a written management contract come first. A frontend can start against that contract with mocks.
