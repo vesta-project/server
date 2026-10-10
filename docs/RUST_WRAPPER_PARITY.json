@@ -2085,7 +2085,7 @@
       "applicableRequirements": [],
       "disposition": "pending_mapping",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "No Rust ControlCodec counterpart by disposition: the pack/status subset is empty and legacy authority/connector messages are forbidden. See the Control IPC disposition below.",
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
@@ -2094,7 +2094,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Control IPC is intentionally not implemented. See the Control IPC disposition below; do not add a Rust codec registry or endpoint."
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/manifest/FileSource.java",
@@ -2606,7 +2607,7 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "439f8ea2dc51a7edd769ab14aff8627497faffb2f45e5701e63ff1989a9ba3e2",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/realtime.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
       ],
@@ -2614,16 +2615,26 @@
       "applicableRequirements": [],
       "disposition": "pending_mapping",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Semantic v2 HTTPS/WebSocket replacement for legacy Disconnect; no TCP framing or wire compatibility is claimed.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/support/realtime.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/support/realtime.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: realtime_session_expiry_closes_socket_without_waiting_for_heartbeat, realtime_unsolicited_text_and_binary_frames_close_with_policy_violation."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/FileRequest.java",
@@ -2631,7 +2642,7 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "7b5c3a527fb07c739428c8788a24d70294596f2a73ed2f122a7fc680396e80e9",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/routes.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
       ],
@@ -2639,16 +2650,26 @@
       "applicableRequirements": [],
       "disposition": "pending_mapping",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Semantic v2 HTTPS/WebSocket replacement for legacy FileRequest; no TCP framing or wire compatibility is claimed.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/https.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/https.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: disk_stream_large_artifact_matches_published_identity_over_https."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/FileResponse.java",
@@ -2656,7 +2677,7 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "b986e4079e015631a0e851ad89054c2ddc0d9f01dcea40d6b67d95dd876fe370",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/lib.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
       ],
@@ -2664,16 +2685,26 @@
       "applicableRequirements": [],
       "disposition": "pending_mapping",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Semantic v2 HTTPS/WebSocket replacement for legacy FileResponse; no TCP framing or wire compatibility is claimed.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/https.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/https.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: disk_stream_large_artifact_matches_published_identity_over_https, replaced_artifact_aborts_https_and_wrong_length_is_refused_before_headers."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/Handshake.java",
@@ -2681,7 +2712,7 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "f95085a9dbc0b770ae39773888db529d8ef0e40334305706534d6bca1b55aa69",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/routes.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
       ],
@@ -2689,16 +2720,26 @@
       "applicableRequirements": [],
       "disposition": "pending_mapping",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Semantic v2 HTTPS/WebSocket replacement for legacy Handshake; no TCP framing or wire compatibility is claimed.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/https.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/https.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: discovery_negotiates_and_rejects_unsupported_versions, password_session_artifact_ticket_and_revocation_are_pack_only."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/HandshakeResponse.java",
@@ -2706,7 +2747,7 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "d1c869d1c2e2e83a09c9aa1c6bd929fa62cf46cdd64005cfb9222722968623f1",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/routes.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
       ],
@@ -2714,16 +2755,26 @@
       "applicableRequirements": [],
       "disposition": "pending_mapping",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Semantic v2 HTTPS/WebSocket replacement for legacy HandshakeResponse; no TCP framing or wire compatibility is claimed.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/https.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/https.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: discovery_negotiates_and_rejects_unsupported_versions, password_session_artifact_ticket_and_revocation_are_pack_only."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/Heartbeat.java",
@@ -2731,7 +2782,7 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "626d3d6410348875b702b33d610eeb6da8203f5ac000f5ed33c36956c599d093",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/realtime.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
       ],
@@ -2739,16 +2790,26 @@
       "applicableRequirements": [],
       "disposition": "pending_mapping",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Semantic v2 HTTPS/WebSocket replacement for legacy Heartbeat; no TCP framing or wire compatibility is claimed.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/support/realtime.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/support/realtime.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: realtime_control_ping_is_answered_and_socket_outlives_http_request_timeout, realtime_heartbeat_rechecks_policy_even_without_publication."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/PushUpdateAvailable.java",
@@ -2756,7 +2817,7 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "1e839e6921d04271a35540c8f7fd4e60627075a49f32e61175d0bb6c05caf65f",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/realtime.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
       ],
@@ -2764,16 +2825,26 @@
       "applicableRequirements": [],
       "disposition": "pending_mapping",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Semantic v2 HTTPS/WebSocket replacement for legacy PushUpdateAvailable; no TCP framing or wire compatibility is claimed.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/support/realtime.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/support/realtime.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: realtime_hello_update_and_required_minimum_are_delivered_with_client_status."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/SyncCheck.java",
@@ -2855,7 +2926,7 @@
       "applicableRequirements": [],
       "disposition": "pending_mapping",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "Legacy TCP SyncComplete is intentionally not reproduced; see the TCP sync disposition below.",
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
@@ -2864,7 +2935,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "No Rust server acknowledgement endpoint is provided; the client persists its installed revision and rechecks pack status. See the TCP sync disposition below."
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/TcpMessageCodec.java",
@@ -3341,7 +3413,7 @@
       "applicableRequirements": [],
       "disposition": "pending_mapping",
       "status": "not_migrated",
-      "rationale": "Shared core sources are included by both wrapper and loader/plugin builds; source-level host-versus-connector ownership is not yet mapped. Keep Java as baseline evidence without claiming connector-only retention or Rust parity.",
+      "rationale": "ControlCodec is intentionally omitted by disposition; this Java contract test has no Rust counterpart. See the Control IPC disposition below.",
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
@@ -3350,7 +3422,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "No codec replacement test applies because Rust ControlCodec is intentionally omitted. See the Control IPC disposition below."
     },
     {
       "javaPath": "core/src/test/java/com/vesta/sync/manifest/LocalArchivePackTest.java",
@@ -3841,7 +3914,7 @@
         "status": "not_run",
         "summary": "Plugin retention classification only; no plugin or host parity tests were run."
       },
-      "notes": "Legacy authority shortcut: connector permission-check ALLOW replies must not grant Rust management authority."
+      "notes": "Retained Java client remains incompatible pending plugin-repository v2 client/detection work. Control IPC is intentionally omitted; see the Control IPC disposition below."
     },
     {
       "javaPath": "src/main/java/com/vesta/loader/platform/BukkitEntrypoint.java",
@@ -4647,7 +4720,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "01d6759486a55eb8b9289d74d0800806765c43a49f86c0400054982dd6a04ede",
-      "rustCounterpart": "crates/vesta-control/src/files/mutation.rs",
+      "rustCounterpart": "crates/vesta-control/src/content/mod.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/content/ContentInstallerTest.java"
       ],
@@ -4662,13 +4735,19 @@
         "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
       "rustTests": [
-        "crates/vesta-control/src/files/mutation_tests.rs"
+        "crates/vesta-control/src/files/mutation_tests.rs",
+        "crates/vesta-control/src/content/tests.rs"
       ],
       "evidence": [
         {
           "path": "crates/vesta-control/src/files/mutation_tests.rs",
           "date": "2026-10-09",
           "claim": "install -> creation_requires_absence_and_never_replaces, overwrites_need_the_current_hash_and_keep_a_recoverable_copy; remove -> deletes_go_to_the_trash_and_restore_only_into_an_empty_path; protected/linked targets -> protected_missing_and_linked_targets_refuse."
+        },
+        {
+          "path": "crates/vesta-control/src/content/tests.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: success_for_both_providers_has_exact_bytes_digest_and_one_audit, hash_mismatch_never_stages_or_writes, redirects_are_rechecked_and_bounded, provider_resolution_requires_current_identity_and_write_capability. Provider install validates identity, authorization and content before writing."
         }
       ],
       "results": {
@@ -4700,7 +4779,8 @@
       ],
       "rustTests": [
         "crates/vesta-control/src/files/tests.rs",
-        "crates/vesta-control/src/files/mutation_tests.rs"
+        "crates/vesta-control/src/files/mutation_tests.rs",
+        "crates/vesta-control/src/files/upload_tests.rs"
       ],
       "evidence": [
         {
@@ -4722,6 +4802,16 @@
           "path": "crates/vesta-control/src/files/mutation_tests.rs",
           "date": "2026-10-09",
           "claim": "write -> creation_requires_absence_and_never_replaces, overwrites_need_the_current_hash_and_keep_a_recoverable_copy; delete/restore -> deletes_go_to_the_trash_and_restore_only_into_an_empty_path; authority/protection/bounds -> each_mutation_requires_its_own_scoped_capability, protected_missing_and_linked_targets_refuse, size_and_trash_capacity_bounds_refuse_without_losing_data, an_unrecorded_change_is_reversed_from_its_trash_copy."
+        },
+        {
+          "path": "crates/vesta-control/src/files/upload_tests.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: resumes_after_partial_upload_and_browser_reopen, wrong_offset_and_different_duplicates_conflict_identical_duplicates_succeed, fresh_authority_is_required_at_begin_append_and_finish. File browser now includes resumable uploads."
+        },
+        {
+          "path": "crates/vesta-control/src/files/mutation_tests.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: mkdir_creates_one_level_and_audits_only_success, rename_moves_one_file_to_an_absent_name_and_audits_both_names, rename_refuses_stale_hash_existing_targets_and_missing_parents. File browser now includes mkdir and rename."
         }
       ],
       "results": {
@@ -5210,7 +5300,7 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Legacy authority shortcut: unauthenticated connector IPC must not grant supervisor or management authority."
+      "notes": "Rust IPC listener is intentionally omitted; see the Control IPC disposition below. Do not reproduce unauthenticated connector authority."
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/launch/LaunchSpec.java",
@@ -6575,18 +6665,27 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "63e52f6e1cae3f7e03c2f33f047cad0a489db06434ed839498f6ff30f181089d",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/tls.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "TLS material is loaded, fingerprinted and safely rotated by the Rust HTTPS transport; failed replacements retain the last good certificate.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/https.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/https.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: rotation_changes_new_handshakes_and_discovery_but_preserves_open_stream, invalid_replacements_retain_last_good_certificate_and_redacted_error, reload_hash_detects_change_even_with_unchanged_size_and_mtime."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -6677,22 +6776,32 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "0aa7b34d01a3b3eb7e52bd238a345382c77500dcb2b247843cd439b732df2ea7",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/lib.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Hyper/Tokio owns HTTPS connection lifecycle and bounded request handling; no legacy TCP ClientConnection API is reproduced.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/https.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/https.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: connection_cap_and_slow_client_timeout_fail_closed, shutdown_joins_idle_keepalive_and_database_can_reopen."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/MessageRouter.java",
@@ -6700,22 +6809,32 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "037f4557bba4461415c95bcc2fa8d9d156c030e8b20776c357a5842bf3f52381",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/routes.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Rust route dispatch handles the versioned HTTPS API rather than registering legacy TCP message handlers.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/https.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/https.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: discovery_negotiates_and_rejects_unsupported_versions, status_tracks_published_revisions_without_sensitive_configuration, strict_bodies_unknown_routes_and_oversized_declaration_refuse_without_body_read."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/ServerState.java",
@@ -6752,22 +6871,32 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "a089e3f4cff69a84840f545add2763d1447a5caddb113361480d6c3ca4d756e9",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-control/src/pack_access.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Pack sessions are server-bound, bounded, single-purpose and policy-rechecked; they do not grant legacy management authority.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/pack_access_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/pack_access_tests.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: sessions_authenticate_until_expiry_and_secrets_are_single_purpose, a_ban_whitelist_removal_or_password_rotation_ends_existing_sessions, stores_are_bounded_and_refuse_rather_than_evict_live_sessions."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/SessionManager.java",
@@ -6815,7 +6944,7 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "No Rust TCP-sync counterpart by owner disposition: superseded by pack-only HTTPS and WebSocket. See the TCP sync disposition below.",
       "gaps": [
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
@@ -6824,7 +6953,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "TCP sync listener intentionally superseded/forbidden; see the TCP sync disposition below. Do not add a Rust TCP sync listener."
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java",
@@ -6869,22 +6999,32 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "88cee9b1a59437f33a4dd1664d994e8667e412dc0a660d1e0f21213ea71d4f8c",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/realtime.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Pack realtime is implemented with the Rust WebSocket transport; legacy TCP semantics are not retained.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/support/realtime.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/support/realtime.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: realtime_hello_update_and_required_minimum_are_delivered_with_client_status, realtime_session_expiry_closes_socket_without_waiting_for_heartbeat, realtime_session_revocation_and_policy_rotation_close_before_push, realtime_unsolicited_text_and_binary_frames_close_with_policy_violation, realtime_global_connection_cap_and_shutdown_join_all_sockets."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/handlers/DisconnectHandler.java",
@@ -6892,22 +7032,32 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "0ca9fad33fdef18f7d12ac31f6cc22ba7fddc287a9560344f94ace051a4e8845",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/realtime.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "WebSocket closure and HTTPS termination replace legacy TCP disconnect handling; no TCP session-removal protocol is retained.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/support/realtime.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/support/realtime.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: realtime_session_expiry_closes_socket_without_waiting_for_heartbeat, realtime_unsolicited_text_and_binary_frames_close_with_policy_violation."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/handlers/FileRequestHandler.java",
@@ -6915,22 +7065,32 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "8dde2046b59006067065826940f6a5a89803b389278d3e2852b4454a1d983eef",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/routes.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Authenticated artifact route streams a pinned pack artifact; it does not accept arbitrary legacy file paths.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/https.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/https.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: disk_stream_large_artifact_matches_published_identity_over_https, replaced_artifact_aborts_https_and_wrong_length_is_refused_before_headers."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/handlers/HandshakeHandler.java",
@@ -6938,22 +7098,32 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "830cae1f2dbe664521036b8bead706b37149c05d8c67ff8b7e979197c2e69652",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/routes.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Versioned HTTPS discovery and pack authentication replace legacy handshake semantics; no TCP version negotiation or authority shortcut is reproduced.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/https.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/https.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: discovery_negotiates_and_rejects_unsupported_versions, password_session_artifact_ticket_and_revocation_are_pack_only, minecraft_mode_password_refusal_and_unknown_completion_never_contact_provider."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/handlers/HeartbeatHandler.java",
@@ -6961,22 +7131,32 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "6f238d349aa18ed34450675c3f89fb5e2fc35f7f4a12a6e85aac5319861447da",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/realtime.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "WebSocket control Ping/Pong and policy rechecks replace legacy heartbeat handling; framing is not wire-compatible.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/support/realtime.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/support/realtime.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: realtime_control_ping_is_answered_and_socket_outlives_http_request_timeout, realtime_heartbeat_rechecks_policy_even_without_publication, realtime_ping_and_unsolicited_pong_floods_close_with_policy_violation."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/handlers/SyncCheckHandler.java",
@@ -6984,22 +7164,32 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "ce05076e688155e054fea65399f507bcae7be1a6f1b0efda9eccba1fb9802a07",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/routes.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "HTTPS pack status uses monotonic installed revision and published-release policy instead of Java TCP sync-check DTOs.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/https.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/https.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: status_tracks_published_revisions_without_sensitive_configuration."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/state/EventLog.java",
@@ -7493,7 +7683,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "57e87cb61950fe5372552b1b20389d65ba7d86bb5d294220d6ee7372bde88712",
-      "rustCounterpart": "crates/vesta-control/src/files/mutation.rs",
+      "rustCounterpart": "crates/vesta-control/src/content/mod.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/content/ContentInstallerTest.java"
       ],
@@ -7506,13 +7696,19 @@
         "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
       ],
       "rustTests": [
-        "crates/vesta-control/src/files/mutation_tests.rs"
+        "crates/vesta-control/src/files/mutation_tests.rs",
+        "crates/vesta-control/src/content/tests.rs"
       ],
       "evidence": [
         {
           "path": "crates/vesta-control/src/files/mutation_tests.rs",
           "date": "2026-10-10",
           "claim": "Existing Rust test function `creation_requires_absence_and_never_replaces` is present in this source."
+        },
+        {
+          "path": "crates/vesta-control/src/content/tests.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: success_for_both_providers_has_exact_bytes_digest_and_one_audit, unsafe_provider_filenames_never_reach_http, precondition_conflict_keeps_original_without_success_audit. Rust provider-install coverage supplements recoverable file mutation coverage."
         }
       ],
       "results": {
@@ -7542,7 +7738,8 @@
       ],
       "rustTests": [
         "crates/vesta-control/src/files/tests.rs",
-        "crates/vesta-control/src/files/mutation_tests.rs"
+        "crates/vesta-control/src/files/mutation_tests.rs",
+        "crates/vesta-control/src/files/upload_tests.rs"
       ],
       "evidence": [
         {
@@ -7559,6 +7756,16 @@
           "path": "crates/vesta-control/src/files/mutation_tests.rs",
           "date": "2026-10-09",
           "claim": "listsWritesReadsAndDeletesFiles write and delete steps -> creation_requires_absence_and_never_replaces, deletes_go_to_the_trash_and_restore_only_into_an_empty_path."
+        },
+        {
+          "path": "crates/vesta-control/src/files/upload_tests.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: resumes_after_partial_upload_and_browser_reopen, oversize_total_chunk_and_past_total_refuse_without_writing. Rust resumable upload tests complement existing browser behavior tests."
+        },
+        {
+          "path": "crates/vesta-control/src/files/mutation_tests.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: mkdir_creates_one_level_and_audits_only_success, rename_moves_one_file_to_an_absent_name_and_audits_both_names. Rust mutation tests cover mkdir and rename."
         }
       ],
       "results": {
@@ -7793,7 +8000,7 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Legacy authority assertion for connector permission-check ALLOW over unauthenticated IPC is intentionally not reproduced."
+      "notes": "This legacy unauthenticated permission-authority contract is intentionally not reproduced. See the Control IPC disposition below."
     },
     {
       "javaPath": "wrapper/src/test/java/com/vesta/wrapper/launch/LaunchSpecTest.java",
@@ -8772,7 +8979,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "89cd39b8cc6dad974ff5b69b2fef93e8137f189c92b360bc75be406b28888cc7",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/realtime.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/server/TcpPushUpdateAvailableTest.java"
       ],
@@ -8780,16 +8987,26 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Legacy TCP update-push test has a semantic WebSocket release-watch replacement, not a TCP listener or compatible frame.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/support/realtime.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/support/realtime.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: realtime_hello_update_and_required_minimum_are_delivered_with_client_status."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
     },
     {
       "javaPath": "wrapper/src/test/java/com/vesta/wrapper/server/VestaHttpServerCommunicationTest.java",
@@ -8824,7 +9041,7 @@
       "kind": "test",
       "boundary": "host",
       "javaSha256": "d3b4f574c299c51287a6c90fb16e5b0c849779c4feb2b22df85307543ea7de38",
-      "rustCounterpart": null,
+      "rustCounterpart": "crates/vesta-transport/src/tls.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/server/VestaHttpServerTlsFingerprintTest.java"
       ],
@@ -8832,12 +9049,21 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Rust discovery exposes the TLS SHA-256 fingerprint and updates it after certificate rotation.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
+        "Applicable-requirement mapping and final independent review remain pending."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-transport/tests/https.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-transport/tests/https.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: rotation_changes_new_handshakes_and_discovery_but_preserves_open_stream, invalid_replacements_retain_last_good_certificate_and_redacted_error."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
