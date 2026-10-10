@@ -7,7 +7,7 @@
 //! and are still authorized. Failures before the runtime starts release everything
 //! opened so far; shutdown is observation-only and keeps ownership on timeout.
 use crate::ControlError;
-use crate::config::{ConfigError, HostConfiguration, PackAccessMode};
+use crate::config::{ConfigError, HostConfiguration, PackAccessMode, PackSource};
 use crate::files::{self, FileBrowser, FileError};
 use crate::identity::minecraft::{MinecraftChallenges, MinecraftError, ServerUuid};
 use crate::identity::{IdentityService, PackPasswords};
@@ -16,7 +16,8 @@ use crate::operations::{OperationError, OperationRuntime, Operations, ShutdownOu
 use crate::pack_access::{PackAccessPolicy, PackSessions, SessionLimits};
 use crate::packs::{
     MAX_PINNED_BYTES, MAX_PINNED_FILE_BYTES, MAX_SNAPSHOT_FILES, MAX_SNAPSHOT_SCAN, PackError,
-    PackPreparation, PackReleases, ReleaseError, SnapshotLimits,
+    PackPreparation, PackReleases, PreparedPack, ReleaseError, ReleasePlan, SnapshotLimits,
+    VestaBuildError,
 };
 use crate::whitelist::{Whitelist, WhitelistError};
 use std::{
@@ -52,6 +53,7 @@ pub enum HostError {
     Admission(AdmissionDataError),
     Files(FileError),
     Pack(PackError),
+    PackBuild(VestaBuildError),
     Release(ReleaseError),
     Operation(OperationError),
 }
@@ -69,6 +71,7 @@ impl HostError {
             Self::Admission(error) => error.code(),
             Self::Files(error) => error.code(),
             Self::Pack(error) => error.code(),
+            Self::PackBuild(error) => error.code(),
             Self::Release(error) => error.code(),
             Self::Operation(error) => error.code(),
         }
@@ -208,10 +211,45 @@ impl Host {
     pub fn files(&self) -> &FileBrowser {
         &self.files
     }
-    /// One explicit pack preparation per configured scan root, in configuration order.
+    /// Selected local source preparation, or legacy scan roots in configuration order.
+    /// Platform-reference mode composes no local pack reader.
     pub fn pack_preparations(&self) -> &[PackPreparation] {
         &self.preparations
     }
+    /// Explicit backend action only. Opening a Host never scans, reads archives,
+    /// fetches a provider, publishes a release or grants pack access.
+    /// Legacy documents can use this API only with one unambiguous scan root.
+    pub fn prepare_pack(
+        &self,
+        plan: &ReleasePlan,
+        sources: &vesta_protocol::pack::sources::SourceRegistry,
+    ) -> Result<PreparedPack, HostError> {
+        let metadata = plan
+            .manifest_metadata(self.config.pack())
+            .map_err(HostError::Release)?;
+        match self.config.pack_source() {
+            Some(PackSource::Platform(reference)) => {
+                PreparedPack::platform(reference.clone(), metadata).map_err(HostError::Pack)
+            }
+            Some(PackSource::Archive { path, .. }) => {
+                let archive = self.preparations[0]
+                    .archive(path)
+                    .map_err(HostError::Pack)?;
+                PreparedPack::archive(archive, metadata).map_err(HostError::Pack)
+            }
+            Some(PackSource::Scanned { .. }) | None => {
+                if self.preparations.len() != 1 {
+                    return Err(HostError::Pack(PackError::InvalidPath));
+                }
+                let snapshot = self.preparations[0]
+                    .snapshot(metadata, sources)
+                    .map_err(HostError::Pack)?;
+                PreparedPack::scanned(snapshot, &plan.pack_metadata(self.config.pack()))
+                    .map_err(HostError::PackBuild)
+            }
+        }
+    }
+
     pub fn releases(&self) -> &PackReleases {
         &self.releases
     }
@@ -289,15 +327,29 @@ fn compose(
         MAX_SNAPSHOT_SCAN,
     )
     .map_err(HostError::Pack)?;
-    let preparations = config
-        .scan_roots()
-        .iter()
+    let roots = match config.pack_source() {
+        Some(source) => source.root().into_iter().collect::<Vec<_>>(),
+        None => config
+            .scan_roots()
+            .iter()
+            .map(|root| root.as_path())
+            .collect(),
+    };
+    let preparations = roots
+        .into_iter()
         .map(|root| {
-            PackPreparation::open(db, root, &protected, limits).map(|preparation| {
-                preparation.with_unresolved_disposition(config.pack().unresolved_disposition())
-            })
+            let mut preparation = PackPreparation::open(db, root, &protected, limits)?
+                .with_unresolved_disposition(config.pack().unresolved_disposition());
+            if let Some(PackSource::Scanned {
+                directories: Some(directories),
+                ..
+            }) = config.pack_source()
+            {
+                preparation = preparation.with_selected_directories(directories.clone());
+            }
+            Ok(preparation)
         })
-        .collect::<Result<Vec<_>, _>>()
+        .collect::<Result<Vec<_>, PackError>>()
         .map_err(HostError::Pack)?;
     let releases = Arc::new(PackReleases::open(db).map_err(HostError::Release)?);
     let graceful_stop = launch.graceful_stop();

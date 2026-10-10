@@ -2,10 +2,10 @@ mod support;
 
 use rusqlite::{Connection, params};
 use support::{DEFAULT_TEST_TIME_MS, Fixture};
-use vesta_state::StateDatabase;
+use vesta_state::{CURRENT_SCHEMA_VERSION, StateDatabase};
 
 #[test]
-fn populated_v7_migrates_to_v9_without_losing_rows_and_enforces_trash_constraints() {
+fn populated_v7_migrates_to_current_without_losing_rows_and_enforces_trash_constraints() {
     let fixture = Fixture::open();
     let directory = fixture.db.directory().clone();
     let server = fixture.db.server_id().to_owned();
@@ -16,12 +16,23 @@ fn populated_v7_migrates_to_v9_without_losing_rows_and_enforces_trash_constraint
     }).unwrap();
     fixture.db.close().unwrap();
     let offline = Connection::open(directory.database_file()).unwrap();
+    let release_sql: String = offline
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE name='pack_releases'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let legacy_release_sql = release_sql.replace(", 'catalogue'", "");
+    offline
+        .execute_batch(&format!("DROP TABLE pack_releases; {legacy_release_sql};"))
+        .unwrap();
     offline
         .execute_batch("BEGIN IMMEDIATE; DROP TABLE file_uploads; DROP TABLE file_trash; PRAGMA user_version=7; COMMIT;")
         .unwrap();
     drop(offline);
     let migrated = StateDatabase::open(directory, fixture.clock.clone()).unwrap();
-    assert_eq!(migrated.schema_version().unwrap(), 9);
+    assert_eq!(migrated.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
     migrated.write(|c| {
         assert_eq!(c.query_row("SELECT display_name FROM principals WHERE id='legacy-principal'", [], |row| row.get::<_, String>(0))?, "Preserved");
         assert_eq!(c.query_row("SELECT role_id FROM role_assignments WHERE id='legacy-role'", [], |row| row.get::<_, String>(0))?, "owner");

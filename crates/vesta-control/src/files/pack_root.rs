@@ -13,6 +13,26 @@ impl PackRoot {
         root::Root::open(path, protected).map(Self)
     }
 
+    /// Only genuinely absent paths are skipped. Protected or hidden selections
+    /// are excluded; links, native aliases, regular files and other failures refuse.
+    pub(crate) fn selected_directory(&self, path: &RelativePath) -> Result<bool> {
+        if path.as_str().split('/').any(|part| part.starts_with('.')) {
+            return Err(FileError::ProtectedPath);
+        }
+        self.0.resolve(None)?;
+        let checked = match self.0.resolve(Some(path)) {
+            Err(FileError::NotFound) => return Ok(false),
+            result => result?,
+        };
+        if checked.resource.as_str() != path.as_str() {
+            return Err(FileError::LinkedPath);
+        }
+        if !checked.metadata.is_dir() {
+            return Err(FileError::NotDirectory);
+        }
+        Ok(true)
+    }
+
     /// Includes hidden/excluded entries in the caller's global scan-work budget.
     pub(crate) fn children(
         &self,

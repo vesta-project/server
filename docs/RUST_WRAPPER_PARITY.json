@@ -2220,9 +2220,9 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Rust performs a bounded host filesystem snapshot, hashes pinned bytes, validates paths and emits a catalogue. It snapshots the permitted root rather than Java selected directories/private policy.",
+      "rationale": "Rust performs bounded retained-byte snapshots in one root-relative namespace, including configured selected directories, missing-selection reports, protected/hidden exclusions and explicit unresolved dispositions.",
       "gaps": [
-        "Selected-directory grouping, absent-directory behavior, path-only known sources and private-path policy have no equivalent; unsafe visible paths/links are rejected. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
+        "Java mods/overrides categories are replaced by one validated root-relative namespace; path-only known-source trust is replaced by a hash-bound registry. Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
       "rustTests": [
         "crates/vesta-control/src/packs/tests.rs"
@@ -2232,6 +2232,11 @@
           "path": "crates/vesta-control/src/packs/tests.rs",
           "date": "2026-10-09",
           "claim": "a_scan_is_deterministic_and_hashes_the_retained_bytes and hidden_files_and_directories_never_enter_the_catalogue cover snapshot/hash and hidden exclusion."
+        },
+        {
+          "path": "crates/vesta-control/src/packs/tests.rs",
+          "date": "2026-10-10",
+          "claim": "selected_directories_keep_root_names_and_report_only_absent_selections, directory_selections_reject_duplicate_overlap_and_directory_case_aliases, selected_scans_keep_exclusions_dispositions_and_global_budgets, selections_share_file_and_byte_budgets_including_private_files. Missing selected directories are skipped and reported; protected/linked paths and global budgets retain their safety behavior. Execution results are reported separately."
         }
       ],
       "results": {
@@ -2402,19 +2407,27 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "4919542050ac81436963e35e0cce467ad3b15028db49a62d0997ff001f752696",
-      "rustCounterpart": "crates/vesta-protocol/src/pack/catalogue.rs",
+      "rustCounterpart": "crates/vesta-control/src/config/mod.rs",
       "testPaths": [],
       "fixturePaths": [],
       "applicableRequirements": [],
       "disposition": "pending_mapping",
       "status": "not_migrated",
-      "rationale": "Java PackSource selects a whole-pack acquisition mode (platform reference, local archive, or scanned) in ServerState; Rust models trusted host inputs and per-file provenance separately, but this mode selection is not yet composed by Host and is being implemented.",
+      "rationale": "Strict backend-only [pack.source] selects scanned, confined local archive or provider/project/version platform reference. Host::prepare_pack composes the selection explicitly; PackReleases::publish_prepared retains current authority and ledger revision checks. Platform references publish native catalogue JSON without fetching provider bytes or accepting URLs.",
       "gaps": [
-        "Configured whole-pack acquisition mode selection (platform reference / local archive / scanned) is not composed by Rust Host; implementation is in progress.",
-        "Whole-family parity mapping and applicable-requirement assessment remain pending parent review."
+        "No automatic live scanning, provider download or archive extraction is introduced. Whole-family parity mapping and applicable-requirement assessment remain pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/config/tests.rs",
+        "crates/vesta-control/src/host_tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/host_tests.rs",
+          "date": "2026-10-10",
+          "claim": "host_prepares_and_publishes_exactly_the_configured_whole_pack_mode covers scanned, ZIP, MRPACK and both supported platform references with immutable publication/reopen; configured_archive_uses_the_protected_reader_and_open_does_not_pin_bytes and platform_publication_rechecks_authority_and_revision_and_preserves_native_references cover refusal behavior. Configuration rejects unknown/ambiguous source fields and URL-like IDs. Execution results are reported separately."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -6940,7 +6953,7 @@
       "kind": "production",
       "boundary": "host",
       "javaSha256": "8909b53931c3e7c4062c5b46cf50c8412d9ca16096e654149d957ce892d2b0af",
-      "rustCounterpart": "crates/vesta-control/src/packs/mod.rs",
+      "rustCounterpart": "crates/vesta-control/src/host.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/server/DurableLifecycleRouteTest.java",
         "wrapper/src/test/java/com/vesta/wrapper/server/LegacyPowerRouteLaunchTest.java",
@@ -6952,13 +6965,13 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Useful deterministic retained-byte scanning, immutable publication, monotonic revisions, status projection and committed-release notifications have cohesive Rust counterparts rather than a mutable Java ServerState class.",
+      "rationale": "Useful deterministic retained-byte scanning, immutable publication, monotonic revisions, status projection and committed-release notifications have cohesive Rust counterparts rather than a mutable Java ServerState class. Configured whole-pack source selection and selected-directory preparation are now explicitly composed by Host without automatic scanning.",
       "gaps": [
-        "Java install/remove-plus-automatic-rescan and platform/self-hosted source orchestration are not mapped as a complete composition. Configured whole-pack mode selection (platform reference / local archive / scanned) is not composed by Rust Host and is being implemented. Remote content/install mutations remain unavailable pending authenticated management.",
-        "Java selected-directory scanning within one root namespace (ManifestBuilder.scan) is not implemented and is being implemented now.",
+        "Java install/remove-plus-automatic-rescan remains deliberately unavailable; configured platform-reference, local archive and scanned selection are implemented. Remote content/install mutations remain unavailable pending authenticated management.",
         "Whole-family requirement accounting and independent parity review remain pending; counterpart pointers do not assert full Java equivalence."
       ],
       "rustTests": [
+        "crates/vesta-control/src/host_tests.rs",
         "crates/vesta-control/src/packs/tests.rs",
         "crates/vesta-control/src/packs/publish_tests.rs",
         "crates/vesta-control/src/packs/releases_tests.rs",
@@ -6966,6 +6979,11 @@
         "crates/vesta-transport/tests/support/realtime.rs"
       ],
       "evidence": [
+        {
+          "path": "crates/vesta-control/src/host_tests.rs",
+          "date": "2026-10-10",
+          "claim": "host_prepares_and_publishes_exactly_the_configured_whole_pack_mode verifies Host selection, root-relative selected scan names, absent-directory reporting, protected exclusions, no owner bootstrap/start, ledger-authoritative revisions and retained artifacts. Native catalogue references are published rather than provider archives fetched. Execution results are reported separately."
+        },
         {
           "path": "crates/vesta-control/src/packs/tests.rs",
           "date": "2026-10-10",

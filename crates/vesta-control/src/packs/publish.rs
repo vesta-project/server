@@ -31,6 +31,8 @@ pub enum ArtifactFormat {
     Vesta,
     Zip,
     Mrpack,
+    /// Native whole-pack platform reference; no fetched provider bytes.
+    Catalogue,
 }
 impl ArtifactFormat {
     pub(crate) const fn extension(self) -> &'static str {
@@ -38,6 +40,7 @@ impl ArtifactFormat {
             Self::Vesta => "vestapack",
             Self::Zip => "zip",
             Self::Mrpack => "mrpack",
+            Self::Catalogue => "catalogue",
         }
     }
 }
@@ -168,6 +171,14 @@ impl PackArtifacts {
             ArchiveFormat::Mrpack => ArtifactFormat::Mrpack,
         };
         self.publish_tracked(format, archive.bytes(), archive.description().sha256())
+    }
+
+    pub(crate) fn publish_platform_tracked(
+        &self,
+        bytes: &[u8],
+        hash: &Sha256,
+    ) -> Result<(PublishedArtifact, bool), PackError> {
+        self.publish_tracked(ArtifactFormat::Catalogue, bytes, hash)
     }
 
     #[cfg(test)]
@@ -346,7 +357,7 @@ fn owned_name(name: &str) -> bool {
         return hex(random, 32);
     }
     name.split_once('.').is_some_and(|(digest, extension)| {
-        hex(digest, 64) && matches!(extension, "vestapack" | "zip" | "mrpack")
+        hex(digest, 64) && matches!(extension, "vestapack" | "zip" | "mrpack" | "catalogue")
     })
 }
 

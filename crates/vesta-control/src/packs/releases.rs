@@ -311,6 +311,46 @@ impl PackReleases {
         )
     }
 
+    /// Publish a configured immutable preparation with the same transaction-time
+    /// capability, revision, force-update and display-version checks as other modes.
+    pub fn publish_prepared(
+        &self,
+        subject: &Subject,
+        plan: &ReleasePlan,
+        pack: &super::PreparedPack,
+        acknowledge_lower_version: bool,
+    ) -> Result<PackRelease, ReleaseError> {
+        let metadata = pack.manifest.metadata();
+        if metadata.revision() != plan.revision
+            || metadata.minimum_revision() != plan.minimum_revision
+        {
+            return Err(ReleaseError::RevisionMismatch);
+        }
+        match &pack.content {
+            super::configured::PreparedContent::Scanned(built) => {
+                self.publish_vesta(subject, plan, built, acknowledge_lower_version)
+            }
+            super::configured::PreparedContent::Archive(archive) => self.publish_archive(
+                subject,
+                plan,
+                archive,
+                metadata.version(),
+                acknowledge_lower_version,
+            ),
+            super::configured::PreparedContent::Platform { bytes, hash } => {
+                self.preflight(subject, plan, metadata.version(), acknowledge_lower_version)?;
+                let published = self.artifacts.publish_platform_tracked(bytes, hash)?;
+                self.record_publication(
+                    subject,
+                    plan,
+                    published,
+                    metadata.version(),
+                    acknowledge_lower_version,
+                )
+            }
+        }
+    }
+
     fn preflight(
         &self,
         subject: &Subject,
@@ -610,6 +650,7 @@ fn current(connection: &Connection, server: &str) -> Result<Option<PackRelease>,
         "vestapack" => ArtifactFormat::Vesta,
         "zip" => ArtifactFormat::Zip,
         "mrpack" => ArtifactFormat::Mrpack,
+        "catalogue" => ArtifactFormat::Catalogue,
         _ => return Err(corrupt()),
     };
     let revision = u64::try_from(revision).map_err(|_| corrupt())?;

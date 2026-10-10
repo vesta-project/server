@@ -664,6 +664,17 @@ fn a_visible_hard_link_is_refused_and_the_file_is_left_intact() {
         PackError::LinkedPath,
     );
 
+    let selected =
+        preparation.with_selected_directories(super::SelectedDirectories::new(&["mods"]).unwrap());
+    assert_pack_error(
+        selected.snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        ),
+        PackError::LinkedPath,
+    );
+
     assert_eq!(
         std::fs::read(fixture.game.join("mods/alpha.jar")).expect("the original survives"),
         ALPHA_BYTES
@@ -739,6 +750,18 @@ fn a_visible_directory_junction_is_refused_and_the_target_is_left_intact() {
     let preparation = preparation(&fixture);
     assert_pack_error(
         preparation.snapshot_with_disposition(
+            crate::config::UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        ),
+        PackError::LinkedPath,
+    );
+
+    let selected = preparation.with_selected_directories(
+        super::SelectedDirectories::new(&["mods/junction/missing"]).unwrap(),
+    );
+    assert_pack_error(
+        selected.snapshot_with_disposition(
             crate::config::UnresolvedDisposition::EmbedPublic,
             metadata(),
             &empty_registry(),
@@ -1195,4 +1218,203 @@ fn debug_and_errors_leak_no_paths_bytes_or_digests() {
         assert_eq!(error.to_string(), error.code());
         assert!(error.code().starts_with("pack_"), "{}", error.code());
     }
+}
+
+#[test]
+fn selected_directories_keep_root_names_and_report_only_absent_selections() {
+    use super::SelectedDirectories;
+    use crate::config::UnresolvedDisposition;
+    let f = Fixture::open();
+    f.write("mods/alpha.jar", ALPHA_BYTES);
+    f.write("config/deep/b.txt", B_TXT_BYTES);
+    f.write("other/not-selected", b"outside");
+    f.write("config/.hidden/secret", b"hidden");
+    f.mkdir("empty");
+    let prepare = preparation(&f)
+        .with_unresolved_disposition(UnresolvedDisposition::EmbedPublic)
+        .with_selected_directories(
+            SelectedDirectories::new(&["missing/deep", "mods", "empty", "config/deep", ".hidden"])
+                .unwrap(),
+        );
+    let snapshot = prepare.snapshot(metadata(), &empty_registry()).unwrap();
+    assert_eq!(entries(&snapshot), ["config/deep/b.txt", "mods/alpha.jar"]);
+    assert_eq!(
+        snapshot
+            .missing_directories()
+            .iter()
+            .map(RelativePath::as_str)
+            .collect::<Vec<_>>(),
+        ["missing/deep"]
+    );
+    assert_eq!(
+        snapshot.bytes(&CataloguePath::parse("mods/alpha.jar").unwrap()),
+        Some(ALPHA_BYTES)
+    );
+    assert_eq!(
+        snapshot.bytes(&CataloguePath::parse("config/deep/b.txt").unwrap()),
+        Some(B_TXT_BYTES)
+    );
+    assert_eq!(
+        snapshot.total_bytes(),
+        ALPHA_BYTES.len() + B_TXT_BYTES.len()
+    );
+}
+
+#[test]
+fn directory_selections_reject_duplicate_overlap_and_directory_case_aliases() {
+    use super::SelectedDirectories;
+    for paths in [
+        vec!["mods", "mods"],
+        vec!["mods", "MODS"],
+        vec!["mods", "mods/sub"],
+        vec!["mods/sub", "mods"],
+        vec!["mods/a", "Mods/b"],
+        vec!["a/B/c", "a/b/d"],
+        vec!["../mods"],
+        vec!["/mods"],
+        vec!["mods//sub"],
+        vec![r"mods\sub"],
+        vec!["mods/CON"],
+        vec![".vesta"],
+        vec![""],
+        vec![],
+    ] {
+        assert!(SelectedDirectories::new(&paths).is_err(), "{paths:?}");
+    }
+    assert!(SelectedDirectories::new(&["mods/a", "mods/b", "mods-other"]).is_ok());
+    let paths = (0..=super::MAX_SELECTED_DIRECTORIES)
+        .map(|n| format!("dir{n}"))
+        .collect::<Vec<_>>();
+    assert!(SelectedDirectories::new(&paths).is_err());
+}
+
+#[test]
+fn selected_scans_keep_exclusions_dispositions_and_global_budgets() {
+    use super::SelectedDirectories;
+    use crate::config::UnresolvedDisposition;
+    let f = Fixture::open();
+    f.write("config/public.txt", B_TXT_BYTES);
+    f.write("config/protected.txt", b"secret");
+    f.write("config/wrapper-config.toml", b"reserved secret");
+    f.write("config/.hidden", b"hidden secret");
+    let secret = f.game.join("config/protected.txt");
+    let p = PackPreparation::open(&f.db, &f.game, &[&secret], limits(1024, 1024, 32, 256))
+        .unwrap()
+        .with_selected_directories(SelectedDirectories::new(&["config", "not-present"]).unwrap());
+    assert!(matches!(
+        p.snapshot(metadata(), &empty_registry()),
+        Err(PackError::UnresolvedFile)
+    ));
+    let public = p
+        .snapshot_with_disposition(
+            UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry(),
+        )
+        .unwrap();
+    assert_eq!(entries(&public), ["config/public.txt"]);
+    let private = p
+        .snapshot_with_disposition(
+            UnresolvedDisposition::ExcludePrivate,
+            metadata(),
+            &empty_registry(),
+        )
+        .unwrap();
+    assert!(entries(&private).is_empty());
+    assert_eq!(private.private_files().len(), 1);
+    assert_eq!(
+        private.private_files()[0].path().as_str(),
+        "config/public.txt"
+    );
+    let stale = SourceRegistry::new(vec![
+        KnownSource::new(
+            "config/public.txt",
+            EMPTY_HASH,
+            FileSource::platform(Platform::Modrinth, "p", "v", None).unwrap(),
+        )
+        .unwrap(),
+    ])
+    .unwrap();
+    assert!(
+        p.snapshot_with_disposition(UnresolvedDisposition::ExcludePrivate, metadata(), &stale)
+            .is_err()
+    );
+    let selections = SelectedDirectories::new(&["config", "absent"]).unwrap();
+    let bounded = PackPreparation::open(&f.db, &f.game, &[&secret], limits(1024, 1024, 32, 2))
+        .unwrap()
+        .with_selected_directories(selections);
+    assert!(matches!(
+        bounded.snapshot_with_disposition(
+            UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry()
+        ),
+        Err(PackError::TooLarge)
+    ));
+    let direct = PackPreparation::open(
+        &f.db,
+        &f.game,
+        &[&f.game.join("private")],
+        limits(1024, 1024, 32, 256),
+    )
+    .unwrap()
+    .with_selected_directories(SelectedDirectories::new(&["private/missing"]).unwrap());
+    let excluded = direct.snapshot(metadata(), &empty_registry()).unwrap();
+    assert!(excluded.missing_directories().is_empty());
+    assert!(entries(&excluded).is_empty());
+}
+
+#[test]
+fn selected_directories_refuse_regular_files_and_missing_root_is_not_a_skipped_selection() {
+    use super::SelectedDirectories;
+    let f = Fixture::open();
+    f.write("plain", b"file");
+    let p =
+        preparation(&f).with_selected_directories(SelectedDirectories::new(&["plain"]).unwrap());
+    assert!(matches!(
+        p.snapshot(metadata(), &empty_registry()),
+        Err(PackError::Unavailable)
+    ));
+    let p =
+        preparation(&f).with_selected_directories(SelectedDirectories::new(&["absent"]).unwrap());
+    std::fs::rename(&f.game, f.game.with_extension("moved")).unwrap();
+    assert!(matches!(
+        p.snapshot(metadata(), &empty_registry()),
+        Err(PackError::Unavailable)
+    ));
+}
+
+#[test]
+fn selections_share_file_and_byte_budgets_including_private_files() {
+    use super::SelectedDirectories;
+    use crate::config::UnresolvedDisposition;
+    let f = Fixture::open();
+    f.write("a/one", b"123");
+    f.write("b/two", b"456");
+    for (budget, disposition) in [
+        (limits(3, 6, 1, 256), UnresolvedDisposition::EmbedPublic),
+        (limits(3, 5, 2, 256), UnresolvedDisposition::EmbedPublic),
+        (limits(3, 5, 2, 256), UnresolvedDisposition::ExcludePrivate),
+    ] {
+        let p = PackPreparation::open(&f.db, &f.game, &[], budget)
+            .unwrap()
+            .with_selected_directories(SelectedDirectories::new(&["a", "b"]).unwrap());
+        assert_pack_error(
+            p.snapshot_with_disposition(disposition, metadata(), &empty_registry()),
+            PackError::TooLarge,
+        );
+    }
+    let p = PackPreparation::open(&f.db, &f.game, &[], limits(3, 6, 2, 256))
+        .unwrap()
+        .with_selected_directories(SelectedDirectories::new(&["a", "b"]).unwrap());
+    assert_eq!(
+        p.snapshot_with_disposition(
+            UnresolvedDisposition::EmbedPublic,
+            metadata(),
+            &empty_registry()
+        )
+        .unwrap()
+        .total_bytes(),
+        6
+    );
 }

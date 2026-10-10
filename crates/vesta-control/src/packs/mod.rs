@@ -2,6 +2,8 @@
 //! Prepared bytes are immutable artifacts; later on-disk replacement cannot change
 //! them under a prior hash. A refresh is bounded, not an atomic tree snapshot.
 mod build;
+mod configured;
+pub use configured::PreparedPack;
 mod publish;
 mod releases;
 pub use build::{
@@ -33,6 +35,51 @@ pub const MAX_PINNED_FILE_BYTES: usize = 16 * 1_024 * 1_024;
 pub const MAX_SNAPSHOT_FILES: usize = 4_096;
 pub const MAX_SNAPSHOT_SCAN: usize = 16_384;
 pub const MAX_SOURCE_DOCUMENT_BYTES: usize = 65_536;
+
+pub const MAX_SELECTED_DIRECTORIES: usize = 256;
+
+/// Validated selections within one root namespace. Order does not change naming.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SelectedDirectories(Vec<RelativePath>);
+impl SelectedDirectories {
+    pub fn new(paths: &[impl AsRef<str>]) -> Result<Self, PackError> {
+        if paths.is_empty() || paths.len() > MAX_SELECTED_DIRECTORIES {
+            return Err(PackError::InvalidPath);
+        }
+        let mut selections: Vec<RelativePath> = Vec::new();
+        let mut bytes = 0usize;
+        for text in paths {
+            let path = RelativePath::parse(text.as_ref())?;
+            CataloguePath::parse(path.as_str())?;
+            bytes += path.as_str().len();
+            if bytes > crate::config::MAX_TOTAL_PATH_BYTES {
+                return Err(PackError::TooLarge);
+            }
+            for existing in &selections {
+                let a = existing.as_str().to_ascii_lowercase();
+                let b = path.as_str().to_ascii_lowercase();
+                if a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/")) {
+                    return Err(PackError::InvalidPath);
+                }
+                // Reject directory-case aliases even for disjoint sibling leaves.
+                for (left, right) in existing.as_str().split('/').zip(path.as_str().split('/')) {
+                    if !left.eq_ignore_ascii_case(right) {
+                        break;
+                    }
+                    if left != right {
+                        return Err(PackError::InvalidPath);
+                    }
+                }
+            }
+            selections.push(path);
+        }
+        selections.sort();
+        Ok(Self(selections))
+    }
+    pub fn paths(&self) -> &[RelativePath] {
+        &self.0
+    }
+}
 
 /// Explicit backend-selected registry document. Missing/malformed/linked sources
 /// refuse; absence never silently changes a known provider file into embedded bytes.
@@ -138,6 +185,7 @@ pub struct PackPreparation {
     root: PackRoot,
     limits: SnapshotLimits,
     unresolved: UnresolvedDisposition,
+    directories: Option<SelectedDirectories>,
 }
 impl PackPreparation {
     pub fn open(
@@ -152,12 +200,18 @@ impl PackPreparation {
             root: PackRoot::open(root, &exclusions)?,
             limits,
             unresolved: UnresolvedDisposition::Refuse,
+            directories: None,
         })
     }
 
     /// Trusted local composition only, not a frontend-selectable policy.
     pub fn with_unresolved_disposition(mut self, disposition: UnresolvedDisposition) -> Self {
         self.unresolved = disposition;
+        self
+    }
+
+    pub fn with_selected_directories(mut self, directories: SelectedDirectories) -> Self {
+        self.directories = Some(directories);
         self
     }
 
@@ -180,7 +234,24 @@ impl PackPreparation {
         sources: &SourceRegistry,
     ) -> Result<PreparedSnapshot, PackError> {
         let mut remaining = self.limits.scanned;
-        let mut pending = vec![None];
+        let mut missing_directories = Vec::new();
+        let mut pending = Vec::new();
+        if let Some(selections) = &self.directories {
+            for path in selections.paths() {
+                if remaining == 0 {
+                    return Err(PackError::TooLarge);
+                }
+                remaining -= 1;
+                match self.root.selected_directory(path) {
+                    Ok(true) => pending.push(Some(path.clone())),
+                    Ok(false) => missing_directories.push(path.clone()),
+                    Err(FileError::ProtectedPath) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        } else {
+            pending.push(None);
+        }
         let mut files = Vec::new();
         let mut checked_files = Vec::new();
         let mut private_files = Vec::new();
@@ -249,6 +320,7 @@ impl PackPreparation {
             bodies,
             total,
             private_files,
+            missing_directories,
         })
     }
 
@@ -262,7 +334,9 @@ impl PackPreparation {
             }
             _ => return Err(PackError::InvalidArchive),
         };
-        let (bytes, hash) = self.root.pin(path, self.limits.file_bytes)?;
+        let (bytes, hash) = self
+            .root
+            .pin(path, self.limits.file_bytes.min(self.limits.total_bytes))?;
         let description = ArchivePack::new(path.as_str(), &hash, bytes.len() as u64, format, None)?;
         Ok(PreparedArchive {
             description,
@@ -307,8 +381,14 @@ pub struct PreparedSnapshot {
     bodies: BTreeMap<CataloguePath, Box<[u8]>>,
     total: usize,
     private_files: Vec<PrivateFileEntry>,
+    missing_directories: Vec<RelativePath>,
 }
 impl PreparedSnapshot {
+    /// Backend-local missing-selection report, never download authority.
+    pub fn missing_directories(&self) -> &[RelativePath] {
+        &self.missing_directories
+    }
+
     pub fn private_files(&self) -> &[PrivateFileEntry] {
         &self.private_files
     }

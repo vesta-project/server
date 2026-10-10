@@ -13,8 +13,30 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         7 => apply_v7(c),
         8 => apply_v8(c),
         9 => apply_v9(c),
+        10 => apply_v10(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
+}
+
+/// Preserve existing release rows while admitting native platform-reference artifacts.
+fn apply_v10(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(r#"
+        ALTER TABLE pack_releases RENAME TO pack_releases_v9;
+        CREATE TABLE pack_releases (
+            server_id TEXT NOT NULL REFERENCES server_identity(server_id),
+            revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 9007199254740991),
+            minimum_revision INTEGER NOT NULL CHECK (minimum_revision BETWEEN 1 AND revision),
+            display_version TEXT NOT NULL CHECK (length(CAST(display_version AS BLOB)) BETWEEN 1 AND 256),
+            format TEXT NOT NULL CHECK (format IN ('vestapack', 'zip', 'mrpack', 'catalogue')),
+            sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+            size INTEGER NOT NULL CHECK (size >= 0),
+            published_at INTEGER NOT NULL,
+            PRIMARY KEY (server_id, revision)
+        ) STRICT;
+        INSERT INTO pack_releases SELECT * FROM pack_releases_v9;
+        DROP TABLE pack_releases_v9;
+    "#)?;
+    Ok(())
 }
 
 fn apply_v1(c: &Connection, now_ms: i64) -> crate::Result<()> {

@@ -2,7 +2,7 @@ mod support;
 
 use rusqlite::{Connection, params};
 use support::{DEFAULT_TEST_TIME_MS, Fixture};
-use vesta_state::StateDatabase;
+use vesta_state::{CURRENT_SCHEMA_VERSION, StateDatabase};
 
 // Frozen from b950e75's original apply_v8, which has no file_uploads table.
 const ORIGINAL_V8_TRASH: &str = r#"
@@ -30,7 +30,7 @@ fn normalize(sql: &str) -> String {
 }
 
 #[test]
-fn original_v8_without_uploads_migrates_to_v9_and_preserves_existing_rows() {
+fn original_v8_without_uploads_migrates_to_current_and_preserves_existing_rows() {
     let fixture = Fixture::open();
     let directory = fixture.db.directory().clone();
     let server = fixture.db.server_id().to_owned();
@@ -43,7 +43,18 @@ fn original_v8_without_uploads_migrates_to_v9_and_preserves_existing_rows() {
     }).unwrap();
     fixture.db.close().unwrap();
     let offline = Connection::open(directory.database_file()).unwrap();
-    // v9 adds only this table; removing it restores the original unchanged v8 schema.
+    let release_sql: String = offline
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE name='pack_releases'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let legacy_release_sql = release_sql.replace(", 'catalogue'", "");
+    offline
+        .execute_batch(&format!("DROP TABLE pack_releases; {legacy_release_sql};"))
+        .unwrap();
+    // Restore v8: v9 adds uploads, and v10 widens the release-format constraint.
     offline
         .execute_batch("BEGIN IMMEDIATE; DROP TABLE file_uploads; PRAGMA user_version=8; COMMIT;")
         .unwrap();
@@ -71,7 +82,7 @@ fn original_v8_without_uploads_migrates_to_v9_and_preserves_existing_rows() {
             .unwrap()
     );
     let mut statement = offline
-        .prepare("SELECT type,name,sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY type,name")
+        .prepare("SELECT type,name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name!='pack_releases' ORDER BY type,name")
         .unwrap();
     let old_schema = statement
         .query_map([], |r| {
@@ -88,13 +99,13 @@ fn original_v8_without_uploads_migrates_to_v9_and_preserves_existing_rows() {
     drop(offline);
 
     let migrated = StateDatabase::open(directory, fixture.clock.clone()).unwrap();
-    assert_eq!(migrated.schema_version().unwrap(), 9);
+    assert_eq!(migrated.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
     assert_eq!(migrated.server_id(), server);
     migrated.write(|c| {
         assert_eq!(c.query_row("SELECT display_name FROM principals WHERE id='legacy-principal'", [], |r| r.get::<_, String>(0))?, "Preserved");
         assert_eq!(c.query_row("SELECT sha256 FROM file_trash WHERE id=?", [&trash], |r| r.get::<_, String>(0))?, hash);
         assert_eq!(c.query_row("SELECT count(*) FROM file_uploads", [], |r| r.get::<_, i64>(0))?, 0);
-        let mut statement = c.prepare("SELECT type,name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name!='file_uploads' ORDER BY type,name")?;
+        let mut statement = c.prepare("SELECT type,name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name!='file_uploads' AND name!='pack_releases' ORDER BY type,name")?;
         let preserved = statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?.collect::<std::result::Result<Vec<_>, _>>()?;
         assert_eq!(preserved, old_schema);
         let insert = "INSERT INTO file_uploads (id,server_id,principal_id,device_id,path,expected_sha256,total_size,final_sha256,expires_at) VALUES (?,?,'legacy-principal','legacy-device','config/new.toml',NULL,3,?,?)";

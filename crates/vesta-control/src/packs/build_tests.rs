@@ -76,6 +76,7 @@ fn snapshot(entries: Vec<(PackFile, Vec<u8>)>) -> PreparedSnapshot {
         files.push(file);
     }
     PreparedSnapshot {
+        missing_directories: Vec::new(),
         private_files: Vec::new(),
         manifest: Manifest::new(catalogue_metadata(), PackContent::Custom(files)).unwrap(),
         bodies,
@@ -440,6 +441,7 @@ fn all_four_snapshot_metadata_fields_must_match_exactly() {
         ManifestMetadata::new("Golden Build", "v1", 7, 2).unwrap(),
     ] {
         let prepared = PreparedSnapshot {
+            missing_directories: Vec::new(),
             private_files: Vec::new(),
             manifest: Manifest::new(observed, PackContent::Custom(Vec::new())).unwrap(),
             bodies: BTreeMap::new(),
@@ -461,6 +463,7 @@ fn whole_platform_and_archive_descriptions_are_not_prepared_custom_snapshots() {
         ),
     ] {
         let prepared = PreparedSnapshot {
+            missing_directories: Vec::new(),
             private_files: Vec::new(),
             manifest: Manifest::new(catalogue_metadata(), content).unwrap(),
             bodies: BTreeMap::new(),

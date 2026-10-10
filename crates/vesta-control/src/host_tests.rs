@@ -672,9 +672,19 @@ fn host_startup_upgrades_original_v8_without_upload_table_and_purges_orphan_stag
     drop(file);
     db.close().unwrap();
 
-    // v9 only adds file_uploads. Removing it leaves the unchanged original v8
-    // schema from b950e75, rather than a v8 fixture that already has uploads.
+    // Restore v8: v9 adds uploads, and v10 widens the release-format constraint.
     let offline = rusqlite::Connection::open(directory.database_file()).unwrap();
+    let release_sql: String = offline
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE name='pack_releases'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let legacy_release_sql = release_sql.replace(", 'catalogue'", "");
+    offline
+        .execute_batch(&format!("DROP TABLE pack_releases; {legacy_release_sql};"))
+        .unwrap();
     offline
         .execute_batch("BEGIN IMMEDIATE; DROP TABLE file_uploads; PRAGMA user_version=8; COMMIT;")
         .unwrap();
@@ -697,7 +707,10 @@ fn host_startup_upgrades_original_v8_without_upload_table_and_purges_orphan_stag
     assert_eq!(uploads.count(10).unwrap(), Some(1));
 
     let host = f.open("minecraft").unwrap();
-    assert_eq!(host.database().schema_version().unwrap(), 9);
+    assert_eq!(
+        host.database().schema_version().unwrap(),
+        vesta_state::CURRENT_SCHEMA_VERSION
+    );
     assert_eq!(host.database().server_id(), server);
     assert_eq!(
         host.database()
@@ -832,6 +845,295 @@ fn native_short_name_spelling_of_the_launch_game_directory_is_accepted_when_avai
     )
     .unwrap();
     let host = f.open("minecraft").unwrap();
+    assert!(matches!(
+        host.shutdown(Duration::from_secs(5)).unwrap(),
+        HostShutdown::Complete
+    ));
+}
+
+fn configured_pack(
+    f: &Fixture,
+    source: &str,
+    disposition: &str,
+    document_path: &str,
+) -> HostConfiguration {
+    let text = format!(
+        "schema-version = 1\n[paths]\nstate = 'private-state'\ngame = 'game'\nscan-roots = ['unused-legacy-root']\nlaunch-definition = 'private/launch.toml'\n[pack]\nname = 'Configured'\nversion = '1.0.0'\nrevision = 77\nminimum-revision = 3\nminecraft-version = '1.21.1'\nunresolved-disposition = '{disposition}'\n[pack.source]\n{source}\n[pack-access]\nmode = 'minecraft'\n[listener]\nmode = 'disabled'\n"
+    );
+    HostConfiguration::parse_toml(text.as_bytes(), &f.base(), Path::new(document_path)).unwrap()
+}
+
+#[test]
+fn host_prepares_and_publishes_exactly_the_configured_whole_pack_mode() {
+    use crate::packs::{ArtifactFormat, MAX_ARTIFACT_BYTES, UpdatePolicy};
+    use vesta_protocol::pack::{
+        catalogue::{Manifest as PackManifest, PackContent},
+        sources::SourceRegistry,
+    };
+    for (source, expected) in [
+        (
+            "mode = 'scanned'\nroot = 'game'\ndirectories = ['config', 'absent']",
+            ArtifactFormat::Vesta,
+        ),
+        (
+            "mode = 'archive'\nroot = 'game'\npath = 'packs/local.zip'",
+            ArtifactFormat::Zip,
+        ),
+        (
+            "mode = 'archive'\nroot = 'game'\npath = 'packs/local.mrpack'",
+            ArtifactFormat::Mrpack,
+        ),
+        (
+            "mode = 'platform'\nprovider = 'modrinth'\nproject-id = 'project'\nversion-id = 'version'",
+            ArtifactFormat::Catalogue,
+        ),
+        (
+            "mode = 'platform'\nprovider = 'curseforge'\nproject-id = '123'\nversion-id = '456'",
+            ArtifactFormat::Catalogue,
+        ),
+    ] {
+        let f = Fixture::new();
+        std::fs::create_dir_all(f.base().join("game/packs")).unwrap();
+        std::fs::write(
+            f.base().join("game/packs/local.zip"),
+            b"opaque archive, not parsed",
+        )
+        .unwrap();
+        std::fs::write(
+            f.base().join("game/packs/local.mrpack"),
+            b"opaque archive, not parsed",
+        )
+        .unwrap();
+        std::fs::write(
+            f.base().join("game/config/public.txt"),
+            b"retained public bytes",
+        )
+        .unwrap();
+        std::fs::write(
+            f.base().join("game/config/host.toml"),
+            b"protected document",
+        )
+        .unwrap();
+        std::fs::write(
+            f.base().join("game/config/wrapper-config.toml"),
+            b"protected standard secret",
+        )
+        .unwrap();
+        let host = Host::open(
+            configured_pack(&f, source, "embed-public", "game/config/host.toml"),
+            Arc::new(SystemClock),
+        )
+        .unwrap();
+        assert_eq!(principals(host.database()), 0);
+        assert!(host.releases().current().unwrap().is_none());
+        assert_eq!(
+            host.pack_preparations().len(),
+            usize::from(expected != ArtifactFormat::Catalogue)
+        );
+        let owner = seed_owner(host.database());
+        let plan = host
+            .releases()
+            .plan(&owner, 0, UpdatePolicy::Optional)
+            .unwrap();
+        let prepared = host
+            .prepare_pack(&plan, &SourceRegistry::new(Vec::new()).unwrap())
+            .unwrap();
+        assert_eq!(
+            prepared.manifest().metadata().revision(),
+            1,
+            "ledger, not configured revision 77"
+        );
+        assert_eq!(prepared.manifest().metadata().minimum_revision(), 1);
+        match prepared.manifest().content() {
+            PackContent::Custom(files) => {
+                assert_eq!(expected, ArtifactFormat::Vesta);
+                assert_eq!(
+                    files
+                        .iter()
+                        .map(|file| file.path().as_str())
+                        .collect::<Vec<_>>(),
+                    ["config/public.txt"]
+                );
+                assert_eq!(
+                    prepared
+                        .missing_directories()
+                        .iter()
+                        .map(RelativePath::as_str)
+                        .collect::<Vec<_>>(),
+                    ["absent"]
+                );
+            }
+            PackContent::Archive(archive) => {
+                assert!(matches!(
+                    expected,
+                    ArtifactFormat::Zip | ArtifactFormat::Mrpack
+                ));
+                assert_eq!(archive.size(), b"opaque archive, not parsed".len() as u64);
+            }
+            PackContent::Platform(reference) => {
+                assert_eq!(expected, ArtifactFormat::Catalogue);
+                assert_eq!(reference.source().url(), None);
+            }
+        }
+        // No later mutable source file is reopened by publication.
+        std::fs::remove_dir_all(f.base().join("game/config")).unwrap();
+        std::fs::remove_dir_all(f.base().join("game/packs")).unwrap();
+        let release = host
+            .releases()
+            .publish_prepared(&owner, &plan, &prepared, false)
+            .unwrap();
+        assert_eq!(release.artifact().format(), expected);
+        assert_eq!(host.releases().current().unwrap().unwrap(), release);
+        let loaded = host
+            .releases()
+            .artifacts()
+            .load(release.artifact(), MAX_ARTIFACT_BYTES)
+            .unwrap();
+        match expected {
+            ArtifactFormat::Catalogue => {
+                let decoded = PackManifest::decode(loaded.bytes()).unwrap();
+                assert_eq!(decoded, *prepared.manifest());
+                assert!(!std::str::from_utf8(loaded.bytes()).unwrap().contains("url"));
+            }
+            ArtifactFormat::Zip | ArtifactFormat::Mrpack => {
+                assert_eq!(loaded.bytes(), b"opaque archive, not parsed")
+            }
+            ArtifactFormat::Vesta => {
+                let mut zip = zip::ZipArchive::new(std::io::Cursor::new(loaded.bytes())).unwrap();
+                assert_eq!(zip.len(), 2);
+                assert!(zip.by_name("overrides/config/public.txt").is_ok());
+                assert!(zip.by_name("overrides/config/host.toml").is_err());
+            }
+        }
+        assert_eq!(host.releases().prune(&owner).unwrap().removed(), 0);
+        assert_eq!(host.runtime().game_snapshot().unwrap().generation, None);
+        assert!(matches!(
+            host.shutdown(Duration::from_secs(5)).unwrap(),
+            HostShutdown::Complete
+        ));
+        std::fs::create_dir_all(f.base().join("game/config")).unwrap();
+        let reopened = Host::open(
+            configured_pack(&f, source, "embed-public", "game/config/host.toml"),
+            Arc::new(SystemClock),
+        )
+        .unwrap();
+        assert_eq!(reopened.releases().current().unwrap().unwrap(), release);
+        assert!(matches!(
+            reopened.shutdown(Duration::from_secs(5)).unwrap(),
+            HostShutdown::Complete
+        ));
+    }
+}
+
+#[test]
+fn configured_archive_uses_the_protected_reader_and_open_does_not_pin_bytes() {
+    use crate::packs::UpdatePolicy;
+    use vesta_protocol::pack::sources::SourceRegistry;
+    for (path, protected, expected) in [
+        ("protected.zip", true, "pack_path_protected"),
+        ("missing.zip", false, "pack_unavailable"),
+    ] {
+        let f = Fixture::new();
+        let host = Host::open(
+            configured_pack(
+                &f,
+                &format!("mode = 'archive'\nroot = 'game'\npath = '{path}'"),
+                "refuse",
+                if protected {
+                    "game/protected.zip"
+                } else {
+                    "host.toml"
+                },
+            ),
+            Arc::new(SystemClock),
+        )
+        .unwrap();
+        let owner = seed_owner(host.database());
+        let plan = host
+            .releases()
+            .plan(&owner, 0, UpdatePolicy::Optional)
+            .unwrap();
+        refused(
+            host.prepare_pack(&plan, &SourceRegistry::new(Vec::new()).unwrap()),
+            expected,
+        );
+        assert!(host.releases().current().unwrap().is_none());
+        assert!(matches!(
+            host.shutdown(Duration::from_secs(5)).unwrap(),
+            HostShutdown::Complete
+        ));
+    }
+}
+
+#[test]
+fn platform_publication_rechecks_authority_and_revision_and_preserves_native_references() {
+    use crate::packs::UpdatePolicy;
+    use vesta_protocol::pack::sources::SourceRegistry;
+    let f = Fixture::new();
+    let host = Host::open(
+        configured_pack(
+            &f,
+            "mode = 'platform'\nprovider = 'modrinth'\nproject-id = 'p'\nversion-id = 'v'",
+            "refuse",
+            "host.toml",
+        ),
+        Arc::new(SystemClock),
+    )
+    .unwrap();
+    let owner = seed_owner(host.database());
+    let plan = host
+        .releases()
+        .plan(&owner, 0, UpdatePolicy::Required)
+        .unwrap();
+    let prepared = host
+        .prepare_pack(&plan, &SourceRegistry::new(Vec::new()).unwrap())
+        .unwrap();
+    host.database()
+        .write(|c| {
+            c.execute(
+                "DELETE FROM role_assignments WHERE principal_id=?",
+                [owner.principal.as_str()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        host.releases()
+            .publish_prepared(&owner, &plan, &prepared, false)
+            .unwrap_err()
+            .code(),
+        "forbidden"
+    );
+    assert!(host.releases().current().unwrap().is_none());
+    assert_eq!(
+        std::fs::read_dir(f.base().join("private-state/artifacts"))
+            .unwrap()
+            .count(),
+        0
+    );
+    host.database().write(|c| { c.execute("INSERT INTO role_assignments (id,principal_id,role_id,granted_by,created_at) VALUES ('restored',?,'owner','fixture',?)", params![owner.principal.as_str(), host.database().clock().millis()])?; Ok(()) }).unwrap();
+    let release = host
+        .releases()
+        .publish_prepared(&owner, &plan, &prepared, false)
+        .unwrap();
+    assert_eq!(
+        host.releases()
+            .publish_prepared(&owner, &plan, &prepared, false)
+            .unwrap_err()
+            .code(),
+        "pack_release_conflict"
+    );
+    let next = host
+        .releases()
+        .plan(&owner, release.revision(), UpdatePolicy::Optional)
+        .unwrap();
+    assert_eq!(
+        host.releases()
+            .publish_prepared(&owner, &next, &prepared, false)
+            .unwrap_err()
+            .code(),
+        "pack_release_revision_mismatch"
+    );
     assert!(matches!(
         host.shutdown(Duration::from_secs(5)).unwrap(),
         HostShutdown::Complete

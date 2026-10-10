@@ -42,7 +42,7 @@ design), Plugin-side (retained Java), or Unknown.
 | Player query | `runtime/PlayersQuery`, `PlayerListParser` | Partial | Literal `list` query is composed through the operation driver (`QueryDriver`). An authenticated management transport for player queries is missing. |
 | File browser | `files/FileBrowserService`, `ServerPathPolicy` | Partial | List/read plus `files/mutation.rs`: create/overwrite/delete/restore, scoped capabilities, bounded recoverable trash (10 GiB / 10 % / 7 days), disk-space preflight and audited transactions. One-level mkdir and file rename with If-Match hashes, and resumable uploads (bounded on-disk staging in protected state, reservations, fresh authority checks), are implemented as library APIs only; no CLI or network entry point (management surface refused until the device boundary exists). Expired uploads are purged at host startup and during upload creation (`crates/vesta-control/src/host.rs:273`, `crates/vesta-control/src/files/upload.rs:137`). Operation-journal integration remains. |
 | Content install | `content/ContentInstaller` | Partial | Library APIs only; no CLI or network entry point. Recoverable file mutations cover upload/remove; provider-sourced Modrinth/CurseForge installs resolve trusted metadata and verify bytes before writing. Uploads and installs are capped at 16 MiB (`MAX_WRITE_BYTES`, `files/mutation.rs:35`). Broader arbitrary URL installation is not implied. |
-| Pack catalogue, manifest, archive | `core/manifest/ServerModpackManifest`, `LocalArchivePack` | Partial (Replaced format) | Rust-native catalogue schema, stored ZIP builder and content-addressed publication exist. Gaps being implemented now: Java `ServerState.java:76-113` configured whole-pack acquisition mode selection (platform reference / local archive / scanned) is not composed by Rust `Host`; Java `ManifestBuilder.java:32-66,77-84` selected-directory scanning within one root namespace is not implemented. |
+| Pack catalogue, manifest, archive | `core/manifest/ServerModpackManifest`, `LocalArchivePack` | Partial (Replaced format) | Rust-native catalogue schema, stored ZIP builder and content-addressed publication exist. Implemented: strict backend `[pack.source]` selects provider/project/version reference, confined local archive, or scanned content through explicit `Host::prepare_pack` / authorized `PackReleases::publish_prepared`. Selected directories share one root-relative namespace, skip/report absent selections, reject overlaps/case aliases, and retain exclusions, unresolved dispositions and global budgets. No live auto-scan, provider fetching or archive extraction. Whole-family independent parity review remains pending. |
 | Pack revisions and update policy | `manifest/ModpackState` | Partial | `packs/releases.rs`: database-backed monotonic releases, optional/required minimum (`pack.force_update`), `current`/`update_available`/`update_required`, display-version acknowledgement. Reference-aware artifact pruning (`prune`) exists. No signing. |
 | Sync and status | `core/sync` | Partial | Pure proposal types. No I/O in the core. `GET /api/v2/pack/status` exists (`crates/vesta-transport/src/routes.rs:211`). |
 | HTTP, TCP, realtime | `server/VestaHttpServer`, `TcpSyncServer`, `VestaRealtimeSocket`, `SessionManager` | Partial | `vesta-transport`: bounded HTTPS (hyper + tokio-rustls) serves `POST /api/v2/discovery`, pack status, password/Minecraft pack sign-in, tickets and disk-streamed artifact downloads; authenticated pack realtime uses WebSocket. Management remains refused and legacy v1 removed; `vesta-agent serve`. TCP sync is superseded/forbidden by the disposition below. Realtime heartbeat rereads the database-hosted release and compares revision and minimum revision, detecting cross-process release changes within one heartbeat; the test commits a database row directly, not via a second process. Download throughput floor and global/per-session/per-peer caps are implemented (`crates/vesta-transport/src/lib.rs`, `routes.rs`). `vesta-agent serve` still has no realtime publish entry point. |
@@ -100,10 +100,13 @@ Each wave ends with focused tests, a fresh full suite and an unsigned local comm
    sessions/tickets and Minecraft admission data (next commit).
 1. **Accounting pass:** script-based recount of requirement links; classify the 179 rows by
    kind and boundary; record dispositions with evidence. No promotion without tests.
-2. **Catalogue and revisions (remaining):** configured whole-pack acquisition mode selection
-   (platform reference / local archive / scanned) is not yet composed by Rust `Host`; selected-directory
-   scanning within one root namespace is also being implemented. Configuration still needs to drop its
-   now non-authoritative revision fields; sync/status and release-aware pruning are implemented.
+2. **Catalogue and revisions:** configured whole-pack acquisition mode selection and selected-directory
+   scanning within one root namespace are **implemented** (2026-10-10). `Host::prepare_pack` is explicit;
+   `PackReleases::publish_prepared` preserves authorization and ledger revision checks for every mode.
+   Platform-reference releases contain native catalogue JSON, not fetched provider archives. A forward-only
+   state schema v10 migration preserves existing releases while admitting the `catalogue` artifact format.
+   Remaining: configuration still needs to drop its non-authoritative revision fields; sync/status and
+   release-aware pruning are implemented.
 3. **Archive-mode manifest and snapshot (remaining):** pinned snapshot, refresh and serve for `.zip`
    and `.mrpack` artifacts.
 4. **Protected file and content services:** Implemented as library APIs only, verified pending final
@@ -287,6 +290,51 @@ Validation on Windows for this documentation-only disposition:
   of an IPC implementation; **0 new tests**. Concurrent content/files-agent changes
   were present and left untouched. Java sources/tests are reference evidence only,
   not executed in this disposition. No dependencies, commits, stash or clean.
+
+### Implemented whole-pack configuration and selected-directory scans
+
+The optional schema-1 `[pack.source]` table is closed and selects exactly one mode. Existing documents
+without it retain the legacy `scan-roots` preparation APIs; the new whole-pack preparation API refuses
+ambiguous multi-root legacy configurations. Configured local source roots also participate in native
+state-overlap validation. Opening the Host observes roots but never scans or pins archive contents.
+
+```toml
+[pack.source]
+mode = "scanned"
+root = "game"
+directories = ["mods", "config/client", "resourcepacks"]
+```
+
+Omitting `directories` scans the permitted root. A supplied list must be nonempty and bounded;
+`RelativePath` and catalogue spelling policies reject unsafe names, duplicates, ancestor/descendant
+overlaps and directory-case aliases. All names remain root-relative. Missing selections are skipped and
+reported locally by `missing_directories()`; empty, protected and hidden selections are not mislabeled
+as missing. Links, non-directory selections and other observation failures refuse. File counts, scan
+work and observed-byte budgets remain global, including unresolved private files.
+
+Alternative tables (use one, not several):
+
+```toml
+[pack.source]
+mode = "archive"
+root = "game"
+path = "packs/release.mrpack"
+```
+
+```toml
+[pack.source]
+mode = "platform"
+provider = "modrinth" # or "curseforge"
+project-id = "project-id"
+version-id = "version-id"
+```
+
+Archive paths are confined relative ZIP/MRPACK paths pinned through the same protected reader as other
+pack bytes; no archive is extracted or parsed. Platform fields are IDs only: no URL field or URL-like ID
+is accepted and no provider is contacted. Native platform-reference artifacts use `.catalogue` and
+`application/vnd.vesta.catalogue+json`; public exposure still passes the existing pack access/download
+boundary. These are trusted backend library APIs, not a new CLI/remote management publication route.
+Filesystem checks remain point-in-time same-account hygiene rather than race-free tree confinement.
 
 ## 7. Repository and documentation cleanup
 

@@ -22,7 +22,8 @@
 //! Config, launch and TLS credential documents must be excluded by host file/pack
 //! composition using `host_protected_paths`, including while those files are absent.
 
-use crate::files::{self, FileError};
+use crate::files::{self, FileError, RelativePath};
+use crate::packs::SelectedDirectories;
 use serde::de::{self, MapAccess, SeqAccess, Visitor, value::MapAccessDeserializer};
 use serde::{Deserialize, Deserializer};
 use std::{
@@ -31,6 +32,7 @@ use std::{
     net::IpAddr,
     path::{Component, Path, PathBuf},
 };
+use vesta_protocol::pack::catalogue::{Platform, PlatformPack};
 use vesta_protocol::pack::join::JoinDescriptor;
 use vesta_state::{StateDirectory, StateError};
 
@@ -270,6 +272,37 @@ pub enum ListenerDescription {
     Tls(TlsListener),
 }
 
+/// Backend-only whole-pack acquisition. No URLs, fetching or archive extraction.
+#[derive(Clone, Eq, PartialEq)]
+pub enum PackSource {
+    Scanned {
+        root: PathBuf,
+        directories: Option<SelectedDirectories>,
+    },
+    Archive {
+        root: PathBuf,
+        path: RelativePath,
+    },
+    Platform(PlatformPack),
+}
+impl fmt::Debug for PackSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Scanned { .. } => "PackSource::Scanned[<redacted>]",
+            Self::Archive { .. } => "PackSource::Archive[<redacted>]",
+            Self::Platform(_) => "PackSource::Platform[<redacted>]",
+        })
+    }
+}
+impl PackSource {
+    pub fn root(&self) -> Option<&Path> {
+        match self {
+            Self::Scanned { root, .. } | Self::Archive { root, .. } => Some(root),
+            Self::Platform(_) => None,
+        }
+    }
+}
+
 #[derive(Clone, Eq, PartialEq)]
 pub struct HostConfiguration {
     base: PathBuf,
@@ -279,6 +312,7 @@ pub struct HostConfiguration {
     scan_roots: Vec<PathBuf>,
     launch_definition: PathBuf,
     pack: PackMetadata,
+    pack_source: Option<PackSource>,
     pack_access: PackAccessMode,
     listener: ListenerDescription,
     protected: Vec<PathBuf>,
@@ -329,7 +363,13 @@ impl HostConfiguration {
         if same_spelling(&source, &launch_definition) {
             return Err(ConfigError::InvalidPath);
         }
-        let pack = document.pack.0.validate()?;
+        let mut wire_pack = document.pack.0;
+        let pack_source = wire_pack
+            .source
+            .take()
+            .map(|Table(source)| source.validate(base))
+            .transpose()?;
+        let pack = wire_pack.validate()?;
         let mut protected = vec![source.clone(), launch_definition.clone()];
         let listener = match document.listener.0 {
             WireListener::Disabled {} => ListenerDescription::Disabled,
@@ -386,6 +426,7 @@ impl HostConfiguration {
                 launch_definition.as_path(),
             ])
             .chain(scan_roots.iter().map(PathBuf::as_path))
+            .chain(pack_source.as_ref().and_then(PackSource::root))
             .chain(protected.iter().skip(2).map(PathBuf::as_path))
         {
             path_bytes = path_bytes
@@ -403,6 +444,7 @@ impl HostConfiguration {
             scan_roots,
             launch_definition,
             pack,
+            pack_source,
             pack_access: document.pack_access.0.mode,
             listener,
             protected,
@@ -432,6 +474,10 @@ impl HostConfiguration {
             StateDirectory::new(&self.state, Some(scan)).map_err(host_path_error)?;
             directory_or_missing(scan)?;
         }
+        if let Some(root) = self.pack_source.as_ref().and_then(PackSource::root) {
+            StateDirectory::new(&self.state, Some(root)).map_err(host_path_error)?;
+            directory_or_missing(root)?;
+        }
         Ok(ValidatedHostPaths { state })
     }
 
@@ -455,6 +501,10 @@ impl HostConfiguration {
     }
     pub fn pack(&self) -> &PackMetadata {
         &self.pack
+    }
+    /// Absent in existing schema-1 documents: retain the legacy scan-root APIs.
+    pub fn pack_source(&self) -> Option<&PackSource> {
+        self.pack_source.as_ref()
     }
     pub fn pack_access(&self) -> PackAccessMode {
         self.pack_access
@@ -744,6 +794,7 @@ impl<'de> Deserialize<'de> for ScanRoots {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct WirePack {
+    source: Option<Table<WirePackSource>>,
     name: String,
     version: String,
     revision: u64,
@@ -754,6 +805,73 @@ struct WirePack {
     #[serde(default)]
     unresolved_disposition: UnresolvedDisposition,
     join: Option<Table<WireJoin>>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "mode", rename_all = "lowercase", deny_unknown_fields)]
+enum WirePackSource {
+    Scanned {
+        root: String,
+        directories: Option<Vec<String>>,
+    },
+    Archive {
+        root: String,
+        path: String,
+    },
+    #[serde(rename_all = "kebab-case")]
+    Platform {
+        provider: String,
+        project_id: String,
+        version_id: String,
+    },
+}
+impl WirePackSource {
+    fn validate(self, base: &Path) -> Result<PackSource> {
+        Ok(match self {
+            Self::Scanned { root, directories } => PackSource::Scanned {
+                root: resolve_value(base, &root)?,
+                directories: directories
+                    .map(|paths| {
+                        SelectedDirectories::new(&paths).map_err(|_| ConfigError::InvalidPath)
+                    })
+                    .transpose()?,
+            },
+            Self::Archive { root, path } => {
+                let path = RelativePath::parse(&path).map_err(|_| ConfigError::InvalidPath)?;
+                if !path
+                    .as_str()
+                    .rsplit_once('.')
+                    .is_some_and(|(_, extension)| {
+                        extension.eq_ignore_ascii_case("zip")
+                            || extension.eq_ignore_ascii_case("mrpack")
+                    })
+                {
+                    return Err(ConfigError::InvalidPath);
+                }
+                PackSource::Archive {
+                    root: resolve_value(base, &root)?,
+                    path,
+                }
+            }
+            Self::Platform {
+                provider,
+                project_id,
+                version_id,
+            } => PackSource::Platform(
+                PlatformPack::new(
+                    match provider.as_str() {
+                        "modrinth" => Platform::Modrinth,
+                        "curseforge" => Platform::Curseforge,
+                        _ => return Err(ConfigError::InvalidDocument),
+                    },
+                    &project_id,
+                    &version_id,
+                    None,
+                )
+                .map_err(|_| ConfigError::InvalidPackMetadata)?,
+            ),
+        })
+    }
 }
 
 #[derive(Deserialize)]

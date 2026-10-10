@@ -346,6 +346,7 @@ fn dispatch(
             };
             let content_type = match artifact.format() {
                 ArtifactFormat::Vesta => "application/vnd.vesta.pack",
+                ArtifactFormat::Catalogue => "application/vnd.vesta.catalogue+json",
                 ArtifactFormat::Zip | ArtifactFormat::Mrpack => "application/zip",
             };
             let Ok(body) = super::ArtifactBody::new(file, artifact, permit) else {

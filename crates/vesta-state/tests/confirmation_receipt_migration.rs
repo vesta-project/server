@@ -198,7 +198,6 @@ fn genuine_v5_migration_preserves_confirmation_rows_without_inventing_receipts()
 
     let migrated = StateDatabase::open(directory.clone(), fixture.clock.clone()).unwrap();
     assert_eq!(migrated.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 9);
     let (migrated_rows, accepted_values) = migrated
         .read(|connection| {
             let mut statement = connection.prepare(

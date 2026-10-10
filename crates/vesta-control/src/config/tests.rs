@@ -1163,3 +1163,100 @@ fn all_error_and_application_debug_output_discards_input_paths_metadata_and_pars
         assert!(error.source().is_none());
     }
 }
+
+#[test]
+fn whole_pack_sources_are_closed_exact_and_backend_only() {
+    let temp = tempfile::tempdir().unwrap();
+    let document = |fields: &str| {
+        GOLDEN.replace(
+            "[pack-access]",
+            &format!("[pack.source]\n{fields}\n\n[pack-access]"),
+        )
+    };
+    for provider in ["modrinth", "curseforge"] {
+        let config = parse(&document(&format!("mode = 'platform'\nprovider = '{provider}'\nproject-id = 'project_1'\nversion-id = 'version-2'")), temp.path()).unwrap();
+        let Some(PackSource::Platform(reference)) = config.pack_source() else {
+            panic!("platform mode")
+        };
+        assert_eq!(reference.source().project_id(), Some("project_1"));
+        assert_eq!(reference.source().version_id(), Some("version-2"));
+        assert_eq!(reference.source().url(), None);
+    }
+    for fields in [
+        "mode = 'scanned'\nroot = 'game'\ndirectories = ['mods', 'config']",
+        "mode = 'scanned'\nroot = 'game'",
+        "mode = 'archive'\nroot = 'game'\npath = 'packs/local.zip'",
+        "mode = 'archive'\nroot = 'game'\npath = 'packs/local.MRPACK'",
+    ] {
+        assert!(parse(&document(fields), temp.path()).is_ok(), "{fields}");
+    }
+    for fields in [
+        "",
+        "mode = 'unknown'",
+        "mode = 'Platform'",
+        "mode = ' scanned'",
+        "mode = ['scanned']\nroot = 'game'",
+        "mode = {scanned = {}}\nroot = 'game'",
+        "mode = 'scanned'",
+        "mode = 'archive'\nroot = 'game'",
+        "mode = 'scanned'\nroot = 'game'\npath = 'local.zip'",
+        "mode = 'archive'\nroot = 'game'\npath = 'local.zip'\ndirectories = ['mods']",
+        "mode = 'platform'\nprovider = 'modrinth'\nproject-id = 'p'\nversion-id = 'v'\nurl = 'https://example.test/pack'",
+        "mode = 'platform'\nprovider = 'modrinth'\nproject-id = 'p'\nversion-id = 'v'\nroot = 'game'",
+        "mode = 'platform'\nprovider = 'Modrinth'\nproject-id = 'p'\nversion-id = 'v'",
+        "mode = 'platform'\nprovider = {modrinth = {}}\nproject-id = 'p'\nversion-id = 'v'",
+        "mode = 'platform'\nprovider = 'unknown'\nproject-id = 'p'\nversion-id = 'v'",
+        "mode = 'platform'\nprovider = 'modrinth'\nproject-id = 'p'",
+        "mode = 'archive'\nmode = 'scanned'\nroot = 'game'\npath = 'a.zip'",
+        "mode = 'scanned'\nroot = 'game'\nunknown = true",
+    ] {
+        refused(
+            parse(&document(fields), temp.path()),
+            ConfigError::InvalidDocument,
+        );
+    }
+    for fields in [
+        "mode = 'platform'\nprovider = 'modrinth'\nproject-id = 'https://example.test/p'\nversion-id = 'v'",
+        "mode = 'platform'\nprovider = 'curseforge'\nproject-id = 'p'\nversion-id = 'https://example.test/v'",
+        "mode = 'platform'\nprovider = 'modrinth'\nproject-id = ''\nversion-id = 'v'",
+    ] {
+        refused(
+            parse(&document(fields), temp.path()),
+            ConfigError::InvalidPackMetadata,
+        );
+    }
+    for fields in [
+        "mode = 'archive'\nroot = 'game'\npath = '../a.zip'",
+        "mode = 'archive'\nroot = 'game'\npath = '/a.zip'",
+        "mode = 'archive'\nroot = 'game'\npath = 'a.exe'",
+        "mode = 'archive'\nroot = 'game'\npath = 'server.properties.zip/../a.zip'",
+        "mode = 'scanned'\nroot = 'game'\ndirectories = []",
+        "mode = 'scanned'\nroot = 'game'\ndirectories = ['mods', 'MODS']",
+        "mode = 'scanned'\nroot = 'game'\ndirectories = ['mods', 'mods/sub']",
+        "mode = 'scanned'\nroot = 'game'\ndirectories = ['config/a', 'Config/b']",
+        "mode = 'scanned'\nroot = 'game'\ndirectories = ['../mods']",
+        "mode = 'scanned'\nroot = 'game'\ndirectories = ['.vesta']",
+    ] {
+        refused(
+            parse(&document(fields), temp.path()),
+            ConfigError::InvalidPath,
+        );
+    }
+    for value in [
+        "[]",
+        "true",
+        "'archive'",
+        "{mode = 'scanned', root = 'game', archive = {path = 'a.zip'}}",
+    ] {
+        let text = GOLDEN.replace("[pack]\n", &format!("[pack]\nsource = {value}\n"));
+        refused(parse(&text, temp.path()), ConfigError::InvalidDocument);
+    }
+}
+
+#[test]
+fn selected_source_root_participates_in_state_overlap_validation() {
+    let temp = tempfile::tempdir().unwrap();
+    let text = GOLDEN.replace("[pack-access]", "[pack.source]\nmode = 'archive'\nroot = 'private-state'\npath = 'local.zip'\n[pack-access]");
+    let config = parse(&text, temp.path()).unwrap();
+    refused(config.validate_host_paths(), ConfigError::StateOverlap);
+}

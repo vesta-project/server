@@ -369,7 +369,6 @@ fn schema_four_to_current_preserves_data_backup_and_pending_expiry_plans() {
         db.schema_version().expect("read schema version"),
         CURRENT_SCHEMA_VERSION
     );
-    assert_eq!(CURRENT_SCHEMA_VERSION, 9);
     seed_v4_data(&db);
     let expected_rows = db
         .read(|connection| Ok(persisted_rows(connection)?))
