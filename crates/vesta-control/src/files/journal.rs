@@ -10,10 +10,15 @@ pub(super) struct Intent {
     pub(super) effect: Option<String>,
     pub(super) stage: Option<String>,
     #[serde(default)]
+    pub(super) compensation_stage: Option<String>,
+    #[serde(default)]
     pub(super) stage_cleaned: bool,
     pub(super) trash: Option<String>,
     pub(super) upload: Option<String>,
     pub(super) size: u64,
+    /// Reservation includes temporary compensation bytes. Old v11 rows charge `size`.
+    #[serde(default)]
+    pub(super) staged_bytes: Option<u64>,
 }
 
 impl FileBrowser {
@@ -49,6 +54,7 @@ impl FileBrowser {
                 self.authorize_destination(c, subject, &to, capability)?;
                 require_absent(&self.parent(&to)?.join(leaf(&to)))?;
             }
+            self.require_intent_capacity(c, intent)?;
             c.execute("INSERT INTO file_intents (id,server_id,principal_id,device_id,kind,path,details_json,status,created_at) VALUES (?,?,?,?,?,?,?,'pending',?)", params![id,self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),kind,path.as_str(),details,self.db.clock().millis()])?;
             Ok(id.clone())
         }).map_err(FileError::from)
@@ -82,21 +88,78 @@ impl FileBrowser {
         Ok(())
     }
 
-    pub(super) fn failed_intent<T>(&self, id: &str, result: &Result<T>) -> Result<()> {
-        if result.is_ok() {
-            return Ok(());
-        }
+    /// A compensation stage is also durable provenance: record its random name
+    /// before creation so interruption cannot leave unaccounted game-tree bytes.
+    pub(super) fn record_compensation_stage(
+        &self,
+        id: &str,
+        stage: &str,
+        bytes: u64,
+    ) -> Result<()> {
         self.db.write_with(|tx| {
-            tx.connection().execute("UPDATE file_intents SET status=? WHERE server_id=? AND id=? AND status='pending'", params![if matches!(result, Err(FileError::RecoveryRequired(_))) { "recovery-required" } else { "aborted" },self.db.server_id(),id])?;
+            let c = tx.connection();
+            let json: String = c.query_row(
+                "SELECT details_json FROM file_intents WHERE server_id=? AND id=? AND status='pending'",
+                params![self.db.server_id(), id], |r| r.get(0),
+            )?;
+            let mut intent: Intent = serde_json::from_str(&json).map_err(|_| FileError::Unavailable)?;
+            if intent.staged_bytes.unwrap_or(intent.size) < bytes || intent.compensation_stage.is_some() {
+                return Err(FileError::Unavailable);
+            }
+            intent.compensation_stage = Some(stage.to_owned());
+            c.execute("UPDATE file_intents SET details_json=? WHERE server_id=? AND id=? AND status='pending'",
+                params![serde_json::to_string(&intent).map_err(|_| FileError::Unavailable)?,self.db.server_id(),id])?;
             Ok::<_, FileError>(())
         }).map_err(FileError::from)
     }
 
+    /// Count all retained rows, including terminal rows whose cleanup/audit failed.
+    /// This is deliberately stricter than counting only pending/recovery rows: a
+    /// cleanup failure must never let more retained stages evade admission.
+    fn require_intent_capacity(&self, c: &Connection, intent: &Intent) -> Result<()> {
+        let (count, bytes): (i64, i64) = c.query_row(
+            "SELECT count(*), COALESCE(sum(CASE WHEN COALESCE(json_extract(details_json,'$.stage_cleaned'),0)=0 THEN COALESCE(json_extract(details_json,'$.staged_bytes'),CASE WHEN json_extract(details_json,'$.stage') IS NOT NULL THEN json_extract(details_json,'$.size') ELSE 0 END,0) ELSE 0 END),0) FROM file_intents WHERE server_id=?",
+            [self.db.server_id()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let incoming = intent.staged_bytes.unwrap_or_else(|| {
+            if intent.stage.is_some() {
+                intent.size
+            } else {
+                0
+            }
+        });
+        if count >= MAX_FILE_INTENTS as i64
+            || u64::try_from(bytes)
+                .map_err(|_| FileError::Unavailable)?
+                .saturating_add(incoming)
+                > MAX_INTENT_STAGED_BYTES
+        {
+            return Err(FileError::IntentsFull);
+        }
+        Ok(())
+    }
+
+    pub(super) fn failed_intent<T>(&self, id: &str, result: &Result<T>) -> Result<()> {
+        if result.is_err() {
+            self.db.write_with(|tx| {
+                tx.connection().execute("UPDATE file_intents SET status=? WHERE server_id=? AND id=? AND status='pending'", params![if matches!(result, Err(FileError::RecoveryRequired(_))) { "recovery-required" } else { "aborted" },self.db.server_id(),id])?;
+                Ok::<_, FileError>(())
+            }).map_err(FileError::from)?;
+        }
+        // Never misreport a committed success (or replace its primary failure) if
+        // maintenance fails. The durable row keeps its reservation for retry.
+        let _ = self.cleanup_intent_stages();
+        Ok(())
+    }
+
     pub(super) fn reconcile_intents(&self) -> Result<usize> {
-        let count = self.db.write_with(|tx| {
+        let mut total = 0;
+        for _ in 0..MAX_RECONCILE_BATCHES {
+            let count = self.db.write_with(|tx| {
             let c = tx.connection();
-            let mut query = c.prepare("SELECT id,principal_id,device_id,kind,path,details_json FROM file_intents WHERE server_id=? AND status='pending' ORDER BY created_at,id")?;
-            let rows = query.query_map([self.db.server_id()], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut query = c.prepare("SELECT id,principal_id,device_id,kind,path,details_json FROM file_intents WHERE server_id=? AND status='pending' ORDER BY created_at,id LIMIT ?")?;
+            let rows = query.query_map(params![self.db.server_id(), RECONCILE_BATCH_SIZE as i64], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
             for (id, principal, device, kind, text, json) in &rows {
                 let intent: Intent = serde_json::from_str(json).map_err(|_| FileError::Unavailable)?;
                 let path = RelativePath::parse(text)?;
@@ -141,56 +204,93 @@ impl FileBrowser {
             }
             Ok(rows.len())
         }).map_err(FileError::from)?;
+            total += count;
+            if count < RECONCILE_BATCH_SIZE {
+                break;
+            }
+        }
         self.cleanup_intent_stages()?;
-        Ok(count)
+        Ok(total)
     }
 
     fn cleanup_intent_stages(&self) -> Result<()> {
-        let rows = self.db.read_with(|snapshot| {
-            let mut query = snapshot.connection().prepare("SELECT id,path,details_json,principal_id,device_id,kind FROM file_intents WHERE server_id=? AND status IN ('complete','aborted') AND json_extract(details_json,'$.stage') IS NOT NULL AND COALESCE(json_extract(details_json,'$.stage_cleaned'),0)=0")?;
-            let rows = query.query_map([self.db.server_id()], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        for _ in 0..MAX_RECONCILE_BATCHES {
+            let rows = self.db.read_with(|snapshot| {
+            let mut query = snapshot.connection().prepare("SELECT id,path,details_json,principal_id,device_id,kind,status FROM file_intents WHERE server_id=? AND status IN ('complete','aborted') ORDER BY created_at,id LIMIT ?")?;
+            let rows = query.query_map(params![self.db.server_id(), RECONCILE_BATCH_SIZE as i64], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
             Ok::<_,FileError>(rows)
         }).map_err(FileError::from)?;
-        for (id, text, json, principal, device, kind) in rows {
-            let mut intent: Intent =
-                serde_json::from_str(&json).map_err(|_| FileError::Unavailable)?;
-            let path = RelativePath::parse(&text)?;
-            let cleanup = (|| {
-                let leaf_name = intent.stage.as_deref().ok_or(FileError::Unavailable)?;
-                let stage_id = leaf_name
-                    .strip_prefix(STAGE_PREFIX)
-                    .and_then(|s| s.strip_suffix(".tmp"))
-                    .ok_or(FileError::InvalidPath)?;
-                trash_name(stage_id)?;
-                let stage = self.parent(&path)?.join(leaf_name);
-                // Random name and content hash identify owned cleanup. Never sweep
-                // uncertain, linked or merely prefix-matching files.
-                if require_absent(&stage).is_err() {
-                    require_hash(&stage, intent.effect.as_deref())?;
-                    native::remove_private_stage(&stage)?;
-                }
-                Ok::<_, FileError>(())
-            })();
-            if cleanup.is_err() {
-                let subject = Subject {
-                    principal: crate::identity::PrincipalId::parse(&principal)?,
-                    device: crate::identity::DeviceId::parse(&device)?,
-                };
-                self.db.write_with(|tx| {
+            let count = rows.len();
+            for (id, text, json, principal, device, kind, status) in rows {
+                let intent: Intent =
+                    serde_json::from_str(&json).map_err(|_| FileError::Unavailable)?;
+                let path = RelativePath::parse(&text)?;
+                let cleanup = (|| {
+                    if intent.stage_cleaned {
+                        return Ok(());
+                    }
+                    for (leaf_name, expected) in [
+                        (intent.stage.as_deref(), intent.effect.as_deref()),
+                        (
+                            intent.compensation_stage.as_deref(),
+                            intent.previous.as_deref(),
+                        ),
+                    ] {
+                        let Some(leaf_name) = leaf_name else {
+                            continue;
+                        };
+                        let stage_id = leaf_name
+                            .strip_prefix(STAGE_PREFIX)
+                            .and_then(|s| s.strip_suffix(".tmp"))
+                            .ok_or(FileError::InvalidPath)?;
+                        trash_name(stage_id)?;
+                        let stage = self.parent(&path)?.join(leaf_name);
+                        // Random name and content hash identify owned cleanup. Never
+                        // sweep uncertain, linked or merely prefix-matching files.
+                        if require_absent(&stage).is_err() {
+                            require_hash(&stage, expected)?;
+                            native::remove_private_stage(&stage)?;
+                        }
+                    }
+                    Ok::<_, FileError>(())
+                })();
+                if cleanup.is_err() {
+                    let subject = Subject {
+                        principal: crate::identity::PrincipalId::parse(&principal)?,
+                        device: crate::identity::DeviceId::parse(&device)?,
+                    };
+                    self.db.write_with(|tx| {
                     let c = tx.connection();
                     let record = intent_record(&subject, &kind, &path, &intent, &id, "recovery-required", true)?;
                     self.audit.append(c, &record)?;
                     c.execute("UPDATE file_intents SET status='recovery-required' WHERE server_id=? AND id=?", params![self.db.server_id(),id])?;
                     Ok::<_,FileError>(())
                 }).map_err(FileError::from)?;
-                continue;
-            }
-            intent.stage_cleaned = true;
-            let json = serde_json::to_string(&intent).map_err(|_| FileError::Unavailable)?;
-            self.db.write_with(|tx| {
-                tx.connection().execute("UPDATE file_intents SET details_json=? WHERE server_id=? AND id=? AND status IN ('complete','aborted')", params![json,self.db.server_id(),id])?;
+                    continue;
+                }
+                self.db.write_with(|tx| {
+                let c = tx.connection();
+                // Success/reconciliation already carry the intent id. A normally
+                // compensated abort has no success audit, so record its outcome
+                // before retiring its only durable provenance.
+                let audited: bool = c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM audit_events WHERE operation_id=?)",
+                    [&id], |r| r.get(0),
+                )?;
+                if status == "aborted" && !audited {
+                    let subject = Subject {
+                        principal: crate::identity::PrincipalId::parse(&principal)?,
+                        device: crate::identity::DeviceId::parse(&device)?,
+                    };
+                    self.audit.append(c, &intent_record(&subject, &kind, &path, &intent, &id, "aborted", false)?)?;
+                }
+                c.execute("DELETE FROM file_intents WHERE server_id=? AND id=? AND status IN ('complete','aborted')", params![self.db.server_id(),id])?;
                 Ok::<_,FileError>(())
             }).map_err(FileError::from)?;
+            }
+            if count < RECONCILE_BATCH_SIZE {
+                break;
+            }
         }
         Ok(())
     }

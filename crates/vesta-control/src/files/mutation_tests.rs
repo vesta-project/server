@@ -1569,7 +1569,17 @@ fn every_native_effect_has_durable_intent_and_an_audited_crash_outcome() {
             reopen(&mut f);
             assert_eq!(f.files.reconcile_pending().unwrap(), 1, "{kind} {point}");
             assert_eq!(f.files.reconcile_pending().unwrap(), 0);
-            let (status, outcome, metadata): (String,String,String) = f.db.read(|c| Ok(c.query_row("SELECT i.status,a.outcome,a.metadata_json FROM file_intents i JOIN audit_events a ON a.operation_id=i.id WHERE a.operation_id IS NOT NULL ORDER BY a.seq DESC LIMIT 1", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?)).unwrap();
+            let (outcome, metadata, intent_id): (String, String, String) = f.db.read(|c| Ok(c.query_row("SELECT outcome,metadata_json,operation_id FROM audit_events WHERE source='files' AND json_extract(metadata_json,'$.reconciled')='true' ORDER BY seq DESC LIMIT 1", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?)).unwrap();
+            let status: Option<String> =
+                f.db.read(|c| {
+                    Ok(c.query_row(
+                        "SELECT status FROM file_intents WHERE id=?",
+                        [&intent_id],
+                        |r| r.get(0),
+                    )
+                    .optional()?)
+                })
+                .unwrap();
             let expected = if point == "before" {
                 "aborted"
             } else if kind == "mkdir" {
@@ -1577,7 +1587,11 @@ fn every_native_effect_has_durable_intent_and_an_audited_crash_outcome() {
             } else {
                 "complete"
             };
-            assert_eq!(status, expected, "{kind} {point}");
+            assert_eq!(
+                status.as_deref(),
+                (expected == "recovery-required").then_some(expected),
+                "{kind} {point}"
+            );
             assert_eq!(
                 outcome,
                 if expected == "complete" {
@@ -1821,15 +1835,15 @@ fn equal_hash_overwrites_abort_only_when_an_unconsumed_stage_proves_no_effect() 
         reopen(&mut f);
         assert_eq!(f.files.reconcile_pending().unwrap(), 1);
         assert_eq!(
-            f.db.read(
-                |c| Ok(c.query_row("SELECT status FROM file_intents", [], |r| r
-                    .get::<_, String>(0))?)
-            )
-            .unwrap(),
+            f.db.read(|c| Ok(c
+                .query_row("SELECT status FROM file_intents", [], |r| r
+                    .get::<_, String>(0))
+                .optional()?))
+                .unwrap(),
             if point == "before" {
-                "aborted"
+                None
             } else {
-                "recovery-required"
+                Some("recovery-required".to_owned())
             }
         );
         assert_eq!(f.get(path.as_str()).unwrap(), b"same");
@@ -1940,3 +1954,6 @@ fn pending_restore_keeps_its_original_copy_even_when_trash_expired() {
     assert_eq!(f.stages("config"), 0);
     assert!(f.get(path.as_str()).is_none());
 }
+
+#[path = "intent_tests.rs"]
+mod intent_tests;

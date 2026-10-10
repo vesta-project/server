@@ -20,8 +20,8 @@ mod upload;
 
 pub(crate) use local_document::read_local_document;
 pub use mutation::{
-    FileChange, MAX_TRASH_FILE_BYTES, MAX_WRITE_BYTES, SPACE_RESERVE_BYTES, TrashEntry,
-    TrashPolicy, WritePrecondition,
+    FileChange, MAX_FILE_INTENTS, MAX_INTENT_STAGED_BYTES, MAX_TRASH_FILE_BYTES, MAX_WRITE_BYTES,
+    SPACE_RESERVE_BYTES, TrashEntry, TrashPolicy, WritePrecondition,
 };
 pub(crate) use pack_root::{PackNode, PackRoot};
 pub use path::{MAX_COMPONENT_BYTES, MAX_PATH_BYTES, RelativePath};
@@ -58,6 +58,7 @@ pub enum FileError {
     /// The precondition no longer holds; carries the current SHA-256 when one exists.
     Conflict(Option<String>),
     TrashFull,
+    IntentsFull,
     UploadFull,
     InsufficientSpace,
     /// A change was applied but neither recorded nor reversed; inspect before retrying.
@@ -84,6 +85,7 @@ impl FileError {
             Self::Unavailable => "file_unavailable",
             Self::Conflict(_) => "file_conflict",
             Self::TrashFull => "file_trash_full",
+            Self::IntentsFull => "file_intents_full",
             Self::UploadFull => "file_upload_full",
             Self::InsufficientSpace => "file_insufficient_space",
             Self::RecoveryRequired(_) => "file_recovery_required",

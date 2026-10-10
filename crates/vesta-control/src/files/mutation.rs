@@ -35,6 +35,12 @@ pub const MAX_WRITE_BYTES: usize = 16 * 1_024 * 1_024;
 pub const MAX_TRASH_FILE_BYTES: u64 = 256 * 1_024 * 1_024;
 /// Free space a write must leave on the target volume.
 pub const SPACE_RESERVE_BYTES: u64 = 64 * 1_024 * 1_024;
+/// Per-server durable reservations, including cleanup-blocked terminal intents.
+pub const MAX_FILE_INTENTS: usize = 1_024;
+/// Aggregate game-tree stage/compensation reservations, independent of trash/uploads.
+pub const MAX_INTENT_STAGED_BYTES: u64 = 1_024 * 1_024 * 1_024;
+const RECONCILE_BATCH_SIZE: usize = 64;
+const MAX_RECONCILE_BATCHES: usize = 64;
 const SOURCE: &str = "files";
 const TARGET: &str = "file";
 const STAGE_PREFIX: &str = ".vesta-stage-";
@@ -276,14 +282,13 @@ impl FileBrowser {
             WritePrecondition::Matches(_) => fs::metadata(&target).map_err(io_error)?.len(),
         };
         self.require_mutation_space(&parent, bytes.len() as u64, incoming)?;
-        let stage = Stage::write(&parent, bytes)?;
+        let stage = Stage::planned(&parent)?;
         let trash = match precondition {
             WritePrecondition::Absent => None,
-            WritePrecondition::Matches(expected) => {
-                Some(self.prepare_trash(subject, path, expected, Reason::Replace, Some(&sha256))?)
-            }
+            WritePrecondition::Matches(_) => Some(random_id()?),
         };
-        let intent = match self.begin_intent(
+        // Reserve count/bytes durably before creating any game stage or trash copy.
+        let intent = self.begin_intent(
             subject,
             "write",
             path,
@@ -297,17 +302,34 @@ impl FileBrowser {
                 trash: trash.clone(),
                 upload: upload.map(str::to_owned),
                 size: bytes.len() as u64,
+                staged_bytes: Some((bytes.len() as u64).max(incoming)),
                 ..Intent::default()
             },
-        ) {
-            Ok(id) => id,
-            Err(error) => {
-                if let Some(id) = &trash {
-                    self.retire_failed::<()>(id, &Err(error.clone()))?;
-                }
-                return Err(error);
+        )?;
+        let prepared = (|| {
+            if let (WritePrecondition::Matches(expected), Some(id)) = (precondition, &trash) {
+                self.prepare_trash_with_id(
+                    subject,
+                    path,
+                    expected,
+                    Reason::Replace,
+                    Some(&sha256),
+                    id,
+                )?;
             }
-        };
+            stage.create(bytes)
+        })();
+        if let Err(error) = &prepared {
+            // Creation owns even a partially written stage. Drop its private
+            // handle/name first so cleanup does not mistake a failed preparation
+            // for an uncertain native effect. Failed removal stays accounted.
+            drop(stage);
+            self.failed_intent(&intent, &prepared)?;
+            if let Some(id) = &trash {
+                let _ = self.retire_failed(id, &prepared);
+            }
+            return Err(error.clone());
+        }
         stage.retained.set(true);
         let applied = Cell::new(None::<Applied>);
         let result = self.db.write_with(|transaction| {
@@ -357,7 +379,15 @@ impl FileBrowser {
         if interrupted() {
             return result.map_err(FileError::from);
         }
-        let result = self.settle(result.map_err(FileError::from), applied.take(), &target);
+        let result = self.settle_with_intent(
+            result.map_err(FileError::from),
+            applied.take(),
+            &target,
+            Some(&intent),
+        );
+        if interrupted() {
+            return result;
+        }
         if let Err(primary) = &result
             && let Some(id) = trash.as_deref()
             && self.retire_failed(id, &result).is_err()
@@ -383,23 +413,24 @@ impl FileBrowser {
         let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
         let parent = self.authorized_parent(subject, path, Capability::FilesDelete)?;
         let target = parent.join(leaf(path));
-        let id = self.prepare_trash(subject, path, expected_sha256, Reason::Delete, None)?;
-        let intent = match self.begin_intent(
+        let id = random_id()?;
+        let intent = self.begin_intent(
             subject,
             "delete",
             path,
             &Intent {
                 previous: Some(expected_sha256.into()),
                 trash: Some(id.clone()),
+                staged_bytes: Some(fs::metadata(&target).map_err(io_error)?.len()),
                 ..Intent::default()
             },
-        ) {
-            Ok(intent) => intent,
-            Err(error) => {
-                self.retire_failed::<()>(&id, &Err(error.clone()))?;
-                return Err(error);
-            }
-        };
+        )?;
+        let prepared =
+            self.prepare_trash_with_id(subject, path, expected_sha256, Reason::Delete, None, &id);
+        if let Err(error) = &prepared {
+            self.failed_intent(&intent, &prepared)?;
+            return Err(error.clone());
+        }
         let applied = Cell::new(None::<Applied>);
         let result = self.db.write_with(|transaction| {
             let connection = transaction.connection();
@@ -422,7 +453,15 @@ impl FileBrowser {
         if interrupted() {
             return result.map_err(FileError::from);
         }
-        let result = self.settle(result.map_err(FileError::from), applied.take(), &target);
+        let result = self.settle_with_intent(
+            result.map_err(FileError::from),
+            applied.take(),
+            &target,
+            Some(&intent),
+        );
+        if interrupted() {
+            return result;
+        }
         self.failed_intent(&intent, &result)?;
         if let Err(primary) = &result
             && self.retire_failed(&id, &result).is_err()
@@ -446,7 +485,7 @@ impl FileBrowser {
         require_space(&parent, entry.size)?;
         let trash = self.trash_dir()?;
         let bytes = read_trash(&trash, &name, &entry)?;
-        let stage = Stage::write(&parent, &bytes)?;
+        let stage = Stage::planned(&parent)?;
         let permissions = self
             .db
             .read_with(|snapshot| {
@@ -464,7 +503,6 @@ impl FileBrowser {
                 permissions_for(connection, self.db.server_id(), id)
             })
             .map_err(FileError::from)?;
-        stage.permissions(&permissions)?;
         let target = parent.join(leaf(&entry.path));
         let intent = self.begin_intent(
             subject,
@@ -478,6 +516,14 @@ impl FileBrowser {
                 ..Intent::default()
             },
         )?;
+        let prepared = stage
+            .create(&bytes)
+            .and_then(|()| stage.permissions(&permissions));
+        if let Err(error) = &prepared {
+            drop(stage);
+            self.failed_intent(&intent, &prepared)?;
+            return Err(error.clone());
+        }
         stage.retained.set(true);
         let applied = Cell::new(None::<Applied>);
         let result = self.db.write_with(|transaction| {
@@ -521,7 +567,15 @@ impl FileBrowser {
         if interrupted() {
             return result.map_err(FileError::from);
         }
-        let result = self.settle(result.map_err(FileError::from), applied.take(), &target);
+        let result = self.settle_with_intent(
+            result.map_err(FileError::from),
+            applied.take(),
+            &target,
+            Some(&intent),
+        );
+        if interrupted() {
+            return result;
+        }
         self.failed_intent(&intent, &result)?;
         stage
             .retained
@@ -590,17 +644,19 @@ impl FileBrowser {
         Ok(removed)
     }
 
-    /// Explicit startup reconciliation, invoked by trusted host composition. No data is
-    /// deleted. Known completed effects become complete with a recovered success audit;
-    /// unchanged or unknown targets retain their copy and become recovery-required.
+    /// Trusted startup reconciliation, at most 64 batches of 64 rows per queue.
+    /// Never replay an effect or remove uncertain data. Audited terminal intents
+    /// are retired after owned-stage cleanup; recovery-required rows stay reserved.
+    /// Call again if a legacy backlog exceeds the per-call work bound.
     pub fn reconcile_pending(&self) -> Result<usize> {
         let admission = mutation_admission(self.db.directory().path())?;
         let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
-        let intents = self.reconcile_intents()?;
-        self.db.write_with(|transaction| {
+        let mut total = self.reconcile_intents()?;
+        for _ in 0..MAX_RECONCILE_BATCHES {
+            let count = self.db.write_with(|transaction| {
             let connection = transaction.connection();
-            let mut statement = connection.prepare("SELECT id,path,effect_sha256,principal_id,device_id,reason FROM file_trash WHERE server_id=? AND status='pending' AND NOT EXISTS (SELECT 1 FROM file_intents WHERE json_extract(details_json,'$.trash')=file_trash.id)")?;
-            let rows = statement.query_map([self.db.server_id()], |row| Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?,row.get::<_, Option<String>>(2)?,row.get::<_, String>(3)?,row.get::<_, String>(4)?,row.get::<_, String>(5)?)))?
+            let mut statement = connection.prepare("SELECT id,path,effect_sha256,principal_id,device_id,reason FROM file_trash WHERE server_id=? AND status='pending' AND NOT EXISTS (SELECT 1 FROM file_intents WHERE json_extract(details_json,'$.trash')=file_trash.id) ORDER BY id LIMIT ?")?;
+            let rows = statement.query_map(params![self.db.server_id(), RECONCILE_BATCH_SIZE as i64], |row| Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?,row.get::<_, Option<String>>(2)?,row.get::<_, String>(3)?,row.get::<_, String>(4)?,row.get::<_, String>(5)?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             for (id, text, effect, principal, device, reason) in &rows {
                 let path = RelativePath::parse(text)?;
@@ -617,8 +673,14 @@ impl FileBrowser {
                     self.audit(connection, &subject, if reason == "delete" { "files.delete" } else { "files.write" }, &path, [("trash", Some(id.clone())), ("reconciled", Some("true".into()))])?;
                 }
             }
-            Ok(rows.len() + intents)
-        }).map_err(FileError::from)
+            Ok(rows.len())
+        }).map_err(FileError::from)?;
+            total += count;
+            if count < RECONCILE_BATCH_SIZE {
+                break;
+            }
+        }
+        Ok(total)
     }
 
     fn remove_recorded_copy(
@@ -764,7 +826,7 @@ impl FileBrowser {
 
     /// Verifies the current bytes against `expected`, copies them into the bounded trash
     /// and records the entry. Returns the new trash ID.
-    #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     fn prepare_trash(
         &self,
         subject: &Subject,
@@ -772,6 +834,19 @@ impl FileBrowser {
         expected: &str,
         reason: Reason,
         effect: Option<&str>,
+    ) -> Result<String> {
+        self.prepare_trash_with_id(subject, path, expected, reason, effect, &random_id()?)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_trash_with_id(
+        &self,
+        subject: &Subject,
+        path: &RelativePath,
+        expected: &str,
+        reason: Reason,
+        effect: Option<&str>,
+        id: &str,
     ) -> Result<String> {
         let mut owned_copy = None;
         let result = self.db.write_with(|transaction| {
@@ -789,8 +864,7 @@ impl FileBrowser {
             self.require_trash_capacity(connection, metadata.len())?;
             require_space(self.db.directory().path(), metadata.len())?;
             let trash = self.trash_dir()?;
-            let id = random_id()?;
-            let name = trash_name(&id)?;
+            let name = trash_name(id)?;
             let mut copy = trash.create_new(&name).map_err(state_io)?;
             owned_copy = Some(CopyGuard { trash: trash.clone(), name: name.clone(), retained: false });
             let (current, size) = copy_source(&mut source, &mut copy)?;
@@ -804,7 +878,7 @@ impl FileBrowser {
             connection.execute("INSERT INTO file_trash (id,server_id,path,sha256,size,reason,principal_id,device_id,status,effect_sha256,unix_mode,readonly,trashed_at,expires_at) VALUES (?,?,?,?,?,?,?,?,'pending',?,?,?,?,?)", params![
                 id,self.db.server_id(),path.as_str(),current,i64::try_from(size).map_err(|_| FileError::TooLarge)?,reason.wire(),subject.principal.as_str(),subject.device.as_str(),effect,unix_mode(&metadata.permissions()),i64::from(metadata.permissions().readonly()),now,now.saturating_add(retention)
             ])?;
-            Ok(id)
+            Ok(id.to_owned())
         }).map_err(FileError::from);
         if let Some(copy) = &mut owned_copy {
             if let Err(error) = &result
@@ -933,7 +1007,18 @@ impl FileBrowser {
     }
 
     /// After a failed transaction, reverse a filesystem change it had already made.
+    #[cfg(test)]
     fn settle<T>(&self, result: Result<T>, applied: Option<Applied>, target: &Path) -> Result<T> {
+        self.settle_with_intent(result, applied, target, None)
+    }
+
+    fn settle_with_intent<T>(
+        &self,
+        result: Result<T>,
+        applied: Option<Applied>,
+        target: &Path,
+        intent: Option<&str>,
+    ) -> Result<T> {
         let (Err(error), Some(applied)) = (&result, applied) else {
             return result;
         };
@@ -955,8 +1040,14 @@ impl FileBrowser {
                     .map_err(FileError::from)?;
                 let bytes = read_trash(&trash, &name, &entry)?;
                 let parent = target.parent().ok_or(FileError::Unavailable)?;
-                let stage = Stage::write(parent, &bytes)?;
+                let stage = Stage::planned(parent)?;
+                if let Some(intent) = intent {
+                    self.record_compensation_stage(intent, &stage.leaf()?, entry.size)?;
+                    stage.retained.set(true);
+                }
+                stage.create(&bytes)?;
                 stage.permissions(&permissions)?;
+                crash_point("compensation")?;
                 if applied.effect.is_some() {
                     stage.replace(target)?;
                 } else {
@@ -983,11 +1074,24 @@ struct Applied {
 /// A hidden create-new stage beside the target; removed on drop unless consumed.
 struct Stage {
     path: PathBuf,
+    created: Cell<bool>,
     retained: Cell<bool>,
 }
 impl Stage {
+    fn planned(parent: &Path) -> Result<Self> {
+        Ok(Self {
+            path: parent.join(format!("{STAGE_PREFIX}{}.tmp", random_id()?)),
+            created: Cell::new(false),
+            retained: Cell::new(false),
+        })
+    }
+    #[cfg(all(test, unix))]
     fn write(parent: &Path, bytes: &[u8]) -> Result<Self> {
-        let path = parent.join(format!("{STAGE_PREFIX}{}.tmp", random_id()?));
+        let stage = Self::planned(parent)?;
+        stage.create(bytes)?;
+        Ok(stage)
+    }
+    fn create(&self, bytes: &[u8]) -> Result<()> {
         let mut options = fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -995,14 +1099,11 @@ impl Stage {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let mut file = options.open(&path).map_err(io_error)?;
-        let stage = Self {
-            path,
-            retained: Cell::new(false),
-        };
+        let mut file = options.open(&self.path).map_err(io_error)?;
+        self.created.set(true);
         file.write_all(bytes).map_err(io_error)?;
         file.sync_all().map_err(io_error)?;
-        Ok(stage)
+        Ok(())
     }
     fn leaf(&self) -> Result<String> {
         self.path
@@ -1040,7 +1141,7 @@ impl Stage {
 }
 impl Drop for Stage {
     fn drop(&mut self) {
-        if !self.retained.get() {
+        if self.created.get() && !self.retained.get() {
             remove_stage(&self.path);
         }
     }
