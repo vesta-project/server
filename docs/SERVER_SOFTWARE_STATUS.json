@@ -2,7 +2,7 @@
   "auditDate": "2026-10-10",
   "repository": "server-connections-mvp",
   "commit": "94fb98a",
-  "scope": "Rust-implementation audit. Features with a changed status were re-audited against Rust source and tests; others are carried from the 2026-10-04 Java audit and marked reauditNote. Statuses move only against the acceptance text.",
+  "scope": "Features carrying reauditNote were re-audited against Rust source and tests; other feature statuses remain as previously audited. Statuses move only against the acceptance text.",
   "tests": {
     "rustWorkspace": {
       "passed": 1211,
@@ -23,18 +23,26 @@
     {
       "id": "F01",
       "name": "Deployment and instance scope",
-      "status": "partial",
+      "status": "prototype",
       "phase": 1,
-      "current": "Existing roots, config and instance registry exist; independent process/control-plane identities and tested Windows/Linux parity do not.",
+      "current": "Rust has protected server-install roots and a server-scoped discovery contract, but no agent installer/adoption flow or persisted instance registry proving existing data stays in place and server_id survives restart.",
       "evidence": [
-        "scripts/install.ps1"
+        "crates/vesta-server-install/src/install.rs",
+        "crates/vesta-protocol/src/discovery.rs"
       ],
       "acceptance": "Install alongside an existing server without moving its data; preserve server_id across restart.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
-      "javaEvidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/config/ConfigLoader.java"
-      ]
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "partial",
+        "current": "Existing roots, config and instance registry exist; independent process/control-plane identities and tested Windows/Linux parity do not.",
+        "evidence": [
+          "scripts/install.ps1"
+        ],
+        "javaEvidence": [
+          "wrapper/src/main/java/com/vesta/wrapper/config/ConfigLoader.java"
+        ]
+      }
     },
     {
       "id": "F02",
@@ -63,57 +71,87 @@
       "name": "Independent supervisor and crash continuity",
       "status": "not_started",
       "phase": 3,
-      "current": "No separate supervisor executable or durable process/save-lease protocol found. Agent shutdown currently stops Minecraft.",
+      "current": "The agent owns the game process and shutdown path; no separate supervisor, save-lease continuity, or recovery across agent loss is implemented.",
       "evidence": [],
       "acceptance": "Kill/restart agent while Minecraft stays alive; recover control and journals without replay.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
-      "javaEvidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/VestaWrapper.java",
-        "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java"
-      ]
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "not_started",
+        "current": "No separate supervisor executable or durable process/save-lease protocol found. Agent shutdown currently stops Minecraft.",
+        "evidence": [],
+        "javaEvidence": [
+          "wrapper/src/main/java/com/vesta/wrapper/VestaWrapper.java",
+          "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java"
+        ]
+      }
     },
     {
       "id": "F04",
       "name": "Startup script adoption and existing services",
-      "status": "partial",
+      "status": "prototype",
       "phase": 3,
-      "current": "Installer/CLI create and control launch artifacts; seamless script inspection/adoption and robust detached-child adapters remain.",
+      "current": "Rust launches a configured game process, but does not inspect/adopt original startup scripts, defer takeover until an approved restart, or detect competing restart loops.",
       "evidence": [
-        "scripts/install.ps1"
+        "crates/vesta-game-runtime/src/launch_config/mod.rs",
+        "crates/vesta-game-runtime/src/process/launch.rs"
       ],
       "acceptance": "Keep original scripts; take over only on approved restart and detect competing restart loops.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "partial",
+        "current": "Installer/CLI create and control launch artifacts; seamless script inspection/adoption and robust detached-child adapters remain.",
+        "evidence": [
+          "scripts/install.ps1"
+        ]
+      }
     },
     {
       "id": "F05",
       "name": "Readiness and crash-loop policy",
       "status": "prototype",
       "phase": 3,
-      "current": "Process-alive state exists, but it is not world readiness; no durable bounded crash-restart controller found.",
-      "evidence": [],
+      "current": "Rust reports process lifecycle state, but has no world-readiness/degraded signal or opt-in bounded crash-restart policy.",
+      "evidence": [
+        "crates/vesta-game-runtime/src/process/mod.rs",
+        "crates/vesta-game-runtime/src/process/tests.rs"
+      ],
       "acceptance": "Expose starting/ready/degraded accurately; bounded configurable restart after crash, opt-in.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
-      "javaEvidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java"
-      ]
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "prototype",
+        "current": "Process-alive state exists, but it is not world readiness; no durable bounded crash-restart controller found.",
+        "evidence": [],
+        "javaEvidence": [
+          "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java"
+        ]
+      }
     },
     {
       "id": "F06",
       "name": "Local identity, pairing and device credentials",
       "status": "prototype",
       "phase": 2,
-      "current": "Link codes and bearers exist; canonical device principals, local owner bootstrap and device certificates are missing.",
-      "evidence": [],
+      "current": "Rust has identity bootstrap and policy primitives, but its production local-authority adapter is unavailable; single-use device pairing, per-device revocation, and OS-authorized recovery are not operational.",
+      "evidence": [
+        "crates/vesta-control/src/identity/local_authority.rs",
+        "crates/vesta-control/src/identity/service.rs",
+        "crates/vesta-control/src/identity/tests/bootstrap.rs"
+      ],
       "acceptance": "Single-use owner pairing, per-device revocation, OS-authorized local recovery.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
-      "javaEvidence": [
-        "core/src/main/java/com/vesta/sync/auth/TokenService.java",
-        "wrapper/src/main/java/com/vesta/wrapper/ipc/ControlIpcServer.java"
-      ]
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "prototype",
+        "current": "Link codes and bearers exist; canonical device principals, local owner bootstrap and device certificates are missing.",
+        "evidence": [],
+        "javaEvidence": [
+          "core/src/main/java/com/vesta/sync/auth/TokenService.java",
+          "wrapper/src/main/java/com/vesta/wrapper/ipc/ControlIpcServer.java"
+        ]
+      }
     },
     {
       "id": "F07",
@@ -230,15 +268,25 @@
       "name": "Abuse, request and storage limits",
       "status": "partial",
       "phase": 2,
-      "current": "HTTP/auth token buckets exist; transfer/storage quotas and coordinated resource budgets are incomplete.",
-      "evidence": [],
+      "current": "Rust bounds HTTP request bodies, shared jobs/downloads, and upload/storage operations, but not coordinated CPU, memory, staging, and recovery-reachability budgets across all workloads.",
+      "evidence": [
+        "crates/vesta-transport/src/routes.rs",
+        "crates/vesta-transport/src/lib.rs",
+        "crates/vesta-control/src/files/upload.rs",
+        "crates/vesta-state/tests/foundation_bounds.rs"
+      ],
       "acceptance": "Bound input, memory, CPU, concurrent work and staging; recovery remains reachable.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
-      "javaEvidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/security/TokenBucketRateLimiter.java",
-        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
-      ]
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "partial",
+        "current": "HTTP/auth token buckets exist; transfer/storage quotas and coordinated resource budgets are incomplete.",
+        "evidence": [],
+        "javaEvidence": [
+          "wrapper/src/main/java/com/vesta/wrapper/security/TokenBucketRateLimiter.java",
+          "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+        ]
+      }
     },
     {
       "id": "F13",
@@ -265,31 +313,51 @@
     {
       "id": "F14",
       "name": "10,000-line live console buffer",
-      "status": "verified",
+      "status": "partial",
       "phase": 3,
-      "current": "Bounded in-memory console ring is present; focused existing ConsoleBuffer tests passed. This does not verify supervisor continuity.",
-      "evidence": [],
+      "current": "Rust captures a 10,000-line, 2 MiB bounded console ring with bounded pages and viewer-independent drains, and tests those limits/concurrency; full slow-viewer and no-duplicate-retained-game-log acceptance is not established.",
+      "evidence": [
+        "crates/vesta-game-runtime/src/console.rs",
+        "crates/vesta-game-runtime/src/console/tests.rs",
+        "crates/vesta-game-runtime/tests/console_concurrency.rs",
+        "crates/vesta-game-runtime/tests/console_adversarial.rs"
+      ],
       "acceptance": "10,000-line cap, bounded bytes and slow-viewer protection; no retained duplicate game logs.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
-      "javaEvidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/console/ConsoleBuffer.java",
-        "wrapper/src/test/java/com/vesta/wrapper/console/ConsoleBufferTest.java"
-      ]
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "verified",
+        "current": "Bounded in-memory console ring is present; focused existing ConsoleBuffer tests passed. This does not verify supervisor continuity.",
+        "evidence": [],
+        "javaEvidence": [
+          "wrapper/src/main/java/com/vesta/wrapper/console/ConsoleBuffer.java",
+          "wrapper/src/test/java/com/vesta/wrapper/console/ConsoleBufferTest.java"
+        ]
+      }
     },
     {
       "id": "F15",
       "name": "Game-log catch-up and player reconciliation",
       "status": "partial",
       "phase": 3,
-      "current": "Live list-command parsing exists; persistent log offsets, rotation/gap reconciliation and reliable absence are missing.",
-      "evidence": [],
+      "current": "Rust parses live player-list observations and rejects malformed or contradictory counts, but has no persistent game-log offset/rotation reconciliation; missing-log unknown state and the no-sleep/no-replayed-moderation guarantee are absent.",
+      "evidence": [
+        "crates/vesta-game-runtime/src/players.rs",
+        "crates/vesta-game-runtime/src/players_tests.rs",
+        "crates/vesta-control/src/operations/players.rs",
+        "crates/vesta-control/src/operations/players_tests.rs"
+      ],
       "acceptance": "Missing logs mark unknown; uncertain count never triggers sleep or replayed moderation.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
-      "javaEvidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java"
-      ]
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "partial",
+        "current": "Live list-command parsing exists; persistent log offsets, rotation/gap reconciliation and reliable absence are missing.",
+        "evidence": [],
+        "javaEvidence": [
+          "wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java"
+        ]
+      }
     },
     {
       "id": "F16",
@@ -340,11 +408,16 @@
       "name": "SFTP service and unified file policy",
       "status": "not_started",
       "phase": 4,
-      "current": "No SFTP subsystem or dependency located.",
+      "current": "SFTP is declared future work; no Rust SFTP service integrates file operations with principals, scopes, quotas, locks, trash, and audit.",
       "evidence": [],
       "acceptance": "Optional SFTP uses the same principals, scopes, quotas, locks, trash and audit.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "not_started",
+        "current": "No SFTP subsystem or dependency located.",
+        "evidence": []
+      }
     },
     {
       "id": "F19",
@@ -395,15 +468,26 @@
       "name": "Vesta Pack schema and provider references",
       "status": "partial",
       "phase": 5,
-      "current": "Vesta index builder includes revision/minimum revision and external references; launcher-compatible schema fixtures need expansion.",
-      "evidence": [],
+      "current": "Rust defines and tests the VestaIndex v1 projection, catalogue/source references, and hash fields, but fixed provider-ID/hash compatibility and a complete unavailable-source failure contract are not verified against the full launcher schema.",
+      "evidence": [
+        "crates/vesta-protocol/src/pack/model.rs",
+        "crates/vesta-protocol/src/pack/sources.rs",
+        "crates/vesta-protocol/tests/pack_index.rs",
+        "crates/vesta-protocol/tests/pack_sources.rs",
+        "crates/vesta-protocol/tests/pack_catalogue_sync.rs"
+      ],
       "acceptance": "Existing VestaIndex compatible; fixed provider IDs/hashes; clear unavailable-source failure.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
-      "javaEvidence": [
-        "core/src/main/java/com/vesta/sync/manifest/VestaPackBuilder.java",
-        "core/src/main/java/com/vesta/sync/manifest/ServerModpackManifest.java"
-      ]
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "partial",
+        "current": "Vesta index builder includes revision/minimum revision and external references; launcher-compatible schema fixtures need expansion.",
+        "evidence": [],
+        "javaEvidence": [
+          "core/src/main/java/com/vesta/sync/manifest/VestaPackBuilder.java",
+          "core/src/main/java/com/vesta/sync/manifest/ServerModpackManifest.java"
+        ]
+      }
     },
     {
       "id": "F22",
@@ -434,15 +518,25 @@
       "name": "Pack policy, minimum version and authorization",
       "status": "partial",
       "phase": 5,
-      "current": "Capabilities and revision fields exist; complete independent pack policy and minimum-version lifecycle remain.",
-      "evidence": [],
+      "current": "Rust implements pack access and release policy/revision primitives, but there is no complete optional/required release lifecycle or demonstrated revoked-management fallback to public policy.",
+      "evidence": [
+        "crates/vesta-control/src/pack_access.rs",
+        "crates/vesta-control/src/packs/releases.rs",
+        "crates/vesta-control/src/packs/releases_tests.rs",
+        "crates/vesta-protocol/src/pack/sync.rs"
+      ],
       "acceptance": "Optional/required release choices; revoked management falls back to public pack policy only.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
-      "javaEvidence": [
-        "core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java",
-        "core/src/main/java/com/vesta/sync/manifest/ServerModpackManifest.java"
-      ]
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "partial",
+        "current": "Capabilities and revision fields exist; complete independent pack policy and minimum-version lifecycle remain.",
+        "evidence": [],
+        "javaEvidence": [
+          "core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java",
+          "core/src/main/java/com/vesta/sync/manifest/ServerModpackManifest.java"
+        ]
+      }
     },
     {
       "id": "F24",
@@ -467,35 +561,50 @@
       "name": "Backup repositories and retention",
       "status": "not_started",
       "phase": 6,
-      "current": "Installer copy/backup options are not a runtime restic repository/history subsystem.",
-      "evidence": [
-        "scripts/install.ps1"
-      ],
+      "current": "Backup repositories, encrypted recovery export, retention, and working-space reserve are declared future work; installer file-copy protections are not a runtime backup/history subsystem.",
+      "evidence": [],
       "acceptance": "Opt-in local/NAS/S3 encrypted repositories, recovery export, retention and working-space reserve.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "not_started",
+        "current": "Installer copy/backup options are not a runtime restic repository/history subsystem.",
+        "evidence": [
+          "scripts/install.ps1"
+        ]
+      }
     },
     {
       "id": "F26",
       "name": "Online backup consistency and save lease",
       "status": "not_started",
       "phase": 6,
-      "current": "No online-backup coordinator, crash-safe autosave lease or snapshot helper found.",
+      "current": "Online backup coordination and autosave/save-lease cleanup are not implemented; plugin-based consistency remains future work.",
       "evidence": [],
       "acceptance": "Flush acknowledgement; independent same-generation autosave cleanup; honest plugin consistency.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "not_started",
+        "current": "No online-backup coordinator, crash-safe autosave lease or snapshot helper found.",
+        "evidence": []
+      }
     },
     {
       "id": "F27",
       "name": "Restore, inspection and recovery exports",
       "status": "not_started",
       "phase": 6,
-      "current": "No verified manual restore workflow or encrypted complete recovery export found.",
+      "current": "Owner-confirmed restore, pre-restore backup, stopped-game enforcement, scoped inspection, and recovery exports are not implemented; backups/recovery are future work.",
       "evidence": [],
       "acceptance": "Owner-confirmed restore, pre-restore backup, stopped game, scoped inspection, no automatic restore.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "not_started",
+        "current": "No verified manual restore workflow or encrypted complete recovery export found.",
+        "evidence": []
+      }
     },
     {
       "id": "F28",
@@ -524,108 +633,167 @@
       "name": "Schedules and typed sequential workflows",
       "status": "not_started",
       "phase": 7,
-      "current": "Session cleanup timers are not an owner scheduler; durable typed workflows/presets absent.",
+      "current": "Durable scheduled typed workflows, authority rechecks, and missed-run policy are absent; operation queue scheduling is not an owner workflow scheduler.",
       "evidence": [],
       "acceptance": "Sequential steps/conditions/delays; authority rechecked; configurable missed-run policy.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "not_started",
+        "current": "Session cleanup timers are not an owner scheduler; durable typed workflows/presets absent.",
+        "evidence": []
+      }
     },
     {
       "id": "F30",
       "name": "Notification inbox and optional delivery",
       "status": "not_started",
       "phase": 7,
-      "current": "Push update events exist, but no durable per-account inbox/delivery subsystem found.",
-      "evidence": [],
+      "current": "Rust emits transient realtime update events, but has no durable per-principal inbox/read state, offline retrieval, or email/Discord/webhook retry delivery; Discord is future work.",
+      "evidence": [
+        "crates/vesta-transport/src/realtime.rs",
+        "crates/vesta-state/src/events.rs"
+      ],
       "acceptance": "Per-principal read state; offline retrieval; bounded optional email/Discord/webhook retries.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
-      "javaEvidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/server/ServerState.java"
-      ]
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "not_started",
+        "current": "Push update events exist, but no durable per-account inbox/delivery subsystem found.",
+        "evidence": [],
+        "javaEvidence": [
+          "wrapper/src/main/java/com/vesta/wrapper/server/ServerState.java"
+        ]
+      }
     },
     {
       "id": "F31",
       "name": "Maintenance, whitelist overlay and hooks",
-      "status": "not_started",
+      "status": "prototype",
       "phase": 7,
-      "current": "Whitelist read adapter exists; temporary maintenance restrictions and crash-safe reconciliation are absent.",
-      "evidence": [],
+      "current": "Rust has a whitelist read adapter, but no maintenance overlay or journalled reconciliation that preserves owner edits and survives crashes.",
+      "evidence": [
+        "crates/vesta-control/src/whitelist.rs",
+        "crates/vesta-control/src/whitelist_tests.rs"
+      ],
       "acceptance": "Connector overlay or journalled whitelist reconciliation; no stale overwrite of owner edits.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
-      "javaEvidence": [
-        "core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java"
-      ]
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "not_started",
+        "current": "Whitelist read adapter exists; temporary maintenance restrictions and crash-safe reconciliation are absent.",
+        "evidence": [],
+        "javaEvidence": [
+          "core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java"
+        ]
+      }
     },
     {
       "id": "F32",
       "name": "Sleep, offline status and wake-on-join",
       "status": "not_started",
       "phase": 7,
-      "current": "No game-port sleep/status responder or wake coordinator located.",
+      "current": "Sleep/status packet handling and a rate-limited join-wake coordinator are absent; MOTD/sleep behavior is declared future work.",
       "evidence": [],
       "acceptance": "Never wake on ping; join wake rate-limited; honest retry/startup/offline responses.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "not_started",
+        "current": "No game-port sleep/status responder or wake coordinator located.",
+        "evidence": []
+      }
     },
     {
       "id": "F33",
       "name": "MOTD/settings placeholders and lifecycle presentation",
       "status": "prototype",
       "phase": 7,
-      "current": "Static descriptor/status exists; structured live/offline templates and state-aware game responses are absent.",
-      "evidence": [],
+      "current": "Rust has validated host configuration and pack status responses, but no online/offline MOTD templates, launcher lifecycle presentation, or state-aware live-change/restart reporting; MOTD work is future scope.",
+      "evidence": [
+        "crates/vesta-control/src/config/mod.rs",
+        "crates/vesta-transport/src/routes.rs"
+      ],
       "acceptance": "Online/offline templates; status in launcher; live changes state reload/restart requirements.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
-      "javaEvidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
-      ]
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "prototype",
+        "current": "Static descriptor/status exists; structured live/offline templates and state-aware game responses are absent.",
+        "evidence": [],
+        "javaEvidence": [
+          "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+        ]
+      }
     },
     {
       "id": "F34",
       "name": "Typed moderation and online player management",
       "status": "partial",
       "phase": 7,
-      "current": "Online players and unrestricted console exist; separate safe moderation endpoints/history remain.",
-      "evidence": [],
+      "current": "Rust can query live players and parse typed player observations, but does not expose typed moderator actions/history; console operations are not a safe typed moderation interface.",
+      "evidence": [
+        "crates/vesta-game-runtime/src/players.rs",
+        "crates/vesta-control/src/operations/players.rs",
+        "crates/vesta-control/src/operations/players_tests.rs"
+      ],
       "acceptance": "Moderator typed actions only by default; console authority never impersonates player.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
-      "javaEvidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java",
-        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
-      ]
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "partial",
+        "current": "Online players and unrestricted console exist; separate safe moderation endpoints/history remain.",
+        "evidence": [],
+        "javaEvidence": [
+          "wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java",
+          "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+        ]
+      }
     },
     {
       "id": "F35",
       "name": "Metrics, diagnostics and resource budgets",
       "status": "prototype",
       "phase": 7,
-      "current": "Basic process/status/list snapshots exist; TPS adapters, storage-limited retention and redacted bundles remain.",
-      "evidence": [],
+      "current": "Rust exposes process lifecycle and live-player observations, but no unknown-labelled metrics, configurable 24h/30d/1y metrics retention, or redacted manual export; metrics retention was declared future work.",
+      "evidence": [
+        "crates/vesta-game-runtime/src/process/mod.rs",
+        "crates/vesta-game-runtime/src/players.rs"
+      ],
       "acceptance": "Unknown metrics labelled; 24h/30d/1y retention tiers configurable; redacted manual export.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
-      "javaEvidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java",
-        "wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java"
-      ]
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "prototype",
+        "current": "Basic process/status/list snapshots exist; TPS adapters, storage-limited retention and redacted bundles remain.",
+        "evidence": [],
+        "javaEvidence": [
+          "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java",
+          "wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java"
+        ]
+      }
     },
     {
       "id": "F36",
       "name": "Structured server configuration",
       "status": "prototype",
       "phase": 4,
-      "current": "Security TOML editor exists; server.properties/JVM/ban/loader schema-backed edits and apply modes are incomplete.",
-      "evidence": [],
+      "current": "Rust validates host TOML and game launch configuration, but has no schema-backed server.properties/JVM/ban/loader editing with preserved edits and live/reload/restart impact reporting; external database provisioning is absent.",
+      "evidence": [
+        "crates/vesta-control/src/config/mod.rs",
+        "crates/vesta-game-runtime/src/launch_config/mod.rs"
+      ],
       "acceptance": "Validate and preserve edits; report live/reload/restart; no external database provisioning.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
-      "javaEvidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/config/SecuritySettingsService.java"
-      ]
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "prototype",
+        "current": "Security TOML editor exists; server.properties/JVM/ban/loader schema-backed edits and apply modes are incomplete.",
+        "evidence": [],
+        "javaEvidence": [
+          "wrapper/src/main/java/com/vesta/wrapper/config/SecuritySettingsService.java"
+        ]
+      }
     },
     {
       "id": "F37",
@@ -651,104 +819,160 @@
       "name": "OS isolation and optional sandbox profiles",
       "status": "prototype",
       "phase": 3,
-      "current": "Service scripts exist; verified separate game/control identities and sandbox/resource-limit profiles remain.",
+      "current": "Rust applies platform protection to agent state paths, but no plugin-versus-agent/supervisor access isolation or optional sandbox/resource profile is implemented, and portable-mode warnings are absent.",
       "evidence": [
-        "scripts/install.ps1"
+        "crates/vesta-state/src/windows_security.rs",
+        "crates/vesta-server-install/src/install.rs"
       ],
       "acceptance": "Plugins cannot read/write agent state or supervisor control; portable mode warns honestly.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "prototype",
+        "current": "Service scripts exist; verified separate game/control identities and sandbox/resource-limit profiles remain.",
+        "evidence": [
+          "scripts/install.ps1"
+        ]
+      }
     },
     {
       "id": "F39",
       "name": "Java runtime and compatibility matrix",
       "status": "partial",
       "phase": 3,
-      "current": "Custom Java/JVM arguments and loader release matrix exist; guided game-runtime provisioning and 1.7+ test matrix remain.",
+      "current": "Rust launches the game as a separate process and can probe a configured Java runtime, with loader/runtime planning tests; a tested adapter-capability compatibility matrix across game/loader/platform combinations is not established.",
       "evidence": [
-        "scripts/install.ps1"
+        "crates/vesta-game-runtime/src/launch_config/mod.rs",
+        "crates/vesta-game-runtime/src/process/launch.rs",
+        "crates/vesta-server-install/src/runtime.rs",
+        "crates/vesta-server-install/src/tests/runtime.rs",
+        "crates/vesta-server-install/src/tests/loaders.rs"
       ],
       "acceptance": "Game runtime independent of agent runtime; adapter capabilities match tested combinations.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
-      "javaEvidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java"
-      ]
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "partial",
+        "current": "Custom Java/JVM arguments and loader release matrix exist; guided game-runtime provisioning and 1.7+ test matrix remain.",
+        "evidence": [
+          "scripts/install.ps1"
+        ],
+        "javaEvidence": [
+          "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java"
+        ]
+      }
     },
     {
       "id": "F40",
       "name": "Network discovery, NAT and optional proxy setup",
-      "status": "partial",
+      "status": "prototype",
       "phase": 8,
-      "current": "Server descriptor/address utilities exist; end-to-end reachability diagnostics, ACME and reviewed proxy setup remain.",
+      "current": "Rust implements versioned server-scoped discovery and TLS transport, but no LAN/direct/VPN/proxy reachability diagnostics, CGNAT diagnosis, consented probes, or NAT setup; NAT/proxy setup is declared future work.",
       "evidence": [
-        "scripts/install.ps1"
+        "crates/vesta-protocol/src/discovery.rs",
+        "crates/vesta-protocol/tests/discovery.rs",
+        "crates/vesta-transport/src/lib.rs"
       ],
       "acceptance": "Local/LAN/direct/VPN/proxy coexist; CGNAT diagnosed; probe consent; no required relay.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation.",
-      "javaEvidence": [
-        "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
-      ]
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "partial",
+        "current": "Server descriptor/address utilities exist; end-to-end reachability diagnostics, ACME and reviewed proxy setup remain.",
+        "evidence": [
+          "scripts/install.ps1"
+        ],
+        "javaEvidence": [
+          "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+        ]
+      }
     },
     {
       "id": "F41",
       "name": "Signed agent/connector updates",
       "status": "not_started",
       "phase": 8,
-      "current": "Distribution packaging exists, not signed rollback-protected updates and approved activation.",
-      "evidence": [
-        "scripts/install.ps1"
-      ],
+      "current": "Signed update metadata/artifacts, rollback protection, and stopped-only supervisor activation are not implemented; signed updates are future work.",
+      "evidence": [],
       "acceptance": "Signed metadata/artifacts; no automatic restart; supervisor activates only while stopped.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "not_started",
+        "current": "Distribution packaging exists, not signed rollback-protected updates and approved activation.",
+        "evidence": [
+          "scripts/install.ps1"
+        ]
+      }
     },
     {
       "id": "F42",
       "name": "Installer, CLI and nonintrusive uninstall",
-      "status": "partial",
+      "status": "not_started",
       "phase": 8,
-      "current": "Windows/Linux installers, registry/control CLI and service helpers exist; complete secure walkthrough/connector setup remain.",
-      "evidence": [
-        "scripts/install.ps1"
-      ],
+      "current": "The Rust agent exposes configuration-check and serve commands, not an agent installer/uninstaller or connector setup; preserving existing worlds/scripts/settings and a secure installation walkthrough remain unimplemented.",
+      "evidence": [],
       "acceptance": "Preserve worlds/scripts/settings; opt-in connector; secure defaults and advanced answers.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "partial",
+        "current": "Windows/Linux installers, registry/control CLI and service helpers exist; complete secure walkthrough/connector setup remain.",
+        "evidence": [
+          "scripts/install.ps1"
+        ]
+      }
     },
     {
       "id": "F43",
       "name": "Discord status/linking and integration presets",
       "status": "not_started",
       "phase": 7,
-      "current": "No Discord bot, identity linkage or outbound delivery provider located.",
+      "current": "Discord identity linking, status, notifications, and delivery presets are not implemented; Discord is declared future work.",
       "evidence": [],
       "acceptance": "Optional channel-configured safe status/notifications; no remote Owner/Admin grant.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "not_started",
+        "current": "No Discord bot, identity linkage or outbound delivery provider located.",
+        "evidence": []
+      }
     },
     {
       "id": "F44",
       "name": "Declarative extensions and opt-in telemetry",
       "status": "not_started",
       "phase": 8,
-      "current": "No target schema-extension registry/telemetry consent implementation located.",
+      "current": "No declarative extension registry or product telemetry-consent implementation is present; the Rust agent does not provide these acceptance behaviors.",
       "evidence": [],
       "acceptance": "No arbitrary code in privileged agent; no product telemetry unless explicitly enabled.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "not_started",
+        "current": "No target schema-extension registry/telemetry consent implementation located.",
+        "evidence": []
+      }
     },
     {
       "id": "F45",
       "name": "Velocity, multi-server, relay and host protocol extensions",
       "status": "deferred",
       "phase": 9,
-      "current": "Future topology/features; initial scope is one independently secured Java server per agent.",
-      "evidence": [],
+      "current": "The Rust protocol supports a server-scoped discovery contract, but Velocity/multi-server/relay/host extensions remain later topology work and are not initial blockers.",
+      "evidence": [
+        "crates/vesta-protocol/src/discovery.rs",
+        "crates/vesta-protocol/src/pack/model.rs"
+      ],
       "acceptance": "Preserve public server-scoped protocol; do not make later hosting capabilities initial blockers.",
-      "auditDate": "2026-10-04",
-      "reauditNote": "Carried from the 2026-10-04 Java audit; not re-audited against the Rust implementation."
+      "auditDate": "2026-10-10",
+      "previous": {
+        "auditDate": "2026-10-04",
+        "status": "deferred",
+        "current": "Future topology/features; initial scope is one independently secured Java server per agent.",
+        "evidence": []
+      }
     }
   ],
   "phases": [
