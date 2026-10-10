@@ -3,7 +3,7 @@
 Status: **not complete.** The migration gate has not passed: 179 inventory rows are
 `not_migrated`, no row is `verified`, and the independent whole-rebuild review by a
 separately configured Sol has not run. Baseline: branch `feat/server-software-foundation`,
-latest commit `2709401` (pack publication).
+latest commit `6a92f55`.
 
 Sources: `docs/RUST_WRAPPER_PARITY.json`, `docs/SERVER_SOFTWARE_REQUIREMENTS.md`,
 `docs/RUST_WRAPPER_MIGRATION_PLAN.md`, `docs/RUST_INTEGRATED_MIGRATION_PASS.md`, and a
@@ -36,21 +36,21 @@ design), Plugin-side (retained Java), or Unknown.
 | Area | Java evidence | Rust status | Gap |
 |---|---|---|---|
 | Identity: Minecraft proof and canonical policy | `identity/`, `auth/AuthService` | Partial | Device enrollment and pairing are missing. Production local authority is unavailable. |
-| Pack passwords and pack-only access | `security/PasswordKdfGate`, `auth/BearerTokenStore`, `RealtimeTicketService`, `server/SessionManager` | Partial | `pack_access.rs`: Minecraft-policy grants from the server's real `server.properties`/whitelist/bans (offline mode fails closed), password grants on the active revision, hash-only bounded sessions and single-use tickets rechecked on every use; composed in `Host`. No routes or transport. |
+| Pack passwords and pack-only access | `security/PasswordKdfGate`, `auth/BearerTokenStore`, `RealtimeTicketService`, `server/SessionManager` | Partial | `pack_access.rs`: Minecraft-policy grants from the server's real `server.properties`/whitelist/bans (offline mode fails closed), password grants on the active revision, hash-only bounded sessions and single-use tickets rechecked on every use; composed in `Host`. Pack-only HTTPS routes exist in `crates/vesta-transport/src/routes.rs` (`route` at line 47). |
 | Operations and confirmations | `operations/` | Partial | Closed lifecycle driver exists. Confirmation coverage is unverified. |
 | Process and console | `runtime/MinecraftServerProcess`, `console/ConsoleBuffer` | Partial | Owned direct-child control and console capture exist. No supervisor, no crash policy. |
 | Player query | `runtime/PlayersQuery`, `PlayerListParser` | Partial | Literal `list` query exists. Runtime composition is not wired. |
-| File browser | `files/FileBrowserService`, `ServerPathPolicy` | Partial | List/read plus `files/mutation.rs`: create/overwrite/delete/restore, one-level mkdir and file rename with If-Match hashes, scoped capabilities, bounded recoverable trash (10 GiB / 10 % / 7 days), disk-space preflight and audited transactions; resumable uploads use bounded staging, reservations and fresh authority checks. Operation-journal integration remains. |
-| Content install | `content/ContentInstaller` | Partial | Recoverable file mutations cover upload/remove; provider-sourced Modrinth/CurseForge installs resolve trusted metadata and verify bytes before writing. Broader arbitrary URL installation is not implied. |
+| File browser | `files/FileBrowserService`, `ServerPathPolicy` | Partial | List/read plus `files/mutation.rs`: create/overwrite/delete/restore, scoped capabilities, bounded recoverable trash (10 GiB / 10 % / 7 days), disk-space preflight and audited transactions. One-level mkdir and file rename with If-Match hashes, and resumable uploads (bounded staging, reservations, fresh authority checks), are implemented as library APIs only; no CLI or network entry point (management surface refused until the device boundary exists). Expired uploads are purged at host startup only (`crates/vesta-control/src/host.rs:273`). Operation-journal integration remains. |
+| Content install | `content/ContentInstaller` | Partial | Library APIs only; no CLI or network entry point. Recoverable file mutations cover upload/remove; provider-sourced Modrinth/CurseForge installs resolve trusted metadata and verify bytes before writing. Uploads and installs are capped at 16 MiB (`MAX_WRITE_BYTES`, `files/mutation.rs:35`). Broader arbitrary URL installation is not implied. |
 | Pack catalogue, manifest, archive | `core/manifest/ServerModpackManifest`, `LocalArchivePack` | Partial (Replaced format) | Rust-native catalogue schema, stored ZIP builder and content-addressed publication exist. No catalogue selection, no archive-mode manifest. |
-| Pack revisions and update policy | `manifest/ModpackState` | Partial | `packs/releases.rs`: database-backed monotonic releases, optional/required minimum (`pack.force_update`), `current`/`update_available`/`update_required`, display-version acknowledgement. Reference-aware artifact pruning (`prune`) exists. No status route or signing. |
-| Sync and status | `core/sync` | Partial | Pure proposal types. No I/O, no status route. |
-| HTTP, TCP, realtime | `server/VestaHttpServer`, `TcpSyncServer`, `VestaRealtimeSocket`, `SessionManager` | Partial | `vesta-transport`: bounded HTTPS (hyper + tokio-rustls) serves discovery, pack status, password/Minecraft pack sign-in, tickets and disk-streamed artifact downloads; authenticated pack realtime uses WebSocket. Management remains refused and legacy v1 removed; `vesta-agent serve`. TCP sync is superseded/forbidden by the disposition below. |
+| Pack revisions and update policy | `manifest/ModpackState` | Partial | `packs/releases.rs`: database-backed monotonic releases, optional/required minimum (`pack.force_update`), `current`/`update_available`/`update_required`, display-version acknowledgement. Reference-aware artifact pruning (`prune`) exists. No signing. |
+| Sync and status | `core/sync` | Partial | Pure proposal types. No I/O in the core. `GET /api/v2/pack/status` exists (`crates/vesta-transport/src/routes.rs:211`). |
+| HTTP, TCP, realtime | `server/VestaHttpServer`, `TcpSyncServer`, `VestaRealtimeSocket`, `SessionManager` | Partial | `vesta-transport`: bounded HTTPS (hyper + tokio-rustls) serves discovery, pack status, password/Minecraft pack sign-in, tickets and disk-streamed artifact downloads; authenticated pack realtime uses WebSocket. Management remains refused and legacy v1 removed; `vesta-agent serve`. TCP sync is superseded/forbidden by the disposition below. Gaps: `vesta-agent serve` has no realtime publish entry point; cross-process `pack_update` detection via heartbeat comparison is pending. Download stall/timeout and per-client download fairness fixes are in progress. |
 | TLS | `security/TlsMaterial` | Partial | Configured PEM via the protected reader, TLS 1.2+, rotation that retains the last good certificate on invalid replacement, and SHA-256 fingerprint response header. No generation or plaintext fallback; mTLS management is not implemented. |
 | Rate limiting | `security/TokenBucketRateLimiter` | Partial | `admission.rs` peer limiter. Equivalence is unverified. |
 | Whitelist and admission data | `security/WhitelistService` | Partial | `whitelist.rs`, `minecraft_admission.rs` (`server.properties`, `banned-players.json`), composed into pack-access policy with explicit reload. No file watching. |
-| Config loading and host composition | `config/ConfigLoader`, `WrapperConfig`, `runtime/AgentRuntime` | Partial | `host.rs`: `Host::open` composes database, identity, pack passwords, Minecraft challenges, whitelist, files, pack preparation, releases and the operation runtime; no owner bootstrap, no game start, rollback on failure, observation-only shutdown. No transport; CLI still only `check-config`. |
-| Discovery | `runtime/ServerFeatureDiscovery` | Partial | `Host::discover` reports composed mechanisms honestly. No transport serves it. |
+| Config loading and host composition | `config/ConfigLoader`, `WrapperConfig`, `runtime/AgentRuntime` | Partial | `host.rs`: `Host::open` composes database, identity, pack passwords, Minecraft challenges, whitelist, files, pack preparation, releases and the operation runtime; no owner bootstrap, no game start, rollback on failure, observation-only shutdown. CLI entrypoint exists (`vesta-agent serve`, `check-config`; `apps/vesta-agent/src/main.rs`). |
+| Discovery | `runtime/ServerFeatureDiscovery` | Partial | `Host::discover` reports composed mechanisms honestly. Served by `GET /api/v2/discovery` (`crates/vesta-transport/src/routes.rs:185`). |
 | Installer | `ContentInstaller`, `AgentRuntime` | Unknown | `vesta-server-install` exists. Capability not inspected. |
 | Connector and plugin protocol | `ipc/ControlIpcServer`, `src/main/java/com/vesta/loader` | Replaced / forbidden legacy authority | Control IPC has no pack/status messages; do not add a Rust endpoint (see Control IPC disposition below). Retained plugin/mod remain Java; they still need a v2 HTTPS client and detection update in the plugin repository. |
 
@@ -104,16 +104,21 @@ Each wave ends with focused tests, a fresh full suite and an unsigned local comm
    non-authoritative revision fields.
 3. **Archive-mode manifest and snapshot:** pinned snapshot, refresh and serve for `.zip` and
    `.mrpack` artifacts.
-4. **Protected file and content services:** Implemented, verified pending final review: mkdir/rename,
-   resumable chunked uploads, and provider-sourced Modrinth/CurseForge content installation.
-   Remaining: optional operation-journal integration for file effects.
-5. **Host composition (remaining):** host-run CLI entrypoint once a transport exists; player
-   query and console exposure through authenticated channels.
+4. **Protected file and content services:** Implemented as library APIs only, verified pending final
+   review: mkdir/rename, resumable chunked uploads, and provider-sourced Modrinth/CurseForge content
+   installation. No CLI or network entry point (management surface refused until the device boundary
+   exists). Expired uploads are purged at host startup only. Uploads and installs are capped at 16 MiB
+   (`MAX_WRITE_BYTES`). Remaining: optional operation-journal integration for file effects.
+5. **Host composition (remaining):** the CLI entrypoint exists (`vesta-agent serve`, `check-config`);
+   `serve` has no realtime publish entry point. Player query and console exposure through
+   authenticated channels remain.
 6. **Transports:** Implemented, verified pending final review: pack WebSocket realtime, disk-streamed
    artifact downloads, TLS rotation and the SHA-256 fingerprint header, bounded HTTPS discovery,
    pack status and pack-only authentication over the existing session store, with rate limits.
    TCP sync is superseded/forbidden by the disposition below, not implemented. Management routes
-   stay unavailable until a canonical device boundary exists.
+   stay unavailable until a canonical device boundary exists. Pending: cross-process `pack_update`
+   publication (`vesta-agent serve` has no publish entry point; detection via heartbeat comparison
+   is being added). Download stall/timeout and per-client download fairness fixes are in progress.
 7. **Out of migration scope:** backups, SFTP, scheduling, NAT, metrics, Discord, MOTD (future work).
 8. **Verification gate:** settled-source fmt, check, test, clippy, Node and parity checks
    on Windows; a separately configured Sol performs the whole-rebuild review; parent fixes
@@ -161,14 +166,14 @@ Replacement mapping (semantic replacement, **not** legacy wire compatibility):
 |---|---|
 | `Handshake` | HTTPS `/api/v2/discovery`, Minecraft challenge/complete (normal identity flow) or alternative pack-password sign-in, then purpose-bound tickets; v2 API boundary instead of TCP version negotiation. |
 | `HandshakeResponse` | HTTPS discovery/auth responses and WebSocket `hello`; pack sessions grant no management authority. |
-| `Heartbeat` | WebSocket heartbeat plus Ping/Pong, bounded idle/session expiry (`crates/vesta-transport/src/realtime.rs:343-377`). |
+| `Heartbeat` | WebSocket heartbeat plus Ping/Pong, bounded idle/session expiry (`crates/vesta-transport/src/realtime.rs:349-381`). |
 | `SyncCheck` | `GET /api/v2/pack/status?installed=N`, using monotonic installed revision rather than Java installed-hash/version DTOs. |
-| `SyncCheckResponse` | `PackReleases` revision/minimum/status response (`crates/vesta-transport/src/routes.rs:193-208`); catalogue/artifact-based installation replaces server-generated per-file action lists. |
+| `SyncCheckResponse` | `PackReleases` revision/minimum/status response (`crates/vesta-transport/src/routes.rs:211`); catalogue/artifact-based installation replaces server-generated per-file action lists. |
 | `FileRequest` | Authenticated `GET /api/v2/pack/artifact`, optionally with a single-use download ticket; no arbitrary file path. |
-| `FileResponse` | Pinned artifact stream with size/SHA-256 verification and digest ETag (`routes.rs:292-334`, `lib.rs:95-112`), not a legacy per-file URL response. |
-| `PushUpdateAvailable` | Release-watch WebSocket `pack_update` (`realtime.rs:336-359`), authorized by a separate realtime ticket. |
+| `FileResponse` | Pinned artifact stream with size/SHA-256 verification and digest ETag (`routes.rs:312` artifact handler, ETag at `routes.rs:349-353`), not a legacy per-file URL response. |
+| `PushUpdateAvailable` | Release-watch WebSocket `pack_update` (`realtime.rs:335` `connected`, send at `:364`), authorized by a separate realtime ticket. Cross-process publish is pending: `vesta-agent serve` has no publish entry point; heartbeat-comparison detection is being added. |
 | `SyncComplete` | Client persists its installed revision, then rechecks status/reconnects with that revision; no server acknowledgement endpoint. Java registered the DTO but no handler (`wrapper/src/main/java/com/vesta/wrapper/server/MessageRouter.java:40-44,85-88`). |
-| `Disconnect` | WebSocket Close / HTTPS connection termination; no TCP session to remove (`realtime.rs:379-400`). |
+| `Disconnect` | WebSocket Close / HTTPS connection termination; no TCP session to remove (`realtime.rs:385`, close frame at `:402`). |
 
 Framing remains a reusable foundation: Java's four-byte big-endian UTF-8 body
 (`core/.../protocol/TcpMessageCodec.java:42-80`) is covered by
@@ -245,12 +250,13 @@ plugin works unchanged under the Rust agent.
 
 Rust replacements already present (semantic, not Java-wire compatibility):
 
-- `crates/vesta-transport/src/routes.rs:47-60,179-208`: HTTPS discovery and
-  published pack revision/minimum/status; pack-auth and artifact endpoints.
-- `crates/vesta-transport/src/realtime.rs:336-359`: subscribe-before-snapshot
-  release watch, WebSocket `hello` and `pack_update`. The plugin has no corresponding
-  ControlCodec receive handler to preserve.
-- `routes.rs:34-40`: management unavailable, all legacy v1 endpoints removed.
+- `crates/vesta-transport/src/routes.rs:47,185,211,312`: route dispatch, HTTPS
+  discovery, published pack revision/minimum/status; pack-auth and artifact endpoints.
+- `crates/vesta-transport/src/realtime.rs:335-383`: subscribe-before-snapshot
+  release watch (`connected`), WebSocket `hello` and `pack_update` (send at `:364`).
+  Cross-process publish is pending (no `vesta-agent serve` publish entry point). The
+  plugin has no corresponding ControlCodec receive handler to preserve.
+- `routes.rs:37`: `fixed_refusal`; management unavailable, all legacy v1 endpoints removed.
 
 Java test evidence: `core/src/test/java/com/vesta/sync/ipc/ControlCodecTest.java:15-24`
 round-trips a permission request and checks its type/node, not golden bytes or
@@ -267,7 +273,7 @@ Validation on Windows for this documentation-only disposition:
 - `cargo fmt --all -- --check`: passed; no Rust files formatted or edited.
 - `cargo clippy --workspace --all-targets --offline --locked -- -D warnings`: passed.
 - `cargo test -p vesta-protocol -p vesta-transport -p vesta-agent --offline --locked -- --test-threads=1`:
-  **132 passed, 0 failed** (protocol 83; transport 42; agent 7; 0 doctests).
+  **139 passed, 0 failed** (protocol 83; transport 49, pending further changes; agent 7; 0 doctests).
 - Both clippy and test used `CARGO_TARGET_DIR=target/sol-transport` and
   `CARGO_INCREMENTAL=0`. These are existing-code regression checks, not certification
   of an IPC implementation; **0 new tests**. Concurrent content/files-agent changes
