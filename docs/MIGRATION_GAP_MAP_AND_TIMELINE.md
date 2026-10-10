@@ -1,10 +1,14 @@
 # Java-to-Rust migration: gap map and timeline
 
 Status: **not complete.** The migration gate has not passed: 179 inventory rows are
-`not_migrated`, no row is `verified`, and the independent whole-rebuild review by a
-separately configured Sol has not run. Historical baseline: branch `feat/server-software-foundation`,
-commit `e4a6e2c`. Current-source accounting below was checked at HEAD `a3dda06`; historical
-checkpoint statements are labeled and are not descriptions of current gaps.
+`not_migrated`, no row is `verified`, and the completed whole-rebuild review did not pass.
+The owner-approved gate is that review plus delta reviews; the review at `a3dda06` found
+3 P2 findings and an accounting issue, and the delta review at `1250533` confirmed the
+three P2s resolved while finding a new P2 (unbounded file-intent retention) and an
+accounting issue. A fix-delta review is pending. Historical baseline: branch
+`feat/server-software-foundation`, commit `e4a6e2c`. Current-source accounting below was
+checked at HEAD `a3dda06`; historical checkpoint statements are labeled and are not
+descriptions of current gaps.
 
 Sources: `docs/RUST_WRAPPER_PARITY.json`, `docs/SERVER_SOFTWARE_REQUIREMENTS.md`,
 `docs/archive/RUST_WRAPPER_MIGRATION_PLAN.md`, `docs/archive/RUST_INTEGRATED_MIGRATION_PASS.md`, and a
@@ -41,10 +45,10 @@ design), Plugin-side (retained Java), or Unknown.
 | Operations and confirmations | `operations/` | Partial | Closed lifecycle driver exists. Confirmation coverage is unverified. |
 | Process and console | `runtime/MinecraftServerProcess`, `console/ConsoleBuffer` | Partial | Owned direct-child control and console capture exist. No supervisor, no crash policy. |
 | Player query | `runtime/PlayersQuery`, `PlayerListParser` | Partial | Literal `list` query is composed through the operation driver (`QueryDriver`). An authenticated management transport for player queries is missing. |
-| File browser | `files/FileBrowserService`, `ServerPathPolicy` | Partial | List/read plus `files/mutation.rs`: create/overwrite/delete/restore, scoped capabilities, bounded recoverable trash (10 GiB / 10 % / 7 days), disk-space preflight and audited transactions. One-level mkdir and file rename with If-Match hashes, and resumable uploads (bounded on-disk staging in protected state, reservations, fresh authority checks), are implemented as library APIs only; no CLI or network entry point (management surface refused until the device boundary exists). Expired uploads are purged at host startup and during upload creation (`crates/vesta-control/src/host.rs:273`, `crates/vesta-control/src/files/upload.rs:137`). Durable file intent/outcome operation-journal integration is required by the plan and is being implemented (in progress). Non-ASCII file/resource names remain unsupported although Java accepted them. |
+| File browser | `files/FileBrowserService`, `ServerPathPolicy` | Partial | List/read plus `files/mutation.rs`: create/overwrite/delete/restore, scoped capabilities, bounded recoverable trash (10 GiB / 10 % / 7 days), disk-space preflight and audited transactions. One-level mkdir and file rename with If-Match hashes, and resumable uploads (bounded on-disk staging in protected state, reservations, fresh authority checks), are implemented as library APIs only; no CLI or network entry point (management surface refused until the device boundary exists). Expired uploads are purged at host startup and during upload creation (`crates/vesta-control/src/host.rs:273`, `crates/vesta-control/src/files/upload.rs:137`). Durable file-intent/outcome journaling is implemented (`crates/vesta-control/src/files/journal.rs`, schema v11); unbounded intent retention remains a capacity limitation being fixed. Non-ASCII file/resource names remain unsupported although Java accepted them. |
 | Content install | `content/ContentInstaller` | Partial | Library APIs only; no CLI or network entry point. Recoverable file mutations cover upload/remove; provider-sourced Modrinth/CurseForge installs resolve trusted metadata and verify bytes before writing. Uploads and installs are capped at 16 MiB (`MAX_WRITE_BYTES`, `files/mutation.rs:35`). Broader arbitrary URL installation is not implied. |
 | Pack catalogue, manifest, archive | `core/manifest/ServerModpackManifest`, `LocalArchivePack` | Partial (Replaced format) | Rust-native catalogue schema, stored ZIP builder and content-addressed publication exist. Implemented: strict backend `[pack.source]` selects provider/project/version reference, confined local archive, or scanned content through explicit `Host::prepare_pack` / authorized `PackReleases::publish_prepared`; configured archive preparation pins bytes through the protected reader and protected publication/authenticated artifact serving are implemented. Selected directories share one root-relative namespace, skip/report absent selections, reject overlaps/case aliases, and retain exclusions, unresolved dispositions and global budgets. No live auto-scan, provider fetching or archive extraction. Exact legacy archive-manifest parity remains an open question; whole-family independent parity review remains pending. `vesta-agent serve` has no trusted pack-publication entry point. |
-| Pack revisions and update policy | `manifest/ModpackState` | Partial | `packs/releases.rs`: database-backed monotonic releases, optional/required minimum (`pack.force_update`), `current`/`update_available`/`update_required`, display-version acknowledgement. Reference-aware artifact pruning (`prune`) exists; its recovery fix is in progress. No signing. |
+| Pack revisions and update policy | `manifest/ModpackState` | Partial | `packs/releases.rs`: database-backed monotonic releases, optional/required minimum (`pack.force_update`), `current`/`update_available`/`update_required`, display-version acknowledgement. Reference-aware artifact pruning and its quarantine/recovery path are implemented (`crates/vesta-control/src/packs/quarantine.rs`). No signing. |
 | Sync and status | `core/sync` | Partial | Pure proposal types. No I/O in the core. `GET /api/v2/pack/status` exists (`crates/vesta-transport/src/routes.rs:211`). |
 | HTTP, TCP, realtime | `server/VestaHttpServer`, `TcpSyncServer`, `VestaRealtimeSocket`, `SessionManager` | Partial | `vesta-transport`: bounded HTTPS (hyper + tokio-rustls) serves `POST /api/v2/discovery`, pack status, password/Minecraft pack sign-in, tickets and disk-streamed artifact downloads; authenticated pack realtime uses WebSocket. Management remains refused and legacy v1 removed; `vesta-agent serve`. TCP sync is superseded/forbidden by the disposition below. Realtime heartbeat rereads the database-hosted release and compares revision and minimum revision, detecting cross-process release changes within one heartbeat; the test commits a database row directly, not via a second process. Download throughput floor and global/per-session/per-peer caps are implemented (`crates/vesta-transport/src/lib.rs`, `routes.rs`). `vesta-agent serve` still has no realtime publish entry point. |
 | TLS | `security/TlsMaterial` | Partial | Configured PEM via the protected reader, TLS 1.2+, rotation that retains the last good certificate on invalid replacement, and SHA-256 fingerprint response header. No generation or plaintext fallback; mTLS management is not implemented. |
@@ -99,7 +103,7 @@ Each wave ends with focused tests, a fresh full suite and an unsigned local comm
    accounting report and checkpoint-doc archive (`dbbefab`); reference-aware artifact pruning and
    protected whitelist loading, host composition and discovery (`52773b0`); pack-access policy,
    sessions/tickets and Minecraft admission data (recorded as the next commit at that checkpoint).
-   At current HEAD these capabilities exist; prune recovery remains in progress.
+   At current HEAD these capabilities exist, including implemented prune quarantine/recovery (`crates/vesta-control/src/packs/quarantine.rs`). The separate file-intent retention limitation remains under fix.
 1. **Accounting pass:** script-based recount of requirement links; classify the 179 rows by
    kind and boundary; record dispositions with evidence. No promotion without tests.
 2. **Catalogue and revisions:** configured whole-pack acquisition mode selection and selected-directory
@@ -110,12 +114,14 @@ Each wave ends with focused tests, a fresh full suite and an unsigned local comm
    Remaining: configuration still needs to drop its non-authoritative revision fields; sync/status and
    release-aware pruning are implemented.
 3. **Archive mode:** configured pinned archive preparation, protected publication and authenticated artifact serving are implemented. Exact legacy archive-manifest parity remains an open question; archive refresh semantics are not claimed.
-4. **Protected file and content services:** Implemented as library APIs only, verified pending final
-   review: mkdir/rename, resumable chunked uploads staged on disk in protected state, and provider-sourced
-   Modrinth/CurseForge content installation. No CLI or network entry point (management surface refused
-   until the device boundary exists). Expired uploads are purged at host startup and during upload
-   creation. Uploads and installs are capped at 16 MiB (`MAX_WRITE_BYTES`). Required durable file
-   intent/outcome operation-journal integration is being implemented (in progress).
+4. **Protected file and content services:** Implemented as library APIs only; review history is
+   recorded below, and migration status remains not passed. This includes mkdir/rename, resumable
+   chunked uploads staged on disk in protected state, provider-sourced Modrinth/CurseForge content
+   installation, and durable file-intent/outcome journaling (`crates/vesta-control/src/files/journal.rs`,
+   schema v11). No CLI or network entry point (management surface refused until the device boundary
+   exists). Expired uploads are purged at host startup and during upload creation. Uploads and installs
+   are capped at 16 MiB (`MAX_WRITE_BYTES`). Unbounded intent retention remains a capacity limitation
+   being fixed.
 5. **Host composition (remaining):** the CLI entrypoint exists (`vesta-agent serve`, `check-config`);
    `serve` has no realtime publish entry point. Player-query runtime composition is wired through
    `QueryDriver`; an authenticated management transport for player queries and console exposure
@@ -131,8 +137,11 @@ Each wave ends with focused tests, a fresh full suite and an unsigned local comm
    caps are implemented.
 7. **Out of migration scope:** backups, SFTP, scheduling, NAT, metrics, Discord, MOTD (future work).
 8. **Verification gate:** settled-source fmt, check, test, clippy, Node and parity checks
-   on Windows; a separately configured Sol performs the whole-rebuild review; parent fixes
-   findings with regressions and reruns the full suites.
+   on Windows. Review history: the complete whole-rebuild Sol review at `a3dda06` did not pass
+   (3 P2 findings plus accounting); the owner-approved gate requires that review plus delta
+   reviews. Delta review `1250533` confirmed those 3 P2s resolved and found a new P2 (unbounded
+   file-intent retention) plus accounting; a fix-delta review is pending. Migration status has
+   not passed.
 9. **Repository cleanup:** move the Java plugin/mod (and the Java core/wrapper baseline) into a
    separate repository outside the server repo, then drop Gradle files and Java-era root docs here.
 10. **Remaining plugin-repository gap:** update the retained plugin's server detection and add a v2

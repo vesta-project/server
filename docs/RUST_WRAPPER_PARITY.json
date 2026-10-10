@@ -2364,11 +2364,11 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Partial host-side Rust equivalent for hosted-pack state: PackReleases records monotonic database-backed releases (revision, minimum revision, display version, content-addressed artifact) under pack.publish/pack.force_update with same-transaction authority recheck and audit, replacing configuration-supplied revisions. GET /api/v2/pack/status projects hosted releases; configured archive preparation, protected publication and authenticated artifact serving exist, as does native platform-reference catalogue state. Release-aware artifact pruning exists; its recovery fix is in progress. Exact legacy archive-manifest parity remains an open question.",
+      "rationale": "Partial host-side Rust equivalent for hosted-pack state: PackReleases records monotonic database-backed releases (revision, minimum revision, display version, content-addressed artifact) under pack.publish/pack.force_update with same-transaction authority recheck and audit, replacing configuration-supplied revisions. GET /api/v2/pack/status projects hosted releases; configured archive preparation, protected publication and authenticated artifact serving exist, as does native platform-reference catalogue state. Release-aware artifact pruning and its quarantine/recovery path are implemented in crates/vesta-control/src/packs/quarantine.rs. Exact legacy archive-manifest parity remains an open question.",
       "gaps": [
         "Configured platform-reference catalogue behavior exists; exact legacy `fromArchive` manifest parity remains an open question, separate from implemented configured pinned archive preparation/publication/serving.",
         "Signed manifests remain unimplemented.",
-        "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
+        "Whole-family applicable-requirement accounting remains incomplete; the whole-rebuild review completed but did not pass, and a fix-delta review is pending."
       ],
       "rustTests": [
         "crates/vesta-control/src/packs/releases_tests.rs",
@@ -2384,6 +2384,16 @@
           "path": "crates/vesta-control/src/packs/releases_tests.rs",
           "date": "2026-10-10",
           "claim": "Rust test function evidence: pruning_keeps_only_the_hosted_artifact_and_never_touches_foreign_names, pruning_without_a_release_removes_every_owned_name."
+        },
+        {
+          "path": "crates/vesta-control/src/packs/quarantine.rs",
+          "date": "2026-10-10",
+          "claim": "Prune moves are recoverable quarantine renames; recovery uses the committed audit to complete or restore them and refuses occupied restore targets rather than replacing them."
+        },
+        {
+          "path": "crates/vesta-control/src/packs/releases_tests.rs",
+          "date": "2026-10-10",
+          "claim": "Recovery test evidence: interrupted prune is reconciled on reopen and reopening refuses to replace an occupied restore target."
         },
         {
           "path": "crates/vesta-transport/tests/https.rs",
@@ -4881,11 +4891,11 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Rust files/mod.rs provides a bounded, sorted directory list that hides protected and non-portable entries, and a bounded read that returns hashed bytes. Java write and delete operations are not implemented in Rust, and the Java traversal rejection is covered by RelativePath::parse. Writes, deletes and restores are now in files/mutation.rs: explicit create/overwrite/delete capabilities, If-Match SHA-256 preconditions, a bounded recoverable trash in protected state, same-directory staging and transactional audit; Java's directory auto-creation and unconditional replace/delete are deliberately not reproduced.",
+      "rationale": "Rust files/mod.rs provides a bounded, sorted directory list that hides protected and non-portable entries, and a bounded read that returns hashed bytes. Java write and delete operations are not implemented in Rust, and the Java traversal rejection is covered by RelativePath::parse. Writes, deletes and restores are now in files/mutation.rs: explicit create/overwrite/delete capabilities, If-Match SHA-256 preconditions, a bounded recoverable trash in protected state, same-directory staging and transactional audit; durable file-intent/outcome journaling is implemented in files/journal.rs using schema v11. Java's directory auto-creation and unconditional replace/delete are deliberately not reproduced.",
       "gaps": [
         "Parent directories are not created implicitly; mkdir creates only one level and rename moves only one file.",
         "Resumable chunked uploads are bounded and staged on disk in protected state (files-and-content-010); they remain library APIs without a network entry point.",
-        "Mutations are direct authorized transactions with best-effort reversal on commit failure, not queued operations with a durable journal.",
+        "File-intent retention is unbounded; this remaining capacity limitation is being fixed.",
         "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
       "rustTests": [
@@ -4923,6 +4933,11 @@
           "path": "crates/vesta-control/src/files/mutation_tests.rs",
           "date": "2026-10-10",
           "claim": "Rust test function evidence: mkdir_creates_one_level_and_audits_only_success, rename_moves_one_file_to_an_absent_name_and_audits_both_names, rename_refuses_stale_hash_existing_targets_and_missing_parents. File browser now includes mkdir and rename."
+        },
+        {
+          "path": "crates/vesta-control/src/files/journal.rs",
+          "date": "2026-10-10",
+          "claim": "File mutations persist intents before native effects, record terminal outcomes with audit, and reconcile pending intents without blindly replaying effects; retention is currently unbounded and is a remaining capacity limitation being fixed. Schema v11 defines file_intents."
         }
       ],
       "results": {
@@ -9698,24 +9713,34 @@
   "baselineInventorySha256": "f8557e2a9002c3e21c54631fbec295315829a7a12ec9e6af2f17ac491c3df5d6",
   "checkerScopeNote": "This checker validates inventory and evidence structure only; it is not a test runner and is not security certification.",
   "finalIndependentSolReview": {
-    "status": "not_run",
-    "model": null,
-    "date": null,
+    "status": "failed",
+    "model": "gpt-6.1-sol",
+    "date": "2026-10-10",
     "evidence": [
       {
+        "path": "docs/MIGRATION_GAP_MAP_AND_TIMELINE.md",
+        "date": "2026-10-10",
+        "claim": "Review history: complete whole-rebuild Sol review at a3dda06 did not pass (3 P2 findings plus accounting). Owner-approved gate is this review plus delta reviews. Delta review at 1250533 confirmed the 3 P2s resolved and found a new P2 (unbounded file-intent retention) plus accounting; fix-delta review is pending. Migration gate has not passed."
+      },
+      {
+        "path": "crates/vesta-control/src/files/journal.rs",
+        "date": "2026-10-10",
+        "claim": "The file-intent journal is implemented, but its retention is unbounded; the capacity limitation is the new P2 awaiting a fix-delta review."
+      },
+      {
         "path": "docs/operations/identity-api.md",
-        "claim": "Interim independent review record. A non-Anthropic interim review was executed on 2026-10-08 and found no authority bypass and no audit/mutation atomicity break. Its one medium finding (a scope longer than one audit metadata value could insert its row and then fail its own success audit) was fixed by bounding ResourceScope text at MAX_METADATA_VALUE_UNITS and covered by an_unrecordable_scope_is_refused_before_any_row_or_audit_is_attempted; an invalid_request state/domain error-code collision was also fixed. This earlier interim review is explicitly NOT the final full-rebuild GPT-6.1 Sol review. Sol was unavailable at that checkpoint; later scoped Sol password/state source reviews are recorded in docs/archive/RUST_PASSWORD_STATE_CHECKPOINT.md. The final whole-rebuild review remains not_run and must occur after actual implementation, before any completion claim.",
+        "claim": "Historical interim-review record from 2026-10-08. It predates the completed whole-rebuild review at a3dda06 and is not the final review evidence.",
         "date": "2026-10-08"
       },
       {
         "path": "docs/archive/RUST_PASSWORD_STATE_CHECKPOINT.md",
-        "claim": "Independent GPT-6.1 Sol scoped source review of password/state fixes and application regressions found no verified production defect; parent fixed weak permit-release and other assertion gaps and reran the fresh Windows suites. This is checkpoint evidence only, not the mandatory final full-rebuild review, which remains not_run.",
+        "claim": "Historical scoped Sol review of password/state fixes and application regressions (2026-10-08); checkpoint evidence only, superseded as the latest review by the whole-rebuild review and subsequent delta review.",
         "date": "2026-10-08"
       },
       {
         "path": "docs/archive/RUST_MINECRAFT_IDENTITY_CHECKPOINT.md",
         "date": "2026-10-08",
-        "claim": "Independent GPT-6.1 Sol scoped Minecraft production/test review confirmed fixes for late provider-error swallowing and the exact ureq body-reader cap; parent strengthened two-slot cleanup, blocked-provider hold and bounded unknown-property assertions, then fresh Windows verification passed. A historical 429 follow-up was later resumed on the same Sol context without fallback. This is not the final whole-rebuild review; its status remains not_run."
+        "claim": "Historical scoped Sol Minecraft production/test review (2026-10-08); checkpoint evidence only, superseded as the latest review by the whole-rebuild review and subsequent delta review."
       }
     ]
   },
