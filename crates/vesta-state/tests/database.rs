@@ -167,7 +167,7 @@ fn failed_pre_migration_backup_neither_overwrites_artifact_nor_migrates_database
     let original = Connection::open(&database_file).expect("reopen schema database");
     original
         .execute_batch(
-            "DROP TABLE file_uploads; DROP TABLE file_trash;
+            "DROP TABLE file_intents; DROP TABLE file_uploads; DROP TABLE file_trash;
              DROP TABLE pack_releases;
              DROP TABLE pack_passwords;
              INSERT INTO meta VALUES ('old-marker', 'preserved');

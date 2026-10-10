@@ -27,7 +27,7 @@ fn v9_platform_reference_migration_preserves_legacy_releases_and_constraints() {
     f.db.close().unwrap();
     let old = Connection::open(directory.database_file()).unwrap();
     old.execute_batch(&format!(
-        "DROP TABLE pack_releases; {ORIGINAL_RELEASES} PRAGMA user_version=9;"
+        "DROP TABLE file_intents; DROP TABLE pack_releases; {ORIGINAL_RELEASES} PRAGMA user_version=9;"
     ))
     .unwrap();
     let insert = "INSERT INTO pack_releases VALUES (?,?,?,?,?,?,?,?)";
@@ -128,9 +128,9 @@ fn v9_platform_reference_migration_preserves_legacy_releases_and_constraints() {
         })
         .unwrap();
     migrated.close().unwrap();
-    let backup_path = directory
-        .path()
-        .join("migration-backups/pre-migration-v9-to-v10-1700000000000.db");
+    let backup_path = directory.path().join(format!(
+        "migration-backups/pre-migration-v9-to-v{CURRENT_SCHEMA_VERSION}-1700000000000.db"
+    ));
     let backup =
         Connection::open_with_flags(backup_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .unwrap();

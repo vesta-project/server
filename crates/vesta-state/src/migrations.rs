@@ -14,6 +14,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         8 => apply_v8(c),
         9 => apply_v9(c),
         10 => apply_v10(c),
+        11 => apply_v11(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -584,3 +585,22 @@ const BUILTIN_PRESETS: &[BuiltinPreset] = &[
         capabilities: &["status.view", "pack.access"],
     },
 ];
+
+/// Durable file mutation intents, independent of operation scheduler retention.
+fn apply_v11(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(r#"
+        CREATE TABLE file_intents (
+            id TEXT PRIMARY KEY CHECK (length(id)=32 AND id NOT GLOB '*[^0-9a-f]*'),
+            server_id TEXT NOT NULL REFERENCES server_identity(server_id),
+            principal_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('write','delete','mkdir','rename','restore')),
+            path TEXT NOT NULL CHECK (length(CAST(path AS BLOB)) BETWEEN 1 AND 4096),
+            details_json TEXT NOT NULL CHECK (json_valid(details_json) AND length(CAST(details_json AS BLOB))<=32768),
+            status TEXT NOT NULL CHECK (status IN ('pending','complete','aborted','recovery-required')),
+            created_at INTEGER NOT NULL
+        ) STRICT;
+        CREATE INDEX file_intents_pending ON file_intents(server_id,status);
+    "#)?;
+    Ok(())
+}

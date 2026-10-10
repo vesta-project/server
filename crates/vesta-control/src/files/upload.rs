@@ -306,6 +306,13 @@ impl FileBrowser {
                 // Aborting only removes protected staging, not a game-tree entry.
                 // A renamed/missing destination must not strand its reservation.
                 super::authorize(&policy, upload.capability(), &upload.path.resource())?;
+                let retained: bool = connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM file_intents WHERE status IN ('pending','recovery-required') AND json_extract(details_json,'$.upload')=?)",
+                    [id.as_str()], |row| row.get(0),
+                )?;
+                if retained {
+                    return Err(FileError::RecoveryRequired(Box::new(FileError::Unavailable)));
+                }
                 self.upload_dir()?.remove(&id.name()?).map_err(state_io)?;
                 tx.connection().execute(
                     "DELETE FROM file_uploads WHERE server_id=? AND id=?",
@@ -331,6 +338,8 @@ impl FileBrowser {
             if rows.len() >= MAX_SCAN { return Err(FileError::UploadFull); }
             let mut purged = 0;
             for (text, expires) in rows {
+                let retained: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM file_intents WHERE status IN ('pending','recovery-required') AND json_extract(details_json,'$.upload')=?)", [&text], |r| r.get(0))?;
+                if retained { continue; }
                 let id = UploadId::parse(&text)?;
                 if expires <= self.db.clock().millis() || directory.open(&id.name()?).map_err(state_io)?.is_none() {
                     directory.remove(&id.name()?).map_err(state_io)?;
@@ -342,7 +351,7 @@ impl FileBrowser {
             for name in directory.list(MAX_SCAN).map_err(state_io)? {
                 let Some(text) = name.as_str().strip_suffix(".bin") else { continue; };
                 if UploadId::parse(text).is_err() { continue; }
-                let recorded: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM file_uploads WHERE id=?)", [text], |r| r.get(0))?;
+                let recorded: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM file_uploads WHERE id=?) OR EXISTS(SELECT 1 FROM file_intents WHERE status IN ('pending','recovery-required') AND json_extract(details_json,'$.upload')=?)", params![text,text], |r| r.get(0))?;
                 if !recorded { directory.remove(&name).map_err(state_io)?; purged += 1; }
             }
             Ok(purged)

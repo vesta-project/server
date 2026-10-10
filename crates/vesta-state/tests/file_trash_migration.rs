@@ -28,7 +28,7 @@ fn populated_v7_migrates_to_current_without_losing_rows_and_enforces_trash_const
         .execute_batch(&format!("DROP TABLE pack_releases; {legacy_release_sql};"))
         .unwrap();
     offline
-        .execute_batch("BEGIN IMMEDIATE; DROP TABLE file_uploads; DROP TABLE file_trash; PRAGMA user_version=7; COMMIT;")
+        .execute_batch("BEGIN IMMEDIATE; DROP TABLE file_intents; DROP TABLE file_uploads; DROP TABLE file_trash; PRAGMA user_version=7; COMMIT;")
         .unwrap();
     drop(offline);
     let migrated = StateDatabase::open(directory, fixture.clock.clone()).unwrap();

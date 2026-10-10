@@ -8,10 +8,8 @@
 //! destructive effect. Authority and the precondition are rechecked in the completion
 //! transaction together with the success audit. Failed completion is compensated only
 //! while the effect's hash still matches. Explicit reconciliation retains uncertain data.
-//! Mkdir and rename use single native effects and compensate failed completion; they do
-//! not journal. A process interruption after the native effect but before database commit
-//! can leave an unaudited directory/move, as with create-only writes. Rename never uses a
-//! copy/delete fallback, so interruption cannot leave a partially copied or replaced file.
+//! Every mutation commits an intent before its effect; startup reports recovered
+//! success, aborted unchanged intent, or explicit recovery-required ambiguity.
 //! Path checks are same-account hygiene, not race-free confinement.
 use super::{FileBrowser, FileError, RelativePath, Result, io_error, native};
 use crate::identity::{self, Capability, Subject};
@@ -40,6 +38,9 @@ pub const SPACE_RESERVE_BYTES: u64 = 64 * 1_024 * 1_024;
 const SOURCE: &str = "files";
 const TARGET: &str = "file";
 const STAGE_PREFIX: &str = ".vesta-stage-";
+#[path = "journal.rs"]
+mod journal;
+use journal::{Intent, crash_point, interrupted};
 
 /// Trash ceiling: the lower of an absolute byte limit and a share of the state volume.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -130,6 +131,7 @@ impl FileBrowser {
     pub fn mkdir(&self, subject: &Subject, path: &RelativePath) -> Result<()> {
         let admission = mutation_admission(self.db.directory().path())?;
         let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
+        let intent = self.begin_intent(subject, "mkdir", path, &Intent::default())?;
         let mut target = None;
         let result = self
             .db
@@ -138,12 +140,18 @@ impl FileBrowser {
                 self.authorize_destination(connection, subject, path, Capability::FilesMkdir)?;
                 let directory = self.parent(path)?.join(leaf(path));
                 require_absent(&directory)?;
+                self.authorize_destination(connection, subject, path, Capability::FilesMkdir)?;
+                crash_point("before")?;
                 fs::create_dir(&directory).map_err(no_replace_error)?;
                 target = Some(directory);
-                self.audit(connection, subject, "files.mkdir", path, [])?;
+                crash_point("after")?;
+                self.finish_intent(connection, &intent)?;
                 Ok(())
             })
             .map_err(FileError::from);
+        if interrupted() {
+            return result;
+        }
         if let Err(error) = &result
             && target.is_some()
         {
@@ -156,9 +164,12 @@ impl FileBrowser {
                 fs::remove_dir(&checked.path).map_err(io_error)
             })();
             if reversed.is_err() {
-                return Err(FileError::RecoveryRequired(Box::new(error.clone())));
+                let failed: Result<()> = Err(FileError::RecoveryRequired(Box::new(error.clone())));
+                self.failed_intent(&intent, &failed)?;
+                return failed;
             }
         }
+        self.failed_intent(&intent, &result)?;
         result
     }
 
@@ -175,6 +186,17 @@ impl FileBrowser {
         check_hex(expected_sha256)?;
         let admission = mutation_admission(self.db.directory().path())?;
         let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
+        let intent = self.begin_intent(
+            subject,
+            "rename",
+            from,
+            &Intent {
+                to: Some(to.as_str().into()),
+                previous: Some(expected_sha256.into()),
+                effect: Some(expected_sha256.into()),
+                ..Intent::default()
+            },
+        )?;
         let mut targets = None;
         let result = self
             .db
@@ -189,18 +211,13 @@ impl FileBrowser {
                 require_mutable_target(&source)?;
                 require_absent(&destination)?;
                 let size = checked.metadata.len();
+                self.authorize(connection, subject, from, Capability::FilesRename)?;
+                self.authorize_destination(connection, subject, to, Capability::FilesRename)?;
+                crash_point("before")?;
                 native::rename_absent(&source, &destination)?;
                 targets = Some((source, destination));
-                self.audit(
-                    connection,
-                    subject,
-                    "files.rename",
-                    from,
-                    [
-                        ("to", Some(to.as_str().to_owned())),
-                        ("sha256", Some(expected_sha256.to_owned())),
-                    ],
-                )?;
+                crash_point("after")?;
+                self.finish_intent(connection, &intent)?;
                 Ok(FileChange {
                     sha256: expected_sha256.to_owned(),
                     size,
@@ -208,9 +225,15 @@ impl FileBrowser {
                 })
             })
             .map_err(FileError::from);
-        if let Some((source, destination)) = targets {
-            return settle_rename(result, &source, &destination, expected_sha256);
+        if interrupted() {
+            return result;
         }
+        let result = if let Some((source, destination)) = targets {
+            settle_rename(result, &source, &destination, expected_sha256)
+        } else {
+            result
+        };
+        self.failed_intent(&intent, &result)?;
         result
     }
 
@@ -260,9 +283,36 @@ impl FileBrowser {
                 Some(self.prepare_trash(subject, path, expected, Reason::Replace, Some(&sha256))?)
             }
         };
+        let intent = match self.begin_intent(
+            subject,
+            "write",
+            path,
+            &Intent {
+                previous: match precondition {
+                    WritePrecondition::Absent => None,
+                    WritePrecondition::Matches(sha) => Some(sha.clone()),
+                },
+                effect: Some(sha256.clone()),
+                stage: Some(stage.leaf()?),
+                trash: trash.clone(),
+                upload: upload.map(str::to_owned),
+                size: bytes.len() as u64,
+                ..Intent::default()
+            },
+        ) {
+            Ok(id) => id,
+            Err(error) => {
+                if let Some(id) = &trash {
+                    self.retire_failed::<()>(id, &Err(error.clone()))?;
+                }
+                return Err(error);
+            }
+        };
+        stage.retained.set(true);
         let applied = Cell::new(None::<Applied>);
         let result = self.db.write_with(|transaction| {
             let connection = transaction.connection();
+            require_hash(&stage.path, Some(&sha256))?;
             self.authorize(connection, subject, path, capability)?;
             match precondition {
                 WritePrecondition::Absent => require_absent(&target)?,
@@ -276,6 +326,8 @@ impl FileBrowser {
                     )?)?;
                 }
             }
+            self.authorize(connection, subject, path, capability)?;
+            crash_point("before")?;
             match precondition {
                 WritePrecondition::Absent => stage.link_absent(&target)?,
                 WritePrecondition::Matches(_) => stage.replace(&target)?,
@@ -284,6 +336,8 @@ impl FileBrowser {
                 trash: trash.clone(),
                 effect: Some(sha256.clone()),
             }));
+            crash_point("after")?;
+            self.finish_intent(connection, &intent)?;
             complete(connection, self.db.server_id(), trash.as_deref())?;
             if let Some(id) = upload {
                 let removed = connection.execute(
@@ -294,24 +348,15 @@ impl FileBrowser {
                     return Err(FileError::NotFound);
                 }
             }
-            self.audit(
-                connection,
-                subject,
-                "files.write",
-                path,
-                [
-                    ("sha256", Some(sha256.clone())),
-                    ("size", Some(bytes.len().to_string())),
-                    ("trash", trash.clone()),
-                ],
-            )?;
             Ok(FileChange {
                 sha256: sha256.clone(),
                 size: bytes.len() as u64,
                 trash: trash.clone(),
             })
         });
-        drop(stage);
+        if interrupted() {
+            return result.map_err(FileError::from);
+        }
         let result = self.settle(result.map_err(FileError::from), applied.take(), &target);
         if let Err(primary) = &result
             && let Some(id) = trash.as_deref()
@@ -319,6 +364,10 @@ impl FileBrowser {
         {
             return Err(FileError::RecoveryRequired(Box::new(primary.clone())));
         }
+        self.failed_intent(&intent, &result)?;
+        stage
+            .retained
+            .set(matches!(&result, Err(FileError::RecoveryRequired(_))));
         result
     }
 
@@ -335,6 +384,22 @@ impl FileBrowser {
         let parent = self.authorized_parent(subject, path, Capability::FilesDelete)?;
         let target = parent.join(leaf(path));
         let id = self.prepare_trash(subject, path, expected_sha256, Reason::Delete, None)?;
+        let intent = match self.begin_intent(
+            subject,
+            "delete",
+            path,
+            &Intent {
+                previous: Some(expected_sha256.into()),
+                trash: Some(id.clone()),
+                ..Intent::default()
+            },
+        ) {
+            Ok(intent) => intent,
+            Err(error) => {
+                self.retire_failed::<()>(&id, &Err(error.clone()))?;
+                return Err(error);
+            }
+        };
         let applied = Cell::new(None::<Applied>);
         let result = self.db.write_with(|transaction| {
             let connection = transaction.connection();
@@ -342,22 +407,23 @@ impl FileBrowser {
             require_hash(&target, Some(expected_sha256))?;
             require_mutable_target(&target)?;
             // Read-only and sharing-denied Windows targets refuse without changing attributes.
+            self.authorize(connection, subject, path, Capability::FilesDelete)?;
+            crash_point("before")?;
             fs::remove_file(&target).map_err(io_error)?;
             applied.set(Some(Applied {
                 trash: Some(id.clone()),
                 effect: None,
             }));
+            crash_point("after")?;
+            self.finish_intent(connection, &intent)?;
             complete(connection, self.db.server_id(), Some(&id))?;
-            self.audit(
-                connection,
-                subject,
-                "files.delete",
-                path,
-                [("trash", Some(id.clone()))],
-            )?;
             load_entry(connection, self.db.server_id(), &id)?.ok_or(FileError::Unavailable)
         });
+        if interrupted() {
+            return result.map_err(FileError::from);
+        }
         let result = self.settle(result.map_err(FileError::from), applied.take(), &target);
+        self.failed_intent(&intent, &result)?;
         if let Err(primary) = &result
             && self.retire_failed(&id, &result).is_err()
         {
@@ -383,13 +449,40 @@ impl FileBrowser {
         let stage = Stage::write(&parent, &bytes)?;
         let permissions = self
             .db
-            .read_with(|snapshot| permissions_for(snapshot.connection(), self.db.server_id(), id))
+            .read_with(|snapshot| {
+                let connection = snapshot.connection();
+                let status: String = connection.query_row(
+                    "SELECT status FROM file_trash WHERE server_id=? AND id=?",
+                    params![self.db.server_id(), id],
+                    |row| row.get(0),
+                )?;
+                if status != "complete" {
+                    return Err(FileError::RecoveryRequired(Box::new(
+                        FileError::Unavailable,
+                    )));
+                }
+                permissions_for(connection, self.db.server_id(), id)
+            })
             .map_err(FileError::from)?;
         stage.permissions(&permissions)?;
         let target = parent.join(leaf(&entry.path));
+        let intent = self.begin_intent(
+            subject,
+            "restore",
+            &entry.path,
+            &Intent {
+                effect: Some(entry.sha256.clone()),
+                stage: Some(stage.leaf()?),
+                trash: Some(id.into()),
+                size: entry.size,
+                ..Intent::default()
+            },
+        )?;
+        stage.retained.set(true);
         let applied = Cell::new(None::<Applied>);
         let result = self.db.write_with(|transaction| {
             let connection = transaction.connection();
+            require_hash(&stage.path, Some(&entry.sha256))?;
             self.authorize(connection, subject, &entry.path, Capability::FilesCreate)?;
             let current = load_entry(connection, self.db.server_id(), id)?;
             if current.as_ref() != Some(&entry) {
@@ -406,21 +499,18 @@ impl FileBrowser {
                 )));
             }
             require_absent(&target)?;
+            self.authorize(connection, subject, &entry.path, Capability::FilesCreate)?;
+            crash_point("before")?;
             stage.link_absent(&target)?;
             applied.set(Some(Applied {
                 trash: None,
                 effect: Some(entry.sha256.clone()),
             }));
+            crash_point("after")?;
+            self.finish_intent(connection, &intent)?;
             connection.execute(
                 "UPDATE file_trash SET status='restored' WHERE server_id=? AND id=?",
                 params![self.db.server_id(), id],
-            )?;
-            self.audit(
-                connection,
-                subject,
-                "files.restore",
-                &entry.path,
-                [("trash", Some(id.to_owned()))],
             )?;
             Ok(FileChange {
                 sha256: entry.sha256.clone(),
@@ -428,8 +518,15 @@ impl FileBrowser {
                 trash: None,
             })
         });
-        drop(stage);
-        let change = self.settle(result.map_err(FileError::from), applied.take(), &target)?;
+        if interrupted() {
+            return result.map_err(FileError::from);
+        }
+        let result = self.settle(result.map_err(FileError::from), applied.take(), &target);
+        self.failed_intent(&intent, &result)?;
+        stage
+            .retained
+            .set(matches!(&result, Err(FileError::RecoveryRequired(_))));
+        let change = result?;
         // Restore already committed successfully. Cleanup failure must not misreport
         // it as failed; retain its accounted restored row for a later purge retry.
         let _ = self.remove_recorded_copy(id, &trash, &name);
@@ -476,7 +573,7 @@ impl FileBrowser {
         let trash = self.trash_dir()?;
         let ids = self.db.read_with(|snapshot| {
             let mut statement = snapshot.connection().prepare(
-                "SELECT id FROM file_trash WHERE server_id=? AND ((status='complete' AND expires_at<=?) OR status='restored')")?;
+                "SELECT id FROM file_trash WHERE server_id=? AND ((status='complete' AND expires_at<=?) OR status='restored') AND NOT EXISTS (SELECT 1 FROM file_intents WHERE status IN ('pending','recovery-required') AND json_extract(details_json,'$.trash')=file_trash.id)")?;
             let ids = statement.query_map(params![self.db.server_id(), self.db.clock().millis()], |row| row.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok::<_, FileError>(ids)
@@ -499,9 +596,10 @@ impl FileBrowser {
     pub fn reconcile_pending(&self) -> Result<usize> {
         let admission = mutation_admission(self.db.directory().path())?;
         let _guard = admission.lock().map_err(|_| FileError::Unavailable)?;
+        let intents = self.reconcile_intents()?;
         self.db.write_with(|transaction| {
             let connection = transaction.connection();
-            let mut statement = connection.prepare("SELECT id,path,effect_sha256,principal_id,device_id,reason FROM file_trash WHERE server_id=? AND status='pending'")?;
+            let mut statement = connection.prepare("SELECT id,path,effect_sha256,principal_id,device_id,reason FROM file_trash WHERE server_id=? AND status='pending' AND NOT EXISTS (SELECT 1 FROM file_intents WHERE json_extract(details_json,'$.trash')=file_trash.id)")?;
             let rows = statement.query_map([self.db.server_id()], |row| Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?,row.get::<_, Option<String>>(2)?,row.get::<_, String>(3)?,row.get::<_, String>(4)?,row.get::<_, String>(5)?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             for (id, text, effect, principal, device, reason) in &rows {
@@ -519,7 +617,7 @@ impl FileBrowser {
                     self.audit(connection, &subject, if reason == "delete" { "files.delete" } else { "files.write" }, &path, [("trash", Some(id.clone())), ("reconciled", Some("true".into()))])?;
                 }
             }
-            Ok(rows.len())
+            Ok(rows.len() + intents)
         }).map_err(FileError::from)
     }
 
@@ -812,8 +910,16 @@ impl FileBrowser {
             subject.device.as_str().to_owned(),
             SOURCE.to_owned(),
         )?;
-        let mut fields = vec![("path".to_owned(), Some(path.as_str().to_owned()))];
-        fields.extend(metadata.map(|(key, value)| (key.to_owned(), value)));
+        let mut fields = path_fields("path", path.as_str());
+        for (key, value) in metadata {
+            if key == "to" {
+                if let Some(value) = value {
+                    fields.extend(path_fields(key, &value));
+                }
+            } else {
+                fields.push((key.to_owned(), value));
+            }
+        }
         let record = AuditRecord::new(
             actor,
             action.to_owned(),
@@ -877,6 +983,7 @@ struct Applied {
 /// A hidden create-new stage beside the target; removed on drop unless consumed.
 struct Stage {
     path: PathBuf,
+    retained: Cell<bool>,
 }
 impl Stage {
     fn write(parent: &Path, bytes: &[u8]) -> Result<Self> {
@@ -889,10 +996,20 @@ impl Stage {
             options.mode(0o600);
         }
         let mut file = options.open(&path).map_err(io_error)?;
-        let stage = Self { path };
+        let stage = Self {
+            path,
+            retained: Cell::new(false),
+        };
         file.write_all(bytes).map_err(io_error)?;
         file.sync_all().map_err(io_error)?;
         Ok(stage)
+    }
+    fn leaf(&self) -> Result<String> {
+        self.path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+            .ok_or(FileError::InvalidPath)
     }
     fn permissions(&self, stored: &StoredPermissions) -> Result<()> {
         let mut permissions = fs::metadata(&self.path).map_err(io_error)?.permissions();
@@ -923,7 +1040,9 @@ impl Stage {
 }
 impl Drop for Stage {
     fn drop(&mut self) {
-        remove_stage(&self.path);
+        if !self.retained.get() {
+            remove_stage(&self.path);
+        }
     }
 }
 
@@ -1225,3 +1344,38 @@ fn remove_stage(path: &Path) {
 #[cfg(test)]
 #[path = "mutation_tests.rs"]
 mod tests;
+
+/// Display is explicitly abbreviated; full UTF-8 path identity is always hashed.
+fn path_fields(key: &str, text: &str) -> Vec<(String, Option<String>)> {
+    let limit = vesta_state::audit::MAX_METADATA_VALUE_UNITS;
+    let display = if text.encode_utf16().count() <= limit {
+        text.to_owned()
+    } else {
+        let prefix: String = text
+            .chars()
+            .scan(0, |units, c| {
+                *units += c.len_utf16();
+                (*units <= 120).then_some(c)
+            })
+            .collect();
+        let suffix: String = text
+            .chars()
+            .rev()
+            .scan(0, |units, c| {
+                *units += c.len_utf16();
+                (*units <= 120).then_some(c)
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        format!("{prefix}...[abbrev]...{suffix}")
+    };
+    vec![
+        (key.into(), Some(display)),
+        (
+            format!("{key}_sha256"),
+            Some(hex::encode(Sha256::digest(text.as_bytes()))),
+        ),
+    ]
+}

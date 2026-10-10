@@ -153,7 +153,7 @@ fn genuine_v5_migration_preserves_confirmation_rows_without_inventing_receipts()
         .execute_batch(
             r#"
             BEGIN IMMEDIATE;
-            DROP TABLE file_uploads; DROP TABLE file_trash;
+            DROP TABLE file_intents; DROP TABLE file_uploads; DROP TABLE file_trash;
             DROP TABLE pack_releases;
             CREATE TABLE confirmations_v5 (
                 id TEXT PRIMARY KEY,

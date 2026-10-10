@@ -56,7 +56,7 @@ fn original_v8_without_uploads_migrates_to_current_and_preserves_existing_rows()
         .unwrap();
     // Restore v8: v9 adds uploads, and v10 widens the release-format constraint.
     offline
-        .execute_batch("BEGIN IMMEDIATE; DROP TABLE file_uploads; PRAGMA user_version=8; COMMIT;")
+        .execute_batch("BEGIN IMMEDIATE; DROP TABLE file_intents; DROP TABLE file_uploads; PRAGMA user_version=8; COMMIT;")
         .unwrap();
     assert_eq!(
         offline
@@ -105,7 +105,7 @@ fn original_v8_without_uploads_migrates_to_current_and_preserves_existing_rows()
         assert_eq!(c.query_row("SELECT display_name FROM principals WHERE id='legacy-principal'", [], |r| r.get::<_, String>(0))?, "Preserved");
         assert_eq!(c.query_row("SELECT sha256 FROM file_trash WHERE id=?", [&trash], |r| r.get::<_, String>(0))?, hash);
         assert_eq!(c.query_row("SELECT count(*) FROM file_uploads", [], |r| r.get::<_, i64>(0))?, 0);
-        let mut statement = c.prepare("SELECT type,name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name!='file_uploads' AND name!='pack_releases' ORDER BY type,name")?;
+        let mut statement = c.prepare("SELECT type,name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT IN ('file_uploads','pack_releases','file_intents','file_intents_pending') ORDER BY type,name")?;
         let preserved = statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?.collect::<std::result::Result<Vec<_>, _>>()?;
         assert_eq!(preserved, old_schema);
         let insert = "INSERT INTO file_uploads (id,server_id,principal_id,device_id,path,expected_sha256,total_size,final_sha256,expires_at) VALUES (?,?,'legacy-principal','legacy-device','config/new.toml',NULL,3,?,?)";

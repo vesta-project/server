@@ -385,7 +385,7 @@ fn schema_four_to_current_preserves_data_backup_and_pending_expiry_plans() {
     let raw = Connection::open(directory.database_file()).expect("open local fixture database");
     raw.execute_batch(
         "BEGIN IMMEDIATE;\
-         DROP TABLE file_uploads; DROP TABLE file_trash;
+         DROP TABLE file_intents; DROP TABLE file_uploads; DROP TABLE file_trash;
             DROP TABLE pack_releases;\
          DROP INDEX role_assignments_pending_expiry;\
          DROP INDEX principal_overrides_pending_expiry;\
@@ -441,11 +441,12 @@ fn schema_four_to_current_preserves_data_backup_and_pending_expiry_plans() {
     assert_eq!(
         added,
         BTreeSet::from([
+            "file_intents_pending",
             "file_trash_expiry",
             "principal_overrides_pending_expiry",
             "role_assignments_pending_expiry",
         ]),
-        "v5 must add exactly its two pending-expiry indexes and v8 its trash expiry index",
+        "v5, v8 and v11 add pending-expiry, trash-expiry and pending-intent indexes",
     );
     let assignment_ddl = post_indexes
         .iter()

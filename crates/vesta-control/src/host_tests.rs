@@ -686,7 +686,7 @@ fn host_startup_upgrades_original_v8_without_upload_table_and_purges_orphan_stag
         .execute_batch(&format!("DROP TABLE pack_releases; {legacy_release_sql};"))
         .unwrap();
     offline
-        .execute_batch("BEGIN IMMEDIATE; DROP TABLE file_uploads; PRAGMA user_version=8; COMMIT;")
+        .execute_batch("BEGIN IMMEDIATE; DROP TABLE file_intents; DROP TABLE file_uploads; PRAGMA user_version=8; COMMIT;")
         .unwrap();
     assert_eq!(
         offline

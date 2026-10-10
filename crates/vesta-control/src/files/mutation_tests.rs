@@ -1477,3 +1477,466 @@ fn rename_compensation_retains_unknown_effects_and_new_source_data() {
     assert_eq!(fs::read(&source).unwrap(), b"new source");
     assert_eq!(fs::read(&destination).unwrap(), b"expected");
 }
+
+fn reopen(f: &mut Fixture) {
+    let directory = f.db.directory().clone();
+    f.db.close().unwrap();
+    f.db = StateDatabase::open(directory, f.clock.clone()).unwrap();
+    f.files = FileBrowser::open(f.db.clone(), &f.game, &[]).unwrap();
+}
+
+#[test]
+fn every_native_effect_has_durable_intent_and_an_audited_crash_outcome() {
+    for kind in [
+        "create",
+        "overwrite",
+        "delete",
+        "mkdir",
+        "rename",
+        "restore",
+    ] {
+        for point in ["before", "after"] {
+            let mut f = Fixture::open();
+            let path = Fixture::path("config/target.txt");
+            let to = Fixture::path("config/destination.txt");
+            if matches!(kind, "overwrite" | "delete" | "rename" | "restore") {
+                f.put(path.as_str(), b"old");
+            }
+            let restore = if kind == "restore" {
+                Some(f.files.delete(&f.owner, &path, &sha(b"old")).unwrap().id)
+            } else {
+                None
+            };
+            journal::interrupt_at(point);
+            let result = match kind {
+                "create" => f
+                    .files
+                    .write(&f.owner, &path, &WritePrecondition::Absent, b"new")
+                    .map(|_| ()),
+                "overwrite" => f
+                    .files
+                    .write(&f.owner, &path, &matches(b"old"), b"new")
+                    .map(|_| ()),
+                "delete" => f.files.delete(&f.owner, &path, &sha(b"old")).map(|_| ()),
+                "mkdir" => f.files.mkdir(&f.owner, &path),
+                "rename" => f
+                    .files
+                    .rename(&f.owner, &path, &to, &sha(b"old"))
+                    .map(|_| ()),
+                "restore" => f
+                    .files
+                    .restore(&f.owner, restore.as_deref().unwrap())
+                    .map(|_| ()),
+                _ => unreachable!(),
+            };
+            refused(result, "file_recovery_required");
+            let pending: i64 =
+                f.db.read(|c| {
+                    Ok(c.query_row(
+                        "SELECT count(*) FROM file_intents WHERE status='pending'",
+                        [],
+                        |r| r.get(0),
+                    )?)
+                })
+                .unwrap();
+            assert_eq!(pending, 1, "{kind} {point}");
+            if point == "before" {
+                assert_eq!(
+                    f.get(path.as_str()),
+                    if matches!(kind, "overwrite" | "delete" | "rename") {
+                        Some(b"old".to_vec())
+                    } else {
+                        None
+                    }
+                );
+                assert!(!f.game.join(to.as_str()).exists());
+                if matches!(kind, "create" | "overwrite" | "restore") {
+                    assert_eq!(f.stages("config"), 1);
+                }
+            } else {
+                match kind {
+                    "create" | "overwrite" => assert_eq!(f.get(path.as_str()).unwrap(), b"new"),
+                    "delete" => assert!(f.get(path.as_str()).is_none()),
+                    "mkdir" => assert!(f.game.join(path.as_str()).is_dir()),
+                    "rename" => {
+                        assert!(f.get(path.as_str()).is_none());
+                        assert_eq!(f.get(to.as_str()).unwrap(), b"old");
+                    }
+                    "restore" => assert_eq!(f.get(path.as_str()).unwrap(), b"old"),
+                    _ => unreachable!(),
+                }
+            }
+            reopen(&mut f);
+            assert_eq!(f.files.reconcile_pending().unwrap(), 1, "{kind} {point}");
+            assert_eq!(f.files.reconcile_pending().unwrap(), 0);
+            let (status, outcome, metadata): (String,String,String) = f.db.read(|c| Ok(c.query_row("SELECT i.status,a.outcome,a.metadata_json FROM file_intents i JOIN audit_events a ON a.operation_id=i.id WHERE a.operation_id IS NOT NULL ORDER BY a.seq DESC LIMIT 1", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?)).unwrap();
+            let expected = if point == "before" {
+                "aborted"
+            } else if kind == "mkdir" {
+                "recovery-required"
+            } else {
+                "complete"
+            };
+            assert_eq!(status, expected, "{kind} {point}");
+            assert_eq!(
+                outcome,
+                if expected == "complete" {
+                    "success"
+                } else {
+                    expected
+                }
+            );
+            assert!(metadata.contains("\"reconciled\":\"true\""));
+            assert_eq!(f.stages("config"), 0);
+            assert!(
+                AuditLog::new(f.db.clone())
+                    .unwrap()
+                    .verify_chain()
+                    .unwrap()
+                    .valid
+            );
+        }
+    }
+}
+
+#[test]
+fn recovery_never_overwrites_an_unknown_intervening_target() {
+    for kind in ["create", "overwrite", "delete", "rename"] {
+        let mut f = Fixture::open();
+        let path = Fixture::path("config/target.txt");
+        let to = Fixture::path("config/moved.txt");
+        if kind != "create" {
+            f.put(path.as_str(), b"old");
+        }
+        journal::interrupt_at("after");
+        let result = match kind {
+            "create" => f
+                .files
+                .write(&f.owner, &path, &WritePrecondition::Absent, b"new")
+                .map(|_| ()),
+            "overwrite" => f
+                .files
+                .write(&f.owner, &path, &matches(b"old"), b"new")
+                .map(|_| ()),
+            "delete" => f.files.delete(&f.owner, &path, &sha(b"old")).map(|_| ()),
+            _ => f
+                .files
+                .rename(&f.owner, &path, &to, &sha(b"old"))
+                .map(|_| ()),
+        };
+        assert!(result.is_err());
+        let foreign = if kind == "rename" {
+            to.as_str()
+        } else {
+            path.as_str()
+        };
+        f.put(foreign, b"foreign edit");
+        reopen(&mut f);
+        assert_eq!(f.files.reconcile_pending().unwrap(), 1);
+        assert_eq!(f.get(foreign).unwrap(), b"foreign edit");
+        assert_eq!(
+            f.db.read(|c| Ok(
+                c.query_row("SELECT status FROM file_intents LIMIT 1", [], |r| r
+                    .get::<_, String>(0))?
+            ))
+            .unwrap(),
+            "recovery-required"
+        );
+    }
+}
+
+#[test]
+fn nested_audit_paths_below_at_and_above_boundary_are_bounded_and_identified() {
+    let f = Fixture::open();
+    let parent_text = format!(
+        "config/{}/{}/{}",
+        "a".repeat(80),
+        "b".repeat(80),
+        "c".repeat(70)
+    );
+    fs::create_dir_all(f.game.join(&parent_text)).unwrap();
+    for units in [255, 256, 257, 400] {
+        let text = format!(
+            "{parent_text}/{}",
+            "x".repeat(units - parent_text.len() - 1)
+        );
+        let path = Fixture::path(&text);
+        f.files
+            .write(&f.owner, &path, &WritePrecondition::Absent, b"new")
+            .unwrap();
+        let audit = AuditLog::new(f.db.clone())
+            .unwrap()
+            .page(0, 200)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_str(&audit.metadata_json).unwrap();
+        assert_eq!(json["path_sha256"], sha(text.as_bytes()));
+        assert!(json["path"].as_str().unwrap().encode_utf16().count() <= 256);
+        if units > 256 {
+            assert!(json["path"].as_str().unwrap().contains("[abbrev]"));
+        } else {
+            assert_eq!(json["path"], text);
+        }
+        assert_eq!(f.get(&text).unwrap(), b"new");
+    }
+    f.put("config/source.txt", b"source");
+    let to = Fixture::path(&format!("{parent_text}/{}", "d".repeat(180)));
+    f.files
+        .rename(
+            &f.owner,
+            &Fixture::path("config/source.txt"),
+            &to,
+            &sha(b"source"),
+        )
+        .unwrap();
+    let audit = AuditLog::new(f.db.clone())
+        .unwrap()
+        .page(0, 200)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_str(&audit.metadata_json).unwrap();
+    assert_eq!(json["to_sha256"], sha(to.as_str().as_bytes()));
+    assert!(json["to"].as_str().unwrap().encode_utf16().count() <= 256);
+    assert_eq!(f.get(to.as_str()).unwrap(), b"source");
+}
+
+#[test]
+fn supplementary_unicode_path_display_preserves_full_identity() {
+    for units in [254, 256, 258, 4096] {
+        let text = "\u{1f680}".repeat(units / 2);
+        let fields = path_fields("path", &text);
+        assert!(fields[0].1.as_ref().unwrap().encode_utf16().count() <= 256);
+        assert_eq!(fields[1].1.as_deref(), Some(sha(text.as_bytes()).as_str()));
+    }
+}
+
+#[test]
+fn failed_intent_admission_refuses_every_effect_and_cleans_owned_staging() {
+    for kind in [
+        "create",
+        "overwrite",
+        "delete",
+        "mkdir",
+        "rename",
+        "restore",
+    ] {
+        let f = Fixture::open();
+        let path = Fixture::path("config/target.txt");
+        if matches!(kind, "overwrite" | "delete" | "rename" | "restore") {
+            f.put(path.as_str(), b"old");
+        }
+        let restore = if kind == "restore" {
+            Some(f.files.delete(&f.owner, &path, &sha(b"old")).unwrap().id)
+        } else {
+            None
+        };
+        f.db.write(|c| { c.execute_batch("CREATE TRIGGER reject_intent BEFORE INSERT ON file_intents BEGIN SELECT RAISE(ABORT,'fixture'); END;")?; Ok(()) }).unwrap();
+        let result = match kind {
+            "create" => f
+                .files
+                .write(&f.owner, &path, &WritePrecondition::Absent, b"new")
+                .map(|_| ()),
+            "overwrite" => f
+                .files
+                .write(&f.owner, &path, &matches(b"old"), b"new")
+                .map(|_| ()),
+            "delete" => f.files.delete(&f.owner, &path, &sha(b"old")).map(|_| ()),
+            "mkdir" => f.files.mkdir(&f.owner, &path),
+            "rename" => f
+                .files
+                .rename(
+                    &f.owner,
+                    &path,
+                    &Fixture::path("config/to.txt"),
+                    &sha(b"old"),
+                )
+                .map(|_| ()),
+            _ => f
+                .files
+                .restore(&f.owner, restore.as_deref().unwrap())
+                .map(|_| ()),
+        };
+        assert!(result.is_err(), "{kind}");
+        assert_eq!(
+            f.get(path.as_str()),
+            if matches!(kind, "overwrite" | "delete" | "rename") {
+                Some(b"old".to_vec())
+            } else {
+                None
+            }
+        );
+        assert!(!f.game.join("config/to.txt").exists());
+        assert!(!f.game.join(path.as_str()).is_dir());
+        assert_eq!(f.stages("config"), 0);
+        assert_eq!(f.trash_rows(), i64::from(kind == "restore"));
+    }
+}
+
+#[test]
+fn failed_recovered_audit_preserves_pending_intent_and_owned_stage_for_retry() {
+    let mut f = Fixture::open();
+    let path = Fixture::path("config/target.txt");
+    journal::interrupt_at("before");
+    assert!(
+        f.files
+            .write(&f.owner, &path, &WritePrecondition::Absent, b"new")
+            .is_err()
+    );
+    reopen(&mut f);
+    f.db.write(|c| { c.execute_batch("CREATE TRIGGER reject_recovered_audit BEFORE INSERT ON audit_events WHEN NEW.source='files' BEGIN SELECT RAISE(ABORT,'fixture'); END;")?; Ok(()) }).unwrap();
+    assert!(f.files.reconcile_pending().is_err());
+    assert_eq!(f.stages("config"), 1);
+    assert_eq!(
+        f.db.read(
+            |c| Ok(c.query_row("SELECT status FROM file_intents", [], |r| r
+                .get::<_, String>(0))?)
+        )
+        .unwrap(),
+        "pending"
+    );
+    f.db.write(|c| {
+        c.execute_batch("DROP TRIGGER reject_recovered_audit")?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(f.files.reconcile_pending().unwrap(), 1);
+    assert_eq!(f.stages("config"), 0);
+    assert!(f.get(path.as_str()).is_none());
+}
+
+#[test]
+fn equal_hash_overwrites_abort_only_when_an_unconsumed_stage_proves_no_effect() {
+    for point in ["before", "after"] {
+        let mut f = Fixture::open();
+        let path = Fixture::path("config/target.txt");
+        f.put(path.as_str(), b"same");
+        journal::interrupt_at(point);
+        assert!(
+            f.files
+                .write(&f.owner, &path, &matches(b"same"), b"same")
+                .is_err()
+        );
+        reopen(&mut f);
+        assert_eq!(f.files.reconcile_pending().unwrap(), 1);
+        assert_eq!(
+            f.db.read(
+                |c| Ok(c.query_row("SELECT status FROM file_intents", [], |r| r
+                    .get::<_, String>(0))?)
+            )
+            .unwrap(),
+            if point == "before" {
+                "aborted"
+            } else {
+                "recovery-required"
+            }
+        );
+        assert_eq!(f.get(path.as_str()).unwrap(), b"same");
+        assert_eq!(f.trash_rows(), 1);
+    }
+}
+
+#[test]
+fn changed_pending_stage_is_retained_and_has_an_explicit_recovery_audit() {
+    let mut f = Fixture::open();
+    journal::interrupt_at("before");
+    assert!(
+        f.files
+            .write(
+                &f.owner,
+                &Fixture::path("config/target.txt"),
+                &WritePrecondition::Absent,
+                b"new"
+            )
+            .is_err()
+    );
+    let stage = fs::read_dir(f.game.join("config"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(STAGE_PREFIX)
+        })
+        .unwrap();
+    fs::write(&stage, b"foreign stage content").unwrap();
+    reopen(&mut f);
+    assert_eq!(f.files.reconcile_pending().unwrap(), 1);
+    assert_eq!(fs::read(&stage).unwrap(), b"foreign stage content");
+    assert_eq!(
+        f.db.read(
+            |c| Ok(c.query_row("SELECT status FROM file_intents", [], |r| r
+                .get::<_, String>(0))?)
+        )
+        .unwrap(),
+        "recovery-required"
+    );
+    assert_eq!(
+        AuditLog::new(f.db.clone())
+            .unwrap()
+            .page(0, 200)
+            .unwrap()
+            .last()
+            .unwrap()
+            .outcome,
+        "recovery-required"
+    );
+}
+
+#[test]
+fn pending_upload_staging_survives_expiry_and_recovery_retains_uncertain_bytes() {
+    for (point, foreign) in [("before", false), ("after", false), ("after", true)] {
+        let mut f = Fixture::open();
+        let path = Fixture::path("config/target.txt");
+        let upload = f
+            .files
+            .begin(&f.owner, &path, &WritePrecondition::Absent, 3, &sha(b"new"))
+            .unwrap();
+        f.files.append(&f.owner, &upload, 0, b"new").unwrap();
+        journal::interrupt_at(point);
+        assert!(f.files.finish(&f.owner, &upload).is_err());
+        refused(f.files.abort(&f.owner, &upload), "file_recovery_required");
+        f.clock
+            .0
+            .store(START + 8 * 24 * 60 * 60 * 1000, Ordering::SeqCst);
+        assert_eq!(f.files.purge_expired_uploads().unwrap(), 0);
+        if foreign {
+            f.put(path.as_str(), b"foreign");
+        }
+        reopen(&mut f);
+        assert_eq!(f.files.reconcile_pending().unwrap(), 1);
+        assert_eq!(
+            f.files.purge_expired_uploads().unwrap(),
+            usize::from(!foreign)
+        );
+        let upload_copy =
+            f.db.directory()
+                .path()
+                .join("uploads")
+                .join(format!("{}.bin", upload.as_str()));
+        assert_eq!(upload_copy.exists(), foreign);
+        if foreign {
+            assert_eq!(fs::read(upload_copy).unwrap(), b"new");
+        }
+    }
+}
+
+#[test]
+fn pending_restore_keeps_its_original_copy_even_when_trash_expired() {
+    let mut f = Fixture::open();
+    let path = Fixture::path("config/target.txt");
+    f.put(path.as_str(), b"old");
+    let trash = f.files.delete(&f.owner, &path, &sha(b"old")).unwrap();
+    journal::interrupt_at("before");
+    assert!(f.files.restore(&f.owner, &trash.id).is_err());
+    f.clock.0.store(trash.expires_at, Ordering::SeqCst);
+    assert_eq!(f.files.purge_expired_trash().unwrap(), 0);
+    assert_eq!(f.trash_files(), 1);
+    assert_eq!(f.stages("config"), 1);
+    reopen(&mut f);
+    assert_eq!(f.files.reconcile_pending().unwrap(), 1);
+    assert_eq!(f.stages("config"), 0);
+    assert!(f.get(path.as_str()).is_none());
+}
