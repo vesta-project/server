@@ -2359,16 +2359,32 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Partial host-side Rust equivalent for hosted-pack state: PackReleases records monotonic database-backed releases (revision, minimum revision, display version, content-addressed artifact) under pack.publish/pack.force_update with same-transaction authority recheck and audit, replacing configuration-supplied revisions. Archive-mode manifest derivation (fromArchive) and platform-reference state are not implemented.",
+      "rationale": "Partial host-side Rust equivalent for hosted-pack state: PackReleases records monotonic database-backed releases (revision, minimum revision, display version, content-addressed artifact) under pack.publish/pack.force_update with same-transaction authority recheck and audit, replacing configuration-supplied revisions. GET /api/v2/pack/status projects hosted releases, and release-aware artifact pruning is implemented by PackReleases::prune. Archive-mode manifest derivation (fromArchive) and platform-reference state are not implemented.",
       "gaps": [
         "ModpackState.fromArchive archive-mode manifest and platform-reference (createsAPlatformReferenceWithoutHostedFiles) behavior remain unimplemented.",
-        "Sync/status route, artifact pruning tied to releases and signed manifests remain unimplemented.",
+        "Signed manifests remain unimplemented.",
         "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
       "rustTests": [
-        "crates/vesta-control/src/packs/releases_tests.rs"
+        "crates/vesta-control/src/packs/releases_tests.rs",
+        "crates/vesta-transport/tests/https.rs"
       ],
       "evidence": [
+        {
+          "path": "crates/vesta-control/src/packs/releases.rs",
+          "date": "2026-10-10",
+          "claim": "PackReleases::prune retains only the currently hosted artifact and removes abandoned owned artifacts/stages without touching foreign names."
+        },
+        {
+          "path": "crates/vesta-control/src/packs/releases_tests.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: pruning_keeps_only_the_hosted_artifact_and_never_touches_foreign_names, pruning_without_a_release_removes_every_owned_name."
+        },
+        {
+          "path": "crates/vesta-transport/tests/https.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: status_tracks_published_revisions_without_sensitive_configuration validates GET /api/v2/pack/status."
+        },
         {
           "path": "docs/RUST_INTEGRATED_MIGRATION_PASS.md",
           "date": "2026-10-09",
@@ -2392,9 +2408,10 @@
       "applicableRequirements": [],
       "disposition": "pending_mapping",
       "status": "not_migrated",
-      "rationale": "No direct Rust equivalent: Java selects a whole-pack acquisition mode, while Rust models trusted host inputs and per-file provenance separately rather than retaining the Java source enum.",
+      "rationale": "Java PackSource selects a whole-pack acquisition mode (platform reference, local archive, or scanned) in ServerState; Rust models trusted host inputs and per-file provenance separately, but this mode selection is not yet composed by Host and is being implemented.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Configured whole-pack acquisition mode selection (platform reference / local archive / scanned) is not composed by Rust Host; implementation is in progress.",
+        "Whole-family parity mapping and applicable-requirement assessment remain pending parent review."
       ],
       "rustTests": [],
       "evidence": [],
@@ -2522,7 +2539,7 @@
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
       "javaSha256": "ae30756fe49a77d1450d04d9b1078da78556b95f1857969c025edbf4137906d8",
-      "rustCounterpart": "crates/vesta-control/src/config/mod.rs",
+      "rustCounterpart": "crates/vesta-control/src/packs/mod.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/ManifestBuilderTest.java",
         "core/src/test/java/com/vesta/sync/manifest/ModpackStatePlatformTest.java"
@@ -2531,12 +2548,25 @@
       "applicableRequirements": [],
       "disposition": "pending_mapping",
       "status": "not_migrated",
-      "rationale": "No direct Rust equivalent: Java config chooses whether unresolved scanned files are public or private; Rust preparation pins the public catalogue and does not implement this private/public policy switch.",
+      "rationale": "Rust preparation has explicit unresolved-file dispositions: refuse, embed-public, and exclude-private (UnresolvedDisposition). Java ManifestBuilder accepts unresolvedPolicy and passes it into walkDir, but that parameter does not alter the emitted files; the Java scan still emits entries via buildPublicEntry.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Whole-family parity mapping and applicable-requirement assessment remain pending parent review."
       ],
-      "rustTests": [],
-      "evidence": [],
+      "rustTests": [
+        "crates/vesta-control/src/packs/tests.rs"
+      ],
+      "evidence": [
+        {
+          "path": "crates/vesta-control/src/packs/tests.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: unresolved_refuses_by_default_and_public_embedding_requires_explicit_selection. Rust also supports ExcludePrivate as an explicit disposition."
+        },
+        {
+          "path": "core/src/main/java/com/vesta/sync/manifest/ManifestBuilder.java",
+          "date": "2026-10-10",
+          "claim": "ManifestBuilder.scan accepts unresolvedPolicy and forwards it to walkDir; walkDir does not read the parameter when selecting or emitting publicMods/publicOverrides entries."
+        }
+      ],
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
@@ -4796,10 +4826,10 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Java ContentInstaller.install/remove wrote and deleted files under the scan root without preconditions or recovery. Rust covers this with FileBrowser::write/delete/restore: scoped files.create/overwrite/delete capabilities, If-Match hashes, recoverable trash and audit. resolveByHash served per-file downloads by manifest hash; Rust serves the content-addressed pack artifact instead.",
+      "rationale": "Java ContentInstaller.install/remove wrote and deleted files under the scan root without preconditions or recovery. Rust covers this with FileBrowser::write/delete/restore: scoped files.create/overwrite/delete capabilities, If-Match hashes, recoverable trash and audit. resolveByHash served per-file downloads by manifest hash; Rust serves the content-addressed pack artifact instead. Provider installation is now implemented in crates/vesta-control/src/content/ as a library API; there is no network entry point.",
       "gaps": [
-        "The dedicated content.install capability and provider-sourced installs (Modrinth/CurseForge/URL with mandatory hashes) are not implemented.",
-        "Uploads are bounded in-memory, not resumable.",
+        "Provider installs have no authenticated network entry point; the management transport remains unavailable.",
+        "Resumable uploads are bounded, staged on disk in protected state (crates/vesta-control/src/files/upload.rs; tests in upload_tests.rs).",
         "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
       "rustTests": [
@@ -4820,7 +4850,7 @@
       ],
       "results": {
         "status": "unverified",
-        "summary": "Upload/remove covered by recoverable file mutations; provider installs remain."
+        "summary": "Provider installation is implemented as a library API; network entry point remains unavailable. Source evidence is recorded; execution results are reported separately."
       }
     },
     {
@@ -4840,8 +4870,8 @@
       "status": "not_migrated",
       "rationale": "Rust files/mod.rs provides a bounded, sorted directory list that hides protected and non-portable entries, and a bounded read that returns hashed bytes. Java write and delete operations are not implemented in Rust, and the Java traversal rejection is covered by RelativePath::parse. Writes, deletes and restores are now in files/mutation.rs: explicit create/overwrite/delete capabilities, If-Match SHA-256 preconditions, a bounded recoverable trash in protected state, same-directory staging and transactional audit; Java's directory auto-creation and unconditional replace/delete are deliberately not reproduced.",
       "gaps": [
-        "Parent directories are not created implicitly (no mkdir/rename API yet).",
-        "Writes are bounded in-memory (16 MiB); resumable chunked uploads (files-and-content-010) are not implemented.",
+        "Parent directories are not created implicitly; mkdir creates only one level and rename moves only one file.",
+        "Resumable chunked uploads are bounded and staged on disk in protected state (files-and-content-010); they remain library APIs without a network entry point.",
         "Mutations are direct authorized transactions with best-effort reversal on commit failure, not queued operations with a durable journal.",
         "Whole-family applicable-requirement accounting and the separate final independent review remain pending."
       ],
@@ -4874,7 +4904,7 @@
         {
           "path": "crates/vesta-control/src/files/upload_tests.rs",
           "date": "2026-10-10",
-          "claim": "Rust test function evidence: resumes_after_partial_upload_and_browser_reopen, wrong_offset_and_different_duplicates_conflict_identical_duplicates_succeed, fresh_authority_is_required_at_begin_append_and_finish. File browser now includes resumable uploads."
+          "claim": "Rust test function evidence: resumes_after_partial_upload_and_browser_reopen, wrong_offset_and_different_duplicates_conflict_identical_duplicates_succeed, oversize_total_chunk_and_past_total_refuse_without_writing, expiry_purge_removes_rows_stages_and_orphans_but_preserves_live_upload, fresh_authority_is_required_at_begin_append_and_finish. File browser now has bounded resumable uploads staged on disk in protected state; creation and startup purge expired uploads."
         },
         {
           "path": "crates/vesta-control/src/files/mutation_tests.rs",
@@ -4884,7 +4914,7 @@
       ],
       "results": {
         "status": "unverified",
-        "summary": "List/read/write/delete/restore tests pass; uploads and mkdir remain."
+        "summary": "Source/test evidence includes list/read/write/delete/restore, resumable bounded uploads, one-level mkdir and single-file rename; execution results are reported separately."
       }
     },
     {
@@ -6924,7 +6954,8 @@
       "status": "not_migrated",
       "rationale": "Useful deterministic retained-byte scanning, immutable publication, monotonic revisions, status projection and committed-release notifications have cohesive Rust counterparts rather than a mutable Java ServerState class.",
       "gaps": [
-        "Java install/remove-plus-automatic-rescan and platform/self-hosted source orchestration are not mapped as a complete composition. Remote content/install mutations remain unavailable pending authenticated management.",
+        "Java install/remove-plus-automatic-rescan and platform/self-hosted source orchestration are not mapped as a complete composition. Configured whole-pack mode selection (platform reference / local archive / scanned) is not composed by Rust Host and is being implemented. Remote content/install mutations remain unavailable pending authenticated management.",
+        "Java selected-directory scanning within one root namespace (ManifestBuilder.scan) is not implemented and is being implemented now.",
         "Whole-family requirement accounting and independent parity review remain pending; counterpart pointers do not assert full Java equivalence."
       ],
       "rustTests": [
@@ -7074,18 +7105,25 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Wrapper production/test source is in the host-side migration scope; no Rust counterpart or parity result has been established.",
+      "rationale": "Rust network transport, pack-only sessions and route composition are implemented in crates/vesta-transport: bounded HTTPS discovery, pack status, pack-only authentication, tickets, artifacts and management refusal are composed over the control host. This is a semantic v2 replacement, not legacy v1 route compatibility.",
       "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+        "Authenticated management routes remain unavailable pending the canonical device boundary.",
+        "Whole-family parity mapping and applicable-requirement assessment remain pending parent review."
       ],
       "rustTests": [
-        "crates/vesta-transport/tests/https.rs"
+        "crates/vesta-transport/tests/https.rs",
+        "crates/vesta-transport/src/tests.rs"
       ],
       "evidence": [
         {
           "path": "crates/vesta-transport/tests/https.rs",
           "date": "2026-10-10",
-          "claim": "Existing Rust test function `tls_only_and_explicit_fixture_trust` is present in this source."
+          "claim": "Rust test function evidence: tls_only_and_explicit_fixture_trust, discovery_negotiates_and_rejects_unsupported_versions, status_tracks_published_revisions_without_sensitive_configuration, password_session_artifact_ticket_and_revocation_are_pack_only, strict_bodies_unknown_routes_and_oversized_declaration_refuse_without_body_read."
+        },
+        {
+          "path": "crates/vesta-transport/src/tests.rs",
+          "date": "2026-10-10",
+          "claim": "Rust test function evidence: downloads_are_capped_per_session_per_peer_and_globally_and_slots_are_cleaned, connection_deadline_bounds_heads_but_streams_by_throughput_floor."
         }
       ],
       "results": {
@@ -7106,7 +7144,7 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Pack realtime is implemented with the Rust WebSocket transport; legacy TCP semantics are not retained.",
+      "rationale": "Pack realtime is implemented with the Rust WebSocket transport; heartbeat rereads the database-hosted release and compares revision/minimum revision so cross-process changes are detected within one heartbeat. The test commits a database row directly, not via a second process; legacy TCP semantics are not retained.",
       "gaps": [
         "Semantic replacement only; this does not preserve the legacy TCP wire contract.",
         "Applicable-requirement mapping and final independent review remain pending."
@@ -7118,7 +7156,7 @@
         {
           "path": "crates/vesta-transport/tests/support/realtime.rs",
           "date": "2026-10-10",
-          "claim": "Rust test function evidence: realtime_hello_update_and_required_minimum_are_delivered_with_client_status, realtime_session_expiry_closes_socket_without_waiting_for_heartbeat, realtime_session_revocation_and_policy_rotation_close_before_push, realtime_unsolicited_text_and_binary_frames_close_with_policy_violation, realtime_global_connection_cap_and_shutdown_join_all_sockets."
+          "claim": "Rust test function evidence: realtime_hello_update_and_required_minimum_are_delivered_with_client_status, realtime_heartbeat_delivers_releases_committed_outside_this_process_watch, realtime_session_expiry_closes_socket_without_waiting_for_heartbeat, realtime_session_revocation_and_policy_rotation_close_before_push, realtime_unsolicited_text_and_binary_frames_close_with_policy_violation, realtime_global_connection_cap_and_shutdown_join_all_sockets. The cross-process-detection test commits the database row directly; it does not launch a second process."
         }
       ],
       "results": {
@@ -9271,7 +9309,7 @@
       "applicableRequirements": [],
       "disposition": "migrate_to_rust",
       "status": "not_migrated",
-      "rationale": "Useful public discovery/status, authenticated artifacts, challenge binding/replay refusal, strict bounded bodies, live credential invalidation, single-use realtime tickets, revision pushes, revocation and native-only browser-origin refusal have Rust evidence. Legacy v1 private/management endpoints are 410; v2 management remains 403. Rate-limit responses include Retry-After hints; peer refill durations round up to positive delta-seconds.",
+      "rationale": "The Rust network transport, pack-only sessions and route composition exist in crates/vesta-transport: public discovery/status, authenticated artifacts, challenge binding/replay refusal, strict bounded bodies, live credential invalidation, single-use realtime tickets, revision pushes, revocation and native-only browser-origin refusal have Rust evidence. Legacy v1 private/management endpoints are 410; v2 management remains 403. Rate-limit responses include Retry-After hints; peer refill durations round up to positive delta-seconds.",
       "gaps": [
         "Java per-file manifest/sync-check action wire contracts are not ported; v2 uses immutable pack artifacts and installed-revision status, not incidental v1 compatibility routes.",
         "Admin settings, player/console/filesystem management, content mutation and devtools authority remain unavailable pending authenticated management. Browser WebSockets are refused until an explicit origin policy exists; no CORS reflection or loopback exception is reproduced.",
