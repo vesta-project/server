@@ -11,6 +11,7 @@ mod builtin_roles;
 mod capability;
 mod domain;
 mod local_authority;
+pub mod management;
 pub mod minecraft;
 mod pack_passwords;
 pub mod password;

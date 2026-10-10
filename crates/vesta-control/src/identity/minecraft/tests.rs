@@ -1167,3 +1167,233 @@ fn non_success_provider_statuses_are_handled_without_reading_the_body() {
         );
     }
 }
+
+/// Real canonical state; only the existing Mojang verifier abstraction is fake.
+fn management_fixture() -> (
+    tempfile::TempDir,
+    vesta_state::StateDatabase,
+    crate::identity::management::ManagementAccess,
+    MinecraftChallenges,
+) {
+    let temp = tempfile::tempdir().unwrap();
+    let db = vesta_state::StateDatabase::open(
+        vesta_state::StateDirectory::new(temp.path().join("state"), None).unwrap(),
+        Arc::new(vesta_state::SystemClock),
+    )
+    .unwrap();
+    let service = crate::identity::management::ManagementAccess::new(db.clone()).unwrap();
+    let challenges = default_challenges(|_, _| Ok(Some(joined(TEST_PROFILE, "PlayerOne"))))
+        .handle_for_server(server(db.server_id()));
+    (temp, db, service, challenges)
+}
+fn device_key() -> ring::signature::Ed25519KeyPair {
+    ring::signature::Ed25519KeyPair::from_pkcs8(
+        ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+            .unwrap()
+            .as_ref(),
+    )
+    .unwrap()
+}
+fn enroll_device(
+    service: &crate::identity::management::ManagementAccess,
+    challenges: &MinecraftChallenges,
+) -> (
+    crate::identity::management::Enrolled,
+    ring::signature::Ed25519KeyPair,
+) {
+    use base64::Engine as _;
+    use ring::signature::KeyPair;
+    let issued = challenges
+        .issue_management(profile_uuid(TEST_PROFILE), name("PlayerOne"))
+        .unwrap();
+    let profile = challenges
+        .complete_management(issued.challenge_id())
+        .unwrap()
+        .unwrap();
+    assert!(
+        challenges
+            .complete_management(issued.challenge_id())
+            .unwrap()
+            .is_none()
+    );
+    let key = device_key();
+    let device = service
+        .enroll_minecraft(
+            profile,
+            "Online device",
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref()),
+        )
+        .unwrap();
+    (device, key)
+}
+fn device_session(
+    service: &crate::identity::management::ManagementAccess,
+    device: &crate::identity::management::Enrolled,
+    key: &ring::signature::Ed25519KeyPair,
+) -> crate::identity::management::SessionToken {
+    use base64::Engine as _;
+    let nonce = service.challenge(&device.device_id).unwrap();
+    let message = crate::identity::management::session_message(service.server_id(), nonce.expose());
+    service
+        .session(
+            &device.device_id,
+            nonce.expose(),
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.sign(&message).as_ref()),
+        )
+        .unwrap()
+}
+#[test]
+fn local_link_enrolls_linked_role_unlink_preserves_existing_or_revokes_explicitly() {
+    use crate::identity::management::ManagementError;
+    use crate::identity::{BuiltinRole, Capability};
+    let (_temp, _db, service, challenges) = management_fixture();
+    service
+        .link_local(profile_uuid(TEST_PROFILE), BuiltinRole::Administrator)
+        .unwrap();
+    assert_eq!(service.links_local().unwrap().len(), 1);
+    let (device, key) = enroll_device(&service, &challenges);
+    assert_eq!(device.role, "administrator");
+    let token = device_session(&service, &device, &key);
+    service
+        .authorize(token.secret.expose(), Capability::StatusView, None)
+        .unwrap();
+    service
+        .unlink_local(profile_uuid(TEST_PROFILE), false)
+        .unwrap();
+    assert!(service.links_local().unwrap().is_empty());
+    service
+        .authorize(token.secret.expose(), Capability::StatusView, None)
+        .unwrap();
+    let (roleless, key) = enroll_device(&service, &challenges);
+    assert!(roleless.role.is_empty());
+    let roleless_token = device_session(&service, &roleless, &key);
+    assert!(service.authenticate(roleless_token.secret.expose()).is_ok());
+    // Same verified UUID means the same canonical user: default unlink
+    // preserves its explicit role, including for a newly authenticated device.
+    assert_eq!(roleless.principal_id, device.principal_id);
+    assert!(
+        service
+            .authorize(roleless_token.secret.expose(), Capability::StatusView, None)
+            .is_ok()
+    );
+    // Revoke lineages even when the link was already removed.
+    service
+        .unlink_local(profile_uuid(TEST_PROFILE), true)
+        .unwrap();
+    assert!(matches!(
+        service.authenticate(token.secret.expose()),
+        Err(ManagementError::SessionInvalid)
+    ));
+    assert!(matches!(
+        service.authenticate(roleless_token.secret.expose()),
+        Err(ManagementError::SessionInvalid)
+    ));
+    let audit = vesta_state::audit::AuditLog::new(_db.clone())
+        .unwrap()
+        .page(0, 100)
+        .unwrap();
+    for action in [
+        "management.owner.link",
+        "management.minecraft.enroll",
+        "management.owner.unlink",
+        "management.owner.unlink_revoke",
+    ] {
+        assert!(audit.iter().any(|r| r.action == action));
+    }
+}
+#[test]
+fn unlinked_minecraft_enrolls_roleless_and_pack_proof_never_grants_management() {
+    use crate::identity::management::ManagementError;
+    use crate::identity::{BuiltinRole, Capability};
+    use base64::Engine as _;
+    use ring::signature::KeyPair;
+    let (_temp, _db, service, challenges) = management_fixture();
+    let (device, key) = enroll_device(&service, &challenges);
+    assert!(device.role.is_empty());
+    let token = device_session(&service, &device, &key);
+    for capability in Capability::ALL {
+        assert!(matches!(
+            service.authorize(token.secret.expose(), *capability, None),
+            Err(ManagementError::Forbidden)
+        ));
+    }
+    service
+        .link_local(profile_uuid(TEST_PROFILE), BuiltinRole::Owner)
+        .unwrap();
+    let issued = challenges
+        .issue(profile_uuid(TEST_PROFILE), name("PlayerOne"))
+        .unwrap();
+    let pack_profile = challenges.complete(issued.challenge_id()).unwrap().unwrap();
+    assert!(matches!(
+        service.enroll_minecraft(
+            pack_profile,
+            "Pack proof",
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref())
+        ),
+        Err(ManagementError::SessionInvalid)
+    ));
+}
+#[test]
+fn minecraft_pack_and_enrollment_challenges_are_action_bound_and_single_use() {
+    let (_temp, _db, _service, challenges) = management_fixture();
+    let pack = challenges
+        .issue(profile_uuid(TEST_PROFILE), name("PlayerOne"))
+        .unwrap();
+    assert!(
+        challenges
+            .complete_management(pack.challenge_id())
+            .unwrap()
+            .is_none()
+    );
+    assert!(challenges.complete(pack.challenge_id()).unwrap().is_none());
+    let management = challenges
+        .issue_management(profile_uuid(TEST_PROFILE), name("PlayerOne"))
+        .unwrap();
+    assert!(
+        challenges
+            .complete(management.challenge_id())
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        challenges
+            .complete_management(management.challenge_id())
+            .unwrap()
+            .is_none()
+    );
+}
+#[test]
+fn local_owner_links_are_bounded_and_update_does_not_spend_new_capacity() {
+    let (_temp, _db, service, _challenges) = management_fixture();
+    for n in 1..=32 {
+        service
+            .link_local(
+                MinecraftUuid::from_uuid(Uuid::from_u128(n)).unwrap(),
+                crate::identity::BuiltinRole::Viewer,
+            )
+            .unwrap();
+    }
+    assert!(matches!(
+        service.link_local(
+            MinecraftUuid::from_uuid(Uuid::from_u128(33)).unwrap(),
+            crate::identity::BuiltinRole::Owner
+        ),
+        Err(crate::identity::management::ManagementError::Saturated)
+    ));
+    service
+        .link_local(
+            MinecraftUuid::from_uuid(Uuid::from_u128(1)).unwrap(),
+            crate::identity::BuiltinRole::Owner,
+        )
+        .unwrap();
+    service
+        .unlink_local(MinecraftUuid::from_uuid(Uuid::from_u128(1)).unwrap(), false)
+        .unwrap();
+    service
+        .link_local(
+            MinecraftUuid::from_uuid(Uuid::from_u128(33)).unwrap(),
+            crate::identity::BuiltinRole::Owner,
+        )
+        .unwrap();
+    assert_eq!(service.links_local().unwrap().len(), 32);
+}

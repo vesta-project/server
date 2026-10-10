@@ -974,7 +974,10 @@ fn delegation_requires_the_exact_roles_assign_capability() {
         "roles.create is still refused for the bare principal",
     );
     assert_eq!(
-        scalar::<i64>(&fixture, "SELECT count(*) FROM roles WHERE builtin = 0"),
+        scalar::<i64>(
+            &fixture,
+            "SELECT count(*) FROM roles WHERE builtin = 0 AND id NOT IN ('public','player')"
+        ),
         3,
         "only the two planted rows and the one permitted custom role exist"
     );
@@ -1469,7 +1472,10 @@ fn a_custom_role_may_only_be_created_below_the_actor_and_within_its_authority() 
         );
     }
     assert_eq!(
-        scalar::<i64>(&fixture, "SELECT count(*) FROM roles WHERE builtin = 0"),
+        scalar::<i64>(
+            &fixture,
+            "SELECT count(*) FROM roles WHERE builtin = 0 AND id NOT IN ('public','player')"
+        ),
         0,
         "a refused creation must not leave a role or a grant row"
     );
@@ -2901,6 +2907,10 @@ fn a_policy_snapshot_is_observation_only_and_never_accepted_by_a_command() {
         before,
         "nothing an expired identity attempted changed"
     );
-    assert_eq!(fixture.count("roles"), 6, "no custom role was created");
+    assert_eq!(
+        fixture.count("roles"),
+        8,
+        "no custom role was created beyond the safe access defaults"
+    );
     assert!(fixture.audit.verify_chain().expect("audit chain").valid);
 }

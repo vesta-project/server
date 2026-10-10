@@ -36,6 +36,9 @@ const OWNER_CAPABILITIES: &[Capability] = &[
     Capability::ConfigView,
     Capability::ConfigEdit,
     Capability::IntegrationsEdit,
+    Capability::PublicInfo,
+    Capability::PackDownload,
+    Capability::PackRealtime,
     Capability::PackAccess,
     Capability::PackEdit,
     Capability::PackBuild,
@@ -86,6 +89,9 @@ const ADMINISTRATOR_CAPABILITIES: &[Capability] = &[
     Capability::ConfigView,
     Capability::ConfigEdit,
     Capability::IntegrationsEdit,
+    Capability::PublicInfo,
+    Capability::PackDownload,
+    Capability::PackRealtime,
     Capability::PackAccess,
     Capability::PackEdit,
     Capability::PackBuild,
@@ -149,7 +155,13 @@ const VIEWER_CAPABILITIES: &[Capability] = &[
     Capability::TasksView,
 ];
 
-const PACK_USER_CAPABILITIES: &[Capability] = &[Capability::StatusView, Capability::PackAccess];
+const PACK_USER_CAPABILITIES: &[Capability] = &[
+    Capability::StatusView,
+    Capability::PublicInfo,
+    Capability::PackDownload,
+    Capability::PackRealtime,
+    Capability::PackAccess,
+];
 
 /// The six versioned built-in role presets.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

@@ -1363,8 +1363,8 @@ fn every_domain_rejection_is_a_typed_code_and_never_an_infrastructure_rollback()
     assert_eq!(fixture.count("role_assignments"), 4);
     assert_eq!(
         fixture.count("roles"),
-        7,
-        "six built-ins plus one custom role"
+        9,
+        "six built-ins, two safe access defaults and one custom role"
     );
     assert_eq!(fixture.count("devices"), 4);
     assert!(fixture.identities.owner_exists().expect("owner lookup"));

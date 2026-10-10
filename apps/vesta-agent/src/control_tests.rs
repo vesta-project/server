@@ -85,6 +85,8 @@ fn protected_channel_start_stop_restart_pending_eula_and_absent_agent() {
             "owned".into(),
             game.clone(),
             owned.runtime.local_handle(),
+            vesta_control::identity::management::ManagementAccess::new(db.clone()).unwrap(),
+            None,
         )
         .await
         .unwrap();
@@ -92,6 +94,137 @@ fn protected_channel_start_stop_restart_pending_eula_and_absent_agent() {
             control::request(db.directory().path(), "owned".into(), Op::Start).await,
             Err("local_eula_pending_owner_must_accept_themselves")
         );
+
+        // Identity commands do not require or accept a game EULA. Native IPC
+        // proves the OS account before the local owner seam can issue authority.
+        let paired = control::request_data(
+            db.directory().path(),
+            "owned".into(),
+            Op::Pair {
+                role: "admin".into(),
+                minutes: 10,
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(paired["role"], "administrator");
+        assert_eq!(paired["code"].as_str().unwrap().len(), 43);
+        assert_eq!(
+            control::request_data(
+                db.directory().path(),
+                "wrong-name".into(),
+                Op::Pair {
+                    role: "owner".into(),
+                    minutes: 10
+                }
+            )
+            .await,
+            Err("local_control_request_refused")
+        );
+        assert_eq!(
+            control::request_data(
+                db.directory().path(),
+                "owned".into(),
+                Op::Pair {
+                    role: "owner".into(),
+                    minutes: 61
+                }
+            )
+            .await,
+            Err("local_control_request_refused")
+        );
+        let sources = control::request_data(db.directory().path(), "owned".into(), Op::AccessShow)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(sources["anonymous"], "public");
+        assert_eq!(
+            control::request_data(
+                db.directory().path(),
+                "owned".into(),
+                Op::AccessSet {
+                    fields: vec![("anonymous".into(), "owner".into())]
+                }
+            )
+            .await,
+            Err("local_control_request_refused")
+        );
+        let changed = control::request_data(
+            db.directory().path(),
+            "owned".into(),
+            Op::AccessSet {
+                fields: vec![("whitelist_enabled".into(), "off".into())],
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(changed["whitelist_enabled"], false);
+        db.read(|c| {
+            let count: u32 = c.query_row(
+                "SELECT count(*) FROM audit_events WHERE action='access.sources.set'",
+                [],
+                |r| r.get(0),
+            )?;
+            assert_eq!(count, 1);
+            Ok(())
+        })
+        .unwrap();
+        let identity =
+            vesta_control::identity::management::ManagementAccess::new(db.clone()).unwrap();
+        let enrolled = identity
+            .enroll(
+                paired["code"].as_str().unwrap(),
+                "IPC device",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            )
+            .unwrap();
+        let listed = control::request_data(db.directory().path(), "owned".into(), Op::DevicesList)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(listed[0]["device_id"], enrolled.device_id);
+        control::request_data(
+            db.directory().path(),
+            "owned".into(),
+            Op::DevicesRevoke {
+                device: enrolled.device_id,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(identity.list_local().unwrap()[0].revoked);
+        let uuid = "11111111-2222-4333-8444-555555555555".to_owned();
+        let linked = control::request_data(
+            db.directory().path(),
+            "owned".into(),
+            Op::OwnerLink {
+                uuid: uuid.clone(),
+                role: "owner".into(),
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(linked["linked"], true);
+        assert!(linked["tls_sha256_fingerprint"].is_null()); // This fixture is local-only.
+        let links = control::request_data(db.directory().path(), "owned".into(), Op::OwnerList)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(links.as_array().unwrap().len(), 1);
+        control::request_data(
+            db.directory().path(),
+            "owned".into(),
+            Op::OwnerUnlink {
+                uuid,
+                revoke_devices: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(identity.links_local().unwrap().is_empty());
         // Synthetic owner-accepted configuration for this inert test child only.
         // This is not a real install and does not accept a Minecraft EULA.
         fs::write(

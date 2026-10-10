@@ -26,6 +26,7 @@ fn v9_platform_reference_migration_preserves_legacy_releases_and_constraints() {
     let server = f.db.server_id().to_owned();
     f.db.close().unwrap();
     let old = Connection::open(directory.database_file()).unwrap();
+    support::remove_v12_schema(&old);
     old.execute_batch(&format!(
         "DROP TABLE file_intents; DROP TABLE pack_releases; {ORIGINAL_RELEASES} PRAGMA user_version=9;"
     ))

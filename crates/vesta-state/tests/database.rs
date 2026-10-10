@@ -165,6 +165,7 @@ fn failed_pre_migration_backup_neither_overwrites_artifact_nor_migrates_database
     current.close().unwrap();
     let database_file = directory.database_file().to_path_buf();
     let original = Connection::open(&database_file).expect("reopen schema database");
+    support::remove_v12_schema(&original);
     original
         .execute_batch(
             "DROP TABLE file_intents; DROP TABLE file_uploads; DROP TABLE file_trash;

@@ -148,6 +148,7 @@ fn genuine_v5_migration_preserves_confirmation_rows_without_inventing_receipts()
     // migration-added column and the SQLite schema marker.
     fixture.db.close().unwrap();
     let offline_fixture = Connection::open(directory.database_file()).unwrap();
+    support::remove_v12_schema(&offline_fixture);
     assert!(has_column(&offline_fixture, "confirmations", "accepted_at").unwrap());
     offline_fixture
         .execute_batch(

@@ -104,6 +104,8 @@ pub async fn run(source: &Path, base: &Path, local_only: bool) -> ExitCode {
         control_name,
         host.configuration().game().to_owned(),
         host.runtime().local_handle(),
+        host.management().clone(),
+        transport.as_ref().map(Transport::fingerprint_handle),
     )
     .await
     {

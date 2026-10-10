@@ -30,11 +30,20 @@ const CA: &[u8] = include_bytes!("fixtures/test-only-ca.pem");
 const PASSWORD: &str = "transport test password only";
 type TlsStream = StreamOwned<ClientConnection, TcpStream>;
 
+#[derive(Default)]
+struct FixtureClock(std::sync::atomic::AtomicI64);
+impl vesta_state::Clock for FixtureClock {
+    fn millis(&self) -> i64 {
+        vesta_state::Clock::millis(&SystemClock) + self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
 struct Fixture {
     temp: TempDir,
     host: Option<Host>,
     transport: Option<Transport>,
     address: SocketAddr,
+    clock: Arc<FixtureClock>,
+    password_observation: std::sync::Mutex<Option<vesta_control::identity::PasswordVerification>>,
 }
 impl Fixture {
     fn new(mode: &str, connections: u16, max_body: u32, timeout: u16) -> Self {
@@ -57,7 +66,8 @@ impl Fixture {
             panic!("TLS fixture");
         };
         let listener = listener.on_ephemeral_port();
-        let host = Host::open(config, Arc::new(SystemClock)).unwrap();
+        let clock = Arc::new(FixtureClock::default());
+        let host = Host::open(config, clock.clone()).unwrap();
         let transport = Transport::start(host.network_handle(), &listener).unwrap();
         let address = transport.local_addr();
         assert!(address.ip().is_loopback());
@@ -67,6 +77,8 @@ impl Fixture {
             host: Some(host),
             transport: Some(transport),
             address,
+            clock,
+            password_observation: std::sync::Mutex::new(None),
         }
     }
     fn host(&self) -> &Host {
@@ -314,7 +326,7 @@ fn status_tracks_published_revisions_without_sensitive_configuration() {
 }
 
 #[test]
-fn password_session_artifact_ticket_and_revocation_are_pack_only() {
+fn password_role_artifact_ticket_and_revocation_use_one_device_session() {
     let f = Fixture::new("minecraft-or-password", 8, 4096, 10);
     let owner = f.owner();
     let passwords = f.host().pack_passwords().unwrap();
@@ -332,16 +344,18 @@ fn password_session_artifact_ticket_and_revocation_are_pack_only() {
         None,
     )
     .error(403, "pack_access_denied");
+    let device_session = f.device_session();
     let reply = f.request(
         "POST",
         "/api/v2/auth/password",
         &serde_json::to_vec(&serde_json::json!({"password":PASSWORD})).unwrap(),
-        None,
+        Some(&device_session),
     );
     assert_eq!(reply.status, 200);
     let session = reply.json()["session"].as_str().unwrap().to_owned();
     assert_eq!(session.len(), 43);
-    assert_eq!(reply.json()["expires_in"], 3600);
+    assert_eq!(reply.json()["expires_in"], 900);
+    assert_eq!(session, device_session);
     reply.hides(PASSWORD);
     f.request(
         "GET",
@@ -503,11 +517,11 @@ fn password_rotation_applies_to_http_sessions_and_preserves_pack_publication() {
         "POST",
         "/api/v2/auth/password",
         &serde_json::to_vec(&serde_json::json!({"password":rotated_password})).unwrap(),
-        None,
+        Some(&session),
     );
     assert_eq!(fresh.status, 200);
     let fresh_session = fresh.json()["session"].as_str().unwrap().to_owned();
-    assert_ne!(fresh_session, session);
+    assert_eq!(fresh_session, session);
     let artifact = f.request("GET", "/api/v2/pack/artifact", b"", Some(&fresh_session));
     assert_eq!(artifact.status, 200);
     assert_eq!(artifact.body, payload);
@@ -846,16 +860,15 @@ impl Fixture {
                 &SecretPassword::try_from(PASSWORD.as_bytes().to_vec()).unwrap(),
             )
             .unwrap();
-        self.request(
+        let token = self.device_session();
+        let reply = self.request(
             "POST",
             "/api/v2/auth/password",
             &serde_json::to_vec(&serde_json::json!({"password":PASSWORD})).unwrap(),
-            None,
-        )
-        .json()["session"]
-            .as_str()
-            .unwrap()
-            .to_owned()
+            Some(&token),
+        );
+        assert_eq!(reply.status, 200);
+        reply.json()["session"].as_str().unwrap().to_owned()
     }
     /// A live password-grant session without an HTTP KDF round trip, for fixtures
     /// whose request timeout is shorter than a debug-build password verification.
@@ -869,15 +882,49 @@ impl Fixture {
                 &SecretPassword::try_from(PASSWORD.as_bytes().to_vec()).unwrap(),
             )
             .unwrap();
-        let (session, _) = self
-            .host()
-            .pack_sessions()
-            .issue(
-                vesta_control::pack_access::PackGrant::Password(PasswordRevision::new(1).unwrap()),
-                Instant::now(),
+        self.granted_session()
+    }
+    fn device_session(&self) -> String {
+        use base64::Engine as _;
+        use ring::signature::KeyPair;
+        let key = management_key();
+        let management = self.host().management();
+        let device = management
+            .enroll_device(
+                "TLS fixture",
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref()),
             )
             .unwrap();
-        session.expose().to_owned()
+        let nonce = management.challenge(&device.device_id).unwrap();
+        let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            key.sign(&vesta_control::identity::management::session_message(
+                management.server_id(),
+                nonce.expose(),
+            ))
+            .as_ref(),
+        );
+        management
+            .session(&device.device_id, nonce.expose(), &signature)
+            .unwrap()
+            .secret
+            .expose()
+            .to_owned()
+    }
+    fn granted_session(&self) -> String {
+        let mut cache = self.password_observation.lock().unwrap();
+        let verification = cache.get_or_insert_with(|| {
+            self.host()
+                .pack_passwords()
+                .unwrap()
+                .verify(PASSWORD.as_bytes().to_vec())
+                .unwrap()
+        });
+        let token = self.device_session();
+        self.host()
+            .management()
+            .grant_password(&token, verification, &self.host().pack_policy().unwrap())
+            .unwrap();
+        token
     }
     fn raw(&self, request: &[u8]) -> WireReply {
         let mut stream = self.stream();
@@ -936,17 +983,7 @@ fn slow_large_downloads_are_bounded_and_cancel_releases_budget() {
     f.request("GET", "/api/v2/pack/artifact", b"", Some(&ticket))
         .error(503, "download_busy");
     // Another player's session from the same address is refused by the peer cap.
-    let other = f
-        .request(
-            "POST",
-            "/api/v2/auth/password",
-            &serde_json::to_vec(&serde_json::json!({"password":PASSWORD})).unwrap(),
-            None,
-        )
-        .json()["session"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let other = f.granted_session();
     f.request("GET", "/api/v2/pack/artifact", b"", Some(&other))
         .error(503, "download_busy");
     drop(held);
@@ -1239,7 +1276,9 @@ fn rotation_changes_new_handshakes_and_discovery_but_preserves_open_stream() {
     let f = Fixture::new("minecraft", 8, 1024, 30);
     let transport = f.transport.as_ref().unwrap();
     assert!(!transport.reload_tls().unwrap());
+    let local_fingerprint = transport.fingerprint_handle();
     let old = fingerprint(CERT);
+    assert_eq!(local_fingerprint.current().unwrap(), old);
     let new = fingerprint(ROTATED_CERT);
     assert_ne!(old, new);
     let mut existing = f.stream();
@@ -1259,6 +1298,7 @@ fn rotation_changes_new_handshakes_and_discovery_but_preserves_open_stream() {
     assert!(transport.reload_tls().unwrap());
     assert!(transport.last_tls_reload_error().is_none());
     assert_eq!(transport.tls_fingerprint().unwrap(), new);
+    assert_eq!(local_fingerprint.current().unwrap(), new);
     assert!(!transport.reload_tls().unwrap());
     assert_eq!(peer_fingerprint(&f.stream()), new);
     let reply = discovery_on(&mut existing);
@@ -1348,4 +1388,436 @@ fn reload_hash_detects_change_even_with_unchanged_size_and_mtime() {
     assert!(transport.reload_tls().unwrap());
     assert!(!transport.reload_tls().unwrap());
     assert_eq!(peer_fingerprint(&f.stream()), fingerprint(CERT));
+}
+
+fn management_key() -> ring::signature::Ed25519KeyPair {
+    ring::signature::Ed25519KeyPair::from_pkcs8(
+        ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+            .unwrap()
+            .as_ref(),
+    )
+    .unwrap()
+}
+fn enroll_management(
+    f: &Fixture,
+    role: vesta_control::identity::BuiltinRole,
+) -> (String, ring::signature::Ed25519KeyPair) {
+    use base64::Engine as _;
+    use ring::signature::KeyPair;
+    let code = f.host().management().issue_local(role, 10).unwrap();
+    let key = management_key();
+    let request = serde_json::json!({"code": code.secret.expose(), "device_name": "TLS test device", "public_key": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref())});
+    let reply = f.request(
+        "POST",
+        "/api/v3/manage/pair",
+        &serde_json::to_vec(&request).unwrap(),
+        None,
+    );
+    assert_eq!(reply.status, 200);
+    assert_eq!(reply.json()["role"], role.id());
+    f.request(
+        "POST",
+        "/api/v3/manage/pair",
+        &serde_json::to_vec(&request).unwrap(),
+        None,
+    )
+    .error(401, "management_pair_invalid");
+    (reply.json()["device_id"].as_str().unwrap().to_owned(), key)
+}
+fn management_session(f: &Fixture, device: &str, key: &ring::signature::Ed25519KeyPair) -> String {
+    use base64::Engine as _;
+    let request = serde_json::to_vec(&serde_json::json!({"device_id": device})).unwrap();
+    let reply = f.request("POST", "/api/v3/manage/session/challenge", &request, None);
+    assert_eq!(reply.status, 200);
+    let data = reply.json();
+    let message = vesta_control::identity::management::session_message(
+        data["server_id"].as_str().unwrap(),
+        data["nonce"].as_str().unwrap(),
+    );
+    let request = serde_json::to_vec(&serde_json::json!({"device_id": device, "nonce": data["nonce"], "signature": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.sign(&message).as_ref())})).unwrap();
+    let reply = f.request("POST", "/api/v3/manage/session", &request, None);
+    assert_eq!(reply.status, 200);
+    f.request("POST", "/api/v3/manage/session", &request, None)
+        .error(401, "management_session_invalid");
+    reply.json()["token"].as_str().unwrap().to_owned()
+}
+#[test]
+fn management_https_pair_challenge_session_policy_revoke_and_no_remote_link_creation() {
+    let f = Fixture::new("minecraft", 8, 1024, 3);
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    for path in [
+        "/api/v3/manage",
+        "/api/v3/manage/status",
+        "/api/v3/manage/owner/link",
+        "/api/v3/manage/unknown",
+    ] {
+        f.request("GET", path, b"", None)
+            .error(401, "management_session_invalid");
+        f.request("GET", path, b"", Some(&token))
+            .error(501, "not_implemented");
+    }
+    f.request(
+        "POST",
+        "/api/v3/manage/owner/link",
+        br#"{"minecraft_uuid":"11111111-2222-4333-8444-555555555555"}"#,
+        Some(&token),
+    )
+    .error(501, "not_implemented");
+    assert!(f.host().management().links_local().unwrap().is_empty());
+    f.request("GET", "/api/v2/manage/status", b"", Some(&token))
+        .error(403, "management_unavailable");
+    f.request("GET", "/api/v1/status", b"", Some(&token))
+        .error(410, "legacy_endpoint_removed");
+    let db = f.host().database();
+    db.write(|c| { c.execute("UPDATE role_assignments SET expires_at = ? WHERE principal_id = (SELECT principal_id FROM devices WHERE id = ?)", rusqlite::params![db.clock().millis(), device])?; Ok(()) }).unwrap();
+    f.request("GET", "/api/v3/manage/status", b"", Some(&token))
+        .error(403, "management_forbidden");
+    f.host().management().revoke_local(&device).unwrap();
+    f.request("GET", "/api/v3/manage/status", b"", Some(&token))
+        .error(401, "management_session_invalid");
+}
+#[test]
+fn one_session_crosses_access_domains_only_when_its_user_has_the_capability() {
+    let f = Fixture::new("minecraft-or-password", 8, 1024, 10);
+    let owner = f.owner();
+    let pack_session = f.password_session(&owner);
+    let pack_ticket = f
+        .request("POST", "/api/v2/pack/ticket", b"", Some(&pack_session))
+        .json()["ticket"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.request("GET", "/api/v3/manage/status", b"", Some(&pack_session))
+        .error(403, "management_forbidden");
+    f.request("GET", "/api/v3/manage/status", b"", Some(&pack_ticket))
+        .error(401, "management_session_invalid");
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    f.request("GET", "/api/v3/manage/status", b"", Some(&token))
+        .error(501, "not_implemented");
+    assert_eq!(
+        f.request("POST", "/api/v2/pack/ticket", b"", Some(&token))
+            .status,
+        200
+    );
+    assert_eq!(
+        f.request("POST", "/api/v2/realtime/ticket", b"", Some(&token))
+            .status,
+        200
+    );
+    let bytes = b"same user same session";
+    f.publish(&owner, UpdatePolicy::Optional, bytes, "1");
+    assert_eq!(
+        f.request("GET", "/api/v2/pack/artifact", b"", Some(&token))
+            .body,
+        bytes
+    );
+    f.host().management().revoke_local(&device).unwrap();
+    f.request("GET", "/api/v3/manage/status", b"", Some(&token))
+        .error(401, "management_session_invalid");
+    f.request("GET", "/api/v2/pack/artifact", b"", Some(&token))
+        .error(401, "pack_session_invalid");
+}
+#[test]
+fn roleless_device_https_session_is_refused_on_every_management_placeholder() {
+    let f = Fixture::new("minecraft", 8, 1024, 3);
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Viewer);
+    f.host().database().write(|c| { c.execute("DELETE FROM role_assignments WHERE principal_id = (SELECT principal_id FROM devices WHERE id = ?)", [&device])?; Ok(()) }).unwrap();
+    let token = management_session(&f, &device, &key);
+    for (method, path, body) in [
+        ("GET", "/api/v3/manage", b"".as_slice()),
+        ("GET", "/api/v3/manage/status", b""),
+        ("POST", "/api/v3/manage/owner/link", b"{}"),
+        ("POST", "/api/v3/manage/operations", b"{}"),
+        ("DELETE", "/api/v3/manage/files/unknown", b""),
+    ] {
+        f.request(method, path, body, Some(&token))
+            .error(403, "management_forbidden");
+    }
+    assert!(f.host().management().links_local().unwrap().is_empty());
+}
+#[test]
+fn management_https_body_rate_limits_strict_shapes_and_unknown_minecraft_proofs() {
+    let f = Fixture::new("minecraft", 8, 256, 3);
+    f.request("POST", "/api/v3/manage/pair", &vec![b'x'; 257], None)
+        .error(413, "request_too_large");
+    for (path, body) in [
+        (
+            "/api/v3/manage/pair",
+            br#"{"code":"wrong","device_name":"Fixture","public_key":"wrong","role":"owner"}"#
+                .as_slice(),
+        ),
+        (
+            "/api/v3/manage/session/challenge",
+            br#"{"device_id":"unknown","role":"owner"}"#,
+        ),
+        (
+            "/api/v3/manage/session",
+            br#"{"device_id":"unknown","nonce":"bad","signature":"bad","purpose":"pack"}"#,
+        ),
+        (
+            "/api/v3/manage/minecraft/complete",
+            br#"{"challenge":"bad","device_name":"Fixture","public_key":"bad","role":"owner"}"#,
+        ),
+    ] {
+        f.request("POST", path, body, None)
+            .error(400, "invalid_request");
+    }
+    // Unknown IDs never call Mojang. Neither a legacy ticket nor a claimed UUID is proof.
+    let completion = serde_json::to_vec(&serde_json::json!({"challenge": "0".repeat(64), "device_name": "Fixture", "public_key": "A".repeat(43)})).unwrap();
+    f.request(
+        "POST",
+        "/api/v3/manage/minecraft/complete",
+        &completion,
+        None,
+    )
+    .error(401, "management_session_invalid");
+    let mut limited = false;
+    for _ in 0..65 {
+        let reply = f.request(
+            "POST",
+            "/api/v3/manage/session/challenge",
+            br#"{"device_id":"unknown"}"#,
+            None,
+        );
+        if reply.status == 429 {
+            reply.error(429, "peer_rate_limited");
+            limited = true;
+            break;
+        }
+        reply.error(401, "management_session_invalid");
+    }
+    assert!(limited);
+}
+
+#[test]
+fn public_v3_auth_aliases_and_pair_attachment_reuse_the_signed_users_session() {
+    use base64::Engine as _;
+    use ring::signature::KeyPair;
+    let f = Fixture::new("minecraft", 8, 1024, 3);
+    let key = management_key();
+    let public = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref());
+    let enrolled = f.request(
+        "POST",
+        "/api/v3/auth/device/enroll",
+        &serde_json::to_vec(&serde_json::json!({"device_name":"Alias user","public_key":public}))
+            .unwrap(),
+        None,
+    );
+    assert_eq!(enrolled.status, 200);
+    let device = enrolled.json()["device_id"].as_str().unwrap().to_owned();
+    let challenge = f.request(
+        "POST",
+        "/api/v3/auth/session/challenge",
+        &serde_json::to_vec(&serde_json::json!({"device_id":device})).unwrap(),
+        None,
+    );
+    assert_eq!(challenge.status, 200);
+    let c = challenge.json();
+    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        key.sign(&vesta_control::identity::management::session_message(
+            c["server_id"].as_str().unwrap(),
+            c["nonce"].as_str().unwrap(),
+        ))
+        .as_ref(),
+    );
+    let body = serde_json::to_vec(
+        &serde_json::json!({"device_id":device,"nonce":c["nonce"],"signature":signature}),
+    )
+    .unwrap();
+    let session = f.request("POST", "/api/v3/auth/session", &body, None);
+    assert_eq!(session.status, 200);
+    let token = session.json()["token"].as_str().unwrap().to_owned();
+    f.request("POST", "/api/v3/auth/session", &body, None)
+        .error(401, "management_session_invalid");
+    assert_eq!(
+        f.request("GET", "/api/v2/pack/status?installed=0", b"", Some(&token))
+            .status,
+        200
+    );
+    f.request("GET", "/api/v3/manage/status", b"", Some(&token))
+        .error(403, "management_forbidden");
+    f.request("POST", "/api/v2/pack/ticket", b"", Some(&token))
+        .error(401, "pack_session_invalid");
+    let code = f
+        .host()
+        .management()
+        .issue_local(vesta_control::identity::BuiltinRole::Owner, 10)
+        .unwrap();
+    let paired=f.request("POST","/api/v3/manage/pair",&serde_json::to_vec(&serde_json::json!({"code":code.secret.expose(),"device_name":"Alias user","public_key":public})).unwrap(),Some(&token));
+    assert_eq!(paired.status, 200);
+    assert_eq!(paired.json()["device_id"], device);
+    f.request("GET", "/api/v3/manage/status", b"", Some(&token))
+        .error(501, "not_implemented");
+    assert_eq!(
+        f.request("POST", "/api/v2/pack/ticket", b"", Some(&token))
+            .status,
+        200
+    );
+    assert_eq!(f.host().management().list_local().unwrap().len(), 1);
+}
+#[test]
+fn anonymous_pack_is_explicit_and_existing_tickets_recheck_local_source_changes() {
+    let f = Fixture::new("minecraft", 8, 1024, 3);
+    let owner = f.owner();
+    let bytes = b"explicit open pack";
+    f.publish(&owner, UpdatePolicy::Optional, bytes, "1");
+    f.request("GET", "/api/v2/pack/artifact", b"", None)
+        .error(401, "pack_session_invalid");
+    f.host()
+        .management()
+        .patch_access_local(&[("anonymous".into(), "player".into())])
+        .unwrap();
+    assert_eq!(
+        f.request("GET", "/api/v2/pack/artifact", b"", None).body,
+        bytes
+    );
+    let ticket = f.request("POST", "/api/v2/pack/ticket", b"", None);
+    assert_eq!(ticket.status, 200);
+    let ticket = ticket.json()["ticket"].as_str().unwrap().to_owned();
+    f.host()
+        .management()
+        .patch_access_local(&[("anonymous".into(), "public".into())])
+        .unwrap();
+    f.request("GET", "/api/v2/pack/artifact", b"", Some(&ticket))
+        .error(401, "pack_session_invalid");
+    assert_eq!(
+        f.request("GET", "/api/v2/pack/status?installed=0", b"", None)
+            .status,
+        200
+    );
+}
+
+fn persisted_whitelist_user(f: &Fixture) -> String {
+    // Test-only durable record for a previously verified canonical UUID. The
+    // device/session uses real enrollment, Ed25519 and signed challenge flow.
+    let token = f.device_session();
+    let subject = f.host().management().authenticate(&token).unwrap();
+    let db = f.host().database();
+    db.write(|c| {
+        c.execute(
+            "INSERT INTO user_minecraft_accounts VALUES (?,?,?)",
+            rusqlite::params![
+                db.server_id(),
+                "12345678-1234-4234-8234-123456789abc",
+                subject.principal.as_str()
+            ],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    token
+}
+fn write_live_whitelist(f: &Fixture) {
+    std::fs::write(
+        f.temp.path().join("game/server.properties"),
+        b"online-mode=true\nwhite-list=false\n",
+    )
+    .unwrap();
+    std::fs::write(
+        f.temp.path().join("game/whitelist.json"),
+        br#"[{"uuid":"12345678-1234-4234-8234-123456789abc","name":"Fixture"}]"#,
+    )
+    .unwrap();
+    std::fs::write(f.temp.path().join("game/banned-players.json"), b"[]").unwrap();
+}
+fn live_download_ticket(f: &Fixture, token: &str) -> String {
+    let reply = f.request("POST", "/api/v2/pack/ticket", b"", Some(token));
+    assert_eq!(reply.status, 200);
+    reply.json()["ticket"].as_str().unwrap().to_owned()
+}
+#[test]
+fn whitelist_and_ban_edits_apply_on_the_next_http_use_without_reload() {
+    let f = Fixture::new("minecraft", 8, 4096, 3);
+    let owner = f.owner();
+    let bytes = b"live admission";
+    f.publish(&owner, UpdatePolicy::Optional, bytes, "1");
+    let token = persisted_whitelist_user(&f);
+    write_live_whitelist(&f);
+    // Startup snapshot was empty; current files alone establish access.
+    assert_eq!(
+        f.request("GET", "/api/v2/pack/artifact", b"", Some(&token))
+            .body,
+        bytes
+    );
+    let ticket = live_download_ticket(&f, &token);
+    std::fs::write(f.temp.path().join("game/whitelist.json"), b"[]").unwrap();
+    f.request("GET", "/api/v2/pack/artifact", b"", Some(&token))
+        .error(401, "pack_session_invalid");
+    f.request("GET", "/api/v2/pack/artifact", b"", Some(&ticket))
+        .error(401, "pack_session_invalid");
+    write_live_whitelist(&f);
+    let ticket = live_download_ticket(&f, &token);
+    std::fs::write(
+        f.temp.path().join("game/banned-players.json"),
+        br#"[{"uuid":"12345678-1234-4234-8234-123456789abc","name":"Fixture"}]"#,
+    )
+    .unwrap();
+    f.request("GET", "/api/v2/pack/artifact", b"", Some(&token))
+        .error(401, "pack_session_invalid");
+    f.request("GET", "/api/v2/pack/artifact", b"", Some(&ticket))
+        .error(401, "pack_session_invalid");
+    write_live_whitelist(&f);
+    assert_eq!(
+        f.request("GET", "/api/v2/pack/artifact", b"", Some(&token))
+            .body,
+        bytes
+    );
+}
+#[test]
+fn unreadable_or_malformed_current_admission_disables_only_whitelist_source() {
+    let f = Fixture::new("minecraft-or-password", 8, 4096, 3);
+    let owner = f.owner();
+    let bytes = b"independent sources";
+    f.publish(&owner, UpdatePolicy::Optional, bytes, "1");
+    let password = f.direct_session(&owner);
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let explicit = management_session(&f, &device, &key);
+    let token = persisted_whitelist_user(&f);
+    for file in ["whitelist.json", "banned-players.json", "server.properties"] {
+        write_live_whitelist(&f);
+        let ticket = live_download_ticket(&f, &token);
+        // Populate a valid cache too: failure must never reuse it.
+        f.host().network_handle().reload_admission().unwrap();
+        let corrupt = if file == "server.properties" {
+            b"online-mode=invalid".as_slice()
+        } else {
+            b"malformed document".as_slice()
+        };
+        std::fs::write(f.temp.path().join("game").join(file), corrupt).unwrap();
+        f.request("GET", "/api/v2/pack/artifact", b"", Some(&token))
+            .error(401, "pack_session_invalid");
+        f.request("GET", "/api/v2/pack/artifact", b"", Some(&ticket))
+            .error(401, "pack_session_invalid");
+        assert_eq!(
+            f.request("GET", "/api/v2/pack/artifact", b"", Some(&password))
+                .body,
+            bytes
+        );
+        assert_eq!(
+            f.request("GET", "/api/v2/pack/artifact", b"", Some(&explicit))
+                .body,
+            bytes
+        );
+        assert_eq!(
+            f.request("GET", "/api/v2/pack/status?installed=0", b"", None)
+                .status,
+            200
+        );
+    }
+    write_live_whitelist(&f);
+    let ticket = live_download_ticket(&f, &token);
+    let path = f.temp.path().join("game/whitelist.json");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    f.request("GET", "/api/v2/pack/artifact", b"", Some(&token))
+        .error(401, "pack_session_invalid");
+    f.request("GET", "/api/v2/pack/artifact", b"", Some(&ticket))
+        .error(401, "pack_session_invalid");
+    assert_eq!(
+        f.request("GET", "/api/v2/pack/artifact", b"", Some(&password))
+            .body,
+        bytes
+    );
 }

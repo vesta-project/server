@@ -5,13 +5,22 @@ use std::path::{Path, PathBuf};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use vesta_control::operations::{LocalAction, LocalRuntime};
 const MAX_FRAME: usize = 1024;
+const MAX_RESPONSE_FRAME: usize = 1024 * 1024;
 const IO_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", deny_unknown_fields)]
 pub enum Op {
     Start,
     Stop,
     Restart,
+    Pair { role: String, minutes: u16 },
+    DevicesList,
+    OwnerLink { uuid: String, role: String },
+    OwnerUnlink { uuid: String, revoke_devices: bool },
+    OwnerList,
+    AccessShow,
+    AccessSet { fields: Vec<(String, String)> },
+    DevicesRevoke { device: String },
 }
 impl From<Op> for LocalAction {
     fn from(op: Op) -> Self {
@@ -19,6 +28,7 @@ impl From<Op> for LocalAction {
             Op::Start => Self::Start,
             Op::Stop => Self::Stop,
             Op::Restart => Self::Restart,
+            _ => unreachable!("management ops never reach lifecycle driver"),
         }
     }
 }
@@ -40,18 +50,23 @@ enum Code {
     StopTimedOutNoForceKill,
     OutcomeUncertain,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Response {
     version: u8,
     code: Code,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    data: Option<serde_json::Value>,
 }
 async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>> {
+    read_frame_limit(reader, MAX_FRAME).await
+}
+async fn read_frame_limit<R: AsyncRead + Unpin>(reader: &mut R, maximum: usize) -> Result<Vec<u8>> {
     let length = reader
         .read_u32()
         .await
         .map_err(|_| "local_control_invalid_frame")? as usize;
-    if length == 0 || length > MAX_FRAME {
+    if length == 0 || length > maximum {
         return Err("local_control_invalid_frame");
     }
     let mut bytes = vec![0; length];
@@ -63,7 +78,7 @@ async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>> {
 }
 async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(writer: &mut W, value: &T) -> Result<()> {
     let bytes = serde_json::to_vec(value).map_err(|_| "local_control_invalid_frame")?;
-    if bytes.is_empty() || bytes.len() > MAX_FRAME {
+    if bytes.is_empty() || bytes.len() > MAX_RESPONSE_FRAME {
         return Err("local_control_invalid_frame");
     }
     writer
@@ -110,14 +125,44 @@ async fn serve_stream<S: AsyncRead + AsyncWrite + Unpin>(
     name: &str,
     game: &Path,
     runtime: &LocalRuntime,
+    management: &vesta_control::identity::management::ManagementAccess,
+    fingerprint: Option<&vesta_transport::TlsFingerprint>,
 ) -> Result<()> {
     let request = match tokio::time::timeout(IO_WAIT, read_frame(stream)).await {
         Ok(Ok(bytes)) => decode(&bytes),
         _ => Err("local_control_invalid_frame"),
     };
+    let mut data = None;
     let code = match request {
         Err(_) => Code::InvalidRequest,
         Ok(request) if request.name != name => Code::NameMismatch,
+        Ok(request)
+            if matches!(
+                request.op,
+                Op::Pair { .. }
+                    | Op::DevicesList
+                    | Op::DevicesRevoke { .. }
+                    | Op::OwnerLink { .. }
+                    | Op::OwnerUnlink { .. }
+                    | Op::OwnerList
+                    | Op::AccessShow
+                    | Op::AccessSet { .. }
+            ) =>
+        {
+            let management = management.clone();
+            let fingerprint = fingerprint.cloned();
+            match tokio::task::spawn_blocking(move || {
+                management_op(&management, request.op, fingerprint.as_ref())
+            })
+            .await
+            {
+                Ok(Ok(value)) => {
+                    data = Some(value);
+                    Code::Complete
+                }
+                _ => Code::RuntimeRefused,
+            }
+        }
         Ok(request) if !matches!(request.op, Op::Stop) && !local_files::eula_accepted(game) => {
             Code::EulaPending
         }
@@ -133,9 +178,19 @@ async fn serve_stream<S: AsyncRead + AsyncWrite + Unpin>(
             }
         }
     };
-    tokio::time::timeout(IO_WAIT, write_frame(stream, &Response { version: 1, code }))
-        .await
-        .map_err(|_| "local_control_io_failed")?
+    tokio::time::timeout(
+        IO_WAIT,
+        write_frame(
+            stream,
+            &Response {
+                version: 1,
+                code,
+                data,
+            },
+        ),
+    )
+    .await
+    .map_err(|_| "local_control_io_failed")?
 }
 #[cfg(target_os = "linux")]
 struct SocketCleanup {
@@ -170,6 +225,8 @@ impl Server {
         name: String,
         game: PathBuf,
         runtime: LocalRuntime,
+        management: vesta_control::identity::management::ManagementAccess,
+        fingerprint: Option<vesta_transport::TlsFingerprint>,
     ) -> Result<Self> {
         if !crate::cli::valid_name(&name) {
             return Err("local_control_name_invalid");
@@ -220,7 +277,7 @@ impl Server {
                         if stream.peer_cred().map_err(|_| "local_control_acl_refused")?.uid() != linux_uid() { continue; }
                         stream
                     };
-                    let _ = serve_stream(&mut stream, &name, &game, &runtime).await;
+                    let _ = serve_stream(&mut stream, &name, &game, &runtime, &management, fingerprint.as_ref()).await;
                 }
                 Ok(())
             }.await;
@@ -233,7 +290,16 @@ impl Server {
         });
         #[cfg(not(any(windows, target_os = "linux")))]
         let task = {
-            let _ = (endpoint, stop, stopped, name, game, runtime);
+            let _ = (
+                endpoint,
+                stop,
+                stopped,
+                name,
+                game,
+                runtime,
+                management,
+                fingerprint,
+            );
             return Err("local_platform_unsupported");
         };
         Ok(Self {
@@ -255,6 +321,9 @@ fn linux_uid() -> u32 {
     unsafe { libc::geteuid() }
 }
 pub async fn request(state: &Path, name: String, op: Op) -> Result<()> {
+    request_data(state, name, op).await.map(|_| ())
+}
+pub async fn request_data(state: &Path, name: String, op: Op) -> Result<Option<serde_json::Value>> {
     let endpoint = endpoint(state)?;
     #[cfg(windows)]
     let mut stream = {
@@ -308,18 +377,20 @@ pub async fn request(state: &Path, name: String, op: Op) -> Result<()> {
         .await
         .map_err(|_| "local_control_io_failed")??;
         // Native stop may take ten seconds; never retry a possibly admitted request.
-        let bytes =
-            tokio::time::timeout(std::time::Duration::from_secs(30), read_frame(&mut stream))
-                .await
-                .map_err(|_| "local_control_outcome_unknown_do_not_retry")?
-                .map_err(|_| "local_control_outcome_unknown_do_not_retry")?;
+        let bytes = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            read_frame_limit(&mut stream, MAX_RESPONSE_FRAME),
+        )
+        .await
+        .map_err(|_| "local_control_outcome_unknown_do_not_retry")?
+        .map_err(|_| "local_control_outcome_unknown_do_not_retry")?;
         let response: Response =
             serde_json::from_slice(&bytes).map_err(|_| "local_control_invalid_response")?;
         if response.version != 1 {
             return Err("local_control_invalid_response");
         }
         match response.code {
-            Code::Complete => Ok(()),
+            Code::Complete => Ok(response.data),
             Code::EulaPending => Err("local_eula_pending_owner_must_accept_themselves"),
             Code::StopTimedOutNoForceKill => Err("local_stop_timed_out_no_force_kill"),
             Code::OutcomeUncertain => Err("local_control_outcome_unknown_do_not_retry"),
@@ -332,6 +403,82 @@ pub async fn request(state: &Path, name: String, op: Op) -> Result<()> {
         Err("local_platform_unsupported")
     }
 }
+/// This is reached only after native pipe/socket admission and server-name binding.
+fn management_op(
+    service: &vesta_control::identity::management::ManagementAccess,
+    op: Op,
+    fingerprint: Option<&vesta_transport::TlsFingerprint>,
+) -> Result<serde_json::Value> {
+    match op {
+        Op::Pair { role, minutes } => {
+            let role = crate::cli::pair_role(&role).ok_or("local_control_invalid_request")?;
+            let code = service
+                .issue_local(role, minutes)
+                .map_err(|_| "local_management_refused")?;
+            Ok(
+                serde_json::json!({"code": code.secret.expose(), "expires_at_ms": code.expires_at_ms, "server_id": service.server_id(), "role": role.id()}),
+            )
+        }
+        Op::OwnerLink { uuid, role } => {
+            let uuid = vesta_control::identity::minecraft::MinecraftUuid::parse(&uuid)
+                .map_err(|_| "local_control_invalid_request")?;
+            let role = crate::cli::pair_role(&role).ok_or("local_control_invalid_request")?;
+            // Resolve fingerprint BEFORE mutation; a failure cannot hide an admitted link.
+            let fingerprint = fingerprint
+                .map(|f| f.current().map_err(|_| "local_tls_unavailable"))
+                .transpose()?;
+            service
+                .link_local(uuid, role)
+                .map_err(|_| "local_management_refused")?;
+            Ok(
+                serde_json::json!({"linked": true, "minecraft_uuid": uuid.as_uuid().to_string(), "role": role.id(), "server_id": service.server_id(), "tls_sha256_fingerprint": fingerprint}),
+            )
+        }
+        Op::OwnerUnlink {
+            uuid,
+            revoke_devices,
+        } => {
+            let uuid = vesta_control::identity::minecraft::MinecraftUuid::parse(&uuid)
+                .map_err(|_| "local_control_invalid_request")?;
+            service
+                .unlink_local(uuid, revoke_devices)
+                .map_err(|_| "local_management_refused")?;
+            Ok(serde_json::json!({"unlinked": true, "devices_revoked": revoke_devices}))
+        }
+        Op::AccessShow => serde_json::to_value(
+            service
+                .access_local()
+                .map_err(|_| "local_management_refused")?,
+        )
+        .map_err(|_| "local_management_refused"),
+        Op::AccessSet { fields } => serde_json::to_value(
+            service
+                .patch_access_local(&fields)
+                .map_err(|_| "local_management_refused")?,
+        )
+        .map_err(|_| "local_management_refused"),
+        Op::OwnerList => serde_json::to_value(
+            service
+                .links_local()
+                .map_err(|_| "local_management_refused")?,
+        )
+        .map_err(|_| "local_management_refused"),
+        Op::DevicesList => serde_json::to_value(
+            service
+                .list_local()
+                .map_err(|_| "local_management_refused")?,
+        )
+        .map_err(|_| "local_management_refused"),
+        Op::DevicesRevoke { device } => {
+            service
+                .revoke_local(&device)
+                .map_err(|_| "local_management_refused")?;
+            Ok(serde_json::json!({"revoked": true}))
+        }
+        _ => Err("local_control_invalid_request"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,6 +489,8 @@ mod tests {
             br#"{"version":2,"op":"stop","name":"owned"}"#,
             br#"{"version":1,"op":"start","name":"../owned"}"#,
             br#"{"version":1,"op":"stop","name":"owned","command":"arbitrary"}"#,
+            br#"{"version":1,"op":{"pair":{"role":"owner","minutes":10,"command":"arbitrary"}},"name":"owned"}"#,
+            br#"{"version":1,"op":{"accessset":{"fields":[],"role":"owner"}},"name":"owned"}"#,
         ] {
             assert!(decode(bytes).is_err());
         }

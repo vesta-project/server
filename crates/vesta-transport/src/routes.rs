@@ -32,6 +32,10 @@ struct Player {
 #[serde(deny_unknown_fields)]
 struct Completion {
     challenge: String,
+    #[serde(default)]
+    device_name: Option<String>,
+    #[serde(default)]
+    public_key: Option<String>,
 }
 
 pub(super) fn fixed_refusal(path: &str) -> Option<Reply> {
@@ -49,23 +53,50 @@ pub(super) async fn route(
     state: Arc<Shared>,
     peer: std::net::SocketAddr,
 ) -> Reply {
-    let path = request.uri().path().to_owned();
-    let method = request.method().clone();
-    let recognized = matches!(
-        (method.as_str(), path.as_str()),
-        (
-            "POST",
-            "/api/v2/discovery"
-                | "/api/v2/auth/password"
-                | "/api/v2/auth/minecraft/challenge"
-                | "/api/v2/auth/minecraft/complete"
-                | "/api/v2/pack/ticket"
-                | "/api/v2/realtime/ticket"
-        ) | (
-            "GET",
-            "/api/v2/pack/status" | "/api/v2/pack/artifact" | "/api/v2/realtime"
-        )
+    let original_path = request.uri().path();
+    let auth_alias = matches!(
+        original_path,
+        "/api/v3/auth/device/enroll"
+            | "/api/v3/auth/minecraft/challenge"
+            | "/api/v3/auth/minecraft/complete"
+            | "/api/v3/auth/session/challenge"
+            | "/api/v3/auth/session"
+            | "/api/v3/auth/password"
     );
+    let path = if auth_alias {
+        original_path.replacen("/api/v3/auth/", "/api/v3/manage/", 1)
+    } else {
+        original_path.to_owned()
+    };
+    let method = request.method().clone();
+    let management = path == "/api/v3/manage" || path.starts_with("/api/v3/manage/");
+    let management_public = method == Method::POST
+        && matches!(
+            path.as_str(),
+            "/api/v3/manage/pair"
+                | "/api/v3/manage/session/challenge"
+                | "/api/v3/manage/session"
+                | "/api/v3/manage/minecraft/challenge"
+                | "/api/v3/manage/minecraft/complete"
+                | "/api/v3/manage/device/enroll"
+                | "/api/v3/manage/password"
+        );
+    let recognized = management
+        || matches!(
+            (method.as_str(), path.as_str()),
+            (
+                "POST",
+                "/api/v2/discovery"
+                    | "/api/v2/auth/password"
+                    | "/api/v2/auth/minecraft/challenge"
+                    | "/api/v2/auth/minecraft/complete"
+                    | "/api/v2/pack/ticket"
+                    | "/api/v2/realtime/ticket"
+            ) | (
+                "GET",
+                "/api/v2/pack/status" | "/api/v2/pack/artifact" | "/api/v2/realtime"
+            )
+        );
     if !recognized {
         return error(StatusCode::NOT_FOUND, "endpoint_not_found");
     }
@@ -92,12 +123,8 @@ pub(super) async fn route(
     } else {
         None
     };
-    if matches!(
-        path.as_str(),
-        "/api/v2/pack/ticket" | "/api/v2/realtime/ticket" | "/api/v2/pack/artifact"
-    ) && authorization.is_none()
-    {
-        return error(StatusCode::UNAUTHORIZED, "pack_session_invalid");
+    if management && !management_public && authorization.is_none() {
+        return error(StatusCode::UNAUTHORIZED, "management_session_invalid");
     }
     if method == Method::POST
         && !matches!(
@@ -159,6 +186,15 @@ pub(super) async fn route(
     state
         .jobs
         .execute(move || {
+            if management {
+                return manage_dispatch(
+                    &host,
+                    &path,
+                    management_public,
+                    authorization.as_ref().map(|secret| secret.as_str()),
+                    &bytes,
+                );
+            }
             dispatch(
                 &host,
                 &path,
@@ -194,6 +230,15 @@ fn dispatch(
     downloads: Requester,
     tls: Arc<crate::tls::Material>,
 ) -> Reply {
+    if matches!(path, "/api/v2/discovery" | "/api/v2/pack/status") {
+        let admitted = host.with_policy(|p| {
+            host.sessions()
+                .authorize_info(authorization, Instant::now(), p)
+        });
+        if !matches!(admitted, Ok(Ok(()))) {
+            return error(StatusCode::UNAUTHORIZED, "pack_session_invalid");
+        }
+    }
     match path {
         "/api/v2/discovery" => {
             let manifest = discovery::decode_request(bytes)
@@ -264,7 +309,20 @@ fn dispatch(
                 _ => {}
             }
             match host.with_policy(|policy| policy.grant_password(&verification)) {
-                Ok(Some(grant)) => issue_session(host, grant),
+                Ok(Some(_)) => {
+                    let Some(token) = authorization else {
+                        return error(StatusCode::UNAUTHORIZED, "device_session_required");
+                    };
+                    match host.with_policy(|policy| {
+                        host.management()
+                            .grant_password(token, &verification, policy)
+                    }) {
+                        Ok(Ok(())) => json(
+                            serde_json::json!({"session":token,"expires_in":900,"granted":true}),
+                        ),
+                        _ => error(StatusCode::FORBIDDEN, "pack_access_denied"),
+                    }
+                }
                 _ => error(StatusCode::FORBIDDEN, "pack_access_denied"),
             }
         }
@@ -293,10 +351,18 @@ fn dispatch(
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
             };
             match host.minecraft().complete(&challenge) {
-                Ok(Some(profile)) => match host.with_policy(|p| p.grant_minecraft(&profile)) {
-                    Ok(Some(grant)) => issue_session(host, grant),
-                    _ => error(StatusCode::FORBIDDEN, "pack_access_denied"),
-                },
+                Ok(Some(profile)) => {
+                    let (Some(name), Some(key)) = (input.device_name, input.public_key) else {
+                        return error(StatusCode::BAD_REQUEST, "invalid_request");
+                    };
+                    match host
+                        .management()
+                        .enroll_pack_profile(profile, &name, &key, authorization)
+                    {
+                        Ok(device) => json(serde_json::json!({"device_id":device.device_id})),
+                        Err(e) => management_error(e),
+                    }
+                }
                 Ok(None) => error(StatusCode::FORBIDDEN, "pack_access_denied"),
                 Err(e) => minecraft_error(e.code()),
             }
@@ -369,15 +435,6 @@ fn dispatch(
         _ => error(StatusCode::NOT_FOUND, "endpoint_not_found"),
     }
 }
-fn issue_session(host: &NetworkHost, grant: vesta_control::pack_access::PackGrant) -> Reply {
-    let now = Instant::now();
-    match host.sessions().issue(grant, now) {
-        Ok((secret, session)) => json(
-            serde_json::json!({"session": secret.expose(), "expires_in": session.expires_at().saturating_duration_since(now).as_secs()}),
-        ),
-        Err(_) => error(StatusCode::SERVICE_UNAVAILABLE, "pack_session_unavailable"),
-    }
-}
 fn minecraft_error(code: &'static str) -> Reply {
     match code {
         // Production challenge issuance/completion refill one token per second.
@@ -385,4 +442,176 @@ fn minecraft_error(code: &'static str) -> Reply {
         "minecraft_busy" => error(StatusCode::SERVICE_UNAVAILABLE, "minecraft_busy"),
         _ => error(StatusCode::SERVICE_UNAVAILABLE, "minecraft_unavailable"),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Pair {
+    code: String,
+    device_name: String,
+    public_key: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeviceChallenge {
+    device_id: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManagementSession {
+    device_id: String,
+    nonce: String,
+    signature: String,
+}
+fn management_error(e: vesta_control::identity::management::ManagementError) -> Reply {
+    use vesta_control::identity::management::ManagementError;
+    let status = match e {
+        ManagementError::PairInvalid | ManagementError::SessionInvalid => StatusCode::UNAUTHORIZED,
+        ManagementError::InvalidRequest => StatusCode::BAD_REQUEST,
+        ManagementError::Forbidden => StatusCode::FORBIDDEN,
+        ManagementError::Saturated | ManagementError::Unavailable => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+    };
+    error(status, e.code())
+}
+fn manage_dispatch(
+    host: &NetworkHost,
+    path: &str,
+    public: bool,
+    authorization: Option<&str>,
+    bytes: &[u8],
+) -> Reply {
+    let management = host.management();
+    if !public {
+        return match authorization.map_or(
+            Err(vesta_control::identity::management::ManagementError::SessionInvalid),
+            |token| {
+                management.authorize(token, vesta_control::identity::Capability::StatusView, None)
+            },
+        ) {
+            Ok(_) => error(StatusCode::NOT_IMPLEMENTED, "not_implemented"),
+            Err(e) => management_error(e),
+        };
+    }
+    match path {
+        "/api/v3/manage/device/enroll" => {
+            let Ok(input) = serde_json::from_slice::<DeviceEnrollment>(bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            match management.enroll_device_for(&input.device_name, &input.public_key, authorization)
+            {
+                Ok(device) => json(serde_json::json!({"device_id":device.device_id})),
+                Err(e) => management_error(e),
+            }
+        }
+        "/api/v3/manage/password" => {
+            let Some(token) = authorization else {
+                return error(StatusCode::UNAUTHORIZED, "device_session_required");
+            };
+            let Ok(input) = serde_json::from_slice::<Password>(bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            let Some(passwords) = host.passwords() else {
+                return error(StatusCode::FORBIDDEN, "pack_access_denied");
+            };
+            let verification = match passwords.verify(input.password.into_bytes()) {
+                Ok(v) => v,
+                Err(_) => {
+                    return error(StatusCode::SERVICE_UNAVAILABLE, "pack_session_unavailable");
+                }
+            };
+            match host.with_policy(|p| management.grant_password(token, &verification, p)) {
+                Ok(Ok(())) => json(serde_json::json!({"granted":true})),
+                _ => error(StatusCode::FORBIDDEN, "pack_access_denied"),
+            }
+        }
+        "/api/v3/manage/minecraft/challenge" => {
+            let Ok(input) = serde_json::from_slice::<Player>(bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            let (Ok(uuid), Ok(name)) = (
+                MinecraftUuid::parse(&input.uuid),
+                MinecraftName::parse(&input.name),
+            ) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            match host.minecraft().issue_management(uuid, name) {
+                Ok(c) => json(
+                    serde_json::json!({"challenge": c.challenge_id().as_str(), "server_hash": c.server_hash().as_str(), "expires_in": c.lifetime().as_secs()}),
+                ),
+                Err(e) => minecraft_error(e.code()),
+            }
+        }
+        "/api/v3/manage/minecraft/complete" => {
+            let Ok(input) = serde_json::from_slice::<MinecraftEnrollment>(bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            let Ok(challenge) = ChallengeId::parse(&input.challenge) else {
+                return error(StatusCode::UNAUTHORIZED, "management_session_invalid");
+            };
+            match host.minecraft().complete_management(&challenge) {
+                Ok(Some(profile)) => match management.enroll_minecraft_for(
+                    profile,
+                    &input.device_name,
+                    &input.public_key,
+                    authorization,
+                ) {
+                    Ok(enrolled) => json(serde_json::json!({"device_id": enrolled.device_id})),
+                    Err(e) => management_error(e),
+                },
+                Ok(None) => error(StatusCode::UNAUTHORIZED, "management_session_invalid"),
+                Err(e) => minecraft_error(e.code()),
+            }
+        }
+        "/api/v3/manage/pair" => {
+            let Ok(input) = serde_json::from_slice::<Pair>(bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            let code = zeroize::Zeroizing::new(input.code);
+            match management.enroll_for(&code, &input.device_name, &input.public_key, authorization)
+            {
+                Ok(enrolled) => json(serde_json::to_value(enrolled).expect("enrollment JSON")),
+                Err(e) => management_error(e),
+            }
+        }
+        "/api/v3/manage/session/challenge" => {
+            let Ok(input) = serde_json::from_slice::<DeviceChallenge>(bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            match management.challenge(&input.device_id) {
+                Ok(nonce) => json(
+                    serde_json::json!({"server_id": management.server_id(), "nonce": nonce.expose(), "expires_in_seconds": 60, "purpose": vesta_control::identity::management::SESSION_PURPOSE}),
+                ),
+                Err(e) => management_error(e),
+            }
+        }
+        "/api/v3/manage/session" => {
+            let Ok(input) = serde_json::from_slice::<ManagementSession>(bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            match management.session(&input.device_id, &input.nonce, &input.signature) {
+                Ok(token) => json(
+                    serde_json::json!({"server_id": management.server_id(), "token": token.secret.expose(), "expires_at_ms": token.expires_at_ms}),
+                ),
+                Err(e) => management_error(e),
+            }
+        }
+        _ => unreachable!("closed public management route set"),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MinecraftEnrollment {
+    challenge: String,
+    device_name: String,
+    public_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeviceEnrollment {
+    device_name: String,
+    public_key: String,
 }

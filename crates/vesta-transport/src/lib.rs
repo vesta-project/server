@@ -564,6 +564,14 @@ pub enum TransportShutdown {
     Complete,
     TimedOut(Transport),
 }
+/// Read-only live TLS identity handle for the protected local owner channel.
+#[derive(Clone)]
+pub struct TlsFingerprint(Arc<tls::Material>);
+impl TlsFingerprint {
+    pub fn current(&self) -> Result<String, TransportError> {
+        self.0.fingerprint()
+    }
+}
 pub struct Transport {
     address: SocketAddr,
     tls: Arc<tls::Material>,
@@ -639,6 +647,9 @@ impl Transport {
     /// retains the old configuration and records only `tls_material_unavailable`.
     pub fn reload_tls(&self) -> Result<bool, TransportError> {
         self.tls.reload()
+    }
+    pub fn fingerprint_handle(&self) -> TlsFingerprint {
+        TlsFingerprint(self.tls.clone())
     }
     pub fn tls_fingerprint(&self) -> Result<String, TransportError> {
         self.tls.fingerprint()

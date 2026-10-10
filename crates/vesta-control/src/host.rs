@@ -9,6 +9,7 @@
 use crate::ControlError;
 use crate::config::{ConfigError, HostConfiguration, PackAccessMode, PackSource};
 use crate::files::{self, FileBrowser, FileError};
+use crate::identity::management::ManagementAccess;
 use crate::identity::minecraft::{MinecraftChallenges, MinecraftError, ServerUuid};
 use crate::identity::{IdentityService, PackPasswords};
 use crate::minecraft_admission::{AdmissionDataError, BanList, ServerProperties};
@@ -96,6 +97,7 @@ pub struct Host {
     config: HostConfiguration,
     db: StateDatabase,
     identity: IdentityService,
+    management: ManagementAccess,
     passwords: Option<PackPasswords>,
     minecraft: MinecraftChallenges,
     server: ServerUuid,
@@ -157,6 +159,9 @@ impl Host {
     pub fn database(&self) -> &StateDatabase {
         &self.db
     }
+    pub fn management(&self) -> &ManagementAccess {
+        &self.management
+    }
     pub fn identity(&self) -> &IdentityService {
         &self.identity
     }
@@ -193,7 +198,9 @@ impl Host {
     pub fn pack_sessions(&self) -> &PackSessions {
         &self.sessions
     }
-    /// The current pack-access policy, read fresh for each decision.
+    /// Local admission observation (explicitly refreshed by `reload_admission`).
+    /// Network authorization instead uses `NetworkHost::with_policy`, which
+    /// establishes current admission files independently on every decision.
     pub fn pack_policy(&self) -> Result<PackAccessPolicy<'_>, HostError> {
         let password = match &self.passwords {
             Some(passwords) => passwords.active_revision().map_err(HostError::Identity)?,
@@ -263,11 +270,13 @@ impl Host {
         discover_components(self.db.server_id(), self.graceful_stop, request)
     }
 
-    /// Pack/discovery-only facade, with no management or runtime service.
+    /// Authentication/pack facade with capability-checked management placeholders;
+    /// it exposes no operational runtime mutation route.
     pub fn network_handle(&self) -> NetworkHost {
         NetworkHost {
             config: self.config.clone(),
             db: self.db.clone(),
+            management: self.management.clone(),
             passwords: self.passwords.clone(),
             minecraft: self.minecraft.clone(),
             server: self.server,
@@ -306,6 +315,11 @@ fn compose(
         .map(|path| path.as_path())
         .collect();
     let identity = IdentityService::new(db.clone()).map_err(HostError::Identity)?;
+    let management = ManagementAccess::new(db.clone()).map_err(|_| {
+        HostError::Identity(crate::ControlError::State(vesta_state::StateError::new(
+            "management_unavailable",
+        )))
+    })?;
     let passwords = match config.pack_access() {
         PackAccessMode::Minecraft => None,
         PackAccessMode::MinecraftOrPassword => {
@@ -315,7 +329,10 @@ fn compose(
     let server = ServerUuid::parse(db.server_id()).map_err(HostError::Minecraft)?;
     let minecraft = MinecraftChallenges::new(server).map_err(HostError::Minecraft)?;
     let admission = AdmissionData::load(&config)?;
-    let sessions = Arc::new(PackSessions::new(server, SessionLimits::default()));
+    let sessions = Arc::new(PackSessions::new(
+        management.clone(),
+        SessionLimits::default(),
+    ));
     let files =
         FileBrowser::open(db.clone(), config.game(), &protected).map_err(HostError::Files)?;
     files.reconcile_pending().map_err(HostError::Files)?;
@@ -361,6 +378,7 @@ fn compose(
         config,
         db: db.clone(),
         identity,
+        management,
         passwords,
         minecraft,
         server,
@@ -443,9 +461,10 @@ fn discover_components(
     )
 }
 
-/// Cloneable descriptive/pack facade. No management Subject or operation admission.
+/// Cloneable authentication/pack facade; operational admission remains unavailable.
 #[derive(Clone)]
 pub struct NetworkHost {
+    management: ManagementAccess,
     config: HostConfiguration,
     db: StateDatabase,
     passwords: Option<PackPasswords>,
@@ -473,6 +492,9 @@ impl Drop for AdmissionRefresh {
     }
 }
 impl NetworkHost {
+    pub fn management(&self) -> &ManagementAccess {
+        &self.management
+    }
     pub fn start_admission_refresh(&self) -> Result<AdmissionRefresh, HostError> {
         let host = self.clone();
         let (stop, stopped) = mpsc::channel();
@@ -524,7 +546,8 @@ impl NetworkHost {
     pub fn discover(&self, request: &DiscoveryRequest) -> Result<Manifest, ProtocolError> {
         discover_components(self.db.server_id(), self.graceful_stop, request)
     }
-    /// Only brief policy decisions hold admission data; KDF/provider I/O occurs first.
+    /// Re-read bounded protected admission files for each decision; KDF/provider
+    /// I/O occurs first. Cached refresh snapshots never authorize pack sources.
     pub fn with_policy<T>(
         &self,
         decide: impl FnOnce(&PackAccessPolicy<'_>) -> T,
@@ -536,10 +559,15 @@ impl NetworkHost {
             .transpose()
             .map_err(HostError::Identity)?
             .flatten();
-        let data = self
-            .admission
-            .read()
-            .map_err(|_| HostError::Admission(AdmissionDataError::Unavailable))?;
+        // Cached admission is an operator observation, not authorization. Every
+        // decision uses bounded protected reads of the current local files.
+        // Failure disables only the live whitelist source, never prolongs its
+        // cached grant and never blocks independent explicit/password sources.
+        let data = AdmissionData::load(&self.config).unwrap_or_else(|_| AdmissionData {
+            properties: None,
+            whitelist: Whitelist::default(),
+            bans: BanList::default(),
+        });
         Ok(decide(&PackAccessPolicy {
             server: self.server,
             mode: self.config.pack_access(),

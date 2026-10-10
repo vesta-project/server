@@ -10,8 +10,8 @@ mod types;
 
 pub use challenge::MinecraftChallenges;
 pub use types::{
-    ChallengeId, IssuedChallenge, MinecraftError, MinecraftErrorCode, MinecraftName, MinecraftUuid,
-    ServerHash, ServerUuid, VerifiedMinecraftProfile,
+    ChallengeId, IssuedChallenge, MinecraftError, MinecraftErrorCode, MinecraftName,
+    MinecraftPurpose, MinecraftUuid, ServerHash, ServerUuid, VerifiedMinecraftProfile,
 };
 
 #[cfg(test)]

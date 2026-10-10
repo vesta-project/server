@@ -16,12 +16,13 @@ fn v10_upgrade_preserves_pending_trash_and_adds_constrained_intents() {
     }).unwrap();
     f.db.close().unwrap();
     let old = Connection::open(directory.database_file()).unwrap();
+    support::remove_v12_schema(&old);
     old.execute_batch("DROP TABLE file_intents; PRAGMA user_version=10;")
         .unwrap();
     drop(old);
     let upgraded = StateDatabase::open(directory.clone(), f.clock.clone()).unwrap();
     assert_eq!(upgraded.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 11);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 12);
     assert_eq!(upgraded.server_id(), server);
     upgraded.write(|c| {
         assert_eq!(c.query_row("SELECT path,status FROM file_trash WHERE id=?", [&trash], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?, ("config/legacy.txt".into(),"pending".into()));
@@ -40,7 +41,7 @@ fn v10_upgrade_preserves_pending_trash_and_adds_constrained_intents() {
     upgraded.close().unwrap();
     let backup = Connection::open_with_flags(
         directory.backups_dir().join(format!(
-            "pre-migration-v10-to-v11-{DEFAULT_TEST_TIME_MS}.db"
+            "pre-migration-v10-to-v{CURRENT_SCHEMA_VERSION}-{DEFAULT_TEST_TIME_MS}.db"
         )),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )

@@ -216,12 +216,22 @@ impl fmt::Debug for IssuedChallenge {
 ///     name: MinecraftName::parse("PlayerOne").unwrap(),
 /// };
 /// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MinecraftPurpose {
+    Pack,
+    ManagementEnrollment,
+}
+
 pub struct VerifiedMinecraftProfile {
+    pub(super) purpose: MinecraftPurpose,
     pub(super) server: ServerUuid,
     pub(super) uuid: MinecraftUuid,
     pub(super) name: MinecraftName,
 }
 impl VerifiedMinecraftProfile {
+    pub const fn purpose(&self) -> MinecraftPurpose {
+        self.purpose
+    }
     pub const fn server_uuid(&self) -> ServerUuid {
         self.server
     }
@@ -232,8 +242,18 @@ impl VerifiedMinecraftProfile {
         &self.name
     }
     #[cfg(test)]
+    pub(crate) fn for_test_enrollment(server: ServerUuid, uuid: MinecraftUuid) -> Self {
+        Self {
+            purpose: MinecraftPurpose::ManagementEnrollment,
+            server,
+            uuid,
+            name: MinecraftName::parse("Fixture").unwrap(),
+        }
+    }
+    #[cfg(test)]
     pub(crate) fn for_test(server: ServerUuid, uuid: MinecraftUuid) -> Self {
         Self {
+            purpose: MinecraftPurpose::Pack,
             server,
             uuid,
             name: MinecraftName::parse("Fixture").expect("valid fixture name"),

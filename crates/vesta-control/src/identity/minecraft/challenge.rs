@@ -1,7 +1,7 @@
 use super::provider::{MojangProvider, SessionProvider};
 use super::{
-    ChallengeId, IssuedChallenge, MinecraftError, MinecraftName, MinecraftUuid, ServerHash,
-    ServerUuid, VerifiedMinecraftProfile,
+    ChallengeId, IssuedChallenge, MinecraftError, MinecraftName, MinecraftPurpose, MinecraftUuid,
+    ServerHash, ServerUuid, VerifiedMinecraftProfile,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -88,6 +88,7 @@ impl Bucket {
 }
 
 struct Pending {
+    purpose: MinecraftPurpose,
     server: ServerUuid,
     profile: MinecraftUuid,
     name: MinecraftName,
@@ -158,6 +159,21 @@ impl MinecraftChallenges {
         profile: MinecraftUuid,
         name: MinecraftName,
     ) -> Result<IssuedChallenge, MinecraftError> {
+        self.issue_for(profile, name, MinecraftPurpose::Pack)
+    }
+    pub fn issue_management(
+        &self,
+        profile: MinecraftUuid,
+        name: MinecraftName,
+    ) -> Result<IssuedChallenge, MinecraftError> {
+        self.issue_for(profile, name, MinecraftPurpose::ManagementEnrollment)
+    }
+    fn issue_for(
+        &self,
+        profile: MinecraftUuid,
+        name: MinecraftName,
+        purpose: MinecraftPurpose,
+    ) -> Result<IssuedChallenge, MinecraftError> {
         let mut state = self
             .shared
             .state
@@ -179,7 +195,7 @@ impl MinecraftChallenges {
             if state.pending.contains_key(&id) {
                 continue;
             }
-            let hash = server_hash(self.server, &nonce);
+            let hash = server_hash_for(self.server, &nonce, purpose);
             let deadline = self
                 .shared
                 .clock
@@ -189,6 +205,7 @@ impl MinecraftChallenges {
             state.pending.insert(
                 id.clone(),
                 Pending {
+                    purpose,
                     server: self.server,
                     profile,
                     name,
@@ -211,6 +228,19 @@ impl MinecraftChallenges {
         &self,
         challenge: &ChallengeId,
     ) -> Result<Option<VerifiedMinecraftProfile>, MinecraftError> {
+        self.complete_for(challenge, MinecraftPurpose::Pack)
+    }
+    pub fn complete_management(
+        &self,
+        challenge: &ChallengeId,
+    ) -> Result<Option<VerifiedMinecraftProfile>, MinecraftError> {
+        self.complete_for(challenge, MinecraftPurpose::ManagementEnrollment)
+    }
+    fn complete_for(
+        &self,
+        challenge: &ChallengeId,
+        purpose: MinecraftPurpose,
+    ) -> Result<Option<VerifiedMinecraftProfile>, MinecraftError> {
         let (pending, _permit) = {
             let mut state = self
                 .shared
@@ -221,7 +251,10 @@ impl MinecraftChallenges {
                 return Ok(None);
             };
             let now = self.shared.clock.now();
-            if pending.server != self.server || now >= pending.deadline {
+            if pending.purpose != purpose
+                || pending.server != self.server
+                || now >= pending.deadline
+            {
                 return Ok(None);
             }
             if !state.verify_rate.charge(now) {
@@ -252,6 +285,7 @@ impl MinecraftChallenges {
             return Ok(None);
         }
         Ok(Some(VerifiedMinecraftProfile {
+            purpose: pending.purpose,
             server: pending.server,
             uuid: joined.uuid,
             name: joined.name,
@@ -295,9 +329,12 @@ impl Drop for VerificationPermit {
 
 /// Mojang requires an unpredictable shared serverId of at most 40 hex characters,
 /// not SHA-1 itself. This new construction intentionally has no Java digest fixture.
-fn server_hash(server: ServerUuid, nonce: &[u8; 32]) -> ServerHash {
+fn server_hash_for(server: ServerUuid, nonce: &[u8; 32], purpose: MinecraftPurpose) -> ServerHash {
     let mut digest = Sha256::new();
     digest.update(b"vesta-minecraft-session-v1\0");
+    if purpose == MinecraftPurpose::ManagementEnrollment {
+        digest.update(b"management-enrollment\0");
+    }
     digest.update(server.as_uuid().as_bytes());
     digest.update(nonce);
     let digest = digest.finalize();

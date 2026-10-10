@@ -1,12 +1,7 @@
-//! Pack-only access: grants from Minecraft proofs or pack passwords, and the short-lived
-//! sessions and single-use tickets that carry them.
-//!
-//! This domain is separate from management. A pack grant never becomes a `Subject`,
-//! role or capability, and it only describes access to hosted pack resources. Secrets
-//! are random, returned once and retained only as a server-bound SHA-256. Every use
-//! rechecks the grant against the current policy, so a ban, whitelist removal, mode
-//! change or password rotation ends access without waiting for expiry. Sessions live
-//! in memory and end with the process.
+//! Purpose-bound action tickets over the sole canonical user/device session store.
+//! Authentication identifies a device; every download/realtime use resolves live
+//! public/pack capabilities and safe automatic role sources. Passwords and UUID
+//! proofs cannot grant management. No independent pack session authority is cached.
 use crate::config::PackAccessMode;
 use crate::identity::minecraft::{MinecraftUuid, ServerUuid, VerifiedMinecraftProfile};
 use crate::identity::{PasswordRevision, PasswordVerification, PasswordVerificationStatus};
@@ -15,6 +10,8 @@ use crate::whitelist::Whitelist;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::sync::Arc;
 use std::{
     collections::HashMap,
     fmt,
@@ -23,12 +20,10 @@ use std::{
 };
 use zeroize::Zeroizing;
 
-pub const MAX_SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+pub const MAX_SESSION_TTL: Duration = Duration::from_secs(15 * 60);
 pub const MAX_TICKET_TTL: Duration = Duration::from_secs(60);
-pub const MAX_SESSIONS: usize = 16_384;
+pub const MAX_SESSIONS: usize = 4_096;
 pub const MAX_TICKETS: usize = 4_096;
-const SECRET_BYTES: usize = 32;
-const SECRET_TEXT_LEN: usize = 43;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PackAccessError {
@@ -58,12 +53,14 @@ impl std::error::Error for PackAccessError {}
 /// What a pack client may access, and why. Never management authority.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum PackGrant {
+    Role,
     Minecraft(MinecraftUuid),
     Password(PasswordRevision),
 }
 impl fmt::Debug for PackGrant {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::Role => "PackGrant::Role",
             Self::Minecraft(_) => "PackGrant::Minecraft[<redacted>]",
             Self::Password(_) => "PackGrant::Password",
         })
@@ -94,8 +91,10 @@ impl PackAccessPolicy<'_> {
     }
 
     pub fn grant_minecraft(&self, profile: &VerifiedMinecraftProfile) -> Option<PackGrant> {
-        (profile.server_uuid() == self.server && self.admits(profile.uuid()))
-            .then_some(PackGrant::Minecraft(profile.uuid()))
+        (profile.purpose() == crate::identity::minecraft::MinecraftPurpose::Pack
+            && profile.server_uuid() == self.server
+            && self.admits(profile.uuid()))
+        .then_some(PackGrant::Minecraft(profile.uuid()))
     }
 
     /// Only a match against the currently active password revision grants access.
@@ -109,6 +108,7 @@ impl PackAccessPolicy<'_> {
 
     pub fn allows(&self, grant: PackGrant) -> bool {
         match grant {
+            PackGrant::Role => false,
             PackGrant::Minecraft(player) => self.admits(player),
             PackGrant::Password(revision) => {
                 self.mode == PackAccessMode::MinecraftOrPassword && self.password == Some(revision)
@@ -132,8 +132,8 @@ impl fmt::Debug for PackSecret {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PackSession {
-    grant: PackGrant,
-    expires_at: Instant,
+    pub(crate) grant: PackGrant,
+    pub(crate) expires_at: Instant,
 }
 impl PackSession {
     pub const fn grant(&self) -> PackGrant {
@@ -180,7 +180,7 @@ impl SessionLimits {
 impl Default for SessionLimits {
     fn default() -> Self {
         Self {
-            session_ttl: Duration::from_secs(60 * 60),
+            session_ttl: Duration::from_secs(15 * 60),
             ticket_ttl: Duration::from_secs(30),
             sessions: 4_096,
             tickets: 1_024,
@@ -189,121 +189,120 @@ impl Default for SessionLimits {
 }
 
 type Key = [u8; 32];
-
+pub type RealtimeSession = crate::identity::management::DeviceSessionReference;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TicketPurpose {
     Download,
     Realtime,
 }
-
-/// Opaque server-local session reference. Not a client bearer credential or authority.
-#[derive(Clone, Copy, Eq, PartialEq, Hash)]
-pub struct RealtimeSession {
-    key: Key,
-    server: ServerUuid,
-}
-impl fmt::Debug for RealtimeSession {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("RealtimeSession[<redacted>]")
-    }
-}
 struct Ticket {
-    session: Key,
+    session: RealtimeSession,
     expires_at: Instant,
     purpose: TicketPurpose,
 }
 #[derive(Default)]
 struct State {
-    sessions: HashMap<Key, PackSession>,
     tickets: HashMap<Key, Ticket>,
 }
-
-/// In-memory store for one canonical server. Callers pass a monotonic `now`.
+/// Ticket facade over the sole canonical device session store. No pack sessions
+/// or cached pack authority are retained here; every use resolves live user roles.
 pub struct PackSessions {
+    management: crate::identity::management::ManagementAccess,
     server: ServerUuid,
     limits: SessionLimits,
     state: Mutex<State>,
+    #[cfg(test)]
+    fixture: Option<Arc<tempfile::TempDir>>,
 }
 impl fmt::Debug for PackSessions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PackSessions")
+        f.debug_struct("DeviceTickets")
             .field("limits", &self.limits)
             .finish_non_exhaustive()
     }
 }
 impl PackSessions {
-    pub fn new(server: ServerUuid, limits: SessionLimits) -> Self {
+    pub fn new(
+        management: crate::identity::management::ManagementAccess,
+        limits: SessionLimits,
+    ) -> Self {
+        let server = ServerUuid::parse(management.server_id()).expect("canonical server UUID");
         Self {
+            management,
             server,
             limits,
             state: Mutex::new(State::default()),
+            #[cfg(test)]
+            fixture: None,
         }
     }
-
-    /// The grant must come from `PackAccessPolicy::grant_*` against the current policy.
-    pub fn issue(
-        &self,
-        grant: PackGrant,
-        now: Instant,
-    ) -> Result<(PackSecret, PackSession), PackAccessError> {
-        let mut state = self.lock()?;
-        purge(&mut state, now);
-        if state.sessions.len() >= self.limits.sessions {
-            return Err(PackAccessError::Saturated);
-        }
-        let expires_at = now
-            .checked_add(self.limits.session_ttl)
-            .ok_or(PackAccessError::Unavailable)?;
-        let (secret, key) = self.mint()?;
-        let session = PackSession { grant, expires_at };
-        if state.sessions.insert(key, session).is_some() {
-            return Err(PackAccessError::Unavailable);
-        }
-        Ok((secret, session))
-    }
-
-    /// A session whose grant the current policy no longer allows is removed.
     pub fn authenticate(
         &self,
         secret: &str,
         now: Instant,
         policy: &PackAccessPolicy<'_>,
     ) -> Result<PackSession, PackAccessError> {
-        let key = self.key(secret)?;
-        let mut state = self.lock()?;
-        live_session(&mut state, &key, now, policy)
+        self.authenticate_reference(secret, now, policy)
+            .map(|(_, s)| s)
     }
-
-    /// Like `authenticate`, plus the opaque reference used for per-session admission
-    /// (for example, concurrent download caps). The reference is not a credential.
     pub fn authenticate_reference(
         &self,
         secret: &str,
         now: Instant,
         policy: &PackAccessPolicy<'_>,
     ) -> Result<(RealtimeSession, PackSession), PackAccessError> {
-        let key = self.key(secret)?;
-        let mut state = self.lock()?;
-        let session = live_session(&mut state, &key, now, policy)?;
-        Ok((
-            RealtimeSession {
-                key,
-                server: self.server,
-            },
-            session,
-        ))
+        let reference = self
+            .management
+            .pack_reference(if secret.is_empty() {
+                None
+            } else {
+                Some(secret)
+            })
+            .map_err(pack_error)?;
+        let session = self
+            .management
+            .authorize_pack(
+                reference,
+                crate::identity::Capability::PackDownload,
+                now,
+                policy,
+            )
+            .map_err(pack_error)?;
+        Ok((reference, session))
     }
-
+    pub fn authorize_info(
+        &self,
+        token: Option<&str>,
+        now: Instant,
+        policy: &PackAccessPolicy<'_>,
+    ) -> Result<(), PackAccessError> {
+        let reference = self.management.pack_reference(token).map_err(pack_error)?;
+        self.management
+            .authorize_pack(
+                reference,
+                crate::identity::Capability::PublicInfo,
+                now,
+                policy,
+            )
+            .map(|_| ())
+            .map_err(pack_error)
+    }
     pub fn revoke(&self, secret: &str) -> Result<bool, PackAccessError> {
-        let Ok(key) = self.key(secret) else {
-            return Ok(false);
-        };
-        let mut state = self.lock()?;
-        state.tickets.retain(|_, ticket| ticket.session != key);
-        Ok(state.sessions.remove(&key).is_some())
+        let reference = self.management.pack_reference(Some(secret));
+        if let Ok(reference) = reference {
+            self.lock()?.tickets.retain(|_, t| t.session != reference);
+        }
+        self.management
+            .revoke_session(secret)
+            .or_else(|e| {
+                if e == crate::identity::management::ManagementError::SessionInvalid {
+                    Ok(false)
+                } else {
+                    Err(e)
+                }
+            })
+            .map_err(pack_error)
     }
-
-    /// Compatibility helper: issue a download ticket, never a realtime ticket.
     pub fn issue_ticket(
         &self,
         secret: &str,
@@ -312,8 +311,6 @@ impl PackSessions {
     ) -> Result<PackSecret, PackAccessError> {
         self.issue_ticket_for(secret, TicketPurpose::Download, now, policy)
     }
-
-    /// Purpose-bound single-use ticket. It never outlives its session.
     pub fn issue_ticket_for(
         &self,
         secret: &str,
@@ -321,30 +318,39 @@ impl PackSessions {
         now: Instant,
         policy: &PackAccessPolicy<'_>,
     ) -> Result<PackSecret, PackAccessError> {
-        let session_key = self.key(secret)?;
+        let reference = self
+            .management
+            .pack_reference(if secret.is_empty() {
+                None
+            } else {
+                Some(secret)
+            })
+            .map_err(pack_error)?;
+        let capability = match purpose {
+            TicketPurpose::Download => crate::identity::Capability::PackDownload,
+            TicketPurpose::Realtime => crate::identity::Capability::PackRealtime,
+        };
+        let session = self
+            .management
+            .authorize_pack(reference, capability, now, policy)
+            .map_err(pack_error)?;
         let mut state = self.lock()?;
-        let session = live_session(&mut state, &session_key, now, policy)?;
-        purge(&mut state, now);
+        state.tickets.retain(|_, t| now < t.expires_at);
         if state.tickets.len() >= self.limits.tickets {
             return Err(PackAccessError::Saturated);
         }
-        let expires_at = now
-            .checked_add(self.limits.ticket_ttl)
-            .ok_or(PackAccessError::Unavailable)?
-            .min(session.expires_at);
-        let (ticket, key) = self.mint()?;
+        let expires_at = (now + self.limits.ticket_ttl).min(session.expires_at());
+        let (secret, key) = self.mint()?;
         state.tickets.insert(
             key,
             Ticket {
-                session: session_key,
+                session: reference,
                 expires_at,
                 purpose,
             },
         );
-        Ok(ticket)
+        Ok(secret)
     }
-
-    /// Consumes the ticket whether or not redemption succeeds.
     pub fn redeem_ticket(
         &self,
         ticket: &str,
@@ -352,11 +358,8 @@ impl PackSessions {
         policy: &PackAccessPolicy<'_>,
     ) -> Result<PackSession, PackAccessError> {
         self.redeem_for(ticket, TicketPurpose::Download, now, policy)
-            .map(|(_, session)| session)
+            .map(|(_, s)| s)
     }
-
-    /// `redeem_ticket` returning the owning session's reference, so a download
-    /// ticket and its session bearer share one per-session admission slot.
     pub fn redeem_download(
         &self,
         ticket: &str,
@@ -365,7 +368,6 @@ impl PackSessions {
     ) -> Result<(RealtimeSession, PackSession), PackAccessError> {
         self.redeem_for(ticket, TicketPurpose::Download, now, policy)
     }
-
     pub fn redeem_realtime(
         &self,
         ticket: &str,
@@ -374,102 +376,139 @@ impl PackSessions {
     ) -> Result<(RealtimeSession, PackSession), PackAccessError> {
         self.redeem_for(ticket, TicketPurpose::Realtime, now, policy)
     }
-
     fn redeem_for(
         &self,
-        ticket: &str,
+        secret: &str,
         purpose: TicketPurpose,
         now: Instant,
         policy: &PackAccessPolicy<'_>,
     ) -> Result<(RealtimeSession, PackSession), PackAccessError> {
-        let key = self.key(ticket)?;
-        let mut state = self.lock()?;
-        let ticket = state.tickets.remove(&key).ok_or(PackAccessError::Invalid)?;
+        let key = self.key(secret)?;
+        let ticket = self
+            .lock()?
+            .tickets
+            .remove(&key)
+            .ok_or(PackAccessError::Invalid)?;
         if now >= ticket.expires_at || ticket.purpose != purpose {
             return Err(PackAccessError::Invalid);
         }
-        let session = live_session(&mut state, &ticket.session, now, policy)?;
-        Ok((
-            RealtimeSession {
-                key: ticket.session,
-                server: self.server,
-            },
-            session,
-        ))
+        let capability = match purpose {
+            TicketPurpose::Download => crate::identity::Capability::PackDownload,
+            TicketPurpose::Realtime => crate::identity::Capability::PackRealtime,
+        };
+        let session = self
+            .management
+            .authorize_pack(ticket.session, capability, now, policy)
+            .map_err(pack_error)?;
+        Ok((ticket.session, session))
     }
-
-    /// Every realtime push must consult the live store and current policy, not a
-    /// cached grant: revocation must also terminate already connected sockets.
     pub fn recheck_realtime(
         &self,
         reference: RealtimeSession,
         now: Instant,
         policy: &PackAccessPolicy<'_>,
     ) -> Result<PackSession, PackAccessError> {
-        if reference.server != self.server {
-            return Err(PackAccessError::Invalid);
-        }
-        let mut state = self.lock()?;
-        live_session(&mut state, &reference.key, now, policy)
+        self.management
+            .authorize_pack(
+                reference,
+                crate::identity::Capability::PackRealtime,
+                now,
+                policy,
+            )
+            .map_err(pack_error)
     }
-
     pub fn len(&self) -> Result<(usize, usize), PackAccessError> {
-        let state = self.lock()?;
-        Ok((state.sessions.len(), state.tickets.len()))
+        Ok((
+            self.management
+                .session_count(Instant::now())
+                .map_err(pack_error)?,
+            self.lock()?.tickets.len(),
+        ))
     }
-
     fn mint(&self) -> Result<(PackSecret, Key), PackAccessError> {
-        let mut random = Zeroizing::new([0_u8; SECRET_BYTES]);
-        getrandom::fill(random.as_mut()).map_err(|_| PackAccessError::Unavailable)?;
-        let secret = PackSecret(Zeroizing::new(URL_SAFE_NO_PAD.encode(random.as_ref())));
+        use ring::rand::SecureRandom as _;
+        let mut bytes = Zeroizing::new([0; 32]);
+        ring::rand::SystemRandom::new()
+            .fill(bytes.as_mut())
+            .map_err(|_| PackAccessError::Unavailable)?;
+        let secret = PackSecret(Zeroizing::new(URL_SAFE_NO_PAD.encode(bytes.as_ref())));
         let key = self.key(secret.expose())?;
         Ok((secret, key))
     }
-
-    /// Strict spelling first, so arbitrary input is never hashed into a lookup.
     fn key(&self, secret: &str) -> Result<Key, PackAccessError> {
-        if secret.len() != SECRET_TEXT_LEN
-            || !secret
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-        {
+        if secret.len() != 43 {
             return Err(PackAccessError::Invalid);
         }
-        let mut hasher = Sha256::new();
-        hasher.update(b"vesta-pack-session\0");
-        hasher.update(self.server.as_uuid().as_bytes());
-        hasher.update(secret.as_bytes());
-        Ok(hasher.finalize().into())
+        let bytes = URL_SAFE_NO_PAD
+            .decode(secret)
+            .map_err(|_| PackAccessError::Invalid)?;
+        if bytes.len() != 32 || URL_SAFE_NO_PAD.encode(bytes) != secret {
+            return Err(PackAccessError::Invalid);
+        }
+        let mut hash = Sha256::new();
+        hash.update(b"vesta-device-action-ticket-v1\0");
+        hash.update(self.server.as_uuid().as_bytes());
+        hash.update(secret.as_bytes());
+        Ok(hash.finalize().into())
     }
-
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, State>, PackAccessError> {
         self.state.lock().map_err(|_| PackAccessError::Unavailable)
     }
 }
-
-fn live_session(
-    state: &mut State,
-    key: &Key,
-    now: Instant,
-    policy: &PackAccessPolicy<'_>,
-) -> Result<PackSession, PackAccessError> {
-    let session = *state.sessions.get(key).ok_or(PackAccessError::Invalid)?;
-    if now >= session.expires_at || !policy.allows(session.grant) {
-        state.sessions.remove(key);
-        state.tickets.retain(|_, ticket| &ticket.session != key);
-        return Err(PackAccessError::Invalid);
+fn pack_error(error: crate::identity::management::ManagementError) -> PackAccessError {
+    use crate::identity::management::ManagementError;
+    match error {
+        ManagementError::Forbidden
+        | ManagementError::SessionInvalid
+        | ManagementError::PairInvalid
+        | ManagementError::InvalidRequest => PackAccessError::Invalid,
+        ManagementError::Saturated => PackAccessError::Saturated,
+        ManagementError::Unavailable => PackAccessError::Unavailable,
     }
-    Ok(session)
 }
-
-fn purge(state: &mut State, now: Instant) {
-    state.sessions.retain(|_, session| now < session.expires_at);
-    let sessions = &state.sessions;
-    state
-        .tickets
-        .retain(|_, ticket| now < ticket.expires_at && sessions.contains_key(&ticket.session));
-}
-
 #[cfg(test)]
 #[path = "pack_access_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+impl PackSessions {
+    fn fixture(server: ServerUuid, limits: SessionLimits) -> Self {
+        let temp = Arc::new(tempfile::tempdir().unwrap());
+        let directory = vesta_state::StateDirectory::new(temp.path().join("state"), None).unwrap();
+        let db =
+            vesta_state::StateDatabase::open(directory.clone(), Arc::new(vesta_state::SystemClock))
+                .unwrap();
+        db.write(|c| {
+            c.execute(
+                "UPDATE server_identity SET server_id=?",
+                [server.as_uuid().to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        db.close().unwrap();
+        let db = vesta_state::StateDatabase::open(directory, Arc::new(vesta_state::SystemClock))
+            .unwrap();
+        let management = crate::identity::management::ManagementAccess::with_limits(
+            db,
+            limits.sessions,
+            limits.session_ttl.as_millis() as i64,
+        )
+        .unwrap();
+        let mut sessions = Self::new(management, limits);
+        sessions.fixture = Some(temp);
+        sessions
+    }
+    pub(crate) fn issue(
+        &self,
+        grant: PackGrant,
+        now: Instant,
+    ) -> Result<(PackSecret, PackSession), PackAccessError> {
+        self.lock()?.tickets.retain(|_, t| now < t.expires_at);
+        let (secret, session) = self
+            .management
+            .test_pack_session(grant, now)
+            .map_err(pack_error)?;
+        Ok((PackSecret(Zeroizing::new(secret.expose().into())), session))
+    }
+}

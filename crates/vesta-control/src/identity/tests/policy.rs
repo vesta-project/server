@@ -1232,8 +1232,8 @@ fn builtin_role_rows_and_capability_targets_are_immutable() {
     );
     assert_eq!(
         fixture.count("roles"),
-        7,
-        "six presets plus the one custom role"
+        9,
+        "six presets, two safe access defaults, and the one custom role"
     );
     assert!(fixture.audit.verify_chain().expect("audit chain").valid);
 }
@@ -1367,7 +1367,15 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
 
     // 51 capability ids, in persisted ordinal order, with the persisted flags.
     assert_eq!(fixture_capabilities.len(), 51);
-    assert_eq!(Capability::ALL.len(), 51);
+    assert_eq!(Capability::ALL.len(), 54);
+    assert_eq!(
+        &Capability::ALL[51..],
+        &[
+            Capability::PublicInfo,
+            Capability::PackDownload,
+            Capability::PackRealtime
+        ]
+    );
     for (index, expected) in fixture_capabilities.iter().enumerate() {
         let capability = Capability::ALL[index];
         assert_eq!(expected.ordinal, index as i32, "ordinal {index}");
@@ -1456,7 +1464,23 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
             .iter()
             .map(|capability| capability.id())
             .collect::<Vec<_>>();
-        assert_eq!(expected.capabilities, declared, "role {}", expected.id);
+        // Keep the historical oracle fixture intact; V12 explicitly extends
+        // the three pack-bearing presets with these unified capabilities.
+        let mut expected_capabilities = expected.capabilities.clone();
+        if let Some(at) = expected_capabilities
+            .iter()
+            .position(|c| c == "pack.access")
+        {
+            expected_capabilities.splice(
+                at..at,
+                [
+                    "public.info".to_owned(),
+                    "pack.download".to_owned(),
+                    "pack.realtime".to_owned(),
+                ],
+            );
+        }
+        assert_eq!(expected_capabilities, declared, "role {}", expected.id);
 
         // The migrated rows carry the same ids, name, rank and whole-scope grants.
         assert_eq!(
@@ -1512,8 +1536,8 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
     );
     assert_eq!(
         Capability::ALL.len(),
-        persisted_ids.len(),
-        "every persisted capability id was compared"
+        persisted_ids.len() + 3,
+        "legacy fixture ids and the three explicit unified additions were compared"
     );
 }
 

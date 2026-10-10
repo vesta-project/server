@@ -383,6 +383,7 @@ fn schema_four_to_current_preserves_data_backup_and_pending_expiry_plans() {
 
     // Remove every post-v4 schema change offline, not just its version marker.
     let raw = Connection::open(directory.database_file()).expect("open local fixture database");
+    support::remove_v12_schema(&raw);
     raw.execute_batch(
         "BEGIN IMMEDIATE;\
          DROP TABLE file_intents; DROP TABLE file_uploads; DROP TABLE file_trash;

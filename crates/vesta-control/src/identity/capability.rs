@@ -70,10 +70,14 @@ pub enum Capability {
     // Local-only hard invariants.
     OwnerRecovery,
     AgentInstall,
+    // Unified public/pack permissions append to the legacy capability registry.
+    PublicInfo,
+    PackDownload,
+    PackRealtime,
 }
 
 impl Capability {
-    /// All capabilities, in the same order as the persisted Java contract.
+    /// Stable legacy registry order followed by the unified-access additions.
     pub const ALL: &'static [Self] = &[
         Self::StatusView,
         Self::StatusDetailed,
@@ -126,11 +130,17 @@ impl Capability {
         Self::AuditView,
         Self::OwnerRecovery,
         Self::AgentInstall,
+        Self::PublicInfo,
+        Self::PackDownload,
+        Self::PackRealtime,
     ];
 
     /// The stable, exact identifier used in persisted identity records.
     pub const fn id(self) -> &'static str {
         match self {
+            Self::PublicInfo => "public.info",
+            Self::PackDownload => "pack.download",
+            Self::PackRealtime => "pack.realtime",
             Self::StatusView => "status.view",
             Self::StatusDetailed => "status.detailed",
             Self::MetricsView => "metrics.view",
@@ -188,6 +198,9 @@ impl Capability {
     /// Resolve only known persisted identifiers; unknown identifiers remain absent.
     pub fn from_id(id: &str) -> Option<Self> {
         match id {
+            "public.info" => Some(Self::PublicInfo),
+            "pack.download" => Some(Self::PackDownload),
+            "pack.realtime" => Some(Self::PackRealtime),
             "status.view" => Some(Self::StatusView),
             "status.detailed" => Some(Self::StatusDetailed),
             "metrics.view" => Some(Self::MetricsView),

@@ -25,6 +25,7 @@ tokio-tungstenite = { version = "=0.20.1", default-features = false, features = 
 futures-util = { version = "=0.3.32", default-features = false, features = ["sink", "std"] }
 
 [dev-dependencies]
+ring = "=0.17.14"
 tempfile.workspace = true
 vesta-state.workspace = true
 rusqlite.workspace = true

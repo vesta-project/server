@@ -67,6 +67,28 @@ Config opens the protected host configuration file, never dumps its contents. `E
 
 Local IPC is a four-byte big-endian length followed by JSON, capped at 1024 bytes. Version 1 requests have only `version`, `op` (`start`, `stop`, `restart`) and `name`; responses contain only `version` and a closed redacted result code. Frame I/O is time-bounded and unknown fields/operations are refused. Windows uses a local-only named pipe with an atomic protected current-token-SID-only DACL; clients also check the server process token SID. Linux uses an owner-only state directory and mode-0600 Unix socket, checks peer uid in both directions, refuses stale sockets instead of unlinking unknown endpoints, and cleans up only the socket inode created by this agent. Same-account processes remain trusted; this is not game/agent isolation. No TCP IPC, remote administration, service or firewall setup is added.
 
-The bounded local mailbox serializes with the existing runtime's sole owned process driver, refuses active competing operations, and uses its configured launch/owned graceful-stop primitives. It never selects commands/paths/arguments from IPC, mints Subjects/roles/devices, or silently escalates stop/restart to force-kill. Restart waits for actual exit and I/O completion before starting a new generation; a stop timeout retains the old generation and does not restart it. A disconnected/timed-out client can have an unknown admitted outcome and must not blindly retry. `version` says updates are not signed; `update` reports the current version and available version as unknown, exits refused, and never replaces a binary (F41).
+The bounded local mailbox serializes with the existing runtime's sole owned process driver, refuses active competing operations, and uses its configured launch/owned graceful-stop primitives. It never selects commands/paths/arguments from lifecycle IPC or silently escalates stop/restart to force-kill. Restart waits for actual exit and I/O completion before starting a new generation; a stop timeout retains the old generation and does not restart it. A disconnected/timed-out client can have an unknown admitted outcome and must not blindly retry. `version` says updates are not signed; `update` reports the current version and available version as unknown, exits refused, and never replaces a binary (F41).
 
 P3 still owns durable per-server supervisors, process-tree confinement/continuity, restart/reboot recovery and readiness. This first IPC adapter is not those features. Agent shutdown retains live ownership and may wait for an uncooperative child; stop the game through the running agent before shutting the agent down. Linux Unix-socket path limits and supported-local-filesystem restrictions apply; Windows and Linux native IPC need their own platform gates.
+
+
+## P2 local owner setup (2026-10-11)
+
+The binding owner decision now treats the CLI OS account as owner for protected
+local `pair`, `devices list/revoke`, `owner link/unlink/list`, and `access show/set` commands. They
+require a running `serve` and reuse the native current-account-only control
+channel; no HTTP link/setup route or offline direct-state shortcut exists.
+See [management API contract section 2](management-api-contract.md#2-authentication--implemented-unified-users-sessions-and-permissions)
+for exact grammar, bounds, key enrollment/session shapes, unlink/revocation
+semantics, live TLS fingerprint comparison, safe automatic role sources and the
+single canonical session used by pack/download/realtime and management.
+This supersedes this document's older statements that all owner setup and device
+management are design only. It does not implement permanent SID/UID enrollment,
+stronger local recovery, same-account game isolation or operational remote effects.
+
+Local IPC still bounds requests to 1024 bytes. Identity/list responses may be up
+to 1 MiB (at most 1000 devices / 32 owner links); lifecycle responses remain small.
+Identity operations serialize on the protected channel and own their canonical
+policy/mutation/audit write transaction. Native peer checks remain unchanged.
+A client timeout/disconnect can leave an unknown admitted result; do not retry
+blindly or assume an unseen pairing code was never created.

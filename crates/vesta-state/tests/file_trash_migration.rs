@@ -16,6 +16,7 @@ fn populated_v7_migrates_to_current_without_losing_rows_and_enforces_trash_const
     }).unwrap();
     fixture.db.close().unwrap();
     let offline = Connection::open(directory.database_file()).unwrap();
+    support::remove_v12_schema(&offline);
     let release_sql: String = offline
         .query_row(
             "SELECT sql FROM sqlite_schema WHERE name='pack_releases'",

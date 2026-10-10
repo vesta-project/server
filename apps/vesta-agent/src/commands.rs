@@ -57,6 +57,7 @@ pub async fn run(command: Command, base: &Path) -> ExitCode {
                     recovery.display()
                 );
             }),
+        Command::Management { name, root, op } => management(name, root.as_deref(), op, base).await,
         Command::Named { op, name, root } => named(op, name, root.as_deref(), base).await,
     };
     match result {
@@ -89,5 +90,26 @@ async fn named(
     };
     control::request(configuration.state(), name, op).await?;
     println!("local_game_operation_complete; readiness_not_observed");
+    Ok(())
+}
+
+async fn management(
+    name: String,
+    selected_root: Option<&Path>,
+    op: control::Op,
+    base: &Path,
+) -> local_files::Result<()> {
+    let root = servers::root(selected_root, base)?;
+    let server = servers::resolve(&root, &name)?;
+    let configuration = HostConfiguration::load_file(&server.config, base)
+        .map_err(|_| "local_config_unavailable")?;
+    let data = control::request_data(configuration.state(), name, op)
+        .await?
+        .ok_or("local_control_invalid_response")?;
+    // The one explicit secret presentation. No request/response Debug logging.
+    println!(
+        "{}",
+        serde_json::to_string(&data).map_err(|_| "local_control_invalid_response")?
+    );
     Ok(())
 }

@@ -149,3 +149,24 @@ pub fn remove_directory_link(link: &Path) -> io::Result<()> {
         std::fs::remove_file(link)
     }
 }
+
+/// Remove the current unified-auth additions before constructing an owned
+/// pre-V12 migration fixture. Marker-only downgrades are not old schemas.
+pub fn remove_v12_schema(connection: &rusqlite::Connection) {
+    connection.execute_batch("BEGIN IMMEDIATE;
+        DROP TABLE management_device_keys;
+        DROP TABLE management_pairing_codes;
+        DROP TABLE management_owner_links;
+        DROP TABLE user_minecraft_accounts;
+        DROP TABLE user_default_roles;
+        DROP TABLE device_password_grants;
+        DROP TABLE access_role_sources;
+        DELETE FROM role_capabilities WHERE role_id IN ('public','player');
+        DELETE FROM roles WHERE id IN ('public','player');
+        DROP TRIGGER role_capabilities_builtin_no_delete;
+        DELETE FROM role_capabilities WHERE capability IN ('public.info','pack.download','pack.realtime');
+        CREATE TRIGGER role_capabilities_builtin_no_delete BEFORE DELETE ON role_capabilities
+            WHEN (SELECT builtin FROM roles WHERE id=OLD.role_id)=1
+            BEGIN SELECT RAISE(ABORT,'builtin roles are immutable'); END;
+        COMMIT;").unwrap();
+}

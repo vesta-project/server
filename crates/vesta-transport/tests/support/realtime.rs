@@ -56,16 +56,33 @@ impl Fixture {
     }
 }
 fn realtime_json(peer: &mut RealtimePeer) -> serde_json::Value {
-    match peer.read().unwrap() {
-        Message::Text(text) => serde_json::from_str(&text).unwrap(),
-        other => panic!("expected JSON notice, got {other:?}"),
+    // Native clients service WebSocket control frames while waiting for a
+    // notice. Creating many real signed sessions may cross a heartbeat tick.
+    for _ in 0..8 {
+        match peer.read().unwrap() {
+            Message::Text(text) => return serde_json::from_str(&text).unwrap(),
+            Message::Ping(_) => peer.flush().unwrap(), // flush Tungstenite's automatic pong
+            other => panic!("expected JSON notice, got {other:?}"),
+        }
     }
+    panic!("too many control frames before a JSON notice");
 }
 fn realtime_close(peer: &mut RealtimePeer, code: CloseCode) {
-    match peer.read().unwrap() {
-        Message::Close(Some(frame)) => assert_eq!(frame.code, code),
-        other => panic!("expected close, got {other:?}"),
+    for _ in 0..8 {
+        match peer.read().unwrap() {
+            Message::Close(Some(frame)) => {
+                assert_eq!(frame.code, code);
+                return;
+            }
+            Message::Ping(_) => peer.flush().unwrap(),
+            Message::Text(text) => assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&text).unwrap()["type"],
+                "heartbeat"
+            ),
+            other => panic!("expected close, got {other:?}"),
+        }
     }
+    panic!("too many queued notices before close");
 }
 
 #[test]
@@ -167,24 +184,17 @@ fn realtime_hello_update_and_required_minimum_are_delivered_with_client_status()
 fn realtime_session_expiry_closes_socket_without_waiting_for_heartbeat() {
     let f = Fixture::new("minecraft-or-password", 8, 4096, 10);
     let owner = f.owner();
-    let original = f.password_session(&owner);
-    let grant = f
-        .host()
-        .pack_sessions()
-        .authenticate(&original, Instant::now(), &f.host().pack_policy().unwrap())
-        .unwrap()
-        .grant();
-    let (session, _) = f
-        .host()
-        .pack_sessions()
-        .issue(grant, Instant::now() - Duration::from_millis(3_598_500))
-        .unwrap();
-    let mut peer = f.websocket(&f.direct_ticket(session.expose()), 0).unwrap();
+    let session = f.password_session(&owner);
+    let mut peer = f.websocket(&f.direct_ticket(&session), 0).unwrap();
     assert_eq!(
         realtime_json(&mut peer),
         serde_json::json!({"type":"hello", "revision":0, "minimum_revision":0, "status":null})
     );
     let start = Instant::now();
+    f.clock
+        .0
+        .fetch_add(900_001, std::sync::atomic::Ordering::SeqCst);
+    f.publish(&owner, UpdatePolicy::Optional, b"expiry wake", "1");
     realtime_close(&mut peer, CloseCode::Policy);
     assert!(start.elapsed() < Duration::from_secs(3));
 }
@@ -199,15 +209,8 @@ fn realtime_session_revocation_and_policy_rotation_close_before_push() {
     f.host().pack_sessions().revoke(&session).unwrap();
     f.publish(&owner, UpdatePolicy::Optional, b"first", "1");
     realtime_close(&mut peer, CloseCode::Policy);
-    let (session, _) = f
-        .host()
-        .pack_sessions()
-        .issue(
-            vesta_control::pack_access::PackGrant::Password(PasswordRevision::new(1).unwrap()),
-            Instant::now(),
-        )
-        .unwrap();
-    let mut peer = f.websocket(&f.direct_ticket(session.expose()), 0).unwrap();
+    let session = f.granted_session();
+    let mut peer = f.websocket(&f.direct_ticket(&session), 0).unwrap();
     realtime_json(&mut peer);
     f.host()
         .pack_passwords()
@@ -268,32 +271,18 @@ fn realtime_global_connection_cap_and_shutdown_join_all_sockets() {
     let mut f = Fixture::new("minecraft-or-password", 64, 4096, 10);
     let owner = f.owner();
     f.password_session(&owner);
+    // Complete real key enrollment/signatures before leaving any socket idle.
+    // The capacity test is not a test of clients ignoring heartbeat controls
+    // while 33 durable authentication transactions are being performed.
+    let sessions: Vec<_> = (0..33).map(|_| f.granted_session()).collect();
     let mut peers = Vec::new();
-    for _ in 0..32 {
-        let (session, _) = f
-            .host()
-            .pack_sessions()
-            .issue(
-                vesta_control::pack_access::PackGrant::Password(PasswordRevision::new(1).unwrap()),
-                Instant::now(),
-            )
-            .unwrap();
-        let mut peer = f.websocket(&f.direct_ticket(session.expose()), 0).unwrap();
+    for session in &sessions[..32] {
+        let mut peer = f.websocket(&f.direct_ticket(session), 0).unwrap();
         realtime_json(&mut peer);
         peers.push(peer);
     }
-    let (session, _) = f
-        .host()
-        .pack_sessions()
-        .issue(
-            vesta_control::pack_access::PackGrant::Password(PasswordRevision::new(1).unwrap()),
-            Instant::now(),
-        )
-        .unwrap();
-    assert_eq!(
-        f.websocket(&f.direct_ticket(session.expose()), 0).err(),
-        Some(503)
-    );
+    let session = &sessions[32];
+    assert_eq!(f.websocket(&f.direct_ticket(session), 0).err(), Some(503));
     f.publish(
         &owner,
         UpdatePolicy::Optional,
@@ -301,15 +290,30 @@ fn realtime_global_connection_cap_and_shutdown_join_all_sockets() {
         "1",
     );
     for peer in &mut peers {
+        let mut received = realtime_json(peer);
+        for _ in 0..4 {
+            if received["type"] != "heartbeat" {
+                break;
+            }
+            received = realtime_json(peer);
+        }
         assert_eq!(
-            realtime_json(peer),
+            received,
             serde_json::json!({"type":"pack_update", "revision":1, "minimum_revision":1, "status":"update_required"})
         );
     }
-    f.finish();
-    for peer in &mut peers {
-        realtime_close(peer, CloseCode::Away);
-    }
+    // Real clients read the bounded close while shutdown is happening, rather
+    // than leaving all 32 sockets unread until after their server tasks join.
+    std::thread::scope(|scope| {
+        let readers: Vec<_> = peers
+            .iter_mut()
+            .map(|peer| scope.spawn(move || realtime_close(peer, CloseCode::Away)))
+            .collect();
+        f.finish();
+        for reader in readers {
+            reader.join().unwrap();
+        }
+    });
 }
 
 #[test]

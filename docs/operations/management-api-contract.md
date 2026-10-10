@@ -1,10 +1,11 @@
 # Remote management API contract — DRAFT 0.1
 
-**Not implemented. Not an available API.** This is a proposed, versioned contract
-for frontend mocks and owner review, not permission to enable remote management.
-Every endpoint below is **NOT IMPLEMENTED** as a remote management endpoint.
-Existing pack APIs and basic OS-local CLI/IPC do not implement this boundary.
-Numbers and wire shapes below are draft proposals unless identified as binding.
+**P2 authentication core is implemented as specified in section 2. Everything
+else remains DRAFT and NOT IMPLEMENTED.** This is not an available operational
+management API: authenticated management placeholders return 501. Sections 3
+onward describe proposals, not deployed endpoint shapes or permissions. The
+implemented P2 shapes in section 2 override conflicting draft authentication,
+response-envelope and timestamp proposals elsewhere in this document.
 
 Binding sources:
 - [Implementation plan](../SERVER_SOFTWARE_IMPLEMENTATION_PLAN.md), sections 5,
@@ -24,7 +25,8 @@ specification and event schemas must freeze the reviewed wire contract first.
 `/api/v2/manage` and descendants stay refused with HTTP **403** and fixed code
 `management_unavailable`. V2 authenticates pack access, not canonical management
 principals/devices/sessions; neither an alias nor a redirect may upgrade it.
-V3 is not currently routed; this document does not claim a deployed V3 refusal.
+V3 authentication and authenticated placeholder refusals are implemented as
+described in section 2; operational management endpoints remain unavailable.
 
 A future authenticated `/capabilities` response negotiates API/schema version,
 stable server identity, supported adapters/features and effective request limits.
@@ -42,38 +44,218 @@ Compatibility proposals:
 - Use decimal strings for generations, revisions, sequences and byte counts;
   timestamps are UTC RFC 3339. IDs/cursors are opaque, bounded strings.
 
-## 2. Authentication — unavailable until P2
+## 2. Authentication — implemented unified users, sessions and permissions
 
-Management is a **canonical device/session boundary that does not yet exist**.
-Transport reachability, player identity and pack access are not substitutes.
+### Authority and protected local commands
 
-| Placeholder state/flow | Required future behavior | Status |
+By binding owner decision, the OS account running the local CLI is the owner for
+these commands. They require a running `serve` and its protected native control
+channel; there is no offline direct-state fallback. Windows uses current-token-SID
+named-pipe DACLs and server-SID checking; Linux uses owner-only sockets and
+bidirectional peer-UID checks. Same-account processes are trusted. This is not P3
+process isolation, permanent SID/UID enrollment or supervisor recovery. A pack
+password, Minecraft proof/receipt, OP status, loopback/LAN, process ownership,
+configuration possession or mere bearer possession never appoints an administrator.
+
+```text
+vesta-agent pair <name> [--install-root <root>]
+    [--role owner|admin|administrator|maintainer|moderator|viewer|pack-user]
+    [--expires <minutes>]
+vesta-agent devices list <name> [--install-root <root>]
+vesta-agent devices revoke <device-id> <name> [--install-root <root>]
+vesta-agent owner link <name> --minecraft-uuid <uuid>
+    [--role <same built-in roles>] [--install-root <root>]
+vesta-agent owner unlink <name> --minecraft-uuid <uuid>
+    [--revoke-devices] [--install-root <root>]
+vesta-agent owner list <name> [--install-root <root>]
+vesta-agent access show <name> [--install-root <root>]
+vesta-agent access set <name> [--install-root <root>]
+    [--anonymous-role <role-id>] [--new-user-role <role-id>]
+    [--whitelist-role <role-id>] [--whitelist-sync on|off]
+    [--password-role <role-id>]
+```
+
+`<name>` selects an existing server registry entry, not a person. Root selection is
+`--install-root`, then `VESTA_SERVER_ROOT`, then local `vesta-servers`. `admin` aliases
+`administrator`; link/pair default to `owner`. Pair lifetime defaults to 10 minutes
+and accepts integral 1–60 minutes. There are at most 32 outstanding codes and 32
+owner links; canonical enrollment is bounded to 1000 registered device keys,
+including revoked keys (no automatic deletion or eviction). Public registration
+uses at most 968 slots, reserving 32 for explicit local pairing/owner links or
+authenticated security managers, so unauthenticated registration cannot exhaust
+local owner recovery admission. Expired codes are pruned on issuance; capacity refuses instead of
+silently evicting a live code. Device lists are bounded to 1000 entries; larger
+inventories refuse pending pagination. `access set` requires at least one setting,
+rejects duplicates/unknown flags, and validates every automatic role before its
+transactional audited update. Show/set return the canonical source settings as JSON.
+
+Pair prints one JSON object with `code`, `server_id`, `role`, `expires_at_ms`. Only a
+server/purpose-bound SHA-256 digest of the random 32-byte code is persisted. A code
+survives restart until consumed/expired. Redemption consumes the code, creates or
+attaches the device to its canonical user, assigns the locally selected role,
+checks current identity and appends success audit in one immediate transaction.
+Concurrent redemption has one committed winner. Audit/infrastructure failure rolls
+back redemption; an uncertain network outcome must not be blindly retried. To
+attach pairing to an existing user/key, supply that user's valid device session.
+Knowledge of someone else's public key is not authentication and cannot merge users.
+
+Owner links are server-scoped explicit role sources. Linking/replacing also updates
+an already mapped canonical UUID user, not just future enrollments. Default unlink
+removes the enrollment link but preserves the user's existing explicit role and
+its devices. Because roles belong to the user, later devices authenticated as that
+same user inherit preserved authority. `--revoke-devices` instead revokes **all**
+devices of that UUID's canonical user, including subsequently attached/pairing
+devices, and revokes its link-derived role assignment. It works after a previous
+unlink and prevents fresh UUID enrollment from restoring that assignment. Other
+explicit local grants are not silently removed. Independent device revoke remains
+available. Local mutations and successful enrollment/session issuance are audited.
+
+`owner link` returns `linked`, `minecraft_uuid`, `role`, `server_id`, and
+`tls_sha256_fingerprint`: the live transport leaf-DER SHA-256 from the same reloadable
+material as discovery's `x-vesta-tls-sha256-fingerprint`. It is null for local-only
+serve. First-contact out-of-band comparison, TOFU/pinning and TLS verification are
+launcher responsibilities. A renewable transport certificate is not server identity
+or administrative authority.
+
+### Permissions model
+
+There is one canonical user/principal per verified Minecraft UUID per server and
+one device-session store. Multiple device keys and authentication methods attach
+to that user; a device signs in once, then acts as its user. Anonymous registration
+cannot determine a person's identity. Existing-user attachment therefore requires
+an authenticated session or a fresh proof for that already mapped UUID; conflicting
+UUID/user/key bindings and silent account merges are refused.
+
+Access is capability-based. `public.info` controls discovery/status;
+`pack.download` controls archives/download tickets; `pack.realtime` controls realtime
+tickets/subscriptions. Existing explicit `pack.access` is a compatibility alias
+for download/realtime, not a second authentication domain. Owner/administrator/
+pack-user canonical roles include the new public/pack capabilities. Management
+still requires the exact management capability; a session identifies, not authorizes.
+
+Canonical configurable role sources are:
+
+| Source | Default | Lifetime and scope |
 | --- | --- | --- |
-| Owner uninitialized → bootstrapped | Reviewed OS-identity verification, one-time canonical owner recording and protected policy; no inference from existing files | NOT IMPLEMENTED; P2 |
-| Device unenrolled → enrolled | Explicit server-scoped, role-scoped invitation and proof of possession; owner approval under current policy | NOT IMPLEMENTED; P2 |
-| Enrolled device → authenticated session | Verified mTLS client certificate bound to canonical principal/device and server identity | NOT IMPLEMENTED; P2 |
-| Session → expired/revoked | Immediately invalidate requests, subscriptions and authority for future queued steps | NOT IMPLEMENTED; P2 |
-| Identity/key rotation or recovery | Authenticated continuity or explicit OS-authorized recovery; unexpected identity change blocks management | NOT IMPLEMENTED; P2 |
+| Anonymous | `public` | Live role selection; public info only by default |
+| New user | `public` | Safe role captured on user creation; role capabilities resolved live |
+| Whitelist sync | enabled, `player` | Fresh protected admission-file reads before every network decision; actual whitelist membership, online mode and no active ban; can disable/retarget |
+| Correct password | `player` | Chosen safe role bound to that device and password revision |
+| Local pairing/owner link | explicit selected built-in role | Canonical user role; only the protected local owner establishes it |
 
-These states do not define usable bootstrap/enrolment endpoints. Public discovery
-and pairing must remain reachable without a client certificate, but every
-management route requires verified device authentication. Public-CA transport
-certificates do not replace per-device mTLS. A proxy must provide verifiable
-client authentication; arbitrary forwarded certificate headers are not trusted.
+V12 seeds separate safe default roles even when existing custom names or IDs
+collide: names/IDs receive unused suffixes, existing roles and assignments remain
+unchanged, and canonical source settings reference the newly seeded roles. A
+malformed or unreadable current admission document disables the whitelist source
+for that decision; cached admission never prolongs it. Independent explicit,
+password and public-role sources remain available.
 
-For every request: verify device/session, resolve current canonical policy,
-authorize capability plus resource scope, validate desired input, audit admission,
-and persist intent before effects. Repeat current-policy checks before queued
-steps; expiry/revocation cannot leave durable authority behind. Optional step-up
-(TOTP/local security PIN) is disabled by default and never replaces this boundary.
+`public` contains only `public.info`. `player` contains `public.info`,
+`pack.download`, `pack.realtime`. All four automatic source roles are validated to
+contain **only public/pack capabilities and all-resource scopes**. An owner,
+management-capable custom role or even legacy `pack-user` (which has `status.view`)
+is refused as an automatic role. Roles are checked again at use, so later unsafe
+role edits fail closed. Explicit capability denies dominate automatic sources.
+Whitelist sync uses the actual current list even when Minecraft's `white-list`
+property is off; a successful proof for an unlisted player is identity, not access.
+Password rotation/revocation invalidates derived grants and pending tickets/live
+subscriptions, not the user's sign-in or independent explicit role. The current
+password revision is rechecked in the canonical transaction. Password grants are
+not shared with another device of the same user.
 
-**Not accepted as management credentials or grants:** pack passwords, pack/public
-sessions or download/realtime tickets, Microsoft/Minecraft proofs or receipts,
-Minecraft UUID/name/whitelist membership, OP/operator level, connector credentials,
-loopback/LAN location, reverse-proxy proximity, process ownership, installation
-account identity, config/file possession, arbitrary passwords, or bearer possession.
-A future explicitly enrolled identity may link Minecraft identity; proof alone
-never creates a role. OS-local CLI authorization remains local only.
+### Implemented HTTPS wire shapes
+
+Requests are strict JSON: unknown fields, cookies, duplicate authorization headers
+and query credentials are refused. Use `Content-Type: application/json` and one
+`Authorization: Bearer <token>` field when authenticated. Public POST sign-in/
+enrollment paths do not require an existing session; password attachment does.
+
+| Endpoint | Request | HTTP 200 response |
+| --- | --- | --- |
+| `/api/v3/auth/device/enroll` | `{"device_name":"…","public_key":"…"}` | `{"device_id":"…"}` |
+| `/api/v3/manage/pair` | `{"code":"…","device_name":"…","public_key":"…"}` | `{"server_id":"…","principal_id":"…","device_id":"…","role":"owner"}` |
+| `/api/v3/auth/minecraft/challenge` | `{"uuid":"…","name":"…"}` | `{"challenge":"…","server_hash":"…","expires_in":60}` |
+| `/api/v3/auth/minecraft/complete` | `{"challenge":"…","device_name":"…","public_key":"…"}` | `{"device_id":"…"}` |
+| `/api/v3/auth/session/challenge` | `{"device_id":"…"}` | `{"server_id":"…","nonce":"…","expires_in_seconds":60,"purpose":"vesta.management.session.v1"}` |
+| `/api/v3/auth/session` | `{"device_id":"…","nonce":"…","signature":"…"}` | `{"server_id":"…","token":"…","expires_at_ms":1791116100000}` |
+| `/api/v3/auth/password` | `{"password":"…"}` plus device bearer | `{"granted":true}` |
+
+The corresponding `/api/v3/manage/{device/enroll,minecraft/challenge,minecraft/complete,
+session/challenge,session,password}` paths are compatibility aliases for exactly
+the same handlers/store. Enrollment may supply an authenticated bearer to attach
+another device or previously unmapped UUID to that user. Both linked and unlinked
+Minecraft completions return only `device_id`; responses do not disclose owner-link
+existence. There is no HTTP owner-link or role-source mutation endpoint.
+
+Keys are exactly 32 Ed25519 bytes, signatures 64 bytes, in canonical unpadded
+base64url. Codes/nonces/tokens are 32 random bytes (43 base64url characters).
+Device labels use the existing 64-scalar bound. Expiration is signed epoch
+milliseconds, not the later draft's RFC3339 convention. Server-authenticated HTTPS
+and Ed25519 proof of possession do not require client certificates.
+
+Minecraft enrollment reuses the bounded join verifier: proof checks UUID, name,
+server, purpose, freshness and single use. V2 pack-proof and V3 enrollment challenge
+hash domains differ; cross-purpose completion consumes/refuses before provider I/O.
+The shared verifier limits are 1024 pending/active challenges, two active
+verifications, 60-second TTL and bounded issue/verification rates. Tests use the
+existing fake provider, not real Minecraft/Mojang. UUID proof finds/creates the
+canonical user and enrolls its key; only a current explicit local owner link gives
+management authority. Unlinked users receive their safe defaults/live pack sources.
+
+Sign exactly these UTF-8 bytes, with two NUL separators and no trailing NUL/newline:
+
+```text
+vesta.management.session.v1\0<canonical server_id>\0<canonical base64url nonce>
+```
+
+The purpose string is retained as a compatibility/domain-separation identifier; it
+is the **single** user/device session for both management and pack use. Wrong key,
+server, purpose, signature, unknown/expired/replayed nonce or revoked identity
+refuse. A recognized attempt consumes the nonce even when signature/device/capacity/
+audit admission fails. Issuance rechecks identity and audits before returning.
+Challenges are bounded to 1024, sessions to 4096, session lifetime to 15 minutes.
+Both wall and monotonic deadlines apply. Only server/purpose-bound credential hashes
+are retained in process-local memory; restart ends sessions/challenges.
+
+Downloads and realtime now resolve this same session against **current** role
+sources. There is no independent pack-session store. Bounded, hash-only,
+single-use download/realtime action tickets are purpose-bound and no longer lived
+than their session. Redemption and realtime push/heartbeat recheck live identity,
+roles, whitelist/bans and password revision. A ticket is never a device bearer or
+management credential. Configuring anonymous `player` deliberately opens pack
+access; the default anonymous `public` does not.
+
+Deprecated V2 thin shims remain: `/api/v2/auth/password` verifies the password and
+requires a canonical device bearer, then attaches the device role and echoes that
+**same** session (`session`, `expires_in:900`, `granted:true`), never mints a pack
+session. `expires_in` is the maximum session lifetime, not a renewal. Correct
+password without a device session receives 401 `device_session_required`.
+V2 Minecraft completion requires `device_name`/`public_key` with a valid proof,
+returns `device_id`, and uses the canonical UUID user; clients then use signed
+session issuance. V2 status/artifact/ticket/realtime endpoints consume canonical
+sessions or explicitly configured anonymous capabilities.
+
+### Capability-checked placeholders and fixed errors
+
+Other paths at/below `/api/v3/manage` require a valid device session and live
+`status.view` as the current placeholder admission gate. They perform no operational
+effect: denied capability returns 403 `management_forbidden`, admitted placeholders
+return fixed **501** `not_implemented`. Future handlers must use their exact
+capability/resource in their own mutation transaction and before durable queued
+steps. Wrong methods on public-auth paths are not authentication exceptions.
+V2 management remains 403 `management_unavailable`; V1 remains 410
+`legacy_endpoint_removed`, including rate exhaustion.
+
+Implemented failures retain small fixed `{"error":"fixed_code"}` responses, not
+section 3's draft envelope. Pair refusal is 401 `management_pair_invalid`; invalid
+session/nonces/identity are 401 `management_session_invalid`; denied management is
+403 `management_forbidden`; malformed input is 400 `invalid_request`; capacity/state
+failure is fixed 503 `management_saturated`/`management_unavailable`. Pack denial
+retains 401 `pack_session_invalid`; password refusal is 403 `pack_access_denied`.
+Verifier errors retain fixed `minecraft_*` responses. All handlers reuse bounded
+bodies, timeouts, blocking admission and the peer-IP limiter (60 requests/minute,
+1024 peers), with 429 `peer_rate_limited`. Secrets, SQL, rejected values and provider
+diagnostics are never reflected in errors.
 
 ## 3. Common protocol
 

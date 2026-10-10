@@ -1,5 +1,5 @@
-//! Pure in-memory fixtures. Proof objects are built with test-only constructors; no
-//! Mojang request, database, listener or game is involved.
+//! Real temporary canonical state and signed device sessions for ticket fixtures.
+//! Only credential observations use test-only constructors; no game/provider I/O.
 use super::*;
 
 const SERVER: &str = "11111111-2222-4333-8444-555555555555";
@@ -148,32 +148,32 @@ fn password_grants_need_password_mode_a_match_and_the_current_revision() {
 
 #[test]
 fn sessions_authenticate_until_expiry_and_secrets_are_single_purpose() {
-    let admission = Admission::new(&[], &[]);
+    let admission = Admission::new(&[PLAYER], &[]);
     let policy = admission.policy(
         PackAccessMode::Minecraft,
         Some(properties(false, true)),
         None,
     );
-    let sessions = PackSessions::new(server(), SessionLimits::default());
+    let sessions = PackSessions::fixture(server(), SessionLimits::default());
     let start = Instant::now();
     let grant = PackGrant::Minecraft(player(PLAYER));
     let (secret, session) = sessions.issue(grant, start).unwrap();
     assert_eq!(secret.expose().len(), 43);
     assert_eq!(session.grant(), grant);
-    assert_eq!(session.expires_at(), start + Duration::from_secs(3_600));
+    assert_eq!(session.expires_at(), start + Duration::from_secs(900));
     assert_eq!(
         sessions
             .authenticate(secret.expose(), start, &policy)
             .unwrap(),
         session
     );
-    let almost = start + Duration::from_secs(3_599);
+    let almost = start + Duration::from_secs(899);
     assert!(
         sessions
             .authenticate(secret.expose(), almost, &policy)
             .is_ok()
     );
-    let expired = start + Duration::from_secs(3_600);
+    let expired = start + Duration::from_secs(900);
     assert_eq!(
         sessions.authenticate(secret.expose(), expired, &policy),
         Err(PackAccessError::Invalid)
@@ -202,7 +202,7 @@ fn sessions_authenticate_until_expiry_and_secrets_are_single_purpose() {
 
 #[test]
 fn new_session_store_never_restores_previous_session_or_ticket_secrets() {
-    let admission = Admission::new(&[], &[]);
+    let admission = Admission::new(&[PLAYER], &[]);
     let policy = admission.policy(
         PackAccessMode::MinecraftOrPassword,
         Some(properties(false, true)),
@@ -214,7 +214,7 @@ fn new_session_store_never_restores_previous_session_or_ticket_secrets() {
         PackGrant::Password(revision(2)),
     ] {
         let (secret, download, realtime) = {
-            let old = PackSessions::new(server(), SessionLimits::default());
+            let old = PackSessions::fixture(server(), SessionLimits::default());
             let (secret, _) = old.issue(grant, now).unwrap();
             let download = old.issue_ticket(secret.expose(), now, &policy).unwrap();
             let realtime = old
@@ -224,7 +224,7 @@ fn new_session_store_never_restores_previous_session_or_ticket_secrets() {
         };
         // Even on the same server with unchanged admission/password revision,
         // a newly composed store needs fresh sign-in, not restored bearer hashes.
-        let fresh = PackSessions::new(server(), SessionLimits::default());
+        let fresh = PackSessions::fixture(server(), SessionLimits::default());
         assert_eq!(
             fresh.authenticate(secret.expose(), now, &policy),
             Err(PackAccessError::Invalid)
@@ -250,7 +250,7 @@ fn new_session_store_never_restores_previous_session_or_ticket_secrets() {
 
 #[test]
 fn a_ban_whitelist_removal_or_password_rotation_ends_existing_sessions() {
-    let sessions = PackSessions::new(server(), SessionLimits::default());
+    let sessions = PackSessions::fixture(server(), SessionLimits::default());
     let now = Instant::now();
     let (minecraft, _) = sessions
         .issue(PackGrant::Minecraft(player(PLAYER)), now)
@@ -289,12 +289,13 @@ fn a_ban_whitelist_removal_or_password_rotation_ends_existing_sessions() {
         sessions.authenticate(password.expose(), now, &after_ban),
         Err(PackAccessError::Invalid)
     );
-    // Refused sessions are gone even if the policy is restored.
-    assert_eq!(
-        sessions.authenticate(minecraft.expose(), now, &policy),
-        Err(PackAccessError::Invalid)
+    // Whitelist authority is a live source, not a second credential store.
+    assert!(
+        sessions
+            .authenticate(minecraft.expose(), now, &policy)
+            .is_ok()
     );
-    assert_eq!(sessions.len().unwrap(), (0, 0));
+    assert_eq!(sessions.len().unwrap(), (2, 0));
 
     let (unlisted, _) = sessions
         .issue(PackGrant::Minecraft(player(PLAYER)), now)
@@ -313,14 +314,14 @@ fn a_ban_whitelist_removal_or_password_rotation_ends_existing_sessions() {
 
 #[test]
 fn password_setting_changes_invalidate_sessions_and_tickets_without_reviving_old_access() {
-    let admission = Admission::new(&[], &[]);
+    let admission = Admission::new(&[PLAYER], &[]);
     let now = Instant::now();
     for (mode, active) in [
         (PackAccessMode::MinecraftOrPassword, Some(revision(3))),
         (PackAccessMode::MinecraftOrPassword, None),
         (PackAccessMode::Minecraft, Some(revision(2))),
     ] {
-        let sessions = PackSessions::new(server(), SessionLimits::default());
+        let sessions = PackSessions::fixture(server(), SessionLimits::default());
         let before = admission.policy(
             PackAccessMode::MinecraftOrPassword,
             Some(properties(false, true)),
@@ -351,7 +352,7 @@ fn password_setting_changes_invalidate_sessions_and_tickets_without_reviving_old
             sessions.recheck_realtime(reference, now, &after),
             Err(PackAccessError::Invalid)
         );
-        assert_eq!(sessions.len().unwrap(), (1, 0));
+        assert_eq!(sessions.len().unwrap(), (2, 2));
         assert!(
             sessions
                 .authenticate(minecraft.expose(), now, &after)
@@ -375,7 +376,7 @@ fn password_setting_changes_invalidate_sessions_and_tickets_without_reviving_old
 
 #[test]
 fn tickets_are_single_use_short_lived_and_never_outlive_their_session() {
-    let admission = Admission::new(&[], &[]);
+    let admission = Admission::new(&[PLAYER], &[]);
     let policy = admission.policy(
         PackAccessMode::Minecraft,
         Some(properties(false, true)),
@@ -383,7 +384,7 @@ fn tickets_are_single_use_short_lived_and_never_outlive_their_session() {
     );
     let limits =
         SessionLimits::new(Duration::from_secs(40), Duration::from_secs(30), 8, 8).unwrap();
-    let sessions = PackSessions::new(server(), limits);
+    let sessions = PackSessions::fixture(server(), limits);
     let start = Instant::now();
     let grant = PackGrant::Minecraft(player(PLAYER));
     let (secret, session) = sessions.issue(grant, start).unwrap();
@@ -443,14 +444,14 @@ fn tickets_are_single_use_short_lived_and_never_outlive_their_session() {
 
 #[test]
 fn stores_are_bounded_and_refuse_rather_than_evict_live_sessions() {
-    let admission = Admission::new(&[], &[]);
+    let admission = Admission::new(&[PLAYER], &[]);
     let policy = admission.policy(
         PackAccessMode::Minecraft,
         Some(properties(false, true)),
         None,
     );
     let limits = SessionLimits::new(Duration::from_secs(10), Duration::from_secs(5), 2, 1).unwrap();
-    let sessions = PackSessions::new(server(), limits);
+    let sessions = PackSessions::fixture(server(), limits);
     let start = Instant::now();
     let grant = PackGrant::Minecraft(player(PLAYER));
     let (first, _) = sessions.issue(grant, start).unwrap();
@@ -482,14 +483,14 @@ fn stores_are_bounded_and_refuse_rather_than_evict_live_sessions() {
 
 #[test]
 fn secrets_are_bound_to_the_issuing_server() {
-    let admission = Admission::new(&[], &[]);
+    let admission = Admission::new(&[PLAYER], &[]);
     let policy = admission.policy(
         PackAccessMode::Minecraft,
         Some(properties(false, true)),
         None,
     );
-    let here = PackSessions::new(server(), SessionLimits::default());
-    let elsewhere = PackSessions::new(
+    let here = PackSessions::fixture(server(), SessionLimits::default());
+    let elsewhere = PackSessions::fixture(
         ServerUuid::parse(OTHER_SERVER).unwrap(),
         SessionLimits::default(),
     );
@@ -541,7 +542,7 @@ fn limits_are_validated_and_output_is_redacted() {
             Err(PackAccessError::InvalidLimits)
         );
     }
-    let sessions = PackSessions::new(server(), SessionLimits::default());
+    let sessions = PackSessions::fixture(server(), SessionLimits::default());
     let (secret, session) = sessions
         .issue(PackGrant::Minecraft(player(PLAYER)), Instant::now())
         .unwrap();
@@ -553,13 +554,13 @@ fn limits_are_validated_and_output_is_redacted() {
 
 #[test]
 fn realtime_tickets_are_purpose_bound_single_use_and_recheck_live_sessions() {
-    let admission = Admission::new(&[], &[]);
+    let admission = Admission::new(&[PLAYER], &[]);
     let policy = admission.policy(
         PackAccessMode::Minecraft,
         Some(properties(false, true)),
         None,
     );
-    let sessions = PackSessions::new(server(), SessionLimits::default());
+    let sessions = PackSessions::fixture(server(), SessionLimits::default());
     let now = Instant::now();
     let (secret, session) = sessions
         .issue(PackGrant::Minecraft(player(PLAYER)), now)
@@ -642,13 +643,13 @@ fn realtime_tickets_are_purpose_bound_single_use_and_recheck_live_sessions() {
 
 #[test]
 fn download_admission_references_bind_session_and_its_tickets_to_one_slot() {
-    let admission = Admission::new(&[], &[]);
+    let admission = Admission::new(&[PLAYER, STRANGER], &[]);
     let policy = admission.policy(
         PackAccessMode::Minecraft,
         Some(properties(false, true)),
         None,
     );
-    let sessions = PackSessions::new(server(), SessionLimits::default());
+    let sessions = PackSessions::fixture(server(), SessionLimits::default());
     let now = Instant::now();
     let (secret, session) = sessions
         .issue(PackGrant::Minecraft(player(PLAYER)), now)

@@ -15,6 +15,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         9 => apply_v9(c),
         10 => apply_v10(c),
         11 => apply_v11(c),
+        12 => apply_v12(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -603,4 +604,110 @@ fn apply_v11(c: &Connection) -> crate::Result<()> {
         CREATE INDEX file_intents_pending ON file_intents(server_id,status);
     "#)?;
     Ok(())
+}
+
+/// P2 credentials are separate from both legacy bootstrap and pack access.
+fn apply_v12(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(
+        r#"
+        CREATE TABLE management_pairing_codes (
+            code_hash BLOB PRIMARY KEY CHECK (length(code_hash) = 32),
+            server_id TEXT NOT NULL REFERENCES server_identity(server_id),
+            role_id TEXT NOT NULL REFERENCES roles(id),
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL CHECK (expires_at > created_at)
+        ) STRICT;
+        DROP TRIGGER role_capabilities_builtin_no_insert;
+        INSERT OR IGNORE INTO role_capabilities (role_id,capability,scope) SELECT id,'public.info','*' FROM roles WHERE id IN ('owner','administrator','pack-user');
+        INSERT OR IGNORE INTO role_capabilities (role_id,capability,scope) SELECT id,'pack.download','*' FROM roles WHERE id IN ('owner','administrator','pack-user');
+        INSERT OR IGNORE INTO role_capabilities (role_id,capability,scope) SELECT id,'pack.realtime','*' FROM roles WHERE id IN ('owner','administrator','pack-user');
+        CREATE TRIGGER role_capabilities_builtin_no_insert BEFORE INSERT ON role_capabilities
+        WHEN (SELECT builtin FROM roles WHERE id = NEW.role_id) = 1
+        BEGIN SELECT RAISE(ABORT, 'builtin roles are immutable'); END;
+        CREATE TABLE user_minecraft_accounts (
+            server_id TEXT NOT NULL REFERENCES server_identity(server_id),
+            minecraft_uuid TEXT NOT NULL,
+            principal_id TEXT NOT NULL REFERENCES principals(id),
+            PRIMARY KEY(server_id,minecraft_uuid), UNIQUE(server_id,principal_id)
+        ) STRICT;
+        CREATE TABLE user_default_roles (
+            principal_id TEXT PRIMARY KEY REFERENCES principals(id),
+            role_id TEXT NOT NULL REFERENCES roles(id)
+        ) STRICT;
+        CREATE TABLE device_password_grants (
+            device_id TEXT PRIMARY KEY REFERENCES devices(id),
+            role_id TEXT NOT NULL REFERENCES roles(id),
+            password_revision INTEGER NOT NULL CHECK(password_revision > 0)
+        ) STRICT;
+        CREATE TABLE access_role_sources (
+            singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+            settings_json TEXT NOT NULL CHECK(length(settings_json) <= 4096)
+        ) STRICT;
+        CREATE TABLE management_owner_links (
+            server_id TEXT NOT NULL REFERENCES server_identity(server_id),
+            minecraft_uuid TEXT NOT NULL,
+            role_id TEXT NOT NULL REFERENCES roles(id),
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(server_id, minecraft_uuid)
+        ) STRICT;
+        CREATE TABLE management_device_keys (
+            device_id TEXT PRIMARY KEY REFERENCES devices(id),
+            server_id TEXT NOT NULL REFERENCES server_identity(server_id),
+            public_key BLOB NOT NULL CHECK (length(public_key) = 32),
+            linked_minecraft_uuid TEXT
+        ) STRICT;
+    "#,
+    )?;
+    // Existing custom roles may use either the preferred names or IDs. Never
+    // adopt them as automatic defaults: they may contain management authority.
+    let public = seed_access_default(c, "public", "Public", 1, &["public.info"])?;
+    let player = seed_access_default(
+        c,
+        "player",
+        "Player",
+        10,
+        &["public.info", "pack.download", "pack.realtime"],
+    )?;
+    let settings = format!(
+        r#"{{"anonymous":"{public}","new_user":"{public}","whitelist":"{player}","whitelist_enabled":true,"password":"{player}"}}"#
+    );
+    c.execute("INSERT INTO access_role_sources VALUES (1,?)", [settings])?;
+    Ok(())
+}
+
+fn seed_access_default(
+    c: &Connection,
+    preferred_id: &str,
+    name: &str,
+    rank: u32,
+    capabilities: &[&str],
+) -> crate::Result<String> {
+    let mut id = preferred_id.to_owned();
+    let mut suffix = 0_u64;
+    while c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM roles WHERE id=?)",
+        [&id],
+        |r| r.get::<_, bool>(0),
+    )? {
+        suffix += 1;
+        id = format!("{preferred_id}-default-{suffix}");
+    }
+    let mut display = name.to_owned();
+    suffix = 0;
+    while c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM roles WHERE name=? COLLATE NOCASE)",
+        [&display],
+        |r| r.get::<_, bool>(0),
+    )? {
+        suffix += 1;
+        display = format!("{name} (Vesta default {suffix})");
+    }
+    c.execute("INSERT INTO roles (id,name,rank,builtin,created_by,created_at) VALUES (?,?,?,0,'migration',0)",params![id,display,rank])?;
+    for capability in capabilities {
+        c.execute(
+            "INSERT INTO role_capabilities VALUES (?,?,'*')",
+            params![id, capability],
+        )?;
+    }
+    Ok(id)
 }
