@@ -51,11 +51,11 @@ pub struct LaunchIntent {
     pub launch_identity: String,
 }
 
-fn name(text: &str) -> Result<ArtifactName> {
+pub(crate) fn name(text: &str) -> Result<ArtifactName> {
     ArtifactName::new(text).map_err(|_| "supervisor_record_unavailable")
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(
+pub(crate) fn read_json<T: for<'de> Deserialize<'de>>(
     directory: &ArtifactDirectory,
     file: &str,
 ) -> Result<Option<T>> {
@@ -78,7 +78,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(
         .map_err(|_| "supervisor_record_invalid")
 }
 
-fn publish<T: Serialize>(
+pub(crate) fn publish<T: Serialize>(
     directory: &ArtifactDirectory,
     staged: &str,
     published: &str,

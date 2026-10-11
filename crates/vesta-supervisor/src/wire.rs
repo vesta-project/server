@@ -44,8 +44,23 @@ pub enum Op {
     /// Clear an unresolved launch intent left by a crash between intent and record.
     /// Explicit operator action; refused while any game or orphan is live.
     ResolveLaunch,
+    /// Apply the agent's current trusted crash-restart policy (`None` disables it).
+    /// Sent on every attach so configuration changes reach a running supervisor.
+    Configure { restart: Option<WireRestartPolicy> },
+    /// Clear a crash-loop suspension, crash history and any scheduled restart.
+    /// Explicit operator action; never starts or stops anything.
+    ResetRestarts,
     /// Exit the supervisor; refused while a game generation or orphan is live.
     Shutdown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WireRestartPolicy {
+    pub crash_limit: u32,
+    pub window_secs: u64,
+    pub backoff_secs: u64,
+    pub max_backoff_secs: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -104,6 +119,16 @@ pub struct Health {
     pub launch_unresolved: bool,
     /// Native observation failed at least once; current facts are not proven.
     pub observation_failed: bool,
+    /// Opt-in crash restart is configured.
+    pub restart_enabled: bool,
+    /// The crash-loop breaker tripped: no automatic restart until reset.
+    pub crash_loop: bool,
+    /// Crashes inside the configured window.
+    pub recent_crashes: u32,
+    /// An automatic restart is scheduled this many milliseconds from now.
+    pub restart_pending_ms: Option<u64>,
+    /// The breaker is tripped in memory but its durable marker could not be written yet.
+    pub restart_state_unsaved: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -127,6 +152,9 @@ pub struct SyncPage {
     pub latest_cursor: u64,
     pub gap: bool,
     pub health: Health,
+    /// Supervisor console cursor just before the current generation was launched:
+    /// lines after it belong to that generation.
+    pub generation_floor: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,6 +167,8 @@ pub enum Reply {
     },
     Delivered,
     Resolved,
+    RestartsReset,
+    Configured,
     Exited {
         exit: WireExit,
     },

@@ -52,10 +52,15 @@ fn main() -> ExitCode {
         state: launch.state,
         launch: launch.spec,
         launch_identity: launch.identity,
+        restart: launch.restart,
     };
     // Ctrl+C only ends an idle supervisor; a running game keeps it alive.
+    // A detached supervisor has no console; if Ctrl+C cannot be registered, never
+    // treat that as a stop request.
     let stop = async {
-        let _ = tokio::signal::ctrl_c().await;
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
     };
     match runtime.block_on(vesta_supervisor::run(config, stop)) {
         Ok(()) => ExitCode::SUCCESS,

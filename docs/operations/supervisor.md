@@ -152,7 +152,77 @@ All of the following ran on Windows:
 - Unit tests cover the closed protocol, framing bounds, start-time identity and the
   create-new record.
 
+## Crash restart (opt-in)
+
+Crash restart is off unless `host.toml` asks for it, and only in separate-supervision mode
+(without a supervisor, an agent restart would end the game too):
+
+```toml
+[process]
+supervision = "separate"
+
+[process.restart]            # an empty table uses the recommended preset
+crash-limit = 3              # 1..=20 crashes ...
+crash-window-minutes = 10    # ... within this window trip the breaker (max 24 h)
+backoff-seconds = 10         # first restart delay, doubling per crash in the window
+max-backoff-seconds = 300    # cap (max 1 h)
+```
+
+- A crash is an exit the supervisor did not cause: no graceful stop or kill was applied,
+  and no console `stop` was actually delivered for that generation, and the exit status was
+  not success. An in-game `/stop` exits successfully and is treated as a stop, not a crash.
+  While a stop request is in flight, the exit is classified only once its delivery is known.
+- After a crash the supervisor schedules a restart after the backoff. The restart uses the
+  same launch path as an explicit start (intent, record, duplicate checks). A failed
+  automatic launch counts as another crash, so a broken launch definition reaches the
+  breaker instead of retrying forever.
+- When the crash limit is reached inside the window, the breaker trips. The game stays
+  stopped, and a durable `restart-suspended.json` marker survives supervisor restarts.
+  No automatic restart happens until `vesta-agent reset-restarts <name>`, which clears
+  the marker, the crash history and any scheduled restart, and never starts or stops the game.
+  A manual start is still allowed while the breaker is tripped.
+- An applied start, stop or kill cancels a scheduled restart; a refused one changes
+  nothing. An explicit start first classifies any just-finished exit, so it also supersedes
+  a restart scheduled by that exit. An idle supervisor with a scheduled restart refuses to shut down.
+- The agent pushes its current `[process.restart]` policy to the supervisor every time it
+  attaches, so adding, changing or removing the table takes effect at the next agent start
+  without restarting the supervisor or the game. Removing it cancels a scheduled restart. A tripped
+  breaker stays tripped until reset.
+- If the suspension marker cannot be written, the breaker stays tripped in memory and the write is
+  retried on every observation (`restart_state_unsaved` in status). Crash history uses two alternating
+  files, so the newest complete history always survives. A corrupt history file trips the
+  breaker rather than reading as "no crashes".
+- Status reports `crash_restart_enabled`, `crash_loop`, `recent_crashes` and
+  `restart_pending_ms` (see the management API `/server/status`). The notification
+  inbox (F30) does not exist yet, so the breaker is surfaced through status only.
+
+## Readiness
+
+Both process modes report `starting`, `ready` or `degraded` from the console and,
+when the game's `server.properties` is readable at agent start, a Minecraft status ping
+to that port (`readiness_evidence: "log_and_probe"`; otherwise `"log_only"`). Ready
+needs the server's own `Done (…s)! For help, type "help"` log line (chat lines that
+imitate it are ignored) followed by a successful status ping. Degraded reasons:
+`startup_timeout` (300 s), `probe_failed` (three failed pings after ready),
+`fatal_output` (bind failure or crash report lines) and `console_gap` (output lost before
+ready, until a ping succeeds). Only output after the current generation's launch counts:
+locally the agent records the console position before spawning, and a supervisor reports
+it with each sync. If that boundary is unknown (for example the agent attached after it
+was already mirrored), the backlog is skipped and reported as `console_gap`. A draining
+(exited) process reports `stopped`. Lost output anywhere in the console, not only before
+the first line read, counts as a gap. A changed port is picked up when the agent restarts.
+Readiness is observation only and never starts, stops or restarts anything.
+
 ## Review
+
+A delta review (Sol, 2026-10-12) of crash restart and readiness found 8 issues. All are fixed,
+with regressions for the scheduling, configuration, persistence and console-gap cases:
+policy not reconciled with a running supervisor, a fail-open breaker on a write failure, a
+stale restart after a manual start, a refused kill cancelling recovery, an undelivered stop
+hiding a crash, previous-generation output counted for the new one, a draining exit staying
+ready, and mid-page gaps.
+
+### First review
 
 An independent review (Sol, 2026-10-11) of the first version found 30 issues; the 22 in
 this slice were all fixed with regressions where testable: spawn-to-record gap,
@@ -167,8 +237,8 @@ permissions, gzip and download work and are tracked in the management API contra
 ## Not in this slice (remaining P3 work)
 
 - Separate OS identities for game and control plane, and service-account launch helpers.
-- Crash-restart policy with bounded backoff and crash-loop suspension, and start-on-agent-start.
-- Readiness detection, and log catch-up by file identity/offset after supervisor loss.
+- Start-on-agent-start (crash restart and readiness are now implemented, above).
+- Log catch-up by file identity/offset after supervisor loss, and connector readiness signals.
 - Autosave/save-lease primitive and its crash recovery.
 - OS service installation and shutdown-deadline integration, plus supervisor self-update
   (activation only while stopped).

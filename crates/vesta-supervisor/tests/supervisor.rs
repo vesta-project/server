@@ -41,6 +41,9 @@ fn inert_supervised_game() {
         .unwrap();
     println!("inert-supervised-ready");
     std::io::stdout().flush().unwrap();
+    if Path::new("crash-on-start").exists() {
+        std::process::exit(23);
+    }
     loop {
         if Path::new("release-game").exists() {
             std::process::exit(0);
@@ -53,6 +56,9 @@ fn inert_supervised_game() {
                 std::io::stdout().flush().unwrap();
                 if line == "stop" {
                     std::process::exit(0);
+                }
+                if line == "crash" {
+                    std::process::exit(23);
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -114,10 +120,14 @@ struct Running {
 }
 impl Running {
     fn start(fixture: &Fixture) -> Self {
+        Self::start_with(fixture, None)
+    }
+    fn start_with(fixture: &Fixture, restart: Option<vesta_supervisor::RestartPolicy>) -> Self {
         let config = SupervisorConfig {
             state: fixture.state.clone(),
             launch: fixture.launch(),
             launch_identity: IDENTITY.into(),
+            restart,
         };
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let thread = thread::spawn(move || {
@@ -332,6 +342,7 @@ fn mismatched_launch_identity_and_second_supervisor_refuse() {
             state: fixture.state.clone(),
             launch: fixture.launch(),
             launch_identity: IDENTITY.into(),
+            restart: None,
         },
         std::future::pending(),
     ));
@@ -497,6 +508,7 @@ fn cancelling_the_supervisor_never_kills_a_live_game() {
         state: fixture.state.clone(),
         launch: fixture.launch(),
         launch_identity: IDENTITY.into(),
+        restart: None,
     };
     let (started, ready) = mpsc::channel();
     let state = fixture.state.clone();
@@ -631,5 +643,198 @@ fn retained_client_handles_cannot_exhaust_the_endpoint() {
         Reply::Hello(_)
     ));
     drop(retained);
+    running.join().unwrap();
+}
+
+fn health(raw: &SupervisorClient) -> vesta_supervisor::wire::Health {
+    match raw
+        .call(Op::Sync { after: 0 }, Duration::from_secs(2))
+        .unwrap()
+    {
+        Reply::Sync(page) => page.health,
+        other => panic!("unexpected reply {other:?}"),
+    }
+}
+
+fn fast_policy() -> vesta_supervisor::RestartPolicy {
+    vesta_supervisor::RestartPolicy::new(
+        3,
+        Duration::from_secs(600),
+        Duration::from_millis(100),
+        Duration::from_millis(400),
+    )
+    .unwrap()
+}
+
+#[test]
+fn crash_restarts_with_backoff_but_stops_and_clean_exits_do_not() {
+    let fixture = Fixture::new();
+    let running = Running::start_with(&fixture, Some(fast_policy()));
+    let mut remote = RemoteProcess::attach(client(&fixture), IDENTITY.into()).unwrap();
+    let first = remote.start_guarded(|_| Ok::<(), ()>(())).unwrap();
+    eventually(
+        || console_contains(&mut remote, "inert-supervised-ready"),
+        "game ready",
+    );
+    let raw = SupervisorClient::new(&fixture.state).unwrap();
+    assert!(health(&raw).restart_enabled);
+    // Crash: the supervisor restarts it as a new generation after the backoff.
+    let receipt = remote
+        .queue_command_guarded(first, "crash", || Ok::<(), ()>(()))
+        .unwrap();
+    let _ = wait_receipt(receipt);
+    eventually(
+        || {
+            remote
+                .poll()
+                .is_ok_and(|s| s.generation.is_some_and(|g| g != first))
+        },
+        "automatic restart",
+    );
+    let second = remote.snapshot().generation.unwrap();
+    assert_eq!(health(&raw).recent_crashes, 1);
+    // A graceful stop is not a crash: nothing restarts.
+    let receipt = remote
+        .queue_stop_guarded(second, || Ok::<(), ()>(()))
+        .unwrap();
+    wait_receipt(receipt).unwrap();
+    eventually(
+        || remote.poll().is_ok_and(|s| s.generation.is_none()),
+        "stopped",
+    );
+    thread::sleep(Duration::from_millis(800));
+    assert_eq!(remote.poll().unwrap().generation, None);
+    let after_stop = health(&raw);
+    assert_eq!(after_stop.recent_crashes, 1);
+    assert_eq!(after_stop.restart_pending_ms, None);
+    assert!(!after_stop.crash_loop);
+    drop(remote);
+    fixture.release();
+    eventually(
+        || {
+            raw.call(Op::Shutdown, Duration::from_secs(2))
+                .is_ok_and(|reply| reply == Reply::ShuttingDown)
+        },
+        "supervisor idle",
+    );
+    running.join().unwrap();
+}
+
+#[test]
+fn crash_loop_breaker_leaves_the_game_stopped_until_reset_even_across_restarts() {
+    let fixture = Fixture::new();
+    fs::write(fixture.game.join("crash-on-start"), b"crash").unwrap();
+    let running = Running::start_with(&fixture, Some(fast_policy()));
+    let mut remote = RemoteProcess::attach(client(&fixture), IDENTITY.into()).unwrap();
+    remote.start_guarded(|_| Ok::<(), ()>(())).unwrap();
+    let raw = SupervisorClient::new(&fixture.state).unwrap();
+    eventually(|| health(&raw).crash_loop, "breaker trips");
+    let tripped = health(&raw);
+    assert_eq!(tripped.recent_crashes, 3);
+    assert_eq!(tripped.restart_pending_ms, None);
+    thread::sleep(Duration::from_millis(800));
+    assert_eq!(remote.poll().unwrap().generation, None);
+    drop(remote);
+    // The suspension survives a supervisor restart.
+    assert_eq!(
+        raw.call(Op::Shutdown, Duration::from_secs(2)).unwrap(),
+        Reply::ShuttingDown
+    );
+    running.join().unwrap();
+    let running = Running::start_with(&fixture, Some(fast_policy()));
+    let raw = SupervisorClient::new(&fixture.state).unwrap();
+    assert!(health(&raw).crash_loop);
+    assert_eq!(
+        raw.call(Op::ResetRestarts, Duration::from_secs(2)).unwrap(),
+        Reply::RestartsReset
+    );
+    let reset = health(&raw);
+    assert!(!reset.crash_loop);
+    assert_eq!(reset.recent_crashes, 0);
+    assert_eq!(
+        raw.call(Op::Shutdown, Duration::from_secs(2)).unwrap(),
+        Reply::ShuttingDown
+    );
+    running.join().unwrap();
+}
+
+#[test]
+fn explicit_actions_and_configuration_govern_scheduled_restarts() {
+    let fixture = Fixture::new();
+    // A long backoff keeps the scheduled restart observable.
+    let slow = vesta_supervisor::RestartPolicy::new(
+        3,
+        Duration::from_secs(600),
+        Duration::from_secs(30),
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    let running = Running::start_with(&fixture, Some(slow));
+    let mut remote = RemoteProcess::attach(client(&fixture), IDENTITY.into()).unwrap();
+    let raw = SupervisorClient::new(&fixture.state).unwrap();
+    let crash = |remote: &mut RemoteProcess| {
+        let generation = remote.start_guarded(|_| Ok::<(), ()>(())).unwrap();
+        eventually(
+            || console_contains(remote, "inert-supervised-ready"),
+            "game ready",
+        );
+        let receipt = remote
+            .queue_command_guarded(generation, "crash", || Ok::<(), ()>(()))
+            .unwrap();
+        let _ = wait_receipt(receipt);
+        generation
+    };
+    let first = crash(&mut remote);
+    eventually(
+        || health(&raw).restart_pending_ms.is_some(),
+        "restart scheduled",
+    );
+    // A refused kill for a stale generation does not cancel recovery.
+    assert!(matches!(
+        raw.call(
+            Op::Kill {
+                generation: first.to_hex(),
+                wait_ms: 0
+            },
+            Duration::from_secs(5)
+        )
+        .unwrap(),
+        Reply::Refused { .. }
+    ));
+    assert!(health(&raw).restart_pending_ms.is_some());
+    // An explicit start supersedes the scheduled restart.
+    let manual = remote.start_guarded(|_| Ok::<(), ()>(())).unwrap();
+    let after_start = health(&raw);
+    assert_eq!(after_start.restart_pending_ms, None);
+    assert_eq!(after_start.recent_crashes, 1);
+    assert_eq!(remote.poll().unwrap().generation, Some(manual));
+    eventually(
+        || console_contains(&mut remote, "inert-supervised-ready"),
+        "manual game ready",
+    );
+    let receipt = remote
+        .queue_command_guarded(manual, "crash", || Ok::<(), ()>(()))
+        .unwrap();
+    let _ = wait_receipt(receipt);
+    eventually(
+        || health(&raw).restart_pending_ms.is_some(),
+        "restart scheduled again",
+    );
+    // The agent's configuration can disable restart on a running supervisor.
+    remote.configure(None).unwrap();
+    let disabled = health(&raw);
+    assert!(!disabled.restart_enabled);
+    assert_eq!(disabled.restart_pending_ms, None);
+    remote.configure(Some(slow)).unwrap();
+    assert!(health(&raw).restart_enabled);
+    drop(remote);
+    fixture.release();
+    eventually(
+        || {
+            raw.call(Op::Shutdown, Duration::from_secs(2))
+                .is_ok_and(|reply| reply == Reply::ShuttingDown)
+        },
+        "supervisor idle",
+    );
     running.join().unwrap();
 }

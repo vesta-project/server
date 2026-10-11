@@ -131,8 +131,9 @@ async fn open(endpoint: &std::path::Path) -> Result<native::Stream> {
     loop {
         match native::connect(endpoint).await {
             Ok(stream) => return Ok(stream),
-            // Every pipe instance is momentarily connected; retry briefly.
-            Err(BUSY) if attempts < BUSY_ATTEMPTS => {
+            // Every pipe instance is momentarily connected, or the supervisor is between
+            // listening instances: retry briefly. A stopped supervisor costs one second.
+            Err(BUSY | NOT_RUNNING) if attempts < BUSY_ATTEMPTS => {
                 attempts += 1;
                 tokio::time::sleep(BUSY_RETRY).await;
             }

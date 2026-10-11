@@ -37,6 +37,17 @@ const MAX_COMMAND_BYTES: usize = 1024;
 struct Mirror {
     console: ConsoleCapture,
     cursor: u64,
+    /// Local console cursor after which the named generation's output begins.
+    /// `None` inside means the boundary was already mirrored past and is unknown.
+    floor: Option<(GenerationId, Option<u64>)>,
+}
+impl Mirror {
+    fn latest(&self) -> std::result::Result<u64, RuntimeError> {
+        self.console
+            .snapshot(0, 1)
+            .map(|page| page.latest_cursor)
+            .map_err(|_| RuntimeError::ObserveFailed)
+    }
 }
 
 pub struct RemoteProcess {
@@ -48,6 +59,7 @@ pub struct RemoteProcess {
     snapshot: ProcessSnapshot,
     synced: Option<Instant>,
     health: wire::Health,
+    floor: Option<(GenerationId, Option<u64>)>,
     writer: Option<JoinHandle<()>>,
 }
 impl std::fmt::Debug for RemoteProcess {
@@ -127,11 +139,13 @@ impl RemoteProcess {
             mirror: Arc::new(Mutex::new(Mirror {
                 console: console.clone(),
                 cursor: 0,
+                floor: None,
             })),
             console,
             snapshot: wire::snapshot_from_wire(&hello.snapshot)?,
             synced: None,
             health: hello.health,
+            floor: None,
             writer: None,
         };
         remote.sync(true).map_err(|_| "supervisor_not_running")?;
@@ -151,6 +165,31 @@ impl RemoteProcess {
     /// A game from an earlier supervisor is alive (or unobservable) without stdin.
     pub fn orphan_running(&self) -> bool {
         self.health.orphan_running
+    }
+
+    /// Local console cursor after which `generation`'s output begins, if known.
+    pub fn console_floor(&self, generation: GenerationId) -> Option<u64> {
+        self.floor
+            .filter(|(g, _)| *g == generation)
+            .and_then(|(_, floor)| floor)
+    }
+
+    /// Push the agent's current trusted crash-restart policy to the supervisor.
+    pub fn configure(&self, restart: Option<crate::RestartPolicy>) -> Result<()> {
+        match self.client.call(
+            Op::Configure {
+                restart: restart.map(crate::RestartPolicy::to_wire),
+            },
+            SYNC_WAIT,
+        )? {
+            Reply::Configured => Ok(()),
+            _ => Err("supervisor_configure_refused"),
+        }
+    }
+
+    /// Supervisor conditions from the latest successful observation.
+    pub fn health(&self) -> wire::Health {
+        self.health
     }
 
     /// A launch intent without a recorded outcome blocks launching until resolved.
@@ -196,7 +235,26 @@ impl RemoteProcess {
         };
         let snapshot =
             wire::snapshot_from_wire(&page.snapshot).map_err(|_| RuntimeError::ObserveFailed)?;
+        // Map the supervisor's launch boundary into the local mirror.
+        let pending = match snapshot.generation {
+            Some(generation) if mirror.floor.is_none_or(|(g, _)| g != generation) => {
+                if mirror.cursor <= page.generation_floor {
+                    Some(generation)
+                } else {
+                    mirror.floor = Some((generation, None));
+                    None
+                }
+            }
+            _ => None,
+        };
+        let mut pending = pending;
         for line in &page.lines {
+            if let Some(generation) = pending
+                && line.cursor > page.generation_floor
+            {
+                mirror.floor = Some((generation, Some(mirror.latest()?)));
+                pending = None;
+            }
             if line.cursor <= mirror.cursor {
                 return Err(RuntimeError::ObserveFailed);
             }
@@ -213,6 +271,11 @@ impl RemoteProcess {
                 .map_err(|_| RuntimeError::ObserveFailed)?;
             mirror.cursor = line.cursor;
         }
+        if let Some(generation) = pending {
+            // Every mirrored line so far precedes this generation's launch.
+            mirror.floor = Some((generation, Some(mirror.latest()?)));
+        }
+        self.floor = mirror.floor;
         self.snapshot = snapshot;
         self.health = page.health;
         self.synced = Some(Instant::now());

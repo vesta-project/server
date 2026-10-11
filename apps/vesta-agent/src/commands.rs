@@ -64,6 +64,9 @@ pub async fn run(command: Command, base: &Path) -> ExitCode {
         } => servers::root(root.as_deref(), base)
             .and_then(|root| crate::supervision::resolve_launch(&root, &name, &confirm))
             .map(|()| println!("launch_intent_resolved; no_process_touched")),
+        Command::ResetRestarts { name, root } => servers::root(root.as_deref(), base)
+            .and_then(|root| crate::supervision::reset_restarts(&root, &name))
+            .map(|()| println!("crash_restarts_reset; no_process_touched")),
         Command::Management { name, root, op } => management(name, root.as_deref(), op, base).await,
         Command::Named { op, name, root } => named(op, name, root.as_deref(), base).await,
     };

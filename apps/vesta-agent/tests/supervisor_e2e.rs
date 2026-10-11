@@ -38,7 +38,17 @@ fn inert_e2e_game() {
             }
         }
     });
-    println!("inert-e2e-ready");
+    // A real server keeps running when its supervisor's pipes close; so does this one.
+    {
+        use std::io::Write;
+        let mut out = std::io::stdout();
+        let _ = writeln!(out, "inert-e2e-ready");
+        let _ = writeln!(
+            out,
+            "[12:00:00] [Server thread/INFO]: Done (0.123s)! For help, type \"help\""
+        );
+        let _ = out.flush();
+    }
     loop {
         if Path::new("release-game").exists() {
             std::process::exit(0);
@@ -151,6 +161,21 @@ fn agent_exit_keeps_the_game_and_a_supervisor_crash_blocks_duplicates() {
         .request(LocalAction::Start)
         .unwrap();
     let generation = host.runtime().game_snapshot().unwrap().generation.unwrap();
+    // Readiness flows from the supervisor's console mirror; without server.properties
+    // there is no probe target, so readiness is log-only and says so.
+    let status = host.runtime().network_handle();
+    eventually(
+        || {
+            status.readiness().is_ok_and(|view| {
+                view.readiness == vesta_control::operations::readiness::Readiness::Ready
+                    && !view.probed
+            })
+        },
+        "log-only readiness",
+    );
+    let health = status.supervision().unwrap().expect("supervised health");
+    assert!(!health.restart_enabled);
+    assert!(!health.crash_loop);
     let recorded = layout.record().expect("generation recorded");
     assert_eq!(recorded.generation, generation.to_hex());
     assert!(recorded.held());
@@ -162,6 +187,7 @@ fn agent_exit_keeps_the_game_and_a_supervisor_crash_blocks_duplicates() {
 
     // A new agent adopts the same generation and never launches another.
     let host = layout.open_host(client.clone());
+    let status = host.runtime().network_handle();
     eventually(
         || host.runtime().game_snapshot().unwrap().generation == Some(generation),
         "adopted generation",
@@ -181,13 +207,28 @@ fn agent_exit_keeps_the_game_and_a_supervisor_crash_blocks_duplicates() {
         .unwrap();
     let second = host.runtime().game_snapshot().unwrap().generation.unwrap();
     assert_ne!(second, generation);
+    // Let the new game finish starting (its output is mirrored) before the crash.
+    eventually(
+        || {
+            status.readiness().is_ok_and(|view| {
+                view.readiness == vesta_control::operations::readiness::Readiness::Ready
+            })
+        },
+        "second generation ready",
+    );
 
     // Supervisor crash: the game survives with its record, and is never killed.
     supervisor.kill().unwrap();
     supervisor.wait().unwrap();
     let orphan = layout.record().expect("record survives supervisor crash");
     assert!(orphan.held());
-    close(host);
+    // The agent lost its supervisor: shutdown completes, reporting lost observation
+    // if the driver noticed in time. It never waits on, stops or kills the game.
+    match host.shutdown(Duration::from_secs(20)) {
+        Ok(HostShutdown::Complete) => {}
+        Err(error) => assert_eq!(error.code(), "game_observe_failed"),
+        Ok(HostShutdown::TimedOut(_)) => panic!("shutdown must not wait for a lost supervisor"),
+    }
 
     let (mut replacement, client) = layout.spawn_supervisor();
     let remote = RemoteProcess::attach(

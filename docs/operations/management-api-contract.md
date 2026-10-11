@@ -301,7 +301,7 @@ is null; persistent monotonic stopped-control generations are not introduced.
 | Method / path | Exact request | Exact `data` / status | Capability |
 | --- | --- | --- | --- |
 | GET `/server` | no body/query | 200 `{server_id,name,agent_version,minecraft_version,pack_version,configured_mode:"same_account"}`; other fields strings | `status.view` |
-| GET `/server/status` | no body/query | 200 `{state:"stopped\|running\|stopping\|draining",generation:hex-or-null,player_count:integer-or-null,player_count_known:boolean,player_count_observed_at_ms:integer-or-null,uptime_seconds:decimal-string-or-null}` | `status.view` |
+| GET `/server/status` | no body/query | 200 `{state:"stopped\|running\|stopping\|draining",generation:hex-or-null,player_count:integer-or-null,player_count_known:boolean,player_count_observed_at_ms:integer-or-null,uptime_seconds:decimal-string-or-null,readiness:"stopped\|starting\|ready\|degraded",readiness_reason:"startup_timeout\|probe_failed\|fatal_output\|console_gap"-or-null,readiness_evidence:"log_and_probe\|log_only",supervision:"in_process\|separate",supervisor:null-or-{orphan_running,launch_unresolved,observation_failed,crash_restart_enabled,crash_loop,restart_state_unsaved:boolean,recent_crashes:integer,restart_pending_ms:decimal-string-or-null}}`. Readiness and crash-restart semantics: operations/supervisor.md | `status.view` |
 | POST `/lifecycle/start` | `{}` + `Idempotency-Key` | 202 `Operation` | `lifecycle.start` |
 | POST `/lifecycle/stop` | `{"expected_generation":"<hex>"}` + key | 202 `Operation` | `lifecycle.stop` |
 | POST `/lifecycle/restart` | same generation request + key | 202 `Operation` | `lifecycle.restart` |

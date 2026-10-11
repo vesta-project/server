@@ -95,14 +95,29 @@ pub fn resolve_launch(root: &Path, name: &str, confirm: &str) -> Result<()> {
     if name != confirm {
         return Err("local_resolve_confirmation_mismatch");
     }
+    request(root, name, wire::Op::ResolveLaunch, wire::Reply::Resolved)
+}
+
+/// Clear a tripped crash-loop breaker, crash history and any scheduled restart, so
+/// opt-in crash restart applies again. Never starts or stops the game.
+pub fn reset_restarts(root: &Path, name: &str) -> Result<()> {
+    request(
+        root,
+        name,
+        wire::Op::ResetRestarts,
+        wire::Reply::RestartsReset,
+    )
+}
+
+fn request(root: &Path, name: &str, op: wire::Op, expected: wire::Reply) -> Result<()> {
     let server = crate::servers::resolve(root, name)?;
     let config =
         HostConfiguration::load_file(&server.config, &server.directory).map_err(|e| e.code())?;
     let launch = supervised_launch(&config).map_err(|e| e.code())?;
     let client = SupervisorClient::new(&launch.state)?;
-    match client.call(wire::Op::ResolveLaunch, Duration::from_secs(5)) {
-        Ok(wire::Reply::Resolved) => Ok(()),
-        Ok(wire::Reply::Refused { .. }) => Err("supervisor_resolve_refused"),
+    match client.call(op, Duration::from_secs(5)) {
+        Ok(reply) if reply == expected => Ok(()),
+        Ok(wire::Reply::Refused { .. }) => Err("supervisor_request_refused"),
         Err(vesta_supervisor::client::NOT_RUNNING) => {
             Err("supervisor_not_running_start_serve_first")
         }

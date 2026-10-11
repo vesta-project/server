@@ -18,6 +18,7 @@ pub mod native;
 pub mod pipe_security;
 pub mod record;
 pub mod remote;
+pub mod restart;
 pub mod server;
 pub mod wire;
 
@@ -31,6 +32,7 @@ use std::{
 
 pub use client::SupervisorClient;
 pub use remote::RemoteProcess;
+pub use restart::RestartPolicy;
 pub use server::{SupervisorConfig, run};
 
 const READY_WAIT: Duration = Duration::from_secs(10);

@@ -2,11 +2,13 @@
 //! The private driver is the sole mutable owner. A guarded stdin request reserves
 //! that generation until its actual writer acknowledgement; it cannot be replaced
 //! while the request or its IO workers are still owned.
+use super::readiness::{ReadinessView, ReadinessWatch};
 use super::{OperationError, OperationErrorCode, OperationsResult, SourceRevision};
 use std::sync::{
     Arc, RwLock,
     atomic::{AtomicBool, Ordering},
 };
+use vesta_game_runtime::readiness::{Readiness, ReadinessConfig};
 use vesta_game_runtime::{
     console::ConsoleCapture,
     process::{
@@ -23,6 +25,9 @@ pub(super) struct LiveGameView {
     snapshot: RwLock<ProcessSnapshot>,
     revision_usable: AtomicBool,
     started: RwLock<Option<(GenerationId, std::time::Instant)>>,
+    /// Supervisor conditions; `None` when this agent owns the game itself.
+    supervision: RwLock<Option<vesta_supervisor::wire::Health>>,
+    readiness: RwLock<ReadinessView>,
 }
 impl LiveGameView {
     fn new(snapshot: ProcessSnapshot) -> Self {
@@ -30,7 +35,24 @@ impl LiveGameView {
             snapshot: RwLock::new(snapshot),
             revision_usable: AtomicBool::new(true),
             started: RwLock::new(None),
+            supervision: RwLock::new(None),
+            readiness: RwLock::new(ReadinessView {
+                readiness: Readiness::Stopped,
+                probed: false,
+            }),
         }
+    }
+    pub(super) fn readiness(&self) -> OperationsResult<ReadinessView> {
+        self.readiness
+            .read()
+            .map(|value| *value)
+            .map_err(|_| StateError::new("state_game_view_unavailable").into())
+    }
+    pub(super) fn supervision(&self) -> OperationsResult<Option<vesta_supervisor::wire::Health>> {
+        self.supervision
+            .read()
+            .map(|value| *value)
+            .map_err(|_| StateError::new("state_game_view_unavailable").into())
     }
     pub(super) fn snapshot(&self) -> OperationsResult<ProcessSnapshot> {
         self.snapshot
@@ -100,6 +122,9 @@ pub(super) struct GameLifecycle {
     pub(super) console: ConsoleCapture,
     launch: Option<LaunchSpec>,
     pub(super) view: Arc<LiveGameView>,
+    readiness: ReadinessWatch,
+    /// Console cursor just before the latest local launch: later lines are its output.
+    local_floor: Option<(GenerationId, u64)>,
 }
 impl GameLifecycle {
     pub(super) fn new(launch: LaunchSpec) -> Self {
@@ -107,6 +132,8 @@ impl GameLifecycle {
         let process = GameProcess::new(console.clone());
         let view = Arc::new(LiveGameView::new(process.snapshot()));
         Self {
+            readiness: ReadinessWatch::new(ReadinessConfig::default(), console.clone()),
+            local_floor: None,
             process: ProcessBackend::Local(process),
             console,
             launch: Some(launch),
@@ -118,6 +145,8 @@ impl GameLifecycle {
         let console = remote.console();
         let view = Arc::new(LiveGameView::new(remote.snapshot()));
         Self {
+            readiness: ReadinessWatch::new(ReadinessConfig::default(), console.clone()),
+            local_floor: None,
             process: ProcessBackend::Supervised(remote),
             console,
             launch: None,
@@ -125,7 +154,45 @@ impl GameLifecycle {
         }
     }
     pub(super) fn publish(&self) -> OperationsResult<()> {
+        if let ProcessBackend::Supervised(remote) = &self.process {
+            *self
+                .view
+                .supervision
+                .write()
+                .map_err(|_| StateError::new("state_game_view_unavailable"))? =
+                Some(remote.health());
+        }
         self.view.publish(self.process.snapshot())
+    }
+    /// Trusted host readiness settings (probe address, timeouts).
+    pub(super) fn with_readiness(mut self, config: ReadinessConfig) -> Self {
+        self.readiness = ReadinessWatch::new(config, self.console.clone());
+        self
+    }
+    /// Advance readiness from console output, generation changes and probes.
+    pub(super) fn track_readiness(&mut self) -> OperationsResult<()> {
+        // Only a live process can be starting or ready; a draining exit is stopped.
+        let snapshot = self.process.snapshot();
+        let generation = snapshot.generation.filter(|_| {
+            matches!(
+                snapshot.phase,
+                ProcessPhase::Running | ProcessPhase::Stopping
+            )
+        });
+        let floor = generation.and_then(|generation| match &self.process {
+            ProcessBackend::Local(_) => self
+                .local_floor
+                .filter(|(g, _)| *g == generation)
+                .map(|(_, floor)| floor),
+            ProcessBackend::Supervised(remote) => remote.console_floor(generation),
+        });
+        let view = self.readiness.track(generation, floor);
+        *self
+            .view
+            .readiness
+            .write()
+            .map_err(|_| StateError::new("state_game_view_unavailable"))? = view;
+        Ok(())
     }
     pub(super) fn observe(&mut self) -> Result<ProcessSnapshot, RuntimeError> {
         self.process.poll()
@@ -154,7 +221,14 @@ impl GameLifecycle {
         match (&mut self.process, &self.launch) {
             // &mut GameProcess is held before entering the DB authorization callback.
             // Native preflight/RNG/worker preparation happen before that callback.
-            (ProcessBackend::Local(process), Some(launch)) => process.start_guarded(launch, guard),
+            (ProcessBackend::Local(process), Some(launch)) => {
+                let floor = self.console.snapshot(0, 1).map(|page| page.latest_cursor);
+                let started = process.start_guarded(launch, guard);
+                if let (Ok(generation), Ok(floor)) = (&started, floor) {
+                    self.local_floor = Some((*generation, floor));
+                }
+                started
+            }
             (ProcessBackend::Supervised(remote), _) => remote.start_guarded(guard),
             (ProcessBackend::Local(_), None) => Err(RuntimeError::InvalidLaunch.into()),
         }

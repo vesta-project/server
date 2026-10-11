@@ -1260,3 +1260,48 @@ fn selected_source_root_participates_in_state_overlap_validation() {
     let config = parse(&text, temp.path()).unwrap();
     refused(config.validate_host_paths(), ConfigError::StateOverlap);
 }
+
+#[test]
+fn process_supervision_and_crash_restart_are_strict_opt_in_settings() {
+    let base = std::env::current_dir().unwrap();
+    let default = parse(GOLDEN, &base).unwrap();
+    assert_eq!(default.supervision(), Supervision::InProcess);
+    assert_eq!(default.restart(), None);
+
+    let separate = format!("{GOLDEN}\n[process]\nsupervision = 'separate'\n");
+    let parsed = parse(&separate, &base).unwrap();
+    assert_eq!(parsed.supervision(), Supervision::Separate);
+    assert_eq!(parsed.restart(), None);
+
+    // An empty restart table enables the recommended preset.
+    let preset = format!("{separate}\n[process.restart]\n");
+    assert_eq!(
+        parse(&preset, &base).unwrap().restart(),
+        Some(RestartSettings {
+            crash_limit: 3,
+            crash_window_minutes: 10,
+            backoff_seconds: 10,
+            max_backoff_seconds: 300,
+        })
+    );
+    let custom = format!("{preset}crash-limit = 5\nbackoff-seconds = 30\n");
+    let settings = parse(&custom, &base).unwrap().restart().unwrap();
+    assert_eq!((settings.crash_limit, settings.backoff_seconds), (5, 30));
+
+    // Crash restart without a separate supervisor, unknown keys, and loose
+    // spellings all refuse.
+    let in_process =
+        format!("{GOLDEN}\n[process]\nsupervision = 'in-process'\n[process.restart]\n");
+    refused(parse(&in_process, &base), ConfigError::InvalidDocument);
+    refused(
+        parse(&format!("{preset}restart-forever = true\n"), &base),
+        ConfigError::InvalidDocument,
+    );
+    refused(
+        parse(
+            &format!("{GOLDEN}\n[process]\nsupervision = 'Separate'\n"),
+            &base,
+        ),
+        ConfigError::InvalidDocument,
+    );
+}

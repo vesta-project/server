@@ -11,7 +11,8 @@ pub const USAGE: &str = "Usage: vesta-agent version | update | check-config <pat
        vesta-agent devices list <name> [--install-root <root>]
        vesta-agent devices revoke <device-id> <name> [--install-root <root>]\n       vesta-agent owner link <name> --minecraft-uuid <uuid> [--role <builtin>] [--install-root <root>]\n       vesta-agent owner unlink <name> --minecraft-uuid <uuid> [--revoke-devices] [--install-root <root>]\n       vesta-agent owner list <name> [--install-root <root>]
        vesta-agent superadmin grant|revoke <user-id> <name> [--install-root <root>]
-       vesta-agent resolve-launch <name> --confirm <name> [--install-root <root>]";
+       vesta-agent resolve-launch <name> --confirm <name> [--install-root <root>]
+       vesta-agent reset-restarts <name> [--install-root <root>]";
 #[derive(Debug)]
 pub enum Command {
     Help,
@@ -37,6 +38,10 @@ pub enum Command {
     ResolveLaunch {
         name: String,
         confirm: String,
+        root: Option<PathBuf>,
+    },
+    ResetRestarts {
+        name: String,
         root: Option<PathBuf>,
     },
     Named {
@@ -133,7 +138,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
         "owner" => return parse_owner(&args),
         "access" => return parse_access(&args),
         "pair" | "devices" => return parse_management(&args),
-        "create" | "delete" | "resolve-launch" | "config" | "start" | "stop" | "restart" => {}
+        "create" | "delete" | "resolve-launch" | "reset-restarts" | "config" | "start" | "stop"
+        | "restart" => {}
         _ => return Err(()),
     }
     let name = args.get(1).and_then(|v| v.to_str()).ok_or(())?.to_owned();
@@ -227,6 +233,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
             confirm: confirm.ok_or(())?,
             root,
         },
+        "reset-restarts" => Command::ResetRestarts { name, root },
         _ => Command::Named {
             op: match command {
                 "config" => NamedOp::Config,

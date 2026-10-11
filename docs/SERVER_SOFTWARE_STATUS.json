@@ -1,11 +1,11 @@
 {
-  "auditDate": "2026-10-11",
+  "auditDate": "2026-10-12",
   "repository": "server-connections-mvp",
   "commit": "94fb98a",
   "scope": "Features carrying reauditNote were re-audited against Rust source and tests; other feature statuses remain as previously audited. Statuses move only against the acceptance text.",
   "tests": {
     "rustWorkspace": {
-      "passed": 1426,
+      "passed": 1477,
       "failed": 0,
       "ignored": 0,
       "summaries": 56,
@@ -113,22 +113,26 @@
     {
       "id": "F05",
       "name": "Readiness and crash-loop policy",
-      "status": "prototype",
+      "status": "partial",
       "phase": 3,
-      "current": "Rust reports process lifecycle state, but has no world-readiness/degraded signal or opt-in bounded crash-restart policy.",
+      "current": "Readiness reports starting/ready/degraded from anchored console patterns plus a bounded status ping, log-only when no port is known, in both process modes. Opt-in crash restart in the separate supervisor uses doubling backoff and a durable crash-loop breaker that leaves the game stopped until reset. Not yet: connector readiness signals, durable notifications (F30) and start-on-agent-start.",
       "evidence": [
-        "crates/vesta-game-runtime/src/process/mod.rs",
-        "crates/vesta-game-runtime/src/process/tests.rs"
+        "crates/vesta-game-runtime/src/readiness.rs",
+        "crates/vesta-game-runtime/src/readiness_tests.rs",
+        "crates/vesta-control/src/operations/readiness.rs",
+        "crates/vesta-supervisor/src/restart.rs",
+        "crates/vesta-supervisor/tests/supervisor.rs",
+        "apps/vesta-agent/tests/supervisor_e2e.rs"
       ],
       "acceptance": "Expose starting/ready/degraded accurately; bounded configurable restart after crash, opt-in.",
-      "auditDate": "2026-10-10",
+      "auditDate": "2026-10-12",
       "previous": {
-        "auditDate": "2026-10-04",
+        "auditDate": "2026-10-10",
         "status": "prototype",
-        "current": "Process-alive state exists, but it is not world readiness; no durable bounded crash-restart controller found.",
-        "evidence": [],
-        "javaEvidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java"
+        "current": "Rust reports process lifecycle state, but has no world-readiness/degraded signal or opt-in bounded crash-restart policy.",
+        "evidence": [
+          "crates/vesta-game-runtime/src/process/mod.rs",
+          "crates/vesta-game-runtime/src/process/tests.rs"
         ]
       }
     },

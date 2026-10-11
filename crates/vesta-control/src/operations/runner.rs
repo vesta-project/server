@@ -233,6 +233,15 @@ impl RuntimeHandle {
     pub fn game_observation(&self) -> OperationsResult<(ProcessSnapshot, Option<u64>)> {
         self.shared.view.observation()
     }
+    /// Separate-supervisor conditions (crash restart, orphan, unresolved launch);
+    /// `None` when this agent owns the game process itself.
+    pub fn supervision(&self) -> OperationsResult<Option<vesta_supervisor::wire::Health>> {
+        self.shared.view.supervision()
+    }
+    /// Starting/ready/degraded evidence for the current generation.
+    pub fn readiness(&self) -> OperationsResult<super::readiness::ReadinessView> {
+        self.shared.view.readiness()
+    }
     pub fn operations_service(&self) -> &Operations {
         &self.operations
     }
@@ -271,10 +280,24 @@ impl OperationRuntime {
     pub fn open_supervised(
         operations: Operations,
         remote: vesta_supervisor::RemoteProcess,
+        readiness: vesta_game_runtime::readiness::ReadinessConfig,
     ) -> OperationsResult<Self> {
         Self::open_lifecycle(
             operations,
-            GameLifecycle::supervised(remote),
+            GameLifecycle::supervised(remote).with_readiness(readiness),
+            DEFAULT_STOP_WAIT,
+        )
+    }
+
+    /// An agent-owned game with trusted readiness settings.
+    pub fn open_with_readiness(
+        operations: Operations,
+        launch: LaunchSpec,
+        readiness: vesta_game_runtime::readiness::ReadinessConfig,
+    ) -> OperationsResult<Self> {
+        Self::open_lifecycle(
+            operations,
+            GameLifecycle::new(launch).with_readiness(readiness),
             DEFAULT_STOP_WAIT,
         )
     }
@@ -478,6 +501,8 @@ impl Driver {
                 self.shared.stop();
                 first_failure.get_or_insert(error);
             }
+            // Observation only: readiness failures never stop dispatch or effects.
+            let _ = self.game.track_readiness();
             if let Err(error) = self.advance() {
                 self.shared.error(error.code());
                 self.shared.stop();

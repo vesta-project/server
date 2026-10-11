@@ -163,6 +163,11 @@ impl Host {
                 if state != checked.state.path().to_string_lossy() || identity != checked.identity {
                     return Err(HostError::Supervisor("host_supervisor_binding_mismatch"));
                 }
+                // The running supervisor adopts this configuration's restart policy, so
+                // removing or changing [process.restart] takes effect on agent start.
+                remote
+                    .configure(restart_policy(&config)?)
+                    .map_err(HostError::Supervisor)?;
                 Some(remote)
             }
             (Supervision::Separate, None) => {
@@ -407,9 +412,18 @@ fn compose(
     let spec = launch.into_launch_spec(None).map_err(HostError::Launch)?;
     let operations = Operations::new(db.clone()).map_err(HostError::Operation)?;
     // Last: once the driver runs, failures must go through observation-only shutdown.
+    // The status probe target comes from server.properties at open time; a changed
+    // port is picked up when the agent is restarted.
+    let readiness = vesta_game_runtime::readiness::ReadinessConfig {
+        probe: files::read_local_document(&config.game().join(PROPERTIES_FILE), 64 * 1024)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .and_then(|text| crate::operations::readiness::probe_from_properties(&text)),
+        ..Default::default()
+    };
     let runtime = match supervisor {
-        None => OperationRuntime::open(operations, spec),
-        Some(remote) => OperationRuntime::open_supervised(operations, remote),
+        None => OperationRuntime::open_with_readiness(operations, spec, readiness),
+        Some(remote) => OperationRuntime::open_supervised(operations, remote, readiness),
     }
     .map_err(HostError::Operation)?;
     Ok(Host {
@@ -474,6 +488,7 @@ pub struct SupervisedLaunch {
     pub state: vesta_state::StateDirectory,
     pub spec: LaunchSpec,
     pub identity: String,
+    pub restart: Option<vesta_supervisor::RestartPolicy>,
 }
 impl fmt::Debug for SupervisedLaunch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -481,13 +496,34 @@ impl fmt::Debug for SupervisedLaunch {
     }
 }
 
+/// The configured crash-restart policy, validated; `None` when disabled.
+fn restart_policy(
+    config: &HostConfiguration,
+) -> Result<Option<vesta_supervisor::RestartPolicy>, HostError> {
+    config
+        .restart()
+        .map(|r| {
+            let s = |n: u32| std::time::Duration::from_secs(u64::from(n));
+            vesta_supervisor::RestartPolicy::new(
+                r.crash_limit,
+                s(r.crash_window_minutes.saturating_mul(60)),
+                s(r.backoff_seconds),
+                s(r.max_backoff_seconds),
+            )
+        })
+        .transpose()
+        .map_err(HostError::Supervisor)
+}
+
 /// Validate a configuration for supervision without opening the database.
 pub fn supervised_launch(config: &HostConfiguration) -> Result<SupervisedLaunch, HostError> {
     if config.supervision() != Supervision::Separate {
         return Err(HostError::Supervisor("host_supervisor_not_configured"));
     }
+    let restart = restart_policy(config)?;
     let checked = check_launch(config)?;
     Ok(SupervisedLaunch {
+        restart,
         state: checked.state,
         spec: checked
             .launch

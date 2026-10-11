@@ -139,6 +139,15 @@ impl<'de> Deserialize<'de> for Supervision {
     }
 }
 
+/// Opt-in crash restart settings, validated again by the supervisor policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RestartSettings {
+    pub crash_limit: u32,
+    pub crash_window_minutes: u32,
+    pub backoff_seconds: u32,
+    pub max_backoff_seconds: u32,
+}
+
 /// Pack access preference only. Neither mode supplies canonical control capabilities.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
@@ -335,6 +344,7 @@ pub struct HostConfiguration {
     listener: ListenerDescription,
     protected: Vec<PathBuf>,
     supervision: Supervision,
+    restart: Option<RestartSettings>,
 }
 impl fmt::Debug for HostConfiguration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -436,6 +446,23 @@ impl HostConfiguration {
                 })
             }
         };
+        let (supervision, restart) = match document.process {
+            None => (Supervision::default(), None),
+            Some(Table(process)) => {
+                let restart = process.restart.map(|Table(restart)| RestartSettings {
+                    crash_limit: restart.crash_limit.unwrap_or(3),
+                    crash_window_minutes: restart.crash_window_minutes.unwrap_or(10),
+                    backoff_seconds: restart.backoff_seconds.unwrap_or(10),
+                    max_backoff_seconds: restart.max_backoff_seconds.unwrap_or(300),
+                });
+                // Without a separate supervisor, an agent restart would also end the
+                // game; automatic crash restart is only offered where it is owned.
+                if restart.is_some() && process.supervision != Supervision::Separate {
+                    return Err(ConfigError::InvalidDocument);
+                }
+                (process.supervision, restart)
+            }
+        };
         let mut path_bytes = 0usize;
         for path in std::iter::once(base)
             .chain([
@@ -467,10 +494,8 @@ impl HostConfiguration {
             pack_access: document.pack_access.0.mode,
             listener,
             protected,
-            supervision: document
-                .process
-                .map(|Table(process)| process.supervision)
-                .unwrap_or_default(),
+            supervision,
+            restart,
         })
     }
 
@@ -534,6 +559,9 @@ impl HostConfiguration {
     }
     pub fn supervision(&self) -> Supervision {
         self.supervision
+    }
+    pub fn restart(&self) -> Option<RestartSettings> {
+        self.restart
     }
     pub fn listener(&self) -> &ListenerDescription {
         &self.listener
@@ -783,6 +811,18 @@ struct Document {
 #[serde(deny_unknown_fields)]
 struct WireProcess {
     supervision: Supervision,
+    restart: Option<Table<WireRestart>>,
+}
+
+/// Presence of the table enables crash restart; omitted fields take the
+/// recommended preset (three crashes in ten minutes, 10 s to 300 s backoff).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct WireRestart {
+    crash_limit: Option<u32>,
+    crash_window_minutes: Option<u32>,
+    backoff_seconds: Option<u32>,
+    max_backoff_seconds: Option<u32>,
 }
 
 #[derive(Deserialize)]

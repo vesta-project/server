@@ -9,6 +9,7 @@
 use crate::{
     Result, native, record,
     record::{GenerationRecord, LaunchIntent},
+    restart::{self, RestartPolicy, Restarts},
     wire::{self, Health, Op, Reply},
 };
 use std::{
@@ -35,6 +36,8 @@ pub struct SupervisorConfig {
     pub state: StateDirectory,
     pub launch: LaunchSpec,
     pub launch_identity: String,
+    /// Opt-in crash restart; `None` never restarts automatically.
+    pub restart: Option<RestartPolicy>,
 }
 
 /// Owns the game process; dropping it never runs the emergency kill of a live child.
@@ -82,13 +85,36 @@ struct Core {
     unresolved: bool,
     observation_failed: bool,
     stopping: bool,
+    restarts: Restarts,
+    /// Generation for which a stop was delivered, or a graceful stop or kill applied.
+    stop_admitted: Option<GenerationId>,
+    /// A stop request is in flight; its exit is classified once delivery is known.
+    stop_inflight: Option<GenerationId>,
+    /// Console cursor just before the current generation was launched.
+    generation_floor: u64,
+    /// Last exited generation already classified as a stop or a crash.
+    handled_exit: Option<GenerationId>,
 }
 impl Core {
+    /// Observe, classify exits and fire a due automatic restart.
     fn observe(&mut self) {
+        self.observe_state();
+        if !self.stopping && self.restarts.take_due(Instant::now()) {
+            // A failed automatic launch counts as another crash, so a broken launch
+            // definition reaches the breaker instead of retrying forever.
+            if self.launch().is_err() {
+                self.restarts.on_crash(Instant::now(), restart::now_ms());
+            }
+        }
+    }
+    /// Observation only: never launches.
+    fn observe_state(&mut self) {
         if self.process.poll().is_err() {
             // Sticky: later successful polls cannot prove what happened meanwhile.
             self.observation_failed = true;
         }
+        self.restarts.retry_persist();
+        self.classify_exit();
         let live = self.process.snapshot().generation;
         if let Some(generation) = self.recorded
             && live != Some(generation)
@@ -111,17 +137,64 @@ impl Core {
             self.orphan = None;
         }
     }
+    /// Classify each finished generation exactly once: an admitted stop or a success
+    /// status is a stop; anything else is a crash handed to the restart policy.
+    fn classify_exit(&mut self) {
+        let snapshot = self.process.snapshot();
+        let Some(exit) = snapshot.last_exit else {
+            return;
+        };
+        if snapshot.generation == Some(exit.generation)
+            || self.handled_exit == Some(exit.generation)
+            || self.stop_inflight == Some(exit.generation)
+        {
+            return;
+        }
+        self.handled_exit = Some(exit.generation);
+        if self.stop_admitted == Some(exit.generation) || exit.success {
+            return;
+        }
+        self.restarts.on_crash(Instant::now(), restart::now_ms());
+    }
+    fn admit_stop(&mut self, generation: GenerationId) {
+        self.stop_admitted = Some(generation);
+        self.restarts.cancel_pending();
+    }
+    /// A stop request was admitted but not yet delivered.
+    fn stop_requested(&mut self, generation: GenerationId) {
+        self.stop_inflight = Some(generation);
+        self.restarts.cancel_pending();
+    }
+    /// Delivery outcome of an in-flight stop. Only a delivered stop makes a later
+    /// unsuccessful exit a stop rather than a crash.
+    fn stop_delivered(&mut self, generation: GenerationId, delivered: bool) {
+        if self.stop_inflight == Some(generation) {
+            self.stop_inflight = None;
+        }
+        if delivered {
+            self.stop_admitted = Some(generation);
+        }
+    }
     fn health(&self) -> Health {
         Health {
             orphan_running: self.orphan.is_some(),
             launch_unresolved: self.unresolved || self.intent_for.is_some(),
             observation_failed: self.observation_failed,
+            restart_enabled: self.restarts.enabled(),
+            crash_loop: self.restarts.suspended(),
+            recent_crashes: self.restarts.recent_crashes(restart::now_ms()),
+            restart_pending_ms: self
+                .restarts
+                .pending_in(Instant::now())
+                .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+            restart_state_unsaved: self.restarts.unsaved(),
         }
     }
     fn idle(&self) -> bool {
         self.process.snapshot().generation.is_none()
             && self.orphan.is_none()
             && self.intent_for.is_none()
+            && self.restarts.pending_in(Instant::now()).is_none()
     }
 }
 
@@ -171,6 +244,7 @@ pub async fn run(config: SupervisorConfig, stop: impl Future<Output = ()>) -> Re
         .map_err(|_| "supervisor_state_unavailable")?;
     fs2::FileExt::try_lock_exclusive(&lock_file).map_err(|_| "supervisor_already_running")?;
     let (orphan, unresolved) = recover(&directory)?;
+    let restarts = Restarts::load(directory.clone(), config.restart)?;
     let endpoint = native::endpoint(
         config.state.path(),
         &config
@@ -192,6 +266,11 @@ pub async fn run(config: SupervisorConfig, stop: impl Future<Output = ()>) -> Re
         unresolved,
         observation_failed: false,
         stopping: false,
+        restarts,
+        stop_admitted: None,
+        stop_inflight: None,
+        generation_floor: 0,
+        handled_exit: None,
     }));
     let result = serve(&endpoint, core, stop).await;
     drop(lock_file);
@@ -255,7 +334,7 @@ async fn serve(
         };
         // Endpoint failures never abandon a live game; keep retrying the listener.
         let Ok(mut stream) = stream else {
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
             continue;
         };
         let core = core.clone();
@@ -344,29 +423,46 @@ fn execute(core: &Shared, op: Op) -> Reply {
             let receipt = {
                 let mut core = lock(core);
                 admit(&core)?;
-                core.process
+                let receipt = core
+                    .process
                     .queue_stop_guarded(id, || Ok::<(), ()>(()))
-                    .map_err(runtime)?
+                    .map_err(runtime)?;
+                core.stop_requested(id);
+                receipt
             };
-            deliver(receipt)?;
-            lock(core)
-                .process
-                .acknowledge_guarded_stop(id)
-                .map_err(runtime)?;
+            let delivered = deliver(receipt);
+            let mut core = lock(core);
+            core.stop_delivered(id, delivered.is_ok());
+            delivered?;
+            core.process.acknowledge_guarded_stop(id).map_err(runtime)?;
             Ok(Reply::Delivered)
         }),
         Op::Command {
             generation: text,
             line,
         } => generation(&text).and_then(|id| {
+            // A console `stop` is an operator stop, not a crash, once delivered.
+            let is_stop = line
+                .trim()
+                .trim_start_matches('/')
+                .eq_ignore_ascii_case("stop");
             let receipt = {
                 let mut core = lock(core);
                 admit(&core)?;
-                core.process
+                let receipt = core
+                    .process
                     .queue_command_guarded(id, &line, || Ok::<(), ()>(()))
-                    .map_err(runtime)?
+                    .map_err(runtime)?;
+                if is_stop {
+                    core.stop_requested(id);
+                }
+                receipt
             };
-            deliver(receipt).map(|()| Reply::Delivered)
+            let delivered = deliver(receipt);
+            if is_stop {
+                lock(core).stop_delivered(id, delivered.is_ok());
+            }
+            delivered.map(|()| Reply::Delivered)
         }),
         Op::List {
             generation: text,
@@ -397,6 +493,7 @@ fn execute(core: &Shared, op: Op) -> Reply {
                 let mut core = lock(core);
                 admit(&core)?;
                 core.process.stop(id, Duration::ZERO).map_err(runtime)?;
+                core.admit_stop(id);
             }
             wait_exit(core, id, wait_ms)
         }),
@@ -407,12 +504,16 @@ fn execute(core: &Shared, op: Op) -> Reply {
             {
                 let mut core = lock(core);
                 admit(&core)?;
+                // Exact-generation validation happens inside the call; only an applied
+                // kill changes restart state. The core lock keeps exit classification
+                // from running in between.
                 core.process
                     .force_kill_guarded(id, Duration::ZERO, |_| Ok::<(), ()>(()))
                     .map_err(|error| match error {
                         GuardedError::Runtime(error) => runtime(error),
                         GuardedError::Guard(()) => refused("supervisor_worker_failed"),
                     })?;
+                core.admit_stop(id);
             }
             wait_exit(core, id, wait_ms)
         }),
@@ -431,6 +532,23 @@ fn execute(core: &Shared, op: Op) -> Reply {
                         Reply::Resolved
                     })
             }
+        }
+        Op::Configure { restart } => {
+            let policy = restart.map(RestartPolicy::from_wire).transpose();
+            match policy {
+                Ok(policy) => {
+                    lock(core).restarts.set_policy(policy);
+                    Ok(Reply::Configured)
+                }
+                Err(code) => Err(refused(code)),
+            }
+        }
+        Op::ResetRestarts => {
+            let mut core = lock(core);
+            core.restarts
+                .reset()
+                .map(|()| Reply::RestartsReset)
+                .map_err(refused)
         }
         Op::Shutdown => {
             let mut core = lock(core);
@@ -472,96 +590,116 @@ fn sync(core: &Shared, after: u64) -> std::result::Result<Reply, Reply> {
         latest_cursor: page.latest_cursor,
         gap: page.gap,
         health: core.health(),
+        generation_floor: core.generation_floor,
     })))
 }
 
 fn start(core: &Shared, launch_identity: &str) -> std::result::Result<Reply, Reply> {
     let mut guard = lock(core);
     let core = &mut *guard;
-    core.observe();
+    // Classify any exit first, then let this explicit start supersede whatever
+    // restart that classification scheduled.
+    core.observe_state();
+    core.restarts.cancel_pending();
     admit(core)?;
     if launch_identity != core.launch_identity {
         return Err(refused("supervisor_launch_mismatch"));
     }
-    if core.orphan.is_some() {
-        return Err(refused("supervisor_orphan_running"));
-    }
-    if core.unresolved || core.intent_for.is_some() {
-        return Err(refused("supervisor_launch_unresolved"));
-    }
-    if core.observation_failed {
-        return Err(refused(RuntimeError::ObserveFailed.code()));
-    }
-    if core.recorded.is_some() || core.process.snapshot().generation.is_some() {
-        return Err(refused(RuntimeError::AlreadyOwned.code()));
-    }
-    // Durable before any spawn: a crash from here on leaves an unresolved intent.
-    record::write_intent(
-        &core.directory,
-        &LaunchIntent {
-            version: 1,
-            launch_identity: core.launch_identity.clone(),
-        },
-    )
-    .map_err(refused)?;
-    let started = core
-        .process
-        .start_guarded(&core.launch, |_| Ok::<(), ()>(()));
-    let uncertain = matches!(
-        started,
-        Err(GuardedError::Runtime(RuntimeError::StartupUncertain))
-    );
-    let generation = match started {
-        Ok(generation) => generation,
-        // A child exists but its I/O did not attach: still record and own it.
-        Err(GuardedError::Runtime(RuntimeError::StartupUncertain)) => {
-            match core.process.snapshot().generation {
-                Some(generation) => generation,
-                None => {
-                    core.unresolved = true;
-                    return Err(runtime(RuntimeError::StartupUncertain));
-                }
-            }
-        }
-        Err(error) => {
-            // Nothing was spawned: retire the intent (or keep refusing if that fails).
-            if record::clear_intent(&core.directory).is_err() {
-                core.unresolved = true;
-            }
-            return Err(match error {
-                GuardedError::Runtime(error) => runtime(error),
-                GuardedError::Guard(()) => refused("supervisor_worker_failed"),
-            });
-        }
-    };
-    core.intent_for = Some(generation);
-    let published = core.process.native_id().and_then(|pid| {
-        native::process_start(pid).map(|process_start| GenerationRecord {
-            version: 1,
-            generation: generation.to_hex(),
-            pid,
-            process_start,
-            boot_id: native::boot_id(),
-            launch_identity: core.launch_identity.clone(),
-        })
-    });
-    match published.map(|value| record::write(&core.directory, &value)) {
-        Some(Ok(())) => {
-            core.recorded = Some(generation);
-            if record::clear_intent(&core.directory).is_ok() {
-                core.intent_for = None;
-            }
-        }
-        // Owned and observable, but restart continuity is unproven: the intent stays,
-        // refusing further launches here and in any replacement supervisor.
-        _ => return Err(refused("supervisor_start_unrecorded")),
-    }
+    let (generation, uncertain) = core.launch()?;
     if uncertain {
         return Err(runtime(RuntimeError::StartupUncertain));
     }
     Ok(Reply::Started {
         generation: generation.to_hex(),
     })
+}
+
+impl Core {
+    /// Launch the trusted definition with durable intent and record. Returns the
+    /// generation and whether its I/O attachment was uncertain.
+    fn launch(&mut self) -> std::result::Result<(GenerationId, bool), Reply> {
+        if self.orphan.is_some() {
+            return Err(refused("supervisor_orphan_running"));
+        }
+        if self.unresolved || self.intent_for.is_some() {
+            return Err(refused("supervisor_launch_unresolved"));
+        }
+        if self.observation_failed {
+            return Err(refused(RuntimeError::ObserveFailed.code()));
+        }
+        if self.recorded.is_some() || self.process.snapshot().generation.is_some() {
+            return Err(refused(RuntimeError::AlreadyOwned.code()));
+        }
+        // Lines after this cursor belong to the new generation.
+        let floor = self
+            .console
+            .snapshot(0, 1)
+            .map(|page| page.latest_cursor)
+            .map_err(|error| refused(error.code()))?;
+        // Durable before any spawn: a crash from here on leaves an unresolved intent.
+        record::write_intent(
+            &self.directory,
+            &LaunchIntent {
+                version: 1,
+                launch_identity: self.launch_identity.clone(),
+            },
+        )
+        .map_err(refused)?;
+        let started = self
+            .process
+            .start_guarded(&self.launch, |_| Ok::<(), ()>(()));
+        let uncertain = matches!(
+            started,
+            Err(GuardedError::Runtime(RuntimeError::StartupUncertain))
+        );
+        let generation = match started {
+            Ok(generation) => generation,
+            // A child exists but its I/O did not attach: still record and own it.
+            Err(GuardedError::Runtime(RuntimeError::StartupUncertain)) => {
+                match self.process.snapshot().generation {
+                    Some(generation) => generation,
+                    None => {
+                        self.unresolved = true;
+                        return Err(runtime(RuntimeError::StartupUncertain));
+                    }
+                }
+            }
+            Err(error) => {
+                // Nothing was spawned: retire the intent (or keep refusing if that fails).
+                if record::clear_intent(&self.directory).is_err() {
+                    self.unresolved = true;
+                }
+                return Err(match error {
+                    GuardedError::Runtime(error) => runtime(error),
+                    GuardedError::Guard(()) => refused("supervisor_worker_failed"),
+                });
+            }
+        };
+        self.intent_for = Some(generation);
+        self.generation_floor = floor;
+        let published = self.process.native_id().and_then(|pid| {
+            native::process_start(pid).map(|process_start| GenerationRecord {
+                version: 1,
+                generation: generation.to_hex(),
+                pid,
+                process_start,
+                boot_id: native::boot_id(),
+                launch_identity: self.launch_identity.clone(),
+            })
+        });
+        match published.map(|value| record::write(&self.directory, &value)) {
+            Some(Ok(())) => {
+                self.recorded = Some(generation);
+                if record::clear_intent(&self.directory).is_ok() {
+                    self.intent_for = None;
+                }
+            }
+            // Owned and observable, but restart continuity is unproven: the intent stays,
+            // refusing further launches here and in any replacement supervisor.
+            _ => return Err(refused("supervisor_start_unrecorded")),
+        }
+        Ok((generation, uncertain))
+    }
 }
 
 fn deliver(mut receipt: GuardedInput<()>) -> std::result::Result<(), Reply> {
@@ -620,45 +758,25 @@ pub(crate) fn stream(stderr: bool) -> ConsoleStream {
 mod endpoint {
     use super::MAX_CONNECTIONS;
     use crate::Result;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
     use tokio::net::windows::named_pipe::NamedPipeServer;
 
-    /// Connected requests plus one listening instance.
+    /// Connected requests plus one listening instance. The OS enforces this limit.
     const MAX_INSTANCES: usize = MAX_CONNECTIONS + 1;
 
-    /// Bounded pipe instances. A finished request disconnects its instance before
-    /// closing it, which detaches any client end the caller retained, so retained
-    /// client handles cannot hold instances and exhaust the limit.
+    /// A finished request disconnects its instance before closing it, which detaches
+    /// any client end the caller retained, so retained client handles cannot hold
+    /// instances and exhaust the limit.
     #[derive(Clone)]
-    pub(super) struct Pool {
-        endpoint: Arc<std::path::PathBuf>,
-        created: Arc<AtomicUsize>,
-    }
+    pub(super) struct Pool;
     impl Pool {
-        fn take(&self) -> Result<NamedPipeServer> {
-            if self.created.fetch_add(1, Ordering::AcqRel) >= MAX_INSTANCES {
-                self.created.fetch_sub(1, Ordering::AcqRel);
-                return Err("supervisor_endpoint_busy");
-            }
-            crate::pipe_security::create(&self.endpoint, false, MAX_INSTANCES).inspect_err(|_| {
-                self.created.fetch_sub(1, Ordering::AcqRel);
-            })
-        }
-        fn discard(&self) {
-            self.created.fetch_sub(1, Ordering::AcqRel);
-        }
         pub(super) async fn recycle(&self, instance: NamedPipeServer) {
             let _ = instance.disconnect();
             drop(instance);
-            self.discard();
         }
     }
 
     pub(super) struct Listener {
-        pool: Pool,
+        endpoint: std::path::PathBuf,
         current: Option<NamedPipeServer>,
     }
     impl Listener {
@@ -666,29 +784,34 @@ mod endpoint {
             let first = crate::pipe_security::create(endpoint, true, MAX_INSTANCES)
                 .map_err(|_| "supervisor_already_running")?;
             Ok(Self {
-                pool: Pool {
-                    endpoint: Arc::new(endpoint.to_owned()),
-                    created: Arc::new(AtomicUsize::new(1)),
-                },
+                endpoint: endpoint.to_owned(),
                 current: Some(first),
             })
         }
         pub(super) fn pool(&self) -> Pool {
-            self.pool.clone()
+            Pool
         }
+        /// Cancel safe: the listening instance stays in `self` until a client is
+        /// connected, so a cancelled accept never leaves the endpoint without one.
         pub(super) async fn accept(&mut self) -> Result<NamedPipeServer> {
-            let current = match self.current.take() {
-                Some(current) => current,
-                None => self.pool.take()?,
+            if self.current.is_none() {
+                self.current = Some(crate::pipe_security::create(
+                    &self.endpoint,
+                    false,
+                    MAX_INSTANCES,
+                )?);
+            }
+            let connected = match &self.current {
+                Some(current) => current.connect().await,
+                None => return Err("supervisor_accept_failed"),
             };
-            if current.connect().await.is_err() {
-                // A broken instance is discarded; the next accept takes another.
-                drop(current);
-                self.pool.discard();
+            let current = self.current.take().ok_or("supervisor_accept_failed")?;
+            if connected.is_err() {
+                // A broken instance is discarded; the next accept creates another.
                 return Err("supervisor_accept_failed");
             }
             // Keep an instance listening before handing out the connected one.
-            self.current = self.pool.take().ok();
+            self.current = crate::pipe_security::create(&self.endpoint, false, MAX_INSTANCES).ok();
             Ok(current)
         }
     }
