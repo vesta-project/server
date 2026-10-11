@@ -1,0 +1,27 @@
+[package]
+name = "vesta-supervisor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+vesta-game-runtime.workspace = true
+vesta-state.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+fs2.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "sync", "macros"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Pipes", "Win32_System_JobObjects"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

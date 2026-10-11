@@ -121,6 +121,24 @@ impl fmt::Display for ConfigError {
 }
 impl Error for ConfigError {}
 
+/// Who owns the game process. `Separate` delegates it to the per-server supervisor so
+/// the game survives agent restarts; `InProcess` (the default) keeps the agent as owner.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Supervision {
+    #[default]
+    InProcess,
+    Separate,
+}
+impl<'de> Deserialize<'de> for Supervision {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        match String::deserialize(deserializer)?.as_str() {
+            "in-process" => Ok(Self::InProcess),
+            "separate" => Ok(Self::Separate),
+            _ => Err(de::Error::custom("invalid supervision")),
+        }
+    }
+}
+
 /// Pack access preference only. Neither mode supplies canonical control capabilities.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
@@ -316,6 +334,7 @@ pub struct HostConfiguration {
     pack_access: PackAccessMode,
     listener: ListenerDescription,
     protected: Vec<PathBuf>,
+    supervision: Supervision,
 }
 impl fmt::Debug for HostConfiguration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -448,6 +467,10 @@ impl HostConfiguration {
             pack_access: document.pack_access.0.mode,
             listener,
             protected,
+            supervision: document
+                .process
+                .map(|Table(process)| process.supervision)
+                .unwrap_or_default(),
         })
     }
 
@@ -508,6 +531,9 @@ impl HostConfiguration {
     }
     pub fn pack_access(&self) -> PackAccessMode {
         self.pack_access
+    }
+    pub fn supervision(&self) -> Supervision {
+        self.supervision
     }
     pub fn listener(&self) -> &ListenerDescription {
         &self.listener
@@ -750,6 +776,13 @@ struct Document {
     pack: Table<WirePack>,
     pack_access: Table<WirePackAccess>,
     listener: Table<WireListener>,
+    process: Option<Table<WireProcess>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireProcess {
+    supervision: Supervision,
 }
 
 #[derive(Deserialize)]

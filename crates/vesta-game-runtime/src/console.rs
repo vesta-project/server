@@ -179,6 +179,36 @@ impl ConsoleCapture {
         Ok(report)
     }
 
+    /// Publish one already-framed line observed by another bounded capture, such as a
+    /// supervisor's ring. The same byte bound applies; delimiters are not reinterpreted.
+    pub fn ingest(
+        &self,
+        stream: ConsoleStream,
+        text: &str,
+        truncated: bool,
+    ) -> Result<(), ConsoleError> {
+        let mut framer = Framer::new();
+        let kept = text.len().min(RAW_LINE_BYTES);
+        framer.bytes.extend_from_slice(&text.as_bytes()[..kept]);
+        framer.truncated = truncated || kept < text.len();
+        let mut report = CaptureReport {
+            lines: 0,
+            truncated_lines: 0,
+        };
+        self.publish(stream, &mut framer, &mut report)
+    }
+
+    /// Record that upstream output was lost: one cursor is consumed with no line, so
+    /// readers paging across it see `gap` instead of a falsely contiguous stream.
+    pub fn mark_gap(&self) -> Result<(), ConsoleError> {
+        let mut inner = self.inner.lock().map_err(|_| ConsoleError::Unavailable)?;
+        inner.latest = inner
+            .latest
+            .checked_add(1)
+            .ok_or(ConsoleError::CursorExhausted)?;
+        Ok(())
+    }
+
     pub fn snapshot(&self, after: u64, limit: usize) -> Result<ConsolePage, ConsoleError> {
         if !(1..=MAX_PAGE_LINES).contains(&limit) {
             return Err(ConsoleError::InvalidPage);
@@ -187,10 +217,6 @@ impl ConsoleCapture {
         if after > inner.latest {
             return Err(ConsoleError::InvalidPage);
         }
-        let gap = inner
-            .lines
-            .front()
-            .is_some_and(|line| after < line.cursor - 1);
         let lines: Vec<_> = inner
             .lines
             .iter()
@@ -198,6 +224,8 @@ impl ConsoleCapture {
             .take(limit)
             .cloned()
             .collect();
+        // Evicted prefix, or a cursor skipped by `mark_gap`, before the first line.
+        let gap = lines.first().is_some_and(|line| line.cursor > after + 1);
         let next_cursor = lines.last().map_or(after, |line| line.cursor);
         Ok(ConsolePage {
             lines,

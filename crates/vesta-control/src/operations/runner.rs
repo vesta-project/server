@@ -263,6 +263,27 @@ impl OperationRuntime {
         launch: LaunchSpec,
         stop_wait: Duration,
     ) -> OperationsResult<Self> {
+        Self::open_lifecycle(operations, GameLifecycle::new(launch), stop_wait)
+    }
+
+    /// Drive a game owned by the separate supervisor. Shutting this runtime down
+    /// never stops that game; it only ends this agent's observation and dispatch.
+    pub fn open_supervised(
+        operations: Operations,
+        remote: vesta_supervisor::RemoteProcess,
+    ) -> OperationsResult<Self> {
+        Self::open_lifecycle(
+            operations,
+            GameLifecycle::supervised(remote),
+            DEFAULT_STOP_WAIT,
+        )
+    }
+
+    fn open_lifecycle(
+        operations: Operations,
+        game: GameLifecycle,
+        stop_wait: Duration,
+    ) -> OperationsResult<Self> {
         if stop_wait > MAX_SHUTDOWN_WAIT {
             return Err(OperationError::rejected(OperationErrorCode::InvalidRequest));
         }
@@ -270,7 +291,6 @@ impl OperationRuntime {
         // and retains a runtime DB lease before any native or driver work.
         let owner = operations.open_owner()?;
         let operations = owner.operations().clone();
-        let game = GameLifecycle::new(launch);
         let (shared, players) = DriverState::new(&owner, &game);
         let (local_sender, local_receiver) = mpsc::sync_channel(1);
         let mut worker = Driver {
@@ -492,7 +512,21 @@ impl Driver {
             }
             if self.shared.stopping.load(Ordering::Acquire) {
                 self.owner.stop_claiming();
-                if self.active.is_none() && !self.game.has_owned_generation() {
+                if !self.game.is_local()
+                    && let Some(Active::Exit { claim, .. }) = self.active.take()
+                {
+                    // The supervisor, not this agent, owns the game. Waiting for its
+                    // exit could block shutdown forever; the outcome is unknown here.
+                    if let Err(error) = self.owner.finish(
+                        claim,
+                        FinishOutcome::Uncertain {
+                            code: "game_supervised_outcome_unobserved",
+                        },
+                    ) {
+                        first_failure.get_or_insert(error);
+                    }
+                }
+                if self.active.is_none() && !self.game.retains_native_child() {
                     return first_failure.map_or(Ok(()), Err);
                 }
             } else if self.active.is_none() && !self.players.writer_pending() {
@@ -780,6 +814,11 @@ impl Driver {
                                 stop_deadline: None,
                                 restart: false,
                             });
+                        } else if effect_marked && error == RuntimeError::ThreadFailed {
+                            // A supervised kill was sent but its reply was lost; the game
+                            // being gone now does not prove this request had no effect.
+                            self.owner
+                                .finish(claim, FinishOutcome::Uncertain { code: error.code() })?;
                         } else {
                             self.owner
                                 .finish(claim, FinishOutcome::Failed { code: error.code() })?;
@@ -986,7 +1025,7 @@ impl Drop for Driver {
         // Keep owner+claim+pending receipt alive during this observation-only
         // drain, including panic cleanup. GameProcess's emergency Drop kill must
         // never execute while a real native generation remains in this adapter.
-        while self.game.has_owned_generation() {
+        while self.game.retains_native_child() {
             let _ = self.game.observe();
             let _ = self.game.publish();
             thread::sleep(DRIVER_INTERVAL);

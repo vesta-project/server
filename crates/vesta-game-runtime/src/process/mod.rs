@@ -176,6 +176,15 @@ impl<E> fmt::Debug for GuardedInput<E> {
     }
 }
 impl<E> GuardedInput<E> {
+    /// A receipt whose result is produced by another owner of the same request,
+    /// for example a supervisor client worker. Dropping the sender is uncertainty.
+    pub fn from_receiver(receiver: std::sync::mpsc::Receiver<Result<(), GuardedError<E>>>) -> Self {
+        Self {
+            receiver,
+            completed: false,
+        }
+    }
+
     /// Return one exact result after guard/write returns. A vanished worker is
     /// uncertainty, never an acknowledgement of a no-effect failure.
     pub fn try_result(&mut self) -> Option<Result<(), GuardedError<E>>> {
@@ -569,6 +578,15 @@ impl GameProcess {
             }
         }
         Err(RuntimeError::GenerationUnavailable)
+    }
+
+    /// Native process ID of the owned, not-yet-exited child. Supervisor records pair
+    /// it with the native start time; a PID alone never identifies a generation.
+    pub fn native_id(&self) -> Option<u32> {
+        self.owned
+            .as_ref()
+            .filter(|owned| owned.exit.is_none())
+            .map(|owned| owned.child.id())
     }
 
     /// Bounded observation of retained ownership, including observation failures.

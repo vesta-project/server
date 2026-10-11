@@ -23,6 +23,7 @@ pub const ARTIFACTS_DIR: &str = "artifacts";
 pub const TRASH_DIR: &str = "trash";
 pub const UPLOADS_DIR: &str = "uploads";
 pub const SPOOL_DIR: &str = "spool";
+pub const SUPERVISOR_DIR: &str = "supervisor";
 pub const MAX_ARTIFACT_NAME_BYTES: usize = 96;
 
 /// Flat lowercase ASCII names: alphanumerics, `-` and `.`, starting and ending with an
@@ -91,6 +92,11 @@ impl StateDirectory {
         self.flat_directory(SPOOL_DIR)
     }
 
+    /// Owner-only supervisor records (process generation, lock). Never game-readable.
+    pub fn supervisor(&self) -> Result<ArtifactDirectory> {
+        self.flat_directory(SUPERVISOR_DIR)
+    }
+
     fn flat_directory(&self, name: &str) -> Result<ArtifactDirectory> {
         self.verify_root_spelling()?;
         require_directory(self.path())?;
@@ -129,6 +135,19 @@ impl ArtifactDirectory {
         let file = open_regular(&path, true, false)?;
         tighten_open_file(&file)?;
         Ok(file)
+    }
+
+    /// Open, or create owner-only, a long-lived regular file such as a lock file. Linked or
+    /// special entries refuse. Existing bytes are kept; callers own locking semantics.
+    pub fn open_or_create(&self, name: &ArtifactName) -> Result<File> {
+        self.verify()?;
+        let path = self.entry(name);
+        if !require_regular_or_absent(&path)? {
+            let file = open_regular(&path, true, false)?;
+            tighten_open_file(&file)?;
+            return Ok(file);
+        }
+        open_regular(&path, false, false).map_err(|_| StateError::new("state_artifact_linked"))
     }
 
     /// Add `published` as a second name for the regular file `staged`. Never replaces:

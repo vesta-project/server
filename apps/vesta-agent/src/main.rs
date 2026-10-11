@@ -8,11 +8,12 @@ mod control_tests;
 mod editor;
 mod local_files;
 #[cfg(windows)]
-mod pipe_security;
+use vesta_supervisor::pipe_security;
 mod serve;
 mod servers;
 mod sessions;
 mod status;
+mod supervision;
 fn main() -> ExitCode {
     let command = match cli::parse(std::env::args_os().skip(1)) {
         Ok(command) => command,

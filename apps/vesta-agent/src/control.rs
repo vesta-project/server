@@ -236,7 +236,7 @@ impl Server {
         let endpoint = endpoint(state)?;
         let (stop, mut stopped) = tokio::sync::oneshot::channel();
         #[cfg(windows)]
-        let listener = crate::pipe_security::create(&endpoint, true)?;
+        let listener = crate::pipe_security::create(&endpoint, true, 2)?;
         #[cfg(target_os = "linux")]
         let (listener, cleanup) = {
             use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -270,7 +270,7 @@ impl Server {
                     let mut stream = {
                         tokio::select! { _ = &mut stopped => break, result = listener.connect() => result.map_err(|_| "local_control_accept_failed")? }
                         // Keep a protected instance alive continuously, before dropping the connected one.
-                        let next = crate::pipe_security::create(&endpoint, false)?;
+                        let next = crate::pipe_security::create(&endpoint, false, 2)?;
                         std::mem::replace(&mut listener, next)
                     };
                     #[cfg(target_os = "linux")]

@@ -10,11 +10,12 @@ use std::sync::{
 use vesta_game_runtime::{
     console::ConsoleCapture,
     process::{
-        GameProcess, GenerationId, GuardedError, LaunchSpec, ProcessPhase, ProcessSnapshot,
-        RuntimeError, WaitOutcome,
+        GameProcess, GenerationId, GuardedError, GuardedInput, LaunchSpec, ProcessPhase,
+        ProcessSnapshot, RuntimeError, WaitOutcome,
     },
 };
 use vesta_state::StateError;
+use vesta_supervisor::RemoteProcess;
 
 /// Independently published, bounded native ownership facts. Reading this lock in
 /// a DB transaction never acquires the process owner or calls process.poll().
@@ -95,9 +96,9 @@ fn revision(snapshot: ProcessSnapshot) -> SourceRevision {
 
 pub(super) struct GameLifecycle {
     // No caller can access mutable process ownership, launch paths or stdin.
-    pub(super) process: GameProcess,
+    pub(super) process: ProcessBackend,
     pub(super) console: ConsoleCapture,
-    launch: LaunchSpec,
+    launch: Option<LaunchSpec>,
     pub(super) view: Arc<LiveGameView>,
 }
 impl GameLifecycle {
@@ -106,9 +107,20 @@ impl GameLifecycle {
         let process = GameProcess::new(console.clone());
         let view = Arc::new(LiveGameView::new(process.snapshot()));
         Self {
-            process,
+            process: ProcessBackend::Local(process),
             console,
-            launch,
+            launch: Some(launch),
+            view,
+        }
+    }
+    /// A game owned by the separate supervisor. Its launch definition lives there.
+    pub(super) fn supervised(remote: RemoteProcess) -> Self {
+        let console = remote.console();
+        let view = Arc::new(LiveGameView::new(remote.snapshot()));
+        Self {
+            process: ProcessBackend::Supervised(remote),
+            console,
+            launch: None,
             view,
         }
     }
@@ -124,24 +136,126 @@ impl GameLifecycle {
     pub(super) fn has_owned_generation(&self) -> bool {
         self.process.snapshot().generation.is_some()
     }
+    /// Whether this agent owns the game process itself (not a supervisor).
+    pub(super) fn is_local(&self) -> bool {
+        matches!(self.process, ProcessBackend::Local(_))
+    }
+    /// Whether runtime shutdown must wait for the game: only an agent-owned child.
+    /// A supervised game deliberately keeps running after the agent stops.
+    pub(super) fn retains_native_child(&self) -> bool {
+        matches!(self.process, ProcessBackend::Local(_)) && self.has_owned_generation()
+    }
     pub(super) fn start(
         &mut self,
         guard: impl FnOnce(&SourceRevision) -> OperationsResult<()>,
     ) -> Result<GenerationId, GuardedError<super::OperationError>> {
-        // &mut GameProcess is held before entering the DB authorization callback.
-        // Native preflight/RNG/worker preparation happen before that callback.
-        self.process.start_guarded(&self.launch, |snapshot| {
-            guard(&SourceRevision::for_game(snapshot.generation))
-        })
+        let guard =
+            |snapshot: ProcessSnapshot| guard(&SourceRevision::for_game(snapshot.generation));
+        match (&mut self.process, &self.launch) {
+            // &mut GameProcess is held before entering the DB authorization callback.
+            // Native preflight/RNG/worker preparation happen before that callback.
+            (ProcessBackend::Local(process), Some(launch)) => process.start_guarded(launch, guard),
+            (ProcessBackend::Supervised(remote), _) => remote.start_guarded(guard),
+            (ProcessBackend::Local(_), None) => Err(RuntimeError::InvalidLaunch.into()),
+        }
     }
     pub(super) fn kill(
         &mut self,
         generation: GenerationId,
         guard: impl FnOnce(&SourceRevision) -> OperationsResult<()>,
     ) -> Result<WaitOutcome, GuardedError<super::OperationError>> {
-        self.process
-            .force_kill_guarded(generation, std::time::Duration::ZERO, |snapshot| {
-                guard(&SourceRevision::for_game(snapshot.generation))
-            })
+        let guard =
+            |snapshot: ProcessSnapshot| guard(&SourceRevision::for_game(snapshot.generation));
+        match &mut self.process {
+            ProcessBackend::Local(process) => {
+                process.force_kill_guarded(generation, std::time::Duration::ZERO, guard)
+            }
+            ProcessBackend::Supervised(remote) => {
+                remote.force_kill_guarded(generation, std::time::Duration::ZERO, guard)
+            }
+        }
+    }
+}
+
+/// The one process owner a lifecycle drives: this agent's own child, or a game owned by
+/// the separate supervisor. Both expose the same guarded, generation-bound effects.
+pub(super) enum ProcessBackend {
+    Local(GameProcess),
+    Supervised(RemoteProcess),
+}
+impl ProcessBackend {
+    pub(super) fn snapshot(&self) -> ProcessSnapshot {
+        match self {
+            Self::Local(process) => process.snapshot(),
+            Self::Supervised(remote) => remote.snapshot(),
+        }
+    }
+    pub(super) fn poll(&mut self) -> Result<ProcessSnapshot, RuntimeError> {
+        match self {
+            Self::Local(process) => process.poll(),
+            Self::Supervised(remote) => remote.poll(),
+        }
+    }
+    pub(super) fn stop(
+        &mut self,
+        generation: GenerationId,
+        timeout: std::time::Duration,
+    ) -> Result<WaitOutcome, RuntimeError> {
+        match self {
+            Self::Local(process) => process.stop(generation, timeout),
+            Self::Supervised(remote) => remote.stop(generation, timeout),
+        }
+    }
+    pub(super) fn queue_command_guarded<E, F>(
+        &mut self,
+        generation: GenerationId,
+        line: &str,
+        guard: F,
+    ) -> Result<GuardedInput<E>, RuntimeError>
+    where
+        E: Send + 'static,
+        F: FnMut() -> Result<(), E> + Send + 'static,
+    {
+        match self {
+            Self::Local(process) => process.queue_command_guarded(generation, line, guard),
+            Self::Supervised(remote) => remote.queue_command_guarded(generation, line, guard),
+        }
+    }
+    pub(super) fn queue_stop_guarded<E, F>(
+        &mut self,
+        generation: GenerationId,
+        guard: F,
+    ) -> Result<GuardedInput<E>, RuntimeError>
+    where
+        E: Send + 'static,
+        F: FnMut() -> Result<(), E> + Send + 'static,
+    {
+        match self {
+            Self::Local(process) => process.queue_stop_guarded(generation, guard),
+            Self::Supervised(remote) => remote.queue_stop_guarded(generation, guard),
+        }
+    }
+    pub(super) fn queue_list_guarded<E, F>(
+        &mut self,
+        generation: GenerationId,
+        guard: F,
+    ) -> Result<GuardedInput<E>, RuntimeError>
+    where
+        E: Send + 'static,
+        F: FnMut() -> Result<(), E> + Send + 'static,
+    {
+        match self {
+            Self::Local(process) => process.queue_list_guarded(generation, guard),
+            Self::Supervised(remote) => remote.queue_list_guarded(generation, guard),
+        }
+    }
+    pub(super) fn acknowledge_guarded_stop(
+        &mut self,
+        generation: GenerationId,
+    ) -> Result<(), RuntimeError> {
+        match self {
+            Self::Local(process) => process.acknowledge_guarded_stop(generation),
+            Self::Supervised(remote) => remote.acknowledge_guarded_stop(generation),
+        }
     }
 }

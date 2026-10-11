@@ -10,7 +10,8 @@ pub const USAGE: &str = "Usage: vesta-agent version | update | check-config <pat
        vesta-agent access show|set <name> [--anonymous-role role] [--new-user-role role] [--whitelist-role role] [--whitelist-sync on|off] [--password-role role] [--install-root path]\n  vesta-agent pair <name> [--install-root <root>] [--role owner|admin|administrator|maintainer|moderator|viewer|pack-user] [--expires <1..60 minutes>]
        vesta-agent devices list <name> [--install-root <root>]
        vesta-agent devices revoke <device-id> <name> [--install-root <root>]\n       vesta-agent owner link <name> --minecraft-uuid <uuid> [--role <builtin>] [--install-root <root>]\n       vesta-agent owner unlink <name> --minecraft-uuid <uuid> [--revoke-devices] [--install-root <root>]\n       vesta-agent owner list <name> [--install-root <root>]
-       vesta-agent superadmin grant|revoke <user-id> <name> [--install-root <root>]";
+       vesta-agent superadmin grant|revoke <user-id> <name> [--install-root <root>]
+       vesta-agent resolve-launch <name> --confirm <name> [--install-root <root>]";
 #[derive(Debug)]
 pub enum Command {
     Help,
@@ -29,6 +30,11 @@ pub enum Command {
         op: crate::control::Op,
     },
     Delete {
+        name: String,
+        confirm: String,
+        root: Option<PathBuf>,
+    },
+    ResolveLaunch {
         name: String,
         confirm: String,
         root: Option<PathBuf>,
@@ -127,7 +133,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
         "owner" => return parse_owner(&args),
         "access" => return parse_access(&args),
         "pair" | "devices" => return parse_management(&args),
-        "create" | "delete" | "config" | "start" | "stop" | "restart" => {}
+        "create" | "delete" | "resolve-launch" | "config" | "start" | "stop" | "restart" => {}
         _ => return Err(()),
     }
     let name = args.get(1).and_then(|v| v.to_str()).ok_or(())?.to_owned();
@@ -149,7 +155,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
         }
         match flag {
             "--install-root" => root = Some(PathBuf::from(value(&args, &mut at)?)),
-            "--confirm" if command == "delete" => confirm = Some(text(value(&args, &mut at)?)?),
+            "--confirm" if command == "delete" || command == "resolve-launch" => {
+                confirm = Some(text(value(&args, &mut at)?)?)
+            }
             "--minecraft-version" if command == "create" => {
                 version = Some(text(value(&args, &mut at)?)?)
             }
@@ -210,6 +218,11 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
             })
         }
         "delete" => Command::Delete {
+            name,
+            confirm: confirm.ok_or(())?,
+            root,
+        },
+        "resolve-launch" => Command::ResolveLaunch {
             name,
             confirm: confirm.ok_or(())?,
             root,

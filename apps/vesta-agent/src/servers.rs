@@ -256,6 +256,26 @@ pub fn delete(root: &Path, name: &str, confirm: &str) -> Result<PathBuf> {
         Some(&server.directory.join("game")),
     )
     .map_err(|_| "local_state_refused")?;
+    // A supervised game outlives its agent: a live supervisor or recorded game refuses.
+    // Check the configured state as well as the default; an edited host.toml may point
+    // elsewhere. An unreadable configuration with supervision unknown refuses.
+    let mut states = vec![state.clone()];
+    if server.config.exists() {
+        let configured =
+            vesta_control::config::HostConfiguration::load_file(&server.config, &server.directory)
+                .map_err(|_| "local_config_unreadable_delete_refused")?;
+        states.push(
+            StateDirectory::new(configured.state(), Some(configured.game()))
+                .map_err(|_| "local_state_refused")?,
+        );
+    }
+    for state in &states {
+        if state.path().is_dir()
+            && vesta_supervisor::instance_busy(state).map_err(|_| "local_state_refused")?
+        {
+            return Err("local_supervised_game_running");
+        }
+    }
     let db = if state.database_file().exists() {
         let runner = state
             .acquire_runner_lock()
@@ -351,7 +371,7 @@ mod tests {
     fn delete_refuses_unproven_shutdown_without_moving_or_erasing_files() {
         let (_temp, root) = fixture();
         let server = resolve(&root, "owned").unwrap();
-        let session = crate::sessions::Sessions::begin([server.directory.clone()]).unwrap();
+        let session = crate::sessions::Sessions::begin([server.directory.clone()], false).unwrap();
         drop(session); // Simulates retained evidence, not a real agent/game crash.
         assert_eq!(
             delete(&root, "owned", "owned"),

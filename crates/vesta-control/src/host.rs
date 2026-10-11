@@ -7,7 +7,7 @@
 //! and are still authorized. Failures before the runtime starts release everything
 //! opened so far; shutdown is observation-only and keeps ownership on timeout.
 use crate::ControlError;
-use crate::config::{ConfigError, HostConfiguration, PackAccessMode, PackSource};
+use crate::config::{ConfigError, HostConfiguration, PackAccessMode, PackSource, Supervision};
 use crate::files::{self, FileBrowser, FileError};
 use crate::identity::management::ManagementAccess;
 use crate::identity::minecraft::{MinecraftChallenges, MinecraftError, ServerUuid};
@@ -29,7 +29,7 @@ use std::{
     time::Duration,
 };
 use vesta_game_runtime::launch_config::{LaunchConfigError, LaunchConfiguration, MAX_CONFIG_BYTES};
-use vesta_game_runtime::process::GracefulStop;
+use vesta_game_runtime::process::{GracefulStop, LaunchSpec};
 use vesta_protocol::discovery::{
     self, DiscoveryRequest, Feature, Manifest, ProtocolError, Support,
 };
@@ -57,6 +57,9 @@ pub enum HostError {
     PackBuild(VestaBuildError),
     Release(ReleaseError),
     Operation(OperationError),
+    /// Supervision mode and the supplied process owner disagree, or the supervisor
+    /// is bound to a different launch definition. Fixed codes only.
+    Supervisor(&'static str),
 }
 impl HostError {
     pub fn code(&self) -> &'static str {
@@ -75,6 +78,7 @@ impl HostError {
             Self::PackBuild(error) => error.code(),
             Self::Release(error) => error.code(),
             Self::Operation(error) => error.code(),
+            Self::Supervisor(code) => code,
         }
     }
 }
@@ -130,20 +134,46 @@ pub enum HostShutdown {
 
 impl Host {
     pub fn open(config: HostConfiguration, clock: Arc<dyn Clock>) -> Result<Self, HostError> {
-        config.validate_host_paths().map_err(HostError::Config)?;
-        let launch = read_launch_definition(&config)?;
-        // Both checks observe only: refuse before database preparation or ownership.
-        // Retain the launch cwd in StateDirectory's later overlap rechecks as well.
-        let state =
-            vesta_state::StateDirectory::new(config.state(), Some(launch.working_directory()))
-                .map_err(|_| HostError::LaunchDirectory)?;
-        if !files::same_directory(config.game(), launch.working_directory())
-            .map_err(|_| HostError::LaunchDirectory)?
-        {
-            return Err(HostError::LaunchDirectory);
-        }
-        let db = StateDatabase::open(state, clock).map_err(HostError::State)?;
-        match compose(config, &db, launch) {
+        Self::open_with(config, clock, None)
+    }
+
+    /// Open with the configured process owner. `Supervision::Separate` requires an
+    /// attached supervisor bound to this configuration's exact launch definition;
+    /// the in-process default refuses one. Opening never launches the game.
+    pub fn open_with(
+        config: HostConfiguration,
+        clock: Arc<dyn Clock>,
+        supervisor: Option<vesta_supervisor::RemoteProcess>,
+    ) -> Result<Self, HostError> {
+        let checked = check_launch(&config)?;
+        let owner = match (config.supervision(), supervisor) {
+            (Supervision::InProcess, None) => {
+                // A game left running by a supervisor (or an unresolved supervised
+                // launch) must never get a second, agent-owned launch beside it.
+                if checked.state.path().is_dir()
+                    && vesta_supervisor::instance_busy(&checked.state)
+                        .map_err(HostError::Supervisor)?
+                {
+                    return Err(HostError::Supervisor("host_supervised_game_running"));
+                }
+                None
+            }
+            (Supervision::Separate, Some(remote)) => {
+                let (state, identity) = remote.binding();
+                if state != checked.state.path().to_string_lossy() || identity != checked.identity {
+                    return Err(HostError::Supervisor("host_supervisor_binding_mismatch"));
+                }
+                Some(remote)
+            }
+            (Supervision::Separate, None) => {
+                return Err(HostError::Supervisor("host_supervisor_required"));
+            }
+            (Supervision::InProcess, Some(_)) => {
+                return Err(HostError::Supervisor("host_supervisor_not_configured"));
+            }
+        };
+        let db = StateDatabase::open(checked.state, clock).map_err(HostError::State)?;
+        match compose(config, &db, checked.launch, owner) {
             Ok(host) => Ok(host),
             Err(error) => {
                 // Nothing owned live work yet; closing cannot discard a running child.
@@ -311,6 +341,7 @@ fn compose(
     config: HostConfiguration,
     db: &StateDatabase,
     launch: LaunchConfiguration,
+    supervisor: Option<vesta_supervisor::RemoteProcess>,
 ) -> Result<Host, HostError> {
     let protected: Vec<&Path> = config
         .host_protected_paths()
@@ -376,7 +407,11 @@ fn compose(
     let spec = launch.into_launch_spec(None).map_err(HostError::Launch)?;
     let operations = Operations::new(db.clone()).map_err(HostError::Operation)?;
     // Last: once the driver runs, failures must go through observation-only shutdown.
-    let runtime = OperationRuntime::open(operations, spec).map_err(HostError::Operation)?;
+    let runtime = match supervisor {
+        None => OperationRuntime::open(operations, spec),
+        Some(remote) => OperationRuntime::open_supervised(operations, remote),
+    }
+    .map_err(HostError::Operation)?;
     Ok(Host {
         config,
         db: db.clone(),
@@ -396,10 +431,70 @@ fn compose(
     })
 }
 
-fn read_launch_definition(config: &HostConfiguration) -> Result<LaunchConfiguration, HostError> {
+struct CheckedLaunch {
+    state: vesta_state::StateDirectory,
+    launch: LaunchConfiguration,
+    identity: String,
+}
+
+/// Shared by the agent and the supervisor: identical path, overlap and cwd checks.
+fn check_launch(config: &HostConfiguration) -> Result<CheckedLaunch, HostError> {
+    config.validate_host_paths().map_err(HostError::Config)?;
     let bytes = files::read_local_document(config.launch_definition(), MAX_CONFIG_BYTES)
         .map_err(HostError::LaunchDocument)?;
-    LaunchConfiguration::parse_toml(&bytes, config.base()).map_err(HostError::Launch)
+    let launch =
+        LaunchConfiguration::parse_toml(&bytes, config.base()).map_err(HostError::Launch)?;
+    // Both checks observe only: refuse before database preparation or ownership.
+    // Retain the launch cwd in StateDirectory's later overlap rechecks as well.
+    let state = vesta_state::StateDirectory::new(config.state(), Some(launch.working_directory()))
+        .map_err(|_| HostError::LaunchDirectory)?;
+    if !files::same_directory(config.game(), launch.working_directory())
+        .map_err(|_| HostError::LaunchDirectory)?
+    {
+        return Err(HostError::LaunchDirectory);
+    }
+    let identity = vesta_supervisor::launch_identity(&[
+        &bytes,
+        config.base().to_string_lossy().as_bytes(),
+        config.launch_definition().to_string_lossy().as_bytes(),
+        config.game().to_string_lossy().as_bytes(),
+        state.path().to_string_lossy().as_bytes(),
+        launch.working_directory().to_string_lossy().as_bytes(),
+    ]);
+    Ok(CheckedLaunch {
+        state,
+        launch,
+        identity,
+    })
+}
+
+/// What a separate supervisor needs from a validated host configuration: its state
+/// directory, the trusted launch specification and the launch-definition identity.
+pub struct SupervisedLaunch {
+    pub state: vesta_state::StateDirectory,
+    pub spec: LaunchSpec,
+    pub identity: String,
+}
+impl fmt::Debug for SupervisedLaunch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SupervisedLaunch")
+    }
+}
+
+/// Validate a configuration for supervision without opening the database.
+pub fn supervised_launch(config: &HostConfiguration) -> Result<SupervisedLaunch, HostError> {
+    if config.supervision() != Supervision::Separate {
+        return Err(HostError::Supervisor("host_supervisor_not_configured"));
+    }
+    let checked = check_launch(config)?;
+    Ok(SupervisedLaunch {
+        state: checked.state,
+        spec: checked
+            .launch
+            .into_launch_spec(None)
+            .map_err(HostError::Launch)?,
+        identity: checked.identity,
+    })
 }
 
 #[derive(Clone)]

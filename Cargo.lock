@@ -1995,6 +1995,7 @@ dependencies = [
  "vesta-game-runtime",
  "vesta-server-install",
  "vesta-state",
+ "vesta-supervisor",
  "vesta-transport",
  "windows-sys 0.61.2",
 ]
@@ -2025,6 +2026,7 @@ dependencies = [
  "vesta-game-runtime",
  "vesta-protocol",
  "vesta-state",
+ "vesta-supervisor",
  "windows-sys 0.61.2",
  "zeroize",
  "zip",
@@ -2083,6 +2085,22 @@ dependencies = [
  "sha2",
  "tempfile",
  "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "vesta-supervisor"
+version = "0.1.0"
+dependencies = [
+ "fs2",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "vesta-game-runtime",
+ "vesta-state",
  "windows-sys 0.61.2",
 ]
 

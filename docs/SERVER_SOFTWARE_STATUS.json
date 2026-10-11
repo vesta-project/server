@@ -1,19 +1,19 @@
 {
-  "auditDate": "2026-10-10",
+  "auditDate": "2026-10-11",
   "repository": "server-connections-mvp",
   "commit": "94fb98a",
   "scope": "Features carrying reauditNote were re-audited against Rust source and tests; other feature statuses remain as previously audited. Statuses move only against the acceptance text.",
   "tests": {
     "rustWorkspace": {
-      "passed": 1211,
+      "passed": 1426,
       "failed": 0,
       "ignored": 0,
-      "summaries": 45,
+      "summaries": 56,
       "command": "cargo test --workspace --all-targets --offline --locked -- --test-threads=1",
-      "lastRunAt": "0ccf1bd"
+      "lastRunAt": "eae2e47 plus the supervisor slice"
     },
     "node": {
-      "passed": 161,
+      "passed": 164,
       "failed": 0,
       "command": "node --test scripts/*.test.mjs"
     },
@@ -69,21 +69,24 @@
     {
       "id": "F03",
       "name": "Independent supervisor and crash continuity",
-      "status": "not_started",
+      "status": "partial",
       "phase": 3,
-      "current": "The agent owns the game process and shutdown path; no separate supervisor, save-lease continuity, or recovery across agent loss is implemented.",
-      "evidence": [],
+      "current": "Opt-in per-server vesta-supervisor owns the game over protected same-account local IPC (no network listener). Agent exit leaves the game running and a new agent adopts the same generation without relaunching; a PID plus native-start-time record blocks duplicate launches and reports an orphaned game after a supervisor crash without killing it. Not yet: save leases, crash-restart policy, readiness, separate OS identities, service install, Linux execution evidence and the failure-drill gate.",
+      "evidence": [
+        "crates/vesta-supervisor/src/server.rs",
+        "crates/vesta-supervisor/src/remote.rs",
+        "crates/vesta-supervisor/src/record.rs",
+        "crates/vesta-supervisor/tests/supervisor.rs",
+        "apps/vesta-agent/tests/supervisor_e2e.rs",
+        "docs/operations/supervisor.md"
+      ],
       "acceptance": "Kill/restart agent while Minecraft stays alive; recover control and journals without replay.",
-      "auditDate": "2026-10-10",
+      "auditDate": "2026-10-11",
       "previous": {
-        "auditDate": "2026-10-04",
+        "auditDate": "2026-10-10",
         "status": "not_started",
-        "current": "No separate supervisor executable or durable process/save-lease protocol found. Agent shutdown currently stops Minecraft.",
-        "evidence": [],
-        "javaEvidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/VestaWrapper.java",
-          "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java"
-        ]
+        "current": "The agent owns the game process and shutdown path; no separate supervisor, save-lease continuity, or recovery across agent loss is implemented.",
+        "evidence": []
       }
     },
     {

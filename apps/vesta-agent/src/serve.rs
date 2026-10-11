@@ -2,7 +2,7 @@
 use crate::{control, local_files};
 use std::{path::Path, process::ExitCode, sync::Arc, time::Duration};
 use vesta_control::{
-    config::{HostConfiguration, ListenerDescription},
+    config::{HostConfiguration, ListenerDescription, Supervision},
     host::{Host, HostShutdown},
 };
 use vesta_state::SystemClock;
@@ -67,14 +67,32 @@ pub async fn run(source: &Path, base: &Path, local_only: bool) -> ExitCode {
         .flatten()
         .filter(|p| crate::servers::managed_lease(p).is_some())
         .map(Path::to_owned);
-    let sessions = match crate::sessions::Sessions::begin(directories) {
+    let supervised = configuration.supervision() == Supervision::Separate;
+    let sessions = match crate::sessions::Sessions::begin(directories, supervised) {
         Ok(sessions) => sessions,
         Err(code) => {
             eprintln!("{code}");
             return ExitCode::FAILURE;
         }
     };
-    let host = match Host::open(configuration, Arc::new(SystemClock)) {
+    let (supervisor, supervised_state) = match configuration.supervision() {
+        Supervision::InProcess => (None, crate::supervision::Release::none()),
+        Supervision::Separate => match crate::supervision::attach(&configuration, &source, base) {
+            Ok(attached) => (
+                Some(attached.remote),
+                crate::supervision::Release::new(attached.state),
+            ),
+            Err(code) => {
+                eprintln!("{code}");
+                // No runtime was opened; the supervisor (if any) owns its own game.
+                if sessions.stopped().is_err() {
+                    eprintln!("local_shutdown_marker_failed");
+                }
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+    let host = match Host::open_with(configuration, Arc::new(SystemClock), supervisor) {
         Ok(h) => h,
         Err(e) => {
             eprintln!("host_open_failed: {}", e.code());
@@ -132,6 +150,7 @@ pub async fn run(source: &Path, base: &Path, local_only: bool) -> ExitCode {
     }
     shutdown_transport(transport);
     let result = shutdown_host(host, sessions);
+    supervised_state.finish();
     if signal_failed || control_failed {
         ExitCode::FAILURE
     } else {

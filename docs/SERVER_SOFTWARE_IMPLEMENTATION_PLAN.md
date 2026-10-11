@@ -503,7 +503,7 @@ this audit, not proof that every uninspected branch lacks it.
 | --- | --- | --- | --- | --- | --- |
 | F01 | Deployment and instance scope | partial | P1 | Existing roots, config and instance registry exist; independent process/control-plane identities and tested Windows/Linux parity do not. | [install.ps1](../scripts/install.ps1), [ConfigLoader.java](../wrapper/src/main/java/com/vesta/wrapper/config/ConfigLoader.java) |
 | F02 | Process lifecycle | partial | P3 | Start/stop/restart/kill exist, but stop force-kills after ten seconds and control is owned by the agent JVM. | [MinecraftServerProcess.java](../wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java), [VestaWrapper.java](../wrapper/src/main/java/com/vesta/wrapper/VestaWrapper.java) |
-| F03 | Independent supervisor and crash continuity | not started | P3 | No separate supervisor executable or durable process/save-lease protocol found. Agent shutdown currently stops Minecraft. | [VestaWrapper.java](../wrapper/src/main/java/com/vesta/wrapper/VestaWrapper.java), [MinecraftServerProcess.java](../wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java) |
+| F03 | Independent supervisor and crash continuity | partial | P3 | Rust (2026-10-11): opt-in per-server `vesta-supervisor` owns the game over protected same-account IPC; agent exit leaves the game running; a new agent adopts the same generation; a PID+start-time record blocks duplicate launches and detects orphans after a supervisor crash (Windows tests). No save leases, crash-restart policy, readiness, OS identities or Linux evidence. See docs/operations/supervisor.md. | [VestaWrapper.java](../wrapper/src/main/java/com/vesta/wrapper/VestaWrapper.java), [MinecraftServerProcess.java](../wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java) |
 | F04 | Startup script adoption and existing services | partial | P3 | Installer/CLI create and control launch artifacts; seamless script inspection/adoption and robust detached-child adapters remain. | [install.ps1](../scripts/install.ps1) |
 | F05 | Readiness and crash-loop policy | prototype | P3 | Process-alive state exists, but it is not world readiness; no durable bounded crash-restart controller found. | [MinecraftServerProcess.java](../wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java) |
 | F06 | Local identity, pairing and device credentials | prototype | P2 | Link codes and bearers exist; canonical device principals, local owner bootstrap and device certificates are missing. | [TokenService.java](../core/src/main/java/com/vesta/sync/auth/TokenService.java), [ControlIpcServer.java](../wrapper/src/main/java/com/vesta/wrapper/ipc/ControlIpcServer.java) |
@@ -752,23 +752,23 @@ should begin with P0/P1 against the agreed baseline rather than restart product
 discovery or implement all subsystems in one unreviewable patch.
 
 
-## 20. Current status against the phases (2026-10-10)
+## 20. Current status against the phases (2026-10-11)
 
-Audit at commit 94fb98a. The Java-to-Rust migration gate has not passed: the change-only review since a3dda06 is still pending. The feature registry (`SERVER_SOFTWARE_STATUS.json`) now carries the Rust re-audit for 15 features; the rest are carried from 2026-10-04 and marked for re-audit.
+Updated 2026-10-11 after commit eae2e47 and the supervisor slice. The Java-to-Rust migration gate passed for the agreed scope (the whole-rebuild review at a3dda06 plus delta reviews); no inventory row is verified and assertion-level gaps stay recorded. Phase rows P2–P4 and feature F03 were refreshed; other feature statuses are carried from the 2026-10-10 audit.
 
 | Phase | Where it stands |
 |---|---|
 | P0 Baseline | Mostly complete. Requirements, inventory and parity checks exist. |
 | P1 Durable foundation | Largely in Rust: migrations to v11, operations, audit, confirmations, file intents and recovery, all tested. |
-| P2 Identity and remote security | Not met. No remote management login, device certificates or owner recovery. Management routes are refused by design. |
-| P3 Supervisor and adoption | Not met. The agent still owns the game process; no separate supervisor or crash continuity. |
-| P4 Files and content | Built as library code, not reachable remotely until P2. SFTP not started. |
+| P2 Identity and remote security | Partly met. One canonical user per person per server with attached methods (Minecraft proof, pairing code, pack password, device key); Ed25519 device sign-in; rank-bound remote permission management; superadmin only from the local console. No mTLS, vault or owner recovery; the P2 gate has not been run. |
+| P3 Supervisor and adoption | First slice built (opt-in). A separate per-server supervisor owns the game over protected local IPC; agent restarts keep it running and re-adopt it; duplicate launches are refused and orphans detected after a supervisor crash. No crash-restart policy, readiness, save leases, OS identities, service install or Linux evidence; the failure-drill gate has not been run. |
+| P4 Files and content | Reachable through the capability-checked management API: files, uploads, trash, content install, server.properties, streamed large-file reads, rotated .log.gz reading and whole-file download. SFTP and log search not started. |
 | P5 Client-pack hosting | Mostly built. Scheduled release and a trusted publish path from the running server remain open. |
 | P6 Backups and recovery | Not started. Outside the Java scope; future work. |
 | P7 Automation | Not started, except pieces of moderation and player queries. |
 | P8 Distribution | Partial installer. Signed updates not started. |
 
-Recommended direction: P2 (remote management identity), then P3 (a separate supervisor), then the remote parts of P4 and P5.
+Recommended direction: finish P3 (crash-restart policy, readiness, save leases, Linux evidence and the failure drills), then launcher-side work against the management API.
 
 ## 21. Decisions and next work (2026-10-10)
 
