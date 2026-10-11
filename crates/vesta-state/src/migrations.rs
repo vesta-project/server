@@ -20,6 +20,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         14 => apply_v14(c),
         15 => apply_v15(c, now_ms),
         16 => apply_v16(c),
+        17 => apply_v17(c, now_ms),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -759,6 +760,17 @@ fn apply_v15(c: &Connection, now_ms: i64) -> crate::Result<()> {
     c.execute_batch("ALTER TABLE management_file_outcomes ADD COLUMN completed_at INTEGER CHECK(completed_at IS NULL OR completed_at>=0); CREATE INDEX management_file_outcomes_retention ON management_file_outcomes(server_id,completed_at) WHERE outcome_json IS NOT NULL;")?;
     c.execute(
         "UPDATE management_file_outcomes SET completed_at=? WHERE outcome_json IS NOT NULL",
+        [now_ms],
+    )?;
+    Ok(())
+}
+
+/// Retention for remote permission receipts. Existing receipts are dated at upgrade time
+/// so a retry inside the retention window still replays rather than reapplying.
+fn apply_v17(c: &Connection, now_ms: i64) -> crate::Result<()> {
+    c.execute_batch("ALTER TABLE management_permission_receipts ADD COLUMN completed_at INTEGER NOT NULL DEFAULT 0 CHECK(completed_at>=0); CREATE INDEX management_permission_receipts_retention ON management_permission_receipts(completed_at);")?;
+    c.execute(
+        "UPDATE management_permission_receipts SET completed_at=?",
         [now_ms],
     )?;
     Ok(())

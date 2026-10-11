@@ -1002,4 +1002,4 @@ Rank rules:
 
 Errors: `management_session_invalid` (401), `management_forbidden` (403), `invalid_request` (400), `resource_not_found` (404), `precondition_failed` (412, stale `expected_version`), `idempotency_conflict` and `permission_conflict` (409), `temporarily_unavailable` (503).
 
-Known limit: the permission-change receipt store is capped and has no retention yet. When it is full, permission changes return 503 until retention is added.
+Retries: receipts replay the stored result for the same `Idempotency-Key` for seven days. Older receipts are purged in batches of 128 on each change (schema v17). The store holds at most 4,096 receipts; only more than 4,096 changes within seven days returns 503.

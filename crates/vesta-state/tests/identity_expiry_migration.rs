@@ -445,10 +445,11 @@ fn schema_four_to_current_preserves_data_backup_and_pending_expiry_plans() {
             "file_intents_pending",
             "file_trash_expiry",
             "management_file_outcomes_retention",
+            "management_permission_receipts_retention",
             "principal_overrides_pending_expiry",
             "role_assignments_pending_expiry",
         ]),
-        "v5, v8, v11 and v15 add expiry, pending-intent and outcome-retention indexes",
+        "v5, v8, v11, v15 and v17 add expiry, pending-intent and retention indexes",
     );
     let assignment_ddl = post_indexes
         .iter()

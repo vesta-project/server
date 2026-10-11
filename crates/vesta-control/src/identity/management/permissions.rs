@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 const MAX_RECEIPTS: i64 = 4096;
+/// Receipts answer retries for this long, then are purged in bounded batches.
+const RECEIPT_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const RECEIPT_PURGE_BATCH: i64 = 128;
 const MAX_ROLES: i64 = 128;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PermissionError {
@@ -457,6 +460,7 @@ impl ManagementAccess {
                 if hash!=intent_hash.as_ref() {return Err(PermissionError::IdempotencyConflict);}
                 return serde_json::from_str(&result).map_err(|_|PermissionError::Unavailable);
             }
+            repo.connection().execute("DELETE FROM management_permission_receipts WHERE key_hash IN (SELECT key_hash FROM management_permission_receipts WHERE completed_at<? ORDER BY completed_at LIMIT ?)",params![repo.now.saturating_sub(RECEIPT_RETENTION_MS),RECEIPT_PURGE_BATCH])?;
             let count:i64=repo.connection().query_row("SELECT count(*) FROM management_permission_receipts",[],|r|r.get(0))?;
             if count>=MAX_RECEIPTS {return Err(PermissionError::Saturated);}
             let result=self.mutate_in(repo,&subject,&policy,&command)?;
@@ -465,7 +469,7 @@ impl ManagementAccess {
             let mut receipt=result.clone();
             if matches!(command,PermissionMutation::Invitation(_)) {receipt.as_object_mut().expect("object").remove("code");}
             let result_json=serde_json::to_string(&receipt).map_err(|_|PermissionError::Unavailable)?;
-            repo.connection().execute("INSERT INTO management_permission_receipts VALUES(?,?,?)",params![key_hash.as_ref(),intent_hash.as_ref(),result_json])?;
+            repo.connection().execute("INSERT INTO management_permission_receipts(key_hash,intent_hash,result_json,completed_at) VALUES(?,?,?,?)",params![key_hash.as_ref(),intent_hash.as_ref(),result_json,repo.now])?;
             Ok(result)
         })
     }

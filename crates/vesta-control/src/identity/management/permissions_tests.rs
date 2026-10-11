@@ -647,3 +647,93 @@ fn invitations_are_bounded() {
         Err(PermissionError::Saturated)
     );
 }
+
+fn fill_receipts(f: &Fixture, completed_at: i64) {
+    f.db.write_with(|tx| {
+        let c = tx.connection();
+        let mut insert = c.prepare(
+            "INSERT INTO management_permission_receipts(key_hash,intent_hash,result_json,completed_at) VALUES(?,?,'{}',?)",
+        )?;
+        for i in 0u32..4096 {
+            let mut key = [0u8; 32];
+            key[..4].copy_from_slice(&i.to_be_bytes());
+            insert.execute(rusqlite::params![key.as_slice(), [7u8; 32].as_slice(), completed_at])?;
+        }
+        Ok::<_, rusqlite::Error>(())
+    })
+    .unwrap();
+}
+fn receipt_count(f: &Fixture) -> i64 {
+    f.db.read(|c| {
+        Ok(c.query_row(
+            "SELECT count(*) FROM management_permission_receipts",
+            [],
+            |r| r.get(0),
+        )?)
+    })
+    .unwrap()
+}
+
+#[test]
+fn expired_receipts_are_purged_so_a_full_store_never_blocks_changes_forever() {
+    let f = Fixture::new();
+    let (_, s) = actor(&f, BuiltinRole::Owner);
+    let (target, _) = actor(&f, BuiltinRole::Viewer);
+    fill_receipts(
+        &f,
+        f.clock.0.load(std::sync::atomic::Ordering::SeqCst) - 8 * 24 * 60 * 60 * 1000,
+    );
+    assert_eq!(receipt_count(&f), 4096);
+    let before = get(&f, &s, &target.principal_id);
+    run(
+        &f,
+        &s,
+        "after-expired-receipts-0001",
+        PermissionMutation::UserRoles(
+            target.principal_id.clone(),
+            roles(&["moderator"], &[], &before),
+        ),
+    )
+    .unwrap();
+    // One bounded batch was purged and the new receipt was stored.
+    assert_eq!(receipt_count(&f), 4096 - 128 + 1);
+}
+
+#[test]
+fn recent_receipts_still_cap_the_store_and_retries_still_replay() {
+    let f = Fixture::new();
+    let (_, s) = actor(&f, BuiltinRole::Owner);
+    let (target, _) = actor(&f, BuiltinRole::Viewer);
+    let before = get(&f, &s, &target.principal_id);
+    let change = || {
+        PermissionMutation::UserRoles(
+            target.principal_id.clone(),
+            roles(&["moderator"], &[], &before),
+        )
+    };
+    let first = run(&f, &s, "replayed-within-window-0001", change()).unwrap();
+    // A retry with the same key replays the stored result instead of reapplying.
+    assert_eq!(
+        run(&f, &s, "replayed-within-window-0001", change()).unwrap(),
+        first
+    );
+    // Six-day-old receipts are still inside the retention window and are not purged.
+    let six_days = 6 * 24 * 60 * 60 * 1000;
+    fill_receipts(
+        &f,
+        f.clock.0.load(std::sync::atomic::Ordering::SeqCst) - six_days,
+    );
+    let current = get(&f, &s, &target.principal_id);
+    assert_eq!(
+        run(
+            &f,
+            &s,
+            "store-full-of-recent-0001",
+            PermissionMutation::UserRoles(
+                target.principal_id.clone(),
+                roles(&[], &["moderator"], &current)
+            ),
+        ),
+        Err(PermissionError::Saturated)
+    );
+}
