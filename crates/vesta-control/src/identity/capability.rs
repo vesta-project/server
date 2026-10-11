@@ -74,6 +74,9 @@ pub enum Capability {
     PublicInfo,
     PackDownload,
     PackRealtime,
+    RolesManage,
+    AccessSourcesManage,
+    InvitationsCreate,
 }
 
 impl Capability {
@@ -133,6 +136,9 @@ impl Capability {
         Self::PublicInfo,
         Self::PackDownload,
         Self::PackRealtime,
+        Self::RolesManage,
+        Self::AccessSourcesManage,
+        Self::InvitationsCreate,
     ];
 
     /// The stable, exact identifier used in persisted identity records.
@@ -141,6 +147,9 @@ impl Capability {
             Self::PublicInfo => "public.info",
             Self::PackDownload => "pack.download",
             Self::PackRealtime => "pack.realtime",
+            Self::RolesManage => "roles.manage",
+            Self::AccessSourcesManage => "access-sources.manage",
+            Self::InvitationsCreate => "invitations.create",
             Self::StatusView => "status.view",
             Self::StatusDetailed => "status.detailed",
             Self::MetricsView => "metrics.view",
@@ -201,6 +210,9 @@ impl Capability {
             "public.info" => Some(Self::PublicInfo),
             "pack.download" => Some(Self::PackDownload),
             "pack.realtime" => Some(Self::PackRealtime),
+            "roles.manage" => Some(Self::RolesManage),
+            "access-sources.manage" => Some(Self::AccessSourcesManage),
+            "invitations.create" => Some(Self::InvitationsCreate),
             "status.view" => Some(Self::StatusView),
             "status.detailed" => Some(Self::StatusDetailed),
             "metrics.view" => Some(Self::MetricsView),

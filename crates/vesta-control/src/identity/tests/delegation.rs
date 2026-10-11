@@ -2449,7 +2449,7 @@ fn an_owner_may_revoke_any_device_including_its_own() {
 /// Java: `deviceRevocationHonorsOwnerDenyAndStrictHierarchyWithoutSelfBypass`
 /// (the hierarchy half).
 #[test]
-fn a_non_owner_revoker_needs_a_strictly_lower_principal_and_never_itself() {
+fn a_non_owner_revoker_needs_a_lower_principal_or_its_own_device() {
     let fixture = Fixture::open();
     let owner = fixture.owner();
     let administrator = fixture.subject(builtin(BuiltinRole::Administrator));
@@ -2467,15 +2467,6 @@ fn a_non_owner_revoker_needs_a_strictly_lower_principal_and_never_itself() {
         ),
         DenyReason::Rank,
         "revoking an equal-ranked principal's device",
-    );
-    assert_denied(
-        remote(
-            &fixture,
-            &administrator,
-            RemoteCommand::RevokeDevice(administrator.device.clone()),
-        ),
-        DenyReason::SelfTarget,
-        "revoking one's own device",
     );
     assert!(snapshot_of(&fixture, &equal).has_current_identity());
     assert!(snapshot_of(&fixture, &administrator).has_current_identity());
@@ -2559,6 +2550,15 @@ fn a_non_owner_revoker_needs_a_strictly_lower_principal_and_never_itself() {
         "a delegated capability under an explicit deny",
     );
     assert!(snapshot_of(&fixture, &administrator).has_current_identity());
+    expect_revoked(
+        remote(
+            &fixture,
+            &administrator,
+            RemoteCommand::RevokeDevice(administrator.device.clone()),
+        ),
+        "revoking one's own device",
+    );
+    assert_resolves_no_authority(&fixture, Some(&administrator), "self-revoked administrator");
     assert!(fixture.audit.verify_chain().expect("audit chain").valid);
 }
 

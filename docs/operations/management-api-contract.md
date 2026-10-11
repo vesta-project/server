@@ -487,7 +487,10 @@ an overwrite's recoverable original. All synchronous mutations return 200.
 | Method / path | Exact request | Exact `data` / status | Existing capabilities |
 | --- | --- | --- | --- |
 | GET `/files` | Optional `path`, `cursor`, `limit`; absent/empty path selects root | 200 `{items:[{name,kind:"file"\|"directory",size,modified_at}],next_cursor}` | `files.list` on directory and visible children |
-| GET `/files/content` | Required `path`, no body/conditional | 200 raw octet-stream, headers below | `files.read` exact file |
+| GET `/files/content` | Required `path`; optional single `Range` and `If-Range`, no body | 200 legacy full body or 206 raw octet-stream, headers below | `files.read` exact file |
+| GET `/files/tail` | Required `path`; optional `lines` (default 100, max 1000) | 200 `TextPage` below | `files.read` exact file |
+| GET `/files/lines` | Required `path`; optional `from_byte`, `limit` (default 100, max 1000), `direction:"forward"\|"backward"` | 200 `TextPage` below | `files.read` exact file |
+| GET `/files/follow` | Native WebSocket upgrade; required `path`, optional byte `cursor`, bearer; no body/cookie/Origin | 101; byte-preserving file notices below | `files.read` exact file |
 | PUT `/files/content` | Required `path`, raw bytes, create/overwrite conditional | `Change` | `files.create` or `files.overwrite` exact path |
 | POST `/files/uploads` | `{path,total_size,sha256}`, create/overwrite conditional | `{upload_id,offset:"0"}` | Same destination create/overwrite authority |
 | PUT `/files/uploads/{id}` | Required `offset` query, raw chunk; no conditional | `{offset}` actual staged length | Original upload create/overwrite authority, same principal/device |
@@ -502,12 +505,98 @@ an overwrite's recoverable original. All synchronous mutations return 200.
 | GET `/config/server-properties` | No body/query/conditional | 200 `{values:{key:typed_value},sha256}` | `config.view` plus `files.read` server.properties, one read snapshot |
 | PATCH `/config/server-properties` | `{changes:{key:typed_value},expected_sha256,confirmation_token?}`, no query/conditional | `Change` plus `restart_needed:true`; weakening preparation 202 below | `config.edit`, `files.read`, `files.overwrite` server.properties |
 
-Binary GET headers are `X-Vesta-Sha256: <hash>`, quoted `ETag: "<hash>"`,
-`X-Vesta-Api-Version: 3`, `X-Vesta-Request-Id: request-N`. Errors remain JSON.
-Reads are bounded/buffered to 1,048,576 bytes; larger files return 413. Existing
-64-KiB response frames and connection deadline handle accepted larger reads, not
-an unbounded/range stream. Listings omit SHA-256 (no content hashing);
-`modified_at` is epoch milliseconds or null.
+The legacy GET without Range stays bounded/buffered to **1,048,576 bytes**;
+larger files still return 413. Its unchanged raw bytes, `X-Vesta-Sha256: <hash>`
+and quoted content-SHA-256 `ETag` remain compatible. It additionally reports
+`X-Vesta-File-Size` and `X-Vesta-Encoding`. All binary successes include
+`X-Vesta-Api-Version: 3`, `X-Vesta-Request-Id: request-N`; errors remain JSON.
+Listings omit SHA-256 (no content hashing); `modified_at` is epoch milliseconds
+or null.
+
+### Large-file ranges, text pages and follow
+
+All new reads use the same device session, live `files.read` scope checks, path
+policy and **submitted/canonical/opened-handle** protected/admission-document
+exclusions. File content is **not redacted**: `files.read` is a powerful raw-content
+grant. Bytes are never normalized, decoded lossily, or line-ending transformed.
+
+Range supports exactly one `bytes=a-b`, `bytes=a-`, or `bytes=-N` suffix range.
+Offsets are canonical decimal; inclusive end clamps to EOF. Empty files, zero
+suffixes, reversed/out-of-file starts, malformed/multipart ranges and resolved
+ranges over **4 MiB** return 416 `range_not_satisfiable` with
+`Content-Range: bytes */<current-size>`. Successful 206 responses include
+`Content-Range: bytes <start>-<end>/<current-size>`, `Content-Length`,
+`Accept-Ranges: bytes`, `X-Vesta-File-Size`, `X-Vesta-Encoding` and a quoted strong
+metadata ETag. This ETag is SHA-256 of size, nanosecond-resolution reported mtime
+and native file identity (Windows volume/file index or Unix device/inode), **not
+content SHA-256**. It detects ordinary append/truncate/replace/mtime changes, not
+malicious rewrites restoring identical metadata. The legacy full-read SHA-256
+ETag uses a separate validator scheme; start range sessions with a range response.
+Ranges do not report `X-Vesta-Sha256`, since hashing the whole file would be unbounded.
+
+`If-Range` exact equality with the range ETag honors Range. Mismatch (including
+weak/date values) ignores Range and falls back to the legacy full read: 200 for a
+file ≤1 MiB, **413 for a larger file**, retaining current range ETag/size headers
+so the client can resynchronize with a fresh bounded range. Duplicate Range or
+If-Range headers and If-Range without Range refuse with 400. There is no
+unbounded full-download fallback. Each disk range holds one of two global range
+slots through its last outstanding chunk; one 64-KiB blocking read at a time,
+no read-ahead queue or file-sized allocation. It reuses artifact streaming's
+8-KiB/s throughput floor over each configured request-timeout window, bounded
+socket buffers and drain deadline. Metadata changes during the range abort the
+body before completing the advertised length; clients retry/reconcile, not assume
+a pinned immutable snapshot.
+
+`TextPage` is the ordinary JSON envelope's `data`:
+
+```json
+{"bytes_base64":"<standard padded base64>","encoding":"utf-8",
+ "start_byte":"0","cursor":"123","next_byte":null,"prev_byte":null,
+ "size":"123","etag":"\"<metadata digest>\""}
+```
+
+`encoding` is `utf-8` or `binary`. Tail selects the last N physical LF-delimited
+lines (a trailing LF does not add an empty line; CRLF and an unterminated final
+line are retained exactly), returning its end byte as `cursor`. Lines returns
+complete lines plus `next_byte` (end, null at EOF) and `prev_byte` (start, null at
+BOF); request the latter with `direction=backward` to page backwards. With no
+`from_byte`, direction defaults backward from current EOF; with `from_byte`,
+defaults forward. Explicit forward without a cursor starts at zero. Non-EOF/BOF
+cursors must follow LF; out-of-file or mid-line cursors refuse 400. Limits are
+1–1000. Scan/output storage is bounded to **4 MiB** per page, read in 64-KiB
+chunks; an exceptionally long line/page exceeding that budget returns 413 rather
+than truncating a line. The encoded JSON can exceed the ordinary 1-MiB projection
+bound, but remains bounded to 6 MiB. Pages are live observations, not retained
+snapshots; compare the metadata ETag when combining them.
+
+Encoding is a conservative hint, not a whole-file validation: legacy full reads
+and text pages validate their returned bytes; ranges examine only the first
+64 KiB; follow validates each returned chunk. NUL or invalid UTF-8 indicates
+`binary`; multibyte splits at a sample/chunk boundary can conservatively report
+binary. No byte transformation occurs. `.log.gz` files can be read as compressed
+binary bytes, but **streaming gzip decompression is not implemented**: neither
+flate2 nor miniz_oxide is present in Cargo.lock and no package was added.
+
+Follow uses the existing native realtime codec/task ownership, **32 global / two
+per device-session** cap shared with console and pack sockets, 1024-byte inbound
+ceiling, 128-KiB bounded outbound buffer, two-second send deadline and control/idle
+budgets. Slow sends disconnect; there is no subscriber queue. Every 250-ms sample
+reauthenticates the session and opens/rechecks the exact canonical file under live
+scope policy. Default cursor is the observed EOF; explicit cursor begins there.
+At most one **16-KiB raw-byte** append per tick (64 KiB/s; base64 JSON frame <24 KiB).
+File shrink or native identity replacement emits `files.rotated`, resets to zero
+and resumes. A supplied cursor beyond current EOF also resets. A temporarily
+missing/unreadable file closes the stream; reconnect after rotation completes.
+Truncate-and-regrow entirely between samples can escape shrink detection. Cursors
+are byte offsets, not persistent generation-bound references; compare ETags after
+reconnect and use tail/lines/range to resynchronize. Native clients must service
+Ping/Pong and reconnect after idle or authorization closure. Exact messages:
+
+```json
+{"type":"files.available","api_version":"3","cursor":"123","size":"123","etag":"\"<digest>\""}
+{"type":"files.rotated","api_version":"3","cursor":"0","size":"42","etag":"\"<digest>\""}
+{"type":"files.append","api_version":"3","from_byte":"0","cursor":"42","size":"42","etag":"\"<digest>\"","encoding":"utf-8","bytes_base64":"<standard padded base64>"}
+```
 
 Pages default 50, maximum 100. Directory order is ASCII case-insensitive name,
 then exact name; bounds remain 1000 returned/4000 scanned entries. Trash retains
@@ -883,3 +972,34 @@ protected IPC, generation/readiness and Windows/Linux failure-drill gates. P4/P5
 routes need their own phase gates. Review OpenAPI/event schemas, durable admission,
 confirmations, redaction and bounded mock fixtures before a frontend treats this
 **draft, not implemented contract** as a production API.
+
+## Users, roles and permissions (implemented 2026-10-11)
+
+All paths are under `/api/v3/manage`, require a device session, use the standard envelope, and every mutation needs an `Idempotency-Key`. The required capability is rechecked inside the same transaction as the change and its audit record.
+
+| Endpoint | Request | Capability |
+|---|---|---|
+| GET `/users` | optional `offset`, `limit` (default 50, max 100) | `principals.view` |
+| GET `/users/{id}` | none | `principals.view` |
+| GET `/roles` | none | `principals.view` |
+| GET `/access-sources` | none | `access-sources.manage` |
+| GET `/users/{id}/devices` | none | `devices.revoke`; own devices or a lower-rank user |
+| PUT `/users/{id}/roles` | `{add:[role], remove:[role], expected_version}` | `principals.manage`, plus `roles.assign` to add and `roles.revoke` to remove |
+| POST `/roles` | `{name, rank, capabilities:[{capability, scope}]}` | `roles.create` |
+| PATCH `/roles/{id}` | `{name?, rank?, capabilities?, expected_version}` | `roles.manage` |
+| DELETE `/roles/{id}` | `{expected_version}` | `roles.manage` |
+| PATCH `/access-sources` | `{anonymous?, new_user?, whitelist?, whitelist_enabled?, password?, expected_version}` | `access-sources.manage` |
+| POST `/invitations` | `{role, expires_minutes}` (1–60) | `invitations.create` |
+| DELETE `/devices/{id}` | empty body | `devices.revoke` |
+
+Rank rules:
+- A user can change only users of strictly lower rank, never themselves.
+- Added roles must rank strictly below the actor and must not be the owner or administrator roles, which can only be granted locally. Removed roles must rank below the actor; only the owner (superadmin) role can never be removed remotely.
+- Created or edited roles must rank below the actor and may contain only capabilities the actor holds. Built-in roles cannot be edited or deleted. A role in use, or used by an automatic source, cannot be deleted.
+- The anonymous, new-user, whitelist-sync and password roles can never contain management capabilities.
+- Invitation codes are for roles below the actor, are shown once, and recheck the inviter's current permissions when redeemed.
+- Superadmin is granted or revoked only with `vesta-agent superadmin grant|revoke` on the server machine. The last superadmin cannot be removed.
+
+Errors: `management_session_invalid` (401), `management_forbidden` (403), `invalid_request` (400), `resource_not_found` (404), `precondition_failed` (412, stale `expected_version`), `idempotency_conflict` and `permission_conflict` (409), `temporarily_unavailable` (503).
+
+Known limit: the permission-change receipt store is capped and has no retention yet. When it is full, permission changes return 503 until retention is added.

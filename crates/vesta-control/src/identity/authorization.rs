@@ -89,7 +89,7 @@ pub(super) fn revoke_device(
     if !base.allowed() {
         return base;
     } // explicit deny still wins for Owner
-    if actor.holds_builtin(BuiltinRole::Owner) {
+    if actor.principal() == Some(target) {
         return Decision::Allow;
     }
     lower_target(actor, target, target_rank)

@@ -19,6 +19,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         13 => apply_v13(c),
         14 => apply_v14(c),
         15 => apply_v15(c, now_ms),
+        16 => apply_v16(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -760,5 +761,36 @@ fn apply_v15(c: &Connection, now_ms: i64) -> crate::Result<()> {
         "UPDATE management_file_outcomes SET completed_at=? WHERE outcome_json IS NOT NULL",
         [now_ms],
     )?;
+    Ok(())
+}
+
+/// Durable bounded remote permission receipts and issuer-bound pairing codes.
+fn apply_v16(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(r#"
+        CREATE TABLE management_permission_receipts (
+            key_hash BLOB PRIMARY KEY CHECK(length(key_hash)=32),
+            intent_hash BLOB NOT NULL CHECK(length(intent_hash)=32),
+            result_json TEXT NOT NULL CHECK(length(result_json)<=65536)
+        ) STRICT;
+        CREATE TABLE user_minecraft_names (
+            principal_id TEXT PRIMARY KEY REFERENCES principals(id),
+            name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 16)
+        ) STRICT;
+        CREATE TABLE management_invitation_issuers (
+            code_hash BLOB PRIMARY KEY REFERENCES management_pairing_codes(code_hash) ON DELETE CASCADE,
+            principal_id TEXT NOT NULL REFERENCES principals(id),
+            device_id TEXT NOT NULL REFERENCES devices(id)
+        ) STRICT;
+        DROP TRIGGER role_capabilities_builtin_no_insert;
+        INSERT OR IGNORE INTO role_capabilities(role_id,capability,scope)
+            SELECT id,'roles.manage','*' FROM roles WHERE id IN ('owner','administrator');
+        INSERT OR IGNORE INTO role_capabilities(role_id,capability,scope)
+            SELECT id,'access-sources.manage','*' FROM roles WHERE id IN ('owner','administrator');
+        INSERT OR IGNORE INTO role_capabilities(role_id,capability,scope)
+            SELECT id,'invitations.create','*' FROM roles WHERE id IN ('owner','administrator');
+        CREATE TRIGGER role_capabilities_builtin_no_insert BEFORE INSERT ON role_capabilities
+        WHEN (SELECT builtin FROM roles WHERE id = NEW.role_id) = 1
+        BEGIN SELECT RAISE(ABORT, 'builtin roles are immutable'); END;
+    "#)?;
     Ok(())
 }

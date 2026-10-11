@@ -223,7 +223,7 @@ fn scope_and_capability_values_are_validated_at_construction() {
     // A capability that is not resource-scoped may not carry a narrower scope.
     assert!(RoleGrant::new(Capability::StatusView, scope).is_err());
     assert!(RoleGrant::new(Capability::FilesRead, ResourceScope::ALL).is_ok());
-    assert_eq!(Capability::ALL.len(), 54);
+    assert_eq!(Capability::ALL.len(), 57);
     assert_eq!(BuiltinRole::ALL.len(), 6);
 }
 

@@ -20,6 +20,9 @@ pub(super) fn implemented(path: &str) -> bool {
         path,
         "/api/v3/manage/files"
             | "/api/v3/manage/files/content"
+            | "/api/v3/manage/files/tail"
+            | "/api/v3/manage/files/lines"
+            | "/api/v3/manage/files/follow"
             | "/api/v3/manage/files/mkdir"
             | "/api/v3/manage/files/rename"
             | "/api/v3/manage/files/uploads"
@@ -42,7 +45,7 @@ fn restore_route(path: &str) -> Option<&str> {
         .strip_suffix("/restore")?;
     (!id.is_empty() && !id.contains('/')).then_some(id)
 }
-fn file_error(value: FileError) -> Reply {
+pub(crate) fn file_error(value: FileError) -> Reply {
     match value {
         FileError::Control(_) => error(StatusCode::FORBIDDEN, "management_forbidden"),
         FileError::InvalidPath
@@ -202,7 +205,11 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     let capabilities: &[Capability] = match action {
         "files" if request.method == Method::GET => &[Capability::FilesList],
         "files" => &[Capability::FilesDelete],
-        "files/content" if request.method == Method::GET => &[Capability::FilesRead],
+        "files/content" | "files/tail" | "files/lines" | "files/follow"
+            if request.method == Method::GET =>
+        {
+            &[Capability::FilesRead]
+        }
         "files/content" | "files/uploads" if request.if_match.is_some() => {
             &[Capability::FilesOverwrite]
         }
@@ -216,6 +223,11 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     if let Err(e) = host.files().check_remote_surface(&subject, capabilities) {
         return file_error(e);
     }
+    if (request.range.is_some() || request.if_range.is_some())
+        && !(action == "files/content" && request.method == Method::GET)
+    {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
     if request.method == Method::POST && request.bytes.len() > 65_536 {
         return error(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large");
     }
@@ -226,6 +238,9 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         {
             return error(StatusCode::BAD_REQUEST, "invalid_request");
         }
+        if matches!(action, "files/tail" | "files/lines") {
+            return text_page(host, &request, &subject, action);
+        }
         if action == "files/content" {
             let Some(query) = query(request.query, &["path"]) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
@@ -233,6 +248,12 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             let Some(path) = query.get("path").and_then(|s| relative(s)) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
             };
+            if let Some(range) = request.range {
+                return ranged(host, &subject, &path, range, request.if_range);
+            }
+            if request.if_range.is_some() {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            }
             return match host.files().read(&subject, &path, MAX_READ_BYTES) {
                 Ok(value) => {
                     // ReplyBody already sends owned bytes in bounded 64-KiB frames.
@@ -240,6 +261,16 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                         StatusCode::OK,
                         value.bytes().to_vec(),
                         "application/octet-stream",
+                    );
+                    reply.headers_mut().insert(
+                        "x-vesta-encoding",
+                        http::HeaderValue::from_static(vesta_control::files::encoding_hint(
+                            value.bytes(),
+                        )),
+                    );
+                    reply.headers_mut().insert(
+                        "x-vesta-file-size",
+                        value.bytes().len().to_string().parse().expect("size"),
                     );
                     reply
                         .headers_mut()
@@ -627,4 +658,204 @@ fn documents(
         };
     }
     error(StatusCode::BAD_REQUEST, "invalid_request")
+}
+
+fn parse_range(value: &str, size: u64) -> Option<(u64, u64)> {
+    let value = value.strip_prefix("bytes=")?;
+    let (start, end) = value.split_once('-')?;
+    if size == 0 {
+        return None;
+    }
+    let (start, end) = if start.is_empty() {
+        let suffix = decimal(end)?;
+        if suffix == 0 {
+            return None;
+        }
+        (size.saturating_sub(suffix), size - 1)
+    } else {
+        let start = decimal(start)?;
+        let end = if end.is_empty() {
+            size - 1
+        } else {
+            decimal(end)?.min(size - 1)
+        };
+        (start, end)
+    };
+    if start >= size || end < start || end - start + 1 > vesta_control::files::MAX_RANGE_BYTES {
+        return None;
+    }
+    Some((start, end))
+}
+fn ranged(
+    host: &NetworkHost,
+    subject: &vesta_control::identity::Subject,
+    path: &RelativePath,
+    range: &str,
+    if_range: Option<&str>,
+) -> Reply {
+    let mut file = match host.files().open_stream(subject, path) {
+        Ok(file) => file,
+        Err(e) => return file_error(e),
+    };
+    let size = file.size();
+    let etag = file.etag().to_owned();
+    if if_range.is_some_and(|value| value != etag) {
+        // If-Range mismatch ignores Range. Preserve the original full-read bound.
+        let mut reply = match host.files().read(subject, path, MAX_READ_BYTES) {
+            Ok(read) => {
+                let current = match host.files().open_stream(subject, path) {
+                    Ok(current) => current,
+                    Err(e) => return file_error(e),
+                };
+                if current.etag() != etag || read.bytes().len() as u64 != current.size() {
+                    let mut reply = error(StatusCode::PRECONDITION_FAILED, "precondition_failed");
+                    read_headers(&mut reply, current.size(), current.etag());
+                    return reply;
+                }
+                let mut reply = response(
+                    StatusCode::OK,
+                    read.bytes().to_vec(),
+                    "application/octet-stream",
+                );
+                reply
+                    .headers_mut()
+                    .insert("x-vesta-sha256", read.sha256().parse().expect("digest"));
+                reply.headers_mut().insert(
+                    "x-vesta-encoding",
+                    http::HeaderValue::from_static(vesta_control::files::encoding_hint(
+                        read.bytes(),
+                    )),
+                );
+                reply
+            }
+            Err(e) => file_error(e),
+        };
+        read_headers(&mut reply, size, &etag);
+        return reply;
+    }
+    let Some((start, end)) = parse_range(range, size) else {
+        let mut reply = error(StatusCode::RANGE_NOT_SATISFIABLE, "range_not_satisfiable");
+        reply.headers_mut().insert(
+            "content-range",
+            format!("bytes */{size}").parse().expect("size"),
+        );
+        read_headers(&mut reply, size, &etag);
+        return reply;
+    };
+    let hint = match file.encoding_hint() {
+        Ok(hint) => hint,
+        Err(e) => return file_error(e),
+    };
+    let Some(body) = crate::file_body::FileBody::new(file, start, end - start + 1) else {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable");
+    };
+    let mut reply = http::Response::builder()
+        .status(StatusCode::PARTIAL_CONTENT)
+        .header("content-type", "application/octet-stream")
+        .header("cache-control", "no-store")
+        .header("content-length", end - start + 1)
+        .header("content-range", format!("bytes {start}-{end}/{size}"))
+        .header("x-vesta-encoding", hint)
+        .body(crate::ReplyBody::File(Box::new(body)))
+        .expect("range headers");
+    read_headers(&mut reply, size, &etag);
+    reply
+}
+fn read_headers(reply: &mut Reply, size: u64, etag: &str) {
+    for (name, value) in [
+        ("etag", etag.to_owned()),
+        ("x-vesta-file-size", size.to_string()),
+        ("accept-ranges", "bytes".to_owned()),
+        ("x-vesta-api-version", "3".to_owned()),
+        (
+            "x-vesta-request-id",
+            format!(
+                "request-{}",
+                super::REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ),
+        ),
+    ] {
+        reply
+            .headers_mut()
+            .insert(name, value.parse().expect("fixed read header"));
+    }
+}
+fn text_page(
+    host: &NetworkHost,
+    request: &Request<'_>,
+    subject: &vesta_control::identity::Subject,
+    action: &str,
+) -> Reply {
+    use base64::Engine;
+    if request.range.is_some() || request.if_range.is_some() {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    let tail = action == "files/tail";
+    let allowed: &[&str] = if tail {
+        &["path", "lines"]
+    } else {
+        &["path", "from_byte", "limit", "direction"]
+    };
+    let Some(query) = query(request.query, allowed) else {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let Some(path) = query.get("path").and_then(|s| relative(s)) else {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let limit = query
+        .get(if tail { "lines" } else { "limit" })
+        .map_or(Some(100), |s| {
+            decimal(s).and_then(|n| usize::try_from(n).ok())
+        });
+    let Some(limit @ 1..=vesta_control::files::MAX_TEXT_LINES) = limit else {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let backwards = if tail {
+        true
+    } else {
+        match query.get("direction").map(String::as_str) {
+            Some("backward") => true,
+            Some("forward") => false,
+            None => !query.contains_key("from_byte"),
+            _ => return error(StatusCode::BAD_REQUEST, "invalid_request"),
+        }
+    };
+    let mut file = match host.files().open_stream(subject, &path) {
+        Ok(file) => file,
+        Err(e) => return file_error(e),
+    };
+    let from = query
+        .get("from_byte")
+        .map_or(Some(if backwards { file.size() } else { 0 }), |s| {
+            decimal(s)
+        });
+    let Some(from) = from else {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    match file.lines(from, limit, backwards) {
+        Ok(page) => ok(
+            json!({"bytes_base64":base64::engine::general_purpose::STANDARD.encode(&page.bytes),"encoding":page.encoding,"start_byte":page.start.to_string(),"cursor":page.end.to_string(),"next_byte":(page.end < page.size).then(|| page.end.to_string()),"prev_byte":(page.start > 0).then(|| page.start.to_string()),"size":page.size.to_string(),"etag":page.etag}),
+        ),
+        Err(e) => file_error(e),
+    }
+}
+
+pub(crate) fn follow_query(value: Option<&str>) -> Option<(RelativePath, Option<u64>)> {
+    let query = query(value, &["path", "cursor"])?;
+    // Document exclusion occurs after capability admission in open_stream.
+    let path = RelativePath::parse(query.get("path")?).ok()?;
+    let cursor = query.get("cursor").map(|s| decimal(s)).transpose_option()?;
+    Some((path, cursor))
+}
+trait TransposeOption<T> {
+    fn transpose_option(self) -> Option<Option<T>>;
+}
+impl<T> TransposeOption<T> for Option<Option<T>> {
+    fn transpose_option(self) -> Option<Option<T>> {
+        match self {
+            Some(Some(value)) => Some(Some(value)),
+            Some(None) => None,
+            None => Some(None),
+        }
+    }
 }

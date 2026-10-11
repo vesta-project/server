@@ -18,6 +18,7 @@ pub enum Op {
     OwnerLink { uuid: String, role: String },
     OwnerUnlink { uuid: String, revoke_devices: bool },
     OwnerList,
+    Superadmin { user: String, grant: bool },
     AccessShow,
     AccessSet { fields: Vec<(String, String)> },
     DevicesRevoke { device: String },
@@ -145,6 +146,7 @@ async fn serve_stream<S: AsyncRead + AsyncWrite + Unpin>(
                     | Op::OwnerLink { .. }
                     | Op::OwnerUnlink { .. }
                     | Op::OwnerList
+                    | Op::Superadmin { .. }
                     | Op::AccessShow
                     | Op::AccessSet { .. }
             ) =>
@@ -457,6 +459,12 @@ fn management_op(
                 .map_err(|_| "local_management_refused")?,
         )
         .map_err(|_| "local_management_refused"),
+        Op::Superadmin { user, grant } => {
+            service
+                .superadmin_local(&user, grant)
+                .map_err(|_| "local_management_refused")?;
+            Ok(serde_json::json!({"user": user, "superadmin": grant}))
+        }
         Op::OwnerList => serde_json::to_value(
             service
                 .links_local()

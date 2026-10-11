@@ -60,6 +60,7 @@ use vesta_control::{
     host::NetworkHost,
 };
 
+mod file_body;
 mod manage;
 mod realtime;
 mod routes;
@@ -348,6 +349,7 @@ enum ReplyBody {
         deadline: Arc<ConnectionDeadline>,
     },
     Artifact(Box<ArtifactBody>),
+    File(Box<file_body::FileBody>),
 }
 impl ReplyBody {
     fn watch(&mut self, deadline: Arc<ConnectionDeadline>) {
@@ -362,6 +364,7 @@ impl ReplyBody {
                 };
             }
             Self::Artifact(body) => body.watch(deadline),
+            Self::File(body) => body.watch(deadline),
             Self::TimedBytes { .. } => unreachable!("response is watched once"),
         }
     }
@@ -467,6 +470,7 @@ impl Body for ReplyBody {
                 }
                 Poll::Ready(frame.map(Ok))
             }
+            Self::File(body) => Pin::new(body.as_mut()).poll_frame(cx),
             Self::Artifact(body) => {
                 if body.pending.is_none() {
                     let Some(mut stream) = body.stream.take() else {
@@ -508,6 +512,7 @@ impl Body for ReplyBody {
     fn is_end_stream(&self) -> bool {
         match self {
             Self::Bytes(bytes) | Self::TimedBytes { bytes, .. } => bytes.is_empty(),
+            Self::File(body) => body.is_end_stream(),
             Self::Artifact(body) => {
                 body.pending.is_none() && body.stream.as_ref().is_none_or(|s| s.remaining == 0)
             }
@@ -520,7 +525,7 @@ impl Body for ReplyBody {
             }
             // Content-Length is set from the checked published size. Do not claim
             // completion while an unverified read is in flight.
-            Self::Artifact(_) => SizeHint::default(),
+            Self::Artifact(_) | Self::File(_) => SizeHint::default(),
         }
     }
 }

@@ -9,7 +9,8 @@ use vesta_server_install::Software;
 pub const USAGE: &str = "Usage: vesta-agent version | update | check-config <path> | status <path> | serve <path> [--local-only]\n       vesta-agent create <name> --install-root <root> --minecraft-version <version> --java <path> [--loader <vanilla|paper|folia|purpur|fabric|quilt>] [--loader-version <version>] [--bind <loopback-ip>] [--port <port>] [--approve-install] [--ack-warnings] [--ack-legacy-checksum]\n       vesta-agent delete <name> --confirm <name> [--install-root <root>]\n       vesta-agent <config|start|stop|restart> <name> [--install-root <root>]
        vesta-agent access show|set <name> [--anonymous-role role] [--new-user-role role] [--whitelist-role role] [--whitelist-sync on|off] [--password-role role] [--install-root path]\n  vesta-agent pair <name> [--install-root <root>] [--role owner|admin|administrator|maintainer|moderator|viewer|pack-user] [--expires <1..60 minutes>]
        vesta-agent devices list <name> [--install-root <root>]
-       vesta-agent devices revoke <device-id> <name> [--install-root <root>]\n       vesta-agent owner link <name> --minecraft-uuid <uuid> [--role <builtin>] [--install-root <root>]\n       vesta-agent owner unlink <name> --minecraft-uuid <uuid> [--revoke-devices] [--install-root <root>]\n       vesta-agent owner list <name> [--install-root <root>]";
+       vesta-agent devices revoke <device-id> <name> [--install-root <root>]\n       vesta-agent owner link <name> --minecraft-uuid <uuid> [--role <builtin>] [--install-root <root>]\n       vesta-agent owner unlink <name> --minecraft-uuid <uuid> [--revoke-devices] [--install-root <root>]\n       vesta-agent owner list <name> [--install-root <root>]
+       vesta-agent superadmin grant|revoke <user-id> <name> [--install-root <root>]";
 #[derive(Debug)]
 pub enum Command {
     Help,
@@ -122,6 +123,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
                 _ => Command::Serve { source, local_only },
             });
         }
+        "superadmin" => return parse_superadmin(&args),
         "owner" => return parse_owner(&args),
         "access" => return parse_access(&args),
         "pair" | "devices" => return parse_management(&args),
@@ -567,4 +569,28 @@ mod access_grammar_tests {
             assert!(p(&args).is_err(), "{args:?}");
         }
     }
+}
+
+fn parse_superadmin(args: &[OsString]) -> Result<Command, ()> {
+    let grant = match args.get(1).and_then(|v| v.to_str()) {
+        Some("grant") => true,
+        Some("revoke") => false,
+        _ => return Err(()),
+    };
+    let user = args.get(2).and_then(|v| v.to_str()).ok_or(())?.to_owned();
+    vesta_control::identity::PrincipalId::parse(&user).map_err(|_| ())?;
+    let name = args.get(3).and_then(|v| v.to_str()).ok_or(())?.to_owned();
+    if !valid_name(&name) {
+        return Err(());
+    }
+    let root = match args.len() {
+        4 => None,
+        6 if args[4] == "--install-root" && !args[5].is_empty() => Some(PathBuf::from(&args[5])),
+        _ => return Err(()),
+    };
+    Ok(Command::Management {
+        name,
+        root,
+        op: crate::control::Op::Superadmin { user, grant },
+    })
 }

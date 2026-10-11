@@ -348,6 +348,9 @@ impl<'a> Repository<'a> {
         expiry: Option<i64>,
         by: &str,
     ) -> Result<AssignmentId> {
+        if role.as_str() != BuiltinRole::Owner.id() {
+            self.ensure_owner_survives(principal)?;
+        }
         // Expired but unrevoked assignments are also replaced; no resurrection.
         self.connection.execute(
             "UPDATE role_assignments SET revoked_at = ?, revoked_by = ? WHERE principal_id = ? AND revoked_at IS NULL",
@@ -360,6 +363,17 @@ impl<'a> Repository<'a> {
         )?;
         Ok(id)
     }
+    pub(super) fn ensure_owner_survives(&self, principal: &PrincipalId) -> Result<()> {
+        let holds: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM role_assignments WHERE principal_id=? AND role_id='owner' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?))", params![principal.as_str(),self.now], |r|r.get(0))?;
+        if holds {
+            let count: i64 = self.connection.query_row("SELECT count(DISTINCT p.id) FROM principals p JOIN role_assignments a ON a.principal_id=p.id WHERE p.server_id=? AND p.status='active' AND a.role_id='owner' AND a.revoked_at IS NULL AND (a.expires_at IS NULL OR a.expires_at>?)", params![self.server,self.now], |r|r.get(0))?;
+            if count <= 1 {
+                return Err(rejected(IdentityErrorCode::Conflict));
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn insert_override(
         &self,
         principal: &PrincipalId,

@@ -131,8 +131,10 @@ impl Sockets {
 
 pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) -> Reply {
     let console = request.uri().path() == "/api/v3/manage/console/stream";
+    let follow = request.uri().path() == "/api/v3/manage/files/follow";
+    let management = console || follow;
     let error = |status, code| {
-        if console {
+        if management {
             super::manage::error(
                 status,
                 match code {
@@ -158,7 +160,22 @@ pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) 
         .and_then(|q| q.strip_prefix("installed="))
         .filter(|s| !s.is_empty() && s.len() <= 20 && s.bytes().all(|b| b.is_ascii_digit()))
         .and_then(|s| s.parse::<u64>().ok());
-    let installed = if console && request.uri().query().is_none() {
+    let follow_target = if follow {
+        match super::manage::files::follow_query(request.uri().query()) {
+            Some(target) => Some(target),
+            None => return error(StatusCode::BAD_REQUEST, "invalid_request"),
+        }
+    } else {
+        None
+    };
+    if management
+        && ["range", "if-range", "if-match", "if-none-match"]
+            .iter()
+            .any(|name| request.headers().contains_key(*name))
+    {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    let installed = if follow || (console && request.uri().query().is_none()) {
         Some(0)
     } else {
         installed
@@ -230,25 +247,44 @@ pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) 
     state.jobs.reap(false).await;
     state.realtime.reap(false).await;
     let host = state.host.clone();
-    let console_secret = console.then(|| zeroize::Zeroizing::new(secret.as_str().to_owned()));
-    let session = if console {
+    let console_secret = management.then(|| zeroize::Zeroizing::new(secret.as_str().to_owned()));
+    let admission_target = follow_target.clone();
+    let session = if management {
         let admitted = state
             .jobs
             .run(move || {
-                host.management().authorize(
-                    secret.as_str(),
-                    vesta_control::identity::Capability::ConsoleRead,
-                    None,
-                )?;
-                host.management().pack_reference(Some(secret.as_str()))
+                if let Some((path, _)) = admission_target {
+                    let subject = host
+                        .management()
+                        .authenticate(secret.as_str())
+                        .map_err(|e| Box::new(super::manage::management_error(e)))?;
+                    host.files()
+                        .check_remote_surface(
+                            &subject,
+                            &[vesta_control::identity::Capability::FilesRead],
+                        )
+                        .map_err(|e| Box::new(super::manage::files::file_error(e)))?;
+                    host.files()
+                        .open_stream(&subject, &path)
+                        .map_err(|e| Box::new(super::manage::files::file_error(e)))?;
+                } else {
+                    host.management()
+                        .authorize(
+                            secret.as_str(),
+                            vesta_control::identity::Capability::ConsoleRead,
+                            None,
+                        )
+                        .map_err(|e| Box::new(super::manage::management_error(e)))?;
+                }
+                host.management()
+                    .pack_reference(Some(secret.as_str()))
+                    .map_err(|e| Box::new(super::manage::management_error(e)))
             })
             .await;
         let reference = match admitted {
             Ok(Ok(reference)) => reference,
-            Ok(Err(vesta_control::identity::management::ManagementError::Forbidden)) => {
-                return error(StatusCode::FORBIDDEN, "management_forbidden");
-            }
-            _ => return error(StatusCode::UNAUTHORIZED, "management_session_invalid"),
+            Ok(Err(reply)) => return *reply,
+            _ => return error(StatusCode::SERVICE_UNAVAILABLE, "realtime_busy"),
         };
         (reference, None)
     } else {
@@ -309,7 +345,11 @@ pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) 
         };
         let config = WebSocketConfig {
             write_buffer_size: 0,
-            max_write_buffer_size: if console { 128 * 1024 } else { FRAME_BYTES * 2 },
+            max_write_buffer_size: if management {
+                128 * 1024
+            } else {
+                FRAME_BYTES * 2
+            },
             max_message_size: Some(FRAME_BYTES),
             max_frame_size: Some(FRAME_BYTES),
             ..WebSocketConfig::default()
@@ -318,7 +358,11 @@ pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) 
             WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, Some(config))
                 .await;
         if let Some(secret) = console_secret {
-            connected_console(socket, owned, secret).await;
+            if let Some((path, cursor)) = follow_target {
+                connected_follow(socket, owned, secret, path, cursor).await;
+            } else {
+                connected_console(socket, owned, secret).await;
+            }
         } else {
             connected(
                 socket,
@@ -334,7 +378,10 @@ pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) 
 }
 
 type Socket = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
-async fn send(socket: &mut Socket, message: Message) -> Result<(), ()> {
+async fn send<S>(socket: &mut S, message: Message) -> Result<(), ()>
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
     tokio::time::timeout(SEND_TIMEOUT, socket.send(message))
         .await
         .map_err(|_| ())?
@@ -583,4 +630,128 @@ async fn connected_console(
         })),
     )
     .await;
+}
+
+async fn connected_follow(
+    mut socket: Socket,
+    state: Arc<Shared>,
+    secret: zeroize::Zeroizing<String>,
+    path: vesta_control::files::RelativePath,
+    mut cursor: Option<u64>,
+) {
+    let mut stop = state.stop.clone();
+    let mut identity: Option<String> = None;
+    let mut previous_size = 0;
+    let close = async {
+        let mut poll = tokio::time::interval(Duration::from_millis(250));
+        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + HEARTBEAT, HEARTBEAT);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut activity = Instant::now();
+        let mut controls = ControlRate::new(activity);
+        loop {
+            tokio::select! {
+                biased;
+                _ = stop.changed() => return CloseCode::Away,
+                _ = tokio::time::sleep_until((activity + IDLE).into()) => return CloseCode::Policy,
+                _ = poll.tick() => {
+                    let observed = admitted(&state.realtime_jobs, &state.stop, SEND_TIMEOUT.min(state.timeout), || {
+                        let host = state.host.clone();
+                        let token = zeroize::Zeroizing::new(secret.as_str().to_owned());
+                        let path = path.clone();
+                        let old_identity = identity.clone();
+                        move || {
+                            let subject = host.management().authenticate(token.as_str()).map_err(|_| Refusal::Revoked)?;
+                            let mut file = host.files().open_stream(&subject, &path).map_err(|e| match e {
+                                vesta_control::files::FileError::Control(_) | vesta_control::files::FileError::ProtectedPath | vesta_control::files::FileError::LinkedPath => Refusal::Revoked,
+                                _ => Refusal::Unavailable,
+                            })?;
+                            let size = file.size();
+                            let rotated = old_identity.as_ref().is_some_and(|old| old != file.identity()) || (old_identity.is_some() && size < previous_size) || cursor.is_some_and(|offset| offset > size);
+                            let offset = if rotated { 0 } else { cursor.unwrap_or(size) };
+                            // One 16-KiB raw frame per tick: at most 64 KiB/s, no queue.
+                            let bytes = file.read_chunk(offset, 16 * 1024).map_err(|_| Refusal::Unavailable)?;
+                            Ok((file.identity().to_owned(), size, file.etag().to_owned(), offset, bytes, rotated))
+                        }
+                    }).await;
+                    let (new_identity,size,etag,offset,bytes,rotated) = match observed { Ok(value) => value, Err(refusal) => return refusal.close_code() };
+                    let first = identity.is_none();
+                    identity = Some(new_identity); previous_size = size;
+                    if first || rotated {
+                        let notice = serde_json::json!({"type":if rotated {"files.rotated"} else {"files.available"},"api_version":"3","cursor":offset.to_string(),"size":size.to_string(),"etag":etag});
+                        if send(&mut socket, Message::Text(notice.to_string())).await.is_err() { return CloseCode::Away; }
+                    }
+                    cursor = Some(offset + bytes.len() as u64);
+                    if !bytes.is_empty() {
+                        let notice = serde_json::json!({"type":"files.append","api_version":"3","from_byte":offset.to_string(),"cursor":cursor.expect("cursor").to_string(),"size":size.to_string(),"etag":etag,"encoding":vesta_control::files::encoding_hint(&bytes),"bytes_base64":base64::engine::general_purpose::STANDARD.encode(&bytes)});
+                        if send(&mut socket, Message::Text(notice.to_string())).await.is_err() { return CloseCode::Away; }
+                    }
+                }
+                _ = heartbeat.tick() => { if send(&mut socket, Message::Ping(Vec::new())).await.is_err() { return CloseCode::Away; } }
+                message = socket.next() => match message {
+                    Some(Ok(Message::Ping(_) | Message::Pong(_))) => {
+                        if !controls.admit(Instant::now()) { return CloseCode::Policy; }
+                        activity = Instant::now();
+                        if !matches!(tokio::time::timeout(SEND_TIMEOUT, socket.flush()).await, Ok(Ok(()))) { return CloseCode::Away; }
+                    }
+                    Some(Ok(Message::Close(_))) => { let _ = tokio::time::timeout(SEND_TIMEOUT, socket.flush()).await; return CloseCode::Normal; }
+                    None => return CloseCode::Normal,
+                    _ => return CloseCode::Policy,
+                }
+            }
+        }
+    }.await;
+    let _ = send(
+        &mut socket,
+        Message::Close(Some(CloseFrame {
+            code: close,
+            reason: "".into(),
+        })),
+    )
+    .await;
+}
+
+#[cfg(test)]
+mod file_stream_budget_tests {
+    use super::*;
+    #[test]
+    fn a_slow_consumer_cannot_hold_a_follow_send_indefinitely() {
+        struct Stalled;
+        impl futures_util::Sink<Message> for Stalled {
+            type Error = ();
+            fn poll_ready(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Result<(), ()>> {
+                std::task::Poll::Pending
+            }
+            fn start_send(self: std::pin::Pin<&mut Self>, _: Message) -> Result<(), ()> {
+                unreachable!()
+            }
+            fn poll_flush(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Result<(), ()>> {
+                std::task::Poll::Pending
+            }
+            fn poll_close(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Result<(), ()>> {
+                std::task::Poll::Pending
+            }
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let start = Instant::now();
+        assert!(
+            runtime
+                .block_on(send(&mut Stalled, Message::Text("files.append".into())))
+                .is_err()
+        );
+        assert!(start.elapsed() >= SEND_TIMEOUT);
+        assert!(start.elapsed() < SEND_TIMEOUT + Duration::from_secs(2));
+    }
 }

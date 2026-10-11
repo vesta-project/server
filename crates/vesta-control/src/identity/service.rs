@@ -441,6 +441,19 @@ impl IdentityService {
                 let principal = repo.grant_principal(table, id)?;
                 let target_rank = repo.rank(&principal)?;
                 enforce(authorization::revoke(policy, &principal, target_rank))?;
+                if matches!(table, GrantTable::Assignments) {
+                    let role: String = repo.connection().query_row(
+                        "SELECT role_id FROM role_assignments WHERE id=?",
+                        [id],
+                        |r| r.get(0),
+                    )?;
+                    let role = repo.role(&RoleId::parse(&role)?)?;
+                    if role.rank >= policy.rank() || role.builtin == Some(BuiltinRole::Owner) {
+                        return Err(crate::ControlError::forbidden(
+                            super::DenyReason::LocalGrantOnly,
+                        ));
+                    }
+                }
                 repo.revoke_grant(table, id, authenticated_principal(policy)?)?;
                 self.audit_success(
                     repo,
@@ -454,9 +467,8 @@ impl IdentityService {
         )
     }
 
-    /// An exact devices.revoke capability always applies, including to Owner. Owner may
-    /// then revoke any device; every other actor still requires strictly lower rank and
-    /// no self-target, because the capability check runs first.
+    /// Exact devices.revoke is required even for Owner. All actors may revoke their
+    /// own devices; other users must have strictly lower rank.
     fn revoke_device(&self, subject: &Subject, id: DeviceId) -> Result<AuthorityChange> {
         let refusal_target = format!("device:{}", id.as_str());
         self.remote(

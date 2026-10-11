@@ -252,7 +252,8 @@ fn read_buffered_reply(reader: &mut impl BufRead) -> std::io::Result<WireReply> 
         "CORS must be absent"
     );
     let size: usize = headers.get("content-length").unwrap().parse().unwrap();
-    assert!(size <= 1024 * 1024);
+    // Text pages encode at most 4 MiB; disk ranges are capped at 4 MiB.
+    assert!(size <= 6 * 1024 * 1024);
     let mut body = vec![0; size];
     reader.read_exact(&mut body)?;
     Ok(WireReply {
@@ -2751,3 +2752,9 @@ fn management_pack_mutations_are_authorized_atomic_and_idempotent() {
 
 #[path = "support/management_files.rs"]
 mod management_files;
+
+#[path = "support/large_files.rs"]
+mod large_files;
+
+#[path = "support/management_permissions.rs"]
+mod management_permissions;

@@ -17,14 +17,20 @@ use vesta_control::{
 };
 
 #[path = "manage_files.rs"]
-mod files;
+pub(super) mod files;
+#[path = "manage_permissions.rs"]
+mod permissions;
 
 static REQUEST: AtomicU64 = AtomicU64::new(1);
+pub(super) fn permission_endpoint(path: &str) -> bool {
+    permissions::implemented(path)
+}
 pub(super) fn file_endpoint(path: &str) -> bool {
     files::implemented(path)
 }
 pub(super) fn implemented(path: &str) -> bool {
     files::implemented(path)
+        || permissions::implemented(path)
         || matches!(
             path,
             "/api/v3/manage/server"
@@ -65,7 +71,7 @@ pub(super) fn error(status: StatusCode, code: &'static str) -> Reply {
 fn ok(data: Value) -> Reply {
     envelope(StatusCode::OK, json!({"data": data}))
 }
-fn management_error(e: ManagementError) -> Reply {
+pub(super) fn management_error(e: ManagementError) -> Reply {
     match e {
         ManagementError::Forbidden => error(StatusCode::FORBIDDEN, "management_forbidden"),
         ManagementError::SessionInvalid | ManagementError::PairInvalid => {
@@ -323,8 +329,13 @@ pub(super) struct Request<'a> {
     pub bytes: &'a [u8],
     pub if_match: Option<&'a str>,
     pub if_none_match: Option<&'a str>,
+    pub range: Option<&'a str>,
+    pub if_range: Option<&'a str>,
 }
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
+    if permissions::implemented(request.path) {
+        return permissions::dispatch(host, request);
+    }
     if files::implemented(request.path) {
         return files::dispatch(host, request);
     }

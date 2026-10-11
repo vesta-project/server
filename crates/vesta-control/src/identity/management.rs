@@ -258,6 +258,7 @@ impl ManagementAccess {
             let role = RoleId::parse(&role.ok_or(invalid)?)?;
             // BEGIN IMMEDIATE owns redemption. Removal, policy, enrollment and
             // audit commit together; failed transactions leave the code usable.
+            let issuer = self.invitation_issuer(repo, &hash)?;
             c.execute("DELETE FROM management_pairing_codes WHERE code_hash = ?", [hash.as_slice()])?;
             repo.role(&role)?;
             if let Some(subject)=&authenticated {self.subject_in(repo,&subject.device)?;}
@@ -268,7 +269,11 @@ impl ManagementAccess {
                 let device=repo.insert_device(&principal,&label,&fingerprint)?;
                 c.execute("INSERT INTO management_device_keys (device_id, server_id, public_key) VALUES (?,?,?)", params![device.as_str(), self.server_id(), key.as_slice()])?;device
             };
-            repo.replace_role(&principal, &role, None, "local-owner-pair")?;
+            if let Some(issuer) = issuer {
+                self.redeem_invitation(repo, &issuer, &principal, &role)?;
+            } else {
+                repo.replace_role(&principal, &role, None, "local-owner-pair")?;
+            }
             let subject = Subject { principal: principal.clone(), device: device.clone() };
             if !repo.policy(Some(&subject))?.has_current_identity() { return Err(ManagementError::Unavailable); }
             self.audit(repo, device_actor(&subject)?, "management.pair.enroll", device.as_str())?;
@@ -316,6 +321,8 @@ impl ManagementAccess {
             let c = repo.connection();
             c.execute("DELETE FROM management_owner_links WHERE server_id = ? AND minecraft_uuid = ?", params![self.server_id(), uuid])?;
             if revoke_devices {
+                let linked_owner: Option<String> = c.query_row("SELECT a.principal_id FROM role_assignments a JOIN user_minecraft_accounts m ON m.principal_id=a.principal_id WHERE m.server_id=? AND m.minecraft_uuid=? AND a.role_id='owner' AND a.granted_by='local-owner-minecraft-link' AND a.revoked_at IS NULL AND (a.expires_at IS NULL OR a.expires_at>?) LIMIT 1",params![self.server_id(),uuid,repo.now],|r|r.get(0)).optional()?;
+                if let Some(id) = linked_owner { repo.ensure_owner_survives(&PrincipalId::parse(&id)?)?; }
                 c.execute("UPDATE devices SET revoked_at = ?, revoked_by = 'local-os-owner' WHERE server_id = ? AND revoked_at IS NULL AND principal_id IN (SELECT principal_id FROM user_minecraft_accounts WHERE server_id = ? AND minecraft_uuid = ?)", params![repo.now, self.server_id(), self.server_id(), uuid])?;
                 c.execute("UPDATE role_assignments SET revoked_at=?,revoked_by='local-os-owner' WHERE granted_by='local-owner-minecraft-link' AND revoked_at IS NULL AND principal_id IN (SELECT principal_id FROM user_minecraft_accounts WHERE server_id=? AND minecraft_uuid=?)",params![repo.now,self.server_id(),uuid])?;
             }
@@ -620,3 +627,5 @@ mod tests;
 
 mod access;
 pub use access::{AccessSettings, DeviceSessionReference};
+
+pub mod permissions;

@@ -95,9 +95,11 @@ pub(super) async fn route(
             _ => Err(()),
         }
     };
-    let (Ok(if_match), Ok(if_none_match)) = (
+    let (Ok(if_match), Ok(if_none_match), Ok(range), Ok(if_range)) = (
         conditional_header("if-match"),
         conditional_header("if-none-match"),
+        conditional_header("range"),
+        conditional_header("if-range"),
     ) else {
         return super::manage::error(StatusCode::BAD_REQUEST, "invalid_request");
     };
@@ -132,7 +134,11 @@ pub(super) async fn route(
     if !recognized {
         return error(StatusCode::NOT_FOUND, "endpoint_not_found");
     }
-    if path == "/api/v3/manage/console/stream" && method == Method::GET {
+    if matches!(
+        path.as_str(),
+        "/api/v3/manage/console/stream" | "/api/v3/manage/files/follow"
+    ) && method == Method::GET
+    {
         return super::realtime::upgrade(request, state).await;
     }
     if path == "/api/v2/realtime" {
@@ -183,6 +189,19 @@ pub(super) async fn route(
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
     if request.headers().contains_key("cookie") {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if super::manage::permission_endpoint(&path)
+        && (method == Method::PUT
+            || method == Method::PATCH
+            || (method == Method::DELETE && path.starts_with("/api/v3/manage/roles/")))
+        && (request.headers().get_all("content-type").iter().count() != 1
+            || request
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                != Some("application/json"))
+    {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
     let maximum = state.max_body;
@@ -245,6 +264,8 @@ pub(super) async fn route(
                     bytes: &bytes,
                     if_match: if_match.as_deref(),
                     if_none_match: if_none_match.as_deref(),
+                    range: range.as_deref(),
+                    if_range: if_range.as_deref(),
                 },
             );
         }

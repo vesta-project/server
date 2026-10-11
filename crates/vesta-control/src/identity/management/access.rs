@@ -44,7 +44,7 @@ impl fmt::Debug for DeviceSessionReference {
         f.write_str("DeviceSessionReference[<redacted>]")
     }
 }
-fn safe(capability: Capability) -> bool {
+pub(super) fn safe(capability: Capability) -> bool {
     matches!(
         capability,
         Capability::PublicInfo
@@ -53,7 +53,11 @@ fn safe(capability: Capability) -> bool {
             | Capability::PackAccess
     )
 }
-fn role_allows(repo: &Repository<'_>, role: &str, capability: Capability) -> Result<bool> {
+pub(super) fn role_allows(
+    repo: &Repository<'_>,
+    role: &str,
+    capability: Capability,
+) -> Result<bool> {
     let role = repo.role(&RoleId::parse(role).map_err(|_| ManagementError::InvalidRequest)?)?;
     if role
         .grants
@@ -71,7 +75,7 @@ fn role_allows(repo: &Repository<'_>, role: &str, capability: Capability) -> Res
                 ))
     }))
 }
-fn source_settings(repo: &Repository<'_>) -> Result<AccessSettings> {
+pub(super) fn source_settings(repo: &Repository<'_>) -> Result<AccessSettings> {
     let text: String = repo.connection().query_row(
         "SELECT settings_json FROM access_role_sources WHERE singleton = 1",
         [],
@@ -302,6 +306,7 @@ impl ManagementAccess {
             let previously: Option<String> = c.query_row("SELECT minecraft_uuid FROM user_minecraft_accounts WHERE server_id = ? AND principal_id = ?",params![self.server_id(),principal.as_str()],|r|r.get(0)).optional()?;
             if previously.as_ref().is_some_and(|old|old != &uuid) { return Err(ManagementError::SessionInvalid); }
             c.execute("INSERT INTO user_minecraft_accounts VALUES (?,?,?) ON CONFLICT(server_id,minecraft_uuid) DO NOTHING",params![self.server_id(),uuid,principal.as_str()])?;
+            c.execute("INSERT INTO user_minecraft_names VALUES (?,?) ON CONFLICT(principal_id) DO UPDATE SET name=excluded.name",params![principal.as_str(),profile.name().as_str()])?;
             let role: Option<String> = c.query_row("SELECT role_id FROM management_owner_links WHERE server_id = ? AND minecraft_uuid = ?",params![self.server_id(),uuid],|r|r.get(0)).optional()?;
             let device = if let Some((owner,id))=existing { if owner != principal.as_str() { return Err(ManagementError::SessionInvalid); } DeviceId::parse(&id)? }
                 else { self.check_device_capacity(repo,role.is_some())?; let device=repo.insert_device(&principal,&label,&fingerprint)?; c.execute("INSERT INTO management_device_keys VALUES (?,?,?,?)",params![device.as_str(),self.server_id(),key.as_slice(),uuid])?; device };

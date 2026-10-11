@@ -42,6 +42,40 @@ pub(super) fn open_regular(_path: &Path) -> Result<File> {
 }
 
 #[cfg(windows)]
+pub(super) fn open_growing(path: &Path) -> Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    let file = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(io_error)?;
+    windows::check(&file)?;
+    Ok(file)
+}
+#[cfg(not(windows))]
+pub(super) fn open_growing(path: &Path) -> Result<File> {
+    open_regular(path)
+}
+#[cfg(windows)]
+pub(super) fn file_identity(file: &File) -> Result<String> {
+    windows::identity(file)
+}
+#[cfg(unix)]
+pub(super) fn file_identity(file: &File) -> Result<String> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata().map_err(io_error)?;
+    Ok(format!("{}:{}", metadata.dev(), metadata.ino()))
+}
+#[cfg(not(any(windows, unix)))]
+pub(super) fn file_identity(_file: &File) -> Result<String> {
+    Err(FileError::Unavailable)
+}
+
+#[cfg(windows)]
 pub(super) fn actual_path(file: &File, _path: &Path) -> Result<PathBuf> {
     windows::path(file)
 }
@@ -92,6 +126,18 @@ mod windows {
             return Err(FileError::NotRegular);
         }
         Ok(())
+    }
+    pub(super) fn identity(file: &File) -> Result<String> {
+        check(file)?;
+        // SAFETY: the owned handle and initialized output remain live for the call.
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &mut info) } == 0 {
+            return Err(FileError::Unavailable);
+        }
+        Ok(format!(
+            "{}:{}:{}",
+            info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow
+        ))
     }
     pub(super) fn path(file: &File) -> Result<PathBuf> {
         check(file)?;

@@ -17,8 +17,12 @@ mod pack_root;
 mod path;
 mod remote;
 mod root;
+mod stream;
 mod upload;
 pub use remote::RemoteFileMutation;
+pub use stream::{
+    FILE_CHUNK_BYTES, FileStream, LinePage, MAX_RANGE_BYTES, MAX_TEXT_LINES, encoding_hint,
+};
 
 pub(crate) use local_document::read_local_document;
 pub use mutation::{

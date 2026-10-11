@@ -536,3 +536,110 @@ fn file_and_directory_symlinks_are_refused() {
     refused(f.read("file-link", 100), "file_path_linked");
     assert!(f.browser.list(&f.owner, None).unwrap().entries.is_empty());
 }
+
+#[test]
+fn growing_file_chunks_metadata_and_live_authority_are_bounded() {
+    let f = Fixture::open();
+    let bytes = vec![b'a'; 5 * 1024 * 1024 + 7];
+    f.write("latest.log", &bytes);
+    let path = RelativePath::parse("latest.log").unwrap();
+    let mut stream = f.browser.open_stream(&f.owner, &path).unwrap();
+    assert_eq!(stream.size(), bytes.len() as u64);
+    assert!(!stream.etag().starts_with("W/"));
+    let etag = stream.etag().to_owned();
+    let identity = stream.identity().to_owned();
+    let mut offset = 0;
+    let mut chunks = 0;
+    while offset < stream.size() {
+        let chunk = stream.read_chunk(offset, FILE_CHUNK_BYTES).unwrap();
+        assert!(chunk.len() <= FILE_CHUNK_BYTES);
+        assert_eq!(chunk, bytes[offset as usize..offset as usize + chunk.len()]);
+        offset += chunk.len() as u64;
+        chunks += 1;
+    }
+    assert_eq!(chunks, 81);
+    assert!(stream.unchanged().unwrap());
+    use std::io::Write;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(f.game.join("latest.log"))
+        .unwrap()
+        .write_all(b"tail")
+        .unwrap();
+    assert!(!stream.unchanged().unwrap());
+    let changed = f.browser.open_stream(&f.owner, &path).unwrap();
+    assert_ne!(changed.etag(), etag);
+    assert_eq!(changed.identity(), identity);
+    let denied = seed(&f.db, false);
+    refused(f.browser.open_stream(&denied, &path), "forbidden");
+    f.grant(&f.owner, Capability::FilesRead, "latest.log", "deny");
+    refused(f.browser.open_stream(&f.owner, &path), "forbidden");
+}
+#[test]
+fn text_pages_tail_long_lines_and_bidirectional_cursors_preserve_bytes() {
+    let f = Fixture::open();
+    let bytes = [b"first\r\n".as_slice(), &vec![b'x'; 150_000], b"\nlast"].concat();
+    f.write("latest.log", &bytes);
+    let path = RelativePath::parse("latest.log").unwrap();
+    let mut file = f.browser.open_stream(&f.owner, &path).unwrap();
+    let tail = file.lines(file.size(), 2, true).unwrap();
+    assert_eq!(tail.start, 7);
+    assert_eq!(tail.end, file.size());
+    assert_eq!(tail.bytes, bytes[7..]);
+    let previous = file.lines(tail.start, 1, true).unwrap();
+    assert_eq!(previous.bytes, b"first\r\n");
+    let forward = file.lines(previous.end, 1, false).unwrap();
+    assert_eq!(forward.bytes, bytes[7..150_008]);
+    let last = file.lines(forward.end, 1, false).unwrap();
+    assert_eq!(last.bytes, b"last");
+    assert!(file.lines(last.end, 1, false).unwrap().bytes.is_empty());
+    refused(file.lines(2, 1, false), "file_limit_invalid");
+    refused(file.lines(2, 1, true), "file_limit_invalid");
+    refused(file.lines(0, 1001, false), "file_limit_invalid");
+    f.write("trailing.log", b"a\nb\nc\n");
+    let mut file = f
+        .browser
+        .open_stream(&f.owner, &RelativePath::parse("trailing.log").unwrap())
+        .unwrap();
+    assert_eq!(file.lines(file.size(), 2, true).unwrap().bytes, b"b\nc\n");
+    f.write("empty.log", b"");
+    let mut file = f
+        .browser
+        .open_stream(&f.owner, &RelativePath::parse("empty.log").unwrap())
+        .unwrap();
+    assert!(file.lines(0, 1, true).unwrap().bytes.is_empty());
+}
+#[test]
+fn stream_documents_and_aliases_are_excluded_and_encoding_is_not_transformed() {
+    let f = Fixture::open();
+    for name in [
+        "server.properties",
+        "whitelist.json",
+        "ops.json",
+        "banned-players.json",
+        "banned-ips.json",
+    ] {
+        f.write(name, b"private");
+        refused(
+            f.browser
+                .open_stream(&f.owner, &RelativePath::parse(name).unwrap()),
+            "file_path_protected",
+        );
+    }
+    fs::hard_link(f.game.join("ops.json"), f.game.join("alias.log")).unwrap();
+    refused(
+        f.browser
+            .open_stream(&f.owner, &RelativePath::parse("alias.log").unwrap()),
+        "file_path_linked",
+    );
+    assert_eq!(encoding_hint("Unicode π\n".as_bytes()), "utf-8");
+    assert_eq!(encoding_hint(&[0, 255]), "binary");
+    f.write("binary.log", &[0, 255, b'\n']);
+    let mut file = f
+        .browser
+        .open_stream(&f.owner, &RelativePath::parse("binary.log").unwrap())
+        .unwrap();
+    let page = file.lines(file.size(), 1, true).unwrap();
+    assert_eq!(page.encoding, "binary");
+    assert_eq!(page.bytes, [0, 255, b'\n']);
+}

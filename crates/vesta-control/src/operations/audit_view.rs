@@ -49,6 +49,9 @@ impl Operations {
                     "files.upload.append" => "files.upload.append",
                     "files.upload.abort" => "files.upload.abort",
                     "config.server_properties" => "config.server_properties",
+                    "management.permissions.mutate" => "management.permissions.mutate",
+                    "management.superadmin.grant" => "management.superadmin.grant",
+                    "management.superadmin.revoke" => "management.superadmin.revoke",
                     "confirmation.accept" => "confirmation.accept",
                     _ => "other",
                 }, outcome: match outcome.as_str() {

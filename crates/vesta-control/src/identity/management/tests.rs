@@ -776,6 +776,20 @@ fn unlink_revoke_removes_user_link_authority_and_future_enrollment_stays_unprivi
             .authorize(token.secret.expose(), Capability::SecurityManage, None)
             .is_ok()
     );
+    // Revoking the only remaining top-role holder is refused and changes nothing.
+    assert!(f.service.unlink_local(uuid, true).is_err());
+    assert!(f.service.authenticate(token.secret.expose()).is_ok());
+    // With a second top-role holder, the linked user's devices and link role go.
+    let other = MinecraftUuid::parse("6ba7b810-9dad-11d1-80b4-00c04fd430c8").unwrap();
+    f.service.link_local(other, BuiltinRole::Owner).unwrap();
+    let other_key = key();
+    f.service
+        .enroll_minecraft(
+            profile(&f, "6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
+            "Second owner",
+            &URL_SAFE_NO_PAD.encode(other_key.public_key().as_ref()),
+        )
+        .unwrap();
     f.service.unlink_local(uuid, true).unwrap();
     assert!(matches!(
         f.service.authenticate(token.secret.expose()),
@@ -878,3 +892,6 @@ fn unsafe_automatic_role_edits_fail_closed_and_the_local_owner_can_repair_select
             .is_ok()
     );
 }
+
+#[path = "permissions_tests.rs"]
+mod permissions_tests;
