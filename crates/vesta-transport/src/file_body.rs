@@ -18,6 +18,8 @@ struct Stream {
     offset: u64,
     remaining: u64,
     permit: Arc<OwnedSemaphorePermit>,
+    /// Downloads tolerate appends after they start; ranges require an unchanged file.
+    growing: bool,
 }
 pub(super) struct FileBody {
     stream: Option<Stream>,
@@ -35,6 +37,13 @@ impl AsRef<[u8]> for Chunk {
 }
 impl FileBody {
     pub(super) fn new(file: FileStream, offset: u64, count: u64) -> Option<Self> {
+        Self::build(file, offset, count, false)
+    }
+    /// A whole-file download of the bytes present when it started, of any size.
+    pub(super) fn download(file: FileStream, offset: u64, count: u64) -> Option<Self> {
+        Self::build(file, offset, count, true)
+    }
+    fn build(file: FileStream, offset: u64, count: u64, growing: bool) -> Option<Self> {
         static BUDGET: OnceLock<Arc<Semaphore>> = OnceLock::new();
         let permit = BUDGET
             .get_or_init(|| Arc::new(Semaphore::new(2)))
@@ -47,6 +56,7 @@ impl FileBody {
                 offset,
                 remaining: count,
                 permit: Arc::new(permit),
+                growing,
             }),
             pending: None,
             deadline: None,
@@ -81,22 +91,24 @@ impl Body for FileBody {
             self.pending = Some(tokio::task::spawn_blocking(move || {
                 let count = stream.remaining.min(BODY_CHUNK as u64) as usize;
                 let result = (|| {
-                    if !stream
-                        .file
-                        .unchanged()
-                        .map_err(|_| io::Error::other("file changed"))?
-                    {
+                    let intact = if stream.growing {
+                        stream.file.still_covers()
+                    } else {
+                        stream.file.unchanged()
+                    };
+                    if !intact.map_err(|_| io::Error::other("file changed"))? {
                         return Err(io::Error::other("file changed"));
                     }
                     let bytes = stream
                         .file
                         .read_chunk(stream.offset, count)
                         .map_err(|_| io::Error::other("file read failed"))?;
-                    if !stream
-                        .file
-                        .unchanged()
-                        .map_err(|_| io::Error::other("file changed"))?
-                    {
+                    let intact = if stream.growing {
+                        stream.file.still_covers()
+                    } else {
+                        stream.file.unchanged()
+                    };
+                    if !intact.map_err(|_| io::Error::other("file changed"))? {
                         return Err(io::Error::other("file changed"));
                     }
                     Ok(bytes)

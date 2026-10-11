@@ -20,6 +20,7 @@ pub(super) fn implemented(path: &str) -> bool {
         path,
         "/api/v3/manage/files"
             | "/api/v3/manage/files/content"
+            | "/api/v3/manage/files/download"
             | "/api/v3/manage/files/tail"
             | "/api/v3/manage/files/lines"
             | "/api/v3/manage/files/follow"
@@ -207,7 +208,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     let capabilities: &[Capability] = match action {
         "files" if request.method == Method::GET => &[Capability::FilesList],
         "files" => &[Capability::FilesDelete],
-        "files/content" | "files/tail" | "files/lines" | "files/follow"
+        "files/content" | "files/download" | "files/tail" | "files/lines" | "files/follow"
             if request.method == Method::GET =>
         {
             &[Capability::FilesRead]
@@ -226,7 +227,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         return file_error(e);
     }
     if (request.range.is_some() || request.if_range.is_some())
-        && !(action == "files/content" && request.method == Method::GET)
+        && !(matches!(action, "files/content" | "files/download") && request.method == Method::GET)
     {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
@@ -242,6 +243,9 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         }
         if matches!(action, "files/tail" | "files/lines") {
             return text_page(host, &request, &subject, action);
+        }
+        if action == "files/download" {
+            return download(host, &request, &subject);
         }
         if action == "files/content" {
             let Some(query) = query(request.query, &["path", "decompress"]) else {
@@ -781,6 +785,112 @@ fn ranged(
         .expect("range headers");
     read_headers(&mut reply, size, &etag);
     reply
+}
+/// Whole-file download of any size, streamed from disk. The response carries the bytes
+/// present when it started; a later append is not included and truncation aborts it.
+/// `Range: bytes=N-` with a matching `If-Range` resumes an interrupted download.
+fn download(
+    host: &NetworkHost,
+    request: &Request<'_>,
+    subject: &vesta_control::identity::Subject,
+) -> Reply {
+    let Some(query) = query(request.query, &["path", "decompress"]) else {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let Some(path) = query.get("path").and_then(|s| relative(s)) else {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let Some(decompressed) = decompress_flag(&query) else {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if request.if_range.is_some() && request.range.is_none() {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    let opened = if decompressed {
+        host.files().open_decompressed(subject, &path)
+    } else {
+        host.files().open_stream(subject, &path)
+    };
+    let file = match opened {
+        Ok(file) => file,
+        Err(e) => return file_error(e),
+    };
+    let size = file.size();
+    let etag = file.etag().to_owned();
+    // A resume only applies to the same file; otherwise the whole file is sent again.
+    let resume = request
+        .range
+        .filter(|_| request.if_range.is_none_or(|value| value == etag));
+    let start = match resume {
+        None => 0,
+        Some(range) => match resume_offset(range, size) {
+            Some(start) => start,
+            None => {
+                let mut reply = error(StatusCode::RANGE_NOT_SATISFIABLE, "range_not_satisfiable");
+                reply.headers_mut().insert(
+                    "content-range",
+                    format!("bytes */{size}").parse().expect("size"),
+                );
+                read_headers(&mut reply, size, &etag);
+                return reply;
+            }
+        },
+    };
+    let count = size - start;
+    let name = download_name(path.as_str(), decompressed);
+    let Some(body) = crate::file_body::FileBody::download(file, start, count) else {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable");
+    };
+    let mut builder = http::Response::builder()
+        .status(if resume.is_some() {
+            StatusCode::PARTIAL_CONTENT
+        } else {
+            StatusCode::OK
+        })
+        .header("content-type", "application/octet-stream")
+        .header("cache-control", "no-store")
+        .header("content-length", count)
+        .header(
+            "content-disposition",
+            format!("attachment; filename=\"{name}\""),
+        );
+    if resume.is_some() {
+        builder = builder.header(
+            "content-range",
+            format!("bytes {start}-{}/{size}", size - 1),
+        );
+    }
+    let mut reply = builder
+        .body(crate::ReplyBody::File(Box::new(body)))
+        .expect("download headers");
+    read_headers(&mut reply, size, &etag);
+    reply
+}
+/// Only `bytes=N-` (resume from N) is accepted, with N inside the file.
+fn resume_offset(value: &str, size: u64) -> Option<u64> {
+    let start = decimal(value.strip_prefix("bytes=")?.strip_suffix('-')?)?;
+    (start < size).then_some(start)
+}
+/// The final path segment, with `.gz` dropped for a decompressed download. Paths are
+/// validated portable ASCII; quotes and backslashes are still replaced defensively.
+fn download_name(path: &str, decompressed: bool) -> String {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let name = if decompressed {
+        name.strip_suffix(".gz")
+            .or_else(|| name.strip_suffix(".GZ"))
+            .unwrap_or(name)
+    } else {
+        name
+    };
+    name.chars()
+        .map(|c| {
+            if c == '"' || c == '\\' || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 fn read_headers(reply: &mut Reply, size: u64, etag: &str) {
     for (name, value) in [

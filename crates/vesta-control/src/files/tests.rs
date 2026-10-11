@@ -752,3 +752,59 @@ fn corrupt_truncated_and_bomb_archives_serve_nothing() {
     );
     assert_eq!(spooled_logs(&f), 0, "failed views leave nothing cached");
 }
+
+#[test]
+fn decompressed_views_expire_after_their_ttl_and_are_rebuilt() {
+    let f = Fixture::open();
+    f.write("old.log.gz", &gzip(b"first\nsecond\n"));
+    let path = RelativePath::parse("old.log.gz").unwrap();
+    f.browser.open_decompressed(&f.owner, &path).unwrap();
+    let spool = f.db.directory().path().join("spool");
+    let cached = fs::read_dir(&spool)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|p| p.extension().is_some_and(|e| e == "log"))
+        .unwrap();
+    let aged = std::time::SystemTime::now()
+        - super::stream::SPOOL_VIEW_TTL
+        - std::time::Duration::from_secs(60);
+    fs::File::options()
+        .write(true)
+        .open(&cached)
+        .unwrap()
+        .set_modified(aged)
+        .unwrap();
+    let mut view = f.browser.open_decompressed(&f.owner, &path).unwrap();
+    assert_eq!(view.read_chunk(0, 13).unwrap(), b"first\nsecond\n");
+    let rebuilt = fs::metadata(&cached).unwrap().modified().unwrap();
+    assert!(rebuilt > aged, "an expired view is rebuilt, not reused");
+    assert_eq!(spooled_logs(&f), 1);
+}
+
+#[test]
+fn downloads_cover_the_size_seen_at_start_and_stop_on_truncation() {
+    let f = Fixture::open();
+    f.write("latest.log", b"0123456789");
+    let path = RelativePath::parse("latest.log").unwrap();
+    let stream = f.browser.open_stream(&f.owner, &path).unwrap();
+    use std::io::Write;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(f.game.join("latest.log"))
+        .unwrap()
+        .write_all(b"appended")
+        .unwrap();
+    assert!(
+        stream.still_covers().unwrap(),
+        "appends do not break a download"
+    );
+    assert!(
+        !stream.unchanged().unwrap(),
+        "but they do break an exact range"
+    );
+    fs::write(f.game.join("latest.log"), b"short").unwrap();
+    assert!(
+        !stream.still_covers().unwrap(),
+        "truncation stops a download"
+    );
+}

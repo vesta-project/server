@@ -252,8 +252,9 @@ fn read_buffered_reply(reader: &mut impl BufRead) -> std::io::Result<WireReply> 
         "CORS must be absent"
     );
     let size: usize = headers.get("content-length").unwrap().parse().unwrap();
-    // Text pages encode at most 4 MiB; disk ranges are capped at 4 MiB.
-    assert!(size <= 6 * 1024 * 1024);
+    // Ranges and text pages are capped at 4 MiB; whole-file downloads in these fixtures
+    // stay below 16 MiB. The cap only keeps the test reader bounded.
+    assert!(size <= 16 * 1024 * 1024);
     let mut body = vec![0; size];
     reader.read_exact(&mut body)?;
     Ok(WireReply {

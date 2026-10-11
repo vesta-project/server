@@ -374,3 +374,85 @@ fn tls_gzip_logs_serve_decompressed_ranges_and_pages_only_on_request() {
         Some(400)
     );
 }
+#[test]
+fn tls_downloads_stream_whole_files_with_names_resume_and_refusals() {
+    let f = Fixture::new("minecraft", 8, 4096, 5);
+    let (token, _) = owner_token(&f);
+    let content: Vec<_> = (0..9 * 1024 * 1024 + 5).map(|i| (i % 253) as u8).collect();
+    std::fs::write(f.temp.path().join("game/world-backup.bin"), &content).unwrap();
+    let path = "files/download?path=world-backup.bin";
+    let whole = get(&f, &token, path, "");
+    assert_eq!(whole.status, 200);
+    assert_eq!(
+        whole.body.len(),
+        content.len(),
+        "no 1 MiB or 4 MiB cap on downloads"
+    );
+    assert_eq!(whole.body, content);
+    assert_eq!(
+        whole.headers["content-disposition"],
+        "attachment; filename=\"world-backup.bin\""
+    );
+    let etag = whole.headers["etag"].clone();
+    // Resume from an offset when the file is unchanged.
+    let resumed = get(
+        &f,
+        &token,
+        path,
+        &format!("Range: bytes=7000000-\r\nIf-Range: {etag}\r\n"),
+    );
+    assert_eq!(resumed.status, 206);
+    assert_eq!(resumed.body, content[7_000_000..]);
+    assert_eq!(
+        resumed.headers["content-range"],
+        format!("bytes 7000000-{}/{}", content.len() - 1, content.len())
+    );
+    // A stale validator sends the whole current file again instead of mixing versions.
+    let restarted = get(
+        &f,
+        &token,
+        path,
+        "Range: bytes=7000000-\r\nIf-Range: \"stale\"\r\n",
+    );
+    assert_eq!(restarted.status, 200);
+    assert_eq!(restarted.body.len(), content.len());
+    management_reply_error(
+        &get(
+            &f,
+            &token,
+            path,
+            &format!("Range: bytes={}-\r\n", content.len()),
+        ),
+        416,
+        "range_not_satisfiable",
+    );
+    management_reply_error(
+        &get(&f, &token, path, "Range: bytes=0-10\r\n"),
+        416,
+        "range_not_satisfiable",
+    );
+    // Decompressed download of a rotated log drops the .gz from the file name.
+    let text = b"[10:00:00] [Server thread/INFO]: hello\n".repeat(1000);
+    std::fs::write(f.temp.path().join("game/2026-10-09-1.log.gz"), gzip(&text)).unwrap();
+    let unzipped = get(
+        &f,
+        &token,
+        "files/download?path=2026-10-09-1.log.gz&decompress=1",
+        "",
+    );
+    assert_eq!(unzipped.status, 200);
+    assert_eq!(unzipped.body, text);
+    assert_eq!(
+        unzipped.headers["content-disposition"],
+        "attachment; filename=\"2026-10-09-1.log\""
+    );
+    // Protected documents stay excluded, and a role without files.read is refused.
+    std::fs::write(f.temp.path().join("game/ops.json"), b"[]").unwrap();
+    assert_ne!(
+        get(&f, &token, "files/download?path=ops.json", "").status,
+        200
+    );
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::PackUser);
+    let pack_only = management_session(&f, &device, &key);
+    assert_eq!(get(&f, &pack_only, path, "").status, 403);
+}

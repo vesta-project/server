@@ -76,6 +76,11 @@ impl FileStream {
         let metadata = self.file.metadata().map_err(io_error)?;
         Ok(metadata.len() == self.size && metadata.modified().map_err(io_error)? == self.modified)
     }
+    /// A download serves the size seen when it started. Appended bytes are ignored; a
+    /// shorter file means truncation, so the download must stop.
+    pub fn still_covers(&self) -> Result<bool> {
+        Ok(self.file.metadata().map_err(io_error)?.len() >= self.size)
+    }
     pub fn read_chunk(&mut self, offset: u64, limit: usize) -> Result<Vec<u8>> {
         if limit == 0 || limit > FILE_CHUNK_BYTES || offset > self.size {
             return Err(FileError::InvalidLimit);
@@ -190,6 +195,8 @@ const DECOMPRESS_BUDGET: std::time::Duration = std::time::Duration::from_secs(60
 const SPOOL_MAX_ENTRIES: usize = 8;
 const SPOOL_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 const SPOOL_STALE_STAGE: std::time::Duration = std::time::Duration::from_secs(300);
+/// Decompressed views are reused for this long after they are made, then rebuilt on demand.
+pub const SPOOL_VIEW_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 /// One decompression at a time; a busy cache refuses rather than blocking a worker.
 static DECOMPRESSING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -211,14 +218,14 @@ impl FileBrowser {
         );
         let spool = self.db.directory().spool()?;
         let name = ArtifactName::new(&format!("gz-{key}.log"))?;
-        if let Some(file) = spool.open(&name)? {
+        if let Some(file) = fresh(&spool, &name)? {
             return spooled(file, &source, &key);
         }
         let _busy = DECOMPRESSING
             .try_lock()
             .map_err(|_| FileError::Unavailable)?;
         // Another request may have finished the same archive while we waited.
-        if let Some(file) = spool.open(&name)? {
+        if let Some(file) = fresh(&spool, &name)? {
             return spooled(file, &source, &key);
         }
         let stage = ArtifactName::new(&format!("gz-{key}-{}.tmp", super::mutation::random_id()?))?;
@@ -277,6 +284,29 @@ fn decompress(source: &mut FileStream, out: &mut File) -> Result<()> {
     out.sync_all().map_err(io_error)
 }
 
+/// A cached view younger than the TTL. An expired one is removed so it is rebuilt; if
+/// another reader still holds it open, the removal can fail and the view is reused.
+fn fresh(spool: &ArtifactDirectory, name: &ArtifactName) -> Result<Option<File>> {
+    let Some(file) = spool.open(name)? else {
+        return Ok(None);
+    };
+    if expired(&file.metadata().map_err(io_error)?) {
+        drop(file);
+        if spool.remove(name).is_ok() {
+            return Ok(None);
+        }
+        return spool.open(name).map_err(Into::into);
+    }
+    Ok(Some(file))
+}
+fn expired(metadata: &std::fs::Metadata) -> bool {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|made| std::time::SystemTime::now().duration_since(made).ok())
+        .is_some_and(|age| age > SPOOL_VIEW_TTL)
+}
+
 fn spooled(file: File, source: &FileStream, key: &str) -> Result<FileStream> {
     let metadata = file.metadata().map_err(io_error)?;
     Ok(FileStream {
@@ -309,7 +339,11 @@ fn evict(spool: &ArtifactDirectory, keep: &ArtifactName) {
                 let _ = spool.remove(&name);
             }
         } else if name.as_str().starts_with("gz-") && &name != keep {
-            cached.push((modified, metadata.len(), name));
+            if expired(&metadata) {
+                let _ = spool.remove(&name);
+            } else {
+                cached.push((modified, metadata.len(), name));
+            }
         }
     }
     cached.sort_by_key(|(modified, _, _)| *modified);

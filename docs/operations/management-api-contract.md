@@ -1013,6 +1013,15 @@ Add `decompress=1` to `files/content`, `files/tail` or `files/lines` to read a r
 - The decompressed view has its own strong ETag of the form `"gz-…"`, which changes when the archive changes. A stale `If-Range` returns 412 `precondition_failed`; there is no full-body fallback.
 - Corrupt or truncated archives (including a failed CRC or length check) return 422 `archive_corrupt`, and nothing partial is served.
 - An archive that would expand beyond 512 MiB, or more than 256 times its compressed size (with a 1 MiB minimum allowance), returns 413 `request_too_large`.
-- The first read decompresses the archive once into an owner-only cache in protected state; later reads reuse it. Only one decompression runs at a time, and a concurrent first read returns 503 `temporarily_unavailable` to retry. The cache keeps at most 8 views and 1 GiB.
+- The first read decompresses the archive once into an owner-only cache in protected state. Later reads reuse that copy for 30 minutes after it was made, then it is rebuilt on the next read. Only one decompression runs at a time, and a concurrent first read returns 503 `temporarily_unavailable` to retry. The cache keeps at most 8 views and 1 GiB; expired and oldest views are removed first.
 - `files/follow` has no decompressed mode.
 - Authority and protected-document checks are those of the archive itself (`files.read` on its path).
+
+## File download (implemented 2026-10-11)
+
+`GET /api/v3/manage/files/download?path=<file>[&decompress=1]` downloads a whole file of any size, streamed from disk in 64 KiB chunks. It needs `files.read` on the path; protected documents are refused as for other reads.
+
+- **Response:** 200 with `Content-Disposition: attachment; filename="<name>"`, `Content-Length`, a strong `ETag`, `X-Vesta-File-Size` and `Accept-Ranges: bytes`. `decompress=1` downloads the decompressed text of a `.gz` log and drops `.gz` from the file name.
+- **Growing files:** the download contains the bytes present when it started. Lines appended afterwards are not included. If the file becomes shorter (truncated), the download stops with an error instead of sending mixed content. A rotated log keeps downloading from the original file.
+- **Resume:** send `Range: bytes=N-` with `If-Range: <etag>` from the first response to get 206 with the rest of the file. If the ETag no longer matches, the whole current file is sent again as 200. Only `bytes=N-` is accepted; any other form, or `N` at or beyond the end, returns 416 `range_not_satisfiable`.
+- **Limits:** downloads share the two-at-a-time disk read budget with ranged reads (503 `temporarily_unavailable` when busy) and the connection throughput floor, so a stalled client is dropped.
