@@ -1003,3 +1003,16 @@ Rank rules:
 Errors: `management_session_invalid` (401), `management_forbidden` (403), `invalid_request` (400), `resource_not_found` (404), `precondition_failed` (412, stale `expected_version`), `idempotency_conflict` and `permission_conflict` (409), `temporarily_unavailable` (503).
 
 Retries: receipts replay the stored result for the same `Idempotency-Key` for seven days. Older receipts are purged in batches of 128 on each change (schema v17). The store holds at most 4,096 receipts; only more than 4,096 changes within seven days returns 503.
+
+## Rotated gzip logs (implemented 2026-10-11)
+
+Add `decompress=1` to `files/content`, `files/tail` or `files/lines` to read a rotated `*.gz` log as its decompressed text. Without the flag, the archive bytes are served unchanged.
+
+- Only files whose name ends in `.gz` **and** that start with gzip magic bytes are decompressed. Anything else returns 400 `not_compressed`. Any other value of `decompress` returns 400 `invalid_request`.
+- `files/content?…&decompress=1` requires a `Range` header (400 `range_required` otherwise). Ranges, `X-Vesta-File-Size` and line cursors refer to the decompressed text.
+- The decompressed view has its own strong ETag of the form `"gz-…"`, which changes when the archive changes. A stale `If-Range` returns 412 `precondition_failed`; there is no full-body fallback.
+- Corrupt or truncated archives (including a failed CRC or length check) return 422 `archive_corrupt`, and nothing partial is served.
+- An archive that would expand beyond 512 MiB, or more than 256 times its compressed size (with a 1 MiB minimum allowance), returns 413 `request_too_large`.
+- The first read decompresses the archive once into an owner-only cache in protected state; later reads reuse it. Only one decompression runs at a time, and a concurrent first read returns 503 `temporarily_unavailable` to retry. The cache keeps at most 8 views and 1 GiB.
+- `files/follow` has no decompressed mode.
+- Authority and protected-document checks are those of the archive itself (`files.read` on its path).

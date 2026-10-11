@@ -643,3 +643,112 @@ fn stream_documents_and_aliases_are_excluded_and_encoding_is_not_transformed() {
     assert_eq!(page.encoding, "binary");
     assert_eq!(page.bytes, [0, 255, b'\n']);
 }
+
+fn gzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
+}
+fn spooled_logs(f: &Fixture) -> usize {
+    f.db.directory()
+        .spool()
+        .unwrap()
+        .list(256)
+        .unwrap()
+        .iter()
+        .filter(|name| name.as_str().ends_with(".log"))
+        .count()
+}
+
+#[test]
+fn rotated_gzip_logs_read_as_a_reused_bounded_decompressed_view() {
+    let f = Fixture::open();
+    let text: Vec<u8> = (0..200_000)
+        .flat_map(|i| format!("[12:00:00] [Server thread/INFO]: line {i}\n").into_bytes())
+        .collect();
+    assert!(text.len() > 5 * 1024 * 1024);
+    f.write("2026-10-10-1.log.gz", &gzip(&text));
+    let path = RelativePath::parse("2026-10-10-1.log.gz").unwrap();
+    let mut view = f.browser.open_decompressed(&f.owner, &path).unwrap();
+    assert_eq!(view.size(), text.len() as u64);
+    assert!(view.etag().starts_with("\"gz-"));
+    let raw = f.browser.open_stream(&f.owner, &path).unwrap();
+    assert_ne!(
+        raw.etag(),
+        view.etag(),
+        "decompressed view has its own validator"
+    );
+    let start = 3 * 1024 * 1024;
+    assert_eq!(
+        view.read_chunk(start, FILE_CHUNK_BYTES).unwrap(),
+        text[start as usize..start as usize + FILE_CHUNK_BYTES]
+    );
+    let tail = view.lines(view.size(), 2, true).unwrap();
+    assert_eq!(
+        tail.bytes,
+        b"[12:00:00] [Server thread/INFO]: line 199998\n[12:00:00] [Server thread/INFO]: line 199999\n"
+    );
+    // The second open reuses the cached view instead of decompressing again.
+    let again = f.browser.open_decompressed(&f.owner, &path).unwrap();
+    assert_eq!(again.etag(), view.etag());
+    assert_eq!(spooled_logs(&f), 1);
+    // Authority and protected-document checks are those of the archive itself.
+    let denied = seed(&f.db, false);
+    refused(f.browser.open_decompressed(&denied, &path), "forbidden");
+}
+
+#[test]
+fn only_real_gzip_archives_with_a_gz_name_are_decompressed() {
+    let f = Fixture::open();
+    f.write("latest.log", b"plain text\n");
+    refused(
+        f.browser
+            .open_decompressed(&f.owner, &RelativePath::parse("latest.log").unwrap()),
+        "file_not_compressed",
+    );
+    // Gzip bytes under a non-.gz name are never decompressed.
+    f.write("disguised.log", &gzip(b"hidden\n"));
+    refused(
+        f.browser
+            .open_decompressed(&f.owner, &RelativePath::parse("disguised.log").unwrap()),
+        "file_not_compressed",
+    );
+    // A .gz name without gzip magic is refused too.
+    f.write("fake.log.gz", b"not gzip at all");
+    refused(
+        f.browser
+            .open_decompressed(&f.owner, &RelativePath::parse("fake.log.gz").unwrap()),
+        "file_not_compressed",
+    );
+    assert_eq!(spooled_logs(&f), 0);
+}
+
+#[test]
+fn corrupt_truncated_and_bomb_archives_serve_nothing() {
+    let f = Fixture::open();
+    let archive = gzip(&b"line\n".repeat(50_000));
+    f.write("truncated.log.gz", &archive[..archive.len() / 2]);
+    refused(
+        f.browser
+            .open_decompressed(&f.owner, &RelativePath::parse("truncated.log.gz").unwrap()),
+        "file_corrupt",
+    );
+    let mut flipped = archive.clone();
+    let crc = flipped.len() - 8;
+    flipped[crc] ^= 0xff;
+    f.write("crc.log.gz", &flipped);
+    refused(
+        f.browser
+            .open_decompressed(&f.owner, &RelativePath::parse("crc.log.gz").unwrap()),
+        "file_corrupt",
+    );
+    // A tiny archive that expands far beyond the allowed ratio is refused.
+    f.write("bomb.log.gz", &gzip(&vec![0; 4 * 1024 * 1024]));
+    refused(
+        f.browser
+            .open_decompressed(&f.owner, &RelativePath::parse("bomb.log.gz").unwrap()),
+        "file_too_large",
+    );
+    assert_eq!(spooled_logs(&f), 0, "failed views leave nothing cached");
+}

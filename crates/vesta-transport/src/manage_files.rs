@@ -64,6 +64,8 @@ pub(crate) fn file_error(value: FileError) -> Reply {
         FileError::IdempotencyConflict => error(StatusCode::CONFLICT, "idempotency_conflict"),
         FileError::RecoveryRequired(_) => error(StatusCode::CONFLICT, "recovery_required"),
         FileError::TooLarge => error(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large"),
+        FileError::NotCompressed => error(StatusCode::BAD_REQUEST, "not_compressed"),
+        FileError::Corrupt => error(StatusCode::UNPROCESSABLE_ENTITY, "archive_corrupt"),
         _ => error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
     }
 }
@@ -242,14 +244,21 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             return text_page(host, &request, &subject, action);
         }
         if action == "files/content" {
-            let Some(query) = query(request.query, &["path"]) else {
+            let Some(query) = query(request.query, &["path", "decompress"]) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
             };
             let Some(path) = query.get("path").and_then(|s| relative(s)) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
             };
+            let Some(decompressed) = decompress_flag(&query) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
             if let Some(range) = request.range {
-                return ranged(host, &subject, &path, range, request.if_range);
+                return ranged(host, &subject, &path, range, request.if_range, decompressed);
+            }
+            // A decompressed view is only ever read in bounded ranges or pages.
+            if decompressed {
+                return error(StatusCode::BAD_REQUEST, "range_required");
             }
             if request.if_range.is_some() {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
@@ -692,13 +701,25 @@ fn ranged(
     path: &RelativePath,
     range: &str,
     if_range: Option<&str>,
+    decompressed: bool,
 ) -> Reply {
-    let mut file = match host.files().open_stream(subject, path) {
+    let opened = if decompressed {
+        host.files().open_decompressed(subject, path)
+    } else {
+        host.files().open_stream(subject, path)
+    };
+    let mut file = match opened {
         Ok(file) => file,
         Err(e) => return file_error(e),
     };
     let size = file.size();
     let etag = file.etag().to_owned();
+    if decompressed && if_range.is_some_and(|value| value != etag) {
+        // No unbounded full-body fallback exists for a decompressed view.
+        let mut reply = error(StatusCode::PRECONDITION_FAILED, "precondition_failed");
+        read_headers(&mut reply, size, &etag);
+        return reply;
+    }
     if if_range.is_some_and(|value| value != etag) {
         // If-Range mismatch ignores Range. Preserve the original full-read bound.
         let mut reply = match host.files().read(subject, path, MAX_READ_BYTES) {
@@ -792,9 +813,9 @@ fn text_page(
     }
     let tail = action == "files/tail";
     let allowed: &[&str] = if tail {
-        &["path", "lines"]
+        &["path", "lines", "decompress"]
     } else {
-        &["path", "from_byte", "limit", "direction"]
+        &["path", "from_byte", "limit", "direction", "decompress"]
     };
     let Some(query) = query(request.query, allowed) else {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
@@ -820,7 +841,15 @@ fn text_page(
             _ => return error(StatusCode::BAD_REQUEST, "invalid_request"),
         }
     };
-    let mut file = match host.files().open_stream(subject, &path) {
+    let Some(decompressed) = decompress_flag(&query) else {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let opened = if decompressed {
+        host.files().open_decompressed(subject, &path)
+    } else {
+        host.files().open_stream(subject, &path)
+    };
+    let mut file = match opened {
         Ok(file) => file,
         Err(e) => return file_error(e),
     };
@@ -837,6 +866,15 @@ fn text_page(
             json!({"bytes_base64":base64::engine::general_purpose::STANDARD.encode(&page.bytes),"encoding":page.encoding,"start_byte":page.start.to_string(),"cursor":page.end.to_string(),"next_byte":(page.end < page.size).then(|| page.end.to_string()),"prev_byte":(page.start > 0).then(|| page.start.to_string()),"size":page.size.to_string(),"etag":page.etag}),
         ),
         Err(e) => file_error(e),
+    }
+}
+
+/// `decompress=1` selects the decompressed view of a gzip log; any other value refuses.
+fn decompress_flag(query: &BTreeMap<String, String>) -> Option<bool> {
+    match query.get("decompress").map(String::as_str) {
+        None => Some(false),
+        Some("1") => Some(true),
+        Some(_) => None,
     }
 }
 

@@ -7,6 +7,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
     time::UNIX_EPOCH,
 };
+use vesta_state::artifacts::{ArtifactDirectory, ArtifactName};
 
 pub const MAX_RANGE_BYTES: u64 = 4 * 1024 * 1024;
 pub const FILE_CHUNK_BYTES: usize = 64 * 1024;
@@ -178,4 +179,149 @@ pub struct LinePage {
     pub size: u64,
     pub etag: String,
     pub encoding: &'static str,
+}
+
+/// Decompressed views are capped in size, in expansion ratio and in time, so a crafted
+/// archive cannot exhaust disk, memory or a worker.
+pub const MAX_DECOMPRESSED_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_DECOMPRESSION_RATIO: u64 = 256;
+const MIN_DECOMPRESSED_ALLOWANCE: u64 = 1024 * 1024;
+const DECOMPRESS_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+const SPOOL_MAX_ENTRIES: usize = 8;
+const SPOOL_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+const SPOOL_STALE_STAGE: std::time::Duration = std::time::Duration::from_secs(300);
+/// One decompression at a time; a busy cache refuses rather than blocking a worker.
+static DECOMPRESSING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+impl FileBrowser {
+    /// The decompressed text of a rotated `*.gz` log, as a seekable read-only view.
+    /// Authority and path checks are those of `open_stream` on the archive itself.
+    /// Gzip cannot seek, so the archive is decompressed once into a bounded owner-only
+    /// cache keyed by the archive's own validator; later reads reuse it.
+    pub fn open_decompressed(&self, subject: &Subject, path: &RelativePath) -> Result<FileStream> {
+        if !path.as_str().to_ascii_lowercase().ends_with(".gz") {
+            return Err(FileError::NotCompressed);
+        }
+        let mut source = self.open_stream(subject, path)?;
+        if source.size < 2 || source.read_chunk(0, 2)? != [0x1f, 0x8b] {
+            return Err(FileError::NotCompressed);
+        }
+        let key = hex::encode(
+            &Sha256::digest(format!("{}|{}", source.etag, source.identity).as_bytes())[..16],
+        );
+        let spool = self.db.directory().spool()?;
+        let name = ArtifactName::new(&format!("gz-{key}.log"))?;
+        if let Some(file) = spool.open(&name)? {
+            return spooled(file, &source, &key);
+        }
+        let _busy = DECOMPRESSING
+            .try_lock()
+            .map_err(|_| FileError::Unavailable)?;
+        // Another request may have finished the same archive while we waited.
+        if let Some(file) = spool.open(&name)? {
+            return spooled(file, &source, &key);
+        }
+        let stage = ArtifactName::new(&format!("gz-{key}-{}.tmp", super::mutation::random_id()?))?;
+        let mut out = spool.create_new(&stage)?;
+        let written = decompress(&mut source, &mut out);
+        drop(out);
+        let finished = written.and_then(|()| {
+            if !source.unchanged()? {
+                return Err(FileError::Unavailable);
+            }
+            spool.sync()?;
+            match spool.link_new(&stage, &name) {
+                Ok(()) => Ok(()),
+                Err(e) if e.code() == "state_artifact_exists" => Ok(()),
+                Err(e) => Err(e.into()),
+            }
+        });
+        let _ = spool.remove(&stage);
+        finished?;
+        evict(&spool, &name);
+        let file = spool.open(&name)?.ok_or(FileError::Unavailable)?;
+        spooled(file, &source, &key)
+    }
+}
+
+fn decompress(source: &mut FileStream, out: &mut File) -> Result<()> {
+    use std::io::Write;
+    source.file.seek(SeekFrom::Start(0)).map_err(io_error)?;
+    let limit = MAX_DECOMPRESSED_BYTES.min(
+        source
+            .size
+            .saturating_mul(MAX_DECOMPRESSION_RATIO)
+            .max(MIN_DECOMPRESSED_ALLOWANCE),
+    );
+    let deadline = std::time::Instant::now() + DECOMPRESS_BUDGET;
+    let reader =
+        std::io::BufReader::with_capacity(FILE_CHUNK_BYTES, (&source.file).take(source.size));
+    let mut decoder = flate2::read::MultiGzDecoder::new(reader);
+    let mut buffer = vec![0; FILE_CHUNK_BYTES];
+    let mut total = 0_u64;
+    loop {
+        // Truncation, bad headers and CRC/length mismatches all surface here.
+        let count = decoder.read(&mut buffer).map_err(|_| FileError::Corrupt)?;
+        if count == 0 {
+            break;
+        }
+        total += count as u64;
+        if total > limit {
+            return Err(FileError::TooLarge);
+        }
+        if std::time::Instant::now() > deadline {
+            return Err(FileError::Unavailable);
+        }
+        out.write_all(&buffer[..count]).map_err(io_error)?;
+    }
+    out.sync_all().map_err(io_error)
+}
+
+fn spooled(file: File, source: &FileStream, key: &str) -> Result<FileStream> {
+    let metadata = file.metadata().map_err(io_error)?;
+    Ok(FileStream {
+        file,
+        size: metadata.len(),
+        // Distinct from the archive's own validator, and changes when the archive does.
+        etag: format!("\"gz-{key}\""),
+        identity: format!("{}:gz", source.identity),
+        modified: metadata.modified().map_err(io_error)?,
+    })
+}
+
+/// Best effort: keep the cache within its count and byte budgets, oldest first, and
+/// clear stages abandoned by an interrupted decompression.
+fn evict(spool: &ArtifactDirectory, keep: &ArtifactName) {
+    let Ok(names) = spool.list(256) else { return };
+    let now = std::time::SystemTime::now();
+    let mut cached = Vec::new();
+    for name in names {
+        let Ok(Some(file)) = spool.open(&name) else {
+            continue;
+        };
+        let Ok(metadata) = file.metadata() else {
+            continue;
+        };
+        drop(file);
+        let modified = metadata.modified().unwrap_or(now);
+        if name.as_str().ends_with(".tmp") {
+            if now.duration_since(modified).unwrap_or_default() > SPOOL_STALE_STAGE {
+                let _ = spool.remove(&name);
+            }
+        } else if name.as_str().starts_with("gz-") && &name != keep {
+            cached.push((modified, metadata.len(), name));
+        }
+    }
+    cached.sort_by_key(|(modified, _, _)| *modified);
+    let mut count = cached.len() + 1;
+    let mut bytes: u64 = cached.iter().map(|(_, len, _)| len).sum();
+    for (_, len, name) in cached {
+        if count <= SPOOL_MAX_ENTRIES && bytes <= SPOOL_MAX_BYTES {
+            break;
+        }
+        if spool.remove(&name).is_ok() {
+            count -= 1;
+            bytes -= len;
+        }
+    }
 }

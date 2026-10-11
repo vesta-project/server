@@ -59,6 +59,10 @@ pub enum FileError {
     NotRegular,
     NotDirectory,
     TooLarge,
+    /// The file is not a gzip archive, so it has no decompressed view.
+    NotCompressed,
+    /// The archive is corrupt or truncated; no partial view is served.
+    Corrupt,
     InvalidLimit,
     Unavailable,
     /// The precondition no longer holds; carries the current SHA-256 when one exists.
@@ -90,6 +94,8 @@ impl FileError {
             Self::NotRegular => "file_not_regular",
             Self::NotDirectory => "file_not_directory",
             Self::TooLarge => "file_too_large",
+            Self::NotCompressed => "file_not_compressed",
+            Self::Corrupt => "file_corrupt",
             Self::InvalidLimit => "file_limit_invalid",
             Self::Unavailable => "file_unavailable",
             Self::Conflict(_) => "file_conflict",

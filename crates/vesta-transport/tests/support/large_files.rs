@@ -291,3 +291,86 @@ fn tls_new_file_routes_refuse_capability_and_protected_aliases() {
         assert_eq!(follow(&f, &pack, &format!("path={name}")).unwrap_err(), 403);
     }
 }
+fn gzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
+}
+#[test]
+fn tls_gzip_logs_serve_decompressed_ranges_and_pages_only_on_request() {
+    let f = Fixture::new("minecraft", 8, 4096, 5);
+    let (token, _) = owner_token(&f);
+    let text: Vec<u8> = (0..60_000)
+        .flat_map(|i| format!("[09:00:00] [Server thread/WARN]: entry {i}\n").into_bytes())
+        .collect();
+    let archive = gzip(&text);
+    std::fs::write(f.temp.path().join("game/logs.log.gz"), &archive).unwrap();
+    // Without the flag the archive bytes themselves are served, unchanged.
+    let raw = get(
+        &f,
+        &token,
+        "files/content?path=logs.log.gz",
+        "Range: bytes=0-1\r\n",
+    );
+    assert_eq!(raw.status, 206);
+    assert_eq!(raw.body, [0x1f, 0x8b]);
+    // With the flag, ranges address the decompressed text.
+    let path = "files/content?path=logs.log.gz&decompress=1";
+    let reply = get(&f, &token, path, "Range: bytes=-46\r\n");
+    assert_eq!(reply.status, 206);
+    assert_eq!(reply.body, text[text.len() - 46..]);
+    let etag = reply.headers["etag"].clone();
+    assert!(etag.starts_with("\"gz-"));
+    assert_eq!(reply.headers["x-vesta-file-size"], text.len().to_string());
+    // A decompressed view is only read in bounded ranges, and stale If-Range is 412.
+    management_reply_error(&get(&f, &token, path, ""), 400, "range_required");
+    management_reply_error(
+        &get(
+            &f,
+            &token,
+            path,
+            "Range: bytes=0-9\r\nIf-Range: \"stale\"\r\n",
+        ),
+        412,
+        "precondition_failed",
+    );
+    let tail = get(
+        &f,
+        &token,
+        "files/tail?path=logs.log.gz&lines=1&decompress=1",
+        "",
+    );
+    assert_eq!(tail.status, 200);
+    assert_eq!(
+        bytes(&tail.json()["data"]),
+        b"[09:00:00] [Server thread/WARN]: entry 59999\n"
+    );
+    // Corrupt archives, non-archives and bad flag values refuse.
+    std::fs::write(
+        f.temp.path().join("game/broken.log.gz"),
+        &archive[..archive.len() / 3],
+    )
+    .unwrap();
+    management_reply_error(
+        &get(&f, &token, "files/tail?path=broken.log.gz&decompress=1", ""),
+        422,
+        "archive_corrupt",
+    );
+    std::fs::write(f.temp.path().join("game/plain.log"), b"plain\n").unwrap();
+    management_reply_error(
+        &get(&f, &token, "files/tail?path=plain.log&decompress=1", ""),
+        400,
+        "not_compressed",
+    );
+    management_reply_error(
+        &get(&f, &token, "files/tail?path=logs.log.gz&decompress=yes", ""),
+        400,
+        "invalid_request",
+    );
+    // Follow has no decompressed mode.
+    assert_eq!(
+        follow(&f, &token, "path=logs.log.gz&decompress=1").err(),
+        Some(400)
+    );
+}

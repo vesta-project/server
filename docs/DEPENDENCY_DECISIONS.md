@@ -488,3 +488,12 @@ remain release gates.
 - Intake is not a security advisory/provenance audit or release license bundle.
   Before distribution, verify current advisories for these cached versions and
   retain applicable codec, random-number, encoding and futures transitive notices.
+
+## flate2 1.1.9 for rotated log decompression (2026-10-11)
+
+- **Approved by:** the owner, for reading rotated `.log.gz` server logs.
+- **Added:** `flate2 =1.1.9` with `default-features = false, features = ["rust_backend"]`, which pulls in `miniz_oxide 0.8.9`, `adler2 2.0.1` and `simd-adler32 0.3.8`. `crc32fast` was already locked. All four resolved from the offline cache; no existing lockfile entry changed.
+- **Licences:** MIT or Apache-2.0 (flate2, miniz_oxide, adler2); MIT (simd-adler32).
+- **Why this backend:** pure Rust, no C toolchain or native zlib. It verifies the gzip CRC and length, so truncated or corrupted archives fail instead of returning partial text.
+- **Use:** `vesta-control` decompresses a `.gz` file into a bounded owner-only cache (`<state>/spool`) so the existing range, tail and line reads work on it. Limits: 512 MiB decompressed, 256× expansion (with a 1 MiB minimum allowance), 60 seconds, one decompression at a time, at most 8 cached views and 1 GiB in total. Also used by `vesta-transport` tests to build fixtures.
+- **Open:** no separate vulnerability or provenance review beyond these pinned versions.
