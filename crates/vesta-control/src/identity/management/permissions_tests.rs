@@ -737,3 +737,126 @@ fn recent_receipts_still_cap_the_store_and_retries_still_replay() {
         Err(PermissionError::Saturated)
     );
 }
+
+fn assign_only(f: &Fixture, principal: &str, role: &str) {
+    f.db.write_with(|tx| {
+        tx.connection().execute("UPDATE role_assignments SET revoked_at=1 WHERE principal_id=?", [principal])?;
+        tx.connection().execute("INSERT INTO role_assignments(id,principal_id,role_id,granted_by,created_at) VALUES(?,?,?,'test',0)", rusqlite::params![format!("ceiling-{principal}"), principal, role])?;
+        Ok::<_, rusqlite::Error>(())
+    }).unwrap();
+}
+
+fn revoke_override(f: &Fixture, principal: &str, expires: Option<i64>, revoked: Option<i64>) {
+    f.db.write_with(|tx| {
+        tx.connection().execute("INSERT INTO principal_overrides(id,principal_id,capability,scope,effect,granted_by,created_at,expires_at,revoked_at) VALUES('ceiling-override',?,'devices.revoke','*','allow','test',0,?,?)", rusqlite::params![principal, expires, revoked])?;
+        Ok::<_, rusqlite::Error>(())
+    }).unwrap();
+}
+
+#[test]
+fn invitation_redemption_checks_active_allow_overrides_and_rolls_back() {
+    for (expires, revoked, allowed) in [
+        (None, None, false),
+        (Some(1), None, true),
+        (None, Some(1), true),
+    ] {
+        let f = Fixture::new();
+        let (_, owner) = actor(&f, BuiltinRole::Owner);
+        let manager = create(
+            &f,
+            &owner,
+            "Invitation ceiling manager",
+            60,
+            &[Capability::InvitationsCreate, Capability::StatusView],
+        );
+        let low = create(&f, &owner, "Invitation low", 10, &[Capability::StatusView]);
+        let high = create(&f, &owner, "Invitation high", 50, &[Capability::StatusView]);
+        let (issuer, issuer_session) = actor(&f, BuiltinRole::Viewer);
+        let (target, target_session) = actor(&f, BuiltinRole::Viewer);
+        assign_only(&f, &issuer.principal_id, manager["id"].as_str().unwrap());
+        assign_only(&f, &target.principal_id, low["id"].as_str().unwrap());
+        revoke_override(&f, &target.principal_id, expires, revoked);
+        let invite = run(
+            &f,
+            &issuer_session,
+            "override-invitation-0001",
+            PermissionMutation::Invitation(Invitation {
+                role: high["id"].as_str().unwrap().into(),
+                expires_minutes: 10,
+            }),
+        )
+        .unwrap();
+        let before = get(&f, &owner, &target.principal_id);
+        let k = key();
+        let result = f.service.enroll_for(
+            invite["code"].as_str().unwrap(),
+            "Attach",
+            &URL_SAFE_NO_PAD.encode(k.public_key().as_ref()),
+            Some(target_session.secret.expose()),
+        );
+        if allowed {
+            result.unwrap();
+            assert_eq!(get(&f, &owner, &target.principal_id)["rank"], 50);
+        } else {
+            assert_eq!(result.unwrap_err(), ManagementError::Forbidden);
+            assert_eq!(get(&f, &owner, &target.principal_id), before);
+        }
+    }
+}
+
+#[test]
+fn role_rank_increase_checks_dependents_overrides_and_other_assigned_roles() {
+    for via_role in [false, true] {
+        let f = Fixture::new();
+        let (_, owner) = actor(&f, BuiltinRole::Owner);
+        let manager = create(
+            &f,
+            &owner,
+            "Rank ceiling manager",
+            60,
+            &[Capability::RolesManage, Capability::StatusView],
+        );
+        let low = create(&f, &owner, "Rank low", 10, &[Capability::StatusView]);
+        let (issuer, issuer_session) = actor(&f, BuiltinRole::Viewer);
+        let (target, _) = actor(&f, BuiltinRole::Viewer);
+        assign_only(&f, &issuer.principal_id, manager["id"].as_str().unwrap());
+        assign_only(&f, &target.principal_id, low["id"].as_str().unwrap());
+        if via_role {
+            let extra = create(
+                &f,
+                &owner,
+                "Existing revoker",
+                9,
+                &[Capability::DevicesRevoke],
+            );
+            f.db.write_with(|tx| {
+                tx.connection().execute("INSERT INTO role_assignments(id,principal_id,role_id,granted_by,created_at) VALUES('existing-revoker',?,?,'test',0)", rusqlite::params![target.principal_id, extra["id"].as_str().unwrap()])?;
+                Ok::<_, rusqlite::Error>(())
+            }).unwrap();
+        } else {
+            revoke_override(&f, &target.principal_id, None, None);
+        }
+        let before = get(&f, &owner, &target.principal_id);
+        let patch = |rank| {
+            PermissionMutation::PatchRole(
+                low["id"].as_str().unwrap().into(),
+                RolePatch {
+                    expected_version: low["version"].as_str().unwrap().into(),
+                    name: None,
+                    rank: Some(rank),
+                    capabilities: None,
+                },
+            )
+        };
+        assert_eq!(
+            run(&f, &issuer_session, "rank-increase-ceiling-0001", patch(50)),
+            Err(PermissionError::Forbidden)
+        );
+        assert_eq!(get(&f, &owner, &target.principal_id), before);
+        // Rank reductions do not amplify permissions and remain permitted.
+        assert_eq!(
+            run(&f, &issuer_session, "rank-decrease-ceiling-0001", patch(8)).unwrap()["rank"],
+            8
+        );
+    }
+}

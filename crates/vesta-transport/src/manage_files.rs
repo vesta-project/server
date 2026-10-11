@@ -258,7 +258,15 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
             };
             if let Some(range) = request.range {
-                return ranged(host, &subject, &path, range, request.if_range, decompressed);
+                return ranged(
+                    host,
+                    &subject,
+                    &path,
+                    range,
+                    request.if_range,
+                    decompressed,
+                    token,
+                );
             }
             // A decompressed view is only ever read in bounded ranges or pages.
             if decompressed {
@@ -706,6 +714,7 @@ fn ranged(
     range: &str,
     if_range: Option<&str>,
     decompressed: bool,
+    token: &str,
 ) -> Reply {
     let opened = if decompressed {
         host.files().open_decompressed(subject, path)
@@ -771,9 +780,10 @@ fn ranged(
         Ok(hint) => hint,
         Err(e) => return file_error(e),
     };
-    let Some(body) = crate::file_body::FileBody::new(file, start, end - start + 1) else {
+    let Some(mut body) = crate::file_body::FileBody::new(file, start, end - start + 1) else {
         return error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable");
     };
+    body.authorize(host.management().clone(), host.files().clone(), token);
     let mut reply = http::Response::builder()
         .status(StatusCode::PARTIAL_CONTENT)
         .header("content-type", "application/octet-stream")
@@ -838,9 +848,16 @@ fn download(
     };
     let count = size - start;
     let name = download_name(path.as_str(), decompressed);
-    let Some(body) = crate::file_body::FileBody::download(file, start, count) else {
-        return error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable");
+    let mut body = match crate::file_body::FileBody::download(file, start, count) {
+        Ok(Some(body)) => body,
+        Ok(None) => return error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
+        Err(e) => return file_error(e),
     };
+    body.authorize(
+        host.management().clone(),
+        host.files().clone(),
+        request.authorization.expect("authenticated download"),
+    );
     let mut builder = http::Response::builder()
         .status(if resume.is_some() {
             StatusCode::PARTIAL_CONTENT
@@ -917,7 +934,6 @@ fn text_page(
     subject: &vesta_control::identity::Subject,
     action: &str,
 ) -> Reply {
-    use base64::Engine;
     if request.range.is_some() || request.if_range.is_some() {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
@@ -972,9 +988,20 @@ fn text_page(
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     };
     match file.lines(from, limit, backwards) {
-        Ok(page) => ok(
+        Ok(page) => text_page_reply(&file, page),
+        Err(e) => file_error(e),
+    }
+}
+pub(crate) fn text_page_reply(
+    file: &vesta_control::files::FileStream,
+    page: vesta_control::files::LinePage,
+) -> Reply {
+    use base64::Engine;
+    match file.unchanged() {
+        Ok(true) => ok(
             json!({"bytes_base64":base64::engine::general_purpose::STANDARD.encode(&page.bytes),"encoding":page.encoding,"start_byte":page.start.to_string(),"cursor":page.end.to_string(),"next_byte":(page.end < page.size).then(|| page.end.to_string()),"prev_byte":(page.start > 0).then(|| page.start.to_string()),"size":page.size.to_string(),"etag":page.etag}),
         ),
+        Ok(false) => error(StatusCode::PRECONDITION_FAILED, "precondition_failed"),
         Err(e) => file_error(e),
     }
 }

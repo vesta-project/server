@@ -335,6 +335,46 @@ fn active_roles(repo: &Repository<'_>, principal: &PrincipalId) -> AdminResult<V
     }
     Ok(ids)
 }
+/// Check the complete resulting principal, not only the newly delegated role.
+/// Rank increases amplify existing rank-sensitive permissions such as devices.revoke.
+fn delegated_user(
+    repo: &Repository<'_>,
+    policy: &PolicySnapshot,
+    principal: &PrincipalId,
+    roles: &[String],
+    replacement: Option<&crate::identity::authorization::Role>,
+) -> AdminResult<()> {
+    for id in roles {
+        let current;
+        let r = if let Some(r) = replacement.filter(|r| r.id.as_str() == id) {
+            r
+        } else {
+            current = role(repo, id)?;
+            &current
+        };
+        if r.rank >= policy.rank() {
+            return Err(PermissionError::Forbidden);
+        }
+        delegated(policy, &r.grants)?;
+    }
+    let mut statement = repo.connection().prepare(
+        "SELECT capability,scope FROM principal_overrides WHERE principal_id=? AND effect='allow' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?)",
+    )?;
+    let grants = statement
+        .query_map(params![principal.as_str(), repo.now], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (capability, scope) in grants {
+        let capability = Capability::from_id(&capability).ok_or(PermissionError::Unavailable)?;
+        let grant = RoleGrant::new(
+            capability,
+            ResourceScope::parse(&scope).map_err(|_| PermissionError::Unavailable)?,
+        )?;
+        delegated(policy, &[grant])?;
+    }
+    Ok(())
+}
 fn insert_assignment(
     repo: &Repository<'_>,
     principal: &PrincipalId,
@@ -521,24 +561,7 @@ impl ManagementAccess {
                 if resulting.len() > 64 {
                     return Err(PermissionError::InvalidRequest);
                 }
-                for id in resulting {
-                    delegated(policy, &role(repo, &id)?.grants)?;
-                }
-                // Effective explicit overrides must also fit the actor, not just newly added roles.
-                let mut s=repo.connection().prepare("SELECT capability,scope FROM principal_overrides WHERE principal_id=? AND effect='allow' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?)")?;
-                let grants = s
-                    .query_map(params![id, repo.now], |r| {
-                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                for (cap, scope) in grants {
-                    let cap = Capability::from_id(&cap).ok_or(PermissionError::Unavailable)?;
-                    let grant = RoleGrant::new(
-                        cap,
-                        ResourceScope::parse(&scope).map_err(|_| PermissionError::Unavailable)?,
-                    )?;
-                    delegated(policy, &[grant])?;
-                }
+                delegated_user(repo, policy, &principal, &resulting, None)?;
                 for id in &input.remove {
                     repo.connection().execute("UPDATE role_assignments SET revoked_at=?,revoked_by=? WHERE principal_id=? AND role_id=? AND revoked_at IS NULL",params![repo.now,by,principal.as_str(),id])?;
                 }
@@ -574,7 +597,7 @@ impl ManagementAccess {
                 if input.name.is_none() && input.rank.is_none() && input.capabilities.is_none() {
                     return Err(PermissionError::InvalidRequest);
                 }
-                self.role_dependents(repo, policy, id)?;
+                let dependents = self.role_dependents(repo, policy, id)?;
                 let current = role_value(repo, id)?;
                 let capabilities = input.capabilities.clone().unwrap_or_else(|| {
                     old.grants
@@ -600,6 +623,23 @@ impl ManagementAccess {
                 delegated(policy, custom.grants())?;
                 self.check_name(repo, &input.name, Some(id))?;
                 self.protect_automatic_role(repo, id, custom.grants())?;
+                if input.rank > old.rank {
+                    let replacement = crate::identity::authorization::Role {
+                        id: old.id.clone(),
+                        rank: input.rank,
+                        builtin: None,
+                        grants: custom.grants().to_vec(),
+                    };
+                    for principal in dependents {
+                        delegated_user(
+                            repo,
+                            policy,
+                            &principal,
+                            &active_roles(repo, &principal)?,
+                            Some(&replacement),
+                        )?;
+                    }
+                }
                 repo.connection().execute(
                     "UPDATE roles SET name=?,rank=? WHERE id=?",
                     params![input.name, input.rank, id],
@@ -770,16 +810,19 @@ impl ManagementAccess {
         repo: &Repository<'_>,
         policy: &PolicySnapshot,
         id: &str,
-    ) -> AdminResult<()> {
+    ) -> AdminResult<Vec<PrincipalId>> {
         let mut s=repo.connection().prepare("SELECT DISTINCT principal_id FROM role_assignments WHERE role_id=? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?) UNION SELECT principal_id FROM user_default_roles WHERE role_id=? UNION SELECT d.principal_id FROM device_password_grants g JOIN devices d ON d.id=g.device_id WHERE g.role_id=?")?;
         let users = s
             .query_map(params![id, repo.now, id, id], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        for user in users {
-            let user = principal_id(&user)?;
-            lower(policy, &user, repo.rank(&user)?)?;
+        let users = users
+            .iter()
+            .map(|user| principal_id(user))
+            .collect::<AdminResult<Vec<_>>>()?;
+        for user in &users {
+            lower(policy, user, repo.rank(user)?)?;
         }
-        Ok(())
+        Ok(users)
     }
     fn protect_automatic_role(
         &self,
@@ -853,9 +896,11 @@ impl ManagementAccess {
             let r = role(repo, id.as_str())?;
             lower_role(&policy, &r)?;
             delegated(&policy, &r.grants)?;
-            for existing in active_roles(repo, target)? {
-                delegated(&policy, &role(repo, &existing)?.grants)?;
+            let mut resulting = active_roles(repo, target)?;
+            if !resulting.iter().any(|existing| existing == id.as_str()) {
+                resulting.push(id.as_str().into());
             }
+            delegated_user(repo, &policy, target, &resulting, None)?;
             insert_assignment(repo, target, id, issuer.principal.as_str())
         };
         work().map_err(|_| ManagementError::Forbidden)
