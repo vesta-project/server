@@ -9,6 +9,7 @@
 pub mod artifacts;
 pub mod audit;
 pub mod events;
+pub mod export;
 pub mod settings;
 
 mod clock;

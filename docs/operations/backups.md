@@ -44,6 +44,12 @@ keep-weekly = 4
 keep-monthly = 6
 on-mutation = "fail-world"    # "warn" | "fail-world" (default) | "fail-any"
 warn-seconds = 60             # in-game warning before an online backup (default 60, max 600)
+max-snapshots = 30            # optional cap on this profile's restore points
+
+[backups.limits]              # optional; see "Limits" below
+max-snapshots = 100           # restore points across all profiles
+max-repository-size = "50 GB" # B, KB, MB, GB, TB (powers of 1000) or KiB, MiB, GiB, TiB
+min-free-space = "5 GiB"      # default 1 GiB; "0" turns the reserve off
 ```
 
 or an S3-compatible bucket (AWS S3, MinIO, Backblaze B2, Cloudflare R2, …):
@@ -72,6 +78,36 @@ This is checked lexically at configuration load and again on their real location
 
 Set up the repository once with `vesta-agent backup-init <name>`. It is idempotent and
 prints `backup_repository_initialized`. There is no repository key to keep.
+
+## Limits
+
+Limits stop new backups. They never delete restore points to make room.
+
+- **`max-snapshots`** (per profile, and across all profiles in `[backups.limits]`) is
+  checked against what would remain after the profile's retention. A profile with
+  `keep-last = 7` and `max-snapshots = 7` therefore keeps working, because retention
+  removes the oldest each time. A profile that keeps everything stops at its cap. Safety
+  snapshots don't count.
+- **`max-repository-size`** is checked before a backup starts and enforced while it
+  writes. A backup that would pass it stops partway. The data it already stored is not a
+  restore point and is cleaned up by a later prune. Prune only runs after a successful
+  backup or explicit maintenance, so the repository can sit slightly above the limit until
+  then.
+- **`min-free-space`** is kept free on a local repository's disk (not checked for S3) and,
+  during an in-place restore, on the game disk. If free space can't be measured, the job is
+  refused.
+- When a limit stops a backup, the job fails with `backup_snapshot_limit_reached`,
+  `backup_storage_limit_reached` or `backup_disk_space_low`. The usual backup-failed
+  event fires, so a workflow can notify about it. These checks run before any in-game
+  warning or save suspension.
+- `GET backups/storage` reports repository size, restore-point and safety-snapshot
+  counts, free space, the configured limits, and `backups_stopped` (the limit code from
+  the most recent backup, if it was refused). Backups resume once the owner raises a limit,
+  tightens retention or frees space.
+- Safety snapshots taken before a restore ignore the count and size limits, since they are
+  capped at five per profile, so a full repository never blocks a restore. They still keep
+  the free-space reserve.
+- Sizes are approximate budgets, not exact guarantees. Usage counts every stored object.
 
 ## Jobs
 
@@ -237,9 +273,8 @@ schedules every second and publishes server and backup events. It never acts on 
 - Real S3 providers are untested; only a local fake S3 server is.
 - Two agents writing to one repository are not coordinated. Give each server its own
   repository or prefix.
-- In-place restore does not check free disk space first, and does not stop the game
-  itself.
+- In-place restore does not stop the game itself.
 - Filesystem-snapshot acceleration (VSS/Btrfs/ZFS/LVM) and the write guard are missing.
-- Storage quotas and capacity preflight are missing.
+- Limits are fixed in `host.toml`; changing them needs an agent restart.
 - No player-count or update events, no script presets, no external notification delivery.
 - Linux is untested.

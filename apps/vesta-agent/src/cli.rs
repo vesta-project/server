@@ -13,7 +13,9 @@ pub const USAGE: &str = "Usage: vesta-agent version | update | check-config <pat
        vesta-agent superadmin grant|revoke <user-id> <name> [--install-root <root>]
        vesta-agent resolve-launch <name> --confirm <name> [--install-root <root>]
        vesta-agent reset-restarts <name> [--install-root <root>]
-       vesta-agent backup-init <name> [--install-root <root>]";
+       vesta-agent backup-init <name> [--install-root <root>]
+       vesta-agent recovery-export <name> --output <file> [--install-root <root>]
+       vesta-agent backup-resolve <name> [<job-id> --confirm <job-id>] [--install-root <root>]";
 #[derive(Debug)]
 pub enum Command {
     Help,
@@ -47,6 +49,17 @@ pub enum Command {
     },
     BackupInit {
         name: String,
+        root: Option<PathBuf>,
+    },
+    RecoveryExport {
+        name: String,
+        output: PathBuf,
+        root: Option<PathBuf>,
+    },
+    BackupResolve {
+        name: String,
+        job: Option<String>,
+        confirm: Option<String>,
         root: Option<PathBuf>,
     },
     Named {
@@ -143,6 +156,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
         "owner" => return parse_owner(&args),
         "access" => return parse_access(&args),
         "pair" | "devices" => return parse_management(&args),
+        "recovery-export" | "backup-resolve" => return parse_recovery(&args),
         "create" | "delete" | "resolve-launch" | "reset-restarts" | "backup-init" | "config"
         | "start" | "stop" | "restart" => {}
         _ => return Err(()),
@@ -619,4 +633,165 @@ fn parse_superadmin(args: &[OsString]) -> Result<Command, ()> {
         root,
         op: crate::control::Op::Superadmin { user, grant },
     })
+}
+
+fn parse_recovery(args: &[OsString]) -> Result<Command, ()> {
+    let export = args[0] == "recovery-export";
+    let name = args.get(1).and_then(|v| v.to_str()).ok_or(())?.to_owned();
+    if !valid_name(&name) {
+        return Err(());
+    }
+    let (mut root, mut output, mut confirm, mut job) = (None, None, None, None);
+    let mut seen = std::collections::HashSet::new();
+    let mut at = 2;
+    if !export
+        && args
+            .get(at)
+            .is_some_and(|v| !v.to_string_lossy().starts_with('-'))
+    {
+        let id = args[at].to_str().ok_or(())?;
+        if id.is_empty()
+            || id.len() > 128
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        {
+            return Err(());
+        }
+        job = Some(id.to_owned());
+        at += 1;
+    }
+    while at < args.len() {
+        let flag = args[at].to_str().ok_or(())?;
+        if !seen.insert(flag) {
+            return Err(());
+        }
+        match flag {
+            "--install-root" => root = Some(PathBuf::from(value(args, &mut at)?)),
+            "--output" if export => output = Some(PathBuf::from(value(args, &mut at)?)),
+            "--confirm" if !export => confirm = Some(text(value(args, &mut at)?)?),
+            _ => return Err(()),
+        }
+        at += 1;
+    }
+    if export {
+        Ok(Command::RecoveryExport {
+            name,
+            output: output.ok_or(())?,
+            root,
+        })
+    } else {
+        if job.is_some() != confirm.is_some() {
+            return Err(());
+        }
+        Ok(Command::BackupResolve {
+            name,
+            job,
+            confirm,
+            root,
+        })
+    }
+}
+
+#[cfg(test)]
+mod recovery_grammar_tests {
+    use super::*;
+    fn p(args: &[&str]) -> Result<Command, ()> {
+        parse(args.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn recovery_commands_have_strict_named_grammar() {
+        assert!(matches!(
+            p(&["recovery-export", "owned", "--output", "recovery.json"]),
+            Ok(Command::RecoveryExport { .. })
+        ));
+        assert!(
+            p(&[
+                "recovery-export",
+                "owned",
+                "--install-root",
+                "root",
+                "--output",
+                "recovery.json"
+            ])
+            .is_ok()
+        );
+        assert!(matches!(
+            p(&["backup-resolve", "owned"]),
+            Ok(Command::BackupResolve {
+                job: None,
+                confirm: None,
+                ..
+            })
+        ));
+        assert!(
+            p(&[
+                "backup-resolve",
+                "owned",
+                "job-1",
+                "--confirm",
+                "job-1",
+                "--install-root",
+                "root"
+            ])
+            .is_ok()
+        );
+        // Confirmation equality is enforced by execution, just like resolve-launch.
+        assert!(p(&["backup-resolve", "owned", "job-1", "--confirm", "job-2"]).is_ok());
+        for args in [
+            vec!["recovery-export"],
+            vec!["recovery-export", "owned"],
+            vec!["recovery-export", "../owned", "--output", "out"],
+            vec![
+                "recovery-export",
+                "owned",
+                "--output",
+                "out",
+                "--output",
+                "other",
+            ],
+            vec![
+                "recovery-export",
+                "owned",
+                "--output",
+                "out",
+                "--confirm",
+                "owned",
+            ],
+            vec!["recovery-export", "owned", "--output", ""],
+            vec!["backup-resolve"],
+            vec!["backup-resolve", "owned", "job-1"],
+            vec!["backup-resolve", "owned", "--confirm", "job-1"],
+            vec!["backup-resolve", "owned", "../job", "--confirm", "../job"],
+            vec![
+                "backup-resolve",
+                "owned",
+                "job",
+                "--confirm",
+                "job",
+                "extra",
+            ],
+            vec![
+                "backup-resolve",
+                "owned",
+                "job",
+                "--confirm",
+                "job",
+                "--confirm",
+                "job",
+            ],
+            vec!["backup-resolve", "owned", "--output", "out"],
+            vec![
+                "backup-resolve",
+                "owned",
+                "--install-root",
+                "root",
+                "--install-root",
+                "other",
+            ],
+        ] {
+            assert!(p(&args).is_err(), "{args:?}");
+        }
+    }
 }

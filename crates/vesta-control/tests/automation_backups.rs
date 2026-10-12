@@ -68,7 +68,12 @@ fn a_manual_workflow_runs_a_backup_and_revocation_suspends_it() {
             keep_monthly: 0,
             on_mutation: MutationPolicy::FailWorld,
             warn_seconds: 0,
+            max_snapshots: None,
         }],
+        limits: vesta_control::config::BackupLimits {
+            min_free_bytes: 0,
+            ..Default::default()
+        },
     };
     let generation_handle = handle.clone();
     let backups = Arc::new(

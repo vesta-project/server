@@ -7,6 +7,7 @@ mod control;
 mod control_tests;
 mod editor;
 mod local_files;
+mod recovery;
 #[cfg(windows)]
 use vesta_supervisor::pipe_security;
 mod serve;

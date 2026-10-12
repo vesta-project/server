@@ -67,6 +67,22 @@ pub async fn run(command: Command, base: &Path) -> ExitCode {
         Command::BackupInit { name, root } => servers::root(root.as_deref(), base)
             .and_then(|root| crate::supervision::backup_init(&root, &name))
             .map(|()| println!("backup_repository_initialized")),
+        Command::RecoveryExport { name, output, root } => servers::root(root.as_deref(), base)
+            .and_then(|root| crate::recovery::recovery_export(&root, &name, &output, base))
+            .map(|summary| {
+                println!(
+                    "recovery_export_written tables={} rows={}",
+                    summary.tables, summary.rows
+                )
+            }),
+        Command::BackupResolve {
+            name,
+            job,
+            confirm,
+            root,
+        } => servers::root(root.as_deref(), base).and_then(|root| {
+            crate::recovery::backup_resolve(&root, &name, job.as_deref(), confirm.as_deref())
+        }),
         Command::ResetRestarts { name, root } => servers::root(root.as_deref(), base)
             .and_then(|root| crate::supervision::reset_restarts(&root, &name))
             .map(|()| println!("crash_restarts_reset; no_process_touched")),

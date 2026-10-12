@@ -200,7 +200,8 @@ impl Engine {
     /// In scope, files and directories absent from the snapshot are removed, and
     /// snapshot files are written unless their content already matches. Paths
     /// excluded by `ignore` or covered by `keep` (relative paths, each covering
-    /// everything under it) are left exactly as they are.
+    /// everything under it) are left exactly as they are. With `reserve`, the restore
+    /// is refused unless the target disk keeps that many bytes free afterwards.
     pub fn apply(
         &self,
         snapshot: &str,
@@ -208,6 +209,7 @@ impl Engine {
         includes: &[String],
         ignore: &Ignore,
         keep: &[String],
+        reserve: Option<u64>,
     ) -> std::result::Result<ApplySummary, ApplyError> {
         if includes
             .iter()
@@ -303,6 +305,20 @@ impl Engine {
             }
         }
 
+        if let Some(reserve) = reserve {
+            // Growth of the restored area, plus one temporary copy of the largest file,
+            // which briefly coexists with the file it replaces.
+            let incoming: u64 = files.iter().map(|f| f.size).sum();
+            let outgoing: u64 = now.files.values().sum();
+            let largest = files.iter().map(|f| f.size).max().unwrap_or(0);
+            let needed = incoming
+                .saturating_sub(outgoing)
+                .saturating_add(largest)
+                .saturating_add(reserve);
+            if crate::backups::space::available(root).is_none_or(|free| free < needed) {
+                return Err(EngineError::DiskSpaceLow.into());
+            }
+        }
         let mut summary = ApplySummary::default();
         let mut modified = false;
         let fail = |error: EngineError, modified: bool| ApplyError { error, modified };

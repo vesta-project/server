@@ -1099,11 +1099,13 @@ production is host-only. Title/body/source are bounded to 256/8,192/128 bytes.
 | `POST backups/jobs/{id}/confirm` | `backups.restore` | `{confirmation_token:string}` | HTTP 202 `{job_id:string,state:"queued"}` |
 | `POST backups/jobs/{id}/resolve-recovery` | `backups.restore` | `{}` | HTTP 200 `{job_id:string,state:"failed",recovery:"resolved_by_user"}` |
 | `GET backups/safety-snapshots` | `backups.view` | required `profile=<profile>` only | `{profile:string,snapshots:[{id:string,time:string}]}` |
+| `GET backups/storage` | `backups.view` | no query | `{repository_bytes:integer,restore_points:integer,safety_snapshots:integer,free_bytes:integer|null,limits:{max_snapshots:integer|null,max_repository_bytes:integer|null,min_free_bytes:integer},backups_stopped:"backup_snapshot_limit_reached"|"backup_storage_limit_reached"|"backup_disk_space_low"|null}`; single listing at a time like snapshot listing |
 
 ```text
 BackupProfile = {name:string,mode:"online"|"stopped",keep_last:integer,
   keep_daily:integer,keep_weekly:integer,keep_monthly:integer,
-  on_mutation:"warn"|"fail-world"|"fail-any",warn_seconds:integer}
+  on_mutation:"warn"|"fail-world"|"fail-any",warn_seconds:integer,
+  max_snapshots:integer|null}
 BackupJob = {id:string,profile:string,kind:"backup"|"verify"|"restore"|"restore_in_place",
   state:"awaiting_confirmation"|"queued"|"running"|"succeeded"|"failed"|
     "uncertain"|"recovery_required",
@@ -1194,8 +1196,11 @@ to both normal and safety snapshot listings. Confirmation refusal returns 409
 `backup_snapshot_not_restorable`, `backup_snapshot_unknown`,
 `backup_restore_path_not_in_snapshot`, `backup_restore_target_unsafe`,
 `backup_restore_restart_pending`, `backup_safety_snapshot_failed`,
-`backup_restore_interrupted` and `backup_requires_stopped_server`. These are
-fixed job outcome codes, not free-form diagnostics or immediate HTTP statuses.
+`backup_restore_interrupted` and `backup_requires_stopped_server`. Backup and
+restore jobs refused by a budget fail with `backup_snapshot_limit_reached`,
+`backup_storage_limit_reached` or `backup_disk_space_low`; storage status uses the
+same single-flight listing admission. These are fixed job outcome codes, not
+free-form diagnostics or immediate HTTP statuses.
 
 Across this subsection, current capability refusal returns 403
 `management_forbidden`, invalid sessions return 401 `management_session_invalid`,

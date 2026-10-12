@@ -191,6 +191,61 @@ pub struct BackupProfile {
     pub on_mutation: MutationPolicy,
     /// Seconds of in-game warning before an online backup (recommended 60).
     pub warn_seconds: u32,
+    /// Most restore points this profile may hold after retention; a backup that would
+    /// exceed it is refused (nothing is deleted to make room).
+    pub max_snapshots: Option<u32>,
+}
+
+/// Default free space kept on the repository disk and, during restores, the game disk.
+pub const DEFAULT_MIN_FREE_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Repository-wide budgets. Reaching one stops new backups; nothing is deleted to make
+/// room. Safety snapshots before a restore are exempt from the count and size limits
+/// (they are bounded separately) but not from the free-space reserve.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BackupLimits {
+    /// Most restore points across all profiles, after retention.
+    pub max_snapshots: Option<u32>,
+    /// Most bytes stored in the repository.
+    pub max_repository_bytes: Option<u64>,
+    /// Free space kept on a local repository's disk, and on the game disk by restores.
+    pub min_free_bytes: u64,
+}
+impl Default for BackupLimits {
+    fn default() -> Self {
+        Self {
+            max_snapshots: None,
+            max_repository_bytes: None,
+            min_free_bytes: DEFAULT_MIN_FREE_BYTES,
+        }
+    }
+}
+
+/// `"500 MB"`, `"50GB"`, `"2 TiB"`, `"0"`: a whole number with an optional unit
+/// (B, KB/MB/GB/TB in powers of 1000, KiB/MiB/GiB/TiB in powers of 1024).
+pub fn parse_size(text: &str) -> Option<u64> {
+    let text = text.trim();
+    let split = text
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(text.len());
+    let (digits, unit) = text.split_at(split);
+    if digits.is_empty() || digits.len() > 20 {
+        return None;
+    }
+    let value: u64 = digits.parse().ok()?;
+    let multiplier: u64 = match unit.trim() {
+        "" | "B" => 1,
+        "KB" => 1000,
+        "MB" => 1000_u64.pow(2),
+        "GB" => 1000_u64.pow(3),
+        "TB" => 1000_u64.pow(4),
+        "KiB" => 1 << 10,
+        "MiB" => 1 << 20,
+        "GiB" => 1 << 30,
+        "TiB" => 1 << 40,
+        _ => return None,
+    };
+    value.checked_mul(multiplier)
 }
 
 /// S3-compatible repository location. The secret key is read from a separate file
@@ -220,6 +275,7 @@ pub struct BackupSettings {
     pub repository: BackupRepository,
     pub restore_root: Option<PathBuf>,
     pub profiles: Vec<BackupProfile>,
+    pub limits: BackupLimits,
 }
 impl BackupSettings {
     pub fn profile(&self, name: &str) -> Option<&BackupProfile> {
@@ -630,12 +686,36 @@ impl HostConfiguration {
                         keep_monthly: p.keep_monthly,
                         on_mutation: p.on_mutation,
                         warn_seconds,
+                        max_snapshots: p.max_snapshots,
                     });
+                }
+                let limits = match wire.limits {
+                    None => BackupLimits::default(),
+                    Some(Table(l)) => {
+                        let size = |t: Option<String>| -> Result<Option<u64>> {
+                            t.map(|t| parse_size(&t).ok_or(ConfigError::InvalidDocument))
+                                .transpose()
+                        };
+                        BackupLimits {
+                            max_snapshots: l.max_snapshots,
+                            max_repository_bytes: size(l.max_repository_size)?,
+                            min_free_bytes: size(l.min_free_space)?
+                                .unwrap_or(DEFAULT_MIN_FREE_BYTES),
+                        }
+                    }
+                };
+                // A zero cap would only ever refuse; leave the key out instead.
+                if limits.max_snapshots == Some(0)
+                    || limits.max_repository_bytes == Some(0)
+                    || profiles.iter().any(|p| p.max_snapshots == Some(0))
+                {
+                    return Err(ConfigError::InvalidDocument);
                 }
                 Ok(BackupSettings {
                     repository,
                     restore_root,
                     profiles,
+                    limits,
                 })
             })
             .transpose()?;
@@ -1022,6 +1102,15 @@ struct WireBackups {
     restore_root: Option<String>,
     #[serde(default)]
     profile: Vec<Table<WireBackupProfile>>,
+    limits: Option<Table<WireBackupLimits>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct WireBackupLimits {
+    max_snapshots: Option<u32>,
+    max_repository_size: Option<String>,
+    min_free_space: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1052,6 +1141,7 @@ struct WireBackupProfile {
     #[serde(default)]
     on_mutation: MutationPolicy,
     warn_seconds: Option<u32>,
+    max_snapshots: Option<u32>,
 }
 
 #[derive(Deserialize)]

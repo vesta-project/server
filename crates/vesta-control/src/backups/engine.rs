@@ -63,6 +63,11 @@ pub enum EngineError {
     NotInSnapshot,
     /// The restore target holds a link, special file or conflicting entry.
     TargetUnsafe,
+    /// A backup would store more than its byte budget (repository size limit or the
+    /// repository disk's free-space reserve).
+    LimitReached,
+    /// The disk receiving restored files would drop below its free-space reserve.
+    DiskSpaceLow,
 }
 impl EngineError {
     pub const fn code(self) -> &'static str {
@@ -76,6 +81,8 @@ impl EngineError {
             Self::Missing => "backup_snapshot_unknown",
             Self::NotInSnapshot => "backup_restore_path_not_in_snapshot",
             Self::TargetUnsafe => "backup_restore_target_unsafe",
+            Self::LimitReached => "backup_storage_limit_reached",
+            Self::DiskSpaceLow => "backup_disk_space_low",
         }
     }
 }
@@ -368,6 +375,21 @@ impl Engine {
         tags: &[String],
         parent_tag: Option<&str>,
     ) -> Result<BackupSummary> {
+        self.backup_within(root, ignore, tags, parent_tag, None)
+    }
+
+    /// As `backup`, storing at most `budget` new bytes: past it the backup stops with
+    /// `LimitReached`. Chunks it already stored are unreferenced and pruned later.
+    pub fn backup_within(
+        &self,
+        root: &Path,
+        ignore: &Ignore,
+        tags: &[String],
+        parent_tag: Option<&str>,
+        budget: Option<u64>,
+    ) -> Result<BackupSummary> {
+        let within =
+            |added: u64, next: usize| budget.is_none_or(|b| added.saturating_add(next as u64) <= b);
         if tags.iter().any(|t| !valid_tag(t)) {
             return Err(EngineError::Invalid);
         }
@@ -438,6 +460,9 @@ impl Engine {
                 let hash = hash_hex(&buffer[..filled]);
                 if !known.contains(&hash) {
                     let object = compress(&buffer[..filled]);
+                    if !within(summary.data_added, object.len()) {
+                        return Err(EngineError::LimitReached);
+                    }
                     self.store.put(&chunk_key(&hash), &object)?;
                     summary.data_added += object.len() as u64;
                     known.insert(hash.clone());
@@ -469,6 +494,9 @@ impl Engine {
         let object = compress(&json);
         summary.data_added += object.len() as u64;
         // Chunks first, then the manifest, then the listing record.
+        if !within(summary.data_added, object.len()) {
+            return Err(EngineError::LimitReached);
+        }
         self.store.put(&format!("snapshots/{id}"), &object)?;
         self.write_tags(
             &id,
@@ -516,6 +544,54 @@ impl Engine {
             }
         }
         self.write_tags(snapshot, &record)
+    }
+
+    /// Bytes stored in the repository (every object, including unreferenced chunks that
+    /// a later prune would remove).
+    pub fn usage(&self) -> Result<u64> {
+        self.require_initialized()?;
+        let mut total = 0u64;
+        for prefix in ["chunks/", "snapshots/", "tags/"] {
+            for object in self.store.list(prefix, MAX_CHUNKS_LISTED)? {
+                total = total.saturating_add(object.size);
+            }
+        }
+        Ok(total)
+    }
+
+    /// How many snapshots carry each tag.
+    pub fn tag_counts(&self) -> Result<BTreeMap<String, usize>> {
+        self.require_initialized()?;
+        let mut counts = BTreeMap::new();
+        for (_, record) in self.all()? {
+            for tag in record.tags {
+                *counts.entry(tag).or_insert(0) += 1;
+            }
+        }
+        Ok(counts)
+    }
+
+    /// How many snapshots tagged `tag` would remain if one more were taken now and
+    /// `retention` then applied (no retention keeps them all).
+    pub fn retained_after_backup(&self, tag: &str, retention: Retention) -> Result<usize> {
+        if !valid_tag(tag) {
+            return Err(EngineError::Invalid);
+        }
+        self.require_initialized()?;
+        let mut snapshots: Vec<(String, i64)> = self
+            .all()?
+            .into_iter()
+            .filter(|(_, r)| r.tags.iter().any(|t| t == tag))
+            .map(|(id, r)| (id, r.time_ms))
+            .collect();
+        let newest = snapshots.iter().map(|(_, t)| *t).max().unwrap_or(0);
+        // Not a snapshot ID, so it can never collide with one.
+        snapshots.push(("next".into(), now_ms().max(newest + 1)));
+        Ok(if retention.is_empty() {
+            snapshots.len()
+        } else {
+            keep_set(&snapshots, retention).len()
+        })
     }
 
     /// Apply retention to the snapshots tagged `tag`, then prune unreferenced data.

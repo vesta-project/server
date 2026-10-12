@@ -368,7 +368,7 @@ fn apply_makes_the_tree_match_but_keeps_ignored_and_protected_paths() {
     fs::write(root.join("logs/today.log"), b"log").unwrap();
     fs::write(root.join("secret.key"), b"rotated-secret").unwrap();
 
-    let summary = engine.apply(&id, root, &[], &ignore, &keep).unwrap();
+    let summary = engine.apply(&id, root, &[], &ignore, &keep, None).unwrap();
     assert_eq!(summary.files_written, 1, "{summary:?}");
     assert_eq!(summary.files_unchanged, 1, "the region file is reused");
     assert_eq!(summary.files_removed, 1);
@@ -379,7 +379,7 @@ fn apply_makes_the_tree_match_but_keeps_ignored_and_protected_paths() {
     assert_eq!(tree(root), expected);
     assert!(root.join("empty").is_dir());
     // Restoring again changes nothing.
-    let again = engine.apply(&id, root, &[], &ignore, &keep).unwrap();
+    let again = engine.apply(&id, root, &[], &ignore, &keep, None).unwrap();
     assert_eq!((again.files_written, again.files_removed), (0, 0));
     // No temporary files are left behind.
     assert!(
@@ -402,7 +402,7 @@ fn selective_apply_touches_only_the_requested_paths() {
     fs::write(root.join("logs/latest.log"), b"newer log").unwrap();
 
     engine
-        .apply(&id, root, &["world/region".into()], &none, &[])
+        .apply(&id, root, &["world/region".into()], &none, &[], None)
         .unwrap();
     assert!(!root.join("world/region/r.9.9.mca").exists());
     assert_eq!(fs::read(root.join("world/level.dat")).unwrap(), b"changed");
@@ -411,7 +411,7 @@ fn selective_apply_touches_only_the_requested_paths() {
         b"newer log"
     );
     engine
-        .apply(&id, root, &["world/level.dat".into()], &none, &[])
+        .apply(&id, root, &["world/level.dat".into()], &none, &[], None)
         .unwrap();
     assert_eq!(fs::read(root.join("world/level.dat")).unwrap(), b"level");
 
@@ -420,7 +420,7 @@ fn selective_apply_touches_only_the_requested_paths() {
         let includes: Vec<String> = includes.iter().map(|s| s.to_string()).collect();
         let keep: Vec<String> = keep.iter().map(|s| s.to_string()).collect();
         engine
-            .apply(&id, root, &includes, &none, &keep)
+            .apply(&id, root, &includes, &none, &keep, None)
             .unwrap_err()
     };
     assert_eq!(
@@ -458,7 +458,7 @@ fn apply_refuses_before_any_change_when_chunks_are_missing_or_paths_are_tampered
     let saved = store.get(&key).unwrap();
     store.delete(&key).unwrap();
     let error = engine
-        .apply(&id, source.path(), &[], &none, &[])
+        .apply(&id, source.path(), &[], &none, &[], None)
         .unwrap_err();
     assert_eq!(
         error,
@@ -491,7 +491,7 @@ fn apply_refuses_before_any_change_when_chunks_are_missing_or_paths_are_tampered
         )
         .unwrap();
     let error = engine
-        .apply(tampered, source.path(), &[], &none, &[])
+        .apply(tampered, source.path(), &[], &none, &[], None)
         .unwrap_err();
     assert_eq!(error.error, EngineError::Corrupt);
     assert_eq!(tree(source.path()), before);
@@ -509,7 +509,7 @@ fn apply_refuses_links_in_the_target() {
     fs::remove_dir_all(source.path().join("world/region")).unwrap();
     std::os::unix::fs::symlink(outside.path(), source.path().join("world/region")).unwrap();
     let error = engine
-        .apply(&id, source.path(), &[], &none, &[])
+        .apply(&id, source.path(), &[], &none, &[], None)
         .unwrap_err();
     assert_eq!(
         error,
@@ -540,7 +540,7 @@ fn apply_refuses_junctions_in_the_target() {
         .unwrap();
     assert!(made.status.success(), "mklink must succeed: {made:?}");
     let error = engine
-        .apply(&id, source.path(), &[], &none, &[])
+        .apply(&id, source.path(), &[], &none, &[], None)
         .unwrap_err();
     assert_eq!(
         error,
@@ -551,4 +551,77 @@ fn apply_refuses_junctions_in_the_target() {
     );
     assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
     fs::remove_dir(&link).unwrap();
+}
+
+#[test]
+fn budgets_usage_and_retention_projection() {
+    let source = game();
+    let store = MemStore::default();
+    let engine = Engine::new(Box::new(store.clone()));
+    engine.init().unwrap();
+    let none = Ignore::default();
+    // A budget too small for the data stops the backup; nothing is listed.
+    assert_eq!(
+        engine.backup_within(source.path(), &none, &tags("p"), None, Some(100)),
+        Err(EngineError::LimitReached)
+    );
+    assert!(engine.snapshots("profile=p").unwrap().is_empty());
+    let summary = engine
+        .backup_within(source.path(), &none, &tags("p"), None, Some(u64::MAX))
+        .unwrap();
+    let used = engine.usage().unwrap();
+    assert!(used >= summary.data_added && used > 0);
+    // With nothing new to store, even a tiny budget only has to fit the manifest.
+    assert!(
+        engine
+            .backup_within(
+                source.path(),
+                &none,
+                &tags("p"),
+                Some("profile=p"),
+                Some(4096)
+            )
+            .is_ok()
+    );
+    assert_eq!(engine.tag_counts().unwrap()["profile=p"], 2);
+    // Keeping everything grows by one; keep-last bounds it.
+    assert_eq!(
+        engine
+            .retained_after_backup("profile=p", Retention::default())
+            .unwrap(),
+        3
+    );
+    let keep_two = Retention {
+        keep_last: 2,
+        ..Retention::default()
+    };
+    assert_eq!(
+        engine.retained_after_backup("profile=p", keep_two).unwrap(),
+        2
+    );
+}
+
+#[test]
+fn apply_refuses_without_enough_free_space_before_any_change() {
+    let source = game();
+    let engine = Engine::new(Box::new(MemStore::default()));
+    engine.init().unwrap();
+    let none = Ignore::default();
+    let id = snapshot_of(&engine, source.path(), &none);
+    fs::write(source.path().join("world/level.dat"), b"changed").unwrap();
+    let before = tree(source.path());
+    let error = engine
+        .apply(&id, source.path(), &[], &none, &[], Some(u64::MAX / 2))
+        .unwrap_err();
+    assert_eq!(
+        error,
+        ApplyError {
+            error: EngineError::DiskSpaceLow,
+            modified: false
+        }
+    );
+    assert_eq!(tree(source.path()), before);
+    engine
+        .apply(&id, source.path(), &[], &none, &[], Some(0))
+        .unwrap();
 }

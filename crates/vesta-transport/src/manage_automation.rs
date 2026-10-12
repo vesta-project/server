@@ -37,6 +37,7 @@ enum Route<'a> {
     BackupJob(&'a str),
     Snapshots,
     SafetySnapshots,
+    Storage,
     RestoreInPlace,
     ConfirmRestore(&'a str),
     ResolveRecovery(&'a str),
@@ -59,6 +60,7 @@ fn route(path: &str) -> Option<Route<'_>> {
         "backups" => Route::Backups,
         "backups/snapshots" => Route::Snapshots,
         "backups/safety-snapshots" => Route::SafetySnapshots,
+        "backups/storage" => Route::Storage,
         "backups/restore-in-place" => Route::RestoreInPlace,
         "backups/run" => Route::Backup,
         "backups/verify" => Route::Verify,
@@ -235,9 +237,11 @@ fn capability(route: Route<'_>, method: &Method) -> Capability {
         Route::Notifications | Route::Unread | Route::Read | Route::Acknowledge => {
             Capability::NotificationsView
         }
-        Route::Backups | Route::BackupJob(_) | Route::Snapshots | Route::SafetySnapshots => {
-            Capability::BackupsView
-        }
+        Route::Backups
+        | Route::BackupJob(_)
+        | Route::Snapshots
+        | Route::SafetySnapshots
+        | Route::Storage => Capability::BackupsView,
         Route::Backup => Capability::BackupsCreate,
         Route::Verify => Capability::BackupsVerify,
         Route::Restore
@@ -435,6 +439,16 @@ fn safe_backup_code(value: &str) -> &'static str {
         "backup_restore_restart_pending" => "backup_restore_restart_pending",
         "backup_safety_snapshot_failed" => "backup_safety_snapshot_failed",
         "backup_restore_interrupted" => "backup_restore_interrupted",
+        "backup_authority_revoked" => "backup_authority_revoked",
+        "backup_consistency_lost" => "backup_consistency_lost",
+        "backup_disk_space_low" => "backup_disk_space_low",
+        "backup_repository_corrupt" => "backup_repository_corrupt",
+        "backup_repository_unavailable" => "backup_repository_unavailable",
+        "backup_snapshot_limit_reached" => "backup_snapshot_limit_reached",
+        "backup_storage_limit_reached" => "backup_storage_limit_reached",
+        "backup_storage_unavailable" => "backup_storage_unavailable",
+        "backup_tag_failed" => "backup_tag_failed",
+        "backup_too_large" => "backup_too_large",
         _ => "backup_unavailable",
     }
 }
@@ -799,7 +813,11 @@ fn get(
         Route::Unread if query.is_none() => automation
             .unread_count(subject)
             .map(|count| json!({"unread_count":count})),
-        Route::Backups | Route::BackupJob(_) | Route::Snapshots | Route::SafetySnapshots => {
+        Route::Backups
+        | Route::BackupJob(_)
+        | Route::Snapshots
+        | Route::SafetySnapshots
+        | Route::Storage => {
             return get_backups(host, token, route, query);
         }
         _ => return invalid(),
@@ -814,6 +832,7 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
         Jobs(Option<(i64, String)>, usize),
         Job(&'a str),
         Snapshots(&'a str, bool),
+        Storage,
     }
     let query = match route {
         Route::Backups => {
@@ -835,15 +854,17 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
             }
             Query::Snapshots(value, matches!(route, Route::SafetySnapshots))
         }
+        Route::Storage if query.is_none() => Query::Storage,
         _ => return invalid(),
     };
     let Some(backups) = host.backups() else {
         return backup_failure(BackupError::Disabled);
     };
-    let snapshot_listing = matches!(&query, Query::Snapshots(_, _));
+    // Both list the repository under the same single-listing bound.
+    let snapshot_listing = matches!(&query, Query::Snapshots(_, _) | Query::Storage);
     let result=match query {
         Query::Jobs(before,limit)=>backups.jobs(before.as_ref().map(|(timestamp,id)|(*timestamp,id.as_str())),limit).map(|jobs| {
-            let profiles=backups.settings().profiles.iter().map(|p|json!({"name":p.name,"mode":match p.mode {BackupMode::Online=>"online",BackupMode::Stopped=>"stopped"},"keep_last":p.keep_last,"keep_daily":p.keep_daily,"keep_weekly":p.keep_weekly,"keep_monthly":p.keep_monthly,"on_mutation":match p.on_mutation {MutationPolicy::Warn=>"warn",MutationPolicy::FailWorld=>"fail-world",MutationPolicy::FailAny=>"fail-any"},"warn_seconds":p.warn_seconds})).collect::<Vec<_>>();
+            let profiles=backups.settings().profiles.iter().map(|p|json!({"name":p.name,"mode":match p.mode {BackupMode::Online=>"online",BackupMode::Stopped=>"stopped"},"keep_last":p.keep_last,"keep_daily":p.keep_daily,"keep_weekly":p.keep_weekly,"keep_monthly":p.keep_monthly,"on_mutation":match p.on_mutation {MutationPolicy::Warn=>"warn",MutationPolicy::FailWorld=>"fail-world",MutationPolicy::FailAny=>"fail-any"},"warn_seconds":p.warn_seconds,"max_snapshots":p.max_snapshots})).collect::<Vec<_>>();
             json!({"profiles":profiles,"jobs":jobs.iter().map(|v|backup_job(host,token,v)).collect::<Vec<_>>(),"next_before":if jobs.len()==limit {jobs.last().map(|v|backup_cursor(v.created_at,&v.id))} else {None},"restore_mode":"inspection_only","recovery_required":backups.recovery_required()})
         }),
         Query::Job(id)=>match backups.job(id) {Ok(Some(job))=> {
@@ -855,12 +876,35 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
             if snapshots.iter().any(|v|!engine::valid_snapshot_id(&v.id)||!snapshot_time(&v.time)) {return Err(BackupError::Unavailable);}
             Ok(json!({"profile":profile,"snapshots":snapshots.iter().map(|v|json!({"id":v.id,"time":v.time})).collect::<Vec<_>>() }))
         }),
+        Query::Storage => backups.storage().map(|status| storage_json(&status)),
     };
     match result {
         Ok(v) => ok(v),
         Err(e) => backup_read_failure(e, snapshot_listing),
     }
 }
+/// Usage against budgets. `backups_stopped` carries only fixed limit codes.
+fn storage_json(status: &vesta_control::backups::StorageStatus) -> serde_json::Value {
+    use vesta_control::backups::{DISK_SPACE_LOW, SNAPSHOT_LIMIT, STORAGE_LIMIT};
+    let stopped = status.backups_stopped.as_deref().and_then(|code| {
+        [SNAPSHOT_LIMIT, STORAGE_LIMIT, DISK_SPACE_LOW]
+            .into_iter()
+            .find(|c| *c == code)
+    });
+    json!({
+        "repository_bytes": status.repository_bytes,
+        "restore_points": status.restore_points,
+        "safety_snapshots": status.safety_snapshots,
+        "free_bytes": status.free_bytes,
+        "limits": {
+            "max_snapshots": status.limits.max_snapshots,
+            "max_repository_bytes": status.limits.max_repository_bytes,
+            "min_free_bytes": status.limits.min_free_bytes,
+        },
+        "backups_stopped": stopped,
+    })
+}
+
 fn submit_backup(
     host: &NetworkHost,
     subject: &Subject,
@@ -1293,6 +1337,35 @@ mod tests {
                 br#"{"profile":"daily","snapshot":"12345678","paths":[],"requested_by":"owner"}"#
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn storage_route_reports_budgets_and_only_fixed_stop_codes() {
+        assert!(matches!(
+            route("/api/v3/manage/backups/storage"),
+            Some(Route::Storage)
+        ));
+        assert_eq!(
+            capability(Route::Storage, &Method::GET),
+            Capability::BackupsView
+        );
+        let mut status = vesta_control::backups::StorageStatus {
+            repository_bytes: 10,
+            restore_points: 2,
+            safety_snapshots: 1,
+            free_bytes: Some(5),
+            limits: vesta_control::config::BackupLimits::default(),
+            backups_stopped: Some("backup_storage_limit_reached".into()),
+        };
+        let value = storage_json(&status);
+        assert_eq!(value["backups_stopped"], "backup_storage_limit_reached");
+        assert_eq!(value["limits"]["max_repository_bytes"], Value::Null);
+        status.backups_stopped = Some("private/path".into());
+        assert_eq!(storage_json(&status)["backups_stopped"], Value::Null);
+        assert_eq!(
+            safe_backup_code("backup_disk_space_low"),
+            "backup_disk_space_low"
         );
     }
 }

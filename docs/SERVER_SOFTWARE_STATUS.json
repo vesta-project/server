@@ -568,14 +568,16 @@
       "name": "Backup repositories and retention",
       "status": "partial",
       "phase": 6,
-      "current": "Built-in deduplicating backup engine (SHA-256 content-addressed 1 MiB chunks, deflate, integrity-checked restores; no bundled third-party software; unencrypted by owner decision 2026-10-12) over a local directory or S3-compatible bucket, with per-profile retention and prune, verification, .vesta-backupignore, durable job table and idempotent submission. Not yet: real S3 provider evidence, storage quotas/capacity preflight, recovery export.",
+      "current": "Built-in deduplicating backup engine (SHA-256 content-addressed 1 MiB chunks, deflate, integrity-checked restores; no bundled third-party software; unencrypted by owner decision 2026-10-12) over a local directory or S3-compatible bucket, with per-profile retention and prune, verification, .vesta-backupignore, durable job table and idempotent submission. Budgets: per-profile and repository-wide restore-point caps judged after retention, repository size limit enforced before and during writes, free-space reserve on the repository and game disks; reaching one stops backups without deleting anything, and storage status reports why. Not yet: real S3 provider evidence, runtime-editable limits.",
       "evidence": [
         "crates/vesta-control/src/backups/mod.rs",
         "crates/vesta-control/src/backups/engine.rs",
         "crates/vesta-control/src/backups/store.rs",
         "crates/vesta-control/src/backups/s3.rs",
         "crates/vesta-control/tests/backups.rs",
-        "docs/operations/backups.md"
+        "docs/operations/backups.md",
+        "crates/vesta-control/src/backups/limits.rs",
+        "crates/vesta-control/src/backups/space.rs"
       ],
       "acceptance": "Opt-in local/NAS/S3 repositories (unencrypted by owner decision), recovery export, retention and working-space reserve.",
       "auditDate": "2026-10-12",
@@ -611,13 +613,16 @@
       "name": "Restore, inspection and recovery exports",
       "status": "partial",
       "phase": 6,
-      "current": "Inspection restore into a new directory, and in-place restore (whole tree or selected paths): exact one-time confirmation by the same user and device, already stopped game with starts and crash restarts held, pre-restore safety snapshot (skippable only explicitly; newest five kept), only accepted restore points or safety snapshots, ignored and protected paths untouched, per-file verified atomic replacement, and a durable recovery_required state that blocks starts until resolved or superseded. Never automatic. Not yet: recovery exports, free-space preflight.",
+      "current": "Inspection restore into a new directory, and in-place restore (whole tree or selected paths): exact one-time confirmation by the same user and device, already stopped game with starts and crash restarts held, free-space preflight, pre-restore safety snapshot (skippable only explicitly; newest five kept), only accepted restore points or safety snapshots, ignored and protected paths untouched, per-file verified atomic replacement, and a durable recovery_required state that blocks starts until resolved remotely, locally (vesta-agent backup-resolve) or superseded. Unencrypted credential-free recovery export of control data (vesta-agent recovery-export; owner decision 2026-10-12). Never automatic. Not yet: recovery import, remote export route.",
       "evidence": [
         "crates/vesta-control/src/backups/mod.rs",
         "crates/vesta-control/src/backups/restore.rs",
         "crates/vesta-control/src/backups/engine/apply.rs",
         "crates/vesta-control/tests/backups.rs",
-        "docs/operations/backups.md"
+        "docs/operations/backups.md",
+        "crates/vesta-state/src/export.rs",
+        "apps/vesta-agent/src/recovery.rs",
+        "docs/operations/recovery-export.md"
       ],
       "acceptance": "Owner-confirmed restore, pre-restore backup, stopped game, scoped inspection, no automatic restore.",
       "auditDate": "2026-10-12",

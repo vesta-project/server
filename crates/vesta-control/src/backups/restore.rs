@@ -28,7 +28,10 @@ use crate::{
 };
 use engine::{EngineError, Retention, SAFETY_PREFIX};
 use rusqlite::{OptionalExtension, params};
-use vesta_state::audit::{AuditActor, AuditLog, AuditRecord};
+use vesta_state::{
+    StateDatabase,
+    audit::{AuditActor, AuditLog, AuditRecord},
+};
 
 const CONFIRM_TTL_MS: i64 = 120_000;
 /// Safety snapshots kept per profile.
@@ -238,6 +241,62 @@ impl Backups {
         Ok(())
     }
 
+    /// Interrupted in-place restores that currently block starts, as
+    /// `(job id, error code)`, oldest first.
+    pub fn recovery_jobs(&self) -> Result<Vec<(String, Option<String>)>> {
+        recovery_jobs(&self.inner.db)
+    }
+}
+
+/// Interrupted in-place restores, oldest first.
+pub fn recovery_jobs(db: &StateDatabase) -> Result<Vec<(String, Option<String>)>> {
+    Ok(db.read(|c| {
+        let mut s = c.prepare(
+            "SELECT id,error_code FROM backup_jobs WHERE state='recovery_required' ORDER BY created_at,id",
+        )?;
+        s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    })?)
+}
+
+/// Local operator resolution, for an agent that is **not running** (the caller holds
+/// the server's exclusive local lease): accept the current files of one interrupted
+/// in-place restore so starts are allowed again once none remain. Audited as the
+/// protected local owner. A running agent rereads this state when it next opens.
+pub fn resolve_recovery_locally(db: &StateDatabase, job_id: &str) -> Result<()> {
+    let audit = AuditLog::new(db.clone())?;
+    let now = db.clock().millis();
+    db.write(|c| {
+        let changed = c.execute(
+            "UPDATE backup_jobs SET state='failed',result_json=?,finished_at=? WHERE id=? AND state='recovery_required'",
+            params![
+                serde_json::json!({"recovery":"resolved_locally"}).to_string(),
+                now,
+                job_id
+            ],
+        )?;
+        if changed == 0 {
+            return Ok(Err(BackupError::UnknownJob));
+        }
+        let record = AuditRecord::new(
+            AuditActor::new(
+                "local-os-owner".into(),
+                "local".into(),
+                "protected-local-control".into(),
+            )?,
+            "backups.restore_in_place.resolve".into(),
+            format!("backup-job:{job_id}"),
+            "accepted".into(),
+            None,
+            [],
+        )?;
+        audit.append(c, &record)?;
+        Ok(Ok(()))
+    })?
+}
+
+impl Backups {
     /// Whether an interrupted in-place restore is blocking every game start.
     pub fn recovery_required(&self) -> bool {
         self.inner
@@ -358,14 +417,27 @@ impl Inner {
         }
 
         let safety = if take_safety {
+            // Exempt from count and size limits, but never fills the repository disk.
+            let budget = match self.disk_budget() {
+                Ok(budget) => budget,
+                Err(code) => {
+                    consistency.release();
+                    return Outcome::failed(code);
+                }
+            };
             let tags = ["vesta".to_owned(), safety_tag(&profile.name)];
-            match self.engine.backup(
+            match self.engine.backup_within(
                 &self.game,
                 &ignore,
                 &tags,
                 Some(&profile_tag(&profile.name)),
+                budget.bytes,
             ) {
                 Ok(summary) => Some(summary.snapshot_id),
+                Err(EngineError::LimitReached) => {
+                    consistency.release();
+                    return Outcome::failed(budget.exceeded());
+                }
                 Err(_) => {
                     consistency.release();
                     return Outcome::failed("backup_safety_snapshot_failed");
@@ -386,9 +458,14 @@ impl Inner {
             consistency.release();
             return Outcome::failed(BackupError::State.code());
         }
-        let result = self
-            .engine
-            .apply(&snapshot, &self.game, &paths, &ignore, &self.protected);
+        let result = self.engine.apply(
+            &snapshot,
+            &self.game,
+            &paths,
+            &ignore,
+            &self.protected,
+            Some(self.settings.limits.min_free_bytes),
+        );
         if matches!(result, Err(e) if e.modified) {
             // Block starts before the hold and gate are released.
             let mut recovery = self.recovery.lock().unwrap_or_else(|p| p.into_inner());

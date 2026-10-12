@@ -23,11 +23,14 @@
 //!   Nothing here ever restores automatically, stops or kills the game.
 pub mod engine;
 pub mod ignore;
+mod limits;
 mod restore;
 pub mod s3;
+pub mod space;
 pub mod store;
 
-pub use restore::PreparedRestore;
+pub use limits::{DISK_SPACE_LOW, SNAPSHOT_LIMIT, STORAGE_LIMIT, StorageStatus};
+pub use restore::{PreparedRestore, recovery_jobs, resolve_recovery_locally};
 
 use crate::{
     config::{BackupMode, BackupProfile, BackupRepository, BackupSettings, MutationPolicy},
@@ -951,6 +954,11 @@ impl Inner {
             Err(code) => return Outcome::failed(code),
         };
         let online = profile.mode == BackupMode::Online;
+        // Budgets first: a refused backup never warns players or suspends saving.
+        let budget = match self.capacity(profile) {
+            Ok(budget) => budget,
+            Err(code) => return Outcome::failed(code),
+        };
         // Phase 1: the consistent read, holding file admission and lease/hold/block.
         let (result, before, after, kept) = {
             let admission = match crate::files::mutation_admission(self.db.directory().path()) {
@@ -964,11 +972,12 @@ impl Inner {
             };
             let before = scan(&self.game);
             let tags = ["vesta".to_owned(), format!("{CANDIDATE}={}", profile.name)];
-            let result = self.engine.backup(
+            let result = self.engine.backup_within(
                 &self.game,
                 &ignore,
                 &tags,
                 Some(&profile_tag(&profile.name)),
+                budget.bytes,
             );
             let after = scan(&self.game);
             let kept = consistency.release();
@@ -977,6 +986,7 @@ impl Inner {
         // Phase 2: judge the snapshot; repository maintenance holds nothing else.
         let summary = match result {
             Ok(summary) => summary,
+            Err(EngineError::LimitReached) => return Outcome::failed(budget.exceeded()),
             Err(error) => return Outcome::failed(error.code()),
         };
         let complete = before.complete && after.complete;

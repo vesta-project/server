@@ -8,7 +8,9 @@ use std::{
 use vesta_control::{
     backups::store::{LocalStore, ObjectInfo, Store},
     backups::{BackupError, BackupEvent, Backups, Environment, JobKind, JobState},
-    config::{BackupMode, BackupProfile, BackupRepository, BackupSettings, MutationPolicy},
+    config::{
+        BackupLimits, BackupMode, BackupProfile, BackupRepository, BackupSettings, MutationPolicy,
+    },
     identity::{DeviceId, PrincipalId, Subject},
     operations::StartGate,
 };
@@ -47,6 +49,7 @@ fn profile(name: &str, mode: BackupMode, keep_last: u32) -> BackupProfile {
         keep_monthly: 0,
         on_mutation: MutationPolicy::FailWorld,
         warn_seconds: 0,
+        max_snapshots: None,
     }
 }
 
@@ -86,6 +89,10 @@ fn fixture() -> Fixture {
             profile("stopped", BackupMode::Stopped, 2),
             profile("online", BackupMode::Online, 0),
         ],
+        limits: BackupLimits {
+            min_free_bytes: 0,
+            ..Default::default()
+        },
     };
     Fixture {
         _temp: temp,
@@ -675,4 +682,89 @@ fn an_interrupted_restore_blocks_starts_until_resolved_or_superseded() {
     let cleared = backups.job("interrupted-2").unwrap().unwrap();
     assert_eq!(cleared.state, JobState::Failed);
     assert_eq!(cleared.result.unwrap()["recovery"], "superseded_by_restore");
+}
+
+fn backup_error(backups: &Backups, profile: &str) -> Option<String> {
+    let id = backups
+        .submit(&owner(), profile, JobKind::Backup, None)
+        .unwrap();
+    wait(backups, &id).error_code
+}
+
+#[test]
+fn snapshot_limits_stop_backups_after_retention_without_deleting_anything() {
+    let mut f = fixture();
+    // "stopped" keeps the last 2 and may hold 2: retention keeps it within its cap.
+    f.settings.profiles[0].max_snapshots = Some(2);
+    // "archive" keeps everything, so only the global cap bounds it.
+    f.settings.profiles.push(BackupProfile {
+        max_snapshots: None,
+        ..profile("archive", BackupMode::Stopped, 0)
+    });
+    f.settings.limits.max_snapshots = Some(4);
+    let (backups, _, _) = open(&f, false);
+    backups.init_repository().unwrap();
+    for _ in 0..3 {
+        assert_eq!(backup_error(&backups, "stopped"), None);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(backups.snapshots("stopped").unwrap().len(), 2);
+    // 2 restore points in "stopped" leave room for 2 archive snapshots, not 3.
+    assert_eq!(backup_error(&backups, "archive"), None);
+    assert_eq!(backup_error(&backups, "archive"), None);
+    let status = backups.storage().unwrap();
+    assert_eq!(status.backups_stopped, None);
+    assert_eq!(
+        backup_error(&backups, "archive").as_deref(),
+        Some(vesta_control::backups::SNAPSHOT_LIMIT)
+    );
+    let status = backups.storage().unwrap();
+    assert_eq!(status.restore_points, 4, "nothing was deleted");
+    assert_eq!(
+        status.backups_stopped.as_deref(),
+        Some(vesta_control::backups::SNAPSHOT_LIMIT)
+    );
+    // A retention-bounded profile still works at the global cap.
+    assert_eq!(backup_error(&backups, "stopped"), None);
+    assert_eq!(backups.storage().unwrap().backups_stopped, None);
+}
+
+#[test]
+fn size_and_free_space_budgets_refuse_backups_and_restores() {
+    let mut f = fixture();
+    f.settings.limits.max_repository_bytes = Some(1);
+    let (backups, _, _) = open(&f, false);
+    backups.init_repository().unwrap();
+    assert_eq!(
+        backup_error(&backups, "stopped").as_deref(),
+        Some(vesta_control::backups::STORAGE_LIMIT)
+    );
+    assert!(backups.snapshots("stopped").unwrap().is_empty());
+    let status = backups.storage().unwrap();
+    assert_eq!(status.limits.max_repository_bytes, Some(1));
+    assert!(status.free_bytes.is_some());
+    drop(backups);
+
+    // A generous size limit, then a free-space reserve no disk can meet.
+    f.settings.limits.max_repository_bytes = Some(1 << 30);
+    let (backups, _, _) = open(&f, false);
+    assert_eq!(backup_error(&backups, "stopped"), None);
+    let snapshot = backups.snapshots("stopped").unwrap()[0].id.clone();
+    drop(backups);
+    f.settings.limits.min_free_bytes = u64::MAX / 2;
+    let (backups, _, gate) = open(&f, false);
+    assert_eq!(
+        backup_error(&backups, "stopped").as_deref(),
+        Some(vesta_control::backups::DISK_SPACE_LOW)
+    );
+    fs::write(f.game.join("world/level.dat"), b"changed").unwrap();
+    let before = tree(&f.game);
+    let job = restore_in_place(&backups, &snapshot, &[]);
+    assert_eq!(
+        job.error_code.as_deref(),
+        Some(vesta_control::backups::DISK_SPACE_LOW)
+    );
+    assert_eq!(job.state, JobState::Failed);
+    assert_eq!(tree(&f.game), before);
+    assert!(!gate.blocked());
 }

@@ -1146,6 +1146,12 @@ configuration key is universal. Pre-1.7 legacy status protocols are deferred.
   recovery packages require owner authorization, strong encryption, and a
   separately preserved recovery key/passphrase.
 
+> **Owner amendment (2026-10-12), superseding the encryption clauses above for now:**
+> recovery exports contain no passwords or other credential material (no password
+> verifiers, one-time codes, confirmations or tokens) and are therefore written
+> unencrypted. Encryption and other export options may be added to the backup system
+> later. The baseline bullets stay frozen for traceability.
+
 ### Agent state, repair, and pending changes
 
 - Local durable state uses SQLite in WAL mode with foreign keys, versioned

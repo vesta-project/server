@@ -1347,3 +1347,55 @@ fn backup_repository_is_exactly_one_local_directory_or_s3_bucket() {
         ConfigError::InvalidDocument,
     );
 }
+
+#[test]
+fn backup_limits_parse_sizes_and_refuse_zero_caps() {
+    use super::{DEFAULT_MIN_FREE_BYTES, parse_size};
+    assert_eq!(parse_size("0"), Some(0));
+    assert_eq!(parse_size("500 MB"), Some(500_000_000));
+    assert_eq!(parse_size("50GB"), Some(50_000_000_000));
+    assert_eq!(parse_size("2 GiB"), Some(2 << 30));
+    assert_eq!(parse_size("1 TiB"), Some(1 << 40));
+    for bad in [
+        "",
+        "GB",
+        "1.5 GB",
+        "-1 GB",
+        "10 gigs",
+        "99999999999999999999 TB",
+    ] {
+        assert_eq!(parse_size(bad), None, "{bad}");
+    }
+    let base = std::env::current_dir().unwrap();
+    let profile = "[[backups.profile]]\nname = 'nightly'\nmode = 'stopped'\nkeep-last = 3\n";
+    let plain = format!("{GOLDEN}\n[backups]\nrepository = 'backups'\n{profile}");
+    let limits = parse(&plain, &base)
+        .unwrap()
+        .backups()
+        .unwrap()
+        .limits
+        .clone();
+    assert_eq!(limits.min_free_bytes, DEFAULT_MIN_FREE_BYTES);
+    assert_eq!(
+        (limits.max_snapshots, limits.max_repository_bytes),
+        (None, None)
+    );
+    let limited = format!(
+        "{GOLDEN}\n[backups]\nrepository = 'backups'\n[backups.limits]\nmax-snapshots = 40\nmax-repository-size = '50 GB'\nmin-free-space = '0'\n{profile}max-snapshots = 10\n"
+    );
+    let parsed = parse(&limited, &base).unwrap();
+    let settings = parsed.backups().unwrap();
+    assert_eq!(settings.limits.max_snapshots, Some(40));
+    assert_eq!(settings.limits.max_repository_bytes, Some(50_000_000_000));
+    assert_eq!(settings.limits.min_free_bytes, 0);
+    assert_eq!(settings.profiles[0].max_snapshots, Some(10));
+    for bad in [
+        limited.replace("max-snapshots = 40", "max-snapshots = 0"),
+        limited.replace("'50 GB'", "'0'"),
+        limited.replace("max-snapshots = 10", "max-snapshots = 0"),
+        limited.replace("'50 GB'", "'lots'"),
+        limited.replace("min-free-space", "minimum-free"),
+    ] {
+        refused(parse(&bad, &base), ConfigError::InvalidDocument);
+    }
+}
