@@ -36,6 +36,7 @@ pub use domain::{
     CancelOutcome, MAX_PAGE, OperationError, OperationErrorCode, OperationId, OperationPage,
     OperationState, OperationSummary, OperationsResult,
 };
+pub use game::{StartBlock, StartGate};
 pub use players::{
     MAX_PLAYER_QUERY_BYTES, MAX_PLAYER_QUERY_LINES, MAX_PLAYER_QUERY_WAIT, PlayerObservation,
     PlayerQueryError, PlayerQueryResult,
@@ -77,6 +78,39 @@ impl Operations {
         let audit = AuditLog::new(db.clone())?;
         let events = EventLog::new(db.clone());
         Ok(Self { db, audit, events })
+    }
+
+    /// Trusted host composition only: the operation a principal already submitted under
+    /// `key`, if any, so crash reconciliation never rebuilds generation-bound intent.
+    pub(crate) fn find_key_trusted(
+        &self,
+        principal: &crate::identity::PrincipalId,
+        key: &str,
+    ) -> OperationsResult<Option<OperationSummary>> {
+        self.db
+            .read_with(|snapshot| {
+                let now = self.db.clock().millis();
+                Ok(
+                    Repository::new(snapshot.connection(), self.db.server_id(), now)
+                        .find_key(principal, key)?
+                        .map(|existing| existing.summary),
+                )
+            })
+            .map_err(OperationError::from)
+    }
+
+    /// Trusted host composition only (automation outcome reconciliation): the same
+    /// fixed summary facts as `get`, without a caller capability check.
+    pub(crate) fn summary_trusted(
+        &self,
+        id: &OperationId,
+    ) -> OperationsResult<Option<OperationSummary>> {
+        self.db
+            .read_with(|snapshot| {
+                let now = self.db.clock().millis();
+                Repository::new(snapshot.connection(), self.db.server_id(), now).summary(id)
+            })
+            .map_err(OperationError::from)
     }
 
     /// Fixed lifecycle facts, never stored input/result/free-form progress text.

@@ -33,6 +33,8 @@ pub enum OperationErrorCode {
     ConfirmationRejected,
     SourceRevisionUnavailable,
     ResultTooLarge,
+    /// Maintenance such as a stopped-server backup forbids starting the game now.
+    MaintenanceActive,
 }
 impl OperationErrorCode {
     pub const fn code(self) -> &'static str {
@@ -53,6 +55,7 @@ impl OperationErrorCode {
             Self::ConfirmationRejected => "confirmation_rejected",
             Self::SourceRevisionUnavailable => "source_revision_unavailable",
             Self::ResultTooLarge => "result_too_large",
+            Self::MaintenanceActive => "maintenance_active",
         }
     }
 }

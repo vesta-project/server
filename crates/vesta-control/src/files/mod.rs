@@ -12,6 +12,7 @@
 //! or deletion; it does not copy custom ACLs or other attributes. Stages start private on Unix.
 mod local_document;
 mod mutation;
+pub(crate) use mutation::mutation_admission;
 mod native;
 mod pack_root;
 mod path;

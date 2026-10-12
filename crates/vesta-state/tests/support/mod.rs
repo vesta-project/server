@@ -150,6 +150,10 @@ pub fn remove_directory_link(link: &Path) -> io::Result<()> {
     }
 }
 
+/// V18 additions. Usable inside an existing transaction.
+/// Also removes the V19 backup job table first, so older fixtures stay exact.
+pub const REMOVE_V18_SCHEMA: &str = "DROP TABLE backup_jobs; DROP TABLE notification_state; DROP TABLE notifications; DROP TABLE workflow_schedule; DROP TABLE run_steps; DROP TABLE workflow_runs; DROP TABLE workflows; DROP TRIGGER role_capabilities_builtin_no_delete; DELETE FROM role_capabilities WHERE capability IN ('automation.view','automation.manage','notifications.view'); CREATE TRIGGER role_capabilities_builtin_no_delete BEFORE DELETE ON role_capabilities WHEN (SELECT builtin FROM roles WHERE id=OLD.role_id)=1 BEGIN SELECT RAISE(ABORT,'builtin roles are immutable'); END;";
+
 /// V16 additions (remote permissions). Usable inside an existing transaction.
 #[allow(dead_code)]
 pub const REMOVE_V16_SCHEMA: &str = "DROP TABLE management_invitation_issuers; DROP TABLE management_permission_receipts; DROP TABLE user_minecraft_names;";
@@ -157,6 +161,7 @@ pub const REMOVE_V16_SCHEMA: &str = "DROP TABLE management_invitation_issuers; D
 /// Remove current file/pack-management and unified-auth additions before constructing an owned
 /// pre-V12 migration fixture. Marker-only downgrades are not old schemas.
 pub fn remove_v12_schema(connection: &rusqlite::Connection) {
+    connection.execute_batch(REMOVE_V18_SCHEMA).unwrap();
     connection.execute_batch("BEGIN IMMEDIATE;
         DROP TABLE management_invitation_issuers;
         DROP TABLE management_permission_receipts;

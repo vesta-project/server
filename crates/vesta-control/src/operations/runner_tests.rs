@@ -516,6 +516,7 @@ fn returned_stop_ack_with_second_owned_writer_draining_retains_lock_until_actual
     let mut owned = OwnedRuntime {
         runtime: OperationRuntime {
             operations,
+            start_block: Default::default(),
             shared,
             local: LocalRuntime {
                 sender: mpsc::sync_channel(1).0,
@@ -726,6 +727,7 @@ fn delayed_stop(
     let handle = thread::spawn(move || driver.run());
     let runtime = OperationRuntime {
         operations,
+        start_block: Default::default(),
         shared,
         local: LocalRuntime {
             sender: mpsc::sync_channel(1).0,
@@ -784,6 +786,7 @@ fn pending_player_query_timeout_retains_driver_database_and_lifecycle_exclusion(
     let handle = thread::spawn(move || driver.run());
     let mut owned = OwnedRuntime {
         runtime: OperationRuntime {
+            start_block: Default::default(),
             operations: harness.operations.clone(),
             shared,
             local: LocalRuntime {
@@ -1037,6 +1040,7 @@ fn delayed_stop_ack(
     let owned = OwnedRuntime {
         runtime: OperationRuntime {
             operations,
+            start_block: Default::default(),
             shared,
             local: LocalRuntime {
                 sender: mpsc::sync_channel(1).0,
@@ -1090,6 +1094,7 @@ fn late_dispatch_observation_failure_survives_successful_later_polls_and_real_ex
     let mut owned = OwnedRuntime {
         runtime: OperationRuntime {
             operations,
+            start_block: Default::default(),
             shared,
             local: LocalRuntime {
                 sender: mpsc::sync_channel(1).0,

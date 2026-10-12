@@ -7,6 +7,9 @@
 //! and are still authorized. Failures before the runtime starts release everything
 //! opened so far; shutdown is observation-only and keeps ownership on timeout.
 use crate::ControlError;
+use crate::automation::{Automation, AutomationEvent, Severity};
+use crate::automation_host::HostActions;
+use crate::backups::{BackupEvent, Backups, Environment as BackupEnvironment};
 use crate::config::{ConfigError, HostConfiguration, PackAccessMode, PackSource, Supervision};
 use crate::files::{self, FileBrowser, FileError};
 use crate::identity::management::ManagementAccess;
@@ -24,7 +27,7 @@ use crate::whitelist::{Whitelist, WhitelistError};
 use std::{
     fmt,
     path::Path,
-    sync::{Arc, RwLock, mpsc},
+    sync::{Arc, Mutex, RwLock, mpsc},
     thread,
     time::Duration,
 };
@@ -113,7 +116,134 @@ pub struct Host {
     releases: Arc<PackReleases>,
     graceful_stop: GracefulStop,
     runtime: OperationRuntime,
+    backups: Option<Arc<Backups>>,
+    automation: Arc<Automation>,
+    driver: Option<AutomationDriver>,
 }
+
+/// Ticks schedules and turns runtime and backup facts into automation events.
+/// Observation only: it never starts or stops anything itself, except the opt-in
+/// start-on-agent-start request through the runtime's normal start path.
+struct AutomationDriver {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    local: Arc<std::sync::OnceLock<crate::operations::LocalRuntime>>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+impl AutomationDriver {
+    fn start(
+        automation: Arc<Automation>,
+        runtime: Arc<std::sync::OnceLock<crate::operations::RuntimeHandle>>,
+        backup_events: mpsc::Receiver<BackupEvent>,
+        start_on_agent_start: bool,
+    ) -> Result<Self, HostError> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stop = Arc::new(AtomicBool::new(false));
+        let local: Arc<std::sync::OnceLock<crate::operations::LocalRuntime>> = Arc::default();
+        let (flag, attached) = (stop.clone(), local.clone());
+        let thread = thread::Builder::new()
+            .name("vesta-automation".into())
+            .spawn(move || {
+                // Wait for the runtime; composition fills these right after opening it.
+                let (runtime, local) = loop {
+                    if flag.load(Ordering::Acquire) {
+                        return;
+                    }
+                    if let (Some(runtime), Some(local)) = (runtime.get(), attached.get()) {
+                        break (runtime.clone(), local.clone());
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                };
+                let _ = automation.publish(AutomationEvent::AgentStarted);
+                let mut generation = runtime.game_snapshot().ok().and_then(|s| s.generation);
+                if start_on_agent_start && generation.is_none() {
+                    // The runtime's own start path refuses duplicates, orphans,
+                    // unresolved launches and maintenance blocks; its outcome is audited.
+                    if let Err(code) = local.request(crate::operations::LocalAction::Start) {
+                        let _ = automation.notify(
+                            Severity::Warning,
+                            "Start on agent start refused",
+                            code,
+                            "agent",
+                        );
+                    }
+                }
+                let mut crash_loop = false;
+                while !flag.load(Ordering::Acquire) {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0);
+                    let _ = automation.tick(now);
+                    while let Ok(event) = backup_events.try_recv() {
+                        let _ = automation.publish(match event {
+                            BackupEvent::Completed { profile, .. } => {
+                                AutomationEvent::BackupCompleted { profile }
+                            }
+                            BackupEvent::Failed { profile, .. } => {
+                                AutomationEvent::BackupFailed { profile }
+                            }
+                        });
+                    }
+                    if let Ok(Some(health)) = runtime.supervision() {
+                        if health.crash_loop && !crash_loop {
+                            let _ = automation.notify(
+                                Severity::Critical,
+                                "Crash loop: automatic restarts suspended",
+                                "The server crashed repeatedly and was left stopped. Investigate, then run vesta-agent reset-restarts.",
+                                "supervisor",
+                            );
+                        }
+                        crash_loop = health.crash_loop;
+                    }
+                    if let Ok(snapshot) = runtime.game_snapshot() {
+                        if let Some(old) = generation
+                            && snapshot.generation != Some(old)
+                        {
+                            // The old generation ended, even if a new one already started
+                            // between observations (for example a crash restart).
+                            let crashed = snapshot
+                                .last_exit
+                                .is_some_and(|exit| exit.generation == old && !exit.success);
+                            let _ = automation.publish(if crashed {
+                                AutomationEvent::ServerCrashed
+                            } else {
+                                AutomationEvent::ServerStopped
+                            });
+                        }
+                        if snapshot.generation.is_some() && snapshot.generation != generation {
+                            let _ = automation.publish(AutomationEvent::ServerStarted);
+                        }
+                        generation = snapshot.generation;
+                    }
+                    thread::sleep(Duration::from_secs(1));
+                }
+            })
+            .map_err(|_| HostError::Supervisor("host_automation_unavailable"))?;
+        Ok(Self {
+            stop,
+            local,
+            thread: Some(thread),
+        })
+    }
+    fn attach(&self, local: crate::operations::LocalRuntime) {
+        let _ = self.local.set(local);
+    }
+    fn stop(mut self) {
+        self.halt();
+    }
+    fn halt(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+impl Drop for AutomationDriver {
+    fn drop(&mut self) {
+        self.halt();
+    }
+}
+
 impl fmt::Debug for Host {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Host")
@@ -322,12 +452,34 @@ impl Host {
             runtime: self.runtime().network_handle(),
             preparations: self.preparations.clone(),
             files: self.files.for_remote(),
+            backups: self.backups.clone(),
+            automation: self.automation.clone(),
         }
+    }
+    /// Present only when `[backups]` is configured.
+    pub fn backups(&self) -> Option<&Arc<Backups>> {
+        self.backups.as_ref()
+    }
+    pub fn automation(&self) -> &Arc<Automation> {
+        &self.automation
     }
 
     /// Stop dispatch and wait up to `timeout` for the runtime to finish. The database
     /// is closed only after the runtime has really completed.
     pub fn shutdown(mut self, timeout: Duration) -> Result<HostShutdown, HostError> {
+        if let Some(driver) = self.driver.take() {
+            driver.stop();
+        }
+        // A running backup is waited for, never abandoned mid-write.
+        if let Some(backups) = &self.backups {
+            backups.stop_claiming();
+            if backups.busy() {
+                thread::sleep(timeout.min(Duration::from_millis(500)));
+                if backups.busy() {
+                    return Ok(HostShutdown::TimedOut(Box::new(self)));
+                }
+            }
+        }
         match self
             .runtime
             .shutdown(timeout)
@@ -411,7 +563,6 @@ fn compose(
     let graceful_stop = launch.graceful_stop();
     let spec = launch.into_launch_spec(None).map_err(HostError::Launch)?;
     let operations = Operations::new(db.clone()).map_err(HostError::Operation)?;
-    // Last: once the driver runs, failures must go through observation-only shutdown.
     // The status probe target comes from server.properties at open time; a changed
     // port is picked up when the agent is restarted.
     let readiness = vesta_game_runtime::readiness::ReadinessConfig {
@@ -421,11 +572,84 @@ fn compose(
             .and_then(|text| crate::operations::readiness::probe_from_properties(&text)),
         ..Default::default()
     };
+    let supervised = supervisor.is_some();
+    // Everything fallible is built before the runtime starts, because once it runs a
+    // persisted Start may launch the game and dropping the runtime would wait for it.
+    // The services reach the runtime through a cell filled right after it opens.
+    let cell: Arc<std::sync::OnceLock<crate::operations::RuntimeHandle>> = Arc::default();
+    let gate = crate::operations::StartGate::default();
+    let (event_sink, backup_events) = mpsc::channel();
+    let backups = match config.backups() {
+        None => None,
+        Some(settings) => {
+            let observed = cell.clone();
+            let event_sink = Mutex::new(event_sink);
+            let state = db.directory().clone();
+            Some(Arc::new(
+                Backups::open(
+                    db.clone(),
+                    settings.clone(),
+                    config.game(),
+                    BackupEnvironment {
+                        observe: Box::new(move || {
+                            let runtime = observed.get().ok_or("backup_runtime_unavailable")?;
+                            let snapshot = runtime
+                                .game_snapshot()
+                                .map_err(|_| "backup_game_state_unproven")?;
+                            if let Some(health) = runtime
+                                .supervision()
+                                .map_err(|_| "backup_game_state_unproven")?
+                                && (health.orphan_running
+                                    || health.launch_unresolved
+                                    || health.observation_failed)
+                            {
+                                return Err("backup_game_state_unproven");
+                            }
+                            Ok(snapshot.generation)
+                        }),
+                        supervisor: if supervised {
+                            vesta_supervisor::SupervisorClient::new(&state).ok()
+                        } else {
+                            None
+                        },
+                        start_gate: gate.clone(),
+                        events: Box::new(move |event| {
+                            if let Ok(sink) = event_sink.lock() {
+                                let _ = sink.send(event);
+                            }
+                        }),
+                    },
+                )
+                .map_err(|e| HostError::Supervisor(e.code()))?,
+            ))
+        }
+    };
+    let automation = Arc::new(
+        Automation::new(
+            db.clone(),
+            Arc::new(HostActions::new(
+                db.clone(),
+                cell.clone(),
+                backups.clone(),
+                files.clone(),
+            )),
+        )
+        .map_err(HostError::Identity)?,
+    );
+    let driver = AutomationDriver::start(
+        automation.clone(),
+        cell.clone(),
+        backup_events,
+        config.start_on_agent_start(),
+    )?;
+    // Last: once the driver runs, failures must go through observation-only shutdown.
     let runtime = match supervisor {
-        None => OperationRuntime::open_with_readiness(operations, spec, readiness),
-        Some(remote) => OperationRuntime::open_supervised(operations, remote, readiness),
+        None => OperationRuntime::open_with_readiness(operations, spec, readiness, gate),
+        Some(remote) => OperationRuntime::open_supervised(operations, remote, readiness, gate),
     }
     .map_err(HostError::Operation)?;
+    let _ = cell.set(runtime.network_handle());
+    driver.attach(runtime.local_handle());
     Ok(Host {
         config,
         db: db.clone(),
@@ -442,6 +666,9 @@ fn compose(
         releases,
         graceful_stop,
         runtime,
+        backups,
+        automation,
+        driver: Some(driver),
     })
 }
 
@@ -611,6 +838,8 @@ pub struct NetworkHost {
     runtime: crate::operations::RuntimeHandle,
     preparations: Arc<Vec<PackPreparation>>,
     files: FileBrowser,
+    backups: Option<Arc<Backups>>,
+    automation: Arc<Automation>,
 }
 /// Owned local refresh composition. Dropping it signals and joins the worker,
 /// including any in-progress bounded document read. No remote management route.
@@ -629,6 +858,12 @@ impl Drop for AdmissionRefresh {
     }
 }
 impl NetworkHost {
+    pub fn backups(&self) -> Option<&Arc<Backups>> {
+        self.backups.as_ref()
+    }
+    pub fn automation(&self) -> &Arc<Automation> {
+        &self.automation
+    }
     pub fn prepare_pack(
         &self,
         plan: &ReleasePlan,

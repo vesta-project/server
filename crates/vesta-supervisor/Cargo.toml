@@ -12,6 +12,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 fs2.workspace = true
+getrandom.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "sync", "macros"] }
 
 [target.'cfg(windows)'.dependencies]

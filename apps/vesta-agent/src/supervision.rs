@@ -124,3 +124,15 @@ fn request(root: &Path, name: &str, op: wire::Op, expected: wire::Reply) -> Resu
         _ => Err("supervisor_outcome_unknown_do_not_retry"),
     }
 }
+
+/// Create the backup repository key and initialize the encrypted repository for a
+/// named server whose host configuration has a `[backups]` table.
+pub fn backup_init(root: &Path, name: &str) -> Result<std::path::PathBuf> {
+    let server = crate::servers::resolve(root, name)?;
+    let config =
+        HostConfiguration::load_file(&server.config, &server.directory).map_err(|e| e.code())?;
+    let settings = config.backups().ok_or("backups_not_configured")?;
+    let state = StateDirectory::new(config.state(), Some(config.game()))
+        .map_err(|_| "local_state_refused")?;
+    vesta_control::backups::initialize_repository(&state, settings, config.game())
+}

@@ -287,3 +287,57 @@ fn agent_exit_keeps_the_game_and_a_supervisor_crash_blocks_duplicates() {
     );
     assert!(layout.record().is_none());
 }
+
+#[test]
+fn start_on_agent_start_launches_once_and_never_duplicates() {
+    let layout = Layout::new();
+    let text = fs::read_to_string(&layout.host).unwrap();
+    fs::write(
+        &layout.host,
+        text.replace(
+            "supervision = 'separate'\n",
+            "supervision = 'separate'\nstart-on-agent-start = true\n",
+        ),
+    )
+    .unwrap();
+    let (mut supervisor, client) = layout.spawn_supervisor();
+    let host = layout.open_host(client.clone());
+    let status = host.runtime().network_handle();
+    eventually(
+        || status.game_snapshot().unwrap().generation.is_some(),
+        "started on agent start",
+    );
+    let generation = status.game_snapshot().unwrap().generation.unwrap();
+    eventually(
+        || {
+            status.readiness().is_ok_and(|view| {
+                view.readiness == vesta_control::operations::readiness::Readiness::Ready
+            })
+        },
+        "game ready",
+    );
+    close(host);
+    // A second agent start finds the running generation and starts nothing.
+    let host = layout.open_host(client.clone());
+    let status = host.runtime().network_handle();
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(status.game_snapshot().unwrap().generation, Some(generation));
+    assert_eq!(layout.record().unwrap().generation, generation.to_hex());
+    host.runtime()
+        .local_handle()
+        .request(LocalAction::Stop)
+        .unwrap();
+    close(host);
+    eventually(
+        || {
+            client
+                .call(Op::Shutdown, Duration::from_secs(2))
+                .is_ok_and(|reply| reply == Reply::ShuttingDown)
+        },
+        "idle supervisor shuts down",
+    );
+    eventually(
+        || supervisor.try_wait().unwrap().is_some(),
+        "supervisor exit",
+    );
+}

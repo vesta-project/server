@@ -895,3 +895,69 @@ fn unsafe_automatic_role_edits_fail_closed_and_the_local_owner_can_repair_select
 
 #[path = "permissions_tests.rs"]
 mod permissions_tests;
+
+#[test]
+fn automation_and_notifications_defaults_are_management_not_automatic_access() {
+    use crate::identity::Capability;
+    let f = Fixture::new();
+    let capabilities = [
+        Capability::AutomationView,
+        Capability::AutomationManage,
+        Capability::NotificationsView,
+    ];
+    for capability in capabilities {
+        assert_eq!(Capability::from_id(capability.id()), Some(capability));
+        assert!(!super::access::safe(capability));
+        assert!(!capability.scoped());
+        assert!(capability.delegable());
+    }
+    for role in BuiltinRole::ALL {
+        let (device, key) = f.enroll(*role);
+        let token = f.session(&device, &key);
+        for capability in capabilities {
+            let expected = matches!(role, BuiltinRole::Owner | BuiltinRole::Administrator)
+                || (*role == BuiltinRole::Moderator && capability == Capability::NotificationsView);
+            assert_eq!(
+                f.service
+                    .authorize(token.secret.expose(), capability, None)
+                    .is_ok(),
+                expected,
+                "{} {}",
+                role.id(),
+                capability.id()
+            );
+        }
+    }
+    let before = f.service.access_local().unwrap();
+    for (index, capability) in capabilities.iter().enumerate() {
+        let role_id = format!("automation-auto-{index}");
+        f.db.write(|c| {
+            c.execute(
+                "INSERT INTO roles VALUES(?,?,5,0,'fixture',0)",
+                params![role_id, role_id],
+            )?;
+            c.execute(
+                "INSERT INTO role_capabilities VALUES(?,'public.info','*')",
+                [&role_id],
+            )?;
+            c.execute(
+                "INSERT INTO role_capabilities VALUES(?,?,'*')",
+                params![role_id, capability.id()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        for field in ["anonymous", "new_user", "whitelist", "password"] {
+            assert!(
+                matches!(
+                    f.service
+                        .patch_access_local(&[(field.into(), role_id.clone())]),
+                    Err(ManagementError::InvalidRequest)
+                ),
+                "{field} {}",
+                capability.id()
+            );
+            assert_eq!(f.service.access_local().unwrap(), before);
+        }
+    }
+}

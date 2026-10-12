@@ -914,6 +914,249 @@ shell/argv execution; Moderator has no raw-console entry by default. Confirmatio
 binds the exact command and generation; unsafe replay is forbidden. No
 `execute_as_player`. Exact typed action catalogue remains an owner/schema question.
 
+## 4A. Implemented automation, notification and backup management
+
+This subsection is **implemented**, not a promise about the remaining draft
+routes. Paths below are relative to `/api/v3/manage`. They use the existing
+admitted management session and V3 envelope (`api_version`, `request_id`, then
+`data` or `error:{code}`). Timestamps ending in `_ms` are epoch milliseconds;
+nullable fields are emitted as JSON `null`. Unknown body fields, unsupported
+methods, GET bodies, unknown/duplicate query keys and mutation queries are rejected.
+Every mutation requires exactly one `Content-Type: application/json` and one
+`Idempotency-Key` containing 16–128 visible ASCII bytes. Mutation bodies are
+limited to 70 KiB (and the listener's smaller configured limit, if any).
+
+### Workflow requests and durable mutation results
+
+`automation.view` authorizes global workflow/run/step observations. Mutations
+require `automation.manage`; acting for another execution principal additionally
+requires its current rank to be strictly lower than the caller's. Self is allowed.
+Owner/Administrator receive both capabilities; automatic access sources cannot
+receive `automation.manage`. Creation does not confer execution authority: every
+mutating engine action is reauthorized against the persisted execution principal.
+
+| Method and path | Exact request body/query | Success `data` |
+|---|---|---|
+| `GET automation/workflows` | optional `after=<id>&limit=<1..100>`; default 50 | `{workflows:[WorkflowSummary],next_after:string|null}` |
+| `POST automation/workflows` | `{name:string,execution_principal_id:string,definition:Definition,enabled:boolean}` | HTTP 201 `{kind:"workflow",workflow_id:string,revision:integer}` |
+| `GET automation/workflows/{id}` | no query | `{workflow:WorkflowDetail}` |
+| `PUT automation/workflows/{id}` | `{expected_revision:integer,name:string,execution_principal_id:string,definition:Definition}` | `{kind:"workflow",workflow_id:string,revision:integer}` |
+| `DELETE automation/workflows/{id}` | `{expected_revision:integer}` | `{kind:"deleted",workflow_id:string,deleted:true}` |
+| `POST automation/workflows/{id}/enabled` | `{expected_revision:integer,enabled:boolean}` | `{kind:"workflow",workflow_id:string,revision:integer}` |
+| `POST automation/workflows/{id}/run` | `{}` | `{kind:"run",workflow_id:string,run_id:string|null,skipped:boolean}`; HTTP 202 if admitted, otherwise 200 |
+| `GET automation/workflows/{id}/runs` | optional `after=<id>&limit=<1..100>` | `{runs:[RunSummary],next_after:string|null}` |
+| `GET automation/runs/{id}` | no query | `{run:RunDetail}` |
+| `GET automation/runs/{id}/steps` | optional `after=<0..191>&limit=<1..100>` | `{steps:[RunStep],next_after:integer|null}` |
+| `POST automation/runs/{id}/discard` | `{}` | `{kind:"discarded",run_id:string,discarded:true,operation_cancelled:false}` |
+
+List cursors are exclusive, ordered ascending by opaque ID. `next_after` is the
+last returned cursor when the page is full, otherwise null; a full final page may
+therefore be followed by an empty page. Step cursors flatten `index*6+attempt`.
+Revisions range from 1 through 9,007,199,254,740,991. A stale expected revision
+returns HTTP 412 `precondition_failed`. Other state conflicts return HTTP 409
+`automation_conflict`. Missing resources return 404 `resource_not_found`.
+
+Exact observation shapes (the two detail shapes add only `definition`):
+
+```text
+WorkflowSummary = {id:string,name:string,enabled:boolean,
+  execution_principal_id:string,created_at_ms:integer,updated_at_ms:integer,
+  revision:integer}
+WorkflowDetail = WorkflowSummary + {definition:Definition}
+RunSummary = {id:string,workflow_id:string,workflow_revision:integer,
+  execution_principal_id:string,trigger:object,state:string,current_step:integer,
+  attempt:integer,next_wake_at_ms:integer|null,started_at_ms:integer,
+  finished_at_ms:integer|null,outcome_code:string|null}
+RunDetail = RunSummary + {definition:Definition}
+RunStep = {run_id:string,index:integer,attempt:integer,cursor:integer,state:string,
+  operation_reference:string|null,output:JSON|null,error_code:string|null,
+  started_at_ms:integer,finished_at_ms:integer|null}
+```
+
+Definitions are pinned into runs, including revision and execution principal.
+Workflow detail intentionally includes the owner-authored console line; it is
+not executable shell text. A definition is at most 65,536 serialized bytes:
+
+```json
+{
+  "trigger": {"kind":"manual"},
+  "missed_policy": {"kind":"skip_and_notify"},
+  "steps": [{
+    "id":"announce",
+    "action":{"kind":"notify","severity":"info","title":"Ready","body":"Done"},
+    "timeout_secs":120,
+    "retries":{"max_retries":0,"backoff_secs":0},
+    "on_success":{"kind":"next"},
+    "on_failure":{"kind":"fail"}
+  }]
+}
+```
+
+`missed_policy`, `retries`, `on_success` and `on_failure` default to the values
+shown. Every nested object is strict, including tagged unit variants. `steps`
+contains 1–32 uniquely named steps; retries are at most 5. Branches may only move
+forward, never loop. The closed tagged unions are:
+
+```text
+trigger:
+  {kind:"manual"|"agent_startup"|"server_started"|"server_stopped"|
+    "server_crashed"|"player_count_zero"|"first_player_joined"|"update_available"}
+  {kind:"cron",expr:string,utc_offset_minutes:integer}
+  {kind:"interval",seconds:integer}
+  {kind:"backup_completed"|"backup_failed",profile:string|null}
+missed_policy:
+  {kind:"skip_and_notify"|"run_latest"} | {kind:"catch_up",max:1..10}
+action:
+  {kind:"delay",secs:integer}
+  {kind:"backup"|"verify_backup",profile:string}
+  {kind:"start"|"stop"|"restart"|"clean_trash"}
+  {kind:"console_command",line:string}
+  {kind:"notify",severity:"info"|"warning"|"critical",title:string,body:string}
+  {kind:"script_preset",preset:string,params:{string:string}}
+on_success:
+  {kind:"next"|"end"} | {kind:"goto",step_id:string}
+  {kind:"if_output_equals",key:string,value:JSON,then_step:string,otherwise:string|null}
+on_failure: {kind:"fail"|"next"} | {kind:"goto",step_id:string}
+```
+
+Cron is numeric five-field cron, with lists/ranges/steps, Sunday 0/7 and ordinary
+restricted day-of-month/day-of-week OR semantics. Offsets are fixed UTC minutes
+in -840..840; no host timezone or DST interpretation. Console lines contain no
+control characters and are at most 1,024 bytes. Script presets are owner-approved,
+not uploaded scripts, shell commands or free-form executable paths; a host may
+refuse unsupported actions. Outputs are bounded to 16 KiB and nesting depth 8.
+
+Workflow names and step IDs are nonblank, control-free strings of at most 128
+bytes. Step timeouts and delays are 1–86,400 seconds; retry backoff is 0–86,400
+seconds, persisted exponentially per attempt. Intervals are 60–31,536,000 seconds.
+A notify action's title/body are bounded to 256/4,096 bytes. Script preset names
+are at most 128 bytes; at most 32 parameters have control-free keys/values bounded
+to 64/2,048 bytes, with the entire parameter map also subject to output bounds.
+The manual-run endpoint requires an enabled workflow with the manual trigger.
+
+Only one run per workflow can be running/suspended. Ordinary duplicate triggers
+skip; explicit catch-up queues at most ten occurrences serially. Delay/retry wake
+times and submitting intents survive restart. A persisted handle is polled,
+not blindly resubmitted; an interrupted submitting intent reuses its durable
+idempotency key. Timeouts and uncertain results fail without retry and **do not
+cancel** the underlying operation. Deadlines govern persisted Delay steps too,
+and are checked before wake completion; a delay observed at/after its timeout
+fails through its failure branch. Only an explicit authorization `forbidden`
+suspends the run and emits a critical notification. Authorization `busy` or
+`unavailable` keeps a durable pending attempt, retried once per subsequent tick,
+without notification spam and bounded by the original step deadline (starting at
+the first pending attempt). Authorization `unsupported`/`invalid` fails the step
+without retry through its ordinary failure branch. Authorized discard also does
+not cancel an underlying operation.
+Deleting a workflow preserves pinned run history. Retention is ninety days,
+1,024 finished/2,048 total runs, 128 workflows and 4,096 notifications; active work
+is not evicted, and capacity pressure skips admissions with a warning.
+
+Workflow and inbox mutations atomically store their small result with the
+mutation/audit commit. Receipts are scoped to server, principal, device, method,
+path and domain. Identical normalized intent replays its original result even
+after a run completes or a workflow is deleted; a changed intent under the same
+key returns 409 `idempotency_conflict`. Every replay rechecks current capability
+and current target rank. Receipts retain seven days, with a shared ceiling of
+4,096 and separate 256-record workflow/inbox domain ceilings; saturation returns
+503 `temporarily_unavailable`. After retention clients must not assume old keys
+still deduplicate work. These APIs do not expose trusted producer/tick/event APIs.
+
+### Notification inbox
+
+All four routes require `notifications.view` (Owner, Administrator and Moderator
+have it by default). State is per principal, shared by that principal's devices.
+
+| Method and path | Exact request | Success `data` |
+|---|---|---|
+| `GET notifications` | optional `cursor=<nonnegative integer>&limit=<1..100>`; defaults 0/50 | `{notifications:[Notification],next_cursor:integer,oldest_cursor:integer|null}` |
+| `GET notifications/unread` | no query | `{unread_count:integer}` |
+| `POST notifications/read` | `{ids:[string]}`; 1–256 IDs | `{kind:"notifications_read",marked_read:true}` |
+| `POST notifications/acknowledge` | `{ids:[string]}`; 1–256 IDs | `{kind:"notifications_acknowledged",marked_read:true,acknowledged:true}` |
+
+```text
+Notification = {id:string,cursor:integer,created_at_ms:integer,
+  severity:"info"|"warning"|"critical",title:string,body:string,source:string,
+  read:boolean,acknowledged:boolean}
+```
+
+Fetch is exclusive of the monotonic cursor. `next_cursor` advances only over
+returned entries; `oldest_cursor` lets a client detect a retention gap. Reading
+and acknowledging are idempotent; acknowledgment also marks read. Notification
+production is host-only. Title/body/source are bounded to 256/8,192/128 bytes.
+
+### Backup jobs and inspection-only restore
+
+| Method and path | Capability | Exact request | Success `data` |
+|---|---|---|---|
+| `GET backups` | `backups.view` | optional `before=<opaque cursor>&limit=<1..200>`; default 50 | `{profiles:[BackupProfile],jobs:[BackupJob],next_before:string|null,restore_mode:"inspection_only"}` |
+| `GET backups/jobs/{id}` | `backups.view` | no query | `{job:BackupJob,restore_mode:"inspection_only"}` |
+| `GET backups/snapshots` | `backups.view` | required `profile=<profile>` only | `{profile:string,snapshots:[{id:string,time:string}]}` |
+| `POST backups/run` | `backups.create` | `{profile:string}` | HTTP 202 `{job_id:string,kind:"backup",restore_mode:"inspection_only"}` |
+| `POST backups/verify` | `backups.verify` | `{profile:string}` | HTTP 202 `{job_id:string,kind:"verify",restore_mode:"inspection_only"}` |
+| `POST backups/restore` | `backups.restore` | `{profile:string,snapshot:string,paths:[string]}` | HTTP 202 `{job_id:string,kind:"restore",restore_mode:"inspection_only"}` |
+
+```text
+BackupProfile = {name:string,mode:"online"|"stopped",keep_last:integer,
+  keep_daily:integer,keep_weekly:integer,keep_monthly:integer,
+  on_mutation:"warn"|"fail-world"|"fail-any",warn_seconds:integer}
+BackupJob = {id:string,profile:string,kind:"backup"|"verify"|"restore",state:string,
+  requested_by:string,snapshot_id:string|null,error_code:string|null,
+  created_at_ms:integer,started_at_ms:integer|null,finished_at_ms:integer|null,
+  result:BackupResult|null}
+BackupResult = optional structured facts only:
+  snapshot_id:string; files_new/files_changed/files_unmodified/data_added/
+  total_bytes_processed/source_changes:nonnegative integer;
+  consistency:"world_save_consistent"|"stopped";
+  world_changed/verified/truncated:boolean; retention_error:string|null;
+  changed_paths:[relative string]; restored_to:string.
+```
+
+Profile names are 1–32 lowercase ASCII letters/digits/hyphens and cannot start
+with `-`. Snapshot IDs are 8–64 lowercase hex characters. Restore paths are at
+most 64 confined literal relative paths; pattern characters `* ? [ ] \\ { }`
+are rejected rather than interpreted by restic. An empty array selects the full snapshot.
+Restore is **inspection-only**, into a fresh configured restore-root/job-ID
+folder. It never replaces a running/stopped game's files, starts the game or
+changes its configured world. `restored_to` is returned only when it matches the
+current trusted configuration-derived job directory. Repository/executable/vault
+password paths and native restic/process diagnostics are never projected. Snapshot
+projections deliberately omit restic tags and native source paths, and validate
+canonical RFC3339/RFC3339Nano dates before returning `time`; malformed metadata
+returns a fixed unavailable error rather than echoing native text. `changed_paths`
+is included only when every path passes the caller's current scoped `files.read`
+check; otherwise that field is omitted. Fixed safe error codes replace unknown
+persisted engine errors.
+
+Backup keys bind server/principal/device/method/path; `requested_by` is the
+admitted principal ID, never a caller body field. The backend receives the admitted
+Subject, durably records the principal/device binding and rechecks current backup
+capability when a queued job starts; a schedule or queue cannot retain old access.
+Repeating an accepted intent
+returns the same durable job ID. Changed profile/kind/restore target under the
+same key returns 409 `backup_idempotency_conflict`. Jobs are ordered by creation
+timestamp descending, then ID descending. `before` is an opaque exclusive
+composite cursor covering both timestamp and ID, so equal-timestamp jobs are not
+skipped. A full page returns its last row's cursor as `next_before`; clients pass
+that string back unchanged. The current versioned encoding is
+`b1.<16 lowercase hex timestamp digits>.<lowercase hex UTF-8 job-ID bytes>`;
+it is bounded to 276 bytes and malformed/noncanonical cursors are rejected.
+No configured backup service returns 404
+`backups_not_configured`, after authentication, capability and shape checks.
+Other fixed errors are `backup_forbidden` (403),
+`backup_profile_unknown`/`backup_job_unknown` (404),
+`backup_invalid_request` (400), `backup_busy` (409), and
+`backup_unavailable`/`backup_state_unavailable` (503). Snapshot listing has a
+short backend deadline and single-flight admission; its busy refusal specifically
+returns 503 `temporarily_unavailable`, not a job-admission conflict.
+
+Across this subsection, current capability refusal returns 403
+`management_forbidden`, invalid sessions return 401 `management_session_invalid`,
+invalid shapes return 400 `invalid_request`, listener/adapter body overflow returns
+413 `request_too_large`, and storage/receipt infrastructure failures return 503
+`temporarily_unavailable`. No SQL, filesystem, command or native engine error text
+is copied into an error envelope.
+
 ## 5. Events and realtime
 
 Reuse the existing **purpose-specific ticket → realtime upgrade → bounded notices**
@@ -936,8 +1179,10 @@ access immediately. Streams are observations, not authorization or command repla
 
 ## 6. Explicit non-goals
 
-Backups/restoration, SFTP, Discord integration, scheduling, sleep/MOTD automation,
-and metrics are future work per owner; no routes or promises are defined here.
+Full in-place world restoration, SFTP, Discord integration, sleep/MOTD-specific
+automation and metrics remain future work; no routes or promises are defined here.
+Bounded workflow scheduling, the notification inbox, backup jobs and inspection-only
+restore are implemented exclusively as described in section 4A.
 Also excluded: web UI hosting/proxying, shell/script execution, arbitrary downloads,
 remote bootstrap via bearer/config, automated recovery/restart, server creation/
 adoption/deletion, signed binary updates, file archives, trash purge, role-management routes and an alternative raw TCP management path.

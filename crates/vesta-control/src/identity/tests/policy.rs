@@ -1367,7 +1367,7 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
 
     // 51 capability ids, in persisted ordinal order, with the persisted flags.
     assert_eq!(fixture_capabilities.len(), 51);
-    assert_eq!(Capability::ALL.len(), 57);
+    assert_eq!(Capability::ALL.len(), 60);
     assert_eq!(
         &Capability::ALL[51..],
         &[
@@ -1376,7 +1376,10 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
             Capability::PackRealtime,
             Capability::RolesManage,
             Capability::AccessSourcesManage,
-            Capability::InvitationsCreate
+            Capability::InvitationsCreate,
+            Capability::AutomationView,
+            Capability::AutomationManage,
+            Capability::NotificationsView
         ]
     );
     for (index, expected) in fixture_capabilities.iter().enumerate() {
@@ -1498,6 +1501,23 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
                 ],
             );
         }
+        // V18 adds the automation foundation and the moderator inbox.
+        if matches!(role, BuiltinRole::Owner | BuiltinRole::Administrator) {
+            let at = expected_capabilities
+                .iter()
+                .position(|c| c == "invitations.create")
+                .unwrap();
+            expected_capabilities.splice(
+                at + 1..at + 1,
+                [
+                    "automation.view".to_owned(),
+                    "automation.manage".to_owned(),
+                    "notifications.view".to_owned(),
+                ],
+            );
+        } else if role == BuiltinRole::Moderator {
+            expected_capabilities.insert(0, "notifications.view".to_owned());
+        }
         assert_eq!(expected_capabilities, declared, "role {}", expected.id);
 
         // The migrated rows carry the same ids, name, rank and whole-scope grants.
@@ -1554,8 +1574,8 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
     );
     assert_eq!(
         Capability::ALL.len(),
-        persisted_ids.len() + 6,
-        "legacy fixture ids, the three unified pack additions and the three V16 permission-management additions were compared"
+        persisted_ids.len() + 9,
+        "legacy fixture ids, unified pack, V16 permission-management and V18 automation/inbox additions were compared"
     );
 }
 

@@ -21,6 +21,8 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         15 => apply_v15(c, now_ms),
         16 => apply_v16(c),
         17 => apply_v17(c, now_ms),
+        18 => apply_v18(c),
+        19 => apply_v19(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -803,6 +805,112 @@ fn apply_v16(c: &Connection) -> crate::Result<()> {
         CREATE TRIGGER role_capabilities_builtin_no_insert BEFORE INSERT ON role_capabilities
         WHEN (SELECT builtin FROM roles WHERE id = NEW.role_id) = 1
         BEGIN SELECT RAISE(ABORT, 'builtin roles are immutable'); END;
+    "#)?;
+    Ok(())
+}
+
+/// Durable automation snapshots and a principal-scoped notification inbox.
+/// Runs do not reference live workflows: deleting a definition preserves history.
+fn apply_v18(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(r#"
+        CREATE TABLE workflows (
+            id TEXT PRIMARY KEY CHECK(length(CAST(id AS BLOB)) BETWEEN 1 AND 128),
+            name TEXT NOT NULL CHECK(length(CAST(name AS BLOB)) BETWEEN 1 AND 256),
+            enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+            principal_id TEXT NOT NULL CHECK(length(CAST(principal_id AS BLOB)) BETWEEN 1 AND 128),
+            definition_json TEXT NOT NULL CHECK(json_valid(definition_json) AND length(CAST(definition_json AS BLOB))<=65536),
+            created_at INTEGER NOT NULL CHECK(created_at>=0),
+            updated_at INTEGER NOT NULL CHECK(updated_at>=created_at),
+            revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 9007199254740991)
+        ) STRICT;
+        CREATE TABLE workflow_runs (
+            id TEXT PRIMARY KEY CHECK(length(CAST(id AS BLOB)) BETWEEN 1 AND 128),
+            workflow_id TEXT NOT NULL CHECK(length(CAST(workflow_id AS BLOB)) BETWEEN 1 AND 128),
+            revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 9007199254740991),
+            definition_json TEXT NOT NULL CHECK(json_valid(definition_json) AND length(CAST(definition_json AS BLOB))<=65536),
+            principal_id TEXT NOT NULL CHECK(length(CAST(principal_id AS BLOB)) BETWEEN 1 AND 128),
+            trigger_json TEXT NOT NULL CHECK(json_valid(trigger_json) AND length(CAST(trigger_json AS BLOB))<=65536),
+            state TEXT NOT NULL CHECK(state IN ('queued','running','suspended','succeeded','failed','cancelled')),
+            current_step INTEGER NOT NULL CHECK(current_step BETWEEN 0 AND 31),
+            attempt INTEGER NOT NULL CHECK(attempt BETWEEN 0 AND 5),
+            next_wake_at INTEGER CHECK(next_wake_at IS NULL OR next_wake_at>=0),
+            started_at INTEGER NOT NULL CHECK(started_at>=0),
+            finished_at INTEGER CHECK(finished_at IS NULL OR finished_at>=started_at),
+            outcome_code TEXT CHECK(outcome_code IS NULL OR length(CAST(outcome_code AS BLOB)) BETWEEN 1 AND 128)
+        ) STRICT;
+        CREATE UNIQUE INDEX workflow_runs_active ON workflow_runs(workflow_id)
+            WHERE state IN ('running','suspended');
+        CREATE INDEX workflow_runs_due ON workflow_runs(state,next_wake_at);
+        CREATE INDEX workflow_runs_history ON workflow_runs(workflow_id,started_at,id);
+        CREATE TABLE run_steps (
+            run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+            index_no INTEGER NOT NULL CHECK(index_no BETWEEN 0 AND 31),
+            attempt INTEGER NOT NULL CHECK(attempt BETWEEN 0 AND 5),
+            state TEXT NOT NULL CHECK(state IN ('running','submitting','submitted','waiting','succeeded','failed','skipped','timed_out')),
+            operation_ref TEXT CHECK(operation_ref IS NULL OR length(CAST(operation_ref AS BLOB)) BETWEEN 1 AND 128),
+            output_json TEXT CHECK(output_json IS NULL OR (json_valid(output_json) AND length(CAST(output_json AS BLOB))<=65536)),
+            error_code TEXT CHECK(error_code IS NULL OR length(CAST(error_code AS BLOB)) BETWEEN 1 AND 128),
+            started_at INTEGER NOT NULL CHECK(started_at>=0),
+            finished_at INTEGER CHECK(finished_at IS NULL OR finished_at>=started_at),
+            PRIMARY KEY(run_id,index_no,attempt)
+        ) STRICT;
+        CREATE TABLE workflow_schedule (
+            workflow_id TEXT PRIMARY KEY REFERENCES workflows(id) ON DELETE CASCADE,
+            last_occurrence INTEGER NOT NULL CHECK(last_occurrence>=0)
+        ) STRICT;
+        CREATE TABLE notifications (
+            cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE CHECK(length(CAST(id AS BLOB)) BETWEEN 1 AND 128),
+            created_at INTEGER NOT NULL CHECK(created_at>=0),
+            severity TEXT NOT NULL CHECK(severity IN ('info','warning','critical')),
+            title TEXT NOT NULL CHECK(length(CAST(title AS BLOB)) BETWEEN 1 AND 256),
+            body TEXT NOT NULL CHECK(length(CAST(body AS BLOB))<=8192),
+            source TEXT NOT NULL CHECK(length(CAST(source AS BLOB)) BETWEEN 1 AND 128)
+        ) STRICT;
+        CREATE INDEX notifications_created ON notifications(created_at,cursor);
+        CREATE TABLE notification_state (
+            principal_id TEXT NOT NULL CHECK(length(CAST(principal_id AS BLOB)) BETWEEN 1 AND 128),
+            notification_id TEXT NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+            read_at INTEGER CHECK(read_at IS NULL OR read_at>=0),
+            acknowledged_at INTEGER CHECK(acknowledged_at IS NULL OR acknowledged_at>=0),
+            PRIMARY KEY(principal_id,notification_id)
+        ) STRICT;
+        CREATE INDEX notification_state_notification ON notification_state(notification_id);
+        DROP TRIGGER role_capabilities_builtin_no_insert;
+        INSERT OR IGNORE INTO role_capabilities(role_id,capability,scope)
+            SELECT id,'automation.view','*' FROM roles WHERE id IN ('owner','administrator');
+        INSERT OR IGNORE INTO role_capabilities(role_id,capability,scope)
+            SELECT id,'automation.manage','*' FROM roles WHERE id IN ('owner','administrator');
+        INSERT OR IGNORE INTO role_capabilities(role_id,capability,scope)
+            SELECT id,'notifications.view','*' FROM roles WHERE id IN ('owner','administrator','moderator');
+        CREATE TRIGGER role_capabilities_builtin_no_insert BEFORE INSERT ON role_capabilities
+        WHEN (SELECT builtin FROM roles WHERE id = NEW.role_id) = 1
+        BEGIN SELECT RAISE(ABORT, 'builtin roles are immutable'); END;
+    "#)?;
+    Ok(())
+}
+
+/// Durable backup jobs (backup, verify, inspection restore) processed one at a time.
+fn apply_v19(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(r#"
+        CREATE TABLE backup_jobs (
+            id TEXT PRIMARY KEY CHECK(length(CAST(id AS BLOB)) BETWEEN 1 AND 128),
+            profile TEXT NOT NULL CHECK(length(CAST(profile AS BLOB)) BETWEEN 1 AND 32),
+            kind TEXT NOT NULL CHECK(kind IN ('backup','verify','restore')),
+            state TEXT NOT NULL CHECK(state IN ('queued','running','succeeded','failed','uncertain')),
+            requested_by TEXT NOT NULL CHECK(length(CAST(requested_by AS BLOB)) BETWEEN 1 AND 128),
+            requested_device TEXT NOT NULL CHECK(length(CAST(requested_device AS BLOB)) BETWEEN 1 AND 128),
+            idempotency_key TEXT UNIQUE CHECK(idempotency_key IS NULL OR length(CAST(idempotency_key AS BLOB)) BETWEEN 1 AND 200),
+            snapshot_id TEXT CHECK(snapshot_id IS NULL OR (length(snapshot_id) BETWEEN 8 AND 64 AND snapshot_id NOT GLOB '*[^0-9a-f]*')),
+            target TEXT CHECK(target IS NULL OR length(target)<=16384),
+            result_json TEXT CHECK(result_json IS NULL OR length(result_json)<=16384),
+            error_code TEXT CHECK(error_code IS NULL OR length(error_code) BETWEEN 1 AND 128),
+            created_at INTEGER NOT NULL CHECK(created_at>=0),
+            started_at INTEGER CHECK(started_at IS NULL OR started_at>=0),
+            finished_at INTEGER CHECK(finished_at IS NULL OR finished_at>=0)
+        ) STRICT;
+        CREATE INDEX backup_jobs_queue ON backup_jobs(state, created_at, id);
+        CREATE INDEX backup_jobs_history ON backup_jobs(created_at, id);
     "#)?;
     Ok(())
 }

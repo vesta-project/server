@@ -7,6 +7,7 @@ fn v16_upgrade_dates_existing_permission_receipts_and_keeps_them() {
     let f = Fixture::open();
     let directory = f.db.directory().clone();
     f.db.write(|c| {
+        c.execute_batch(support::REMOVE_V18_SCHEMA)?;
         c.execute(
             "INSERT INTO management_permission_receipts(key_hash,intent_hash,result_json) VALUES(?,?,'{\"ok\":true}')",
             rusqlite::params![[1u8; 32].as_slice(), [2u8; 32].as_slice()],

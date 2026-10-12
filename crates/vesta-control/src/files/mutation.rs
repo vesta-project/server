@@ -1382,7 +1382,7 @@ pub(super) fn state_io(error: vesta_state::StateError) -> FileError {
 
 /// Process-wide admission keyed by canonical database directory, deliberately broader
 /// than a single root. Separate browsers and separately opened databases share it.
-pub(super) fn mutation_admission(directory: &Path) -> Result<Arc<Mutex<()>>> {
+pub(crate) fn mutation_admission(directory: &Path) -> Result<Arc<Mutex<()>>> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
     let key = fs::canonicalize(directory).map_err(io_error)?;
     let mut locks = LOCKS

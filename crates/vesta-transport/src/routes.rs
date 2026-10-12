@@ -191,10 +191,12 @@ pub(super) async fn route(
     if request.headers().contains_key("cookie") {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
-    if super::manage::permission_endpoint(&path)
+    if ((super::manage::permission_endpoint(&path)
         && (method == Method::PUT
             || method == Method::PATCH
-            || (method == Method::DELETE && path.starts_with("/api/v3/manage/roles/")))
+            || (method == Method::DELETE && path.starts_with("/api/v3/manage/roles/"))))
+        || (super::manage::automation_endpoint(&path)
+            && matches!(method, Method::POST | Method::PUT | Method::DELETE)))
         && (request.headers().get_all("content-type").iter().count() != 1
             || request
                 .headers()

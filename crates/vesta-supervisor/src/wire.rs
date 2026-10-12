@@ -24,17 +24,32 @@ pub enum Op {
     /// Identity, launch binding and current snapshot; no effect.
     Hello,
     /// Snapshot plus console lines after the supervisor cursor; no effect.
-    Sync { after: u64 },
+    Sync {
+        after: u64,
+    },
     /// Launch the supervisor's own trusted definition, bound to its identity.
-    Start { launch_identity: String },
+    Start {
+        launch_identity: String,
+    },
     /// Fixed graceful stop line, acknowledged after the actual stdin write.
-    QueueStop { generation: String },
+    QueueStop {
+        generation: String,
+    },
     /// Graceful stop and bounded wait for exit; never escalates to kill.
-    Stop { generation: String, wait_ms: u32 },
+    Stop {
+        generation: String,
+        wait_ms: u32,
+    },
     /// Explicit kill of the exact generation; a separate, deliberate request.
-    Kill { generation: String, wait_ms: u32 },
+    Kill {
+        generation: String,
+        wait_ms: u32,
+    },
     /// One validated console line, acknowledged after the actual stdin write.
-    Command { generation: String, line: String },
+    Command {
+        generation: String,
+        line: String,
+    },
     /// The literal player-list command, written only if the supervisor console has no
     /// output after `expect_latest`, so every later console line follows the write.
     List {
@@ -44,9 +59,41 @@ pub enum Op {
     /// Clear an unresolved launch intent left by a crash between intent and record.
     /// Explicit operator action; refused while any game or orphan is live.
     ResolveLaunch,
+    /// Suspend autosave for an online backup: durable lease, `save-off`, then
+    /// `save-all flush`, each acknowledged by the server. `autosave_baseline` is
+    /// retained for caller compatibility, but never replaces an acknowledgement:
+    /// missing save-off acknowledgement refuses and leaves an unknown obligation.
+    SaveSuspend {
+        generation: String,
+        lease_ms: u32,
+        autosave_baseline: Option<bool>,
+    },
+    /// Extend an active lease for the same generation.
+    SaveRenew {
+        generation: String,
+        token: String,
+        lease_ms: u32,
+    },
+    /// End the lease now, restoring autosave if it was on before.
+    SaveResume {
+        generation: String,
+        token: String,
+    },
+    Hold {
+        lease_ms: u32,
+    },
+    HoldRenew {
+        token: String,
+        lease_ms: u32,
+    },
+    HoldRelease {
+        token: String,
+    },
     /// Apply the agent's current trusted crash-restart policy (`None` disables it).
     /// Sent on every attach so configuration changes reach a running supervisor.
-    Configure { restart: Option<WireRestartPolicy> },
+    Configure {
+        restart: Option<WireRestartPolicy>,
+    },
     /// Clear a crash-loop suspension, crash history and any scheduled restart.
     /// Explicit operator action; never starts or stops anything.
     ResetRestarts,
@@ -129,6 +176,13 @@ pub struct Health {
     pub restart_pending_ms: Option<u64>,
     /// The breaker is tripped in memory but its durable marker could not be written yet.
     pub restart_state_unsaved: bool,
+    /// Milliseconds left on an active save lease (autosave suspended).
+    pub save_lease_ms: Option<u64>,
+    /// A previous supervisor's lease on a still-running game: autosave may stay off
+    /// until that game restarts, because nothing holds its stdin.
+    pub save_lease_stranded: bool,
+    pub save_state_unknown: bool,
+    pub maintenance_hold: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -169,6 +223,20 @@ pub enum Reply {
     Resolved,
     RestartsReset,
     Configured,
+    Held {
+        token: String,
+    },
+    HoldRenewed,
+    HoldReleased,
+    SaveSuspended {
+        token: String,
+        /// Autosave will be turned back on when the lease ends.
+        restore_autosave: bool,
+    },
+    SaveRenewed,
+    SaveResumed {
+        autosave_restored: bool,
+    },
     Exited {
         exit: WireExit,
     },
@@ -200,6 +268,14 @@ pub fn decode_request(bytes: &[u8]) -> Result<Request> {
             Err("supervisor_invalid_request")
         }
         Op::Command { line, .. } if line.len() > 1024 => Err("supervisor_invalid_request"),
+        Op::SaveSuspend { lease_ms, .. }
+        | Op::SaveRenew { lease_ms, .. }
+        | Op::Hold { lease_ms }
+        | Op::HoldRenew { lease_ms, .. }
+            if !(crate::save::MIN_LEASE_MS..=crate::save::MAX_LEASE_MS).contains(lease_ms) =>
+        {
+            Err("supervisor_invalid_request")
+        }
         _ => Ok(request),
     }
 }

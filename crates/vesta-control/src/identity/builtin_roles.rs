@@ -47,6 +47,9 @@ const OWNER_CAPABILITIES: &[Capability] = &[
     Capability::RolesManage,
     Capability::AccessSourcesManage,
     Capability::InvitationsCreate,
+    Capability::AutomationView,
+    Capability::AutomationManage,
+    Capability::NotificationsView,
     Capability::PrincipalsView,
     Capability::PrincipalsManage,
     Capability::DevicesRevoke,
@@ -103,6 +106,9 @@ const ADMINISTRATOR_CAPABILITIES: &[Capability] = &[
     Capability::RolesManage,
     Capability::AccessSourcesManage,
     Capability::InvitationsCreate,
+    Capability::AutomationView,
+    Capability::AutomationManage,
+    Capability::NotificationsView,
     Capability::PrincipalsView,
     Capability::PrincipalsManage,
     Capability::DevicesRevoke,
@@ -147,6 +153,7 @@ const MAINTAINER_CAPABILITIES: &[Capability] = &[
 ];
 
 const MODERATOR_CAPABILITIES: &[Capability] = &[
+    Capability::NotificationsView,
     Capability::StatusView,
     Capability::PlayersView,
     Capability::PlayersModerate,

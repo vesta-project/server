@@ -174,6 +174,22 @@ impl RemoteProcess {
             .and_then(|(_, floor)| floor)
     }
 
+    /// Suspend autosave under a supervisor-owned lease for an online backup.
+    pub fn save_suspend(
+        &self,
+        generation: GenerationId,
+        lease: Duration,
+        autosave_baseline: Option<bool>,
+    ) -> Result<(String, bool)> {
+        crate::save::suspend(&self.client, generation, lease, autosave_baseline)
+    }
+    pub fn save_renew(&self, generation: GenerationId, token: &str, lease: Duration) -> Result<()> {
+        crate::save::renew(&self.client, generation, token, lease)
+    }
+    pub fn save_resume(&self, generation: GenerationId, token: &str) -> Result<bool> {
+        crate::save::resume(&self.client, generation, token)
+    }
+
     /// Push the agent's current trusted crash-restart policy to the supervisor.
     pub fn configure(&self, restart: Option<crate::RestartPolicy>) -> Result<()> {
         match self.client.call(

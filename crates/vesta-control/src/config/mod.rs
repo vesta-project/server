@@ -139,6 +139,92 @@ impl<'de> Deserialize<'de> for Supervision {
     }
 }
 
+pub const MAX_BACKUP_PROFILES: usize = 16;
+pub const MAX_RETENTION: u32 = 1000;
+pub const MAX_WARN_SECONDS: u32 = 600;
+
+/// Online backups suspend autosave under a supervisor lease; stopped backups need
+/// the game stopped and keep it from starting while they read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackupMode {
+    Online,
+    Stopped,
+}
+impl<'de> Deserialize<'de> for BackupMode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        match String::deserialize(deserializer)?.as_str() {
+            "online" => Ok(Self::Online),
+            "stopped" => Ok(Self::Stopped),
+            _ => Err(de::Error::custom("invalid backup mode")),
+        }
+    }
+}
+
+/// What a detected source change during the scan does to the backup result.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MutationPolicy {
+    Warn,
+    /// Fail when world data changed; warn for logs and caches (the safe preset).
+    #[default]
+    FailWorld,
+    FailAny,
+}
+impl<'de> Deserialize<'de> for MutationPolicy {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        match String::deserialize(deserializer)?.as_str() {
+            "warn" => Ok(Self::Warn),
+            "fail-world" => Ok(Self::FailWorld),
+            "fail-any" => Ok(Self::FailAny),
+            _ => Err(de::Error::custom("invalid mutation policy")),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BackupProfile {
+    pub name: String,
+    pub mode: BackupMode,
+    pub keep_last: u32,
+    pub keep_daily: u32,
+    pub keep_weekly: u32,
+    pub keep_monthly: u32,
+    pub on_mutation: MutationPolicy,
+    /// Seconds of in-game warning before an online backup (recommended 60).
+    pub warn_seconds: u32,
+}
+
+/// Trusted backup configuration. Backups stay off unless this table exists.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BackupSettings {
+    pub restic: PathBuf,
+    pub repository: PathBuf,
+    pub restore_root: Option<PathBuf>,
+    pub profiles: Vec<BackupProfile>,
+}
+impl BackupSettings {
+    pub fn profile(&self, name: &str) -> Option<&BackupProfile> {
+        self.profiles.iter().find(|p| p.name == name)
+    }
+}
+
+fn valid_profile_name(name: &str) -> bool {
+    (1..=32).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !name.starts_with('-')
+}
+
+/// Lexical containment (either direction), used before any native check.
+fn nested(left: &Path, right: &Path) -> bool {
+    let (l, r): (Vec<_>, Vec<_>) = (left.components().collect(), right.components().collect());
+    let n = l.len().min(r.len());
+    same_spelling(
+        &l[..n].iter().collect::<PathBuf>(),
+        &r[..n].iter().collect::<PathBuf>(),
+    )
+}
+
 /// Opt-in crash restart settings, validated again by the supervisor policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RestartSettings {
@@ -345,6 +431,8 @@ pub struct HostConfiguration {
     protected: Vec<PathBuf>,
     supervision: Supervision,
     restart: Option<RestartSettings>,
+    backups: Option<BackupSettings>,
+    start_on_agent_start: bool,
 }
 impl fmt::Debug for HostConfiguration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -446,6 +534,66 @@ impl HostConfiguration {
                 })
             }
         };
+        let backups = document
+            .backups
+            .map(|Table(wire)| -> Result<BackupSettings> {
+                let restic = resolve_value(base, &wire.restic)?;
+                let repository = resolve_value(base, &wire.repository)?;
+                let restore_root = wire
+                    .restore_root
+                    .map(|root| resolve_value(base, &root))
+                    .transpose()?;
+                // Backups must never contain their own repository, restores or the
+                // protected state, and must not be written into the game tree.
+                for path in std::iter::once(&repository).chain(restore_root.as_ref()) {
+                    if nested(path, &game) || nested(path, &state) {
+                        return Err(ConfigError::InvalidPath);
+                    }
+                }
+                if restore_root
+                    .as_ref()
+                    .is_some_and(|root| nested(root, &repository))
+                {
+                    return Err(ConfigError::InvalidPath);
+                }
+                if wire.profile.is_empty() || wire.profile.len() > MAX_BACKUP_PROFILES {
+                    return Err(ConfigError::InvalidDocument);
+                }
+                let mut profiles: Vec<BackupProfile> = Vec::new();
+                for Table(p) in wire.profile {
+                    let warn_seconds = p.warn_seconds.unwrap_or(60);
+                    if !valid_profile_name(&p.name)
+                        || profiles.iter().any(|q| q.name == p.name)
+                        || [p.keep_last, p.keep_daily, p.keep_weekly, p.keep_monthly]
+                            .iter()
+                            .any(|&k| k > MAX_RETENTION)
+                        || warn_seconds > MAX_WARN_SECONDS
+                    {
+                        return Err(ConfigError::InvalidDocument);
+                    }
+                    profiles.push(BackupProfile {
+                        name: p.name,
+                        mode: p.mode,
+                        keep_last: p.keep_last,
+                        keep_daily: p.keep_daily,
+                        keep_weekly: p.keep_weekly,
+                        keep_monthly: p.keep_monthly,
+                        on_mutation: p.on_mutation,
+                        warn_seconds,
+                    });
+                }
+                Ok(BackupSettings {
+                    restic,
+                    repository,
+                    restore_root,
+                    profiles,
+                })
+            })
+            .transpose()?;
+        let start_on_agent_start = document
+            .process
+            .as_ref()
+            .is_some_and(|Table(process)| process.start_on_agent_start);
         let (supervision, restart) = match document.process {
             None => (Supervision::default(), None),
             Some(Table(process)) => {
@@ -496,6 +644,8 @@ impl HostConfiguration {
             protected,
             supervision,
             restart,
+            backups,
+            start_on_agent_start,
         })
     }
 
@@ -562,6 +712,13 @@ impl HostConfiguration {
     }
     pub fn restart(&self) -> Option<RestartSettings> {
         self.restart
+    }
+    /// Opt-in: start the game when the agent starts, only if nothing is running.
+    pub fn start_on_agent_start(&self) -> bool {
+        self.start_on_agent_start
+    }
+    pub fn backups(&self) -> Option<&BackupSettings> {
+        self.backups.as_ref()
     }
     pub fn listener(&self) -> &ListenerDescription {
         &self.listener
@@ -805,13 +962,44 @@ struct Document {
     pack_access: Table<WirePackAccess>,
     listener: Table<WireListener>,
     process: Option<Table<WireProcess>>,
+    backups: Option<Table<WireBackups>>,
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct WireBackups {
+    restic: String,
+    repository: String,
+    restore_root: Option<String>,
+    #[serde(default)]
+    profile: Vec<Table<WireBackupProfile>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct WireBackupProfile {
+    name: String,
+    mode: BackupMode,
+    #[serde(default)]
+    keep_last: u32,
+    #[serde(default)]
+    keep_daily: u32,
+    #[serde(default)]
+    keep_weekly: u32,
+    #[serde(default)]
+    keep_monthly: u32,
+    #[serde(default)]
+    on_mutation: MutationPolicy,
+    warn_seconds: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct WireProcess {
     supervision: Supervision,
     restart: Option<Table<WireRestart>>,
+    #[serde(default)]
+    start_on_agent_start: bool,
 }
 
 /// Presence of the table enables crash restart; omitted fields take the

@@ -42,3 +42,10 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+# Inert restic stand-in for backup integration tests; never a production engine.
+[[bin]]
+name = "vesta-restic-fixture"
+path = "tests/fixtures/restic.rs"
+test = false
+bench = false

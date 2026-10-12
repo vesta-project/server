@@ -754,3 +754,12 @@ impl<'a> JsonParser<'a> {
 #[cfg(test)]
 #[path = "readiness_tests.rs"]
 mod tests;
+
+/// The message of a server-thread log line at INFO level, using the same anchored
+/// prefix rules as readiness. Chat and other threads never match.
+pub fn server_info_message(text: &str) -> Option<&str> {
+    match log_message(text) {
+        Some((message, "INFO")) => Some(message),
+        _ => None,
+    }
+}

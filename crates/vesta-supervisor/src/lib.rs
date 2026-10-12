@@ -19,6 +19,7 @@ pub mod pipe_security;
 pub mod record;
 pub mod remote;
 pub mod restart;
+pub mod save;
 pub mod server;
 pub mod wire;
 

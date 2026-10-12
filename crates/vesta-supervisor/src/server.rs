@@ -10,6 +10,7 @@ use crate::{
     Result, native, record,
     record::{GenerationRecord, LaunchIntent},
     restart::{self, RestartPolicy, Restarts},
+    save::{self, SaveAck, SaveLease},
     wire::{self, Health, Op, Reply},
 };
 use std::{
@@ -92,6 +93,14 @@ struct Core {
     stop_inflight: Option<GenerationId>,
     /// Console cursor just before the current generation was launched.
     generation_floor: u64,
+    save_lease: Option<SaveLease>,
+    save_delivery: Option<GuardedInput<()>>,
+    save_delivered: bool,
+    save_completed: Option<(String, bool)>,
+    save_window: Option<String>,
+    hold: Option<(String, Instant)>,
+    /// The lease belongs to an orphan whose stdin is gone; it cannot be undone here.
+    lease_stranded: bool,
     /// Last exited generation already classified as a stop or a crash.
     handled_exit: Option<GenerationId>,
 }
@@ -99,7 +108,7 @@ impl Core {
     /// Observe, classify exits and fire a due automatic restart.
     fn observe(&mut self) {
         self.observe_state();
-        if !self.stopping && self.restarts.take_due(Instant::now()) {
+        if !self.stopping && self.hold.is_none() && self.restarts.take_due(Instant::now()) {
             // A failed automatic launch counts as another crash, so a broken launch
             // definition reaches the breaker instead of retrying forever.
             if self.launch().is_err() {
@@ -113,8 +122,16 @@ impl Core {
             // Sticky: later successful polls cannot prove what happened meanwhile.
             self.observation_failed = true;
         }
+        if self
+            .hold
+            .as_ref()
+            .is_some_and(|(_, until)| Instant::now() >= *until)
+        {
+            self.hold = None;
+        }
         self.restarts.retry_persist();
         self.classify_exit();
+        self.check_lease();
         let live = self.process.snapshot().generation;
         if let Some(generation) = self.recorded
             && live != Some(generation)
@@ -136,6 +153,86 @@ impl Core {
         {
             self.orphan = None;
         }
+    }
+    /// End a lease whose generation is gone (send nothing) or whose time is up.
+    fn check_lease(&mut self) {
+        let Some(lease) = self.save_lease.clone() else {
+            return;
+        };
+        if self.lease_stranded {
+            if self.orphan.is_none() && !self.unresolved && save::clear(&self.directory).is_ok() {
+                self.save_lease = None;
+                self.lease_stranded = false;
+            }
+            return;
+        }
+        let live = self.process.snapshot().generation.map(GenerationId::to_hex);
+        if live.as_deref() != Some(lease.generation.as_str()) {
+            // A new or exited process: never send cleanup commands to it.
+            if save::clear(&self.directory).is_ok() {
+                self.save_lease = None;
+                self.save_delivery = None;
+                self.save_delivered = false;
+            }
+        } else if !lease.unresolved && (lease.ending || restart::now_ms() >= lease.expires_at_ms) {
+            let _ = self.end_lease();
+        }
+    }
+    /// Keep the durable ending obligation and receipt until actual delivery.
+    fn end_lease(&mut self) -> std::result::Result<Option<bool>, Reply> {
+        let Some(mut lease) = self.save_lease.clone() else {
+            return Ok(Some(false));
+        };
+        if lease.unresolved {
+            return Err(refused("supervisor_save_state_unknown"));
+        }
+        if !lease.ending {
+            lease.ending = true;
+            save::replace(&self.directory, &lease).map_err(refused)?;
+            self.save_lease = Some(lease.clone());
+        }
+        if lease.restore_autosave && !self.save_delivered {
+            if let Some(receipt) = self.save_delivery.as_mut() {
+                match receipt.try_result() {
+                    Some(Ok(())) => {
+                        self.save_delivered = true;
+                        self.save_delivery = None;
+                    }
+                    Some(Err(_)) => {
+                        self.save_delivery = None;
+                    }
+                    None => return Ok(None),
+                }
+            }
+            if !self.save_delivered {
+                let generation = GenerationId::parse_hex(&lease.generation)
+                    .map_err(|_| refused("supervisor_record_invalid"))?;
+                self.save_delivery = Some(
+                    self.process
+                        .queue_command_guarded(generation, "save-on", || Ok::<(), ()>(()))
+                        .map_err(runtime)?,
+                );
+                return Ok(None);
+            }
+        }
+        save::clear(&self.directory).map_err(refused)?;
+        self.save_completed = Some((lease.token, lease.restore_autosave));
+        self.save_lease = None;
+        self.save_delivered = false;
+        Ok(Some(lease.restore_autosave))
+    }
+    fn active_lease(&self, id: GenerationId, token: &str) -> std::result::Result<SaveLease, Reply> {
+        self.save_lease
+            .clone()
+            .filter(|lease| {
+                lease.token == token
+                    && lease.generation == id.to_hex()
+                    && self.process.snapshot().generation == Some(id)
+                    && !self.lease_stranded
+                    && !lease.ending
+                    && restart::now_ms() < lease.expires_at_ms
+            })
+            .ok_or_else(|| refused("supervisor_no_save_lease"))
     }
     /// Classify each finished generation exactly once: an admitted stop or a success
     /// status is a stop; anything else is a crash handed to the restart policy.
@@ -188,6 +285,20 @@ impl Core {
                 .pending_in(Instant::now())
                 .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
             restart_state_unsaved: self.restarts.unsaved(),
+            save_lease_ms: self
+                .save_lease
+                .as_ref()
+                .filter(|_| !self.lease_stranded)
+                .map(|lease| {
+                    u64::try_from(lease.expires_at_ms.saturating_sub(restart::now_ms()).max(0))
+                        .unwrap_or(0)
+                }),
+            save_lease_stranded: self.lease_stranded,
+            save_state_unknown: self
+                .save_lease
+                .as_ref()
+                .is_some_and(|lease| lease.unresolved),
+            maintenance_hold: self.hold.is_some(),
         }
     }
     fn idle(&self) -> bool {
@@ -195,6 +306,8 @@ impl Core {
             && self.orphan.is_none()
             && self.intent_for.is_none()
             && self.restarts.pending_in(Instant::now()).is_none()
+            && self.save_lease.is_none()
+            && self.hold.is_none()
     }
 }
 
@@ -245,6 +358,18 @@ pub async fn run(config: SupervisorConfig, stop: impl Future<Output = ()>) -> Re
     fs2::FileExt::try_lock_exclusive(&lock_file).map_err(|_| "supervisor_already_running")?;
     let (orphan, unresolved) = recover(&directory)?;
     let restarts = Restarts::load(directory.clone(), config.restart)?;
+    // A lease from an earlier supervisor: undoable only if its game is gone.
+    let mut save_lease = save::read(&directory)?;
+    let lease_stranded = match (&save_lease, &orphan) {
+        (Some(lease), Some(orphan)) if orphan.generation == lease.generation => true,
+        (Some(_), _) if unresolved => true,
+        (Some(_), _) => {
+            save::clear(&directory)?;
+            save_lease = None;
+            false
+        }
+        (None, _) => false,
+    };
     let endpoint = native::endpoint(
         config.state.path(),
         &config
@@ -270,6 +395,13 @@ pub async fn run(config: SupervisorConfig, stop: impl Future<Output = ()>) -> Re
         stop_admitted: None,
         stop_inflight: None,
         generation_floor: 0,
+        save_lease,
+        save_delivery: None,
+        save_delivered: false,
+        save_completed: None,
+        save_window: None,
+        hold: None,
+        lease_stranded,
         handled_exit: None,
     }));
     let result = serve(&endpoint, core, stop).await;
@@ -449,6 +581,9 @@ fn execute(core: &Shared, op: Op) -> Reply {
             let receipt = {
                 let mut core = lock(core);
                 admit(&core)?;
+                if core.save_window.is_some() && is_save_command(&line) {
+                    return Err(refused("supervisor_save_window_active"));
+                }
                 let receipt = core
                     .process
                     .queue_command_guarded(id, &line, || Ok::<(), ()>(()))
@@ -533,6 +668,81 @@ fn execute(core: &Shared, op: Op) -> Reply {
                     })
             }
         }
+        Op::SaveSuspend {
+            generation: text,
+            lease_ms,
+            autosave_baseline,
+        } => generation(&text).and_then(|id| save_suspend(core, id, lease_ms, autosave_baseline)),
+        Op::SaveRenew {
+            generation: text,
+            token,
+            lease_ms,
+        } => generation(&text).and_then(|id| {
+            let mut core = lock(core);
+            core.observe_state();
+            admit(&core)?;
+            let lease = core.active_lease(id, &token)?;
+            if lease.unresolved {
+                return Err(refused("supervisor_save_state_unknown"));
+            }
+            let renewed = SaveLease {
+                expires_at_ms: restart::now_ms().saturating_add(i64::from(lease_ms)),
+                ..lease
+            };
+            save::replace(&core.directory, &renewed).map_err(refused)?;
+            core.save_lease = Some(renewed);
+            Ok(Reply::SaveRenewed)
+        }),
+        Op::SaveResume {
+            generation: text,
+            token,
+        } => generation(&text).and_then(|id| save_resume(core, id, &token)),
+        Op::Hold { lease_ms } => {
+            let mut core = lock(core);
+            core.observe_state();
+            admit(&core).and_then(|()| {
+                if core.process.snapshot().generation.is_some()
+                    || core.orphan.is_some()
+                    || core.unresolved
+                    || core.intent_for.is_some()
+                    || core.observation_failed
+                {
+                    return Err(refused("supervisor_hold_not_stopped"));
+                }
+                if core.hold.is_some() {
+                    return Err(refused("supervisor_hold_active"));
+                }
+                let token = save::token().map_err(refused)?;
+                core.hold = Some((
+                    token.clone(),
+                    Instant::now() + Duration::from_millis(u64::from(lease_ms)),
+                ));
+                Ok(Reply::Held { token })
+            })
+        }
+        Op::HoldRenew { token, lease_ms } => {
+            let mut core = lock(core);
+            core.observe_state();
+            if core.hold.as_ref().is_some_and(|(t, _)| t == &token) {
+                core.hold = Some((
+                    token,
+                    Instant::now() + Duration::from_millis(u64::from(lease_ms)),
+                ));
+                Ok(Reply::HoldRenewed)
+            } else {
+                Err(refused("supervisor_no_hold"))
+            }
+        }
+        Op::HoldRelease { token } => {
+            let mut core = lock(core);
+            core.observe_state();
+            if core.hold.as_ref().is_some_and(|(t, _)| t == &token) {
+                core.hold = None;
+                Ok(Reply::HoldReleased)
+            } else {
+                Err(refused("supervisor_no_hold"))
+            }
+        }
         Op::Configure { restart } => {
             let policy = restart.map(RestartPolicy::from_wire).transpose();
             match policy {
@@ -600,8 +810,11 @@ fn start(core: &Shared, launch_identity: &str) -> std::result::Result<Reply, Rep
     // Classify any exit first, then let this explicit start supersede whatever
     // restart that classification scheduled.
     core.observe_state();
-    core.restarts.cancel_pending();
     admit(core)?;
+    if core.hold.is_some() {
+        return Err(refused("supervisor_maintenance_hold"));
+    }
+    core.restarts.cancel_pending();
     if launch_identity != core.launch_identity {
         return Err(refused("supervisor_launch_mismatch"));
     }
@@ -618,6 +831,9 @@ impl Core {
     /// Launch the trusted definition with durable intent and record. Returns the
     /// generation and whether its I/O attachment was uncertain.
     fn launch(&mut self) -> std::result::Result<(GenerationId, bool), Reply> {
+        if self.hold.is_some() {
+            return Err(refused("supervisor_maintenance_hold"));
+        }
         if self.orphan.is_some() {
             return Err(refused("supervisor_orphan_running"));
         }
@@ -699,6 +915,222 @@ impl Core {
             _ => return Err(refused("supervisor_start_unrecorded")),
         }
         Ok((generation, uncertain))
+    }
+}
+
+const SAVE_ACK_WAIT: Duration = Duration::from_secs(10);
+const FLUSH_WAIT: Duration = Duration::from_secs(120);
+
+/// Deliver one fixed save command to the exact generation; returns the console
+/// cursor from before the write, so acknowledgements are read only after it.
+fn is_save_command(line: &str) -> bool {
+    let command = line
+        .trim()
+        .trim_start_matches('/')
+        .split_whitespace()
+        .next()
+        .unwrap_or("");
+    ["save-all", "save-off", "save-on"]
+        .iter()
+        .any(|s| command.eq_ignore_ascii_case(s))
+}
+
+fn send_save_command(
+    core: &Shared,
+    id: GenerationId,
+    token: &str,
+    line: &str,
+    after: Option<u64>,
+) -> std::result::Result<u64, Reply> {
+    let owner = Arc::downgrade(core);
+    let instance = token.to_owned();
+    let (receipt, cursor) = {
+        let mut core = lock(core);
+        core.active_lease(id, token)?;
+        let cursor = match after {
+            Some(cursor) => cursor,
+            None => {
+                core.console
+                    .snapshot(0, 1)
+                    .map_err(|e| refused(e.code()))?
+                    .latest_cursor
+            }
+        };
+        let receipt = core
+            .process
+            .queue_command_guarded(id, line, move || {
+                let owner = owner.upgrade().ok_or(())?;
+                lock(&owner)
+                    .active_lease(id, &instance)
+                    .map(|_| ())
+                    .map_err(|_| ())
+            })
+            .map_err(runtime)?;
+        (receipt, cursor)
+    };
+    deliver(receipt)?;
+    Ok(cursor)
+}
+
+/// Generation/gaps/expiry abort correlation. Return the acknowledgement cursor,
+/// not a later snapshot: an unrelated earlier flush must not acknowledge ours.
+fn await_ack(
+    core: &Shared,
+    id: GenerationId,
+    token: &str,
+    mut after: u64,
+    accept: &[SaveAck],
+    wait: Duration,
+) -> std::result::Result<(SaveAck, u64), Reply> {
+    let until = Instant::now() + wait;
+    while Instant::now() < until {
+        let page = {
+            let mut core = lock(core);
+            core.observe_state();
+            core.active_lease(id, token)?;
+            core.console
+                .snapshot(after, MAX_PAGE_LINES)
+                .map_err(|e| refused(e.code()))?
+        };
+        if page.gap {
+            return Err(refused("supervisor_save_console_gap"));
+        }
+        for line in &page.lines {
+            if let Some(ack) = save::classify(&line.text).filter(|ack| accept.contains(ack)) {
+                return Ok((ack, line.cursor));
+            }
+        }
+        after = page.next_cursor;
+        if page.lines.is_empty() {
+            std::thread::sleep(WAIT_STEP);
+        }
+    }
+    Err(refused("supervisor_save_unacknowledged"))
+}
+
+fn save_suspend(
+    core: &Shared,
+    id: GenerationId,
+    lease_ms: u32,
+    _baseline: Option<bool>,
+) -> std::result::Result<Reply, Reply> {
+    let token = {
+        let mut core = lock(core);
+        core.observe_state();
+        admit(&core)?;
+        let snapshot = core.process.snapshot();
+        if snapshot.generation != Some(id)
+            || snapshot.phase != vesta_game_runtime::process::ProcessPhase::Running
+        {
+            return Err(refused(RuntimeError::StaleGeneration.code()));
+        }
+        if core.save_lease.is_some() || core.save_window.is_some() {
+            return Err(refused("supervisor_save_lease_active"));
+        }
+        if core.stop_inflight.is_some() {
+            return Err(refused("supervisor_stop_in_progress"));
+        }
+        let token = save::token().map_err(refused)?;
+        let lease = SaveLease {
+            version: 1,
+            token: token.clone(),
+            generation: id.to_hex(),
+            expires_at_ms: restart::now_ms().saturating_add(i64::from(lease_ms)),
+            restore_autosave: false,
+            unresolved: true,
+            ending: false,
+        };
+        save::write(&core.directory, &lease).map_err(refused)?;
+        core.save_lease = Some(lease);
+        core.save_window = Some(token.clone());
+        token
+    };
+    let result = (|| {
+        let after = send_save_command(core, id, &token, "save-off", None)?;
+        let (ack, off_cursor) = await_ack(
+            core,
+            id,
+            &token,
+            after,
+            &[SaveAck::Disabled, SaveAck::AlreadyOff],
+            SAVE_ACK_WAIT,
+        )?;
+        let restore = ack == SaveAck::Disabled;
+        {
+            let mut core = lock(core);
+            let mut lease = core.active_lease(id, &token)?;
+            lease.restore_autosave = restore;
+            lease.unresolved = false;
+            // Keep the known obligation in memory even if persistence fails. The
+            // older durable unresolved marker remains conservative on recovery.
+            core.save_lease = Some(lease.clone());
+            save::replace(&core.directory, &lease).map_err(refused)?;
+        }
+        let after = send_save_command(core, id, &token, "save-all flush", Some(off_cursor))?;
+        await_ack(core, id, &token, after, &[SaveAck::Saved], FLUSH_WAIT)?;
+        let core = lock(core);
+        core.active_lease(id, &token)?;
+        Ok(Reply::SaveSuspended {
+            token: token.clone(),
+            restore_autosave: restore,
+        })
+    })();
+    let mut core = lock(core);
+    let result = result.and_then(|reply| core.active_lease(id, &token).map(|_| reply));
+    if result.is_err()
+        && core
+            .save_lease
+            .as_ref()
+            .is_some_and(|lease| lease.token == token && !lease.unresolved)
+    {
+        let _ = core.end_lease();
+    }
+    if core.save_window.as_deref() == Some(&token) {
+        core.save_window = None;
+    }
+    result
+}
+
+fn save_resume(core: &Shared, id: GenerationId, token: &str) -> std::result::Result<Reply, Reply> {
+    let until = Instant::now() + DELIVERY_WAIT;
+    // Validate the instance before observing (expiry observation can finish it).
+    {
+        let core = lock(core);
+        if core.lease_stranded
+            || core
+                .save_lease
+                .as_ref()
+                .is_none_or(|l| l.token != token || l.generation != id.to_hex())
+        {
+            return Err(refused("supervisor_no_save_lease"));
+        }
+    }
+    loop {
+        {
+            let mut core = lock(core);
+            core.observe_state();
+            if let Some((done, restored)) = &core.save_completed
+                && done == token
+            {
+                return Ok(Reply::SaveResumed {
+                    autosave_restored: *restored,
+                });
+            }
+            if core
+                .save_lease
+                .as_ref()
+                .is_none_or(|l| l.token != token || l.generation != id.to_hex())
+            {
+                return Err(refused("supervisor_no_save_lease"));
+            }
+            if let Some(autosave_restored) = core.end_lease()? {
+                return Ok(Reply::SaveResumed { autosave_restored });
+            }
+        }
+        if Instant::now() >= until {
+            return Err(refused("supervisor_delivery_unknown"));
+        }
+        std::thread::sleep(WAIT_STEP);
     }
 }
 
@@ -936,3 +1368,267 @@ mod endpoint {
 }
 
 use endpoint::Listener;
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+    use std::{io::BufRead, sync::mpsc};
+    use vesta_game_runtime::process::GracefulStop;
+
+    #[test]
+    fn inert_lease_game() {
+        if std::fs::read("lease-fixture").ok().as_deref() != Some(b"owned-lease-fixture") {
+            return;
+        }
+        for line in std::io::stdin().lock().lines() {
+            if line.is_ok_and(|line| line == "stop") {
+                return;
+            }
+        }
+    }
+
+    struct Fixture {
+        core: Shared,
+        _temp: tempfile::TempDir,
+        id: GenerationId,
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let game = temp.path().join("game");
+            std::fs::create_dir(&game).unwrap();
+            std::fs::write(game.join("lease-fixture"), b"owned-lease-fixture").unwrap();
+            let program = game.join(if cfg!(windows) {
+                "owned-supervised-fixture.exe"
+            } else {
+                "owned-supervised-fixture"
+            });
+            std::fs::copy(std::env::current_exe().unwrap(), &program).unwrap();
+            let launch = LaunchSpec::new(
+                program,
+                vec![
+                    "--exact".into(),
+                    "server::lease_tests::inert_lease_game".into(),
+                    "--nocapture".into(),
+                ],
+                game,
+                GracefulStop::MinecraftCommand,
+            )
+            .unwrap();
+            let state = StateDirectory::new(temp.path().join("state"), None).unwrap();
+            state.prepare().unwrap();
+            let directory = state.supervisor().unwrap();
+            let console = ConsoleCapture::new();
+            let mut process = GameProcess::new(console.clone());
+            let id = process
+                .start_guarded(&launch, |_| Ok::<(), ()>(()))
+                .unwrap();
+            let core = Arc::new(Mutex::new(Core {
+                process: Preserved(Some(process)),
+                console,
+                launch,
+                launch_identity: "test".into(),
+                state: "test".into(),
+                directory: directory.clone(),
+                recorded: None,
+                intent_for: None,
+                orphan: None,
+                unresolved: false,
+                observation_failed: false,
+                stopping: false,
+                restarts: Restarts::load(directory, None).unwrap(),
+                stop_admitted: None,
+                stop_inflight: None,
+                generation_floor: 0,
+                save_lease: None,
+                save_delivery: None,
+                save_delivered: false,
+                save_completed: None,
+                save_window: None,
+                hold: None,
+                lease_stranded: false,
+                handled_exit: None,
+            }));
+            Self {
+                core,
+                _temp: temp,
+                id,
+            }
+        }
+        fn lease(&self, expires_at_ms: i64) -> String {
+            let mut core = lock(&self.core);
+            let token = save::token().unwrap();
+            let lease = SaveLease {
+                version: 1,
+                token: token.clone(),
+                generation: self.id.to_hex(),
+                expires_at_ms,
+                restore_autosave: true,
+                unresolved: false,
+                ending: false,
+            };
+            save::write(&core.directory, &lease).unwrap();
+            core.save_lease = Some(lease);
+            token
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            // Tests own this child: unlike production preservation, drop the
+            // GameProcess explicitly so assertion failures never strand fixtures.
+            drop(lock(&self.core).process.0.take());
+        }
+    }
+
+    #[test]
+    fn restoration_keeps_marker_until_delivery_and_resume_waits_outside_lock() {
+        let fixture = Fixture::new();
+        let token = fixture.lease(restart::now_ms() + 60_000);
+        let (release, blocked) = mpsc::channel();
+        let (entered, waiting) = mpsc::channel();
+        let mut barrier = lock(&fixture.core)
+            .process
+            .queue_command_guarded(fixture.id, "barrier", move || {
+                entered.send(()).unwrap();
+                blocked.recv().unwrap();
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        {
+            let mut core = lock(&fixture.core);
+            assert_eq!(core.end_lease().unwrap(), None);
+            assert!(core.save_delivery.is_some());
+            assert!(save::read(&core.directory).unwrap().unwrap().ending);
+            assert_eq!(core.end_lease().unwrap(), None);
+            assert!(core.save_lease.is_some());
+        }
+        let core = fixture.core.clone();
+        let id = fixture.id;
+        let waiter = std::thread::spawn(move || save_resume(&core, id, &token));
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(!waiter.is_finished());
+        // Health remains available while SaveResume is awaiting the writer.
+        assert!(lock(&fixture.core).health().save_lease_ms.is_some());
+        release.send(()).unwrap();
+        assert_eq!(
+            waiter.join().unwrap().unwrap(),
+            Reply::SaveResumed {
+                autosave_restored: true
+            }
+        );
+        assert!(lock(&fixture.core).save_lease.is_none());
+        assert!(
+            save::read(&lock(&fixture.core).directory)
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(barrier.try_result(), Some(Ok(()))));
+    }
+
+    #[test]
+    fn failed_admission_retries_without_clearing_ending_obligation() {
+        let fixture = Fixture::new();
+        fixture.lease(restart::now_ms() + 60_000);
+        let (release, blocked) = mpsc::channel();
+        let (entered, waiting) = mpsc::channel();
+        let barrier = lock(&fixture.core)
+            .process
+            .queue_command_guarded(fixture.id, "barrier", move || {
+                entered.send(()).unwrap();
+                blocked.recv().unwrap();
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        let mut queued = Vec::new();
+        loop {
+            match lock(&fixture.core)
+                .process
+                .queue_command_guarded(fixture.id, "fill", || Ok::<(), ()>(()))
+            {
+                Ok(receipt) => queued.push(receipt),
+                Err(RuntimeError::StdinBusy) => break,
+                Err(error) => panic!("unexpected queue error: {error:?}"),
+            }
+        }
+        {
+            let mut core = lock(&fixture.core);
+            assert!(core.end_lease().is_err());
+            assert!(core.save_lease.as_ref().unwrap().ending);
+            assert!(save::read(&core.directory).unwrap().unwrap().ending);
+        }
+        release.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            let mut core = lock(&fixture.core);
+            core.observe_state();
+            if core.save_lease.is_none() {
+                break;
+            }
+            drop(core);
+            assert!(Instant::now() < until);
+            std::thread::sleep(WAIT_STEP);
+        }
+        drop((queued, barrier));
+    }
+
+    #[test]
+    fn console_gap_aborts_even_when_page_contains_a_matching_ack() {
+        let fixture = Fixture::new();
+        let token = fixture.lease(restart::now_ms() + 60_000);
+        let console = lock(&fixture.core).console.clone();
+        let after = console.snapshot(0, 1).unwrap().latest_cursor;
+        console.mark_gap().unwrap();
+        console
+            .ingest(
+                ConsoleStream::Stdout,
+                "[12:00:00] [Server thread/INFO]: Saved the game",
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            await_ack(
+                &fixture.core,
+                fixture.id,
+                &token,
+                after,
+                &[SaveAck::Saved],
+                Duration::from_secs(1)
+            )
+            .unwrap_err(),
+            refused("supervisor_save_console_gap")
+        );
+    }
+
+    #[test]
+    fn expired_instance_is_refused_by_the_writer_before_delivery() {
+        let fixture = Fixture::new();
+        let token = fixture.lease(restart::now_ms() + 60_000);
+        let (release, blocked) = mpsc::channel();
+        let (entered, waiting) = mpsc::channel();
+        let barrier = lock(&fixture.core)
+            .process
+            .queue_command_guarded(fixture.id, "barrier", move || {
+                entered.send(()).unwrap();
+                blocked.recv().unwrap();
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        let core = fixture.core.clone();
+        let id = fixture.id;
+        let command = std::thread::spawn(move || {
+            send_save_command(&core, id, &token, "save-all flush", None)
+        });
+        std::thread::sleep(Duration::from_millis(30));
+        lock(&fixture.core)
+            .save_lease
+            .as_mut()
+            .unwrap()
+            .expires_at_ms = 0;
+        release.send(()).unwrap();
+        assert!(command.join().unwrap().is_err());
+        drop(barrier);
+    }
+}

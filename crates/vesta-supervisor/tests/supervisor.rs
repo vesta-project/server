@@ -60,6 +60,28 @@ fn inert_supervised_game() {
                 if line == "crash" {
                     std::process::exit(23);
                 }
+                // Minecraft-style save acknowledgements, unless told to stay silent.
+                if !Path::new("silent-save").exists() {
+                    let info = |message: &str| {
+                        println!("[12:00:00] [Server thread/INFO]: {message}");
+                    };
+                    match line.as_str() {
+                        "save-off" if Path::new("autosave-off").exists() => {
+                            info("Saving is already turned off")
+                        }
+                        "save-off" => info("Automatic saving is now disabled"),
+                        "save-all flush" => {
+                            if Path::new("delay-flush").exists() {
+                                thread::sleep(Duration::from_secs(11));
+                            }
+                            info("Saving the game (this may take a moment!)");
+                            info("Saved the game");
+                        }
+                        "save-on" => info("Automatic saving is now enabled"),
+                        _ => {}
+                    }
+                    std::io::stdout().flush().unwrap();
+                }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             // Stdin closed (supervisor gone): keep running, like a real server would.
@@ -380,6 +402,15 @@ fn surviving_recorded_game_blocks_launch_until_it_exits() {
     let mut remote = RemoteProcess::attach(client(&fixture), IDENTITY.into()).unwrap();
     assert!(remote.orphan_running());
     assert_eq!(
+        SupervisorClient::new(&fixture.state)
+            .unwrap()
+            .call(Op::Hold { lease_ms: 60_000 }, Duration::from_secs(2))
+            .unwrap(),
+        Reply::Refused {
+            code: "supervisor_hold_not_stopped".into()
+        }
+    );
+    assert_eq!(
         remote.start_guarded(|_| Ok::<(), ()>(())),
         Err(GuardedError::Runtime(RuntimeError::AlreadyOwned))
     );
@@ -444,6 +475,15 @@ fn unresolved_launch_intent_blocks_start_until_explicitly_resolved() {
     let running = Running::start(&fixture);
     let mut remote = RemoteProcess::attach(client(&fixture), IDENTITY.into()).unwrap();
     assert!(remote.launch_unresolved());
+    assert_eq!(
+        SupervisorClient::new(&fixture.state)
+            .unwrap()
+            .call(Op::Hold { lease_ms: 60_000 }, Duration::from_secs(2))
+            .unwrap(),
+        Reply::Refused {
+            code: "supervisor_hold_not_stopped".into()
+        }
+    );
     assert_eq!(
         remote.start_guarded(|_| Ok::<(), ()>(())),
         Err(GuardedError::Runtime(RuntimeError::AlreadyOwned))
@@ -837,4 +877,407 @@ fn explicit_actions_and_configuration_govern_scheduled_restarts() {
         "supervisor idle",
     );
     running.join().unwrap();
+}
+
+fn command_lines(fixture: &Fixture) -> Vec<String> {
+    fixture.commands().lines().map(str::to_owned).collect()
+}
+
+fn started(
+    fixture: &Fixture,
+) -> (
+    Running,
+    RemoteProcess,
+    vesta_game_runtime::process::GenerationId,
+) {
+    let running = Running::start(fixture);
+    let mut remote = RemoteProcess::attach(client(fixture), IDENTITY.into()).unwrap();
+    let generation = remote.start_guarded(|_| Ok::<(), ()>(())).unwrap();
+    eventually(
+        || console_contains(&mut remote, "inert-supervised-ready"),
+        "game ready",
+    );
+    (running, remote, generation)
+}
+
+fn finish(fixture: &Fixture, running: Running, remote: RemoteProcess) {
+    drop(remote);
+    fixture.release();
+    let raw = SupervisorClient::new(&fixture.state).unwrap();
+    eventually(
+        || {
+            raw.call(Op::Shutdown, Duration::from_secs(2))
+                .is_ok_and(|reply| reply == Reply::ShuttingDown)
+        },
+        "supervisor idle",
+    );
+    running.join().unwrap();
+}
+
+#[test]
+fn save_lease_suspends_flushes_and_restores_only_prior_autosave() {
+    let fixture = Fixture::new();
+    let (running, remote, generation) = started(&fixture);
+    let raw = SupervisorClient::new(&fixture.state).unwrap();
+    let (token, restore) = remote
+        .save_suspend(generation, Duration::from_secs(60), None)
+        .unwrap();
+    assert!(restore);
+    assert!(health(&raw).save_lease_ms.is_some_and(|ms| ms > 50_000));
+    let lines = command_lines(&fixture);
+    assert_eq!(lines, ["save-off", "save-all flush"]);
+    // A second lease is refused; renewal works; shutdown waits for the lease.
+    assert!(
+        remote
+            .save_suspend(generation, Duration::from_secs(60), None)
+            .is_err()
+    );
+    remote
+        .save_renew(generation, &token, Duration::from_secs(120))
+        .unwrap();
+    assert!(health(&raw).save_lease_ms.is_some_and(|ms| ms > 100_000));
+    assert!(matches!(
+        raw.call(Op::Shutdown, Duration::from_secs(2)).unwrap(),
+        Reply::Refused { .. }
+    ));
+    assert!(remote.save_resume(generation, &token).unwrap());
+    eventually(
+        || {
+            command_lines(&fixture)
+                .last()
+                .is_some_and(|l| l == "save-on")
+        },
+        "autosave restored",
+    );
+    assert_eq!(health(&raw).save_lease_ms, None);
+
+    // An owner's deliberate save-off is respected: nothing re-enables autosave.
+    fs::write(fixture.game.join("autosave-off"), b"off").unwrap();
+    let (second_token, restore) = remote
+        .save_suspend(generation, Duration::from_secs(60), None)
+        .unwrap();
+    assert!(!restore);
+    assert_ne!(token, second_token);
+    assert!(remote.save_resume(generation, &token).is_err());
+    assert!(
+        remote
+            .save_renew(generation, &token, Duration::from_secs(60))
+            .is_err()
+    );
+    assert!(!remote.save_resume(generation, &second_token).unwrap());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        command_lines(&fixture)
+            .iter()
+            .filter(|l| l.as_str() == "save-on")
+            .count(),
+        1
+    );
+    finish(&fixture, running, remote);
+}
+
+#[test]
+fn unacknowledged_save_off_keeps_unknown_obligation_until_exit() {
+    let fixture = Fixture::new();
+    let (running, mut remote, generation) = started(&fixture);
+    let raw = SupervisorClient::new(&fixture.state).unwrap();
+    fs::write(fixture.game.join("silent-save"), b"silent").unwrap();
+    assert!(
+        remote
+            .save_suspend(generation, Duration::from_secs(10), Some(true))
+            .is_err()
+    );
+    let status = health(&raw);
+    assert!(status.save_state_unknown);
+    assert!(status.save_lease_ms.is_some());
+    assert!(
+        vesta_supervisor::save::read(&fixture.state.supervisor().unwrap())
+            .unwrap()
+            .unwrap()
+            .unresolved
+    );
+    assert!(!command_lines(&fixture).contains(&"save-on".to_owned()));
+    fs::remove_file(fixture.game.join("silent-save")).unwrap();
+    assert!(
+        remote
+            .save_suspend(generation, Duration::from_secs(60), None)
+            .is_err()
+    );
+    let receipt = remote
+        .queue_stop_guarded(generation, || Ok::<(), ()>(()))
+        .unwrap();
+    wait_receipt(receipt).unwrap();
+    eventually(
+        || remote.poll().is_ok_and(|s| s.generation.is_none()),
+        "stopped",
+    );
+    eventually(
+        || !health(&raw).save_state_unknown,
+        "unknown cleared on exit",
+    );
+    let next = remote.start_guarded(|_| Ok::<(), ()>(())).unwrap();
+    let (_, restore) = remote
+        .save_suspend(next, Duration::from_secs(10), None)
+        .unwrap();
+    assert!(restore);
+    eventually(
+        || {
+            command_lines(&fixture)
+                .last()
+                .is_some_and(|l| l == "save-on")
+        },
+        "expiry restores",
+    );
+    assert_eq!(health(&raw).save_lease_ms, None);
+    finish(&fixture, running, remote);
+}
+
+#[test]
+fn a_lease_never_sends_cleanup_to_another_generation() {
+    let fixture = Fixture::new();
+    let (running, mut remote, first) = started(&fixture);
+    let raw = SupervisorClient::new(&fixture.state).unwrap();
+    assert!(
+        remote
+            .save_suspend(first, Duration::from_secs(60), None)
+            .unwrap()
+            .1
+    );
+    // The game exits while the lease is held: the lease ends with nothing sent.
+    let receipt = remote
+        .queue_stop_guarded(first, || Ok::<(), ()>(()))
+        .unwrap();
+    wait_receipt(receipt).unwrap();
+    eventually(
+        || remote.poll().is_ok_and(|s| s.generation.is_none()),
+        "stopped",
+    );
+    eventually(|| health(&raw).save_lease_ms.is_none(), "lease cleared");
+    let second = remote.start_guarded(|_| Ok::<(), ()>(())).unwrap();
+    assert_ne!(second, first);
+    thread::sleep(Duration::from_millis(300));
+    assert!(!command_lines(&fixture).contains(&"save-on".to_owned()));
+    finish(&fixture, running, remote);
+}
+
+#[test]
+fn a_lease_on_an_orphan_is_reported_stranded_until_it_exits() {
+    let fixture = Fixture::new();
+    let mut orphan = std::process::Command::new(fixture.launch_program())
+        .args(["--exact", "inert_supervised_game", "--nocapture"])
+        .current_dir(&fixture.game)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = orphan.id();
+    let directory = fixture.state.supervisor().unwrap();
+    let generation = "0123456789abcdef0123456789abcdef";
+    record::write(
+        &directory,
+        &record::GenerationRecord {
+            version: 1,
+            generation: generation.into(),
+            pid,
+            process_start: native::process_start(pid).unwrap(),
+            boot_id: native::boot_id(),
+            launch_identity: IDENTITY.into(),
+        },
+    )
+    .unwrap();
+    vesta_supervisor::save::write(
+        &directory,
+        &vesta_supervisor::save::SaveLease {
+            version: 1,
+            token: "test".into(),
+            unresolved: false,
+            ending: false,
+            generation: generation.into(),
+            expires_at_ms: 0,
+            restore_autosave: true,
+        },
+    )
+    .unwrap();
+    let running = Running::start(&fixture);
+    let raw = SupervisorClient::new(&fixture.state).unwrap();
+    let stranded = health(&raw);
+    assert!(stranded.save_lease_stranded);
+    assert_eq!(stranded.save_lease_ms, None);
+    fixture.release();
+    orphan.wait().unwrap();
+    eventually(
+        || !health(&raw).save_lease_stranded,
+        "orphan exit clears lease",
+    );
+    assert!(vesta_supervisor::save::read(&directory).unwrap().is_none());
+    fs::remove_file(fixture.game.join("release-game")).unwrap();
+    eventually(
+        || {
+            raw.call(Op::Shutdown, Duration::from_secs(2))
+                .is_ok_and(|reply| reply == Reply::ShuttingDown)
+        },
+        "supervisor idle",
+    );
+    running.join().unwrap();
+}
+
+#[test]
+fn expiry_during_flush_never_reports_suspend_success() {
+    let fixture = Fixture::new();
+    let (running, remote, generation) = started(&fixture);
+    fs::write(fixture.game.join("delay-flush"), b"delay").unwrap();
+    assert!(
+        remote
+            .save_suspend(generation, Duration::from_secs(10), None)
+            .is_err()
+    );
+    eventually(
+        || command_lines(&fixture).iter().any(|line| line == "save-on"),
+        "expiry restoration delivered",
+    );
+    assert_eq!(
+        health(&SupervisorClient::new(&fixture.state).unwrap()).save_lease_ms,
+        None
+    );
+    finish(&fixture, running, remote);
+}
+
+#[test]
+fn save_window_fences_other_save_commands_and_generation_change_aborts_wait() {
+    let fixture = Fixture::new();
+    let (running, mut remote, generation) = started(&fixture);
+    fs::write(fixture.game.join("silent-save"), b"silent").unwrap();
+    let raw = client(&fixture);
+    let worker = {
+        let raw = raw.clone();
+        thread::spawn(move || {
+            vesta_supervisor::save::suspend(&raw, generation, Duration::from_secs(60), None)
+        })
+    };
+    eventually(
+        || command_lines(&fixture).contains(&"save-off".to_string()),
+        "save-off admitted",
+    );
+    for line in ["save-all", "/SAVE-ALL flush", " Save-Off ", "/sAvE-oN"] {
+        assert_eq!(
+            raw.call(
+                Op::Command {
+                    generation: generation.to_hex(),
+                    line: line.into()
+                },
+                Duration::from_secs(2)
+            )
+            .unwrap(),
+            Reply::Refused {
+                code: "supervisor_save_window_active".into()
+            }
+        );
+    }
+    raw.call(
+        Op::Command {
+            generation: generation.to_hex(),
+            line: "say fine".into(),
+        },
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let now = Instant::now();
+    let receipt = remote
+        .queue_stop_guarded(generation, || Ok::<(), ()>(()))
+        .unwrap();
+    wait_receipt(receipt).unwrap();
+    assert!(worker.join().unwrap().is_err());
+    assert!(
+        now.elapsed() < Duration::from_secs(3),
+        "generation change aborts immediately"
+    );
+    eventually(
+        || remote.poll().is_ok_and(|s| s.generation.is_none()),
+        "stopped",
+    );
+    assert!(!command_lines(&fixture).contains(&"save-on".to_string()));
+    finish(&fixture, running, remote);
+}
+
+#[test]
+fn stopped_hold_fences_start_and_stale_tokens() {
+    let fixture = Fixture::new();
+    let running = Running::start(&fixture);
+    let raw = SupervisorClient::new(&fixture.state).unwrap();
+    let token = vesta_supervisor::save::hold(&raw, Duration::from_secs(60)).unwrap();
+    assert!(health(&raw).maintenance_hold);
+    assert_eq!(
+        raw.call(
+            Op::Start {
+                launch_identity: IDENTITY.into()
+            },
+            Duration::from_secs(2)
+        )
+        .unwrap(),
+        Reply::Refused {
+            code: "supervisor_maintenance_hold".into()
+        }
+    );
+    assert!(vesta_supervisor::save::release_hold(&raw, "wrong").is_err());
+    vesta_supervisor::save::renew_hold(&raw, &token, Duration::from_secs(120)).unwrap();
+    vesta_supervisor::save::release_hold(&raw, &token).unwrap();
+    let next = vesta_supervisor::save::hold(&raw, Duration::from_secs(60)).unwrap();
+    assert_ne!(token, next);
+    assert!(vesta_supervisor::save::release_hold(&raw, &token).is_err());
+    vesta_supervisor::save::release_hold(&raw, &next).unwrap();
+    let mut remote = RemoteProcess::attach(client(&fixture), IDENTITY.into()).unwrap();
+    remote.start_guarded(|_| Ok::<(), ()>(())).unwrap();
+    assert_eq!(
+        raw.call(Op::Hold { lease_ms: 60_000 }, Duration::from_secs(2))
+            .unwrap(),
+        Reply::Refused {
+            code: "supervisor_hold_not_stopped".into()
+        }
+    );
+    finish(&fixture, running, remote);
+}
+
+#[test]
+fn hold_keeps_crash_restart_pending_until_expiry() {
+    let fixture = Fixture::new();
+    let policy = vesta_supervisor::RestartPolicy::new(
+        3,
+        Duration::from_secs(60),
+        Duration::from_secs(2),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let running = Running::start_with(&fixture, Some(policy));
+    let raw = SupervisorClient::new(&fixture.state).unwrap();
+    let mut remote = RemoteProcess::attach(client(&fixture), IDENTITY.into()).unwrap();
+    let generation = remote.start_guarded(|_| Ok::<(), ()>(())).unwrap();
+    raw.call(
+        Op::Command {
+            generation: generation.to_hex(),
+            line: "crash".into(),
+        },
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    eventually(
+        || health(&raw).restart_pending_ms.is_some(),
+        "restart pending",
+    );
+    let token = vesta_supervisor::save::hold(&raw, Duration::from_secs(10)).unwrap();
+    thread::sleep(Duration::from_secs(3));
+    assert!(health(&raw).maintenance_hold);
+    assert!(health(&raw).restart_pending_ms.is_some());
+    assert!(vesta_supervisor::save::hold(&raw, Duration::from_secs(60)).is_err());
+    eventually(|| !health(&raw).maintenance_hold, "hold expired");
+    eventually(
+        || {
+            remote
+                .poll()
+                .is_ok_and(|s| s.generation.is_some_and(|g| g != generation))
+        },
+        "pending restart fires",
+    );
+    assert!(vesta_supervisor::save::release_hold(&raw, &token).is_err());
+    finish(&fixture, running, remote);
 }

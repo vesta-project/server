@@ -6,6 +6,9 @@
 #![deny(unsafe_code)]
 
 pub mod admission;
+pub mod automation;
+pub mod automation_host;
+pub mod backups;
 pub mod config;
 pub mod content;
 pub mod files;

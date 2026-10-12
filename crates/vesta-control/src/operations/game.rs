@@ -116,6 +116,37 @@ fn revision(snapshot: ProcessSnapshot) -> SourceRevision {
     SourceRevision::for_game(generation)
 }
 
+/// Maintenance exclusion for game starts. `block` returns once any start that was
+/// already past the check has published its generation; until the guard drops, every
+/// start (operations, local CLI, restart continuation) is refused.
+#[derive(Clone, Default)]
+pub struct StartGate {
+    inner: Arc<std::sync::Mutex<u32>>,
+}
+impl std::fmt::Debug for StartGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StartGate")
+    }
+}
+impl StartGate {
+    pub fn block(&self) -> StartBlock {
+        *self.inner.lock().unwrap_or_else(|p| p.into_inner()) += 1;
+        StartBlock { gate: self.clone() }
+    }
+    pub fn blocked(&self) -> bool {
+        *self.inner.lock().unwrap_or_else(|p| p.into_inner()) > 0
+    }
+}
+pub struct StartBlock {
+    gate: StartGate,
+}
+impl Drop for StartBlock {
+    fn drop(&mut self) {
+        let mut count = self.gate.inner.lock().unwrap_or_else(|p| p.into_inner());
+        *count = count.saturating_sub(1);
+    }
+}
+
 pub(super) struct GameLifecycle {
     // No caller can access mutable process ownership, launch paths or stdin.
     pub(super) process: ProcessBackend,
@@ -125,6 +156,8 @@ pub(super) struct GameLifecycle {
     readiness: ReadinessWatch,
     /// Console cursor just before the latest local launch: later lines are its output.
     local_floor: Option<(GenerationId, u64)>,
+    /// Held by maintenance (stopped backups) to refuse every start, including restarts.
+    pub(super) start_block: StartGate,
 }
 impl GameLifecycle {
     pub(super) fn new(launch: LaunchSpec) -> Self {
@@ -134,6 +167,7 @@ impl GameLifecycle {
         Self {
             readiness: ReadinessWatch::new(ReadinessConfig::default(), console.clone()),
             local_floor: None,
+            start_block: StartGate::default(),
             process: ProcessBackend::Local(process),
             console,
             launch: Some(launch),
@@ -147,6 +181,7 @@ impl GameLifecycle {
         Self {
             readiness: ReadinessWatch::new(ReadinessConfig::default(), console.clone()),
             local_floor: None,
+            start_block: StartGate::default(),
             process: ProcessBackend::Supervised(remote),
             console,
             launch: None,
@@ -163,6 +198,11 @@ impl GameLifecycle {
                 Some(remote.health());
         }
         self.view.publish(self.process.snapshot())
+    }
+    /// Share the host's maintenance gate (stopped backups block starts through it).
+    pub(super) fn with_start_gate(mut self, gate: StartGate) -> Self {
+        self.start_block = gate;
+        self
     }
     /// Trusted host readiness settings (probe address, timeouts).
     pub(super) fn with_readiness(mut self, config: ReadinessConfig) -> Self {
@@ -213,6 +253,24 @@ impl GameLifecycle {
         matches!(self.process, ProcessBackend::Local(_)) && self.has_owned_generation()
     }
     pub(super) fn start(
+        &mut self,
+        guard: impl FnOnce(&SourceRevision) -> OperationsResult<()>,
+    ) -> Result<GenerationId, GuardedError<super::OperationError>> {
+        // The gate is held from the block check until the new generation is published,
+        // so a maintenance block either sees this start or this start sees the block.
+        let gate = self.start_block.clone();
+        let blocked = gate.inner.lock().unwrap_or_else(|p| p.into_inner());
+        if *blocked > 0 {
+            return Err(GuardedError::Guard(OperationError::rejected(
+                OperationErrorCode::MaintenanceActive,
+            )));
+        }
+        let started = self.start_unblocked(guard);
+        let _ = self.publish();
+        drop(blocked);
+        started
+    }
+    fn start_unblocked(
         &mut self,
         guard: impl FnOnce(&SourceRevision) -> OperationsResult<()>,
     ) -> Result<GenerationId, GuardedError<super::OperationError>> {

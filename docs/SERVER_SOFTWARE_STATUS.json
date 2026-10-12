@@ -5,12 +5,12 @@
   "scope": "Features carrying reauditNote were re-audited against Rust source and tests; other feature statuses remain as previously audited. Statuses move only against the acceptance text.",
   "tests": {
     "rustWorkspace": {
-      "passed": 1477,
+      "passed": 1564,
       "failed": 0,
       "ignored": 0,
-      "summaries": 56,
+      "summaries": 60,
       "command": "cargo test --workspace --all-targets --offline --locked -- --test-threads=1",
-      "lastRunAt": "eae2e47 plus the supervisor slice"
+      "lastRunAt": "aa5d4ac plus backups and automation"
     },
     "node": {
       "passed": 164,
@@ -115,7 +115,7 @@
       "name": "Readiness and crash-loop policy",
       "status": "partial",
       "phase": 3,
-      "current": "Readiness reports starting/ready/degraded from anchored console patterns plus a bounded status ping, log-only when no port is known, in both process modes. Opt-in crash restart in the separate supervisor uses doubling backoff and a durable crash-loop breaker that leaves the game stopped until reset. Not yet: connector readiness signals, durable notifications (F30) and start-on-agent-start.",
+      "current": "Readiness reports starting/ready/degraded from anchored console patterns plus a bounded status ping (log-only when no port is known), in both process modes. Opt-in crash restart in the separate supervisor uses doubling backoff and a durable crash-loop breaker that leaves the game stopped until reset and posts a critical notification. Opt-in start-on-agent-start launches only when nothing is running. Not yet: connector readiness signals.",
       "evidence": [
         "crates/vesta-game-runtime/src/readiness.rs",
         "crates/vesta-game-runtime/src/readiness_tests.rs",
@@ -566,50 +566,60 @@
     {
       "id": "F25",
       "name": "Backup repositories and retention",
-      "status": "not_started",
+      "status": "partial",
       "phase": 6,
-      "current": "Backup repositories, encrypted recovery export, retention, and working-space reserve are declared future work; installer file-copy protections are not a runtime backup/history subsystem.",
-      "evidence": [],
+      "current": "restic-driven backup jobs with per-profile retention (forget --prune), verification (check), .vesta-backupignore and an owner-initialized encrypted repository; durable job table and idempotent submission. Not yet: bundled restic, S3, storage quotas/capacity preflight, vault for the key.",
+      "evidence": [
+        "crates/vesta-control/src/backups/mod.rs",
+        "crates/vesta-control/src/backups/restic.rs",
+        "crates/vesta-control/tests/backups.rs",
+        "docs/operations/backups.md"
+      ],
       "acceptance": "Opt-in local/NAS/S3 encrypted repositories, recovery export, retention and working-space reserve.",
-      "auditDate": "2026-10-10",
+      "auditDate": "2026-10-12",
       "previous": {
-        "auditDate": "2026-10-04",
+        "auditDate": "2026-10-10",
         "status": "not_started",
-        "current": "Installer copy/backup options are not a runtime restic repository/history subsystem.",
-        "evidence": [
-          "scripts/install.ps1"
-        ]
+        "current": "Backup repositories, encrypted recovery export, retention, and working-space reserve are declared future work; installer file-copy protections are not a runtime backup/history subsystem.",
+        "evidence": []
       }
     },
     {
       "id": "F26",
       "name": "Online backup consistency and save lease",
-      "status": "not_started",
+      "status": "partial",
       "phase": 6,
-      "current": "Online backup coordination and autosave/save-lease cleanup are not implemented; plugin-based consistency remains future work.",
-      "evidence": [],
+      "current": "Supervisor-owned save lease: durable, generation-bound, acknowledged save-off and save-all flush, renewed during the scan, restores autosave only if it was on, expires without an agent, never touches another generation, reports stranded leases after supervisor loss. Online backups use it; stopped backups block starts. Mutation scan applies the profile policy. Not yet: filesystem snapshots, write guard, plugin quiesce adapters.",
+      "evidence": [
+        "crates/vesta-supervisor/src/save.rs",
+        "crates/vesta-supervisor/tests/supervisor.rs",
+        "crates/vesta-control/src/backups/mod.rs"
+      ],
       "acceptance": "Flush acknowledgement; independent same-generation autosave cleanup; honest plugin consistency.",
-      "auditDate": "2026-10-10",
+      "auditDate": "2026-10-12",
       "previous": {
-        "auditDate": "2026-10-04",
+        "auditDate": "2026-10-10",
         "status": "not_started",
-        "current": "No online-backup coordinator, crash-safe autosave lease or snapshot helper found.",
+        "current": "Online backup coordination and autosave/save-lease cleanup are not implemented; plugin-based consistency remains future work.",
         "evidence": []
       }
     },
     {
       "id": "F27",
       "name": "Restore, inspection and recovery exports",
-      "status": "not_started",
+      "status": "prototype",
       "phase": 6,
-      "current": "Owner-confirmed restore, pre-restore backup, stopped-game enforcement, scoped inspection, and recovery exports are not implemented; backups/recovery are future work.",
-      "evidence": [],
+      "current": "Inspection restore of a snapshot (optionally selected paths) into a new directory under a configured restore root; never automatic. Not yet: in-place restore with stop, pre-restore safety snapshot and exact confirmation; recovery exports.",
+      "evidence": [
+        "crates/vesta-control/src/backups/mod.rs",
+        "crates/vesta-control/tests/backups.rs"
+      ],
       "acceptance": "Owner-confirmed restore, pre-restore backup, stopped game, scoped inspection, no automatic restore.",
-      "auditDate": "2026-10-10",
+      "auditDate": "2026-10-12",
       "previous": {
-        "auditDate": "2026-10-04",
+        "auditDate": "2026-10-10",
         "status": "not_started",
-        "current": "No verified manual restore workflow or encrypted complete recovery export found.",
+        "current": "Owner-confirmed restore, pre-restore backup, stopped-game enforcement, scoped inspection, and recovery exports are not implemented; backups/recovery are future work.",
         "evidence": []
       }
     },
@@ -638,38 +648,41 @@
     {
       "id": "F29",
       "name": "Schedules and typed sequential workflows",
-      "status": "not_started",
+      "status": "partial",
       "phase": 7,
-      "current": "Durable scheduled typed workflows, authority rechecks, and missed-run policy are absent; operation queue scheduling is not an owner workflow scheduler.",
-      "evidence": [],
+      "current": "Durable typed workflows: manual, cron (UTC offset), interval, agent/server/backup event triggers; backup, verify, start/stop/restart, console, trash, delay and notify steps with retries, timeouts and forward branches; missed-run policy; restart-safe idempotent step submission; per-step re-authorization through a revocable keyless automation device. Not yet: script presets, player-count/update/resource events, DST-aware time zones.",
+      "evidence": [
+        "crates/vesta-control/src/automation/service.rs",
+        "crates/vesta-control/src/automation_host.rs",
+        "crates/vesta-control/tests/automation_backups.rs"
+      ],
       "acceptance": "Sequential steps/conditions/delays; authority rechecked; configurable missed-run policy.",
-      "auditDate": "2026-10-10",
+      "auditDate": "2026-10-12",
       "previous": {
-        "auditDate": "2026-10-04",
+        "auditDate": "2026-10-10",
         "status": "not_started",
-        "current": "Session cleanup timers are not an owner scheduler; durable typed workflows/presets absent.",
+        "current": "Durable scheduled typed workflows, authority rechecks, and missed-run policy are absent; operation queue scheduling is not an owner workflow scheduler.",
         "evidence": []
       }
     },
     {
       "id": "F30",
       "name": "Notification inbox and optional delivery",
-      "status": "not_started",
+      "status": "partial",
       "phase": 7,
-      "current": "Rust emits transient realtime update events, but has no durable per-principal inbox/read state, offline retrieval, or email/Discord/webhook retry delivery; Discord is future work.",
+      "current": "Durable local notification inbox with per-principal read/acknowledged state and fetch-since cursors; workflow failures, suspensions and skipped schedules notify. Not yet: external delivery integrations.",
       "evidence": [
-        "crates/vesta-transport/src/realtime.rs",
-        "crates/vesta-state/src/events.rs"
+        "crates/vesta-control/src/automation/inbox.rs"
       ],
       "acceptance": "Per-principal read state; offline retrieval; bounded optional email/Discord/webhook retries.",
-      "auditDate": "2026-10-10",
+      "auditDate": "2026-10-12",
       "previous": {
-        "auditDate": "2026-10-04",
+        "auditDate": "2026-10-10",
         "status": "not_started",
-        "current": "Push update events exist, but no durable per-account inbox/delivery subsystem found.",
-        "evidence": [],
-        "javaEvidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/server/ServerState.java"
+        "current": "Rust emits transient realtime update events, but has no durable per-principal inbox/read state, offline retrieval, or email/Discord/webhook retry delivery; Discord is future work.",
+        "evidence": [
+          "crates/vesta-transport/src/realtime.rs",
+          "crates/vesta-state/src/events.rs"
         ]
       }
     },

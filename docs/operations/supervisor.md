@@ -193,8 +193,15 @@ max-backoff-seconds = 300    # cap (max 1 h)
   files, so the newest complete history always survives. A corrupt history file trips the
   breaker rather than reading as "no crashes".
 - Status reports `crash_restart_enabled`, `crash_loop`, `recent_crashes` and
-  `restart_pending_ms` (see the management API `/server/status`). The notification
-  inbox (F30) does not exist yet, so the breaker is surfaced through status only.
+  `restart_pending_ms` (see the management API `/server/status`). When the breaker trips,
+  the agent also posts a critical notification to the inbox.
+
+## Start on agent start (opt-in)
+
+`[process] start-on-agent-start = true` (either supervision mode) starts the game once when
+the agent starts, but only if no generation is running. The normal start path still refuses
+duplicates, orphans, unresolved launches and maintenance blocks. A refusal becomes a warning
+notification; it is never retried in a loop. It is separate from crash restart.
 
 ## Readiness
 
@@ -237,7 +244,7 @@ permissions, gzip and download work and are tracked in the management API contra
 ## Not in this slice (remaining P3 work)
 
 - Separate OS identities for game and control plane, and service-account launch helpers.
-- Start-on-agent-start (crash restart and readiness are now implemented, above).
+- Connector readiness signals (crash restart, readiness and start-on-agent-start are implemented above).
 - Log catch-up by file identity/offset after supervisor loss, and connector readiness signals.
 - Autosave/save-lease primitive and its crash recovery.
 - OS service installation and shutdown-deadline integration, plus supervisor self-update

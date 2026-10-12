@@ -442,14 +442,21 @@ fn schema_four_to_current_preserves_data_backup_and_pending_expiry_plans() {
     assert_eq!(
         added,
         BTreeSet::from([
+            "backup_jobs_history",
+            "backup_jobs_queue",
             "file_intents_pending",
             "file_trash_expiry",
             "management_file_outcomes_retention",
             "management_permission_receipts_retention",
             "principal_overrides_pending_expiry",
             "role_assignments_pending_expiry",
+            "workflow_runs_active",
+            "workflow_runs_due",
+            "workflow_runs_history",
+            "notifications_created",
+            "notification_state_notification",
         ]),
-        "v5, v8, v11, v15 and v17 add expiry, pending-intent and retention indexes",
+        "v5 through v19 add expiry, intent, retention, automation, notification and backup job indexes",
     );
     let assignment_ddl = post_indexes
         .iter()

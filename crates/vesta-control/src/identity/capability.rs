@@ -77,6 +77,9 @@ pub enum Capability {
     RolesManage,
     AccessSourcesManage,
     InvitationsCreate,
+    AutomationView,
+    AutomationManage,
+    NotificationsView,
 }
 
 impl Capability {
@@ -139,6 +142,9 @@ impl Capability {
         Self::RolesManage,
         Self::AccessSourcesManage,
         Self::InvitationsCreate,
+        Self::AutomationView,
+        Self::AutomationManage,
+        Self::NotificationsView,
     ];
 
     /// The stable, exact identifier used in persisted identity records.
@@ -150,6 +156,9 @@ impl Capability {
             Self::RolesManage => "roles.manage",
             Self::AccessSourcesManage => "access-sources.manage",
             Self::InvitationsCreate => "invitations.create",
+            Self::AutomationView => "automation.view",
+            Self::AutomationManage => "automation.manage",
+            Self::NotificationsView => "notifications.view",
             Self::StatusView => "status.view",
             Self::StatusDetailed => "status.detailed",
             Self::MetricsView => "metrics.view",
@@ -213,6 +222,9 @@ impl Capability {
             "roles.manage" => Some(Self::RolesManage),
             "access-sources.manage" => Some(Self::AccessSourcesManage),
             "invitations.create" => Some(Self::InvitationsCreate),
+            "automation.view" => Some(Self::AutomationView),
+            "automation.manage" => Some(Self::AutomationManage),
+            "notifications.view" => Some(Self::NotificationsView),
             "status.view" => Some(Self::StatusView),
             "status.detailed" => Some(Self::StatusDetailed),
             "metrics.view" => Some(Self::MetricsView),

@@ -125,6 +125,7 @@ pub struct OperationRuntime {
     // Never detached on timeout. Taking this is allowed only for actual join.
     driver: Option<JoinHandle<OperationsResult<()>>>,
     local: LocalRuntime,
+    start_block: super::game::StartGate,
 }
 
 /// Trusted OS-local host adapter only. Not a Subject, credential or remote grant.
@@ -281,10 +282,13 @@ impl OperationRuntime {
         operations: Operations,
         remote: vesta_supervisor::RemoteProcess,
         readiness: vesta_game_runtime::readiness::ReadinessConfig,
+        gate: super::game::StartGate,
     ) -> OperationsResult<Self> {
         Self::open_lifecycle(
             operations,
-            GameLifecycle::supervised(remote).with_readiness(readiness),
+            GameLifecycle::supervised(remote)
+                .with_readiness(readiness)
+                .with_start_gate(gate),
             DEFAULT_STOP_WAIT,
         )
     }
@@ -294,10 +298,13 @@ impl OperationRuntime {
         operations: Operations,
         launch: LaunchSpec,
         readiness: vesta_game_runtime::readiness::ReadinessConfig,
+        gate: super::game::StartGate,
     ) -> OperationsResult<Self> {
         Self::open_lifecycle(
             operations,
-            GameLifecycle::new(launch).with_readiness(readiness),
+            GameLifecycle::new(launch)
+                .with_readiness(readiness)
+                .with_start_gate(gate),
             DEFAULT_STOP_WAIT,
         )
     }
@@ -314,6 +321,7 @@ impl OperationRuntime {
         // and retains a runtime DB lease before any native or driver work.
         let owner = operations.open_owner()?;
         let operations = owner.operations().clone();
+        let start_block = game.start_block.clone();
         let (shared, players) = DriverState::new(&owner, &game);
         let (local_sender, local_receiver) = mpsc::sync_channel(1);
         let mut worker = Driver {
@@ -349,10 +357,17 @@ impl OperationRuntime {
             operations,
             shared,
             driver: Some(driver),
+            start_block,
             local: LocalRuntime {
                 sender: local_sender,
             },
         })
+    }
+
+    /// While set, every start (including restarts and local CLI starts) is refused
+    /// with `maintenance_active`. Held by stopped-server backups.
+    pub fn start_block(&self) -> super::game::StartGate {
+        self.start_block.clone()
     }
 
     pub fn local_handle(&self) -> LocalRuntime {
