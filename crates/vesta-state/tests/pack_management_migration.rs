@@ -27,7 +27,7 @@ fn rows(connection: &Connection) -> rusqlite::Result<Vec<Vec<Vec<Value>>>> {
         .map(|table| {
             // V18 intentionally extends builtin grants; compare all prior authority intact.
             let filter = if *table == "role_capabilities" {
-                " WHERE capability NOT IN ('automation.view','automation.manage','notifications.view')"
+                " WHERE capability NOT IN ('automation.view','automation.manage','notifications.view','backups.configure')"
             } else { "" };
             let mut statement =
                 connection.prepare(&format!("SELECT * FROM {table}{filter} ORDER BY rowid"))?;

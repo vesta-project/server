@@ -568,7 +568,7 @@
       "name": "Backup repositories and retention",
       "status": "partial",
       "phase": 6,
-      "current": "Built-in deduplicating backup engine (SHA-256 content-addressed 1 MiB chunks, deflate, integrity-checked restores; no bundled third-party software; unencrypted by owner decision 2026-10-12) over a local directory or S3-compatible bucket, with per-profile retention and prune, verification, .vesta-backupignore, durable job table and idempotent submission. Budgets: per-profile and repository-wide restore-point caps judged after retention, repository size limit enforced before and during writes, free-space reserve on the repository and game disks; reaching one stops backups without deleting anything, and storage status reports why. Not yet: real S3 provider evidence, runtime-editable limits.",
+      "current": "Built-in deduplicating backup engine (SHA-256 content-addressed 1 MiB chunks, deflate, integrity-checked restores; no bundled third-party software; unencrypted by owner decision 2026-10-12) over a local directory or S3-compatible bucket, with per-profile retention and prune, verification, .vesta-backupignore, durable job table and idempotent submission. Budgets: per-profile and repository-wide restore-point caps judged after retention, repository size limit enforced before and during writes, free-space reserve on the repository and game disks; reaching one stops backups without deleting anything, and storage status reports why. Profiles, retention and limits are editable at runtime by owners (backups.configure, revision-checked, audited, schema v21); repository and credentials stay host.toml-only. Not yet: real S3 provider evidence.",
       "evidence": [
         "crates/vesta-control/src/backups/mod.rs",
         "crates/vesta-control/src/backups/engine.rs",
@@ -577,7 +577,8 @@
         "crates/vesta-control/tests/backups.rs",
         "docs/operations/backups.md",
         "crates/vesta-control/src/backups/limits.rs",
-        "crates/vesta-control/src/backups/space.rs"
+        "crates/vesta-control/src/backups/space.rs",
+        "crates/vesta-control/src/backups/policy.rs"
       ],
       "acceptance": "Opt-in local/NAS/S3 repositories (unencrypted by owner decision), recovery export, retention and working-space reserve.",
       "auditDate": "2026-10-12",

@@ -58,7 +58,7 @@ impl Inner {
             return Ok(Budget::default());
         };
         let free = space::available(path).ok_or(DISK_SPACE_LOW)?;
-        let reserve = self.settings.limits.min_free_bytes;
+        let reserve = self.policy().limits.min_free_bytes;
         if free <= reserve {
             return Err(DISK_SPACE_LOW);
         }
@@ -73,7 +73,8 @@ impl Inner {
         &self,
         profile: &BackupProfile,
     ) -> std::result::Result<Budget, &'static str> {
-        let limits = &self.settings.limits;
+        let policy = self.policy();
+        let limits = &policy.limits;
         if profile.max_snapshots.is_some() || limits.max_snapshots.is_some() {
             let retention = Retention {
                 keep_last: profile.keep_last,
@@ -94,8 +95,7 @@ impl Inner {
             }
             if let Some(max) = limits.max_snapshots {
                 let counts = self.engine.tag_counts().map_err(EngineError::code)?;
-                let others: usize = self
-                    .settings
+                let others: usize = policy
                     .profiles
                     .iter()
                     .filter(|p| p.name != profile.name)
@@ -136,7 +136,8 @@ impl Backups {
         let repository_bytes = inner.engine.usage().map_err(unavailable)?;
         let counts = inner.engine.tag_counts().map_err(unavailable)?;
         let count = |tag: String| counts.get(&tag).copied().unwrap_or(0);
-        let profiles = &inner.settings.profiles;
+        let policy = inner.policy();
+        let profiles = &policy.profiles;
         let restore_points = profiles.iter().map(|p| count(profile_tag(&p.name))).sum();
         let safety_snapshots = profiles.iter().map(|p| count(safety_tag(&p.name))).sum();
         let free_bytes = match &inner.settings.repository {
@@ -162,7 +163,7 @@ impl Backups {
             restore_points,
             safety_snapshots,
             free_bytes,
-            limits: inner.settings.limits.clone(),
+            limits: policy.limits.clone(),
             backups_stopped,
         })
     }

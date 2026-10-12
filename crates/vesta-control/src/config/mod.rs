@@ -283,6 +283,33 @@ impl BackupSettings {
     }
 }
 
+pub const DEFAULT_WARN_SECONDS: u32 = 60;
+
+/// The rules for backup profiles and limits, wherever they come from (host.toml or a
+/// policy edited at runtime): 1 to 16 uniquely named profiles, bounded retention and
+/// warnings, and no zero caps (a zero cap could only ever refuse; omit it instead).
+pub fn validate_backup_policy(profiles: &[BackupProfile], limits: &BackupLimits) -> Result<()> {
+    if profiles.is_empty() || profiles.len() > MAX_BACKUP_PROFILES {
+        return Err(ConfigError::InvalidDocument);
+    }
+    for (index, p) in profiles.iter().enumerate() {
+        if !valid_profile_name(&p.name)
+            || profiles[..index].iter().any(|q| q.name == p.name)
+            || [p.keep_last, p.keep_daily, p.keep_weekly, p.keep_monthly]
+                .iter()
+                .any(|&k| k > MAX_RETENTION)
+            || p.warn_seconds > MAX_WARN_SECONDS
+            || p.max_snapshots == Some(0)
+        {
+            return Err(ConfigError::InvalidDocument);
+        }
+    }
+    if limits.max_snapshots == Some(0) || limits.max_repository_bytes == Some(0) {
+        return Err(ConfigError::InvalidDocument);
+    }
+    Ok(())
+}
+
 fn valid_profile_name(name: &str) -> bool {
     (1..=32).contains(&name.len())
         && name
@@ -662,22 +689,13 @@ impl HostConfiguration {
                 {
                     return Err(ConfigError::InvalidPath);
                 }
-                if wire.profile.is_empty() || wire.profile.len() > MAX_BACKUP_PROFILES {
+                if wire.profile.len() > MAX_BACKUP_PROFILES {
                     return Err(ConfigError::InvalidDocument);
                 }
-                let mut profiles: Vec<BackupProfile> = Vec::new();
-                for Table(p) in wire.profile {
-                    let warn_seconds = p.warn_seconds.unwrap_or(60);
-                    if !valid_profile_name(&p.name)
-                        || profiles.iter().any(|q| q.name == p.name)
-                        || [p.keep_last, p.keep_daily, p.keep_weekly, p.keep_monthly]
-                            .iter()
-                            .any(|&k| k > MAX_RETENTION)
-                        || warn_seconds > MAX_WARN_SECONDS
-                    {
-                        return Err(ConfigError::InvalidDocument);
-                    }
-                    profiles.push(BackupProfile {
+                let profiles: Vec<BackupProfile> = wire
+                    .profile
+                    .into_iter()
+                    .map(|Table(p)| BackupProfile {
                         name: p.name,
                         mode: p.mode,
                         keep_last: p.keep_last,
@@ -685,10 +703,10 @@ impl HostConfiguration {
                         keep_weekly: p.keep_weekly,
                         keep_monthly: p.keep_monthly,
                         on_mutation: p.on_mutation,
-                        warn_seconds,
+                        warn_seconds: p.warn_seconds.unwrap_or(DEFAULT_WARN_SECONDS),
                         max_snapshots: p.max_snapshots,
-                    });
-                }
+                    })
+                    .collect();
                 let limits = match wire.limits {
                     None => BackupLimits::default(),
                     Some(Table(l)) => {
@@ -704,13 +722,7 @@ impl HostConfiguration {
                         }
                     }
                 };
-                // A zero cap would only ever refuse; leave the key out instead.
-                if limits.max_snapshots == Some(0)
-                    || limits.max_repository_bytes == Some(0)
-                    || profiles.iter().any(|p| p.max_snapshots == Some(0))
-                {
-                    return Err(ConfigError::InvalidDocument);
-                }
+                validate_backup_policy(&profiles, &limits)?;
                 Ok(BackupSettings {
                     repository,
                     restore_root,

@@ -135,6 +135,16 @@ const INCLUDED: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "backup_policy",
+        &[
+            "singleton",
+            "policy_json",
+            "revision",
+            "updated_at",
+            "updated_by",
+        ],
+    ),
+    (
         "audit_events",
         &[
             "seq",

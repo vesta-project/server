@@ -82,7 +82,7 @@ impl Backups {
         paths: Vec<String>,
         skip_safety_snapshot: bool,
     ) -> Result<PreparedRestore> {
-        if self.inner.settings.profile(profile).is_none() {
+        if self.inner.policy().profile(profile).is_none() {
             return Err(BackupError::UnknownProfile);
         }
         if !engine::valid_snapshot_id(snapshot)
@@ -308,7 +308,7 @@ impl Backups {
 
     /// Safety snapshots taken before in-place restores of `profile`, oldest first.
     pub fn safety_snapshots(&self, profile: &str) -> Result<Vec<engine::Snapshot>> {
-        if self.inner.settings.profile(profile).is_none() {
+        if self.inner.policy().profile(profile).is_none() {
             return Err(BackupError::UnknownProfile);
         }
         let _single = self
@@ -464,7 +464,7 @@ impl Inner {
             &paths,
             &ignore,
             &self.protected,
-            Some(self.settings.limits.min_free_bytes),
+            Some(self.policy().limits.min_free_bytes),
         );
         if matches!(result, Err(e) if e.modified) {
             // Block starts before the hold and gate are released.

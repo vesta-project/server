@@ -7,7 +7,10 @@ use std::{
 };
 use vesta_control::{
     backups::store::{LocalStore, ObjectInfo, Store},
-    backups::{BackupError, BackupEvent, Backups, Environment, JobKind, JobState},
+    backups::{
+        BackupError, BackupEvent, Backups, Environment, JobKind, JobState, LimitsDocument,
+        PolicyDocument, ProfileDocument,
+    },
     config::{
         BackupLimits, BackupMode, BackupProfile, BackupRepository, BackupSettings, MutationPolicy,
     },
@@ -767,4 +770,134 @@ fn size_and_free_space_budgets_refuse_backups_and_restores() {
     assert_eq!(job.state, JobState::Failed);
     assert_eq!(tree(&f.game), before);
     assert!(!gate.blocked());
+}
+
+fn policy_document(profiles: &[(&str, &str, u32)], max_snapshots: Option<u32>) -> PolicyDocument {
+    PolicyDocument {
+        profiles: profiles
+            .iter()
+            .map(|(name, mode, keep_last)| ProfileDocument {
+                name: (*name).into(),
+                mode: (*mode).into(),
+                keep_last: *keep_last,
+                keep_daily: 0,
+                keep_weekly: 0,
+                keep_monthly: 0,
+                on_mutation: None,
+                warn_seconds: Some(0),
+                max_snapshots: None,
+            })
+            .collect(),
+        limits: LimitsDocument {
+            max_snapshots,
+            max_repository_bytes: None,
+            min_free_bytes: Some(0),
+        },
+    }
+}
+
+#[test]
+fn an_owner_edits_the_backup_policy_at_runtime_with_revision_checks() {
+    let f = fixture();
+    let (backups, _, _) = open(&f, false);
+    backups.init_repository().unwrap();
+    let initial = backups.policy();
+    assert_eq!(initial.revision, None, "host.toml applies at first");
+    assert_eq!(initial.profiles.len(), 2);
+
+    // Only the owner may edit; a viewer is refused before anything is stored.
+    let document = policy_document(&[("hourly", "stopped", 3)], Some(10));
+    assert_eq!(
+        backups.set_policy(&subject(VIEWER, VIEWER_DEVICE), None, &document),
+        Err(BackupError::Forbidden)
+    );
+    // Invalid documents never reach storage.
+    for bad in [
+        policy_document(&[], None),
+        policy_document(&[("hourly", "paused", 3)], None),
+        policy_document(&[("Bad Name", "stopped", 3)], None),
+        policy_document(&[("a", "stopped", 1), ("a", "stopped", 1)], None),
+        policy_document(&[("hourly", "stopped", 3)], Some(0)),
+    ] {
+        assert_eq!(
+            backups.set_policy(&owner(), None, &bad),
+            Err(BackupError::Invalid)
+        );
+    }
+    assert_eq!(backups.set_policy(&owner(), None, &document), Ok(1));
+    let current = backups.policy();
+    assert_eq!(current.revision, Some(1));
+    assert_eq!(current.limits.max_snapshots, Some(10));
+    assert_eq!(current.limits.min_free_bytes, 0);
+
+    // It applies immediately: the new profile works, the removed one is unknown.
+    assert_eq!(backup_error(&backups, "hourly"), None);
+    assert_eq!(
+        backups.submit(&owner(), "stopped", JobKind::Backup, None),
+        Err(BackupError::UnknownProfile)
+    );
+    // A stale editor is refused instead of overwriting.
+    assert_eq!(
+        backups.set_policy(&owner(), None, &document),
+        Err(BackupError::PolicyConflict)
+    );
+    let two = policy_document(&[("hourly", "stopped", 5), ("weekly", "stopped", 4)], None);
+    assert_eq!(backups.set_policy(&owner(), Some(1), &two), Ok(2));
+    drop(backups);
+
+    // Stored policies survive a restart.
+    let (backups, _, _) = open(&f, false);
+    assert_eq!(backups.policy().revision, Some(2));
+    assert_eq!(backups.policy().profile("weekly").unwrap().keep_last, 4);
+    // Reset needs the current revision, then host.toml applies again.
+    assert_eq!(
+        backups.reset_policy(&owner(), 1),
+        Err(BackupError::PolicyConflict)
+    );
+    assert_eq!(
+        backups.reset_policy(&subject(VIEWER, VIEWER_DEVICE), 2),
+        Err(BackupError::Forbidden)
+    );
+    backups.reset_policy(&owner(), 2).unwrap();
+    assert_eq!(*backups.policy(), *initial);
+    let audited: i64 = f
+        .db
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT count(*) FROM audit_events WHERE action IN ('backups.policy.update','backups.policy.reset')",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(audited, 3);
+    backups.set_policy(&owner(), None, &document).unwrap();
+    drop(backups);
+
+    // A stored policy that no longer validates refuses to open rather than guessing.
+    f.db.write(|c| {
+        c.execute(
+            "UPDATE backup_policy SET policy_json='{\"profiles\":[]}'",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let BackupRepository::Local(repo) = &f.settings.repository else {
+        unreachable!()
+    };
+    let refused = Backups::open_with_store(
+        f.db.clone(),
+        f.settings.clone(),
+        Box::new(LocalStore::new(repo.clone())),
+        &f.game,
+        Environment {
+            observe: Box::new(|| Ok(None)),
+            supervisor: None,
+            start_gate: StartGate::default(),
+            events: Box::new(|_| {}),
+            protected: Vec::new(),
+        },
+    );
+    assert_eq!(refused.err(), Some(BackupError::State));
 }

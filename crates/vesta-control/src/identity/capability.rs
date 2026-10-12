@@ -80,6 +80,9 @@ pub enum Capability {
     AutomationView,
     AutomationManage,
     NotificationsView,
+    /// Edit backup profiles, retention and limits. Lowering retention removes restore
+    /// points at the next backup, so this is owner-reserved like restore.
+    BackupsConfigure,
 }
 
 impl Capability {
@@ -145,6 +148,7 @@ impl Capability {
         Self::AutomationView,
         Self::AutomationManage,
         Self::NotificationsView,
+        Self::BackupsConfigure,
     ];
 
     /// The stable, exact identifier used in persisted identity records.
@@ -159,6 +163,7 @@ impl Capability {
             Self::AutomationView => "automation.view",
             Self::AutomationManage => "automation.manage",
             Self::NotificationsView => "notifications.view",
+            Self::BackupsConfigure => "backups.configure",
             Self::StatusView => "status.view",
             Self::StatusDetailed => "status.detailed",
             Self::MetricsView => "metrics.view",
@@ -225,6 +230,7 @@ impl Capability {
             "automation.view" => Some(Self::AutomationView),
             "automation.manage" => Some(Self::AutomationManage),
             "notifications.view" => Some(Self::NotificationsView),
+            "backups.configure" => Some(Self::BackupsConfigure),
             "status.view" => Some(Self::StatusView),
             "status.detailed" => Some(Self::StatusDetailed),
             "metrics.view" => Some(Self::MetricsView),
@@ -299,7 +305,10 @@ impl Capability {
     }
 
     pub const fn owner_reserved(self) -> bool {
-        matches!(self, Self::BackupsRestore | Self::RecoveryExport)
+        matches!(
+            self,
+            Self::BackupsRestore | Self::RecoveryExport | Self::BackupsConfigure
+        )
     }
 
     pub const fn admin_reserved(self) -> bool {

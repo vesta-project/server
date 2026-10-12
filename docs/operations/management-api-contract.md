@@ -1099,6 +1099,9 @@ production is host-only. Title/body/source are bounded to 256/8,192/128 bytes.
 | `POST backups/jobs/{id}/confirm` | `backups.restore` | `{confirmation_token:string}` | HTTP 202 `{job_id:string,state:"queued"}` |
 | `POST backups/jobs/{id}/resolve-recovery` | `backups.restore` | `{}` | HTTP 200 `{job_id:string,state:"failed",recovery:"resolved_by_user"}` |
 | `GET backups/safety-snapshots` | `backups.view` | required `profile=<profile>` only | `{profile:string,snapshots:[{id:string,time:string}]}` |
+| `GET backups/policy` | `backups.view` | no query | `{source:"host_config"|"stored",revision:integer|null,profiles:[PolicyProfile],limits:{max_snapshots:integer|null,max_repository_bytes:integer|null,min_free_bytes:integer}}` |
+| `PUT backups/policy` | `backups.configure` (owner-reserved) | `{expected_revision:integer|null,profiles:[PolicyProfile],limits?:{max_snapshots?:integer,max_repository_bytes?:integer,min_free_bytes?:integer}}`; 1–16 profiles; no zero caps | `{source:"stored",revision:integer}`; stale `expected_revision` is 409 `backup_policy_revision_conflict`; never replay-cached |
+| `POST backups/policy/reset` | `backups.configure` (owner-reserved) | `{expected_revision:integer}` | `{source:"host_config",revision:null}`; 409 on a stale revision |
 | `GET backups/storage` | `backups.view` | no query | `{repository_bytes:integer,restore_points:integer,safety_snapshots:integer,free_bytes:integer|null,limits:{max_snapshots:integer|null,max_repository_bytes:integer|null,min_free_bytes:integer},backups_stopped:"backup_snapshot_limit_reached"|"backup_storage_limit_reached"|"backup_disk_space_low"|null}`; single listing at a time like snapshot listing |
 
 ```text
@@ -1106,6 +1109,12 @@ BackupProfile = {name:string,mode:"online"|"stopped",keep_last:integer,
   keep_daily:integer,keep_weekly:integer,keep_monthly:integer,
   on_mutation:"warn"|"fail-world"|"fail-any",warn_seconds:integer,
   max_snapshots:integer|null}
+
+PolicyProfile = {name:string,mode:"online"|"stopped",keep_last?:integer,keep_daily?:integer,
+  keep_weekly?:integer,keep_monthly?:integer,on_mutation?:"warn"|"fail-world"|"fail-any",
+  warn_seconds?:integer,max_snapshots?:integer|null}; omitted fields take the host.toml
+  defaults (retention 0, fail-world, 60 s warning, no cap). Unknown fields are refused;
+  repository, S3 and restore-root settings cannot be set through the API.
 BackupJob = {id:string,profile:string,kind:"backup"|"verify"|"restore"|"restore_in_place",
   state:"awaiting_confirmation"|"queued"|"running"|"succeeded"|"failed"|
     "uncertain"|"recovery_required",

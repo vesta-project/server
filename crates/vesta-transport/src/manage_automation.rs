@@ -11,7 +11,7 @@ use vesta_control::{
         Mutation, MutationError, MutationOutcome, Notification, Run, RunStep, Workflow,
         WorkflowDefinition,
     },
-    backups::{BackupError, Job, JobKind, engine},
+    backups::{BackupError, Job, JobKind, LimitsDocument, PolicyDocument, ProfileDocument, engine},
     config::{BackupMode, MutationPolicy},
     host::NetworkHost,
     identity::{Capability, PrincipalId, Subject},
@@ -38,6 +38,8 @@ enum Route<'a> {
     Snapshots,
     SafetySnapshots,
     Storage,
+    Policy,
+    PolicyReset,
     RestoreInPlace,
     ConfirmRestore(&'a str),
     ResolveRecovery(&'a str),
@@ -61,6 +63,8 @@ fn route(path: &str) -> Option<Route<'_>> {
         "backups/snapshots" => Route::Snapshots,
         "backups/safety-snapshots" => Route::SafetySnapshots,
         "backups/storage" => Route::Storage,
+        "backups/policy" => Route::Policy,
+        "backups/policy/reset" => Route::PolicyReset,
         "backups/restore-in-place" => Route::RestoreInPlace,
         "backups/run" => Route::Backup,
         "backups/verify" => Route::Verify,
@@ -158,9 +162,10 @@ fn backup_failure(value: BackupError) -> Reply {
         }
         BackupError::Forbidden => StatusCode::FORBIDDEN,
         BackupError::Invalid => StatusCode::BAD_REQUEST,
-        BackupError::Busy | BackupError::IdempotencyConflict | BackupError::ConfirmationInvalid => {
-            StatusCode::CONFLICT
-        }
+        BackupError::Busy
+        | BackupError::IdempotencyConflict
+        | BackupError::ConfirmationInvalid
+        | BackupError::PolicyConflict => StatusCode::CONFLICT,
         BackupError::Unavailable | BackupError::State => StatusCode::SERVICE_UNAVAILABLE,
     };
     error(status, value.code())
@@ -234,6 +239,8 @@ fn backup_read_failure(value: BackupError, snapshot_listing: bool) -> Reply {
 }
 fn capability(route: Route<'_>, method: &Method) -> Capability {
     match route {
+        Route::Policy if *method == Method::GET => Capability::BackupsView,
+        Route::Policy | Route::PolicyReset => Capability::BackupsConfigure,
         Route::Notifications | Route::Unread | Route::Read | Route::Acknowledge => {
             Capability::NotificationsView
         }
@@ -682,6 +689,11 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     let Some(key) = scoped_key(host, &subject, &request) else {
         return invalid();
     };
+    // A policy save names the revision it replaces, so a retry cannot apply twice;
+    // it is not replayed either (a retried success reports the revision conflict).
+    if matches!(route, Route::Policy | Route::PolicyReset) {
+        return mutate_policy(host, &subject, route, request.method, request.bytes);
+    }
     // Never cache/replay these responses, especially prepare's one-time secret.
     // Keys remain required and validated, but a retry prepares a fresh job/token.
     if matches!(
@@ -817,7 +829,8 @@ fn get(
         | Route::BackupJob(_)
         | Route::Snapshots
         | Route::SafetySnapshots
-        | Route::Storage => {
+        | Route::Storage
+        | Route::Policy => {
             return get_backups(host, token, route, query);
         }
         _ => return invalid(),
@@ -833,6 +846,7 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
         Job(&'a str),
         Snapshots(&'a str, bool),
         Storage,
+        Policy,
     }
     let query = match route {
         Route::Backups => {
@@ -855,6 +869,7 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
             Query::Snapshots(value, matches!(route, Route::SafetySnapshots))
         }
         Route::Storage if query.is_none() => Query::Storage,
+        Route::Policy if query.is_none() => Query::Policy,
         _ => return invalid(),
     };
     let Some(backups) = host.backups() else {
@@ -864,7 +879,7 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
     let snapshot_listing = matches!(&query, Query::Snapshots(_, _) | Query::Storage);
     let result=match query {
         Query::Jobs(before,limit)=>backups.jobs(before.as_ref().map(|(timestamp,id)|(*timestamp,id.as_str())),limit).map(|jobs| {
-            let profiles=backups.settings().profiles.iter().map(|p|json!({"name":p.name,"mode":match p.mode {BackupMode::Online=>"online",BackupMode::Stopped=>"stopped"},"keep_last":p.keep_last,"keep_daily":p.keep_daily,"keep_weekly":p.keep_weekly,"keep_monthly":p.keep_monthly,"on_mutation":match p.on_mutation {MutationPolicy::Warn=>"warn",MutationPolicy::FailWorld=>"fail-world",MutationPolicy::FailAny=>"fail-any"},"warn_seconds":p.warn_seconds,"max_snapshots":p.max_snapshots})).collect::<Vec<_>>();
+            let profiles=backups.policy().profiles.iter().map(|p|json!({"name":p.name,"mode":match p.mode {BackupMode::Online=>"online",BackupMode::Stopped=>"stopped"},"keep_last":p.keep_last,"keep_daily":p.keep_daily,"keep_weekly":p.keep_weekly,"keep_monthly":p.keep_monthly,"on_mutation":match p.on_mutation {MutationPolicy::Warn=>"warn",MutationPolicy::FailWorld=>"fail-world",MutationPolicy::FailAny=>"fail-any"},"warn_seconds":p.warn_seconds,"max_snapshots":p.max_snapshots})).collect::<Vec<_>>();
             json!({"profiles":profiles,"jobs":jobs.iter().map(|v|backup_job(host,token,v)).collect::<Vec<_>>(),"next_before":if jobs.len()==limit {jobs.last().map(|v|backup_cursor(v.created_at,&v.id))} else {None},"restore_mode":"inspection_only","recovery_required":backups.recovery_required()})
         }),
         Query::Job(id)=>match backups.job(id) {Ok(Some(job))=> {
@@ -877,6 +892,7 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
             Ok(json!({"profile":profile,"snapshots":snapshots.iter().map(|v|json!({"id":v.id,"time":v.time})).collect::<Vec<_>>() }))
         }),
         Query::Storage => backups.storage().map(|status| storage_json(&status)),
+        Query::Policy => Ok(policy_json(&backups.policy())),
     };
     match result {
         Ok(v) => ok(v),
@@ -957,6 +973,81 @@ fn submit_backup(
             StatusCode::ACCEPTED,
             json!({"data":{"job_id":id,"kind":kind_name,"restore_mode":"inspection_only"}}),
         ),
+        Err(e) => backup_failure(e),
+    }
+}
+
+/// The policy in force and where it comes from.
+fn policy_json(policy: &vesta_control::backups::BackupPolicy) -> serde_json::Value {
+    let document = PolicyDocument::from_policy(&policy.profiles, &policy.limits);
+    json!({
+        "source": if policy.revision.is_some() { "stored" } else { "host_config" },
+        "revision": policy.revision,
+        "profiles": document.profiles,
+        "limits": document.limits,
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PutPolicy {
+    /// The revision being replaced; null while host.toml applies.
+    expected_revision: Option<i64>,
+    profiles: Vec<ProfileDocument>,
+    #[serde(default)]
+    limits: LimitsDocument,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResetPolicy {
+    expected_revision: i64,
+}
+
+fn mutate_policy(
+    host: &NetworkHost,
+    subject: &Subject,
+    route: Route<'_>,
+    method: &Method,
+    bytes: &[u8],
+) -> Reply {
+    enum Command {
+        Put(Option<i64>, PolicyDocument),
+        Reset(i64),
+    }
+    let command = match (route, method) {
+        (Route::Policy, &Method::PUT) => {
+            let Some(value) = decode::<PutPolicy>(bytes) else {
+                return invalid();
+            };
+            Command::Put(
+                value.expected_revision,
+                PolicyDocument {
+                    profiles: value.profiles,
+                    limits: value.limits,
+                },
+            )
+        }
+        (Route::PolicyReset, &Method::POST) => {
+            let Some(value) = decode::<ResetPolicy>(bytes) else {
+                return invalid();
+            };
+            Command::Reset(value.expected_revision)
+        }
+        _ => return invalid(),
+    };
+    let Some(backups) = host.backups() else {
+        return backup_failure(BackupError::Disabled);
+    };
+    let result = match command {
+        Command::Put(expected, document) => backups
+            .set_policy(subject, expected, &document)
+            .map(|revision| json!({"source":"stored","revision":revision})),
+        Command::Reset(expected) => backups
+            .reset_policy(subject, expected)
+            .map(|()| json!({"source":"host_config","revision":null})),
+    };
+    match result {
+        Ok(value) => ok(value),
         Err(e) => backup_failure(e),
     }
 }
@@ -1366,6 +1457,54 @@ mod tests {
         assert_eq!(
             safe_backup_code("backup_disk_space_low"),
             "backup_disk_space_low"
+        );
+    }
+
+    #[test]
+    fn policy_routes_need_configure_to_change_and_refuse_unknown_fields() {
+        assert!(matches!(
+            route("/api/v3/manage/backups/policy"),
+            Some(Route::Policy)
+        ));
+        assert!(matches!(
+            route("/api/v3/manage/backups/policy/reset"),
+            Some(Route::PolicyReset)
+        ));
+        assert_eq!(
+            capability(Route::Policy, &Method::GET),
+            Capability::BackupsView
+        );
+        assert_eq!(
+            capability(Route::Policy, &Method::PUT),
+            Capability::BackupsConfigure
+        );
+        assert_eq!(
+            capability(Route::PolicyReset, &Method::POST),
+            Capability::BackupsConfigure
+        );
+        let body = br#"{"expected_revision":null,"profiles":[{"name":"daily","mode":"stopped","keep_last":7}]}"#;
+        let value = decode::<PutPolicy>(body).unwrap();
+        assert_eq!(value.expected_revision, None);
+        assert_eq!(value.limits, LimitsDocument::default());
+        for bad in [
+            &br#"{"expected_revision":1,"profiles":[],"repository":"C:/x"}"#[..],
+            br#"{"expected_revision":1,"profiles":[{"name":"d","mode":"stopped","path":"x"}]}"#,
+            br#"{"expected_revision":1,"profiles":[],"limits":{"max_bytes":1}}"#,
+        ] {
+            assert!(decode::<PutPolicy>(bad).is_none());
+        }
+        assert!(decode::<ResetPolicy>(br#"{}"#).is_none());
+        assert!(decode::<ResetPolicy>(br#"{"expected_revision":3}"#).is_some());
+        let host = vesta_control::backups::BackupPolicy {
+            profiles: vec![],
+            limits: vesta_control::config::BackupLimits::default(),
+            revision: None,
+        };
+        assert_eq!(policy_json(&host)["source"], "host_config");
+        assert_eq!(policy_json(&host)["limits"]["min_free_bytes"], 1u64 << 30);
+        assert_eq!(
+            backup_failure(BackupError::PolicyConflict).status(),
+            StatusCode::CONFLICT
         );
     }
 }

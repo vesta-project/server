@@ -24,12 +24,14 @@
 pub mod engine;
 pub mod ignore;
 mod limits;
+mod policy;
 mod restore;
 pub mod s3;
 pub mod space;
 pub mod store;
 
 pub use limits::{DISK_SPACE_LOW, SNAPSHOT_LIMIT, STORAGE_LIMIT, StorageStatus};
+pub use policy::{BackupPolicy, LimitsDocument, PolicyDocument, ProfileDocument};
 pub use restore::{PreparedRestore, recovery_jobs, resolve_recovery_locally};
 
 use crate::{
@@ -85,6 +87,8 @@ pub enum BackupError {
     Forbidden,
     /// The confirmation is unknown, expired, already used or not the subject's.
     ConfirmationInvalid,
+    /// The backup policy changed since the revision the caller edited.
+    PolicyConflict,
 }
 impl BackupError {
     pub const fn code(self) -> &'static str {
@@ -99,6 +103,7 @@ impl BackupError {
             Self::IdempotencyConflict => "backup_idempotency_conflict",
             Self::Forbidden => "backup_forbidden",
             Self::ConfirmationInvalid => "backup_confirmation_invalid",
+            Self::PolicyConflict => "backup_policy_revision_conflict",
         }
     }
 }
@@ -234,7 +239,12 @@ pub struct Environment {
 
 struct Inner {
     db: StateDatabase,
+    /// host.toml: the repository and restore root, and the policy used until one is saved.
     settings: BackupSettings,
+    /// Profiles and limits in force (see `policy`).
+    policy: std::sync::RwLock<Arc<policy::BackupPolicy>>,
+    /// Serializes policy saves with their in-memory swap.
+    policy_write: Mutex<()>,
     engine: Engine,
     /// Short-timeout engine for interactive observation (snapshot listing).
     listing: Mutex<()>,
@@ -404,9 +414,12 @@ impl Backups {
             Ok(())
         })?;
         let protected = restore::protected_inside(game, &env.protected);
+        let current = policy::load(&db, &settings)?;
         let inner = Arc::new(Inner {
             db,
             settings,
+            policy: std::sync::RwLock::new(Arc::new(current)),
+            policy_write: Mutex::new(()),
             engine,
             listing: Mutex::new(()),
             game: game.to_owned(),
@@ -431,6 +444,8 @@ impl Backups {
         })
     }
 
+    /// host.toml's backup settings (repository, restore root and initial policy).
+    /// The profiles and limits in force are `policy()`.
     pub fn settings(&self) -> &BackupSettings {
         &self.inner.settings
     }
@@ -450,7 +465,7 @@ impl Backups {
         kind: JobKind,
         idempotency_key: Option<&str>,
     ) -> Result<String> {
-        if self.inner.settings.profile(profile).is_none() {
+        if self.inner.policy().profile(profile).is_none() {
             return Err(BackupError::UnknownProfile);
         }
         if idempotency_key.is_some_and(|k| k.is_empty() || k.len() > 200) {
@@ -541,7 +556,7 @@ impl Backups {
     /// Validated restore points for one profile (candidates and rejected snapshots are
     /// excluded). Bounded by a short timeout; one listing at a time, otherwise `Busy`.
     pub fn snapshots(&self, profile: &str) -> Result<Vec<engine::Snapshot>> {
-        if self.inner.settings.profile(profile).is_none() {
+        if self.inner.policy().profile(profile).is_none() {
             return Err(BackupError::UnknownProfile);
         }
         let _single = self
@@ -853,7 +868,7 @@ impl Inner {
     }
 
     fn execute(&self, job: &Claimed) -> Outcome {
-        let Some(profile) = self.settings.profile(&job.profile).cloned() else {
+        let Some(profile) = self.policy().profile(&job.profile).cloned() else {
             return Outcome::failed(BackupError::UnknownProfile.code());
         };
         if !self.authorized(job) {

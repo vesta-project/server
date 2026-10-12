@@ -24,6 +24,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         18 => apply_v18(c),
         19 => apply_v19(c),
         20 => apply_v20(c),
+        21 => apply_v21(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -948,6 +949,27 @@ fn apply_v20(c: &Connection) -> crate::Result<()> {
         ALTER TABLE backup_jobs_v20 RENAME TO backup_jobs;
         CREATE INDEX backup_jobs_queue ON backup_jobs(state, created_at, id);
         CREATE INDEX backup_jobs_history ON backup_jobs(created_at, id);
+    "#)?;
+    Ok(())
+}
+
+/// Backup profiles, retention and limits edited at runtime. Absent: host.toml applies.
+/// Owners alone may edit it (lowering retention removes restore points).
+fn apply_v21(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(r#"
+        CREATE TABLE backup_policy (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+            policy_json TEXT NOT NULL CHECK(json_valid(policy_json) AND length(CAST(policy_json AS BLOB))<=65536),
+            revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 9007199254740991),
+            updated_at INTEGER NOT NULL CHECK(updated_at>=0),
+            updated_by TEXT NOT NULL CHECK(length(CAST(updated_by AS BLOB)) BETWEEN 1 AND 128)
+        ) STRICT;
+        DROP TRIGGER role_capabilities_builtin_no_insert;
+        INSERT OR IGNORE INTO role_capabilities(role_id,capability,scope)
+            SELECT id,'backups.configure','*' FROM roles WHERE id='owner';
+        CREATE TRIGGER role_capabilities_builtin_no_insert BEFORE INSERT ON role_capabilities
+        WHEN (SELECT builtin FROM roles WHERE id = NEW.role_id) = 1
+        BEGIN SELECT RAISE(ABORT, 'builtin roles are immutable'); END;
     "#)?;
     Ok(())
 }

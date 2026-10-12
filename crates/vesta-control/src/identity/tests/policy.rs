@@ -1367,7 +1367,7 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
 
     // 51 capability ids, in persisted ordinal order, with the persisted flags.
     assert_eq!(fixture_capabilities.len(), 51);
-    assert_eq!(Capability::ALL.len(), 60);
+    assert_eq!(Capability::ALL.len(), 61);
     assert_eq!(
         &Capability::ALL[51..],
         &[
@@ -1379,7 +1379,8 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
             Capability::InvitationsCreate,
             Capability::AutomationView,
             Capability::AutomationManage,
-            Capability::NotificationsView
+            Capability::NotificationsView,
+            Capability::BackupsConfigure
         ]
     );
     for (index, expected) in fixture_capabilities.iter().enumerate() {
@@ -1438,7 +1439,7 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
             .filter(|c| c.owner_reserved())
             .map(|c| c.id())
             .collect::<Vec<_>>(),
-        vec!["backups.restore", "recovery.export"]
+        vec!["backups.restore", "recovery.export", "backups.configure"]
     );
     assert_eq!(
         Capability::ALL
@@ -1518,6 +1519,14 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
         } else if role == BuiltinRole::Moderator {
             expected_capabilities.insert(0, "notifications.view".to_owned());
         }
+        // V21 adds owner-only backup policy editing.
+        if role == BuiltinRole::Owner {
+            let at = expected_capabilities
+                .iter()
+                .position(|c| c == "notifications.view")
+                .unwrap();
+            expected_capabilities.insert(at + 1, "backups.configure".to_owned());
+        }
         assert_eq!(expected_capabilities, declared, "role {}", expected.id);
 
         // The migrated rows carry the same ids, name, rank and whole-scope grants.
@@ -1574,8 +1583,8 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
     );
     assert_eq!(
         Capability::ALL.len(),
-        persisted_ids.len() + 9,
-        "legacy fixture ids, unified pack, V16 permission-management and V18 automation/inbox additions were compared"
+        persisted_ids.len() + 10,
+        "legacy fixture ids, unified pack, V16 permission-management, V18 automation/inbox and V21 backup policy additions were compared"
     );
 }
 

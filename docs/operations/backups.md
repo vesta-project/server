@@ -79,6 +79,30 @@ This is checked lexically at configuration load and again on their real location
 Set up the repository once with `vesta-agent backup-init <name>`. It is idempotent and
 prints `backup_repository_initialized`. There is no repository key to keep.
 
+## Editing profiles and limits at runtime
+
+`host.toml` gives the starting profiles, retention and limits. An owner can replace them
+through the management API (`PUT backups/policy`). The change applies to the next job
+without a restart.
+
+- **Stored:** the edited policy is stored in the agent database (`backup_policy`, schema
+  v21) and survives restarts. It takes over from the profiles and limits in `host.toml`
+  until it is reset (`POST backups/policy/reset`).
+- **Not editable:** the repository, S3 settings and restore root stay `host.toml`-only.
+  Clients never choose paths or credentials.
+- **Revision checks:** each save names the revision it replaces (`null` while `host.toml`
+  applies). A stale save fails with `backup_policy_revision_conflict` instead of
+  overwriting someone else's change.
+- **Owner only:** editing needs the owner-reserved `backups.configure` permission, because
+  lowering retention removes restore points at the next backup.
+- **Validation and audit:** the same rules as `host.toml` apply, and every save and reset
+  is audited.
+- **Removing a profile:** its queued jobs fail with `backup_profile_unknown`. Its existing
+  restore points stay in the repository but are no longer listed. Adding the profile back
+  under the same name lists them again.
+- **Fail closed:** if the stored policy is ever invalid (for example, edited by hand), the
+  backup service refuses to open rather than guessing.
+
 ## Limits
 
 Limits stop new backups. They never delete restore points to make room.
@@ -275,6 +299,5 @@ schedules every second and publishes server and backup events. It never acts on 
   repository or prefix.
 - In-place restore does not stop the game itself.
 - Filesystem-snapshot acceleration (VSS/Btrfs/ZFS/LVM) and the write guard are missing.
-- Limits are fixed in `host.toml`; changing them needs an agent restart.
 - No player-count or update events, no script presets, no external notification delivery.
 - Linux is untested.
