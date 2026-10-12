@@ -163,6 +163,7 @@ fn open_with(f: &Fixture, running: bool, mutate: bool) -> (Backups, Events, Star
             supervisor: None,
             start_gate: gate.clone(),
             events: Box::new(move |event| sink.lock().unwrap().push(event)),
+            protected: vec![f.game.join("private")],
         },
     )
     .unwrap();
@@ -389,4 +390,289 @@ fn a_job_interrupted_by_an_agent_crash_is_marked_uncertain() {
     let job = backups.job("j1").unwrap().unwrap();
     assert_eq!(job.state, JobState::Uncertain);
     assert_eq!(job.error_code.as_deref(), Some("backup_interrupted"));
+}
+
+fn tree(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.insert(relative, fs::read(&path).unwrap());
+            }
+        }
+    }
+    out
+}
+
+fn backup_now(backups: &Backups, profile: &str) -> String {
+    let id = backups
+        .submit(&owner(), profile, JobKind::Backup, None)
+        .unwrap();
+    let job = wait(backups, &id);
+    assert_eq!(job.state, JobState::Succeeded, "{:?}", job.error_code);
+    job.snapshot_id.unwrap()
+}
+
+fn restore_in_place(
+    backups: &Backups,
+    snapshot: &str,
+    paths: &[&str],
+) -> vesta_control::backups::Job {
+    let prepared = backups
+        .prepare_restore(
+            &owner(),
+            "stopped",
+            snapshot,
+            paths.iter().map(|p| (*p).to_owned()).collect(),
+            false,
+        )
+        .unwrap();
+    backups
+        .confirm_restore(&owner(), &prepared.job_id, &prepared.token)
+        .unwrap();
+    wait(backups, &prepared.job_id)
+}
+
+#[test]
+fn in_place_restore_needs_exact_confirmation_and_can_be_undone_from_its_safety_snapshot() {
+    let f = fixture();
+    fs::write(f.game.join(".vesta-backupignore"), "logs/\n").unwrap();
+    fs::create_dir_all(f.game.join("private")).unwrap();
+    fs::write(f.game.join("private/key"), b"key-1").unwrap();
+    let (backups, _, gate) = open(&f, false);
+    backups.init_repository().unwrap();
+    let snapshot = backup_now(&backups, "stopped");
+    let original = tree(&f.game);
+
+    // Later changes: an edit, a new file, a newer log (ignored) and a rotated key
+    // (protected).
+    fs::write(f.game.join("world/level.dat"), b"griefed").unwrap();
+    fs::write(f.game.join("world/extra.dat"), b"extra").unwrap();
+    fs::write(f.game.join("logs/latest.log"), b"newer log").unwrap();
+    fs::write(f.game.join("private/key"), b"key-2").unwrap();
+    let changed = tree(&f.game);
+
+    // Restoring needs backups.restore.
+    let viewer = subject(VIEWER, VIEWER_DEVICE);
+    assert_eq!(
+        backups
+            .prepare_restore(&viewer, "stopped", &snapshot, vec![], false)
+            .unwrap_err(),
+        BackupError::Forbidden
+    );
+    // A prepared restore does nothing until it is confirmed.
+    let prepared = backups
+        .prepare_restore(&owner(), "stopped", &snapshot, vec![], false)
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let job = backups.job(&prepared.job_id).unwrap().unwrap();
+    assert_eq!(job.state, JobState::AwaitingConfirmation);
+    assert_eq!(tree(&f.game), changed);
+    // Only the same principal and device can confirm; that refusal burns nothing.
+    assert_eq!(
+        backups.confirm_restore(&viewer, &prepared.job_id, &prepared.token),
+        Err(BackupError::ConfirmationInvalid)
+    );
+    assert_eq!(
+        backups.job(&prepared.job_id).unwrap().unwrap().state,
+        JobState::AwaitingConfirmation
+    );
+    // A wrong token burns the request.
+    let wrong = vesta_control::operations::ConfirmationToken::try_from("A".repeat(43)).unwrap();
+    assert_eq!(
+        backups.confirm_restore(&owner(), &prepared.job_id, &wrong),
+        Err(BackupError::ConfirmationInvalid)
+    );
+    assert_eq!(
+        backups.confirm_restore(&owner(), &prepared.job_id, &prepared.token),
+        Err(BackupError::ConfirmationInvalid)
+    );
+    let burned = backups.job(&prepared.job_id).unwrap().unwrap();
+    assert_eq!(burned.state, JobState::Failed);
+    assert_eq!(
+        burned.error_code.as_deref(),
+        Some("backup_confirmation_invalid")
+    );
+    assert_eq!(tree(&f.game), changed);
+
+    // Confirmed: the world returns, ignored and protected paths stay as they are.
+    let job = restore_in_place(&backups, &snapshot, &[]);
+    assert_eq!(job.state, JobState::Succeeded, "{:?}", job.error_code);
+    let result = job.result.unwrap();
+    let mut expected = original.clone();
+    expected.insert("logs/latest.log".into(), b"newer log".to_vec());
+    expected.insert("private/key".into(), b"key-2".to_vec());
+    assert_eq!(tree(&f.game), expected);
+    assert!(!gate.blocked());
+
+    // The safety snapshot holds the state just before the restore and undoes it.
+    let safety = result["safety_snapshot_id"].as_str().unwrap().to_owned();
+    let listed: Vec<String> = backups
+        .safety_snapshots("stopped")
+        .unwrap()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    assert_eq!(listed, vec![safety.clone()]);
+    assert!(
+        backups
+            .snapshots("stopped")
+            .unwrap()
+            .iter()
+            .all(|s| s.id != safety),
+        "safety snapshots are not profile restore points"
+    );
+    let undo = restore_in_place(&backups, &safety, &[]);
+    assert_eq!(undo.state, JobState::Succeeded, "{:?}", undo.error_code);
+    assert_eq!(tree(&f.game), changed);
+
+    // A selective restore changes only that path.
+    let partial = restore_in_place(&backups, &snapshot, &["world/level.dat"]);
+    assert_eq!(
+        partial.state,
+        JobState::Succeeded,
+        "{:?}",
+        partial.error_code
+    );
+    assert_eq!(fs::read(f.game.join("world/level.dat")).unwrap(), b"level");
+    assert!(f.game.join("world/extra.dat").exists());
+}
+
+#[test]
+fn in_place_restore_refuses_a_running_game_and_snapshots_that_are_not_restore_points() {
+    let f = fixture();
+    let (backups, _, _) = open(&f, false);
+    backups.init_repository().unwrap();
+    let snapshot = backup_now(&backups, "stopped");
+    fs::write(f.game.join("world/level.dat"), b"changed").unwrap();
+    let before = tree(&f.game);
+    drop(backups);
+
+    // A running game refuses before anything changes.
+    let (running, _, gate) = open(&f, true);
+    let job = restore_in_place(&running, &snapshot, &[]);
+    assert_eq!(
+        job.error_code.as_deref(),
+        Some("backup_requires_stopped_server")
+    );
+    assert_eq!(tree(&f.game), before);
+    assert!(!gate.blocked());
+    drop(running);
+
+    // A snapshot rejected for inconsistency, or unknown, is never restored.
+    let (mutating, _, _) = open_with(&f, false, true);
+    let id = mutating
+        .submit(&owner(), "stopped", JobKind::Backup, None)
+        .unwrap();
+    let rejected = wait(&mutating, &id);
+    assert_eq!(
+        rejected.error_code.as_deref(),
+        Some("backup_source_changed")
+    );
+    let rejected = rejected.snapshot_id.unwrap();
+    drop(mutating);
+    let (backups, _, _) = open(&f, false);
+    let before = tree(&f.game);
+    let job = restore_in_place(&backups, &rejected, &[]);
+    assert_eq!(
+        job.error_code.as_deref(),
+        Some("backup_snapshot_not_restorable")
+    );
+    let job = restore_in_place(&backups, "0123456789abcdef0123456789abcdef", &[]);
+    assert_eq!(job.error_code.as_deref(), Some("backup_snapshot_unknown"));
+    let job = restore_in_place(&backups, &snapshot, &["world/missing.dat"]);
+    assert_eq!(
+        job.error_code.as_deref(),
+        Some("backup_restore_path_not_in_snapshot")
+    );
+    assert_eq!(job.state, JobState::Failed);
+    assert_eq!(tree(&f.game), before);
+
+    // An expired confirmation can no longer be redeemed.
+    let prepared = backups
+        .prepare_restore(&owner(), "stopped", &snapshot, vec![], true)
+        .unwrap();
+    f.db.write(|c| {
+        c.execute(
+            "UPDATE backup_jobs SET confirm_by=1 WHERE id=?",
+            rusqlite::params![prepared.job_id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        backups.confirm_restore(&owner(), &prepared.job_id, &prepared.token),
+        Err(BackupError::ConfirmationInvalid)
+    );
+    let expired = backups.job(&prepared.job_id).unwrap().unwrap();
+    assert_eq!(
+        expired.error_code.as_deref(),
+        Some("backup_confirmation_expired")
+    );
+}
+
+/// What a crashed agent leaves behind: a running in-place restore that was applying.
+fn interrupt(f: &Fixture, id: &str) {
+    f.db.write(|c| {
+        c.execute(
+            "INSERT INTO backup_jobs (id,profile,kind,state,requested_by,requested_device,target,created_at,started_at,applying) VALUES (?,'stopped','restore_in_place','running',?,?,'{}',1,1,1)",
+            rusqlite::params![id, OWNER, OWNER_DEVICE],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn an_interrupted_restore_blocks_starts_until_resolved_or_superseded() {
+    let f = fixture();
+    let (backups, _, _) = open(&f, false);
+    backups.init_repository().unwrap();
+    let snapshot = backup_now(&backups, "stopped");
+    drop(backups);
+
+    interrupt(&f, "interrupted-1");
+    let (backups, _, gate) = open(&f, false);
+    let job = backups.job("interrupted-1").unwrap().unwrap();
+    assert_eq!(job.state, JobState::RecoveryRequired);
+    assert_eq!(
+        job.error_code.as_deref(),
+        Some("backup_restore_interrupted")
+    );
+    assert!(gate.blocked(), "starts are blocked on open");
+    assert!(backups.recovery_required());
+    // Resolving needs backups.restore; then starts are allowed again.
+    assert_eq!(
+        backups.resolve_recovery(&subject(VIEWER, VIEWER_DEVICE), "interrupted-1"),
+        Err(BackupError::Forbidden)
+    );
+    assert!(gate.blocked());
+    backups.resolve_recovery(&owner(), "interrupted-1").unwrap();
+    assert!(!gate.blocked());
+    assert!(!backups.recovery_required());
+    assert_eq!(
+        backups.resolve_recovery(&owner(), "interrupted-1"),
+        Err(BackupError::UnknownJob)
+    );
+    drop(backups);
+
+    // A later complete restore also clears it.
+    interrupt(&f, "interrupted-2");
+    let (backups, _, gate) = open(&f, false);
+    assert!(gate.blocked());
+    let job = restore_in_place(&backups, &snapshot, &[]);
+    assert_eq!(job.state, JobState::Succeeded, "{:?}", job.error_code);
+    assert!(!gate.blocked());
+    let cleared = backups.job("interrupted-2").unwrap().unwrap();
+    assert_eq!(cleared.state, JobState::Failed);
+    assert_eq!(cleared.result.unwrap()["recovery"], "superseded_by_restore");
 }

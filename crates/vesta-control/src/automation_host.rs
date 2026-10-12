@@ -288,7 +288,9 @@ impl ActionPort for HostActions {
                 .map_err(|_| ActionError::Unavailable)?
                 .ok_or(ActionError::Invalid)?;
             return Ok(match job.state {
-                JobState::Queued | JobState::Running => ActionStatus::Running,
+                JobState::AwaitingConfirmation | JobState::Queued | JobState::Running => {
+                    ActionStatus::Running
+                }
                 JobState::Succeeded => ActionStatus::Succeeded {
                     output: serde_json::json!({
                         "job": job.id,
@@ -300,6 +302,12 @@ impl ActionPort for HostActions {
                 },
                 JobState::Uncertain => ActionStatus::Uncertain {
                     code: job.error_code.unwrap_or_else(|| "backup_uncertain".into()),
+                },
+                // Automation never submits restores; reported for completeness.
+                JobState::RecoveryRequired => ActionStatus::Failed {
+                    code: job
+                        .error_code
+                        .unwrap_or_else(|| "backup_recovery_required".into()),
                 },
             });
         }

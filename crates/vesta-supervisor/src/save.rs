@@ -183,6 +183,15 @@ pub fn release_hold(client: &SupervisorClient, token: &str) -> Result<()> {
     }
 }
 
+/// Current supervisor health. While a hold is granted the game is stopped, so a crash
+/// restart that is not pending now cannot become pending until the hold ends.
+pub fn health(client: &SupervisorClient) -> Result<crate::wire::Health> {
+    match client.call(Op::Hello, Duration::from_secs(2))? {
+        Reply::Hello(hello) => Ok(hello.health),
+        _ => Err("supervisor_unexpected_reply"),
+    }
+}
+
 /// Server acknowledgements for the save commands, across supported versions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SaveAck {

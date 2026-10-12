@@ -1085,22 +1085,28 @@ returned entries; `oldest_cursor` lets a client detect a retention gap. Reading
 and acknowledging are idempotent; acknowledgment also marks read. Notification
 production is host-only. Title/body/source are bounded to 256/8,192/128 bytes.
 
-### Backup jobs and inspection-only restore
+### Backup jobs, inspection restore and confirmed in-place restore
 
 | Method and path | Capability | Exact request | Success `data` |
 |---|---|---|---|
-| `GET backups` | `backups.view` | optional `before=<opaque cursor>&limit=<1..200>`; default 50 | `{profiles:[BackupProfile],jobs:[BackupJob],next_before:string|null,restore_mode:"inspection_only"}` |
-| `GET backups/jobs/{id}` | `backups.view` | no query | `{job:BackupJob,restore_mode:"inspection_only"}` |
+| `GET backups` | `backups.view` | optional `before=<opaque cursor>&limit=<1..200>`; default 50 | `{profiles:[BackupProfile],jobs:[BackupJob],next_before:string|null,restore_mode:"inspection_only",recovery_required:boolean}` |
+| `GET backups/jobs/{id}` | `backups.view` | no query | `{job:BackupJob}`; also `restore_mode:"inspection_only"` for non-in-place jobs |
 | `GET backups/snapshots` | `backups.view` | required `profile=<profile>` only | `{profile:string,snapshots:[{id:string,time:string}]}` |
 | `POST backups/run` | `backups.create` | `{profile:string}` | HTTP 202 `{job_id:string,kind:"backup",restore_mode:"inspection_only"}` |
 | `POST backups/verify` | `backups.verify` | `{profile:string}` | HTTP 202 `{job_id:string,kind:"verify",restore_mode:"inspection_only"}` |
 | `POST backups/restore` | `backups.restore` | `{profile:string,snapshot:string,paths:[string]}` | HTTP 202 `{job_id:string,kind:"restore",restore_mode:"inspection_only"}` |
+| `POST backups/restore-in-place` | `backups.restore` | `{profile:string,snapshot:string,paths:[string],skip_safety_snapshot?:boolean}`; default false | HTTP 202 `{job_id:string,kind:"restore_in_place",state:"awaiting_confirmation",confirmation_token:string,expires_at_ms:integer}` |
+| `POST backups/jobs/{id}/confirm` | `backups.restore` | `{confirmation_token:string}` | HTTP 202 `{job_id:string,state:"queued"}` |
+| `POST backups/jobs/{id}/resolve-recovery` | `backups.restore` | `{}` | HTTP 200 `{job_id:string,state:"failed",recovery:"resolved_by_user"}` |
+| `GET backups/safety-snapshots` | `backups.view` | required `profile=<profile>` only | `{profile:string,snapshots:[{id:string,time:string}]}` |
 
 ```text
 BackupProfile = {name:string,mode:"online"|"stopped",keep_last:integer,
   keep_daily:integer,keep_weekly:integer,keep_monthly:integer,
   on_mutation:"warn"|"fail-world"|"fail-any",warn_seconds:integer}
-BackupJob = {id:string,profile:string,kind:"backup"|"verify"|"restore",state:string,
+BackupJob = {id:string,profile:string,kind:"backup"|"verify"|"restore"|"restore_in_place",
+  state:"awaiting_confirmation"|"queued"|"running"|"succeeded"|"failed"|
+    "uncertain"|"recovery_required",
   requested_by:string,snapshot_id:string|null,error_code:string|null,
   created_at_ms:integer,started_at_ms:integer|null,finished_at_ms:integer|null,
   result:BackupResult|null}
@@ -1110,15 +1116,22 @@ BackupResult = optional structured facts only:
   consistency:"world_save_consistent"|"stopped";
   world_changed/verified/truncated:boolean; retention_error:string|null;
   changed_paths:[relative string]; restored_to:string.
+In-place BackupResult = optional validated facts only:
+  mode:"in_place"; safety_snapshot_id:32-lowercase-hex string|null;
+  files_written/files_unchanged/files_removed/dirs_removed:nonnegative integer;
+  hold_kept/modified:boolean; recovery:"resolved_by_user"|"superseded_by_restore";
+  job:bounded ID (only with recovery:"superseded_by_restore").
 ```
 
 Profile names are 1–32 lowercase ASCII letters/digits/hyphens and cannot start
 with `-`. Snapshot IDs are exactly 32 lowercase hex characters. Restore paths are at
 most 64 confined literal relative paths; pattern characters `* ? [ ] \\ { }`
 are rejected rather than interpreted. An empty array selects the full snapshot.
-Restore is **inspection-only**, into a fresh configured restore-root/job-ID
-folder. It never replaces a running/stopped game's files, starts the game or
-changes its configured world. `restored_to` is returned only when it matches the
+`POST backups/restore` remains **inspection-only**, into a fresh configured
+restore-root/job-ID folder. It never replaces a running/stopped game's files,
+starts the game or changes its configured world. The listing's legacy
+`restore_mode:"inspection_only"` describes that inspection route, not in-place
+jobs; in-place mutation and job-detail responses do not claim inspection-only. `restored_to` is returned only when it matches the
 current trusted configuration-derived job directory. Repository paths, S3
 credentials and native engine/storage diagnostics are never projected. Snapshot
 projections deliberately omit internal tags and native source paths, and validate
@@ -1128,11 +1141,37 @@ is included only when every path passes the caller's current scoped `files.read`
 check; otherwise that field is omitted. Fixed safe error codes replace unknown
 persisted engine errors.
 
+In-place restore prepares the exact snapshot, paths and safety-snapshot choice;
+confirmation is one-time, expires after two minutes and is bound to the preparing
+principal and device. Malformed tokens return the same 409
+`backup_confirmation_invalid` as wrong, expired or already-used confirmations.
+Validly parsed wrong tokens burn the prepared request. Tokens appear only in the
+prepare response body, never job projections, logs or replay receipts. All three
+in-place mutation routes require the usual valid idempotency key but bypass
+receipt/replay caches: repeating prepare creates a fresh job and token, while
+confirm and resolve recheck durable state and do not replay success. Clients
+must not blindly retry prepare expecting the original token.
+
+The game must already be affirmatively stopped; the worker prevents starts and
+pending crash restarts while applying. No route stops, kills or starts it.
+Only the profile's promoted restore points or safety snapshots are restorable.
+Unless explicitly skipped, a safety snapshot is taken first; the newest five per
+profile are retained and listed by `backups/safety-snapshots`. Ignored/protected
+paths are never written or removed. Success projects `mode`, `safety_snapshot_id`,
+the four numeric file/directory counts and `hold_kept`; failure after applying
+projects `mode`, `safety_snapshot_id` and `modified`. An interrupted modified tree
+requires recovery and blocks starts across restarts. `recovery_required` in the
+listing reflects that block. An authorized resolve accepts the current tree
+without rollback; alternatively, a successful full restore supersedes earlier
+recovery jobs. Cleared jobs project only the fixed `recovery` marker and, for
+supersession, the bounded replacement `job` ID. Unexpected result keys and
+invalid field types/values are dropped, never echoed.
+
 Backup keys bind server/principal/device/method/path; `requested_by` is the
 admitted principal ID, never a caller body field. The backend receives the admitted
 Subject, durably records the principal/device binding and rechecks current backup
 capability when a queued job starts; a schedule or queue cannot retain old access.
-Repeating an accepted intent
+For `run`, `verify` and inspection `restore`, repeating an accepted intent
 returns the same durable job ID. Changed profile/kind/restore target under the
 same key returns 409 `backup_idempotency_conflict`. Jobs are ordered by creation
 timestamp descending, then ID descending. `before` is an opaque exclusive
@@ -1148,7 +1187,15 @@ Other fixed errors are `backup_forbidden` (403),
 `backup_invalid_request` (400), `backup_busy` (409), and
 `backup_unavailable`/`backup_state_unavailable` (503). Snapshot listing has a
 short backend deadline and single-flight admission; its busy refusal specifically
-returns 503 `temporarily_unavailable`, not a job-admission conflict.
+returns 503 `temporarily_unavailable`, not a job-admission conflict; this applies
+to both normal and safety snapshot listings. Confirmation refusal returns 409
+`backup_confirmation_invalid`. In-place job error codes additionally include
+`backup_confirmation_invalid`, `backup_confirmation_expired`,
+`backup_snapshot_not_restorable`, `backup_snapshot_unknown`,
+`backup_restore_path_not_in_snapshot`, `backup_restore_target_unsafe`,
+`backup_restore_restart_pending`, `backup_safety_snapshot_failed`,
+`backup_restore_interrupted` and `backup_requires_stopped_server`. These are
+fixed job outcome codes, not free-form diagnostics or immediate HTTP statuses.
 
 Across this subsection, current capability refusal returns 403
 `management_forbidden`, invalid sessions return 401 `management_session_invalid`,
@@ -1179,10 +1226,10 @@ access immediately. Streams are observations, not authorization or command repla
 
 ## 6. Explicit non-goals
 
-Full in-place world restoration, SFTP, Discord integration, sleep/MOTD-specific
+Recovery exports, SFTP, Discord integration, sleep/MOTD-specific
 automation and metrics remain future work; no routes or promises are defined here.
-Bounded workflow scheduling, the notification inbox, backup jobs and inspection-only
-restore are implemented exclusively as described in section 4A.
+Bounded workflow scheduling, the notification inbox, backup jobs, inspection restore
+and confirmed in-place restore are implemented exclusively as described in section 4A.
 Also excluded: web UI hosting/proxying, shell/script execution, arbitrary downloads,
 remote bootstrap via bearer/config, automated recovery/restart, server creation/
 adoption/deletion, signed binary updates, file archives, trash purge, role-management routes and an alternative raw TCP management path.

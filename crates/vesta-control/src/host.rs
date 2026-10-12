@@ -618,6 +618,7 @@ fn compose(
                                 let _ = sink.send(event);
                             }
                         }),
+                        protected: config.host_protected_paths().to_vec(),
                     },
                 )
                 .map_err(|e| HostError::Supervisor(e.code()))?,

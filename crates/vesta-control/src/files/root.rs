@@ -214,7 +214,7 @@ pub(super) fn plain_ancestors(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn plain(metadata: &Metadata) -> Result<()> {
+pub(crate) fn plain(metadata: &Metadata) -> Result<()> {
     if metadata.file_type().is_symlink() {
         return Err(FileError::LinkedPath);
     }

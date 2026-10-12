@@ -17,13 +17,17 @@
 //! - Snapshots are created as candidates and only tagged into their profile after the
 //!   checks pass, so rejected snapshots are never restore points or retention input.
 //!   Consistency resources are released before repository maintenance (prune).
-//! - Restores go only to a new directory under the configured restore root, whose real
-//!   location is checked against the game and state directories. Nothing here ever
-//!   restores automatically, stops or kills the game.
+//! - Inspection restores go only to a new directory under the configured restore root,
+//!   whose real location is checked against the game and state directories. In-place
+//!   restores (see `restore`) need exact confirmation and an already stopped game.
+//!   Nothing here ever restores automatically, stops or kills the game.
 pub mod engine;
 pub mod ignore;
+mod restore;
 pub mod s3;
 pub mod store;
+
+pub use restore::PreparedRestore;
 
 use crate::{
     config::{BackupMode, BackupProfile, BackupRepository, BackupSettings, MutationPolicy},
@@ -76,6 +80,8 @@ pub enum BackupError {
     IdempotencyConflict,
     /// The subject does not currently hold the job's capability.
     Forbidden,
+    /// The confirmation is unknown, expired, already used or not the subject's.
+    ConfirmationInvalid,
 }
 impl BackupError {
     pub const fn code(self) -> &'static str {
@@ -89,6 +95,7 @@ impl BackupError {
             Self::State => "backup_state_unavailable",
             Self::IdempotencyConflict => "backup_idempotency_conflict",
             Self::Forbidden => "backup_forbidden",
+            Self::ConfirmationInvalid => "backup_confirmation_invalid",
         }
     }
 }
@@ -129,27 +136,34 @@ fn capability(kind: &str) -> Option<Capability> {
     Some(match kind {
         "backup" => Capability::BackupsCreate,
         "verify" => Capability::BackupsVerify,
-        "restore" => Capability::BackupsRestore,
+        "restore" | "restore_in_place" => Capability::BackupsRestore,
         _ => return None,
     })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum JobState {
+    /// An in-place restore waiting for its exact confirmation.
+    AwaitingConfirmation,
     Queued,
     Running,
     Succeeded,
     Failed,
     Uncertain,
+    /// An in-place restore stopped after changing the game directory; starts are
+    /// blocked until it is resolved.
+    RecoveryRequired,
 }
 impl JobState {
     fn wire(self) -> &'static str {
         match self {
+            Self::AwaitingConfirmation => "awaiting_confirmation",
             Self::Queued => "queued",
             Self::Running => "running",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
             Self::Uncertain => "uncertain",
+            Self::RecoveryRequired => "recovery_required",
         }
     }
     fn parse(text: &str) -> Option<Self> {
@@ -159,11 +173,16 @@ impl JobState {
             "succeeded" => Self::Succeeded,
             "failed" => Self::Failed,
             "uncertain" => Self::Uncertain,
+            "awaiting_confirmation" => Self::AwaitingConfirmation,
+            "recovery_required" => Self::RecoveryRequired,
             _ => return None,
         })
     }
     pub fn finished(self) -> bool {
-        matches!(self, Self::Succeeded | Self::Failed | Self::Uncertain)
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::Uncertain | Self::RecoveryRequired
+        )
     }
 }
 
@@ -205,6 +224,9 @@ pub struct Environment {
     /// The runtime's start gate, blocked while a stopped backup reads.
     pub start_gate: StartGate,
     pub events: Box<dyn Fn(BackupEvent) + Send + Sync>,
+    /// Paths an in-place restore never writes or removes (secrets, Vesta's own
+    /// configuration); only those inside the game directory matter.
+    pub protected: Vec<PathBuf>,
 }
 
 struct Inner {
@@ -217,6 +239,10 @@ struct Inner {
     env: Environment,
     stopping: AtomicBool,
     wake: (Mutex<bool>, Condvar),
+    /// Held while an interrupted in-place restore needs recovery.
+    recovery: Mutex<Option<crate::operations::StartBlock>>,
+    /// `env.protected` relative to the game directory.
+    protected: Vec<String>,
 }
 
 pub struct Backups {
@@ -360,13 +386,21 @@ impl Backups {
         let engine = Engine::new(store);
         let now = db.clock().millis();
         db.write(|c| {
+            // Agent died while an in-place restore was changing the game directory.
+            c.execute(
+                "UPDATE backup_jobs SET state='recovery_required',error_code='backup_restore_interrupted',finished_at=? WHERE state='running' AND kind='restore_in_place' AND applying=1",
+                params![now],
+            )?;
             // Agent died mid-job: the snapshot may or may not exist.
             c.execute(
                 "UPDATE backup_jobs SET state='uncertain',error_code='backup_interrupted',finished_at=? WHERE state='running'",
                 params![now],
             )?;
+            // Confirmations do not survive an agent restart.
+            restore::expire_confirmations(c, now, i64::MAX)?;
             Ok(())
         })?;
+        let protected = restore::protected_inside(game, &env.protected);
         let inner = Arc::new(Inner {
             db,
             settings,
@@ -376,7 +410,11 @@ impl Backups {
             env,
             stopping: AtomicBool::new(false),
             wake: (Mutex::new(false), Condvar::new()),
+            recovery: Mutex::new(None),
+            protected,
         });
+        // Before the worker or any caller can start the game.
+        inner.refresh_recovery();
         let worker = {
             let inner = inner.clone();
             std::thread::Builder::new()
@@ -458,7 +496,7 @@ impl Backups {
                 });
             }
             let active: i64 = c.query_row(
-                "SELECT count(*) FROM backup_jobs WHERE state IN ('queued','running')",
+                "SELECT count(*) FROM backup_jobs WHERE state IN ('awaiting_confirmation','queued','running')",
                 [],
                 |r| r.get(0),
             )?;
@@ -830,6 +868,7 @@ impl Inner {
                 Err(error) => Outcome::failed(error.code()),
             },
             "restore" => self.restore(&job.id, job.target.as_deref()),
+            "restore_in_place" => self.restore_in_place(job, &profile),
             _ => Outcome::failed(BackupError::Invalid.code()),
         }
     }
@@ -842,31 +881,7 @@ impl Inner {
     ) -> std::result::Result<Consistency<'_>, &'static str> {
         let state = self.db.directory().clone();
         match profile.mode {
-            BackupMode::Stopped => {
-                let block = self.env.start_gate.block();
-                let hold = match &self.env.supervisor {
-                    Some(client) => {
-                        let token = vesta_supervisor::save::hold(client, LEASE)
-                            .map_err(|_| "backup_requires_stopped_server")?;
-                        let renew_token = token.clone();
-                        let renewer = Renewer::start(state, move |client| {
-                            vesta_supervisor::save::renew_hold(client, &renew_token, LEASE)
-                        });
-                        Some((client, token, renewer))
-                    }
-                    None => None,
-                };
-                let stopped = matches!((self.env.observe)(), Ok(None));
-                let consistency = Consistency::Stopped {
-                    _block: block,
-                    hold,
-                };
-                if !stopped {
-                    consistency.release();
-                    return Err("backup_requires_stopped_server");
-                }
-                Ok(consistency)
-            }
+            BackupMode::Stopped => self.stopped(),
             BackupMode::Online => {
                 let Some(client) = &self.env.supervisor else {
                     return Err("backup_online_requires_supervisor");
@@ -900,6 +915,34 @@ impl Inner {
                 })
             }
         }
+    }
+
+    /// Block every start (and, when supervised, take a maintenance hold), then
+    /// require affirmative evidence that the game is stopped.
+    fn stopped(&self) -> std::result::Result<Consistency<'_>, &'static str> {
+        let block = self.env.start_gate.block();
+        let hold = match &self.env.supervisor {
+            Some(client) => {
+                let token = vesta_supervisor::save::hold(client, LEASE)
+                    .map_err(|_| "backup_requires_stopped_server")?;
+                let renew_token = token.clone();
+                let renewer = Renewer::start(self.db.directory().clone(), move |client| {
+                    vesta_supervisor::save::renew_hold(client, &renew_token, LEASE)
+                });
+                Some((client, token, renewer))
+            }
+            None => None,
+        };
+        let stopped = matches!((self.env.observe)(), Ok(None));
+        let consistency = Consistency::Stopped {
+            _block: block,
+            hold,
+        };
+        if !stopped {
+            consistency.release();
+            return Err("backup_requires_stopped_server");
+        }
+        Ok(consistency)
     }
 
     fn backup(&self, profile: &BackupProfile) -> Outcome {

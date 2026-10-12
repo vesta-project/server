@@ -38,6 +38,11 @@ const PRUNE_GRACE_MS: i64 = 60 * 60 * 1000;
 /// Snapshots never promoted into a profile are removed after this long.
 const UNPROMOTED_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 const PROFILE_PREFIX: &str = "profile=";
+/// Pre-restore safety snapshots, kept by their own count retention rather than a profile.
+pub const SAFETY_PREFIX: &str = "safety=";
+
+mod apply;
+pub use apply::{ApplyError, ApplySummary};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EngineError {
@@ -52,6 +57,12 @@ pub enum EngineError {
     /// A bound was exceeded (files, chunks, snapshots, object size).
     TooLarge,
     Invalid,
+    /// The snapshot does not exist (or has no listing record).
+    Missing,
+    /// A requested restore path is not in the snapshot.
+    NotInSnapshot,
+    /// The restore target holds a link, special file or conflicting entry.
+    TargetUnsafe,
 }
 impl EngineError {
     pub const fn code(self) -> &'static str {
@@ -62,6 +73,9 @@ impl EngineError {
             Self::Corrupt => "backup_repository_corrupt",
             Self::TooLarge => "backup_too_large",
             Self::Invalid => "backup_invalid_request",
+            Self::Missing => "backup_snapshot_unknown",
+            Self::NotInSnapshot => "backup_restore_path_not_in_snapshot",
+            Self::TargetUnsafe => "backup_restore_target_unsafe",
         }
     }
 }
@@ -473,6 +487,21 @@ impl Engine {
         Ok(())
     }
 
+    /// The tags of one snapshot.
+    pub fn snapshot_tags(&self, snapshot: &str) -> Result<Vec<String>> {
+        if !valid_snapshot_id(snapshot) {
+            return Err(EngineError::Invalid);
+        }
+        self.require_initialized()?;
+        let bytes = match self.store.get(&format!("tags/{snapshot}")) {
+            Ok(bytes) => bytes,
+            Err(StoreError::NotFound) => return Err(EngineError::Missing),
+            Err(error) => return Err(error.into()),
+        };
+        let record: TagRecord = serde_json::from_slice(&bytes).map_err(|_| EngineError::Corrupt)?;
+        Ok(record.tags)
+    }
+
     /// Add tags to one snapshot (promotes a checked candidate into its profile).
     pub fn tag_add(&self, snapshot: &str, tags: &[String]) -> Result<()> {
         if !valid_snapshot_id(snapshot) || tags.is_empty() || tags.iter().any(|t| !valid_tag(t)) {
@@ -517,7 +546,8 @@ impl Engine {
         Ok(())
     }
 
-    /// Remove snapshots never promoted into a profile (after a day), then every chunk
+    /// Remove snapshots never promoted into a profile or kept as a safety snapshot
+    /// (after a day), then every chunk
     /// no remaining manifest references (after a grace period).
     pub fn prune(&self) -> Result<()> {
         let now = now_ms();
@@ -530,9 +560,11 @@ impl Engine {
             if !valid_snapshot_id(&id) {
                 continue;
             }
-            let promoted = records
-                .get(&id)
-                .is_some_and(|r| r.tags.iter().any(|t| t.starts_with(PROFILE_PREFIX)));
+            let promoted = records.get(&id).is_some_and(|r| {
+                r.tags
+                    .iter()
+                    .any(|t| t.starts_with(PROFILE_PREFIX) || t.starts_with(SAFETY_PREFIX))
+            });
             // The store's clock, like the chunk grace period below.
             if !promoted && now - object.modified_ms > UNPROMOTED_TTL_MS {
                 self.remove_snapshot(&id)?;
@@ -688,7 +720,13 @@ fn walk(root: &Path, ignore: &Ignore) -> Result<(Vec<String>, Vec<(String, u64, 
                     dirs.push(path.clone());
                     stack.push(path);
                 }
-            } else if meta.is_file() && !ignore.excluded(&path, false) {
+            } else if meta.is_file()
+                && !ignore.excluded(&path, false)
+                && !path
+                    .rsplit('/')
+                    .next()
+                    .is_some_and(|name| name.starts_with(apply::TEMP_PREFIX))
+            {
                 if files.len() >= MAX_FILES {
                     return Err(EngineError::TooLarge);
                 }

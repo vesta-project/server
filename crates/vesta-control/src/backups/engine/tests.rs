@@ -338,3 +338,217 @@ fn retention_buckets_and_dates() {
     assert_eq!(rfc3339(1_791_115_200_000), "2026-10-04T12:00:00Z");
     assert_eq!(civil(-1), (1969, 12, 31));
 }
+
+fn snapshot_of(engine: &Engine, root: &Path, ignore: &Ignore) -> String {
+    engine
+        .backup(root, ignore, &tags("p"), None)
+        .unwrap()
+        .snapshot_id
+}
+
+#[test]
+fn apply_makes_the_tree_match_but_keeps_ignored_and_protected_paths() {
+    let source = game();
+    fs::write(source.path().join("secret.key"), b"original-secret").unwrap();
+    let store = MemStore::default();
+    let engine = Engine::new(Box::new(store.clone()));
+    engine.init().unwrap();
+    let ignore = Ignore::parse("logs/\n").unwrap();
+    let keep = vec!["secret.key".to_owned()];
+    let id = snapshot_of(&engine, source.path(), &ignore);
+    let before = tree(source.path());
+
+    // Later changes: an edited file, a new file and directory, a deleted file, a new
+    // log (ignored) and a rotated secret (protected).
+    let root = source.path();
+    fs::write(root.join("world/level.dat"), b"changed").unwrap();
+    fs::create_dir_all(root.join("world/new/deeper")).unwrap();
+    fs::write(root.join("world/new/deeper/x.dat"), b"x").unwrap();
+    fs::remove_dir(root.join("empty")).unwrap();
+    fs::write(root.join("logs/today.log"), b"log").unwrap();
+    fs::write(root.join("secret.key"), b"rotated-secret").unwrap();
+
+    let summary = engine.apply(&id, root, &[], &ignore, &keep).unwrap();
+    assert_eq!(summary.files_written, 1, "{summary:?}");
+    assert_eq!(summary.files_unchanged, 1, "the region file is reused");
+    assert_eq!(summary.files_removed, 1);
+    assert_eq!(summary.dirs_removed, 2);
+    let mut expected = before.clone();
+    expected.insert("logs/today.log".into(), b"log".to_vec());
+    expected.insert("secret.key".into(), b"rotated-secret".to_vec());
+    assert_eq!(tree(root), expected);
+    assert!(root.join("empty").is_dir());
+    // Restoring again changes nothing.
+    let again = engine.apply(&id, root, &[], &ignore, &keep).unwrap();
+    assert_eq!((again.files_written, again.files_removed), (0, 0));
+    // No temporary files are left behind.
+    assert!(
+        tree(root)
+            .keys()
+            .all(|p| !p.rsplit('/').next().unwrap().starts_with(".vesta-restore-"))
+    );
+}
+
+#[test]
+fn selective_apply_touches_only_the_requested_paths() {
+    let source = game();
+    let engine = Engine::new(Box::new(MemStore::default()));
+    engine.init().unwrap();
+    let none = Ignore::default();
+    let id = snapshot_of(&engine, source.path(), &none);
+    let root = source.path();
+    fs::write(root.join("world/level.dat"), b"changed").unwrap();
+    fs::write(root.join("world/region/r.9.9.mca"), b"new region").unwrap();
+    fs::write(root.join("logs/latest.log"), b"newer log").unwrap();
+
+    engine
+        .apply(&id, root, &["world/region".into()], &none, &[])
+        .unwrap();
+    assert!(!root.join("world/region/r.9.9.mca").exists());
+    assert_eq!(fs::read(root.join("world/level.dat")).unwrap(), b"changed");
+    assert_eq!(
+        fs::read(root.join("logs/latest.log")).unwrap(),
+        b"newer log"
+    );
+    engine
+        .apply(&id, root, &["world/level.dat".into()], &none, &[])
+        .unwrap();
+    assert_eq!(fs::read(root.join("world/level.dat")).unwrap(), b"level");
+
+    // A path the snapshot does not have, a pattern and a protected path are refused.
+    let refused = |includes: &[&str], keep: &[&str]| {
+        let includes: Vec<String> = includes.iter().map(|s| s.to_string()).collect();
+        let keep: Vec<String> = keep.iter().map(|s| s.to_string()).collect();
+        engine
+            .apply(&id, root, &includes, &none, &keep)
+            .unwrap_err()
+    };
+    assert_eq!(
+        refused(&["world/missing"], &[]).error,
+        EngineError::NotInSnapshot
+    );
+    assert_eq!(refused(&["world/*"], &[]).error, EngineError::Invalid);
+    assert_eq!(
+        refused(&["world/level.dat"], &["world"]).error,
+        EngineError::TargetUnsafe
+    );
+    assert!(!refused(&["world/missing"], &[]).modified);
+}
+
+#[test]
+fn apply_refuses_before_any_change_when_chunks_are_missing_or_paths_are_tampered() {
+    let source = game();
+    let store = MemStore::default();
+    let engine = Engine::new(Box::new(store.clone()));
+    engine.init().unwrap();
+    let none = Ignore::default();
+    let id = snapshot_of(&engine, source.path(), &none);
+    fs::write(source.path().join("extra.txt"), b"extra").unwrap();
+    let before = tree(source.path());
+
+    // A missing chunk is found before anything is removed or written.
+    let key = store
+        .objects
+        .lock()
+        .unwrap()
+        .keys()
+        .find(|k| k.starts_with("chunks/"))
+        .cloned()
+        .unwrap();
+    let saved = store.get(&key).unwrap();
+    store.delete(&key).unwrap();
+    let error = engine
+        .apply(&id, source.path(), &[], &none, &[])
+        .unwrap_err();
+    assert_eq!(
+        error,
+        ApplyError {
+            error: EngineError::Corrupt,
+            modified: false
+        }
+    );
+    assert_eq!(tree(source.path()), before);
+    store.put(&key, &saved).unwrap();
+
+    // A manifest whose file has no listed parent directory is refused.
+    let tampered = "fedcba9876543210fedcba9876543210";
+    let manifest = Manifest {
+        version: 1,
+        id: tampered.into(),
+        time_ms: 1,
+        dirs: vec![],
+        files: vec![FileEntry {
+            path: "world/level.dat".into(),
+            size: 0,
+            modified_ms: 0,
+            chunks: vec![],
+        }],
+    };
+    store
+        .put(
+            &format!("snapshots/{tampered}"),
+            &compress(&serde_json::to_vec(&manifest).unwrap()),
+        )
+        .unwrap();
+    let error = engine
+        .apply(tampered, source.path(), &[], &none, &[])
+        .unwrap_err();
+    assert_eq!(error.error, EngineError::Corrupt);
+    assert_eq!(tree(source.path()), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_refuses_links_in_the_target() {
+    let source = game();
+    let outside = tempfile::tempdir().unwrap();
+    let engine = Engine::new(Box::new(MemStore::default()));
+    engine.init().unwrap();
+    let none = Ignore::default();
+    let id = snapshot_of(&engine, source.path(), &none);
+    fs::remove_dir_all(source.path().join("world/region")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), source.path().join("world/region")).unwrap();
+    let error = engine
+        .apply(&id, source.path(), &[], &none, &[])
+        .unwrap_err();
+    assert_eq!(
+        error,
+        ApplyError {
+            error: EngineError::TargetUnsafe,
+            modified: false
+        }
+    );
+    assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn apply_refuses_junctions_in_the_target() {
+    let source = game();
+    let outside = tempfile::tempdir().unwrap();
+    let engine = Engine::new(Box::new(MemStore::default()));
+    engine.init().unwrap();
+    let none = Ignore::default();
+    let id = snapshot_of(&engine, source.path(), &none);
+    let link = source.path().join("world").join("region");
+    fs::remove_dir_all(&link).unwrap();
+    let made = std::process::Command::new("cmd.exe")
+        .args(["/d", "/c", "mklink", "/J"])
+        .arg(&link)
+        .arg(outside.path())
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "mklink must succeed: {made:?}");
+    let error = engine
+        .apply(&id, source.path(), &[], &none, &[])
+        .unwrap_err();
+    assert_eq!(
+        error,
+        ApplyError {
+            error: EngineError::TargetUnsafe,
+            modified: false
+        }
+    );
+    assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+    fs::remove_dir(&link).unwrap();
+}

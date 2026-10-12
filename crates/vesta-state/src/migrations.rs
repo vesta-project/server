@@ -23,6 +23,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         17 => apply_v17(c, now_ms),
         18 => apply_v18(c),
         19 => apply_v19(c),
+        20 => apply_v20(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -909,6 +910,42 @@ fn apply_v19(c: &Connection) -> crate::Result<()> {
             started_at INTEGER CHECK(started_at IS NULL OR started_at>=0),
             finished_at INTEGER CHECK(finished_at IS NULL OR finished_at>=0)
         ) STRICT;
+        CREATE INDEX backup_jobs_queue ON backup_jobs(state, created_at, id);
+        CREATE INDEX backup_jobs_history ON backup_jobs(created_at, id);
+    "#)?;
+    Ok(())
+}
+
+/// In-place restores: a confirmation step, a pre-restore safety snapshot and a
+/// durable recovery-required state that keeps the game from starting. SQLite cannot
+/// widen CHECK constraints in place, so the table is rebuilt with every row kept.
+fn apply_v20(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(r#"
+        CREATE TABLE backup_jobs_v20 (
+            id TEXT PRIMARY KEY CHECK(length(CAST(id AS BLOB)) BETWEEN 1 AND 128),
+            profile TEXT NOT NULL CHECK(length(CAST(profile AS BLOB)) BETWEEN 1 AND 32),
+            kind TEXT NOT NULL CHECK(kind IN ('backup','verify','restore','restore_in_place')),
+            state TEXT NOT NULL CHECK(state IN ('awaiting_confirmation','queued','running','succeeded','failed','uncertain','recovery_required')),
+            requested_by TEXT NOT NULL CHECK(length(CAST(requested_by AS BLOB)) BETWEEN 1 AND 128),
+            requested_device TEXT NOT NULL CHECK(length(CAST(requested_device AS BLOB)) BETWEEN 1 AND 128),
+            idempotency_key TEXT UNIQUE CHECK(idempotency_key IS NULL OR length(CAST(idempotency_key AS BLOB)) BETWEEN 1 AND 200),
+            snapshot_id TEXT CHECK(snapshot_id IS NULL OR (length(snapshot_id) BETWEEN 8 AND 64 AND snapshot_id NOT GLOB '*[^0-9a-f]*')),
+            target TEXT CHECK(target IS NULL OR length(target)<=16384),
+            result_json TEXT CHECK(result_json IS NULL OR length(result_json)<=16384),
+            error_code TEXT CHECK(error_code IS NULL OR length(error_code) BETWEEN 1 AND 128),
+            created_at INTEGER NOT NULL CHECK(created_at>=0),
+            started_at INTEGER CHECK(started_at IS NULL OR started_at>=0),
+            finished_at INTEGER CHECK(finished_at IS NULL OR finished_at>=0),
+            confirmation_hash TEXT CHECK(confirmation_hash IS NULL OR (length(confirmation_hash)=64 AND confirmation_hash NOT GLOB '*[^0-9a-f]*')),
+            confirm_by INTEGER CHECK(confirm_by IS NULL OR confirm_by>=0),
+            safety_snapshot_id TEXT CHECK(safety_snapshot_id IS NULL OR (length(safety_snapshot_id)=32 AND safety_snapshot_id NOT GLOB '*[^0-9a-f]*')),
+            applying INTEGER NOT NULL DEFAULT 0 CHECK(applying IN (0,1)),
+            CHECK((state='awaiting_confirmation') = (confirmation_hash IS NOT NULL AND confirm_by IS NOT NULL))
+        ) STRICT;
+        INSERT INTO backup_jobs_v20 (id,profile,kind,state,requested_by,requested_device,idempotency_key,snapshot_id,target,result_json,error_code,created_at,started_at,finished_at)
+            SELECT id,profile,kind,state,requested_by,requested_device,idempotency_key,snapshot_id,target,result_json,error_code,created_at,started_at,finished_at FROM backup_jobs;
+        DROP TABLE backup_jobs;
+        ALTER TABLE backup_jobs_v20 RENAME TO backup_jobs;
         CREATE INDEX backup_jobs_queue ON backup_jobs(state, created_at, id);
         CREATE INDEX backup_jobs_history ON backup_jobs(created_at, id);
     "#)?;

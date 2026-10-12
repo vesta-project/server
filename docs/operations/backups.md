@@ -75,7 +75,7 @@ prints `backup_repository_initialized`. There is no repository key to keep.
 
 ## Jobs
 
-Backups, verification and restores are durable jobs (`backup_jobs`, schema v19) run one at
+Backups, verification and restores are durable jobs (`backup_jobs`, schema v20) run one at
 a time by the agent. Each job records the user and device that submitted it. That subject must
 hold `backups.create`, `backups.verify` or `backups.restore` when submitting, and again
 when the worker starts the job. A job whose submitter lost that authority while queued fails with
@@ -121,10 +121,10 @@ for 90 days, up to 1,000.
   never cut short. It also deletes unpromoted candidates older than one day.
 - **Verify** checks that every snapshot manifest decodes and every referenced chunk exists.
   It does not re-read chunk data; restores do.
-- **Restore** goes only into a new directory `<restore-root>/<job id>`, optionally limited
-  to validated relative paths. Paths are literal: pattern characters
-  (`* ? [ ] \ { }`) are refused. In-place restore (stop, pre-restore safety snapshot, exact
-  confirmation) is not implemented yet. Nothing ever restores automatically.
+- **Inspection restore** goes only into a new directory `<restore-root>/<job id>`,
+  optionally limited to validated relative paths. Paths are literal: pattern characters
+  (`* ? [ ] \ { }`) are refused. Nothing ever restores automatically.
+- **In-place restore** is described in its own section below.
 - Submissions accept an idempotency key: repeating it returns the same job. A job found
   `running` after an agent restart becomes `uncertain` (`backup_interrupted`), because the
   snapshot may or may not exist. The supervisor's save lease expires by itself.
@@ -133,6 +133,51 @@ for 90 days, up to 1,000.
   others get `backup_busy`.
 - If a job's final state cannot be written, the worker retries it with backoff. It never moves
   on, and never reruns the job.
+
+## In-place restore
+
+An in-place restore makes the game directory, or only some paths in it, match a snapshot.
+
+1. **Prepare.** The request names the profile, the snapshot and optional paths. It is stored
+   as `awaiting_confirmation` and returns a one-time confirmation token valid for two
+   minutes. Nothing is changed and nothing is queued yet.
+2. **Confirm.** Only the same user and device can confirm, once, before the token expires.
+   A wrong token cancels the request (`backup_confirmation_invalid`). Authority
+   (`backups.restore`) is checked when preparing, when confirming and again when the job
+   starts. Prepare, confirm and resolve are audited.
+3. **Checks before any change.** The job fails without touching anything when:
+   - the snapshot is not one of the profile's accepted restore points or safety snapshots
+     (`backup_snapshot_not_restorable`, `backup_snapshot_unknown`); candidate and rejected
+     snapshots are never restorable.
+   - a requested path is not in the snapshot (`backup_restore_path_not_in_snapshot`).
+   - **the game is running.** Vesta does not stop it for you. Stop the server first. The job
+     takes the start gate, the supervisor hold and the file mutation lock, then needs the
+     same affirmative stopped facts as a stopped backup (`backup_requires_stopped_server`).
+   - a supervisor crash restart is pending, or a launch is unresolved
+     (`backup_restore_restart_pending`).
+   - a referenced chunk is missing, the manifest is malformed, or the target holds a
+     symbolic link, junction or special file in the restored area
+     (`backup_repository_corrupt`, `backup_restore_target_unsafe`).
+4. **Safety snapshot.** Unless the request explicitly sets `skip_safety_snapshot`, the
+   current directory is backed up first (same ignore rules), tagged as a safety snapshot of
+   the profile. Safety snapshots are listed separately. They are not profile restore points
+   and do not count toward profile retention. The newest five per profile are kept, and
+   restoring one undoes the restore.
+5. **Apply.** Inside the restored area, files and directories that are not in the snapshot
+   are removed. Snapshot files are written to a temporary file next to the target, checked
+   against their hashes, then renamed into place. Files whose content already matches are
+   left alone. Paths excluded by `.vesta-backupignore` and protected paths (configuration,
+   credentials and other files Vesta protects from the file API) are never written or
+   removed.
+
+**Interruption.** Each file is replaced atomically, but the directory as a whole is not. The
+job is durably marked as applying before the first change. If it fails after changing
+anything, or the agent dies meanwhile, the job becomes `recovery_required`
+(`backup_restore_interrupted` after a crash). While any restore needs recovery, every game
+start is refused, also after the agent restarts. It clears when a later **full** in-place
+restore succeeds, for example of the same snapshot or of the safety snapshot, or when a user
+with `backups.restore` explicitly resolves it and accepts the current files. Nothing is ever
+rolled back or restored automatically, and automation workflows cannot restore.
 
 ## Save lease (supervisor)
 
@@ -192,7 +237,8 @@ schedules every second and publishes server and backup events. It never acts on 
 - Real S3 providers are untested; only a local fake S3 server is.
 - Two agents writing to one repository are not coordinated. Give each server its own
   repository or prefix.
-- Pre-restore safety snapshot and in-place restore are missing.
+- In-place restore does not check free disk space first, and does not stop the game
+  itself.
 - Filesystem-snapshot acceleration (VSS/Btrfs/ZFS/LVM) and the write guard are missing.
 - Storage quotas and capacity preflight are missing.
 - No player-count or update events, no script presets, no external notification delivery.

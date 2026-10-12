@@ -609,12 +609,15 @@
     {
       "id": "F27",
       "name": "Restore, inspection and recovery exports",
-      "status": "prototype",
+      "status": "partial",
       "phase": 6,
-      "current": "Inspection restore of a snapshot (optionally selected paths) into a new directory under a configured restore root; never automatic. Not yet: in-place restore with stop, pre-restore safety snapshot and exact confirmation; recovery exports.",
+      "current": "Inspection restore into a new directory, and in-place restore (whole tree or selected paths): exact one-time confirmation by the same user and device, already stopped game with starts and crash restarts held, pre-restore safety snapshot (skippable only explicitly; newest five kept), only accepted restore points or safety snapshots, ignored and protected paths untouched, per-file verified atomic replacement, and a durable recovery_required state that blocks starts until resolved or superseded. Never automatic. Not yet: recovery exports, free-space preflight.",
       "evidence": [
         "crates/vesta-control/src/backups/mod.rs",
-        "crates/vesta-control/tests/backups.rs"
+        "crates/vesta-control/src/backups/restore.rs",
+        "crates/vesta-control/src/backups/engine/apply.rs",
+        "crates/vesta-control/tests/backups.rs",
+        "docs/operations/backups.md"
       ],
       "acceptance": "Owner-confirmed restore, pre-restore backup, stopped game, scoped inspection, no automatic restore.",
       "auditDate": "2026-10-12",

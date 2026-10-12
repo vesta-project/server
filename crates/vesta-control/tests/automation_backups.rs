@@ -86,6 +86,7 @@ fn a_manual_workflow_runs_a_backup_and_revocation_suspends_it() {
                 supervisor: None,
                 start_gate: Default::default(),
                 events: Box::new(|_| {}),
+                protected: Vec::new(),
             },
         )
         .unwrap(),

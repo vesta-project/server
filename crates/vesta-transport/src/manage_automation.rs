@@ -1,4 +1,4 @@
-//! Closed management adapter for workflows, the inbox and inspection backups.
+//! Closed management adapter for workflows, the inbox and backup jobs.
 use super::{Request, decode, envelope, error, management_error, ok};
 use crate::Reply;
 use http::{Method, StatusCode};
@@ -15,6 +15,7 @@ use vesta_control::{
     config::{BackupMode, MutationPolicy},
     host::NetworkHost,
     identity::{Capability, PrincipalId, Subject},
+    operations::ConfirmationToken,
 };
 
 const MAX_BODY: usize = 70 * 1024;
@@ -35,6 +36,10 @@ enum Route<'a> {
     Backups,
     BackupJob(&'a str),
     Snapshots,
+    SafetySnapshots,
+    RestoreInPlace,
+    ConfirmRestore(&'a str),
+    ResolveRecovery(&'a str),
     Backup,
     Verify,
     Restore,
@@ -53,6 +58,8 @@ fn route(path: &str) -> Option<Route<'_>> {
         "notifications/acknowledge" => Route::Acknowledge,
         "backups" => Route::Backups,
         "backups/snapshots" => Route::Snapshots,
+        "backups/safety-snapshots" => Route::SafetySnapshots,
+        "backups/restore-in-place" => Route::RestoreInPlace,
         "backups/run" => Route::Backup,
         "backups/verify" => Route::Verify,
         "backups/restore" => Route::Restore,
@@ -86,6 +93,16 @@ fn route(path: &str) -> Option<Route<'_>> {
                 Route::Workflow(id)
             } else if let Some(id) = resource(action, "automation/runs/") {
                 Route::Run(id)
+            } else if let Some(id) = action
+                .strip_suffix("/confirm")
+                .and_then(|s| resource(s, "backups/jobs/"))
+            {
+                Route::ConfirmRestore(id)
+            } else if let Some(id) = action
+                .strip_suffix("/resolve-recovery")
+                .and_then(|s| resource(s, "backups/jobs/"))
+            {
+                Route::ResolveRecovery(id)
             } else if let Some(id) = resource(action, "backups/jobs/") {
                 Route::BackupJob(id)
             } else {
@@ -139,7 +156,9 @@ fn backup_failure(value: BackupError) -> Reply {
         }
         BackupError::Forbidden => StatusCode::FORBIDDEN,
         BackupError::Invalid => StatusCode::BAD_REQUEST,
-        BackupError::Busy | BackupError::IdempotencyConflict => StatusCode::CONFLICT,
+        BackupError::Busy | BackupError::IdempotencyConflict | BackupError::ConfirmationInvalid => {
+            StatusCode::CONFLICT
+        }
         BackupError::Unavailable | BackupError::State => StatusCode::SERVICE_UNAVAILABLE,
     };
     error(status, value.code())
@@ -216,10 +235,15 @@ fn capability(route: Route<'_>, method: &Method) -> Capability {
         Route::Notifications | Route::Unread | Route::Read | Route::Acknowledge => {
             Capability::NotificationsView
         }
-        Route::Backups | Route::BackupJob(_) | Route::Snapshots => Capability::BackupsView,
+        Route::Backups | Route::BackupJob(_) | Route::Snapshots | Route::SafetySnapshots => {
+            Capability::BackupsView
+        }
         Route::Backup => Capability::BackupsCreate,
         Route::Verify => Capability::BackupsVerify,
-        Route::Restore => Capability::BackupsRestore,
+        Route::Restore
+        | Route::RestoreInPlace
+        | Route::ConfirmRestore(_)
+        | Route::ResolveRecovery(_) => Capability::BackupsRestore,
         _ if method == Method::GET => Capability::AutomationView,
         _ => Capability::AutomationManage,
     }
@@ -402,15 +426,76 @@ fn safe_backup_code(value: &str) -> &'static str {
         "backup_save_suspend_failed" => "backup_save_suspend_failed",
         "backup_restore_target_unavailable" => "backup_restore_target_unavailable",
         "backup_ignore_file_invalid" => "backup_ignore_file_invalid",
+        "backup_confirmation_invalid" => "backup_confirmation_invalid",
+        "backup_confirmation_expired" => "backup_confirmation_expired",
+        "backup_snapshot_not_restorable" => "backup_snapshot_not_restorable",
+        "backup_snapshot_unknown" => "backup_snapshot_unknown",
+        "backup_restore_path_not_in_snapshot" => "backup_restore_path_not_in_snapshot",
+        "backup_restore_target_unsafe" => "backup_restore_target_unsafe",
+        "backup_restore_restart_pending" => "backup_restore_restart_pending",
+        "backup_safety_snapshot_failed" => "backup_safety_snapshot_failed",
+        "backup_restore_interrupted" => "backup_restore_interrupted",
         _ => "backup_unavailable",
     }
 }
+fn backup_job_metadata(value: &Job) -> Value {
+    json!({"id":value.id,"profile":value.profile,"kind":value.kind,"state":value.state_wire(),"requested_by":value.requested_by,"snapshot_id":value.snapshot_id,"error_code":value.error_code.as_deref().map(safe_backup_code),"created_at_ms":value.created_at,"started_at_ms":value.started_at,"finished_at_ms":value.finished_at})
+}
+fn in_place_facts(raw: &serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
+    let mut facts = serde_json::Map::new();
+    for key in [
+        "files_written",
+        "files_unchanged",
+        "files_removed",
+        "dirs_removed",
+    ] {
+        if let Some(v) = raw.get(key).and_then(Value::as_u64) {
+            facts.insert(key.into(), json!(v));
+        }
+    }
+    for key in ["hold_kept", "modified"] {
+        if let Some(v) = raw.get(key).and_then(Value::as_bool) {
+            facts.insert(key.into(), json!(v));
+        }
+    }
+    if let Some(id) = raw
+        .get("safety_snapshot_id")
+        .filter(|v| v.is_null() || v.as_str().is_some_and(engine::valid_snapshot_id))
+    {
+        facts.insert("safety_snapshot_id".into(), id.clone());
+    }
+    if raw.get("mode").and_then(Value::as_str) == Some("in_place") {
+        facts.insert("mode".into(), json!("in_place"));
+    }
+    if let Some(recovery) = raw
+        .get("recovery")
+        .and_then(Value::as_str)
+        .filter(|v| matches!(*v, "resolved_by_user" | "superseded_by_restore"))
+    {
+        facts.insert("recovery".into(), json!(recovery));
+        if recovery == "superseded_by_restore"
+            && let Some(job) = raw
+                .get("job")
+                .and_then(Value::as_str)
+                .filter(|v| PrincipalId::parse(v).is_ok())
+        {
+            facts.insert("job".into(), json!(job));
+        }
+    }
+    facts
+}
 fn backup_job(host: &NetworkHost, token: &str, value: &Job) -> Value {
-    let mut result = json!({"id":value.id,"profile":value.profile,"kind":value.kind,"state":value.state_wire(),"requested_by":value.requested_by,"snapshot_id":value.snapshot_id,"error_code":value.error_code.as_deref().map(safe_backup_code),"created_at_ms":value.created_at,"started_at_ms":value.started_at,"finished_at_ms":value.finished_at});
+    let mut result = backup_job_metadata(value);
     let Some(raw) = value.result.as_ref().and_then(Value::as_object) else {
         result["result"] = Value::Null;
         return result;
     };
+    // In-place results have their own closed projection; never project inspection
+    // paths or unrelated engine facts into an in-place job.
+    if value.kind == "restore_in_place" {
+        result["result"] = Value::Object(in_place_facts(raw));
+        return result;
+    }
     let mut facts = serde_json::Map::new();
     for key in [
         "files_new",
@@ -530,6 +615,30 @@ struct Restore {
     paths: Vec<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RestoreInPlace {
+    profile: String,
+    snapshot: String,
+    paths: Vec<String>,
+    #[serde(default)]
+    skip_safety_snapshot: bool,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfirmRestore {
+    confirmation_token: String,
+}
+fn confirmation_token(value: String) -> Result<ConfirmationToken, BackupError> {
+    ConfirmationToken::try_from(value).map_err(|_| BackupError::ConfirmationInvalid)
+}
+fn restore_target(profile_name: &str, snapshot: &str, paths: &[String]) -> bool {
+    profile(profile_name)
+        && engine::valid_snapshot_id(snapshot)
+        && paths.len() <= 64
+        && paths.iter().all(|p| restore_path(p))
+}
+
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     let Some(route) = route(request.path) else {
         return invalid();
@@ -559,6 +668,17 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     let Some(key) = scoped_key(host, &subject, &request) else {
         return invalid();
     };
+    // Never cache/replay these responses, especially prepare's one-time secret.
+    // Keys remain required and validated, but a retry prepares a fresh job/token.
+    if matches!(
+        route,
+        Route::RestoreInPlace | Route::ConfirmRestore(_) | Route::ResolveRecovery(_)
+    ) {
+        if request.method != Method::POST {
+            return invalid();
+        }
+        return mutate_restore(host, &subject, route, request.bytes);
+    }
     if matches!(route, Route::Backup | Route::Verify | Route::Restore) {
         if request.method != Method::POST {
             return invalid();
@@ -679,7 +799,7 @@ fn get(
         Route::Unread if query.is_none() => automation
             .unread_count(subject)
             .map(|count| json!({"unread_count":count})),
-        Route::Backups | Route::BackupJob(_) | Route::Snapshots => {
+        Route::Backups | Route::BackupJob(_) | Route::Snapshots | Route::SafetySnapshots => {
             return get_backups(host, token, route, query);
         }
         _ => return invalid(),
@@ -693,7 +813,7 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
     enum Query<'a> {
         Jobs(Option<(i64, String)>, usize),
         Job(&'a str),
-        Snapshots(&'a str),
+        Snapshots(&'a str, bool),
     }
     let query = match route {
         Route::Backups => {
@@ -703,7 +823,7 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
             Query::Jobs(before, limit)
         }
         Route::BackupJob(id) if query.is_none() && PrincipalId::parse(id).is_ok() => Query::Job(id),
-        Route::Snapshots => {
+        Route::Snapshots | Route::SafetySnapshots => {
             let Some(parts) = query_parts(query) else {
                 return invalid();
             };
@@ -713,21 +833,25 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
             if !profile(value) {
                 return invalid();
             }
-            Query::Snapshots(value)
+            Query::Snapshots(value, matches!(route, Route::SafetySnapshots))
         }
         _ => return invalid(),
     };
     let Some(backups) = host.backups() else {
         return backup_failure(BackupError::Disabled);
     };
-    let snapshot_listing = matches!(&query, Query::Snapshots(_));
+    let snapshot_listing = matches!(&query, Query::Snapshots(_, _));
     let result=match query {
         Query::Jobs(before,limit)=>backups.jobs(before.as_ref().map(|(timestamp,id)|(*timestamp,id.as_str())),limit).map(|jobs| {
             let profiles=backups.settings().profiles.iter().map(|p|json!({"name":p.name,"mode":match p.mode {BackupMode::Online=>"online",BackupMode::Stopped=>"stopped"},"keep_last":p.keep_last,"keep_daily":p.keep_daily,"keep_weekly":p.keep_weekly,"keep_monthly":p.keep_monthly,"on_mutation":match p.on_mutation {MutationPolicy::Warn=>"warn",MutationPolicy::FailWorld=>"fail-world",MutationPolicy::FailAny=>"fail-any"},"warn_seconds":p.warn_seconds})).collect::<Vec<_>>();
-            json!({"profiles":profiles,"jobs":jobs.iter().map(|v|backup_job(host,token,v)).collect::<Vec<_>>(),"next_before":if jobs.len()==limit {jobs.last().map(|v|backup_cursor(v.created_at,&v.id))} else {None},"restore_mode":"inspection_only"})
+            json!({"profiles":profiles,"jobs":jobs.iter().map(|v|backup_job(host,token,v)).collect::<Vec<_>>(),"next_before":if jobs.len()==limit {jobs.last().map(|v|backup_cursor(v.created_at,&v.id))} else {None},"restore_mode":"inspection_only","recovery_required":backups.recovery_required()})
         }),
-        Query::Job(id)=>match backups.job(id) {Ok(Some(job))=>Ok(json!({"job":backup_job(host,token,&job),"restore_mode":"inspection_only"})),Ok(None)=>Err(BackupError::UnknownJob),Err(e)=>Err(e)},
-        Query::Snapshots(profile)=>backups.snapshots(profile).and_then(|snapshots| {
+        Query::Job(id)=>match backups.job(id) {Ok(Some(job))=> {
+            let mut data = json!({"job":backup_job(host,token,&job)});
+            if job.kind != "restore_in_place" { data["restore_mode"] = json!("inspection_only"); }
+            Ok(data)
+        },Ok(None)=>Err(BackupError::UnknownJob),Err(e)=>Err(e)},
+        Query::Snapshots(profile,safety)=>(if safety {backups.safety_snapshots(profile)} else {backups.snapshots(profile)}).and_then(|snapshots| {
             if snapshots.iter().any(|v|!engine::valid_snapshot_id(&v.id)||!snapshot_time(&v.time)) {return Err(BackupError::Unavailable);}
             Ok(json!({"profile":profile,"snapshots":snapshots.iter().map(|v|json!({"id":v.id,"time":v.time})).collect::<Vec<_>>() }))
         }),
@@ -762,11 +886,7 @@ fn submit_backup(
             let Some(value) = decode::<Restore>(bytes) else {
                 return invalid();
             };
-            if !profile(&value.profile)
-                || !engine::valid_snapshot_id(&value.snapshot)
-                || value.paths.len() > 64
-                || value.paths.iter().any(|p| !restore_path(p))
-            {
+            if !restore_target(&value.profile, &value.snapshot, &value.paths) {
                 return invalid();
             }
             (
@@ -797,9 +917,242 @@ fn submit_backup(
     }
 }
 
+fn mutate_restore(host: &NetworkHost, subject: &Subject, route: Route<'_>, bytes: &[u8]) -> Reply {
+    // Decode before service lookup, as with the existing backup mutations.
+    enum Command<'a> {
+        Prepare(RestoreInPlace),
+        Confirm(&'a str, ConfirmationToken),
+        Resolve(&'a str),
+    }
+    let command = match route {
+        Route::RestoreInPlace => {
+            let Some(value) = decode::<RestoreInPlace>(bytes)
+                .filter(|v| restore_target(&v.profile, &v.snapshot, &v.paths))
+            else {
+                return invalid();
+            };
+            Command::Prepare(value)
+        }
+        Route::ConfirmRestore(id) if PrincipalId::parse(id).is_ok() => {
+            let Some(value) = decode::<ConfirmRestore>(bytes) else {
+                return invalid();
+            };
+            let token = match confirmation_token(value.confirmation_token) {
+                Ok(token) => token,
+                Err(e) => return backup_failure(e),
+            };
+            Command::Confirm(id, token)
+        }
+        Route::ResolveRecovery(id) if PrincipalId::parse(id).is_ok() => {
+            if decode::<Empty>(bytes).is_none() {
+                return invalid();
+            }
+            Command::Resolve(id)
+        }
+        _ => return invalid(),
+    };
+    let Some(backups) = host.backups() else {
+        return backup_failure(BackupError::Disabled);
+    };
+    match command {
+        Command::Prepare(value) => match backups.prepare_restore(
+            subject,
+            &value.profile,
+            &value.snapshot,
+            value.paths,
+            value.skip_safety_snapshot,
+        ) {
+            Ok(prepared) => envelope(
+                StatusCode::ACCEPTED,
+                json!({"data":{
+                    "job_id":prepared.job_id, "kind":"restore_in_place", "state":"awaiting_confirmation",
+                    "confirmation_token":prepared.token.expose_secret(), "expires_at_ms":prepared.expires_at_ms
+                }}),
+            ),
+            Err(e) => backup_failure(e),
+        },
+        Command::Confirm(id, token) => match backups.confirm_restore(subject, id, &token) {
+            Ok(()) => envelope(
+                StatusCode::ACCEPTED,
+                json!({"data":{"job_id":id,"state":"queued"}}),
+            ),
+            Err(e) => backup_failure(e),
+        },
+        Command::Resolve(id) => match backups.resolve_recovery(subject, id) {
+            Ok(()) => ok(json!({"job_id":id,"state":"failed","recovery":"resolved_by_user"})),
+            Err(e) => backup_failure(e),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn in_place_dtos_are_closed_and_safety_is_default() {
+        let body =
+            br#"{"profile":"daily","snapshot":"0123456789abcdef0123456789abcdef","paths":[]}"#;
+        let value = decode::<RestoreInPlace>(body).unwrap();
+        assert!(!value.skip_safety_snapshot);
+        assert!(restore_target(
+            &value.profile,
+            &value.snapshot,
+            &value.paths
+        ));
+        assert!(decode::<RestoreInPlace>(br#"{"profile":"daily","snapshot":"0123456789abcdef0123456789abcdef","paths":[],"skip_safety_snapshot":true}"#).unwrap().skip_safety_snapshot);
+        for extra in ["requested_by", "confirmation_token", "unknown"] {
+            let mut raw: Value = serde_json::from_slice(body).unwrap();
+            raw[extra] = json!(true);
+            assert!(decode::<RestoreInPlace>(&serde_json::to_vec(&raw).unwrap()).is_none());
+        }
+        assert!(
+            decode::<ConfirmRestore>(br#"{"confirmation_token":"abc","unknown":true}"#).is_none()
+        );
+        assert!(decode::<ConfirmRestore>(br#"{"confirmation_token":1}"#).is_none());
+        assert!(decode::<ConfirmRestore>(br#"{}"#).is_none());
+        assert!(decode::<Empty>(br#"{"confirmation_token":"abc"}"#).is_none());
+        assert!(decode::<Empty>(br#"{}"#).is_some());
+        let snapshot = "0123456789abcdef0123456789abcdef";
+        assert!(!restore_target("daily", "ABCDEF", &[]));
+        assert!(!restore_target("-daily", snapshot, &[]));
+        assert!(!restore_target("daily", snapshot, &["world/*".into()]));
+        assert!(!restore_target(
+            "daily",
+            snapshot,
+            &vec!["world".into(); 65]
+        ));
+        assert!(restore_target("daily", snapshot, &vec!["world".into(); 64]));
+    }
+    #[test]
+    fn malformed_confirmation_has_the_fixed_conflict_envelope() {
+        for text in [
+            "".to_owned(),
+            "bad token".into(),
+            "a".repeat(129),
+            "é".into(),
+        ] {
+            let reply = backup_failure(confirmation_token(text).unwrap_err());
+            assert_eq!(reply.status(), StatusCode::CONFLICT);
+            let crate::ReplyBody::Bytes(bytes) = reply.into_body() else {
+                panic!("expected bytes");
+            };
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["error"]["code"], "backup_confirmation_invalid");
+        }
+        assert!(confirmation_token("A".repeat(43)).is_ok());
+    }
+    #[test]
+    fn in_place_routes_do_not_collide_with_job_resources() {
+        let root = "/api/v3/manage/backups";
+        assert!(matches!(
+            route(&format!("{root}/restore-in-place")),
+            Some(Route::RestoreInPlace)
+        ));
+        assert!(matches!(
+            route(&format!("{root}/safety-snapshots")),
+            Some(Route::SafetySnapshots)
+        ));
+        for id in ["job-1", "12345678-1234-1234-1234-123456789abc"] {
+            assert!(
+                matches!(route(&format!("{root}/jobs/{id}")), Some(Route::BackupJob(v)) if v == id)
+            );
+            assert!(
+                matches!(route(&format!("{root}/jobs/{id}/confirm")), Some(Route::ConfirmRestore(v)) if v == id)
+            );
+            assert!(
+                matches!(route(&format!("{root}/jobs/{id}/resolve-recovery")), Some(Route::ResolveRecovery(v)) if v == id)
+            );
+        }
+        for suffix in [
+            "/confirm",
+            "job/extra/confirm",
+            "job/confirm/extra",
+            "job/resolve-recovery/extra",
+        ] {
+            assert!(route(&format!("{root}/jobs/{suffix}")).is_none());
+        }
+        assert!(route(&format!("{root}/jobs/{}/confirm", "a".repeat(129))).is_none());
+        for r in [
+            Route::RestoreInPlace,
+            Route::ConfirmRestore("job"),
+            Route::ResolveRecovery("job"),
+        ] {
+            assert_eq!(capability(r, &Method::POST), Capability::BackupsRestore);
+        }
+        assert_eq!(
+            capability(Route::SafetySnapshots, &Method::GET),
+            Capability::BackupsView
+        );
+    }
+    #[test]
+    fn in_place_projection_is_typed_closed_and_secret_free() {
+        use vesta_control::backups::JobState;
+        let job = Job {
+            id: "job-1".into(),
+            profile: "daily".into(),
+            kind: "restore_in_place".into(),
+            state: JobState::AwaitingConfirmation,
+            requested_by: "owner".into(),
+            snapshot_id: None,
+            result: None,
+            error_code: Some("backup_confirmation_expired".into()),
+            created_at: 1,
+            started_at: None,
+            finished_at: None,
+        };
+        assert_eq!(backup_job_metadata(&job)["state"], "awaiting_confirmation");
+        assert_eq!(backup_job_metadata(&job)["kind"], "restore_in_place");
+        assert_eq!(
+            backup_job_metadata(&job)["error_code"],
+            "backup_confirmation_expired"
+        );
+        let mut recovery_job = job;
+        recovery_job.state = JobState::RecoveryRequired;
+        assert_eq!(
+            backup_job_metadata(&recovery_job)["state"],
+            "recovery_required"
+        );
+        let success = json!({"mode":"in_place","safety_snapshot_id":"0123456789abcdef0123456789abcdef","files_written":1,"files_unchanged":2,"files_removed":3,"dirs_removed":4,"hold_kept":false});
+        let mut raw = success.clone();
+        raw["confirmation_token"] = json!("secret");
+        raw["restored_to"] = json!("private/path");
+        raw["unexpected"] = json!(true);
+        assert_eq!(
+            Value::Object(in_place_facts(raw.as_object().unwrap())),
+            success
+        );
+        for expected in [
+            json!({"mode":"in_place","safety_snapshot_id":null,"modified":true}),
+            json!({"recovery":"resolved_by_user"}),
+            json!({"recovery":"superseded_by_restore","job":"job-next"}),
+        ] {
+            assert_eq!(
+                Value::Object(in_place_facts(expected.as_object().unwrap())),
+                expected
+            );
+        }
+        let invalid = json!({"mode":"inspection_only","safety_snapshot_id":"ABCDEF0123456789abcdef0123456789ab","files_written":"1","files_unchanged":-1,"files_removed":1.5,"dirs_removed":null,"hold_kept":1,"modified":"true","recovery":"arbitrary","job":"../../private","confirmation_token":"secret"});
+        assert!(in_place_facts(invalid.as_object().unwrap()).is_empty());
+        let invalid_job = json!({"recovery":"superseded_by_restore","job":"../secret"});
+        assert_eq!(
+            Value::Object(in_place_facts(invalid_job.as_object().unwrap())),
+            json!({"recovery":"superseded_by_restore"})
+        );
+        for code in [
+            "backup_confirmation_invalid",
+            "backup_confirmation_expired",
+            "backup_snapshot_not_restorable",
+            "backup_snapshot_unknown",
+            "backup_restore_path_not_in_snapshot",
+            "backup_restore_target_unsafe",
+            "backup_restore_restart_pending",
+            "backup_safety_snapshot_failed",
+            "backup_restore_interrupted",
+            "backup_requires_stopped_server",
+        ] {
+            assert_eq!(safe_backup_code(code), code);
+        }
+    }
     #[test]
     fn bounded_query_contract_rejects_duplicates_and_noncanonical_numbers() {
         for query in [
