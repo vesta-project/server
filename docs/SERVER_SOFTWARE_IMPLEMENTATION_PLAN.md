@@ -365,11 +365,11 @@ not an excuse for arbitrary path escape.
 
 ## 10. Backups, consistency and restoration
 
-Adopt signed, bundled restic orchestration rather than new crypto/deduplication.
-Support opt-in local, mounted/NAS and S3-compatible repositories. All restic
-repositories are encrypted; generate/store the secret and guide owner recovery
-export. Native engine key derivation stays native; Vesta authentication uses
-Argon2id. Remote storage does not require Vesta cloud services.
+Owner decision (2026-10-12): use a built-in Rust engine instead of bundling restic.
+It stores content-addressed (SHA-256), deduplicated, compressed snapshots with
+integrity checks in opt-in local, mounted/NAS or S3-compatible repositories.
+Repositories are not encrypted; confidentiality comes from the storage itself.
+Remote storage does not require Vesta cloud services.
 
 A backup profile declares included paths, ignore rules, storage budget, retention,
 consistency method, warning routes and mutation policy. Separate dated repository
@@ -525,7 +525,7 @@ this audit, not proof that every uninspected branch lacks it.
 | F22 | Pack build, publication and scheduled release | prototype | P5 | Archive builder and configured revisions exist; durable publication transaction, automatic revision increment and scheduled activation remain. | [ServerState.java](../wrapper/src/main/java/com/vesta/wrapper/server/ServerState.java), [VestaPackBuilder.java](../core/src/main/java/com/vesta/sync/manifest/VestaPackBuilder.java) |
 | F23 | Pack policy, minimum version and authorization | partial | P5 | Capabilities and revision fields exist; complete independent pack policy and minimum-version lifecycle remain. | [CapabilityEngine.java](../core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java), [ServerModpackManifest.java](../core/src/main/java/com/vesta/sync/manifest/ServerModpackManifest.java) |
 | F24 | Ignore policies and pack symlink safety | not started | P5 | Independent target ignore rules and per-revision symlink consent protocol not located. | No subsystem located in audited source inventory |
-| F25 | Backup repositories and retention | partial | P6 | Rust (2026-10-12): restic-driven backup jobs with per-profile retention (forget --prune), verification (check), .vesta-backupignore and an owner-initialized encrypted repository; durable job table and idempotent submission. Not yet: bundled restic, S3, storage quotas/capacity preflight, vault for the key. See docs/operations/backups.md. | [install.ps1](../scripts/install.ps1) |
+| F25 | Backup repositories and retention | partial | P6 | Rust (2026-10-12): built-in deduplicating backup engine (no bundled third-party software, unencrypted by owner decision) over local or S3-compatible storage, with per-profile retention and prune, verification, .vesta-backupignore, durable job table and idempotent submission. Not yet: real S3 provider evidence, storage quotas/capacity preflight, recovery export. See docs/operations/backups.md. | [install.ps1](../scripts/install.ps1) |
 | F26 | Online backup consistency and save lease | partial | P6 | Rust (2026-10-12): Supervisor-owned save lease: durable, generation-bound, acknowledged save-off and save-all flush, renewed during the scan, restores autosave only if it was on, expires without an agent, never touches another generation, reports stranded leases after supervisor loss. Online backups use it; stopped backups block starts. Mutation scan applies the profile policy. Not yet: filesystem snapshots, write guard, plugin quiesce adapters. See docs/operations/backups.md. | No subsystem located in audited source inventory |
 | F27 | Restore, inspection and recovery exports | prototype | P6 | Rust (2026-10-12): Inspection restore of a snapshot (optionally selected paths) into a new directory under a configured restore root; never automatic. Not yet: in-place restore with stop, pre-restore safety snapshot and exact confirmation; recovery exports. See docs/operations/backups.md. | No subsystem located in audited source inventory |
 | F28 | Durable operations, locks and recovery journals | not started | P1 | HTTP actions are synchronous/ephemeral; no durable operation store or resource-lock recovery found. | [VestaHttpServer.java](../wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java) |
@@ -624,9 +624,9 @@ one valid public revision; suggestions do not mutate the pack automatically.
 
 ### P6 — Backups and recovery
 
-Bundle reviewed restic, add repositories/recovery keys, profiles, verification,
-retention, save coordination/leases, optional snapshot/write-guard adapters,
-manual restore and encrypted recovery exports.
+Build the native backup engine and repositories (local and S3-compatible), profiles,
+verification, retention, save coordination/leases, optional snapshot/write-guard
+adapters, manual restore and recovery exports.
 Gate: induced agent loss during save-off cleans up; consistency is labelled;
 disk-full/network loss cannot erase valid backups; restore drills verify data.
 
@@ -728,7 +728,8 @@ Keep audit date/commit visible. Update the Markdown, JSON and HTML together.
 - [JVM class loading](https://docs.oracle.com/javase/specs/jvms/se21/html/jvms-5.html):
   loading is dynamic; startup does not establish that a JAR will never be read again.
 - [Restic repository design](https://restic.readthedocs.io/en/stable/100_references.html):
-  use native authenticated encrypted storage rather than inventing backup crypto.
+  informed the built-in engine's content-addressed layout and retention rules;
+  restic itself is not bundled (owner decision, 2026-10-12).
 - [Let's Encrypt challenge types](https://letsencrypt.org/docs/challenge-types/):
   certificate automation has concrete reachability requirements, not just a TLS
   checkbox on any arbitrary API port.
@@ -764,7 +765,7 @@ Updated 2026-10-11 after commit eae2e47 and the supervisor slice. The Java-to-Ru
 | P3 Supervisor and adoption | First slice built (opt-in). A separate per-server supervisor owns the game over protected local IPC; agent restarts keep it running and re-adopt it; duplicate launches are refused and orphans detected after a supervisor crash. No crash-restart policy, readiness, save leases, OS identities, service install or Linux evidence; the failure-drill gate has not been run. |
 | P4 Files and content | Reachable through the capability-checked management API: files, uploads, trash, content install, server.properties, streamed large-file reads, rotated .log.gz reading and whole-file download. SFTP and log search not started. |
 | P5 Client-pack hosting | Mostly built. Scheduled release and a trusted publish path from the running server remain open. |
-| P6 Backups and recovery | Foundation built: restic-driven backup jobs, retention, verification, supervisor save leases and inspection restores. In-place restore, safety snapshots, filesystem snapshots, quotas and real-restic evidence remain. |
+| P6 Backups and recovery | Foundation built: built-in deduplicating engine (local and S3-compatible), backup jobs, retention, verification, supervisor save leases and inspection restores. In-place restore, safety snapshots, filesystem snapshots, quotas and real-S3 evidence remain. |
 | P7 Automation | Foundation built: durable workflows with schedules, event triggers, backup/lifecycle/console/notify steps and a notification inbox. Script presets, external delivery and more event sources remain. |
 | P8 Distribution | Partial installer. Signed updates not started. |
 

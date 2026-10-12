@@ -734,6 +734,14 @@ configuration key is universal. Pre-1.7 legacy status protocols are deferred.
   can fit under an exact hard limit. Cleanup never silently deletes unexpired
   restore points to satisfy that budget.
 
+> **Owner amendment (2026-10-12), superseding the restic and encryption clauses
+> of backups-019 and backups-023:** Vesta does not bundle third-party backup
+> software. It uses a built-in Rust engine: content-addressed (SHA-256),
+> deduplicated, compressed snapshots with integrity checks, stored in a local
+> directory or an S3-compatible bucket. Repositories are not encrypted; owners
+> who need confidentiality use encrypted storage or a private bucket. The baseline
+> bullets above stay frozen for traceability. Read them with this amendment.
+
 ### Backup crash-safety contract
 
 - Online backup requires an adapter capable of reliable save commands and flush
@@ -1369,6 +1377,8 @@ These are implementation work, not another mandatory owner questionnaire.
   uses authenticated encrypted storage. Optional unencrypted restic repositories
   were an incorrect requirement and have been replaced by automatic protected
   key generation plus owner recovery export.
+  Superseded on 2026-10-12: the owner chose a built-in unencrypted engine over
+  bundled restic (see the Backups amendment).
 - [Let's Encrypt's validation requirements](https://letsencrypt.org/docs/challenge-types/)
   distinguish port-80 HTTP validation, port-443 TLS validation, and DNS validation.
   Onboarding must not imply that opening an arbitrary management port enables

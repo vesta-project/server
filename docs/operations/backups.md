@@ -1,32 +1,44 @@
 # Backups and automation (foundation)
 
-Status: implemented on Windows and tested against an inert restic stand-in (2026-10-12). No
-real restic run has been tested yet. This page covers backups (F25–F27 foundation), the
-save lease (F26) and how automation (F29/F30) drives them.
+Status: implemented and tested on Windows with local repositories (2026-10-12). The
+S3-compatible store has been tested only against a local fake server; no real S3 provider
+has been tried. This page covers backups (F25–F27 foundation), the save lease (F26) and how
+automation (F29/F30) drives them.
 
 ## Engine
 
-Vesta does not implement backup storage or encryption. It drives a trusted, locally
-installed **restic** executable, which provides content-defined deduplication,
-authenticated encryption and repository checks. restic is not bundled yet: install it and
-point `host.toml` at it. Every call is a literal argument list (no shell) with a cleared
-environment plus a small allowlist. The repository password is passed only as a protected
-file path. Output is bounded, and only validated identifiers and numbers are taken from it.
+Backups use Vesta's own Rust engine; no third-party backup software is bundled or run.
+
+- Files are split into fixed 1 MiB chunks. Each chunk is stored once under its SHA-256
+  hash and compressed with deflate. Unchanged chunks are never stored twice.
+- A file whose size and modification time match the profile's previous snapshot is reused
+  without being read again.
+- Each snapshot is a compressed manifest listing directories, files and their chunk hashes.
+  Restores re-hash every chunk and refuse a mismatch (`backup_repository_corrupt`).
+  Manifest paths are revalidated, so a tampered manifest cannot write outside the target.
+- **Repositories are not encrypted.** Anyone who can read the repository can read the
+  world. Use an encrypted disk or a private bucket if that matters. This is an owner
+  decision (2026-10-12); see the amendment in `SERVER_SOFTWARE_REQUIREMENTS.md`.
+- Layout: `config.json`, `chunks/<2 hex>/<sha256>`, `snapshots/<id>` and `tags/<id>`.
+  Local writes go to a temporary file and are then renamed into place. Objects are never
+  modified after they are written, except tag files.
+- Bounds: 1,000,000 files per snapshot, 10,000 snapshots, 64 MiB per stored object.
+- Symbolic links, junctions and other special files in the game directory are skipped.
 
 ## Configuration
 
-Backups are off unless `host.toml` has a `[backups]` table:
+Backups are off unless `host.toml` has a `[backups]` table with exactly one repository,
+either a local directory:
 
 ```toml
 [backups]
-restic = "C:/tools/restic.exe"
 repository = "D:/vesta-backups/survival"   # outside the game and state directories
 restore-root = "D:/vesta-restores"         # optional; enables inspection restores
 
 [[backups.profile]]
 name = "nightly"              # a-z, 0-9, '-'; up to 16 profiles
 mode = "online"               # or "stopped"
-keep-last = 7                 # restic forget/prune retention; all zero = keep everything
+keep-last = 7                 # retention; all zero = keep everything
 keep-daily = 7
 keep-weekly = 4
 keep-monthly = 6
@@ -34,15 +46,32 @@ on-mutation = "fail-world"    # "warn" | "fail-world" (default) | "fail-any"
 warn-seconds = 60             # in-game warning before an online backup (default 60, max 600)
 ```
 
-The repository and restore root may not overlap the game or state directories. This is
-checked lexically at configuration load and again on their real locations (following links
-and junctions) when the agent starts and before every restore.
+or an S3-compatible bucket (AWS S3, MinIO, Backblaze B2, Cloudflare R2, …):
 
-Set up the repository once with `vesta-agent backup-init <name>`. It creates a random
-repository key in protected state (`<state>/artifacts/backup-repository.key`), initializes
-the encrypted repository and prints the key path. **Keep a copy of that key somewhere
-else.** Without it the backups cannot be restored. A protected vault (F11) does not exist
-yet, so the key is an owner-only file.
+```toml
+[backups]
+restore-root = "D:/vesta-restores"
+
+[backups.s3]
+endpoint = "https://s3.us-east-1.amazonaws.com"
+region = "us-east-1"
+bucket = "my-vesta-backups"
+prefix = "survival/"                  # optional
+access-key-id = "AKIA..."
+secret-key-file = "C:/vesta/private/s3-secret.key"   # protected from the file API
+path-style = true                     # default true; false for virtual-hosted buckets
+```
+
+The S3 endpoint must use HTTPS. Plain HTTP is accepted only for a loopback address with
+path-style addressing, for local testing. Redirects and proxies are not followed, and
+requests that fail with a 5xx error are retried up to three times.
+
+A local repository and the restore root may not overlap the game or state directories.
+This is checked lexically at configuration load and again on their real locations
+(following links and junctions) when the agent starts and before every restore.
+
+Set up the repository once with `vesta-agent backup-init <name>`. It is idempotent and
+prints `backup_repository_initialized`. There is no repository key to keep.
 
 ## Jobs
 
@@ -56,7 +85,7 @@ for 90 days, up to 1,000.
 - **Backup, online** (needs `[process] supervision = "separate"` and a running game):
   1. Optional in-game `say` warning.
   2. The supervisor takes a **save lease** (below).
-  3. The lease is renewed every 2 minutes across both mutation scans and the restic read.
+  3. The lease is renewed every 2 minutes across both mutation scans and the read.
   4. The lease is released.
 
   The world is save-consistent. If any renewal fails, consistency is reported as `unproven`
@@ -81,23 +110,29 @@ for 90 days, up to 1,000.
   tagged into its profile. Rejected snapshots are tagged `rejected`, are never listed as
   restore points and never count toward retention.
 - The file lock, the lease or hold and the start gate are released as soon as reading
-  finishes. Tagging and `forget --prune` run afterwards, holding none of them.
-- `.vesta-backupignore` in the game root is passed to restic as an exclude file (restic
-  pattern syntax, max 64 KiB).
-- Retention runs `restic forget --prune` per profile tag after a successful backup.
-- **Verify** runs `restic check`.
+  finishes. Tagging, retention and pruning run afterwards, holding none of them.
+- `.vesta-backupignore` in the game root (max 64 KiB, 1,000 patterns) uses a gitignore
+  subset: `#` comments, `!` re-includes, a trailing `/` for directories only, a `/`
+  inside the pattern anchors it to the game root, `*` and `?` within a name, `**` across
+  directories. Character classes are not supported.
+- Retention runs per profile after a successful backup. It keeps the newest N snapshots
+  plus the newest one in each of the last N days, ISO weeks and months (UTC). Pruning then
+  deletes unreferenced chunks older than one hour, so a backup running at the same time is
+  never cut short. It also deletes unpromoted candidates older than one day.
+- **Verify** checks that every snapshot manifest decodes and every referenced chunk exists.
+  It does not re-read chunk data; restores do.
 - **Restore** goes only into a new directory `<restore-root>/<job id>`, optionally limited
-  to validated relative paths. Paths are literal: restic pattern characters
+  to validated relative paths. Paths are literal: pattern characters
   (`* ? [ ] \ { }`) are refused. In-place restore (stop, pre-restore safety snapshot, exact
   confirmation) is not implemented yet. Nothing ever restores automatically.
 - Submissions accept an idempotency key: repeating it returns the same job. A job found
   `running` after an agent restart becomes `uncertain` (`backup_interrupted`), because the
   snapshot may or may not exist. The supervisor's save lease expires by itself.
-- Agent shutdown waits for a running backup instead of abandoning restic mid-write.
+- Agent shutdown waits for a running backup instead of abandoning it mid-write.
 - Listing restore points uses a separate 60-second timeout. Only one listing runs at a time;
   others get `backup_busy`.
 - If a job's final state cannot be written, the worker retries it with backoff. It never moves
-  on, and never reruns restic.
+  on, and never reruns the job.
 
 ## Save lease (supervisor)
 
@@ -154,10 +189,11 @@ schedules every second and publishes server and backup events. It never acts on 
 
 ## Not done yet
 
-- Real restic and S3 repositories are untested. restic is not bundled.
+- Real S3 providers are untested; only a local fake S3 server is.
+- Two agents writing to one repository are not coordinated. Give each server its own
+  repository or prefix.
 - Pre-restore safety snapshot and in-place restore are missing.
 - Filesystem-snapshot acceleration (VSS/Btrfs/ZFS/LVM) and the write guard are missing.
 - Storage quotas and capacity preflight are missing.
-- No vault yet for the repository key.
 - No player-count or update events, no script presets, no external notification delivery.
 - Linux is untested.

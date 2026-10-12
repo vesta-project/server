@@ -1305,3 +1305,45 @@ fn process_supervision_and_crash_restart_are_strict_opt_in_settings() {
         ConfigError::InvalidDocument,
     );
 }
+
+#[test]
+fn backup_repository_is_exactly_one_local_directory_or_s3_bucket() {
+    let base = std::env::current_dir().unwrap();
+    let profile = "[[backups.profile]]\nname = 'nightly'\nmode = 'stopped'\nkeep-last = 3\n";
+    let local = format!("{GOLDEN}\n[backups]\nrepository = 'backups'\n{profile}");
+    let parsed = parse(&local, &base).unwrap();
+    let settings = parsed.backups().unwrap();
+    assert!(matches!(&settings.repository, BackupRepository::Local(p) if p.ends_with("backups")));
+    assert_eq!(settings.profiles[0].on_mutation, MutationPolicy::FailWorld);
+    assert_eq!(settings.profiles[0].warn_seconds, 60);
+
+    let s3 = format!(
+        "{GOLDEN}\n[backups]\n[backups.s3]\nendpoint = 'https://s3.example.com'\nregion = 'us-east-1'\nbucket = 'vesta'\naccess-key-id = 'AKIDEXAMPLE'\nsecret-key-file = 'private/s3.key'\n{profile}"
+    );
+    let parsed = parse(&s3, &base).unwrap();
+    let BackupRepository::S3(bucket) = &parsed.backups().unwrap().repository else {
+        panic!("s3 repository expected");
+    };
+    assert!(bucket.path_style);
+    assert_eq!(bucket.prefix, "");
+    // The secret key file is protected from the file API like other credentials.
+    assert!(
+        parsed
+            .host_protected_paths()
+            .iter()
+            .any(|p| p.ends_with("s3.key"))
+    );
+
+    let both = s3.replace("[backups]\n", "[backups]\nrepository = 'backups'\n");
+    refused(parse(&both, &base), ConfigError::InvalidDocument);
+    let neither = format!("{GOLDEN}\n[backups]\n{profile}");
+    refused(parse(&neither, &base), ConfigError::InvalidDocument);
+    let inside = local.replace("repository = 'backups'", "repository = 'game/backups'");
+    refused(parse(&inside, &base), ConfigError::InvalidPath);
+    let no_profiles = format!("{GOLDEN}\n[backups]\nrepository = 'backups'\n");
+    refused(parse(&no_profiles, &base), ConfigError::InvalidDocument);
+    refused(
+        parse(&local.replace("mode = 'stopped'", "mode = 'paused'"), &base),
+        ConfigError::InvalidDocument,
+    );
+}

@@ -11,7 +11,7 @@ use vesta_control::{
         Mutation, MutationError, MutationOutcome, Notification, Run, RunStep, Workflow,
         WorkflowDefinition,
     },
-    backups::{BackupError, Job, JobKind, restic},
+    backups::{BackupError, Job, JobKind, engine},
     config::{BackupMode, MutationPolicy},
     host::NetworkHost,
     identity::{Capability, PrincipalId, Subject},
@@ -348,7 +348,7 @@ fn backup_page(query: Option<&str>) -> Option<(Option<(i64, String)>, usize)> {
     (1..=200).contains(&limit).then_some((before, limit))
 }
 fn restore_path(value: &str) -> bool {
-    restic::literal_path(value) && vesta_control::files::RelativePath::parse(value).is_ok()
+    engine::literal_path(value) && vesta_control::files::RelativePath::parse(value).is_ok()
 }
 fn profile(value: &str) -> bool {
     (1..=32).contains(&value.len())
@@ -432,7 +432,7 @@ fn backup_job(host: &NetworkHost, token: &str, value: &Job) -> Value {
     if let Some(id) = raw
         .get("snapshot_id")
         .and_then(Value::as_str)
-        .filter(|id| restic::valid_snapshot_id(id))
+        .filter(|id| engine::valid_snapshot_id(id))
     {
         facts.insert("snapshot_id".into(), json!(id));
     }
@@ -728,7 +728,7 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
         }),
         Query::Job(id)=>match backups.job(id) {Ok(Some(job))=>Ok(json!({"job":backup_job(host,token,&job),"restore_mode":"inspection_only"})),Ok(None)=>Err(BackupError::UnknownJob),Err(e)=>Err(e)},
         Query::Snapshots(profile)=>backups.snapshots(profile).and_then(|snapshots| {
-            if snapshots.iter().any(|v|!restic::valid_snapshot_id(&v.id)||!snapshot_time(&v.time)) {return Err(BackupError::Unavailable);}
+            if snapshots.iter().any(|v|!engine::valid_snapshot_id(&v.id)||!snapshot_time(&v.time)) {return Err(BackupError::Unavailable);}
             Ok(json!({"profile":profile,"snapshots":snapshots.iter().map(|v|json!({"id":v.id,"time":v.time})).collect::<Vec<_>>() }))
         }),
     };
@@ -763,7 +763,7 @@ fn submit_backup(
                 return invalid();
             };
             if !profile(&value.profile)
-                || !restic::valid_snapshot_id(&value.snapshot)
+                || !engine::valid_snapshot_id(&value.snapshot)
                 || value.paths.len() > 64
                 || value.paths.iter().any(|p| !restore_path(p))
             {

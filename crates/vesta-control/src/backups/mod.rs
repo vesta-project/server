@@ -1,4 +1,4 @@
-//! Backups (F25–F27 foundation): durable jobs, restic engine, save-lease coordination.
+//! Backups (F25–F27 foundation): durable jobs, built-in engine, save-lease coordination.
 //!
 //! - Jobs (backup, verify, inspection restore) are durable rows processed one at a time
 //!   by an owned worker. Each job records the subject (principal and device) that
@@ -20,14 +20,18 @@
 //! - Restores go only to a new directory under the configured restore root, whose real
 //!   location is checked against the game and state directories. Nothing here ever
 //!   restores automatically, stops or kills the game.
-pub mod restic;
+pub mod engine;
+pub mod ignore;
+pub mod s3;
+pub mod store;
 
 use crate::{
-    config::{BackupMode, BackupProfile, BackupSettings, MutationPolicy},
+    config::{BackupMode, BackupProfile, BackupRepository, BackupSettings, MutationPolicy},
     identity::{Capability, DeviceId, PrincipalId, Subject},
     operations::StartGate,
 };
-use restic::{EngineError, ResticEngine, Retention};
+use engine::{Engine, EngineError, Retention};
+use ignore::Ignore;
 use rusqlite::{OptionalExtension, params};
 use std::{
     collections::BTreeMap,
@@ -40,6 +44,7 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant, UNIX_EPOCH},
 };
+use store::{LocalStore, Store};
 use vesta_game_runtime::process::GenerationId;
 use vesta_state::{StateDatabase, StateDirectory};
 
@@ -50,8 +55,6 @@ const MAX_SCAN_PENDING: usize = 100_000;
 const MAX_SCAN_TIME: Duration = Duration::from_secs(600);
 const LEASE: Duration = Duration::from_secs(600);
 const RENEW_EVERY: Duration = Duration::from_secs(120);
-const ENGINE_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
-const LIST_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_RESULT_JSON: usize = 16 * 1024;
 const MAX_REPORTED_CHANGES: usize = 50;
 pub const MAX_ACTIVE_JOBS: i64 = 32;
@@ -207,9 +210,8 @@ pub struct Environment {
 struct Inner {
     db: StateDatabase,
     settings: BackupSettings,
-    engine: ResticEngine,
+    engine: Engine,
     /// Short-timeout engine for interactive observation (snapshot listing).
-    lister: ResticEngine,
     listing: Mutex<()>,
     game: PathBuf,
     env: Environment,
@@ -227,26 +229,37 @@ impl std::fmt::Debug for Backups {
     }
 }
 
-/// The repository password file in protected state: created once with 32 random bytes.
-pub fn repository_key(state: &StateDirectory) -> Result<PathBuf> {
-    let directory = state.artifacts()?;
-    let name = vesta_state::artifacts::ArtifactName::new("backup-repository.key")?;
-    if directory.open(&name)?.is_none() {
-        let mut secret = [0u8; 32];
-        getrandom::fill(&mut secret).map_err(|_| BackupError::Unavailable)?;
-        use base64::Engine as _;
-        let text = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret);
-        let mut file = directory.create_new(&name)?;
-        use std::io::Write;
-        file.write_all(text.as_bytes())
-            .and_then(|()| file.sync_all())
-            .map_err(|_| BackupError::State)?;
-        directory.sync()?;
+/// Open the configured repository storage.
+pub fn open_store(settings: &BackupSettings) -> Result<Box<dyn Store>> {
+    match &settings.repository {
+        BackupRepository::Local(path) => Ok(Box::new(LocalStore::new(path.clone()))),
+        BackupRepository::S3(s3) => open_s3(s3),
     }
-    Ok(state
-        .path()
-        .join(vesta_state::artifacts::ARTIFACTS_DIR)
-        .join("backup-repository.key"))
+}
+
+/// Build the S3 store; the secret key comes from its own small protected file.
+fn open_s3(repository: &crate::config::S3Repository) -> Result<Box<dyn Store>> {
+    let secret = crate::files::read_local_document(&repository.secret_key_file, 1024)
+        .map_err(|_| BackupError::Unavailable)?;
+    let secret = String::from_utf8(secret)
+        .map_err(|_| BackupError::Invalid)?
+        .trim()
+        .to_owned();
+    if secret.is_empty() {
+        return Err(BackupError::Invalid);
+    }
+    let endpoint = url::Url::parse(&repository.endpoint).map_err(|_| BackupError::Invalid)?;
+    let store = s3::S3Store::new(s3::S3Config {
+        endpoint,
+        region: repository.region.clone(),
+        bucket: repository.bucket.clone(),
+        prefix: repository.prefix.clone(),
+        access_key_id: repository.access_key_id.clone(),
+        secret_access_key: secret,
+        path_style: repository.path_style,
+    })
+    .map_err(|_| BackupError::Invalid)?;
+    Ok(Box::new(store))
 }
 
 /// The real location of `path`: the nearest existing ancestor resolved natively (links
@@ -296,7 +309,11 @@ fn overlaps(left: &Path, right: &Path) -> bool {
 fn check_locations(settings: &BackupSettings, game: &Path, state: &Path) -> Result<()> {
     let game = real_location(game).ok_or(BackupError::Invalid)?;
     let state = real_location(state).ok_or(BackupError::Invalid)?;
-    for path in std::iter::once(&settings.repository).chain(settings.restore_root.as_ref()) {
+    let local = match &settings.repository {
+        BackupRepository::Local(path) => Some(path),
+        BackupRepository::S3(_) => None,
+    };
+    for path in local.into_iter().chain(settings.restore_root.as_ref()) {
         let real = real_location(path).ok_or(BackupError::Invalid)?;
         if overlaps(&real, &game) || overlaps(&real, &state) {
             return Err(BackupError::Invalid);
@@ -305,27 +322,18 @@ fn check_locations(settings: &BackupSettings, game: &Path, state: &Path) -> Resu
     Ok(())
 }
 
-/// Local owner setup without a running agent: create the repository key (if new)
-/// and initialize the encrypted restic repository. Returns the key file path, which
-/// the owner must copy somewhere safe: without it the backups cannot be read.
+/// Local owner setup without a running agent: create the repository (an existing
+/// one is accepted unchanged).
 pub fn initialize_repository(
     state: &StateDirectory,
     settings: &BackupSettings,
     game: &Path,
-) -> std::result::Result<PathBuf, &'static str> {
+) -> std::result::Result<(), &'static str> {
     state.prepare().map_err(|_| BackupError::State.code())?;
     check_locations(settings, game, state.path()).map_err(BackupError::code)?;
-    let key = repository_key(state).map_err(BackupError::code)?;
-    ResticEngine::new(
-        settings.restic.clone(),
-        settings.repository.clone(),
-        key.clone(),
-        state.path().join("backup-cache"),
-        Duration::from_secs(600),
-    )
-    .init()
-    .map_err(EngineError::code)?;
-    Ok(key)
+    Engine::new(open_store(settings).map_err(BackupError::code)?)
+        .init()
+        .map_err(EngineError::code)
 }
 
 impl Backups {
@@ -336,23 +344,20 @@ impl Backups {
         game: &Path,
         env: Environment,
     ) -> Result<Self> {
+        let store = open_store(&settings)?;
+        Self::open_with_store(db, settings, store, game, env)
+    }
+
+    /// As `open`, with an explicitly supplied repository store.
+    pub fn open_with_store(
+        db: StateDatabase,
+        settings: BackupSettings,
+        store: Box<dyn Store>,
+        game: &Path,
+        env: Environment,
+    ) -> Result<Self> {
         check_locations(&settings, game, db.directory().path())?;
-        let key = repository_key(db.directory())?;
-        let cache = db.directory().path().join("backup-cache");
-        let engine = ResticEngine::new(
-            settings.restic.clone(),
-            settings.repository.clone(),
-            key.clone(),
-            cache.clone(),
-            ENGINE_TIMEOUT,
-        );
-        let lister = ResticEngine::new(
-            settings.restic.clone(),
-            settings.repository.clone(),
-            key,
-            cache,
-            LIST_TIMEOUT,
-        );
+        let engine = Engine::new(store);
         let now = db.clock().millis();
         db.write(|c| {
             // Agent died mid-job: the snapshot may or may not exist.
@@ -366,7 +371,6 @@ impl Backups {
             db,
             settings,
             engine,
-            lister,
             listing: Mutex::new(()),
             game: game.to_owned(),
             env,
@@ -390,7 +394,7 @@ impl Backups {
         &self.inner.settings
     }
 
-    /// Create the encrypted repository. Safe to call once; restic refuses re-init.
+    /// Create the repository; an existing valid repository is accepted unchanged.
     pub fn init_repository(&self) -> std::result::Result<(), EngineError> {
         self.inner.engine.init()
     }
@@ -417,10 +421,10 @@ impl Backups {
                 if self.inner.settings.restore_root.is_none() {
                     return Err(BackupError::Disabled);
                 }
-                if !restic::valid_snapshot_id(snapshot)
+                if !engine::valid_snapshot_id(snapshot)
                     || paths.len() > 64
                     || paths.iter().any(|p| {
-                        crate::files::RelativePath::parse(p).is_err() || !restic::literal_path(p)
+                        crate::files::RelativePath::parse(p).is_err() || !engine::literal_path(p)
                     })
                 {
                     return Err(BackupError::Invalid);
@@ -495,7 +499,7 @@ impl Backups {
 
     /// Validated restore points for one profile (candidates and rejected snapshots are
     /// excluded). Bounded by a short timeout; one listing at a time, otherwise `Busy`.
-    pub fn snapshots(&self, profile: &str) -> Result<Vec<restic::Snapshot>> {
+    pub fn snapshots(&self, profile: &str) -> Result<Vec<engine::Snapshot>> {
         if self.inner.settings.profile(profile).is_none() {
             return Err(BackupError::UnknownProfile);
         }
@@ -505,10 +509,10 @@ impl Backups {
             .try_lock()
             .map_err(|_| BackupError::Busy)?;
         self.inner
-            .lister
+            .engine
             .snapshots(&profile_tag(profile))
             .map_err(|error| match error {
-                EngineError::Locked | EngineError::TimedOut => BackupError::Busy,
+                EngineError::Unavailable => BackupError::Busy,
                 _ => BackupError::Unavailable,
             })
     }
@@ -702,7 +706,7 @@ impl Inner {
             match self.claim() {
                 Ok(Some(job)) => {
                     let outcome = self.execute(&job);
-                    // Never advance past an uncommitted outcome: restic is not rerun.
+                    // Never advance past an uncommitted outcome: the backup is not rerun.
                     let mut delay = Duration::from_millis(200);
                     while self.finish(&job, &outcome).is_err() {
                         std::thread::sleep(delay);
@@ -899,8 +903,8 @@ impl Inner {
     }
 
     fn backup(&self, profile: &BackupProfile) -> Outcome {
-        let exclude = match ignore_file(&self.game) {
-            Ok(exclude) => exclude,
+        let ignore = match ignore_file(&self.game) {
+            Ok(ignore) => ignore,
             Err(code) => return Outcome::failed(code),
         };
         let online = profile.mode == BackupMode::Online;
@@ -917,7 +921,12 @@ impl Inner {
             };
             let before = scan(&self.game);
             let tags = ["vesta".to_owned(), format!("{CANDIDATE}={}", profile.name)];
-            let result = self.engine.backup(&self.game, exclude.as_deref(), &tags);
+            let result = self.engine.backup(
+                &self.game,
+                &ignore,
+                &tags,
+                Some(&profile_tag(&profile.name)),
+            );
             let after = scan(&self.game);
             let kept = consistency.release();
             (result, before, after, kept)
@@ -1055,12 +1064,15 @@ fn say(
         .map(|_| ())
 }
 
-/// The game root's `.vesta-backupignore` (restic exclude-pattern syntax), if present.
-fn ignore_file(game: &Path) -> std::result::Result<Option<PathBuf>, &'static str> {
+/// The game root's `.vesta-backupignore` (see [`ignore`]), if present.
+fn ignore_file(game: &Path) -> std::result::Result<Ignore, &'static str> {
     let path = game.join(IGNORE_FILE);
     match fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Ok(meta) if meta.is_file() && meta.len() <= MAX_IGNORE_BYTES => Ok(Some(path)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Ignore::default()),
+        Ok(meta) if meta.is_file() && meta.len() <= MAX_IGNORE_BYTES => {
+            let text = fs::read_to_string(&path).map_err(|_| "backup_ignore_file_invalid")?;
+            Ignore::parse(&text)
+        }
         _ => Err("backup_ignore_file_invalid"),
     }
 }

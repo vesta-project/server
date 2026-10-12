@@ -2429,7 +2429,7 @@
     {
       "id": "backup-crash-safety-contract-001",
       "section": "Backup crash-safety contract",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:739",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:747",
       "text": "Online backup requires an adapter capable of reliable save commands and flush acknowledgement. Exact commands vary by Minecraft/server version; unsupported variants use a compatible adapter or the stopped-server fallback.",
       "textSha256": "2eeaf46cdc9e91e25d95e2070ceeba63a646449b5518d48dcc6ec3059f406ea5",
       "phase": "P6",
@@ -2440,7 +2440,7 @@
     {
       "id": "backup-crash-safety-contract-002",
       "section": "Backup crash-safety contract",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:742",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:750",
       "text": "A normal finally/cancellation handler is insufficient after an agent crash. Before save suspension, the supervisor records a bounded save lease tied to that exact Minecraft process generation. Expiry or lost agent ownership aborts the scan and restores the previous autosave state independently of the agent.",
       "textSha256": "673745a2915c9c2e65f5060f3c78f513bdaf8f5e6112ef0f17aadf5ff3f38eb3",
       "phase": "P6",
@@ -2451,7 +2451,7 @@
     {
       "id": "backup-crash-safety-contract-003",
       "section": "Backup crash-safety contract",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:746",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:754",
       "text": "Restoring autosave cannot accidentally enable it when the owner deliberately had it disabled, or send cleanup commands to a newly started process. An adapter reports the prior state where possible; otherwise online backup requires an explicitly configured/acknowledged autosave baseline.",
       "textSha256": "796c4a9effc995c7e9db86ef7eacdd316aa1edefc1d0e332a6d28a604973efcd",
       "phase": "P6",
@@ -2462,7 +2462,7 @@
     {
       "id": "backup-crash-safety-contract-004",
       "section": "Backup crash-safety contract",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:750",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:758",
       "text": "If the selected process adapter cannot provide this cleanup guarantee, Vesta explains the limitation and offers stopped-server backup instead. After host restart, journals are reconciled before launching or resuming operations.",
       "textSha256": "ad3f308be9a5ad5f85940275353ca21b609702c1727d5d2bee16a6ad1b76b9ce",
       "phase": "P6",
@@ -2473,7 +2473,7 @@
     {
       "id": "backup-crash-safety-contract-005",
       "section": "Backup crash-safety contract",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:753",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:761",
       "text": "VSS or other snapshot privileges are isolated to a narrowly scoped local helper; enabling snapshot support does not make the public agent an OS admin.",
       "textSha256": "f0b8662a016bced0a1f21e2a2a8eb38ec8536f2add211510995e6d7304a30460",
       "phase": "P6",
@@ -2484,7 +2484,7 @@
     {
       "id": "scheduling-and-notifications-001",
       "section": "Scheduling and notifications",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:758",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:766",
       "text": "Schedules execute locally without a launcher connection.",
       "textSha256": "3bd073ff210b4d407cdc4257281373f90ae9d8946d2d1e3c5e77eea72acf8d30",
       "phase": "P7",
@@ -2495,7 +2495,7 @@
     {
       "id": "scheduling-and-notifications-002",
       "section": "Scheduling and notifications",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:759",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:767",
       "text": "The scheduler is a durable typed workflow engine, not only a cron/action list. Workflows compose built-in steps and locally installed script presets in an owner-defined order.",
       "textSha256": "d188260faf857e9a45979df243a4ea0c0e463e721c45aa7c00273f3be9ba8d3a",
       "phase": "P7",
@@ -2506,7 +2506,7 @@
     {
       "id": "scheduling-and-notifications-003",
       "section": "Scheduling and notifications",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:762",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:770",
       "text": "Steps have typed inputs and outputs. Workflows may add delays, pass outputs to later steps, branch on success/failure or validated output conditions, and set retries, timeouts, and failure behavior. Example: create backup; on success, clean trash; then emit a notification.",
       "textSha256": "799d783e4203f3c5651472154b85b1a048b49981dedf4227955966bd90cec69f",
       "phase": "P7",
@@ -2517,7 +2517,7 @@
     {
       "id": "scheduling-and-notifications-004",
       "section": "Scheduling and notifications",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:766",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:774",
       "text": "Scheduled actions, workflow state, outputs, retries, and failures are durable and auditable across agent restarts.",
       "textSha256": "8d774aa081e05eb6610a1860595835181740cb4e68197aea18489c68316acecf",
       "phase": "P7",
@@ -2528,7 +2528,7 @@
     {
       "id": "scheduling-and-notifications-005",
       "section": "Scheduling and notifications",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:768",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:776",
       "text": "Notifications are stored locally and track read/acknowledged state per Vesta principal, with delivery cursors so any of that principal's devices can fetch events missed while offline without creating separate notification accounts.",
       "textSha256": "b19d63ef93c73cb5cc851d71abd77112fc517c53ce4ba802097562372d8f819f",
       "phase": "P7",
@@ -2539,7 +2539,7 @@
     {
       "id": "scheduling-and-notifications-006",
       "section": "Scheduling and notifications",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:771",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:779",
       "text": "External delivery integrations are optional and must not be required for core operation.",
       "textSha256": "e6fd536eefb83d0b6b428aebd44b3767ba9c6443f7e02cf5638ea84a7ccf1cdd",
       "phase": "P7",
@@ -2550,7 +2550,7 @@
     {
       "id": "scheduling-and-notifications-007",
       "section": "Scheduling and notifications",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:773",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:781",
       "text": "Built-in steps include backup, backup verification, start/stop/restart, console command, delay, update check/install, trash cleanup, notification, and local script preset. Notification is a real workflow action with selected destinations and severity.",
       "textSha256": "fe536619eb2d478174272e846e05e0476ec1683f5a815b36a0c58b0fcf3fbadb",
       "phase": "P7",
@@ -2561,7 +2561,7 @@
     {
       "id": "scheduling-and-notifications-008",
       "section": "Scheduling and notifications",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:777",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:785",
       "text": "Arbitrary remote script authoring is not exposed. Scripts/hooks are installed locally as server-side presets; launcher users with permission may select a preset and allowed parameters when creating a schedule.",
       "textSha256": "57ccae7dd97354d78adf612a5f0a6f0cd0129161bf2dfc9268c8efdf528c3cd4",
       "phase": "P7",
@@ -2572,7 +2572,7 @@
     {
       "id": "scheduling-and-notifications-009",
       "section": "Scheduling and notifications",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:780",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:788",
       "text": "Script presets run under the server's unprivileged identity with fixed working directories, environment allowlists, timeouts, output limits, parameter validation, and an auditable content hash.",
       "textSha256": "cedb1b78419d2d91b0da4d82ca01b168074b7e23e4604403392e349b6e9dd3e5",
       "phase": "P7",
@@ -2583,7 +2583,7 @@
     {
       "id": "scheduling-and-notifications-010",
       "section": "Scheduling and notifications",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:783",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:791",
       "text": "Preset definitions can be reloaded without restarting the agent after schema, path, ownership, and security validation.",
       "textSha256": "c3c0bf88e832bb4fbd0524425986fb5eca8345e6c3705261dce8e6777be2d28b",
       "phase": "P7",
@@ -2594,7 +2594,7 @@
     {
       "id": "scheduling-and-notifications-011",
       "section": "Scheduling and notifications",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:785",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:793",
       "text": "Initial workflows are sequential with conditional branches and no loops or parallel branches.",
       "textSha256": "41a5367e722afdff2aa15d2f1a821b88a7f8dc714f963d8518dd5a7ab703ee84",
       "phase": "P7",
@@ -2605,7 +2605,7 @@
     {
       "id": "scheduling-and-notifications-012",
       "section": "Scheduling and notifications",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:787",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:795",
       "text": "Triggers include manual, calendar/cron, fixed interval, agent startup, server start/stop/crash, first-player-join, last-player-leave/player-count-zero, update available, backup completion/failure, and resource thresholds.",
       "textSha256": "d1a5e150f384b2fbcc0c0ce049e6ecf7d1db36129a168cf8b41db8be5fcb1a86",
       "phase": "P7",
@@ -2616,7 +2616,7 @@
     {
       "id": "scheduling-and-notifications-013",
       "section": "Scheduling and notifications",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:790",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:798",
       "text": "Backup schedules and retention are opt-in and configurable. Presets may include minimal daily retention and daily/weekly/monthly policies.",
       "textSha256": "77528d05cc6de52d82b9cd126f7f729a844665761cb82bfa22a759c7c7ce7aad",
       "phase": "P7",
@@ -2627,7 +2627,7 @@
     {
       "id": "scheduling-and-notifications-014",
       "section": "Scheduling and notifications",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:792",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:800",
       "text": "Minecraft log rotation/cleanup is independently configurable by age, total size, and free-space policy.",
       "textSha256": "037432bfe86d4d581bd1e2efa0998a9f78a1e50599f5f837d955ba5f229cae4d",
       "phase": "P7",
@@ -2638,7 +2638,7 @@
     {
       "id": "scheduling-and-notifications-015",
       "section": "Scheduling and notifications",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:794",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:802",
       "text": "Each workflow has an execution principal. Current role, resource scope, credential/grant expiry, and preset approval are checked before each mutating step, not only at schedule creation. Revoked authority suspends affected work and creates an audit event/notification; schedules cannot preserve old access.",
       "textSha256": "6eeb2a3bbd30034baa7e9a8e0642328cefdf0f072c51af79616b95c010850e03",
       "phase": "P7",
@@ -2649,7 +2649,7 @@
     {
       "id": "scheduling-and-notifications-016",
       "section": "Scheduling and notifications",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:798",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:806",
       "text": "Missed schedule occurrences have an explicit policy: skip and notify, run the latest eligible occurrence, or bounded catch-up. Dangerous/non-idempotent work is never inferred from historical console lines or blindly repeated. The confirmed default is skip-and-notify, configurable per workflow. Reconciliation of notifications, process state, and already-started operations is separate and still occurs after recovery.",
       "textSha256": "1bc282891ea2ac12a576a6b52d74e302bf713ab4000e9329b91e69a65d4afb09",
       "phase": "P7",
@@ -2660,7 +2660,7 @@
     {
       "id": "durable-operations-and-concurrency-001",
       "section": "Durable operations and concurrency",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:807",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:815",
       "text": "Every long-running or materially mutating action is represented by a durable operation with an identifier, actor, requested inputs, lifecycle state, timestamps, progress, safe-to-cancel state, result/error, and audit correlation.",
       "textSha256": "bfc0915d64f202c83a2ae6daf4c255f607ef00d424af88d0aabe1b80fabd3be7",
       "phase": "P1",
@@ -2686,7 +2686,7 @@
     {
       "id": "durable-operations-and-concurrency-002",
       "section": "Durable operations and concurrency",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:810",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:818",
       "text": "Operations include backups, verification, restore, updates, Vesta Pack builds, archive work, large file transactions, imports/exports, lifecycle transitions, diagnostics, and maintenance workflows.",
       "textSha256": "429c7a93b3012e0a03aa01a81572f71c0ee3705f0f81fc274112e110766b0029",
       "phase": "P1",
@@ -2697,7 +2697,7 @@
     {
       "id": "durable-operations-and-concurrency-003",
       "section": "Durable operations and concurrency",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:813",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:821",
       "text": "A persistent task queue survives launcher disconnection and agent restart. Authorized clients can subscribe to progress or reconnect and retrieve it.",
       "textSha256": "1efbf41d704ecffcc019d25f1bdca1db4c69aabbff6e1270b680b794199319b4",
       "phase": "P1",
@@ -2720,7 +2720,7 @@
     {
       "id": "durable-operations-and-concurrency-004",
       "section": "Durable operations and concurrency",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:815",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:823",
       "text": "Named resource locks serialize conflicting work. Conflicts normally queue in request order; harmless redundant lifecycle requests may be coalesced or rejected with the existing operation identifier. Local recovery work has a controlled priority path.",
       "textSha256": "0e6e53a9ffe72e97b0e4439c01e6b99110bd77870ba39180957e04c5ba404655",
       "phase": "P1",
@@ -2743,7 +2743,7 @@
     {
       "id": "durable-operations-and-concurrency-005",
       "section": "Durable operations and concurrency",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:819",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:827",
       "text": "Restore, agent activation, pack publication, and other destructive transitions are exclusive against operations that could observe or alter inconsistent state. Read-only work may continue concurrently when its inputs are stable.",
       "textSha256": "9c43e016c78ad75dd90f2d429eb960d80ba1afdf3c912a511a0a09b42e2bae84",
       "phase": "P1",
@@ -2754,7 +2754,7 @@
     {
       "id": "durable-operations-and-concurrency-006",
       "section": "Durable operations and concurrency",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:822",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:830",
       "text": "Cancellation occurs only at declared safe points. If an operation cannot be safely cancelled, the API explains why and completes or rolls back the current transaction instead of abruptly terminating it.",
       "textSha256": "95da52191c1b5cebcc59021d62e032a9aaf8928b9b012b1a280bc28aa6252f96",
       "phase": "P1",
@@ -2777,7 +2777,7 @@
     {
       "id": "durable-operations-and-concurrency-007",
       "section": "Durable operations and concurrency",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:825",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:833",
       "text": "Stop and force-kill requests may receive queue priority, but never silently interrupt consistency-sensitive work. If a backup or comparable operation is active, the client must explicitly confirm cancellation of that exact operation before the kill proceeds; cleanup and operation state remain auditable.",
       "textSha256": "7b43422b9c311b3ec7594cb1b5cf1882517a0e263a8fe9138a5d42d43edd1567",
       "phase": "P1",
@@ -2788,7 +2788,7 @@
     {
       "id": "durable-operations-and-concurrency-008",
       "section": "Durable operations and concurrency",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:830",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:838",
       "text": "After process or machine failure, idempotent/safe work may resume or retry. Interrupted destructive work uses its journal to roll back or enters an explicit `recovery_required` state; it is never blindly replayed.",
       "textSha256": "455dee7b6abbbddacdeb715d35e949064fef7ed3750835c81b88e76c43c55441",
       "phase": "P1",
@@ -2811,7 +2811,7 @@
     {
       "id": "durable-operations-and-concurrency-009",
       "section": "Durable operations and concurrency",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:833",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:841",
       "text": "Completed operation summaries default to 90-day retention. Retention duration, bounded task output, and total task-history storage are configurable; security facts required by audit policy remain independently retained.",
       "textSha256": "ac7d62b282b1828af457eac7b537291aa3f5dc98997c20be1ec795239e412a37",
       "phase": "P1",
@@ -2822,7 +2822,7 @@
     {
       "id": "console-and-player-actions-001",
       "section": "Console and player actions",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:839",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:847",
       "text": "Raw Minecraft stdin executes with console authority and has no native remote user identity. Vesta therefore authorizes commands before writing to stdin.",
       "textSha256": "017264673153bfdd3ea6313b1b7cd521ed8f57bdd1cfc48e99a57fbaead7e0c3",
       "phase": "P7",
@@ -2833,7 +2833,7 @@
     {
       "id": "console-and-player-actions-002",
       "section": "Console and player actions",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:841",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:849",
       "text": "Vesta does not require owners to design a Minecraft command-policy language. Moderator-oriented operations use dedicated typed actions and safe built-in presets rather than unrestricted console strings.",
       "textSha256": "f1186b2870796a8953d50183906de6982043694518067f01eac5e075e43d60a5",
       "phase": "P7",
@@ -2844,7 +2844,7 @@
     {
       "id": "console-and-player-actions-003",
       "section": "Console and player actions",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:844",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:852",
       "text": "Administrators/Maintainers with explicit raw-console capability may use full console. A Moderator has no raw-console entry by default.",
       "textSha256": "810781ad52fdf673ecb773e0c902240b57d18367d0d99530750860f38bb82a7c",
       "phase": "P7",
@@ -2855,7 +2855,7 @@
     {
       "id": "console-and-player-actions-004",
       "section": "Console and player actions",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:846",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:854",
       "text": "Vesta does not provide `execute_as_player`. Platform inconsistencies and online-player requirements make it unreliable; dedicated moderation actions and explicit full-console permission are the supported boundaries.",
       "textSha256": "ead178eca86e12ac1cf3d7087464a8d5bc346b939b4e28f8bce0b1c2f5b31cc2",
       "phase": "P7",
@@ -2866,7 +2866,7 @@
     {
       "id": "console-and-player-actions-005",
       "section": "Console and player actions",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:849",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:857",
       "text": "The player-management baseline includes online players, kick, temporary and permanent ban with reason, pardon, whitelist add/remove, OP/de-OP and OP level, kill, lightning strike, and auditable history.",
       "textSha256": "187af45736835f4892c4da3e7aa542b6a241f8d7542f22db76da20b72cd39152",
       "phase": "P7",
@@ -2877,7 +2877,7 @@
     {
       "id": "console-and-player-actions-006",
       "section": "Console and player actions",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:852",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:860",
       "text": "IP bans, mute, teleport, and inventory inspection are plugin/connector extensions unless later promoted to core actions.",
       "textSha256": "3a7beb553ab8c2ab2e95b491e449b6a97797b78cf5ffcbf5b5b993389f28849f",
       "phase": "P7",
@@ -2888,7 +2888,7 @@
     {
       "id": "console-and-player-actions-007",
       "section": "Console and player actions",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:854",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:862",
       "text": "Console and log output is not heuristically redacted. Access is restricted to explicit log/console capabilities and all access is audited.",
       "textSha256": "deccac96b2351a71afb6579d916940be7d33a79ea54c096982d6de03e5cc1c14",
       "phase": "P7",
@@ -2899,7 +2899,7 @@
     {
       "id": "console-and-player-actions-008",
       "section": "Console and player actions",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:856",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:864",
       "text": "Live console history is an in-memory 10,000-line ring buffer only. Vesta does not duplicate persistent console history because Minecraft already writes its own logs.",
       "textSha256": "77880b6df2eb3fc4ab645ec70cf813966d3e19d994aa5510eefba085f7ace025",
       "phase": "P7",
@@ -2916,7 +2916,7 @@
     {
       "id": "console-and-player-actions-009",
       "section": "Console and player actions",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:859",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:867",
       "text": "The supervisor continuously drains stdout/stderr even without a viewer, so a full process pipe cannot stall Minecraft. The bounded buffer may include early JVM failures not present in game logs; this is not another persistent log store.",
       "textSha256": "642aada30569d395d3c46846b158174d558bcbcc473d3495d8c84e5b995ceae5",
       "phase": "P7",
@@ -2932,7 +2932,7 @@
     {
       "id": "console-and-player-actions-010",
       "section": "Console and player actions",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:862",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:870",
       "text": "Catch-up reads Minecraft's existing logs using file identity/offset cursors, with rotation/truncation handling and bounded scans of retained archives. Missing/deleted logs produce a visible history gap, not fabricated events or replay of commands. Connector/status reconciliation corrects uncertain player state before sleep or player-dependent automation resumes.",
       "textSha256": "91601dfad8be4e16df10b27e5a4b67db2d7151b31423af663ee3de5a075dbb0f",
       "phase": "P7",
@@ -2943,7 +2943,7 @@
     {
       "id": "console-and-player-actions-011",
       "section": "Console and player actions",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:867",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:875",
       "text": "Vesta retains its own bounded operational diagnostics and required security audit records; these describe Vesta actions, not a duplicate Minecraft log.",
       "textSha256": "1140c015360aa7d94deeb5c49c94f76540e48774a955871448a82a0dfa1fd739",
       "phase": "P7",
@@ -2954,7 +2954,7 @@
     {
       "id": "console-and-player-actions-012",
       "section": "Console and player actions",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:869",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:877",
       "text": "Player join/leave history and aggregate activity are retained as metrics under the configured metrics retention policy.",
       "textSha256": "effd556553a975182e838916013482b3ae4b86d5465411dc032bd19c847b1828",
       "phase": "P7",
@@ -2965,7 +2965,7 @@
     {
       "id": "isolation-001",
       "section": "Isolation",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:874",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:882",
       "text": "Sandboxing is optional but recommended.",
       "textSha256": "48351b879d429e810bd748b1586f8f13a18a3831d9caa6249fdcd29b4152089f",
       "phase": "P3",
@@ -2976,7 +2976,7 @@
     {
       "id": "isolation-002",
       "section": "Isolation",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:875",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:883",
       "text": "Docker is not the only isolation option and is not required on Windows.",
       "textSha256": "384c437c2b7a0d11de7e36a00c95f7ed1ee6c4e5c16f6ef91848ceb2513967b9",
       "phase": "P3",
@@ -2987,7 +2987,7 @@
     {
       "id": "isolation-003",
       "section": "Isolation",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:876",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:884",
       "text": "Baseline isolation uses a dedicated unprivileged OS identity, strict filesystem ACLs, process-tree ownership, resource limits, and network policy. Secure service setup uses distinct identities for the game and control plane; containers and stronger sandboxing remain optional additions.",
       "textSha256": "d2f532e78bcfa0d13919e11949afc0d677ff44e90483b8c1b08e14b3cf79ab3e",
       "phase": "P3",
@@ -2998,7 +2998,7 @@
     {
       "id": "isolation-004",
       "section": "Isolation",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:880",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:888",
       "text": "Hardened Linux profiles may add systemd sandboxing, namespaces/cgroups, seccomp, AppArmor/SELinux, or rootless containers.",
       "textSha256": "82ea2b30c27911fb0f0c74d22cd1630f9b4401de0067dec119f1505370f92ce1",
       "phase": "P3",
@@ -3009,7 +3009,7 @@
     {
       "id": "isolation-005",
       "section": "Isolation",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:882",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:890",
       "text": "Hardened Windows profiles may add a restricted service identity, directory ACLs, Job Objects, and Windows Firewall rules.",
       "textSha256": "9203dd9fbb6e3045f30b20c77445ae65d4202f3aac56d8318280b97a5ee8fe03",
       "phase": "P3",
@@ -3020,7 +3020,7 @@
     {
       "id": "java-runtime-001",
       "section": "Java runtime",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:887",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:895",
       "text": "One Java runtime is configured for the single server instance. Setup detects or installs a compatible Java version, and the owner may override it with a custom executable path.",
       "textSha256": "ea8d3307e869949d0585a0590645ea049a9004800a18bca284516b9946549cbc",
       "phase": "P3",
@@ -3038,7 +3038,7 @@
     {
       "id": "java-runtime-002",
       "section": "Java runtime",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:890",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:898",
       "text": "Runtime compatibility is validated before server installation, update, or launch.",
       "textSha256": "f03db8a3db83a643257c93924203d7c27cfe8754cf912ac1d83625276b1ff369",
       "phase": "P3",
@@ -3057,7 +3057,7 @@
     {
       "id": "java-runtime-003",
       "section": "Java runtime",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:892",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:900",
       "text": "Setup may download and manage one signed compatible runtime distribution, with a user-supplied Java executable as an alternative.",
       "textSha256": "8cba7ce17b0b2da2c6e18850b64aa6e3768145d9bcc9e2065f9af3ee5ee45705",
       "phase": "P3",
@@ -3068,7 +3068,7 @@
     {
       "id": "java-runtime-004",
       "section": "Java runtime",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:894",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:902",
       "text": "\"One runtime\" means the configured game runtime. If Vesta itself needs a different runtime, it is bundled/managed independently by the one installer; old Minecraft Java requirements must not force an obsolete agent runtime.",
       "textSha256": "cd076a34bb22d04394de3b20c5aea5baae1909f99a6233c15b611df261dc4baa",
       "phase": "P3",
@@ -3079,7 +3079,7 @@
     {
       "id": "java-runtime-005",
       "section": "Java runtime",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:897",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:905",
       "text": "Minecraft 1.7+ is a protocol/process compatibility target, not a promise that every optional connector, metric, loader, or online-backup command works on every version. The tested adapter matrix and capability discovery say exactly what is supported; unsupported features have an honest fallback.",
       "textSha256": "f3ddd54f118ebee7e722fd6ebd65a127a467877914519d3de101c8c90c3fa146",
       "phase": "P3",
@@ -3090,7 +3090,7 @@
     {
       "id": "metrics-retention-001",
       "section": "Metrics retention",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:904",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:912",
       "text": "Raw operational samples are retained for 24 hours at approximately ten-second resolution.",
       "textSha256": "add49cad8f77ad96e6e43f034d96295e103871857e321255dd8ef6465acd9a10",
       "phase": "P7",
@@ -3101,7 +3101,7 @@
     {
       "id": "metrics-retention-002",
       "section": "Metrics retention",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:906",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:914",
       "text": "Five-minute aggregates are retained for 30 days.",
       "textSha256": "4b0a30868e0a8490367c1b6898ff5fa5c6278e29a4ed3b63bb7276e60c703277",
       "phase": "P7",
@@ -3112,7 +3112,7 @@
     {
       "id": "metrics-retention-003",
       "section": "Metrics retention",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:907",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:915",
       "text": "Daily summaries are retained for one year.",
       "textSha256": "ec17ac1bbc0dd6012aec3bf490b1346f09439357a9cfbee2753b10920fc6ac7c",
       "phase": "P7",
@@ -3123,7 +3123,7 @@
     {
       "id": "metrics-retention-004",
       "section": "Metrics retention",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:908",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:916",
       "text": "Retention and total metrics storage have configurable ceilings and cleanup is performed locally.",
       "textSha256": "8b1a5bd80f466ed05aed5d0ff952514b1b5fcbfce4e9b224df8b8f2708b23040",
       "phase": "P7",
@@ -3134,7 +3134,7 @@
     {
       "id": "resource-controls-and-diagnostics-001",
       "section": "Resource controls and diagnostics",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:913",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:921",
       "text": "Configuration may set Java memory, process priority, CPU affinity where supported, and disk warning/critical thresholds. Strong cgroup/Job Object limits are available only on platforms and isolation profiles that support them.",
       "textSha256": "128a7e724bf0619571fd7b615c6ce28a89c8d632e818819264d07508d3501fd2",
       "phase": "P7",
@@ -3145,7 +3145,7 @@
     {
       "id": "resource-controls-and-diagnostics-002",
       "section": "Resource controls and diagnostics",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:917",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:925",
       "text": "The agent can refuse storage-expanding operations below a configurable critical free-space threshold while preserving owner recovery and cleanup operations.",
       "textSha256": "937adb54fc9162f9c1e57088861c1384f67377a05132ffa73e39cea25a8211ed",
       "phase": "P7",
@@ -3156,7 +3156,7 @@
     {
       "id": "resource-controls-and-diagnostics-003",
       "section": "Resource controls and diagnostics",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:919",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:927",
       "text": "Critical-disk actions are configurable. Notification/refusal is the safe default; an owner may explicitly configure a workflow such as backup cleanup or server stop.",
       "textSha256": "49d3b422d76fdc9b908c8f9677ec9a23117512e137e9c236c2b3b60c47e00105",
       "phase": "P7",
@@ -3167,7 +3167,7 @@
     {
       "id": "resource-controls-and-diagnostics-004",
       "section": "Resource controls and diagnostics",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:922",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:930",
       "text": "A configurable low-disk policy may delete expired staging/temp files and expired trash, then prune only backup snapshots already eligible under the active retention policy. It never silently removes unexpired backups or live server data. Cleanup order, thresholds, and automatic execution are visible and configurable.",
       "textSha256": "a61ace59c2a7bab80742436d7a3aa69c40314f436649070c91bfd74a3d8652c4",
       "phase": "P7",
@@ -3178,7 +3178,7 @@
     {
       "id": "resource-controls-and-diagnostics-005",
       "section": "Resource controls and diagnostics",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:927",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:935",
       "text": "An authorized user can generate and download a diagnostic bundle containing agent logs, Minecraft logs/crash reports, version/environment data, recent metrics, and configuration with known credentials and protected secrets removed.",
       "textSha256": "077ea137dcf034667c51529b0e4e121bd06d6a896c87d995dc79e856776ff11a",
       "phase": "P7",
@@ -3189,7 +3189,7 @@
     {
       "id": "resource-controls-and-diagnostics-006",
       "section": "Resource controls and diagnostics",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:931",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:939",
       "text": "There is no automatic third-party log-upload integration in the baseline; diagnostic and log export is manual.",
       "textSha256": "ebedbc464da3570cac13564fbe02797886fc1406b25cc4bf1ce0654b02a31abf",
       "phase": "P7",
@@ -3200,7 +3200,7 @@
     {
       "id": "resource-controls-and-diagnostics-007",
       "section": "Resource controls and diagnostics",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:933",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:941",
       "text": "Setup recommends Java memory from available host RAM and detected server type, while allowing owner override.",
       "textSha256": "efce72001286c8f9646838deaab3af890c4ec4db1fd946b5487ca08396e70309",
       "phase": "P7",
@@ -3211,7 +3211,7 @@
     {
       "id": "connector-role-001",
       "section": "Connector role",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:938",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:946",
       "text": "The wrapper remains fully useful with a vanilla server and no connector.",
       "textSha256": "44761a03f0a2fbad079410c3fcbf0237aa9620a744086542886b85ff4e5699a3",
       "phase": "P3",
@@ -3222,7 +3222,7 @@
     {
       "id": "connector-role-002",
       "section": "Connector role",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:939",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:947",
       "text": "Loader mods/plugins are optional capability adapters for accurate player events, TPS/MSPT and tick health, coordinated world flushes, join enforcement, native whitelist/ban operations, and other in-process signals.",
       "textSha256": "147ddb4cf8ab54c7a562aa07ad87fe314945d458c09fb5fce7d1b5897ef8944f",
       "phase": "P3",
@@ -3233,7 +3233,7 @@
     {
       "id": "connector-role-003",
       "section": "Connector role",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:942",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:950",
       "text": "The connector is not an administrative authority. Because it shares a process with third-party server code, a compromised mod/plugin environment must not be able to grant wrapper roles, access files, rotate credentials, or approve updates.",
       "textSha256": "3c3ec98baf75b4fede67118ef943ce13b9308395eeea88f3404e7af01a82a359",
       "phase": "P3",
@@ -3244,7 +3244,7 @@
     {
       "id": "connector-role-004",
       "section": "Connector role",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:946",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:954",
       "text": "The no-connector baseline relies on documented server commands, console/log parsing, status probes, and file inspection. Parsers are versioned adapters and surface uncertainty instead of inventing player or health state.",
       "textSha256": "67751e66d457bebdebe462d8bf5d421b84bfdac599e0b2205530f22425a049d1",
       "phase": "P3",
@@ -3255,7 +3255,7 @@
     {
       "id": "connectivity-and-nat-001",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:952",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:960",
       "text": "Direct authenticated HTTPS remains the mandatory self-hosted transport.",
       "textSha256": "d6e1eb9af6eae91e9e48a5e1025b577bf7ac6ec1af7855378ca573828547596f",
       "phase": "P8",
@@ -3266,7 +3266,7 @@
     {
       "id": "connectivity-and-nat-002",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:953",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:961",
       "text": "The endpoint accepts DNS hostnames such as `play.example.net` as well as IPv4 and IPv6 literals. IPv4 and IPv6 have first-class bind, advertise, firewall, certificate, and diagnostic handling.",
       "textSha256": "e8e84728eec8bec1384a5aaa4a4133220a19bda8873122521afd8202f4d0a38c",
       "phase": "P8",
@@ -3277,7 +3277,7 @@
     {
       "id": "connectivity-and-nat-003",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:956",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:964",
       "text": "Entering a Minecraft address can discover the Vesta API through a `_vesta._tcp` DNS SRV record. A configurable HTTPS `/.well-known/vesta-server` descriptor is a secondary discovery path, and complete manual API URL entry is always supported.",
       "textSha256": "d02643ee82f6a94117455996659b13fc8d42fe10975fa225e2ad6fa50392b0e1",
       "phase": "P8",
@@ -3288,7 +3288,7 @@
     {
       "id": "connectivity-and-nat-004",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:960",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:968",
       "text": "A compatible connector may advertise the same endpoint/server-ID hint in an extended Minecraft status response while the server is live; Vesta's offline status responder emits it while sleeping/offline. Discovery hints are untrusted until certificate/server identity and pairing are verified.",
       "textSha256": "6f6a8b6e6bde6dc4812e7b0f96a2b1c2e706f2def4ebb40b0ed8e015de8cf6df",
       "phase": "P8",
@@ -3299,7 +3299,7 @@
     {
       "id": "connectivity-and-nat-005",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:964",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:972",
       "text": "Vesta serves no browser-based management panel. HTTPS exists for the launcher, public status, pack distribution, and third-party protocol clients; local bootstrap/recovery remains available through the wrapper CLI.",
       "textSha256": "5e6ba1128d9ecbb265a852cc41da3f88c667fac67fd00a545fe04ccab13212d1",
       "phase": "P8",
@@ -3310,7 +3310,7 @@
     {
       "id": "connectivity-and-nat-006",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:967",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:975",
       "text": "One configurable HTTPS listener normally serves public status, pack, and authenticated management routes with per-route authorization. Optional SFTP remains a separate protocol/port.",
       "textSha256": "5816b503dbd89f025a5f87dd62bf1747368527316e5e1bcd2e22e9a9adf7af55",
       "phase": "P8",
@@ -3321,7 +3321,7 @@
     {
       "id": "connectivity-and-nat-007",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:970",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:978",
       "text": "Initial operation may use LAN access, explicit port forwarding, a user-managed VPN/overlay, or a reverse proxy.",
       "textSha256": "1cf4df703d975e69b0a049c226b74e1598887b3f480ea052081e659a01d77ef5",
       "phase": "P8",
@@ -3332,7 +3332,7 @@
     {
       "id": "connectivity-and-nat-008",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:972",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:980",
       "text": "A bring-your-own, self-hosted end-to-end encrypted relay is a later CGNAT feature rather than a dependency of the direct-connect release. It requires a publicly reachable owner-operated host; no Vesta-operated relay is mandatory.",
       "textSha256": "656277a3f33ea08ebe6dac52a2ad8d192a7a061e2d25013a432b5365c6dc783e",
       "phase": "P8",
@@ -3343,7 +3343,7 @@
     {
       "id": "connectivity-and-nat-009",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:975",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:983",
       "text": "Relay transport, if implemented, must not be able to decrypt management traffic or impersonate either endpoint.",
       "textSha256": "4ccf394da915756135f945ff7ac426061a1f314deed52533b75f9b26a5e1e2fc",
       "phase": "P8",
@@ -3354,7 +3354,7 @@
     {
       "id": "connectivity-and-nat-010",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:977",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:985",
       "text": "The first networking implementation uses direct HTTPS plus diagnostics for LAN reachability, firewall rules, public addressing, and port forwarding. Automatic UPnP/NAT-PMP mapping is never enabled without explicit owner consent.",
       "textSha256": "046e23767bf07058adf35db266ec669b221a60fc8c95e2ea9550376298c4c680",
       "phase": "P8",
@@ -3365,7 +3365,7 @@
     {
       "id": "connectivity-and-nat-011",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:980",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:988",
       "text": "Setup may create host firewall rules after explicit confirmation and verifies local bind/listener/firewall state. End-to-end public reachability is tested by a paired launcher on another network or an optional stateless external probe; core operation never depends on a Vesta-operated checking service.",
       "textSha256": "8b1ebdebf3c424017b9569b37a387745854ab5d9c452f5d2bf5b6aa3e95152d1",
       "phase": "P8",
@@ -3376,7 +3376,7 @@
     {
       "id": "connectivity-and-nat-012",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:984",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:992",
       "text": "The agent advertises one canonical public endpoint. Launchers may manually retain LAN/VPN alternatives, but automatic multi-address priority/failover is deferred until a concrete need justifies its complexity.",
       "textSha256": "9137c6c74ef805de8e2ac949634e8d0ed87b012e6491e4b98cb1a5265d210e40",
       "phase": "P8",
@@ -3387,7 +3387,7 @@
     {
       "id": "connectivity-and-nat-013",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:987",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:995",
       "text": "Optional LAN mDNS discovery may advertise a safe server ID/name and endpoint, but is a low-priority, onboarding-configurable convenience distinct from normal DNS hostname entry and reveals no credentials.",
       "textSha256": "9195a104c784bd1d9d89c88a74174b8dc1f0d98b9e957ecb037f9f835d019120",
       "phase": "P8",
@@ -3398,7 +3398,7 @@
     {
       "id": "connectivity-and-nat-014",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:990",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:998",
       "text": "A trusted reverse-proxy mode supports owner-operated HTTP proxies that terminate public TLS. Device-key proof remains application-layer authenticated, proxy source addresses are explicitly trusted, forwarded client-address headers are accepted only from those sources, and the origin hop is authenticated.",
       "textSha256": "785f10a636be9719544d74333a36ac94c8a496f8399ecd570afef6cf6ca60e41",
       "phase": "P8",
@@ -3409,7 +3409,7 @@
     {
       "id": "connectivity-and-nat-015",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:994",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1002",
       "text": "Direct and TCP-passthrough deployments retain end-to-end mutual TLS. Reverse proxy termination does not silently downgrade into bearer-token-only access.",
       "textSha256": "8d288f53ae822de3238ebf9d0aa34ea4f4a72680a4963b7b90648e47955368d4",
       "phase": "P8",
@@ -3420,7 +3420,7 @@
     {
       "id": "connectivity-and-nat-016",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:996",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1004",
       "text": "Access modes are composable, not mutually exclusive presets. A reverse-proxy deployment can keep loopback/LAN management available while also exposing its configured public routes through the proxy.",
       "textSha256": "be4ca0ff5cabca311238a32cea3ae2f50968ab3e5fe07fcb44e17ab7c2ff8e2a",
       "phase": "P8",
@@ -3431,7 +3431,7 @@
     {
       "id": "connectivity-and-nat-017",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:999",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1007",
       "text": "Onboarding can optionally detect a local Nginx/Caddy/Traefik installation, generate a reviewed Vesta site/upstream configuration, back up any touched configuration, validate it with the proxy's native checker, and reload only after success. It never silently installs or rewrites an unrelated proxy.",
       "textSha256": "c437ed259eddc87ae006d6c2aae4d10cc8a9285b2d32cb7ac218029093dde903",
       "phase": "P8",
@@ -3442,7 +3442,7 @@
     {
       "id": "connectivity-and-nat-018",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1003",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1011",
       "text": "Optional ACME certificate issuance/renewal supports owners with a domain. A locally generated pinned certificate remains the universal default, and ACME failure cannot remove CLI recovery or silently replace server identity.",
       "textSha256": "10b5b00e5f28bf77222c4adc9a93f19b04861a88ad44ee88ee84e158a9a79846",
       "phase": "P8",
@@ -3453,7 +3453,7 @@
     {
       "id": "connectivity-and-nat-019",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1006",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1014",
       "text": "ACME HTTP-01 requires reachable port 80 and TLS-ALPN-01 requires port 443; neither automatically works merely because Vesta's chosen API port is open. Onboarding detects conflicts/exposure and recommends proxy-managed certificates or an owner-supplied DNS-validated certificate when direct validation cannot work. No DNS-provider secret is required for normal local/pinned setup.",
       "textSha256": "bab415262b32ab2196fd21585144683d959277c1e307a3b275c10806d0e8ef03",
       "phase": "P8",
@@ -3464,7 +3464,7 @@
     {
       "id": "connectivity-and-nat-020",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1011",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1019",
       "text": "Direct deployments initially automate HTTP-01/TLS-ALPN ACME validation. Reverse-proxy deployments normally let the proxy own ACME. DNS-01 uses an owner-supplied ACME client/certificate path initially; provider-specific DNS credential integrations are deferred.",
       "textSha256": "55cbc07c3e8ec6279af68c34bd6cde9b0350aa3eb336205445b415db4248f147",
       "phase": "P8",
@@ -3475,7 +3475,7 @@
     {
       "id": "connectivity-and-nat-021",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1015",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1023",
       "text": "Route exposure is independently configurable. Remote management may be disabled or limited to loopback/LAN while public status and authorized pack downloads continue. Roles still govern access whenever management is exposed.",
       "textSha256": "933240bd41177381544f44afc8d078bce01537d3720f067fcfb325a5f9a3effd",
       "phase": "P8",
@@ -3486,7 +3486,7 @@
     {
       "id": "connectivity-and-nat-022",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1018",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1026",
       "text": "Disabling remote management immediately rejects new remote requests and closes existing remote management event/session channels; loopback CLI recovery is unaffected.",
       "textSha256": "f946e8635451edc91488505fa6f6f98881898fe74057799ffb2a61ef30f23500",
       "phase": "P8",
@@ -3497,7 +3497,7 @@
     {
       "id": "connectivity-and-nat-023",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1021",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1029",
       "text": "Changing the advertised hostname may preserve pairings when continuity of the same server identity is proven. Launchers still require low-priority endpoint approval before sending management requests to the new address.",
       "textSha256": "1b689a478622777b7c3640df855a60ec819b29064d20fad247f087000c2e1f76",
       "phase": "P8",
@@ -3508,7 +3508,7 @@
     {
       "id": "connectivity-and-nat-024",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1024",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1032",
       "text": "Limited Minecraft-style public status remains available even when pack access is password-gated or Minecraft-policy-gated.",
       "textSha256": "c716761c1631f1cc120cb0878d0304e690f499c50cdd4660c5eeb38c73d203cd",
       "phase": "P8",
@@ -3519,7 +3519,7 @@
     {
       "id": "connectivity-and-nat-025",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1026",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1034",
       "text": "Management and SFTP support configurable IP/CIDR allow and deny rules as an additional condition after identity authentication.",
       "textSha256": "48ae41504fb6df05a12fdd673d1d1e0e6be98d6fafea7867e82315a426c07311",
       "phase": "P8",
@@ -3530,7 +3530,7 @@
     {
       "id": "connectivity-and-nat-026",
       "section": "Connectivity and NAT",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1028",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1036",
       "text": "Minecraft `banned-ips.json` remains a game-admission source, not the canonical management firewall. Owners may explicitly enable inheritance of its denied addresses into pack/management/SFTP network policy; independent Vesta rules remain available to avoid accidental owner lockout or shared-NAT surprises.",
       "textSha256": "cf85ebdab63437c84fb6b04d9e5b1f340a6789d0e7222fbea70255feb5534526",
       "phase": "P8",
@@ -3541,7 +3541,7 @@
     {
       "id": "management-authentication-001",
       "section": "Management authentication",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1035",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1043",
       "text": "Management HTTPS uses mutual TLS. The agent presents its pinned server identity and each paired device has a server-scoped client certificate bound to its principal/device record.",
       "textSha256": "fd670bf5d3a4c81e5524f7b6f2a27f09091a916f8347dae26f1978e734b68f61",
       "phase": "P2",
@@ -3552,7 +3552,7 @@
     {
       "id": "management-authentication-002",
       "section": "Management authentication",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1038",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1046",
       "text": "Public-CA certificates are supported for server transport identity without replacing per-device client authentication.",
       "textSha256": "8386e40c92d7506ecb22219386e7c95271149b3d9c37d2dee4ab612115f1d51b",
       "phase": "P2",
@@ -3563,7 +3563,7 @@
     {
       "id": "management-authentication-003",
       "section": "Management authentication",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1040",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1048",
       "text": "The stable Vesta identity key is distinct from a renewable HTTPS certificate. Public-CA certificate renewal with valid hostname/chain and the same verified Vesta identity does not require pairing again. Locally pinned transport keys and the stable identity key have explicit authenticated rotation/continuity flows. An unexpected identity change or unproven pinned-key rotation blocks management until verified locally/out-of-band; failed TLS validation is not silently ignored. Public unauthenticated status may still be displayed with a prominent unverified-identity warning.",
       "textSha256": "77039c81a78c8ea2160392b3388ded0328542f1c64e79254c9f78054d633bf1d",
       "phase": "P2",
@@ -3574,7 +3574,7 @@
     {
       "id": "management-authentication-004",
       "section": "Management authentication",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1048",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1056",
       "text": "Public status, discovery, and pairing must remain reachable without an existing client certificate. Listener/proxy configuration distinguishes these routes while every management route requires verified device authentication; an absent client certificate cannot downgrade management into unauthenticated access.",
       "textSha256": "ed8487f568c6e47e1f5991356caf2aeb34eb28d8b20db7f1472b9c68bfb2de3d",
       "phase": "P2",
@@ -3585,7 +3585,7 @@
     {
       "id": "management-authentication-005",
       "section": "Management authentication",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1052",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1060",
       "text": "Optional TOTP or a local security PIN provides configurable step-up authentication for selected sensitive operations. It is disabled by default.",
       "textSha256": "108b6ad12f3fac97473ecf628f3c736a0297a4ecef24dcfafdbfda0a5bc43954",
       "phase": "P2",
@@ -3596,7 +3596,7 @@
     {
       "id": "management-authentication-006",
       "section": "Management authentication",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1054",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1062",
       "text": "Local recovery requires OS-level authorization: elevation on Windows and root or the dedicated Vesta service identity on Linux.",
       "textSha256": "afd96bad60313c294286ecc7067067008a0669c94d25b7572de00d9ca1177869",
       "phase": "P2",
@@ -3607,7 +3607,7 @@
     {
       "id": "sftp-001",
       "section": "SFTP",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1059",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1067",
       "text": "The agent provides an optional built-in SFTP service rooted in the Minecraft server directory for use with standard tools such as WinSCP and FileZilla.",
       "textSha256": "2e837ba1744c192c1cd78654360433038bfd960f2fa9579f9456d6716a048a7e",
       "phase": "P4",
@@ -3618,7 +3618,7 @@
     {
       "id": "sftp-002",
       "section": "SFTP",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1061",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1069",
       "text": "SFTP is disabled until explicitly enabled during owner onboarding or later configuration.",
       "textSha256": "c3d744006438c175339a5544c6ae651e66b9944457f641ae95c23a3dd214ad19",
       "phase": "P4",
@@ -3629,7 +3629,7 @@
     {
       "id": "sftp-003",
       "section": "SFTP",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1063",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1071",
       "text": "SFTP and HTTPS file management share the same canonical file permissions, browser-ignore rules, protected internal paths, quotas, trash behavior, and audit events.",
       "textSha256": "4b9e5165c833e2cd2c206a12fe966458184e8437028c6dbfc275c97a57561f11",
       "phase": "P4",
@@ -3640,7 +3640,7 @@
     {
       "id": "sftp-004",
       "section": "SFTP",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1066",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1074",
       "text": "Authentication prefers per-principal SSH public keys. Password credentials, if enabled, are separately generated/revocable and use the same role-derived file capabilities; management or pack passwords are never reused directly.",
       "textSha256": "e01da932db07b8d3d666e18ad47d444c66df0871cda208f1e1cc1cfca4133579",
       "phase": "P4",
@@ -3651,7 +3651,7 @@
     {
       "id": "sftp-005",
       "section": "SFTP",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1069",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1077",
       "text": "A Vesta administrator uses the same local Vesta principal and role for SFTP, but registers a dedicated SSH public key or receives a separately revocable SFTP password. SFTP does not create an unrelated authorization database.",
       "textSha256": "8c1e500d0ee90c5bbcdc6fbe99031676434c8996a1a47c2ca340a0e4ed366ea7",
       "phase": "P4",
@@ -3662,7 +3662,7 @@
     {
       "id": "sftp-006",
       "section": "SFTP",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1072",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1080",
       "text": "The canonical SFTP username is the stable Vesta principal UUID. A linked Minecraft UUID may be accepted as an alias. Credential expiry is configurable; SSH keys and generated passwords can have different lifetimes.",
       "textSha256": "b056262d332895b83f117fa8d5c35f64d78edc8f31e45e7f5bc6f45cc13278b5",
       "phase": "P4",
@@ -3673,7 +3673,7 @@
     {
       "id": "sftp-007",
       "section": "SFTP",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1075",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1083",
       "text": "SFTP distinguishes list, read/download, create/upload, overwrite, rename, mkdir, and delete permissions. It prevents path/symlink escape, limits sessions and transfer rates, and logs authentication and file operations.",
       "textSha256": "84c79d264074c94b47bb7118d63649b8ffccf5cfcbbaef156e0f2b8b16bec490",
       "phase": "P4",
@@ -3684,7 +3684,7 @@
     {
       "id": "sftp-008",
       "section": "SFTP",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1078",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1086",
       "text": "SFTP writes use standard live-file semantics. During overwrite, the original may be moved into recoverable trash first, but the new target is visible as it is uploaded; interrupted transfers can leave a partial file and a recoverable previous version.",
       "textSha256": "3fc7fcdfef5e47c8114d4ee7ccf15b27f71078b3f96dc717cd813b31be692f01",
       "phase": "P4",
@@ -3695,7 +3695,7 @@
     {
       "id": "sftp-009",
       "section": "SFTP",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1082",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1090",
       "text": "SFTP and HTTPS file management support ZIP/TAR/GZIP archive creation and extraction with traversal, symlink, file-count, compression-ratio, expanded size, timeout, and disk-space protections.",
       "textSha256": "44ecc564d7c627422ae4e052980c8b170bfa10b5e02a644cc92d686916a6c3a8",
       "phase": "P4",
@@ -3706,7 +3706,7 @@
     {
       "id": "sftp-010",
       "section": "SFTP",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1085",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1093",
       "text": "Remote ownership changes are blocked. Safe permission-bit changes are configurable on supported Unix filesystems and have no fabricated equivalent on Windows.",
       "textSha256": "d6313f7b46f64661f48bc998813fb555e5cf89031314e61e20887f27b41d2dca",
       "phase": "P4",
@@ -3717,7 +3717,7 @@
     {
       "id": "sftp-011",
       "section": "SFTP",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1088",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1096",
       "text": "The server SSH host key is generated locally, displayed during setup, and can be pinned by clients. SFTP listens on a separately configurable port.",
       "textSha256": "64f149a79487a80636a78b429e0f8896e8fd36ee30193d83118cd08a9bd9b483",
       "phase": "P4",
@@ -3728,7 +3728,7 @@
     {
       "id": "secrets-credentials-and-abuse-controls-001",
       "section": "Secrets, credentials, and abuse controls",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1093",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1101",
       "text": "Vesta minimizes credential sprawl by keeping one canonical principal and role assignment. Protocol credentials are authentication methods on that principal, not separate users, and each method can be listed, expired, rotated, or revoked independently from one place.",
       "textSha256": "9c6dea68b92bb49fce89345a92a267a8a9bbcc467fc08557d2494e4f85a1e635",
       "phase": "P2",
@@ -3739,7 +3739,7 @@
     {
       "id": "secrets-credentials-and-abuse-controls-002",
       "section": "Secrets, credentials, and abuse controls",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1097",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1105",
       "text": "Device private keys remain on the launcher device. The server stores only the public key/certificate and revocation metadata. Human-entered passwords and recovery passphrases are stored only as Argon2id verifiers when decryption is not required.",
       "textSha256": "45e68172447f03e7a07f7f1b12ee8331ca520205d0a48687ce9577d9b2ea9ad5",
       "phase": "P2",
@@ -3761,7 +3761,7 @@
     {
       "id": "secrets-credentials-and-abuse-controls-003",
       "section": "Secrets, credentials, and abuse controls",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1101",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1109",
       "text": "Secrets that must be recovered in plaintext, such as Discord tokens, webhook credentials, SMTP credentials, and backup repository keys, live in an encrypted agent vault whose wrapping key is protected by the operating system. Windows uses service-identity/DPAPI protection; Linux uses service-only file permissions with an optional system keyring or TPM-backed key where available.",
       "textSha256": "a9a1d4b2f69e2e9474211b75487a055a80fa0051f6714a2779ba9574ea73b4b4",
       "phase": "P2",
@@ -3772,7 +3772,7 @@
     {
       "id": "secrets-credentials-and-abuse-controls-004",
       "section": "Secrets, credentials, and abuse controls",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1106",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1114",
       "text": "Secrets never appear in normal configuration export, file browsing, metrics, notifications, task output, or diagnostic bundles. Replacement is supported without revealing the current value.",
       "textSha256": "835f79a3927f87c694c67c64ee73df92338e666b535598b2bf74ed3ad6ce020a",
       "phase": "P2",
@@ -3783,7 +3783,7 @@
     {
       "id": "secrets-credentials-and-abuse-controls-005",
       "section": "Secrets, credentials, and abuse controls",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1109",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1117",
       "text": "Public status and pack endpoints have configurable per-IP and per-principal bandwidth, request-rate, concurrent-transfer, archive, and daily-transfer limits. Secure presets are enabled by default, including limits for anonymous clients.",
       "textSha256": "0d3f5aa77f5149c8a7081623a5284c8fd46a52fd1e074d402c59f338563ca1c4",
       "phase": "P2",
@@ -3794,7 +3794,7 @@
     {
       "id": "secrets-credentials-and-abuse-controls-006",
       "section": "Secrets, credentials, and abuse controls",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1113",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1121",
       "text": "Management HTTPS and SFTP apply configurable request/body/transfer limits, connection and session caps, authentication backoff, temporary IP throttling, and per-principal storage/transfer quotas. Local recovery cannot be blocked by remote throttling or network deny rules.",
       "textSha256": "520a3d1a8ecb250328ebfa505f4229500f9189e64559eadd431a74632e834f54",
       "phase": "P2",
@@ -3805,7 +3805,7 @@
     {
       "id": "structured-configuration-001",
       "section": "Structured configuration",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1120",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1128",
       "text": "The management API provides schema-backed editors for `server.properties`, EULA state, JVM/memory settings, whitelist, bans, and recognized loader/server configuration while preserving raw text editing for authorized users.",
       "textSha256": "980b58da9936c1129a1392d9c3c3b2090cf59c268e14c75379ebffe58c8ae68a",
       "phase": "P4",
@@ -3816,7 +3816,7 @@
     {
       "id": "structured-configuration-002",
       "section": "Structured configuration",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1123",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1131",
       "text": "Vesta validates structured edits, writes atomically, preserves formatting when practical, and reports whether a reload or restart may be needed.",
       "textSha256": "d3e8045bee9aa6e03fc382c6b15e99b0be63b2e6f181925485a5be49c6d957fe",
       "phase": "P4",
@@ -3827,7 +3827,7 @@
     {
       "id": "structured-configuration-003",
       "section": "Structured configuration",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1125",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1133",
       "text": "Locally installed declarative schema extensions may add structured editors for server implementations and plugin/mod configuration. Raw text editing remains available, and schemas do not gain arbitrary agent code execution.",
       "textSha256": "3afa2e02ec0bdf8b91bbe1be4da19d8b9125dd12e015641ab6963bf12f115ed7",
       "phase": "P4",
@@ -3838,7 +3838,7 @@
     {
       "id": "structured-configuration-004",
       "section": "Structured configuration",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1128",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1136",
       "text": "Provisioning or managing MySQL/PostgreSQL databases is out of scope. Vesta may protect database credentials found in server files but does not own external database lifecycle.",
       "textSha256": "f5a2383b7d6a1aa214fe06dd7380ec9229c34f7333fc2b935b263c82709e2854",
       "phase": "P4",
@@ -3849,7 +3849,7 @@
     {
       "id": "data-and-recovery-export-001",
       "section": "Data and recovery export",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1134",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1142",
       "text": "Owners can export normal configuration for portability and an encrypted full recovery package containing roles, device registrations, schedules, integrations, SFTP registrations, notification policy, and audit metadata.",
       "textSha256": "27a12f6f89ebfb275903a04315be72efb16f6ee6adad5a72f33c9b0d6b5605af",
       "phase": "P6",
@@ -3860,7 +3860,7 @@
     {
       "id": "data-and-recovery-export-002",
       "section": "Data and recovery export",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1137",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1145",
       "text": "Recovery export is distinct from the redacted diagnostic bundle. Secret-bearing recovery packages require owner authorization, strong encryption, and a separately preserved recovery key/passphrase.",
       "textSha256": "52b415d9e9b6c1d04967f5130f5103e986dba33f025cf5b49b08d69c0dd7000c",
       "phase": "P6",
@@ -3871,7 +3871,7 @@
     {
       "id": "agent-state-repair-and-pending-changes-001",
       "section": "Agent state, repair, and pending changes",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1143",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1151",
       "text": "Local durable state uses SQLite in WAL mode with foreign keys, versioned migrations, startup integrity checks, and a protected pre-migration snapshot. Database maintenance and snapshots participate in the operation queue.",
       "textSha256": "3291c86260d18097d7d1112f51162fd80cb2ab9442863e928af840fe8b8b4a95",
       "phase": "P1",
@@ -3894,7 +3894,7 @@
     {
       "id": "agent-state-repair-and-pending-changes-002",
       "section": "Agent state, repair, and pending changes",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1146",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1154",
       "text": "The SQLite state directory stays on a supported local filesystem, not a network share used for backups. Live database exports use SQLite's supported backup mechanism, not an inconsistent copy of the database/WAL files.",
       "textSha256": "e25c4dbd8cf30757d66fd86706fce6c50247d707fe37287049d6f0d64fda5feb",
       "phase": "P1",
@@ -3905,7 +3905,7 @@
     {
       "id": "agent-state-repair-and-pending-changes-003",
       "section": "Agent state, repair, and pending changes",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1149",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1157",
       "text": "Desired configuration and effective runtime state are tracked separately. Each changed setting declares whether it applies live, on agent restart, on Minecraft reload, or on Minecraft restart.",
       "textSha256": "51743a0ea75237def95e8cb3bccf5c9c148d550e6531e964dee28b2e3d9652a2",
       "phase": "P1",
@@ -3921,7 +3921,7 @@
     {
       "id": "agent-state-repair-and-pending-changes-004",
       "section": "Agent state, repair, and pending changes",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1152",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1160",
       "text": "The API exposes a compact pending-change summary, affected settings, required action, and validation errors. A launcher can render this persistently, such as in a status control at the bottom of its navigation sidebar.",
       "textSha256": "b70e6f62df40b0683031e92fe6fea4490704e2aff591787a2c5dc8ee6f78320b",
       "phase": "P1",
@@ -3932,7 +3932,7 @@
     {
       "id": "agent-state-repair-and-pending-changes-005",
       "section": "Agent state, repair, and pending changes",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1155",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1163",
       "text": "Roles, limits, notification routes, and schedules normally apply live. Listener/TLS/service changes require an agent restart; JVM, loader, and most Minecraft configuration changes report the appropriate reload/restart need.",
       "textSha256": "ab4aee7c7b5e3ac4d89a27ff105ac8eaac7a5f60598b6ed921fb05d4b09c75d3",
       "phase": "P1",
@@ -3943,7 +3943,7 @@
     {
       "id": "agent-state-repair-and-pending-changes-006",
       "section": "Agent state, repair, and pending changes",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1158",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1166",
       "text": "Breaking state corruption prevents Minecraft launch by default and Vesta does not expose normal remote management against uncertain authorization data and enters a local recovery-required mode. The owner may configure a narrowly defined availability policy for non-security-critical failures, but corrupted identity, authorization, path, or launch-integrity state always fails closed.",
       "textSha256": "54b16749fdfd094732f9f896486c4bd3e4676ce9568548c6f117e41ed361495b",
       "phase": "P1",
@@ -3963,7 +3963,7 @@
     {
       "id": "agent-state-repair-and-pending-changes-007",
       "section": "Agent state, repair, and pending changes",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1163",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1171",
       "text": "Repair, restore, reset, or locally approved continuation requires an OS-authorized local confirmation and produces a permanent audit event.",
       "textSha256": "04aa15a1ff8d4c48dd483f22c532996836130f250ea94262588809dd97c4389d",
       "phase": "P1",
@@ -3974,7 +3974,7 @@
     {
       "id": "agent-state-repair-and-pending-changes-008",
       "section": "Agent state, repair, and pending changes",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1165",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1173",
       "text": "Automatic service-level restart of the Vesta agent after an agent crash is an owner-configurable watchdog toggle. It is independent of the Minecraft start-on-agent-start and crash-restart policies.",
       "textSha256": "380e9fbfac7256de7cea8ba08582a3305a2400eb0f686c84e5fac26f4facfdad",
       "phase": "P1",
@@ -3985,7 +3985,7 @@
     {
       "id": "software-update-policy-001",
       "section": "Software update policy",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1171",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1179",
       "text": "Update channels are `stable`, `beta`, and `nightly`; `stable` is the default.",
       "textSha256": "c7cc3929de3ee0e592c47f7cc21205cacdb420f93b25c10cfea0126fd2bacf23",
       "phase": "P8",
@@ -3996,7 +3996,7 @@
     {
       "id": "software-update-policy-002",
       "section": "Software update policy",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1172",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1180",
       "text": "The agent checks for updates at startup and approximately every 24 hours.",
       "textSha256": "3f04ab3ec721edd7f78340da695c2946db073a3436faa743150606d50aec2f49",
       "phase": "P8",
@@ -4007,7 +4007,7 @@
     {
       "id": "software-update-policy-003",
       "section": "Software update policy",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1173",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1181",
       "text": "Checks and optional staging may be automated, but installation, agent restart, and Minecraft restart always require explicit authorization.",
       "textSha256": "8add9b3617682b79815618107936c760e9c5ec8f83b26b9859549d2fd01e7c6a",
       "phase": "P8",
@@ -4018,7 +4018,7 @@
     {
       "id": "software-update-policy-004",
       "section": "Software update policy",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1175",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1183",
       "text": "Updates are signed, rollback-protected, staged, health-checked after activation, and retain the previous working agent version for recovery.",
       "textSha256": "205c960ff5c50aa17653c5dc8b6b880d05b2d15c397e1721950bc5f150e6a29b",
       "phase": "P8",
@@ -4029,7 +4029,7 @@
     {
       "id": "software-update-policy-005",
       "section": "Software update policy",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1177",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1185",
       "text": "Recovery of an interrupted, uncommitted file transaction is distinct from restoring a backup after a completed but unhealthy update. Vesta reconciles journals to a known transaction state; it never silently restores worlds or chooses an older pack/server state after a health check fails. Agent-binary fallback must preserve state compatibility and report exactly what happened.",
       "textSha256": "a604fd7bc7489df63e58a1b50125f1847792e80859b01d43150fe81bda11898e",
       "phase": "P8",
@@ -4040,7 +4040,7 @@
     {
       "id": "installation-experience-001",
       "section": "Installation experience",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1185",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1193",
       "text": "The default installation path is an interactive Windows PowerShell or Linux shell walkthrough. It supports choosing a new/existing server directory, process mode, Java runtime, service/portable operation, ports/firewall, TLS, initial owner pairing, pack policy, optional connector, start/restart policy, backups, update channel, and hardening profile.",
       "textSha256": "488449b0d00df7b87a65acb9adcdea77cc424db50be2a3393eb97aa9931bd4b4",
       "phase": "P8",
@@ -4051,7 +4051,7 @@
     {
       "id": "installation-experience-002",
       "section": "Installation experience",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1190",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1198",
       "text": "The normal walkthrough asks only for a new/existing server, its detected or chosen implementation/version, intended access (local/LAN/internet), initial owner pairing, and opt-in features such as backups or a supported connector. Recommended settings are displayed together; advanced options expand only when requested. Owners are not required to understand IPC, TLS internals, script definitions, resource-limit primitives, or backup cryptography.",
       "textSha256": "07029dcc465b3352f0e3ef622d4c7d1cc5a4d7b7fa0eaab52085cae3d7557499",
       "phase": "P8",
@@ -4062,7 +4062,7 @@
     {
       "id": "installation-experience-003",
       "section": "Installation experience",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1196",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1204",
       "text": "Network onboarding offers composable Local, LAN, Direct internet, Reverse proxy, and VPN/overlay choices rather than forcing one exclusive topology. It configures only the selected listeners/routes and explains the exposure.",
       "textSha256": "496f839881ef6a7a59095b55612705333dc2afabbaf6a0de4ff9eacfcdb0adb2",
       "phase": "P8",
@@ -4073,7 +4073,7 @@
     {
       "id": "installation-experience-004",
       "section": "Installation experience",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1199",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1207",
       "text": "Optional external port/reachability testing discloses that the public address is sent to a remote probe. Owners may instead complete an end-to-end test from a paired launcher on another network.",
       "textSha256": "e2a745e7ee7fedb6155c4fb505d90ef15649f1447369d45bd9ade26fa4e69e1f",
       "phase": "P8",
@@ -4084,7 +4084,7 @@
     {
       "id": "installation-experience-005",
       "section": "Installation experience",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1202",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1210",
       "text": "System-service operation is recommended and starts the agent with the machine. Portable/manual operation and integration with an existing Windows service or systemd unit are also supported.",
       "textSha256": "e96bcc2acbac2518722cdc5309f48dd19f20ee965e99575320ecfce99360af4d",
       "phase": "P8",
@@ -4095,7 +4095,7 @@
     {
       "id": "installation-experience-006",
       "section": "Installation experience",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1205",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1213",
       "text": "Advanced/headless installations support documented non-interactive flags or an answer file using the same validation and backup acknowledgements.",
       "textSha256": "dfc5e1a7b801ba59a7327fc6d6987220507094f9dc185fbe2b148470cebeddc5",
       "phase": "P8",
@@ -4106,7 +4106,7 @@
     {
       "id": "installation-experience-007",
       "section": "Installation experience",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1207",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1215",
       "text": "Uninstallation is a guided set of explicit choices. Removing the Vesta service does not implicitly delete the Minecraft server, Vesta state, downloaded Java, backups, or recovery material; each removable data class is selected and described separately.",
       "textSha256": "e0cc6a4ed7ea7a7976d4f5d6275dde12e219932f7b5f8b6b4b7788dff0c73691",
       "phase": "P8",
@@ -4117,7 +4117,7 @@
     {
       "id": "audit-retention-001",
       "section": "Audit retention",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1214",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1222",
       "text": "Audit records are tamper-evident, locally durable, and exportable as structured JSON.",
       "textSha256": "f62fff360804aa2ab20d0f878ab26627fa593268ee590e1d81fbd0defc4f19c9",
       "phase": "P1",
@@ -4133,7 +4133,7 @@
     {
       "id": "audit-retention-002",
       "section": "Audit retention",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1216",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1224",
       "text": "Local tamper evidence is not protection against an OS administrator replacing the whole history. Optional external checkpoints/export can strengthen that guarantee without becoming a core service dependency.",
       "textSha256": "536eac66e369c9abbbfa1f45b7305779202442d0d15c8ac7d565f7d351fb664d",
       "phase": "P1",
@@ -4144,7 +4144,7 @@
     {
       "id": "audit-retention-003",
       "section": "Audit retention",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1219",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1227",
       "text": "Each event records the principal, authentication method/device, source address, operation, target, outcome, timestamp, and correlation/operation identifier. Sensitive changes include safe before/after hashes or redacted summaries, not raw file contents, credentials, tokens, or command output containing secrets.",
       "textSha256": "1f31fdfdcfd2239977b151bb60894ef698d2385dec6c59126f4732ea7eb6fc6f",
       "phase": "P1",
@@ -4161,7 +4161,7 @@
     {
       "id": "audit-retention-004",
       "section": "Audit retention",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1223",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1231",
       "text": "General audit events have 180-day default retention. Security, ownership, credential, and recovery events are retained permanently unless removed by a local owner recovery operation with an audit export/warning.",
       "textSha256": "1c95ac75c5a6c036fd789bf13f537503fcdf84cb6e464f1921c92de5e2696be8",
       "phase": "P1",
@@ -4172,7 +4172,7 @@
     {
       "id": "audit-retention-005",
       "section": "Audit retention",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1226",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1234",
       "text": "Protected audit growth has storage monitoring, reserved capacity, and explicit local export/archival guidance. Vesta never silently prunes protected history or continues unaudited sensitive mutations when durable recording has failed.",
       "textSha256": "55ab3df230f93e5becc08cb8774a300ee5cc7d76f9a2fbe7d7eeb22c3eb144ff",
       "phase": "P1",
@@ -4189,7 +4189,7 @@
     {
       "id": "discord-integration-001",
       "section": "Discord integration",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1232",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1240",
       "text": "Discord is an optional outbound integration for notifications, status presence, and read-only slash commands such as uptime, online count, and safe server status.",
       "textSha256": "a33b8e97188dfad16cc14a834a0a2010eac28e8928d4a8fd85c6608ebd351dd9",
       "phase": "P7",
@@ -4200,7 +4200,7 @@
     {
       "id": "discord-integration-002",
       "section": "Discord integration",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1235",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1243",
       "text": "Optional Discord OAuth identity linking may associate a Discord user or guild role with a Vesta principal/role. Local Vesta authorization remains canonical, and Discord cannot grant Owner or Administrator authority.",
       "textSha256": "b079bf7b5134d51e79d123c169c7e73a5761fa50bb661f946d9d9e7fc2a02a35",
       "phase": "P7",
@@ -4211,7 +4211,7 @@
     {
       "id": "discord-integration-003",
       "section": "Discord integration",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1238",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1246",
       "text": "Guild, channel, user, and role allowlists constrain bot output. Bot and webhook tokens are protected agent secrets and never exposed through normal file APIs.",
       "textSha256": "046f789fe6b2796ee09eadc36b635273561d17542f6f346d74598269db57bb4c",
       "phase": "P7",
@@ -4222,7 +4222,7 @@
     {
       "id": "discord-integration-004",
       "section": "Discord integration",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1240",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1248",
       "text": "Discord channels, visibility, slash commands, status presentation, event routes, Vesta role mappings, and whether supported actions are enabled are all owner-configurable. Presets provide a useful setup without hard-coding a community's access policy.",
       "textSha256": "e2c362aaa95fc6da6784aa9751acded5419234b43c55b74f1de81b946ee75c2c",
       "phase": "P7",
@@ -4233,7 +4233,7 @@
     {
       "id": "configuration-philosophy-001",
       "section": "Configuration philosophy",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1247",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1255",
       "text": "Vesta ships secure, useful presets and an interactive setup path so an owner does not need to design policies from scratch.",
       "textSha256": "7ae888526ea4b0412427d13741c780e06da119292e46a59f5883a31977c215a3",
       "phase": "P8",
@@ -4244,7 +4244,7 @@
     {
       "id": "configuration-philosophy-002",
       "section": "Configuration philosophy",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1249",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1257",
       "text": "Presets are schema-backed configuration, not product lock-ins. Owners can customize roles, capabilities, pack rules, schedules, retention, notifications, Discord behavior, process policy, storage, network endpoints, and adapters.",
       "textSha256": "cfd86d8b7269da07ae47629d06123dc3772fc62f64201635b0093c13eed816cd",
       "phase": "P8",
@@ -4255,7 +4255,7 @@
     {
       "id": "configuration-philosophy-003",
       "section": "Configuration philosophy",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1252",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1260",
       "text": "Presets can be reset, exported, imported, and diffed against current settings.",
       "textSha256": "b0c8d7b0b5255c73ffe055e887710ca6290031827d72e5a41cd5f32ea97084dd",
       "phase": "P8",
@@ -4266,7 +4266,7 @@
     {
       "id": "configuration-philosophy-004",
       "section": "Configuration philosophy",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1253",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1261",
       "text": "Security invariants remain enforced even when surrounding policy is configurable: path confinement, protected agent secrets, authenticated local owner recovery, cryptographic verification, request limits, and auditable authorization cannot be disabled through ordinary remote configuration.",
       "textSha256": "8a1437ea87ccee29cba01dbdf614d7fbb789cfd686a2c2a3463d269427972cc1",
       "phase": "P8",
@@ -4277,7 +4277,7 @@
     {
       "id": "proxies-and-hosting-extensibility-001",
       "section": "Proxies and hosting extensibility",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1260",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1268",
       "text": "Velocity can be treated as a supported Java server process without requiring multi-server orchestration in the first release.",
       "textSha256": "e8cc168d5e0a3c5e9af4365f013852ad8762cbdf660f15d9e59accd84b426e88",
       "phase": "P8",
@@ -4288,7 +4288,7 @@
     {
       "id": "proxies-and-hosting-extensibility-002",
       "section": "Proxies and hosting extensibility",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1262",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1270",
       "text": "Proxy topology, forwarding secrets, backend network isolation, dependency ordering, and community-wide orchestration are later capabilities.",
       "textSha256": "f37d3e96fc1ee696591b21f960d1a216dbd250f2f16cf794c3a5ef3fe14846ff",
       "phase": "P8",
@@ -4299,7 +4299,7 @@
     {
       "id": "proxies-and-hosting-extensibility-003",
       "section": "Proxies and hosting extensibility",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1264",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1272",
       "text": "The management protocol is public and versioned: an OpenAPI-described HTTPS request API plus a versioned WebSocket or Server-Sent Events stream for task, console, status, metric, player, and notification events.",
       "textSha256": "bf7bbb69173404880da35787302bafbb2f7903be36d2796235bc80a72671d702",
       "phase": "P8",
@@ -4310,7 +4310,7 @@
     {
       "id": "proxies-and-hosting-extensibility-004",
       "section": "Proxies and hosting extensibility",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1267",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1275",
       "text": "Compatibility negotiation, stable error codes, idempotency keys for mutating requests, pagination, event cursors, and deprecation windows are part of the protocol contract so third-party panels can be reliable clients.",
       "textSha256": "6df9f137e86020d362867a7e992d75144d716ef1b7d66fd60eaa9b3efdd94c83",
       "phase": "P8",
@@ -4336,7 +4336,7 @@
     {
       "id": "proxies-and-hosting-extensibility-005",
       "section": "Proxies and hosting extensibility",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1270",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1278",
       "text": "Hosting-provider service principals are a niche optional deployment feature, disabled by default. If enabled, they receive explicitly configured scopes and server access and cannot silently obtain or delegate local Owner authority.",
       "textSha256": "137d26ffb2cbf5d2ebd3c5e94571d6bff15f2ba6e782b5bd3a156141e10942e9",
       "phase": "P8",
@@ -4347,7 +4347,7 @@
     {
       "id": "extension-and-telemetry-boundary-001",
       "section": "Extension and telemetry boundary",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1276",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1284",
       "text": "The initial complete release supports declarative configuration schemas, connector capability adapters, outbound webhooks, and locally installed script presets. These cover likely integrations without loading arbitrary third-party code into the privileged agent process.",
       "textSha256": "785df30b4d15b5ad871d1eee8aa831dcc43b3a995f8a5b12fd8201a29d557e44",
       "phase": "P8",
@@ -4358,7 +4358,7 @@
     {
       "id": "extension-and-telemetry-boundary-002",
       "section": "Extension and telemetry boundary",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1280",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1288",
       "text": "A general in-process plugin API is deferred until concrete extension needs and a secure isolation/signing model exist. Future extensions must declare their capabilities, resources, compatibility, and trust source.",
       "textSha256": "18fbf6802ddeac5cc84ef580b984f5751a1bfd875863e2eef524fdb4245493be",
       "phase": "P8",
@@ -4369,7 +4369,7 @@
     {
       "id": "extension-and-telemetry-boundary-003",
       "section": "Extension and telemetry boundary",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1283",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1291",
       "text": "Product telemetry is completely disabled by default and core operation never depends on it. Owners may explicitly opt into a documented anonymous diagnostic dataset, preview exactly what is sent, and revoke consent at any time.",
       "textSha256": "31a94ae1b9c94ce886c3ec9ba2664479feccbe2f3a606e325856779b1e4e607a",
       "phase": "P8",
@@ -4380,7 +4380,7 @@
     {
       "id": "security-direction-001",
       "section": "Security direction",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1292",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1300",
       "text": "Argon2id for Vesta-owned human password verification. Mature backup engines retain their reviewed native key derivation rather than changing their format.",
       "textSha256": "b71202d51fbb9c78de4b47a2402584137ba89c97e811d73cec770c8cc23640d8",
       "phase": "P2",
@@ -4397,7 +4397,7 @@
     {
       "id": "security-direction-002",
       "section": "Security direction",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1294",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1302",
       "text": "Device public-key authentication and short-lived sessions.",
       "textSha256": "7a9754b741d170069d0466510fe5b5dfb89d8ea6901b8832d6926d0643eb3ea1",
       "phase": "P2",
@@ -4408,7 +4408,7 @@
     {
       "id": "security-direction-003",
       "section": "Security direction",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1295",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1303",
       "text": "Per-device and per-principal revocation.",
       "textSha256": "73aa62bdd1039987f2a8120fef7c1809b36140b5f56d57a5998a9dcdb4c6aa70",
       "phase": "P2",
@@ -4419,7 +4419,7 @@
     {
       "id": "security-direction-004",
       "section": "Security direction",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1296",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1304",
       "text": "Strict TLS identity/pinning and certificate rotation.",
       "textSha256": "c0cef26917cc2c16d1ecb3b2dd22fbf9187be919e9956d43e9d8e7980981e32c",
       "phase": "P2",
@@ -4430,7 +4430,7 @@
     {
       "id": "security-direction-005",
       "section": "Security direction",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1297",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1305",
       "text": "Fine-grained authorization with deny-by-default policy.",
       "textSha256": "cf234b4b82aff18e0917a74d3afeb132d21cac2bfa7b28b88c3736cc33e43079",
       "phase": "P2",
@@ -4441,7 +4441,7 @@
     {
       "id": "security-direction-006",
       "section": "Security direction",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1298",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1306",
       "text": "Request/body/concurrency/storage limits and abuse controls.",
       "textSha256": "30230fa7a025e634aa1c3fd6aa13237edcef9cf4d97c683703b4097466c3ed20",
       "phase": "P2",
@@ -4452,7 +4452,7 @@
     {
       "id": "security-direction-007",
       "section": "Security direction",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1299",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1307",
       "text": "Safe path resolution, protected internal roots, atomic writes, and operation transactions.",
       "textSha256": "922d82db7c924d641624b59ba727eec8eaf037fba718cca76b98177812fdba32",
       "phase": "P2",
@@ -4463,7 +4463,7 @@
     {
       "id": "security-direction-008",
       "section": "Security direction",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1301",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1309",
       "text": "Append-only audit events for every authentication, authorization, console, file, content, backup, schedule, settings, update, and power operation.",
       "textSha256": "26a38559ea1ccd1cbc5d6e6e07a52db1fa3e3042ea2c4c2c0a2734787a33a821",
       "phase": "P2",
@@ -4474,7 +4474,7 @@
     {
       "id": "security-direction-009",
       "section": "Security direction",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1303",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1311",
       "text": "Secret redaction, protected local storage, and platform-specific permissions.",
       "textSha256": "87708abfa1106cc1120e8824ab16d7e6941dcc5568eb8a2a0e9a43a234a21e67",
       "phase": "P2",
@@ -4485,7 +4485,7 @@
     {
       "id": "security-direction-010",
       "section": "Security direction",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1304",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1312",
       "text": "Signed update metadata and rollback protection.",
       "textSha256": "553732ec2449e3543ffff27b673f16fb4012cd283a22da12888f111297954056",
       "phase": "P2",
@@ -4496,7 +4496,7 @@
     {
       "id": "security-direction-011",
       "section": "Security direction",
-      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1305",
+      "source": "docs/SERVER_SOFTWARE_REQUIREMENTS.md:1313",
       "text": "Threat-model and security regression tests before public release.",
       "textSha256": "ed170a05f8effadac8fecc63c60b10f44a42b6aa8e0c20e64a79c8d399e77469",
       "phase": "P2",

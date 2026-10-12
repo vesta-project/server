@@ -25,7 +25,7 @@ Date: **2026-10-04**. This records the foundation batch's new dependency; it is 
 2. Verify trusted artifact provenance and vulnerabilities at the approved release cutoff; establish an update policy without silently changing pins.
 3. Collect applicable driver/native/transitive notices in distributable bundles and review project-license compatibility.
 4. Prove native loading and WAL/ACL/filesystem behavior under clean supported Windows and Linux service accounts, including failed permissions, disk-full, and recovery drills.
-5. Repeat dependency intake for planned restic, ACME/SFTP, installer/service integration, and signed update tooling before enabling those adapters.
+5. Repeat dependency intake for planned ACME/SFTP, installer/service integration, and signed update tooling before enabling those adapters.
 
 The existing BouncyCastle dependency already supplies Argon2id/Ed25519 primitives. This checkpoint does not add a second crypto library or implement the vault/mTLS/signature contract; existing bcrypt-backed MVP authentication remains pending replacement under P2.
 

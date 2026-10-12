@@ -193,11 +193,31 @@ pub struct BackupProfile {
     pub warn_seconds: u32,
 }
 
+/// S3-compatible repository location. The secret key is read from a separate file
+/// (owner-protected like the host configuration), never written into this document.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct S3Repository {
+    pub endpoint: String,
+    pub region: String,
+    pub bucket: String,
+    pub prefix: String,
+    pub access_key_id: String,
+    pub secret_key_file: PathBuf,
+    pub path_style: bool,
+}
+
+/// Where backups are stored.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BackupRepository {
+    /// A local or mounted directory.
+    Local(PathBuf),
+    S3(S3Repository),
+}
+
 /// Trusted backup configuration. Backups stay off unless this table exists.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BackupSettings {
-    pub restic: PathBuf,
-    pub repository: PathBuf,
+    pub repository: BackupRepository,
     pub restore_root: Option<PathBuf>,
     pub profiles: Vec<BackupProfile>,
 }
@@ -537,22 +557,52 @@ impl HostConfiguration {
         let backups = document
             .backups
             .map(|Table(wire)| -> Result<BackupSettings> {
-                let restic = resolve_value(base, &wire.restic)?;
-                let repository = resolve_value(base, &wire.repository)?;
                 let restore_root = wire
                     .restore_root
                     .map(|root| resolve_value(base, &root))
                     .transpose()?;
+                let repository = match (wire.repository, wire.s3) {
+                    (Some(path), None) => BackupRepository::Local(resolve_value(base, &path)?),
+                    (None, Some(Table(s3))) => {
+                        let text_ok = |t: &str, max: usize| {
+                            !t.is_empty() && t.len() <= max && !t.chars().any(char::is_control)
+                        };
+                        if !text_ok(&s3.endpoint, 512)
+                            || !text_ok(&s3.region, 64)
+                            || !text_ok(&s3.bucket, 63)
+                            || !text_ok(&s3.access_key_id, 128)
+                            || s3.prefix.as_deref().is_some_and(|p| !text_ok(p, 128))
+                        {
+                            return Err(ConfigError::InvalidDocument);
+                        }
+                        let secret_key_file = resolve_value(base, &s3.secret_key_file)?;
+                        protected.push(secret_key_file.clone());
+                        BackupRepository::S3(S3Repository {
+                            endpoint: s3.endpoint,
+                            region: s3.region,
+                            bucket: s3.bucket,
+                            prefix: s3.prefix.unwrap_or_default(),
+                            access_key_id: s3.access_key_id,
+                            secret_key_file,
+                            path_style: s3.path_style.unwrap_or(true),
+                        })
+                    }
+                    // Exactly one repository location.
+                    _ => return Err(ConfigError::InvalidDocument),
+                };
                 // Backups must never contain their own repository, restores or the
                 // protected state, and must not be written into the game tree.
-                for path in std::iter::once(&repository).chain(restore_root.as_ref()) {
+                let local = match &repository {
+                    BackupRepository::Local(path) => Some(path),
+                    BackupRepository::S3(_) => None,
+                };
+                for path in local.into_iter().chain(restore_root.as_ref()) {
                     if nested(path, &game) || nested(path, &state) {
                         return Err(ConfigError::InvalidPath);
                     }
                 }
-                if restore_root
-                    .as_ref()
-                    .is_some_and(|root| nested(root, &repository))
+                if let (Some(root), Some(local)) = (&restore_root, local)
+                    && nested(root, local)
                 {
                     return Err(ConfigError::InvalidPath);
                 }
@@ -583,7 +633,6 @@ impl HostConfiguration {
                     });
                 }
                 Ok(BackupSettings {
-                    restic,
                     repository,
                     restore_root,
                     profiles,
@@ -968,11 +1017,23 @@ struct Document {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct WireBackups {
-    restic: String,
-    repository: String,
+    repository: Option<String>,
+    s3: Option<Table<WireS3>>,
     restore_root: Option<String>,
     #[serde(default)]
     profile: Vec<Table<WireBackupProfile>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct WireS3 {
+    endpoint: String,
+    region: String,
+    bucket: String,
+    prefix: Option<String>,
+    access_key_id: String,
+    secret_key_file: String,
+    path_style: Option<bool>,
 }
 
 #[derive(Deserialize)]

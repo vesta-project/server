@@ -568,14 +568,16 @@
       "name": "Backup repositories and retention",
       "status": "partial",
       "phase": 6,
-      "current": "restic-driven backup jobs with per-profile retention (forget --prune), verification (check), .vesta-backupignore and an owner-initialized encrypted repository; durable job table and idempotent submission. Not yet: bundled restic, S3, storage quotas/capacity preflight, vault for the key.",
+      "current": "Built-in deduplicating backup engine (SHA-256 content-addressed 1 MiB chunks, deflate, integrity-checked restores; no bundled third-party software; unencrypted by owner decision 2026-10-12) over a local directory or S3-compatible bucket, with per-profile retention and prune, verification, .vesta-backupignore, durable job table and idempotent submission. Not yet: real S3 provider evidence, storage quotas/capacity preflight, recovery export.",
       "evidence": [
         "crates/vesta-control/src/backups/mod.rs",
-        "crates/vesta-control/src/backups/restic.rs",
+        "crates/vesta-control/src/backups/engine.rs",
+        "crates/vesta-control/src/backups/store.rs",
+        "crates/vesta-control/src/backups/s3.rs",
         "crates/vesta-control/tests/backups.rs",
         "docs/operations/backups.md"
       ],
-      "acceptance": "Opt-in local/NAS/S3 encrypted repositories, recovery export, retention and working-space reserve.",
+      "acceptance": "Opt-in local/NAS/S3 repositories (unencrypted by owner decision), recovery export, retention and working-space reserve.",
       "auditDate": "2026-10-12",
       "previous": {
         "auditDate": "2026-10-10",

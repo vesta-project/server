@@ -1,4 +1,4 @@
-//! Backup jobs against an inert restic stand-in and owned temporary directories.
+//! Backup jobs with the built-in engine over owned temporary directories.
 use std::{
     fs,
     path::PathBuf,
@@ -6,8 +6,9 @@ use std::{
     time::{Duration, Instant},
 };
 use vesta_control::{
+    backups::store::{LocalStore, ObjectInfo, Store},
     backups::{BackupError, BackupEvent, Backups, Environment, JobKind, JobState},
-    config::{BackupMode, BackupProfile, BackupSettings, MutationPolicy},
+    config::{BackupMode, BackupProfile, BackupRepository, BackupSettings, MutationPolicy},
     identity::{DeviceId, PrincipalId, Subject},
     operations::StartGate,
 };
@@ -79,8 +80,7 @@ fn fixture() -> Fixture {
         .unwrap();
     }
     let settings = BackupSettings {
-        restic: PathBuf::from(env!("CARGO_BIN_EXE_vesta-restic-fixture")),
-        repository: temp.path().join("repo"),
+        repository: BackupRepository::Local(temp.path().join("repo")),
         restore_root: Some(temp.path().join("restores")),
         profiles: vec![
             profile("stopped", BackupMode::Stopped, 2),
@@ -97,16 +97,66 @@ fn fixture() -> Fixture {
 
 type Events = Arc<Mutex<Vec<BackupEvent>>>;
 
+/// A local store that, once, writes to world data while the backup is reading:
+/// an independent writer the backup must detect.
+struct MutatingStore {
+    inner: LocalStore,
+    game: PathBuf,
+    done: std::sync::atomic::AtomicBool,
+}
+impl Store for MutatingStore {
+    fn put(&self, key: &str, bytes: &[u8]) -> vesta_control::backups::store::Result<()> {
+        if key.starts_with("chunks/") && !self.done.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            fs::write(self.game.join("world/region.mca"), b"changed during backup").unwrap();
+        }
+        self.inner.put(key, bytes)
+    }
+    fn get(&self, key: &str) -> vesta_control::backups::store::Result<Vec<u8>> {
+        self.inner.get(key)
+    }
+    fn exists(&self, key: &str) -> vesta_control::backups::store::Result<bool> {
+        self.inner.exists(key)
+    }
+    fn list(
+        &self,
+        prefix: &str,
+        limit: usize,
+    ) -> vesta_control::backups::store::Result<Vec<ObjectInfo>> {
+        self.inner.list(prefix, limit)
+    }
+    fn delete(&self, key: &str) -> vesta_control::backups::store::Result<()> {
+        self.inner.delete(key)
+    }
+}
+
 fn open(f: &Fixture, running: bool) -> (Backups, Events, StartGate) {
+    open_with(f, running, false)
+}
+
+fn open_with(f: &Fixture, running: bool, mutate: bool) -> (Backups, Events, StartGate) {
     let events: Events = Arc::default();
     let sink = events.clone();
     let gate = StartGate::default();
     let generation =
         vesta_game_runtime::process::GenerationId::parse_hex("0123456789abcdef0123456789abcdef")
             .unwrap();
-    let backups = Backups::open(
+    let BackupRepository::Local(repo) = &f.settings.repository else {
+        unreachable!()
+    };
+    let store: Box<dyn Store> = if mutate {
+        Box::new(MutatingStore {
+            inner: LocalStore::new(repo.clone()),
+            game: f.game.clone(),
+            done: Default::default(),
+        })
+    } else {
+        Box::new(LocalStore::new(repo.clone()))
+    };
+    let backups = Backups::open_with_store(
         f.db.clone(),
         f.settings.clone(),
+        store,
         &f.game,
         Environment {
             observe: Box::new(move || Ok(running.then_some(generation))),
@@ -235,14 +285,14 @@ fn stopped_backup_snapshots_applies_retention_ignores_and_restores_for_inspectio
             .count(),
         3
     );
-    // Logs were excluded from the snapshot.
-    let repo_logs = f
-        .settings
-        .repository
-        .join("snapshots")
-        .join(&snapshots[2])
-        .join("data/logs/latest.log");
-    assert!(!repo_logs.exists());
+    // A full restore has everything except the ignored logs.
+    let id = backups
+        .submit(&owner(), "stopped", restore(&snapshots[2], &[]), None)
+        .unwrap();
+    let job = wait(&backups, &id);
+    let restored = PathBuf::from(job.result.unwrap()["restored_to"].as_str().unwrap());
+    assert!(restored.join("server.properties").is_file());
+    assert!(!restored.join("logs/latest.log").exists());
 }
 
 #[test]
@@ -274,8 +324,7 @@ fn modes_and_world_mutations_decide_failure_without_touching_the_game() {
     drop(backups);
     // An independent write to world data during the scan fails the safe preset, and
     // the rejected snapshot never becomes a restore point.
-    let (backups, _, _) = open(&f, false);
-    fs::write(f.game.join(".fake-mutate"), b"1").unwrap();
+    let (backups, _, _) = open_with(&f, false, true);
     let id = backups
         .submit(&owner(), "stopped", JobKind::Backup, None)
         .unwrap();

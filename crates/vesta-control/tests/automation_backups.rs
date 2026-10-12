@@ -2,7 +2,6 @@
 //! principal's automation device, and loses that authority when the device is revoked.
 use std::{
     fs,
-    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -47,7 +46,7 @@ fn a_manual_workflow_runs_a_backup_and_revocation_suspends_it() {
     .unwrap();
     // A runtime that never launches anything in this test.
     let launch = LaunchSpec::new(
-        PathBuf::from(env!("CARGO_BIN_EXE_vesta-restic-fixture")),
+        std::env::current_exe().unwrap(),
         vec![],
         game.clone(),
         GracefulStop::MinecraftCommand,
@@ -58,8 +57,7 @@ fn a_manual_workflow_runs_a_backup_and_revocation_suspends_it() {
     let cell: Arc<std::sync::OnceLock<vesta_control::operations::RuntimeHandle>> = Arc::default();
     let _ = cell.set(handle.clone());
     let settings = BackupSettings {
-        restic: PathBuf::from(env!("CARGO_BIN_EXE_vesta-restic-fixture")),
-        repository: temp.path().join("repo"),
+        repository: vesta_control::config::BackupRepository::Local(temp.path().join("repo")),
         restore_root: None,
         profiles: vec![BackupProfile {
             name: "nightly".into(),

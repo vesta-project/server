@@ -125,9 +125,8 @@ fn request(root: &Path, name: &str, op: wire::Op, expected: wire::Reply) -> Resu
     }
 }
 
-/// Create the backup repository key and initialize the encrypted repository for a
-/// named server whose host configuration has a `[backups]` table.
-pub fn backup_init(root: &Path, name: &str) -> Result<std::path::PathBuf> {
+/// Initialize the backup repository for a named server whose host configuration has a `[backups]` table.
+pub fn backup_init(root: &Path, name: &str) -> Result<()> {
     let server = crate::servers::resolve(root, name)?;
     let config =
         HostConfiguration::load_file(&server.config, &server.directory).map_err(|e| e.code())?;

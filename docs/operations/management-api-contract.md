@@ -1113,15 +1113,15 @@ BackupResult = optional structured facts only:
 ```
 
 Profile names are 1–32 lowercase ASCII letters/digits/hyphens and cannot start
-with `-`. Snapshot IDs are 8–64 lowercase hex characters. Restore paths are at
+with `-`. Snapshot IDs are exactly 32 lowercase hex characters. Restore paths are at
 most 64 confined literal relative paths; pattern characters `* ? [ ] \\ { }`
-are rejected rather than interpreted by restic. An empty array selects the full snapshot.
+are rejected rather than interpreted. An empty array selects the full snapshot.
 Restore is **inspection-only**, into a fresh configured restore-root/job-ID
 folder. It never replaces a running/stopped game's files, starts the game or
 changes its configured world. `restored_to` is returned only when it matches the
-current trusted configuration-derived job directory. Repository/executable/vault
-password paths and native restic/process diagnostics are never projected. Snapshot
-projections deliberately omit restic tags and native source paths, and validate
+current trusted configuration-derived job directory. Repository paths, S3
+credentials and native engine/storage diagnostics are never projected. Snapshot
+projections deliberately omit internal tags and native source paths, and validate
 canonical RFC3339/RFC3339Nano dates before returning `time`; malformed metadata
 returns a fixed unavailable error rather than echoing native text. `changed_paths`
 is included only when every path passes the caller's current scoped `files.read`

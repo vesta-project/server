@@ -66,13 +66,7 @@ pub async fn run(command: Command, base: &Path) -> ExitCode {
             .map(|()| println!("launch_intent_resolved; no_process_touched")),
         Command::BackupInit { name, root } => servers::root(root.as_deref(), base)
             .and_then(|root| crate::supervision::backup_init(&root, &name))
-            .map(|key| {
-                println!("backup_repository_initialized");
-                println!(
-                    "repository_key={}\nKeep a copy of this key file somewhere safe and separate from this machine: without it the encrypted backups cannot be restored.",
-                    key.display()
-                );
-            }),
+            .map(|()| println!("backup_repository_initialized")),
         Command::ResetRestarts { name, root } => servers::root(root.as_deref(), base)
             .and_then(|root| crate::supervision::reset_restarts(&root, &name))
             .map(|()| println!("crash_restarts_reset; no_process_touched")),
