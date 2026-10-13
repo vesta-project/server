@@ -11,7 +11,11 @@ use std::{
     sync::Arc,
 };
 use vesta_control::config::HostConfiguration;
-use vesta_state::{StateDatabase, StateDirectory, SystemClock, export::ExportSummary};
+use vesta_state::{
+    StateDatabase, StateDirectory, SystemClock,
+    export::{ExportSummary, ImportSummary},
+};
+use zeroize::Zeroizing;
 
 struct OfflineServer {
     config: HostConfiguration,
@@ -53,18 +57,70 @@ pub fn recovery_export(
     name: &str,
     output: &Path,
     base: &Path,
+    passphrase_file: Option<&Path>,
 ) -> Result<ExportSummary> {
     let server = OfflineServer::open(root, name)?;
     let output = local_files::absolute(output, base)?;
     if contained(&output, server.config.game())? || contained(&output, server.config.state())? {
         return Err("local_export_destination_refused");
     }
+    let passphrase = read_passphrase(passphrase_file, base)?;
     let db = server.database()?;
-    let result = publish_export(&db, &output);
+    let result = publish_export(&db, &output, passphrase.as_deref().map(Vec::as_slice));
     let closed = db.close().map_err(|e| e.code());
     let summary = result?;
     closed?;
     Ok(summary)
+}
+
+fn read_passphrase(file: Option<&Path>, base: &Path) -> Result<Option<Zeroizing<Vec<u8>>>> {
+    let Some(file) = file else {
+        return Ok(None);
+    };
+    let file = local_files::absolute(file, base)?;
+    // The caller protects this local file with owner-only permissions/ACLs. The
+    // existing reader bounds it and rejects linked ancestors and special files.
+    let mut bytes = Zeroizing::new(local_files::read(&file, 4098)?);
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
+    }
+    if bytes.is_empty() || bytes.len() > 4096 {
+        return Err("state_export_passphrase_invalid");
+    }
+    Ok(Some(bytes))
+}
+
+pub fn recovery_import(
+    root: &Path,
+    name: &str,
+    input: &Path,
+    passphrase_file: Option<&Path>,
+    confirm: &str,
+    base: &Path,
+) -> Result<ImportSummary> {
+    let server = OfflineServer::open(root, name)?;
+    let input = local_files::absolute(input, base)?;
+    let passphrase = read_passphrase(passphrase_file, base)?;
+    let mut file = File::open(&input).map_err(|_| "local_file_unavailable")?;
+    let metadata = file.metadata().map_err(|_| "local_file_unavailable")?;
+    if !metadata.is_file() || metadata.len() > 257 * 1024 * 1024 {
+        return Err("local_file_refused");
+    }
+    let export = vesta_state::export::read_recovery_export(
+        &mut file,
+        passphrase.as_deref().map(Vec::as_slice),
+    )
+    .map_err(|e| e.code())?;
+    if confirm != export.server_id {
+        return Err("local_import_confirmation_mismatch");
+    }
+    let directory = StateDirectory::new(server.config.state(), Some(server.config.game()))
+        .map_err(|e| e.code())?;
+    vesta_state::export::import_recovery_export(directory, Arc::new(SystemClock), &export)
+        .map_err(|e| e.code())
 }
 
 pub fn backup_resolve(
@@ -139,7 +195,11 @@ impl Drop for Unpublished {
     }
 }
 
-fn publish_export(db: &StateDatabase, output: &Path) -> Result<ExportSummary> {
+fn publish_export(
+    db: &StateDatabase,
+    output: &Path,
+    passphrase: Option<&[u8]>,
+) -> Result<ExportSummary> {
     local_files::guard(output)?;
     let parent = output.parent().ok_or("local_export_destination_refused")?;
     // Reserve the final name with create_new: pre-existing files are never replaced.
@@ -164,8 +224,8 @@ fn publish_export(db: &StateDatabase, output: &Path) -> Result<ExportSummary> {
         .map_err(|_| "local_write_failed")?;
     cleanup.temporary = Some(temporary.clone());
     let mut writer = BufWriter::new(file);
-    let summary =
-        vesta_state::export::write_recovery_export(db, &mut writer).map_err(|e| e.code())?;
+    let summary = vesta_state::export::write_recovery_export(db, &mut writer, passphrase)
+        .map_err(|e| e.code())?;
     writer.flush().map_err(|_| "local_write_failed")?;
     writer
         .get_ref()
@@ -191,20 +251,20 @@ mod tests {
         )
         .unwrap();
         let output = temp.path().join("export.json");
-        let summary = publish_export(&db, &output).unwrap();
+        let summary = publish_export(&db, &output, None).unwrap();
         let bytes = fs::read(&output).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["format"], "vesta-recovery-export");
         assert_eq!(summary.tables, 20);
         assert_eq!(
-            publish_export(&db, &output),
+            publish_export(&db, &output, None),
             Err("local_destination_exists_or_unavailable")
         );
         assert_eq!(fs::read(&output).unwrap(), bytes);
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
         db.close().unwrap();
         assert_eq!(
-            publish_export(&db, &temp.path().join("failed.json")),
+            publish_export(&db, &temp.path().join("failed.json"), None),
             Err("state_closed")
         );
         assert!(!temp.path().join("failed.json").exists());
@@ -232,7 +292,7 @@ mod tests {
         let (_temp, root, instance) = fixture();
         let lease = local_files::lock(&servers::managed_lease(&instance).unwrap()).unwrap();
         assert_eq!(
-            recovery_export(&root, "owned", &root.join("out.json"), &root),
+            recovery_export(&root, "owned", &root.join("out.json"), &root, None),
             Err("local_server_busy_or_running")
         );
         assert_eq!(
@@ -251,14 +311,90 @@ mod tests {
             Err("backup_job_unknown")
         );
         assert_eq!(
-            recovery_export(&root, "owned", &instance.join("game/out.json"), &root),
+            recovery_export(&root, "owned", &instance.join("game/out.json"), &root, None),
             Err("local_export_destination_refused")
         );
         assert_eq!(
-            recovery_export(&root, "owned", &instance.join("state/out.json"), &root),
+            recovery_export(
+                &root,
+                "owned",
+                &instance.join("state/out.json"),
+                &root,
+                None
+            ),
             Err("local_export_destination_refused")
         );
-        assert!(recovery_export(&root, "owned", &root.join("out.json"), &root).is_ok());
+        assert!(recovery_export(&root, "owned", &root.join("out.json"), &root, None).is_ok());
+    }
+
+    #[test]
+    fn import_requires_exact_export_identity_and_exclusive_local_lease() {
+        let (_source_temp, source_root, _) = fixture();
+        let output = source_root.join("export.json");
+        recovery_export(&source_root, "owned", &output, &source_root, None).unwrap();
+        let export =
+            vesta_state::export::read_recovery_export(&mut File::open(&output).unwrap(), None)
+                .unwrap();
+        let (_target_temp, root, instance) = fixture();
+        let lease = local_files::lock(&servers::managed_lease(&instance).unwrap()).unwrap();
+        assert_eq!(
+            recovery_import(&root, "owned", &output, None, &export.server_id, &root),
+            Err("local_server_busy_or_running")
+        );
+        drop(lease);
+        assert_eq!(
+            recovery_import(&root, "owned", &output, None, "wrong", &root),
+            Err("local_import_confirmation_mismatch")
+        );
+        assert!(!instance.join("state").exists());
+        let summary =
+            recovery_import(&root, "owned", &output, None, &export.server_id, &root).unwrap();
+        assert_eq!(summary.server_id, export.server_id);
+        let db = StateDatabase::open(
+            StateDirectory::new(instance.join("state"), Some(&instance.join("game"))).unwrap(),
+            Arc::new(SystemClock),
+        )
+        .unwrap();
+        assert_eq!(db.server_id(), export.server_id);
+        assert!(
+            vesta_state::audit::AuditLog::new(db.clone())
+                .unwrap()
+                .verify_chain()
+                .unwrap()
+                .valid
+        );
+        db.close().unwrap();
+        assert!(
+            fs::read_dir(instance.join("game"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn passphrase_reader_is_bounded_and_trims_only_one_line_ending() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("passphrase");
+        for (input, expected) in [
+            (b"passphrase\r\n".as_slice(), b"passphrase".as_slice()),
+            (b"passphrase\n\n".as_slice(), b"passphrase\n".as_slice()),
+            (b" passphrase ".as_slice(), b" passphrase ".as_slice()),
+        ] {
+            fs::write(&file, input).unwrap();
+            let bytes = read_passphrase(Some(&file), temp.path()).unwrap().unwrap();
+            assert_eq!(bytes.as_slice(), expected);
+        }
+        fs::write(&file, b"\n").unwrap();
+        assert_eq!(
+            read_passphrase(Some(&file), temp.path()).unwrap_err(),
+            "state_export_passphrase_invalid"
+        );
+        fs::write(&file, vec![b'x'; 4099]).unwrap();
+        assert_eq!(
+            read_passphrase(Some(&file), temp.path()).unwrap_err(),
+            "local_file_refused"
+        );
     }
 
     #[test]

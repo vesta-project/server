@@ -1998,6 +1998,7 @@ dependencies = [
  "vesta-supervisor",
  "vesta-transport",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -2076,9 +2077,12 @@ dependencies = [
 name = "vesta-state"
 version = "0.1.0"
 dependencies = [
+ "argon2",
  "fs2",
+ "getrandom 0.4.3",
  "hex",
  "libc",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2086,6 +2090,7 @@ dependencies = [
  "tempfile",
  "uuid",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

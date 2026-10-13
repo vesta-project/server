@@ -614,7 +614,7 @@
       "name": "Restore, inspection and recovery exports",
       "status": "partial",
       "phase": 6,
-      "current": "Inspection restore into a new directory, and in-place restore (whole tree or selected paths): exact one-time confirmation by the same user and device, already stopped game with starts and crash restarts held, free-space preflight, pre-restore safety snapshot (skippable only explicitly; newest five kept), only accepted restore points or safety snapshots, ignored and protected paths untouched, per-file verified atomic replacement, and a durable recovery_required state that blocks starts until resolved remotely, locally (vesta-agent backup-resolve) or superseded. Unencrypted credential-free recovery export of control data (vesta-agent recovery-export; owner decision 2026-10-12). Never automatic. Not yet: recovery import, remote export route.",
+      "current": "Inspection restore into a new directory, and in-place restore (whole tree or selected paths): exact one-time confirmation by the same user and device, already stopped game with starts and crash restarts held, free-space preflight, pre-restore safety snapshot (skippable only explicitly; newest five kept), only accepted restore points or safety snapshots, ignored and protected paths untouched, per-file verified atomic replacement, and a durable recovery_required state that blocks starts until resolved remotely, locally (vesta-agent backup-resolve) or superseded. Credential-free recovery export of control data, plain JSON or optionally passphrase-encrypted (Argon2id + ChaCha20-Poly1305 STREAM), locally (vesta-agent recovery-export) or by owners over the API (POST recovery/export, 64 MiB cap, audited); local recovery-import into a fresh install adopts the exported server identity, verifies the audit chain and restores everything atomically. Never automatic. Not yet: importing older-schema exports.",
       "evidence": [
         "crates/vesta-control/src/backups/mod.rs",
         "crates/vesta-control/src/backups/restore.rs",
@@ -623,7 +623,10 @@
         "docs/operations/backups.md",
         "crates/vesta-state/src/export.rs",
         "apps/vesta-agent/src/recovery.rs",
-        "docs/operations/recovery-export.md"
+        "docs/operations/recovery-export.md",
+        "crates/vesta-state/src/export_crypto.rs",
+        "crates/vesta-state/src/export_import.rs",
+        "crates/vesta-control/src/recovery_export.rs"
       ],
       "acceptance": "Owner-confirmed restore, pre-restore backup, stopped game, scoped inspection, no automatic restore.",
       "auditDate": "2026-10-12",

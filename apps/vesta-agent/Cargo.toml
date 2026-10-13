@@ -12,6 +12,7 @@ vesta-state.workspace = true
 rusqlite.workspace = true
 url.workspace = true
 uuid.workspace = true
+zeroize.workspace = true
 vesta-transport = { path = "../../crates/vesta-transport" }
 tokio = { workspace = true, features = ["rt", "signal"] }
 

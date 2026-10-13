@@ -1,8 +1,20 @@
-//! Unencrypted, credential-free recovery inventory, not a restorable database backup.
-//! Columns are an explicit schema-reviewed allowlist. BLOBs are never reinterpreted.
+//! Credential-storage-free recovery documents, optionally passphrase encrypted.
+//! Columns are an explicit schema-reviewed allowlist. BLOBs are never guessed.
 use crate::{Result, StateDatabase, StateError};
 use rusqlite::types::ValueRef;
-use std::io::Write;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::{
+    collections::BTreeMap,
+    io::{Read, Write},
+};
+use zeroize::Zeroizing;
+
+#[path = "export_crypto.rs"]
+mod crypto;
+#[path = "export_import.rs"]
+mod importing;
+pub use importing::{ImportSummary, import_recovery_export};
 
 const MAX_ROWS: u64 = 5_000_000;
 
@@ -200,9 +212,204 @@ pub struct ExportSummary {
 }
 
 /// Stream one consistent read snapshot. Errors may leave partial JSON in `out`;
-/// callers must publish only after success. At most five million rows are emitted.
-pub fn write_recovery_export(db: &StateDatabase, out: &mut impl Write) -> Result<ExportSummary> {
-    write_snapshot(db, out, MAX_ROWS)
+/// callers must publish only after success. At most five million rows and 256 MiB
+/// of plaintext are emitted, matching the recovery reader's limits.
+pub fn write_recovery_export(
+    db: &StateDatabase,
+    out: &mut impl Write,
+    passphrase: Option<&[u8]>,
+) -> Result<ExportSummary> {
+    if let Some(passphrase) = passphrase {
+        let mut encrypted = crypto::EncryptWriter::new(out, passphrase)?;
+        let summary = write_snapshot(db, &mut encrypted, MAX_ROWS)?;
+        encrypted.finish()?;
+        Ok(summary)
+    } else {
+        write_plain_snapshot(db, out, crypto::MAX_BYTES)
+    }
+}
+
+fn write_plain_snapshot(
+    db: &StateDatabase,
+    out: &mut impl Write,
+    max_bytes: usize,
+) -> Result<ExportSummary> {
+    struct Bounded<'a, W> {
+        out: &'a mut W,
+        remaining: usize,
+        overflowed: bool,
+    }
+    impl<W: Write> Write for Bounded<'_, W> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.remaining {
+                self.overflowed = true;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::FileTooLarge,
+                    "export too large",
+                ));
+            }
+            let written = self.out.write(bytes)?;
+            self.remaining -= written;
+            Ok(written)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.out.flush()
+        }
+    }
+    let mut bounded = Bounded {
+        out,
+        remaining: max_bytes,
+        overflowed: false,
+    };
+    let result = write_snapshot(db, &mut bounded, MAX_ROWS);
+    if bounded.overflowed {
+        Err(StateError::new("state_export_size_limit"))
+    } else {
+        result
+    }
+}
+
+/// Parsed, schema-validated recovery state. Import validates again before mutation.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryExport {
+    pub format: String,
+    pub version: u32,
+    pub schema_version: u32,
+    pub server_id: String,
+    pub exported_at_ms: i64,
+    #[serde(deserialize_with = "read_tables")]
+    pub tables: BTreeMap<String, RecoveryTable>,
+}
+
+impl std::fmt::Debug for RecoveryExport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecoveryExport")
+            .field("tables", &self.tables.len())
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryTable {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Value>>,
+}
+
+fn read_tables<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<BTreeMap<String, RecoveryTable>, D::Error> {
+    struct Tables;
+    impl<'de> serde::de::Visitor<'de> for Tables {
+        type Value = BTreeMap<String, RecoveryTable>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("unique recovery tables")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> std::result::Result<Self::Value, A::Error> {
+            let mut tables = BTreeMap::new();
+            while let Some((name, table)) = map.next_entry::<String, RecoveryTable>()? {
+                if tables.len() >= INCLUDED.len() || tables.insert(name, table).is_some() {
+                    return Err(serde::de::Error::custom("invalid recovery tables"));
+                }
+            }
+            Ok(tables)
+        }
+    }
+    d.deserialize_map(Tables)
+}
+
+/// Read at most 256 MiB of plaintext, rejecting unauthenticated STREAM input.
+pub fn read_recovery_export(
+    input: &mut impl Read,
+    passphrase: Option<&[u8]>,
+) -> Result<RecoveryExport> {
+    let mut prefix = [0u8; 8];
+    let mut length = 0;
+    while length < prefix.len() {
+        let count = input.read(&mut prefix[length..])?;
+        if count == 0 {
+            break;
+        }
+        length += count;
+    }
+    let bytes = if length == prefix.len() && &prefix == crypto::MAGIC {
+        crypto::decrypt(input, &prefix, passphrase)?
+    } else {
+        let mut bytes = Zeroizing::new(Vec::new());
+        bytes.extend_from_slice(&prefix[..length]);
+        input
+            .take((crypto::MAX_BYTES - length + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > crypto::MAX_BYTES {
+            return Err(StateError::new("state_export_size_limit"));
+        }
+        bytes
+    };
+    let export: RecoveryExport =
+        serde_json::from_slice(&bytes).map_err(|_| StateError::new("state_export_invalid"))?;
+    export.validate()?;
+    Ok(export)
+}
+
+impl RecoveryExport {
+    pub(super) fn validate(&self) -> Result<()> {
+        let invalid = || StateError::new("state_export_invalid");
+        if self.format != "vesta-recovery-export"
+            || self.version != 1
+            || uuid::Uuid::parse_str(&self.server_id).is_err()
+            || self.tables.len() != INCLUDED.len()
+        {
+            return Err(invalid());
+        }
+        let mut count = 0u64;
+        for &(name, columns) in INCLUDED {
+            let table = self.tables.get(name).ok_or_else(invalid)?;
+            if table
+                .columns
+                .iter()
+                .map(String::as_str)
+                .ne(columns.iter().copied())
+            {
+                return Err(invalid());
+            }
+            count = count
+                .checked_add(table.rows.len() as u64)
+                .filter(|n| *n <= MAX_ROWS)
+                .ok_or_else(|| StateError::new("state_export_row_limit"))?;
+            for row in &table.rows {
+                if row.len() != columns.len() {
+                    return Err(invalid());
+                }
+                for (column, value) in columns.iter().zip(row) {
+                    if !(value.is_null() || value.is_string() || value.is_number()) {
+                        return Err(invalid());
+                    }
+                    if *column == "server_id" && value.as_str() != Some(&self.server_id) {
+                        return Err(invalid());
+                    }
+                    if let Value::Number(number) = value {
+                        if (number.is_u64() && number.as_i64().is_none())
+                            || number.as_f64().is_none_or(|n| !n.is_finite())
+                        {
+                            return Err(invalid());
+                        }
+                    }
+                }
+            }
+        }
+        let identity = &self.tables["server_identity"].rows;
+        if identity.len() != 1
+            || identity[0][0].as_i64() != Some(1)
+            || identity[0][1].as_str() != Some(&self.server_id)
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
 }
 
 fn write_snapshot(
@@ -346,6 +553,39 @@ mod tests {
     }
 
     #[test]
+    fn plaintext_export_refuses_output_beyond_the_reader_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let db = StateDatabase::open(
+            StateDirectory::new(root.path().join("state"), None).unwrap(),
+            Arc::new(SystemClock),
+        )
+        .unwrap();
+        let mut full = Vec::new();
+        write_recovery_export(&db, &mut full, None).unwrap();
+        read_recovery_export(&mut full.as_slice(), None).unwrap();
+
+        let mut exact = Vec::new();
+        write_plain_snapshot(&db, &mut exact, full.len()).unwrap();
+        assert_eq!(exact.len(), full.len());
+        let mut too_small = Vec::new();
+        assert_eq!(
+            write_plain_snapshot(&db, &mut too_small, full.len() - 1)
+                .unwrap_err()
+                .code(),
+            "state_export_size_limit"
+        );
+        assert!(too_small.len() < full.len());
+        assert!(read_recovery_export(&mut too_small.as_slice(), None).is_err());
+        assert_eq!(
+            write_plain_snapshot(&db, &mut std::io::sink(), 0)
+                .unwrap_err()
+                .code(),
+            "state_export_size_limit"
+        );
+        db.close().unwrap();
+    }
+
+    #[test]
     fn json_values_escape_and_reject_unsupported_representations() {
         let mut bytes = Vec::new();
         write_string(&mut bytes, "é\"\\\n\t\0").unwrap();
@@ -413,7 +653,7 @@ mod tests {
             bytes: Vec::new(),
             db: Some(db.clone()),
         };
-        let summary = write_recovery_export(&db, &mut out).unwrap();
+        let summary = write_recovery_export(&db, &mut out, None).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&out.bytes).unwrap();
         assert!(
             json["tables"]["principals"]["rows"]
@@ -462,7 +702,7 @@ mod tests {
             }
         }
         assert_eq!(
-            write_recovery_export(&db, &mut FailedWriter)
+            write_recovery_export(&db, &mut FailedWriter, None)
                 .unwrap_err()
                 .code(),
             "state_io"

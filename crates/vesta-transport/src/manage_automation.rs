@@ -40,6 +40,7 @@ enum Route<'a> {
     Storage,
     Policy,
     PolicyReset,
+    RecoveryExport,
     RestoreInPlace,
     ConfirmRestore(&'a str),
     ResolveRecovery(&'a str),
@@ -65,6 +66,7 @@ fn route(path: &str) -> Option<Route<'_>> {
         "backups/storage" => Route::Storage,
         "backups/policy" => Route::Policy,
         "backups/policy/reset" => Route::PolicyReset,
+        "recovery/export" => Route::RecoveryExport,
         "backups/restore-in-place" => Route::RestoreInPlace,
         "backups/run" => Route::Backup,
         "backups/verify" => Route::Verify,
@@ -241,6 +243,7 @@ fn capability(route: Route<'_>, method: &Method) -> Capability {
     match route {
         Route::Policy if *method == Method::GET => Capability::BackupsView,
         Route::Policy | Route::PolicyReset => Capability::BackupsConfigure,
+        Route::RecoveryExport => Capability::RecoveryExport,
         Route::Notifications | Route::Unread | Route::Read | Route::Acknowledge => {
             Capability::NotificationsView
         }
@@ -694,6 +697,13 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     if matches!(route, Route::Policy | Route::PolicyReset) {
         return mutate_policy(host, &subject, route, request.method, request.bytes);
     }
+    // The body is the export itself (and may carry a passphrase): never replayed.
+    if matches!(route, Route::RecoveryExport) {
+        if request.method != Method::POST {
+            return invalid();
+        }
+        return recovery_export(host, &subject, request.bytes);
+    }
     // Never cache/replay these responses, especially prepare's one-time secret.
     // Keys remain required and validated, but a retry prepares a fresh job/token.
     if matches!(
@@ -974,6 +984,47 @@ fn submit_backup(
             json!({"data":{"job_id":id,"kind":kind_name,"restore_mode":"inspection_only"}}),
         ),
         Err(e) => backup_failure(e),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExportRequest {
+    /// Optional: encrypt the export with this passphrase (8 to 1024 bytes).
+    #[serde(default)]
+    passphrase: Option<String>,
+}
+
+/// Owner-only download of the credential-free control data: plain JSON, or the
+/// encrypted format when a passphrase is given.
+fn recovery_export(host: &NetworkHost, subject: &Subject, bytes: &[u8]) -> Reply {
+    use vesta_control::recovery_export::{RecoveryExportError, export_for};
+    let Some(request) = decode::<ExportRequest>(bytes) else {
+        return invalid();
+    };
+    // Moved, not copied, into an erasing owner. The request body buffer itself is
+    // outside this guarantee.
+    let passphrase = request.passphrase.map(zeroize::Zeroizing::new);
+    let passphrase = passphrase.as_ref().map(|p| p.as_bytes());
+    match export_for(host.database(), subject, passphrase) {
+        Ok(body) => crate::response(
+            StatusCode::OK,
+            body,
+            if passphrase.is_some() {
+                "application/octet-stream"
+            } else {
+                "application/json"
+            },
+        ),
+        Err(e) => error(
+            match e {
+                RecoveryExportError::Forbidden => StatusCode::FORBIDDEN,
+                RecoveryExportError::Invalid => StatusCode::BAD_REQUEST,
+                RecoveryExportError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+                RecoveryExportError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+            },
+            e.code(),
+        ),
     }
 }
 
@@ -1506,5 +1557,38 @@ mod tests {
             backup_failure(BackupError::PolicyConflict).status(),
             StatusCode::CONFLICT
         );
+    }
+
+    #[test]
+    fn recovery_export_is_owner_only_and_takes_only_an_optional_passphrase() {
+        assert!(matches!(
+            route("/api/v3/manage/recovery/export"),
+            Some(Route::RecoveryExport)
+        ));
+        assert_eq!(
+            capability(Route::RecoveryExport, &Method::POST),
+            Capability::RecoveryExport
+        );
+        assert!(Capability::RecoveryExport.owner_reserved());
+        assert!(
+            decode::<ExportRequest>(br#"{}"#)
+                .unwrap()
+                .passphrase
+                .is_none()
+        );
+        assert_eq!(
+            decode::<ExportRequest>(br#"{"passphrase":"correct horse"}"#)
+                .unwrap()
+                .passphrase
+                .as_deref(),
+            Some("correct horse")
+        );
+        for bad in [
+            &br#"{"passphrase":1}"#[..],
+            br#"{"passphrase":"x","tables":["pack_passwords"]}"#,
+            br#"{"output":"C:/x"}"#,
+        ] {
+            assert!(decode::<ExportRequest>(bad).is_none());
+        }
     }
 }

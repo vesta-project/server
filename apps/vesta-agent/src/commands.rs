@@ -67,12 +67,48 @@ pub async fn run(command: Command, base: &Path) -> ExitCode {
         Command::BackupInit { name, root } => servers::root(root.as_deref(), base)
             .and_then(|root| crate::supervision::backup_init(&root, &name))
             .map(|()| println!("backup_repository_initialized")),
-        Command::RecoveryExport { name, output, root } => servers::root(root.as_deref(), base)
-            .and_then(|root| crate::recovery::recovery_export(&root, &name, &output, base))
+        Command::RecoveryExport {
+            name,
+            output,
+            passphrase_file,
+            root,
+        } => servers::root(root.as_deref(), base)
+            .and_then(|root| {
+                crate::recovery::recovery_export(
+                    &root,
+                    &name,
+                    &output,
+                    base,
+                    passphrase_file.as_deref(),
+                )
+            })
             .map(|summary| {
                 println!(
                     "recovery_export_written tables={} rows={}",
                     summary.tables, summary.rows
+                )
+            }),
+        Command::RecoveryImport {
+            name,
+            input,
+            passphrase_file,
+            confirm,
+            root,
+        } => servers::root(root.as_deref(), base)
+            .and_then(|root| {
+                crate::recovery::recovery_import(
+                    &root,
+                    &name,
+                    &input,
+                    passphrase_file.as_deref(),
+                    &confirm,
+                    base,
+                )
+            })
+            .map(|summary| {
+                println!(
+                    "recovery_imported server_id={} tables={} rows={}",
+                    summary.server_id, summary.tables, summary.rows
                 )
             }),
         Command::BackupResolve {

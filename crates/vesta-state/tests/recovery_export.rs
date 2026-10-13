@@ -53,7 +53,7 @@ fn recovery_export_includes_identity_and_roles_but_not_secret_tables() {
 
     let output = fixture.root.path().join("recovery-export.json");
     let mut file = File::create(&output).unwrap();
-    let summary = write_recovery_export(&fixture.db, &mut file).unwrap();
+    let summary = write_recovery_export(&fixture.db, &mut file, None).unwrap();
     drop(file);
     assert!(output.is_file());
     assert!(summary.tables > 0);

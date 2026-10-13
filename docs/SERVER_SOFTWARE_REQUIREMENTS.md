@@ -1152,6 +1152,12 @@ configuration key is universal. Pre-1.7 legacy status protocols are deferred.
 > unencrypted. Encryption and other export options may be added to the backup system
 > later. The baseline bullets stay frozen for traceability.
 
+> **Owner amendment (2026-10-13), extending the export options above:**
+> credential-free recovery exports remain unencrypted by default, with optional
+> passphrase encryption for local and owner-authorized remote exports. S3 settings
+> and credential files are not part of the control-data export. Backup repository
+> encryption is unchanged; this option protects only the exported recovery file.
+
 ### Agent state, repair, and pending changes
 
 - Local durable state uses SQLite in WAL mode with foreign keys, versioned

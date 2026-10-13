@@ -18,6 +18,7 @@ pub mod minecraft_admission;
 pub mod operations;
 pub mod pack_access;
 pub mod packs;
+pub mod recovery_export;
 pub mod whitelist;
 
 mod error;

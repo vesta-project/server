@@ -497,3 +497,24 @@ remain release gates.
 - **Why this backend:** pure Rust, no C toolchain or native zlib. It verifies the gzip CRC and length, so truncated or corrupted archives fail instead of returning partial text.
 - **Use:** `vesta-control` decompresses a `.gz` file into a bounded owner-only cache (`<state>/spool`) so the existing range, tail and line reads work on it. Limits: 512 MiB decompressed, 256× expansion (with a 1 MiB minimum allowance), 60 seconds, one decompression at a time, at most 8 cached views and 1 GiB in total. Also used by `vesta-transport` tests to build fixtures.
 - **Open:** no separate vulnerability or provenance review beyond these pinned versions.
+
+## Optional recovery-export encryption (2026-10-13)
+
+- `vesta-state` now directly uses the already locked `ring = 0.17.14`, with defaults
+  disabled and `alloc,dev_urandom_fallback` enabled, for ChaCha20-Poly1305 authenticated
+  encryption. This does not add or upgrade registry packages or expand the existing
+  unified ring feature set selected by Rustls. The native build and release intake
+  caveats in the HTTPS/TLS sections still apply.
+- Key derivation and sensitive owned buffers reuse the existing pinned `argon2 = 0.6.0`
+  and `zeroize = 1.9.1`; randomness reuses `getrandom = 0.4.3`. The KDF is fixed
+  Argon2id (64 MiB, three iterations, parallelism one), with a random 16-byte salt.
+- The versioned streaming envelope uses 1 MiB segments, an authenticated header,
+  ordered counter-based nonces and an authenticated final marker. Truncated,
+  reordered, modified and trailing records are refused. This envelope is a Vesta
+  format, not a claim of compatibility with a third-party encrypted archive format.
+- Passphrases, derived-key bytes and owned plaintext/KDF working buffers use
+  zeroizing storage. Ring's expanded internal key context has no exposed zeroization
+  API; complete process-memory erasure is not claimed.
+- Plaintext export remains the default; backup repositories remain unencrypted.
+  No password storage, bundled executable, dependency provenance certification,
+  MSRV execution or non-Windows validation is introduced by this change.

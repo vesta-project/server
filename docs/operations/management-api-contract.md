@@ -1102,6 +1102,7 @@ production is host-only. Title/body/source are bounded to 256/8,192/128 bytes.
 | `GET backups/policy` | `backups.view` | no query | `{source:"host_config"|"stored",revision:integer|null,profiles:[PolicyProfile],limits:{max_snapshots:integer|null,max_repository_bytes:integer|null,min_free_bytes:integer}}` |
 | `PUT backups/policy` | `backups.configure` (owner-reserved) | `{expected_revision:integer|null,profiles:[PolicyProfile],limits?:{max_snapshots?:integer,max_repository_bytes?:integer,min_free_bytes?:integer}}`; 1–16 profiles; no zero caps | `{source:"stored",revision:integer}`; stale `expected_revision` is 409 `backup_policy_revision_conflict`; never replay-cached |
 | `POST backups/policy/reset` | `backups.configure` (owner-reserved) | `{expected_revision:integer}` | `{source:"host_config",revision:null}`; 409 on a stale revision |
+| `POST recovery/export` | `recovery.export` (owner-reserved) | `{passphrase?:string}` (8–1024 bytes) | HTTP 200 with the export itself: `application/json` without a passphrase, `application/octet-stream` (encrypted format, see recovery-export.md) with one. Built in memory up to 64 MiB; larger is 413 `recovery_export_too_large_use_local_command`. Audited with whether it was encrypted; the passphrase is never stored, audited or replay-cached |
 | `GET backups/storage` | `backups.view` | no query | `{repository_bytes:integer,restore_points:integer,safety_snapshots:integer,free_bytes:integer|null,limits:{max_snapshots:integer|null,max_repository_bytes:integer|null,min_free_bytes:integer},backups_stopped:"backup_snapshot_limit_reached"|"backup_storage_limit_reached"|"backup_disk_space_low"|null}`; single listing at a time like snapshot listing |
 
 ```text
@@ -1240,7 +1241,7 @@ access immediately. Streams are observations, not authorization or command repla
 
 ## 6. Explicit non-goals
 
-Recovery exports, SFTP, Discord integration, sleep/MOTD-specific
+Recovery import over the network, SFTP, Discord integration, sleep/MOTD-specific
 automation and metrics remain future work; no routes or promises are defined here.
 Bounded workflow scheduling, the notification inbox, backup jobs, inspection restore
 and confirmed in-place restore are implemented exclusively as described in section 4A.

@@ -14,7 +14,7 @@ pub const USAGE: &str = "Usage: vesta-agent version | update | check-config <pat
        vesta-agent resolve-launch <name> --confirm <name> [--install-root <root>]
        vesta-agent reset-restarts <name> [--install-root <root>]
        vesta-agent backup-init <name> [--install-root <root>]
-       vesta-agent recovery-export <name> --output <file> [--install-root <root>]
+       vesta-agent recovery-export <name> --output <file> [--passphrase-file <file>] [--install-root <root>]\n       vesta-agent recovery-import <name> --input <file> [--passphrase-file <file>] --confirm <server-id> [--install-root <root>]
        vesta-agent backup-resolve <name> [<job-id> --confirm <job-id>] [--install-root <root>]";
 #[derive(Debug)]
 pub enum Command {
@@ -54,6 +54,14 @@ pub enum Command {
     RecoveryExport {
         name: String,
         output: PathBuf,
+        passphrase_file: Option<PathBuf>,
+        root: Option<PathBuf>,
+    },
+    RecoveryImport {
+        name: String,
+        input: PathBuf,
+        passphrase_file: Option<PathBuf>,
+        confirm: String,
         root: Option<PathBuf>,
     },
     BackupResolve {
@@ -156,7 +164,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
         "owner" => return parse_owner(&args),
         "access" => return parse_access(&args),
         "pair" | "devices" => return parse_management(&args),
-        "recovery-export" | "backup-resolve" => return parse_recovery(&args),
+        "recovery-export" | "recovery-import" | "backup-resolve" => return parse_recovery(&args),
         "create" | "delete" | "resolve-launch" | "reset-restarts" | "backup-init" | "config"
         | "start" | "stop" | "restart" => {}
         _ => return Err(()),
@@ -637,14 +645,17 @@ fn parse_superadmin(args: &[OsString]) -> Result<Command, ()> {
 
 fn parse_recovery(args: &[OsString]) -> Result<Command, ()> {
     let export = args[0] == "recovery-export";
+    let import = args[0] == "recovery-import";
     let name = args.get(1).and_then(|v| v.to_str()).ok_or(())?.to_owned();
     if !valid_name(&name) {
         return Err(());
     }
-    let (mut root, mut output, mut confirm, mut job) = (None, None, None, None);
+    let (mut root, mut output, mut input, mut passphrase_file, mut confirm, mut job) =
+        (None, None, None, None, None, None);
     let mut seen = std::collections::HashSet::new();
     let mut at = 2;
     if !export
+        && !import
         && args
             .get(at)
             .is_some_and(|v| !v.to_string_lossy().starts_with('-'))
@@ -669,6 +680,10 @@ fn parse_recovery(args: &[OsString]) -> Result<Command, ()> {
         match flag {
             "--install-root" => root = Some(PathBuf::from(value(args, &mut at)?)),
             "--output" if export => output = Some(PathBuf::from(value(args, &mut at)?)),
+            "--input" if import => input = Some(PathBuf::from(value(args, &mut at)?)),
+            "--passphrase-file" if export || import => {
+                passphrase_file = Some(PathBuf::from(value(args, &mut at)?))
+            }
             "--confirm" if !export => confirm = Some(text(value(args, &mut at)?)?),
             _ => return Err(()),
         }
@@ -678,6 +693,15 @@ fn parse_recovery(args: &[OsString]) -> Result<Command, ()> {
         Ok(Command::RecoveryExport {
             name,
             output: output.ok_or(())?,
+            passphrase_file,
+            root,
+        })
+    } else if import {
+        Ok(Command::RecoveryImport {
+            name,
+            input: input.ok_or(())?,
+            passphrase_file,
+            confirm: confirm.ok_or(())?,
             root,
         })
     } else {
@@ -704,7 +728,56 @@ mod recovery_grammar_tests {
     fn recovery_commands_have_strict_named_grammar() {
         assert!(matches!(
             p(&["recovery-export", "owned", "--output", "recovery.json"]),
-            Ok(Command::RecoveryExport { .. })
+            Ok(Command::RecoveryExport {
+                passphrase_file: None,
+                ..
+            })
+        ));
+        assert!(matches!(
+            p(&[
+                "recovery-export",
+                "owned",
+                "--output",
+                "recovery.bin",
+                "--passphrase-file",
+                "secret.txt"
+            ]),
+            Ok(Command::RecoveryExport {
+                passphrase_file: Some(_),
+                ..
+            })
+        ));
+        assert!(matches!(
+            p(&[
+                "recovery-import",
+                "owned",
+                "--input",
+                "recovery.bin",
+                "--confirm",
+                "server-uuid"
+            ]),
+            Ok(Command::RecoveryImport {
+                passphrase_file: None,
+                ..
+            })
+        ));
+        assert!(matches!(
+            p(&[
+                "recovery-import",
+                "owned",
+                "--input",
+                "recovery.bin",
+                "--passphrase-file",
+                "secret.txt",
+                "--confirm",
+                "server-uuid",
+                "--install-root",
+                "root"
+            ]),
+            Ok(Command::RecoveryImport {
+                passphrase_file: Some(_),
+                ..
+            })
         ));
         assert!(
             p(&[
@@ -760,6 +833,100 @@ mod recovery_grammar_tests {
                 "owned",
             ],
             vec!["recovery-export", "owned", "--output", ""],
+            vec![
+                "recovery-export",
+                "owned",
+                "--output",
+                "out",
+                "--passphrase-file",
+            ],
+            vec![
+                "recovery-export",
+                "owned",
+                "--output",
+                "out",
+                "--passphrase-file",
+                "pw",
+                "--passphrase-file",
+                "pw2",
+            ],
+            vec![
+                "recovery-export",
+                "owned",
+                "--output",
+                "out",
+                "--passphrase",
+                "secret",
+            ],
+            vec![
+                "recovery-export",
+                "owned",
+                "--output",
+                "out",
+                "--passphrase-env",
+                "SECRET",
+            ],
+            vec!["recovery-import"],
+            vec![
+                "recovery-import",
+                "../owned",
+                "--input",
+                "in",
+                "--confirm",
+                "id",
+            ],
+            vec!["recovery-import", "owned", "--confirm", "id"],
+            vec!["recovery-import", "owned", "--input", "in"],
+            vec![
+                "recovery-import",
+                "owned",
+                "--input",
+                "in",
+                "--confirm",
+                "id",
+                "--confirm",
+                "id",
+            ],
+            vec![
+                "recovery-import",
+                "owned",
+                "--input",
+                "in",
+                "--confirm",
+                "id",
+                "--passphrase",
+                "secret",
+            ],
+            vec![
+                "recovery-import",
+                "owned",
+                "--input",
+                "in",
+                "--confirm",
+                "id",
+                "--passphrase-env",
+                "SECRET",
+            ],
+            vec![
+                "recovery-import",
+                "owned",
+                "--input",
+                "in",
+                "--confirm",
+                "id",
+                "--input",
+                "other",
+            ],
+            vec![
+                "recovery-import",
+                "owned",
+                "--input",
+                "in",
+                "--confirm",
+                "id",
+                "--passphrase-file",
+                "",
+            ],
             vec!["backup-resolve"],
             vec!["backup-resolve", "owned", "job-1"],
             vec!["backup-resolve", "owned", "--confirm", "job-1"],

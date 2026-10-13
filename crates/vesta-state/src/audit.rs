@@ -302,37 +302,7 @@ impl AuditLog {
     /// The connection is trusted, in-process and owned by the caller's write transaction.
     /// An append failure must propagate so the sensitive mutation is rolled back.
     pub fn append(&self, c: &Connection, record: &AuditRecord) -> Result<i64> {
-        use rusqlite::OptionalExtension;
-        let prev: Option<String> = c
-            .query_row(
-                "SELECT hash FROM audit_events ORDER BY seq DESC LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let prev = prev.as_deref().unwrap_or(GENESIS_HASH);
-        let at_ms = self.db.clock().millis();
-        let metadata = record.metadata_json();
-        let hash = chain_hash(&ChainFields {
-            prev_hash: prev,
-            server_id: self.db.server_id(),
-            principal_id: record.actor.principal_id(),
-            device_id: record.actor.device_id(),
-            source: record.actor.source(),
-            action: &record.action,
-            target: &record.target,
-            outcome: &record.outcome,
-            operation_id: record.operation_id.as_deref(),
-            at_ms,
-            metadata_json: &metadata,
-        });
-        c.execute(
-            "INSERT INTO audit_events (server_id,principal_id,device_id,source,action,target,outcome,operation_id,at,metadata_json,prev_hash,hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            params![self.db.server_id(), record.actor.principal_id(), record.actor.device_id(),
-                record.actor.source(), record.action, record.target, record.outcome,
-                record.operation_id, at_ms, metadata, prev, hash],
-        )?;
-        Ok(c.last_insert_rowid())
+        append_on_connection(c, self.db.server_id(), self.db.clock().millis(), record)
     }
 
     pub fn append_record(&self, record: &AuditRecord) -> Result<i64> {
@@ -340,33 +310,8 @@ impl AuditLog {
     }
 
     pub fn verify_chain(&self) -> Result<AuditVerification> {
-        self.db.read(|c| {
-            let mut statement =
-                c.prepare(&format!("SELECT {COLUMNS} FROM audit_events ORDER BY seq"))?;
-            let mut rows = statement.query([])?;
-            let mut expected = GENESIS_HASH.to_owned();
-            let mut checked = 0;
-            while let Some(row) = rows.next()? {
-                let entry = map_row(row)?;
-                if entry.prev_hash != expected
-                    || entry.server_id != self.db.server_id()
-                    || entry.hash != chain_hash(&entry.fields())
-                {
-                    return Ok(AuditVerification {
-                        valid: false,
-                        checked,
-                        first_broken_seq: Some(entry.seq),
-                    });
-                }
-                expected = entry.hash;
-                checked += 1;
-            }
-            Ok(AuditVerification {
-                valid: true,
-                checked,
-                first_broken_seq: None,
-            })
-        })
+        self.db
+            .read(|c| verify_on_connection(c, self.db.server_id()))
     }
 
     pub fn page(&self, after_seq: i64, limit: i32) -> Result<Vec<AuditEntry>> {
@@ -379,4 +324,71 @@ impl AuditLog {
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
     }
+}
+
+/// Verify inside a caller-owned snapshot or recovery transaction.
+pub(crate) fn verify_on_connection(c: &Connection, server_id: &str) -> Result<AuditVerification> {
+    let mut statement = c.prepare(&format!("SELECT {COLUMNS} FROM audit_events ORDER BY seq"))?;
+    let mut rows = statement.query([])?;
+    let mut expected = GENESIS_HASH.to_owned();
+    let mut checked = 0;
+    while let Some(row) = rows.next()? {
+        let entry = map_row(row)?;
+        if entry.prev_hash != expected
+            || entry.server_id != server_id
+            || entry.hash != chain_hash(&entry.fields())
+        {
+            return Ok(AuditVerification {
+                valid: false,
+                checked,
+                first_broken_seq: Some(entry.seq),
+            });
+        }
+        expected = entry.hash;
+        checked += 1;
+    }
+    Ok(AuditVerification {
+        valid: true,
+        checked,
+        first_broken_seq: None,
+    })
+}
+
+/// Append inside the same recovery transaction that adopts server identity.
+pub(crate) fn append_on_connection(
+    c: &Connection,
+    server_id: &str,
+    at_ms: i64,
+    record: &AuditRecord,
+) -> Result<i64> {
+    use rusqlite::OptionalExtension;
+    let prev: Option<String> = c
+        .query_row(
+            "SELECT hash FROM audit_events ORDER BY seq DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let prev = prev.as_deref().unwrap_or(GENESIS_HASH);
+    let metadata = record.metadata_json();
+    let hash = chain_hash(&ChainFields {
+        prev_hash: prev,
+        server_id,
+        principal_id: record.actor.principal_id(),
+        device_id: record.actor.device_id(),
+        source: record.actor.source(),
+        action: &record.action,
+        target: &record.target,
+        outcome: &record.outcome,
+        operation_id: record.operation_id.as_deref(),
+        at_ms,
+        metadata_json: &metadata,
+    });
+    c.execute(
+            "INSERT INTO audit_events (server_id,principal_id,device_id,source,action,target,outcome,operation_id,at,metadata_json,prev_hash,hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            params![server_id, record.actor.principal_id(), record.actor.device_id(),
+                record.actor.source(), record.action, record.target, record.outcome,
+                record.operation_id, at_ms, metadata, prev, hash],
+        )?;
+    Ok(c.last_insert_rowid())
 }
