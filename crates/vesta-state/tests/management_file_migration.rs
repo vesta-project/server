@@ -13,6 +13,7 @@ fn genuine_v13_upgrade_adds_empty_file_ledger_without_changing_pack_outcomes() {
             "INSERT INTO management_pack_outcomes VALUES (?,'principal','pack-key','{}',7,3)",
             [&server],
         )?;
+        c.execute_batch(support::REMOVE_V22_SCHEMA)?;
         c.execute_batch(support::REMOVE_V18_SCHEMA)?;
         c.execute_batch(support::REMOVE_V16_SCHEMA)?;
         c.execute_batch("DROP TABLE management_file_outcomes; PRAGMA user_version=13;")?;
@@ -103,7 +104,7 @@ fn genuine_v14_retention_upgrade_dates_terminal_rows_and_preserves_pending_rows(
     let directory = f.db.directory().clone();
     let server = f.db.server_id().to_owned();
     f.db.write(|c| {
-        c.execute_batch(support::REMOVE_V18_SCHEMA)?; c.execute_batch(support::REMOVE_V16_SCHEMA)?;
+        c.execute_batch(support::REMOVE_V22_SCHEMA)?; c.execute_batch(support::REMOVE_V18_SCHEMA)?; c.execute_batch(support::REMOVE_V16_SCHEMA)?;
         c.execute_batch("DROP INDEX management_file_outcomes_retention; ALTER TABLE management_file_outcomes DROP COLUMN completed_at; PRAGMA user_version=14;")?;
         for (key,outcome) in [("terminal",Some("{}")),("pending",None)] {
             c.execute("INSERT INTO management_file_outcomes VALUES (?,'actor','device',?,?,'[]',?)",params![server,key,"a".repeat(64),outcome])?;

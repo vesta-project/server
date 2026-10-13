@@ -570,6 +570,10 @@ pub(super) fn check_revision(
         | GameCommand::Restart {
             expected_generation,
         }
+        | GameCommand::Moderate {
+            expected_generation,
+            ..
+        }
         | GameCommand::Console {
             expected_generation,
             ..

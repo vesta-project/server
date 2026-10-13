@@ -1367,7 +1367,7 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
 
     // 51 capability ids, in persisted ordinal order, with the persisted flags.
     assert_eq!(fixture_capabilities.len(), 51);
-    assert_eq!(Capability::ALL.len(), 61);
+    assert_eq!(Capability::ALL.len(), 62);
     assert_eq!(
         &Capability::ALL[51..],
         &[
@@ -1380,7 +1380,8 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
             Capability::AutomationView,
             Capability::AutomationManage,
             Capability::NotificationsView,
-            Capability::BackupsConfigure
+            Capability::BackupsConfigure,
+            Capability::PlayersOperator
         ]
     );
     for (index, expected) in fixture_capabilities.iter().enumerate() {
@@ -1527,6 +1528,14 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
                 .unwrap();
             expected_capabilities.insert(at + 1, "backups.configure".to_owned());
         }
+        // V22 deliberately separates Minecraft operator elevation from moderation.
+        if matches!(role, BuiltinRole::Owner | BuiltinRole::Administrator) {
+            let at = expected_capabilities
+                .iter()
+                .position(|c| c == "players.moderate")
+                .unwrap();
+            expected_capabilities.insert(at + 1, "players.operator".to_owned());
+        }
         assert_eq!(expected_capabilities, declared, "role {}", expected.id);
 
         // The migrated rows carry the same ids, name, rank and whole-scope grants.
@@ -1583,8 +1592,8 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
     );
     assert_eq!(
         Capability::ALL.len(),
-        persisted_ids.len() + 10,
-        "legacy fixture ids, unified pack, V16 permission-management, V18 automation/inbox and V21 backup policy additions were compared"
+        persisted_ids.len() + 11,
+        "legacy fixture ids, unified pack, V16 permission-management, V18 automation/inbox, V21 backup policy and V22 operator additions were compared"
     );
 }
 

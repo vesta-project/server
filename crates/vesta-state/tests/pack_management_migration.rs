@@ -27,7 +27,7 @@ fn rows(connection: &Connection) -> rusqlite::Result<Vec<Vec<Vec<Value>>>> {
         .map(|table| {
             // V18 intentionally extends builtin grants; compare all prior authority intact.
             let filter = if *table == "role_capabilities" {
-                " WHERE capability NOT IN ('automation.view','automation.manage','notifications.view','backups.configure')"
+                " WHERE capability NOT IN ('automation.view','automation.manage','notifications.view','backups.configure','players.operator')"
             } else { "" };
             let mut statement =
                 connection.prepare(&format!("SELECT * FROM {table}{filter} ORDER BY rowid"))?;
@@ -60,7 +60,7 @@ fn populated_v12_to_v13_preserves_existing_rows_and_adds_empty_pack_management_t
         connection.execute("INSERT INTO device_password_grants VALUES ('preserved-device','player',9)", [])?;
         connection.execute("INSERT INTO pack_releases VALUES (?,7,3,'preserved-pack','catalogue',?,321,23)", params![server,"b".repeat(64)])?;
         // Reconstruct v12 by removing all later management outcome tables.
-        connection.execute_batch(support::REMOVE_V18_SCHEMA)?; connection.execute_batch(support::REMOVE_V16_SCHEMA)?;
+        connection.execute_batch(support::REMOVE_V22_SCHEMA)?; connection.execute_batch(support::REMOVE_V18_SCHEMA)?; connection.execute_batch(support::REMOVE_V16_SCHEMA)?;
         connection.execute_batch("DROP TABLE management_file_outcomes; DROP TABLE management_pack_outcomes; DROP TABLE pack_minimum_policy; PRAGMA user_version=12;")?;
         Ok(())
     }).unwrap();

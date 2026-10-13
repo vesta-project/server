@@ -83,6 +83,7 @@ pub enum Capability {
     /// Edit backup profiles, retention and limits. Lowering retention removes restore
     /// points at the next backup, so this is owner-reserved like restore.
     BackupsConfigure,
+    PlayersOperator,
 }
 
 impl Capability {
@@ -149,6 +150,7 @@ impl Capability {
         Self::AutomationManage,
         Self::NotificationsView,
         Self::BackupsConfigure,
+        Self::PlayersOperator,
     ];
 
     /// The stable, exact identifier used in persisted identity records.
@@ -164,6 +166,7 @@ impl Capability {
             Self::AutomationManage => "automation.manage",
             Self::NotificationsView => "notifications.view",
             Self::BackupsConfigure => "backups.configure",
+            Self::PlayersOperator => "players.operator",
             Self::StatusView => "status.view",
             Self::StatusDetailed => "status.detailed",
             Self::MetricsView => "metrics.view",
@@ -231,6 +234,7 @@ impl Capability {
             "automation.manage" => Some(Self::AutomationManage),
             "notifications.view" => Some(Self::NotificationsView),
             "backups.configure" => Some(Self::BackupsConfigure),
+            "players.operator" => Some(Self::PlayersOperator),
             "status.view" => Some(Self::StatusView),
             "status.detailed" => Some(Self::StatusDetailed),
             "metrics.view" => Some(Self::MetricsView),

@@ -763,16 +763,22 @@
     {
       "id": "F34",
       "name": "Typed moderation and online player management",
-      "status": "partial",
+      "status": "implemented",
       "phase": 7,
-      "current": "Rust can query live players and parse typed player observations, but does not expose typed moderator actions/history; console operations are not a safe typed moderation interface.",
+      "current": "Rust exposes online players and closed, injection-resistant typed moderation with separate confirmed OP authority, protected bounded bans/ops/whitelist reads, auditable durable history, and original-actor reauthorized temporary-ban expiry. Native-write success does not claim Minecraft applied the command; OP level is read-only. Ban plugins are not supported yet: plugin commands/databases may diverge from vanilla file views, and history covers only Vesta-issued actions; in-game bans are not recorded. Plugin/connector integration is future work. Unconfirmed temporary expiry posts a warning for manual review.",
       "evidence": [
-        "crates/vesta-game-runtime/src/players.rs",
-        "crates/vesta-control/src/operations/players.rs",
-        "crates/vesta-control/src/operations/players_tests.rs"
+        "crates/vesta-control/src/moderation.rs",
+        "crates/vesta-control/src/operations/bindings.rs",
+        "crates/vesta-control/src/operations/moderation.rs",
+        "crates/vesta-control/src/operations/moderation_tests.rs",
+        "crates/vesta-control/src/automation_host.rs",
+        "crates/vesta-transport/src/manage_moderation.rs",
+        "crates/vesta-transport/tests/https/moderation.rs",
+        "crates/vesta-state/tests/moderation_migration.rs",
+        "docs/operations/management-api-contract.md"
       ],
       "acceptance": "Moderator typed actions only by default; console authority never impersonates player.",
-      "auditDate": "2026-10-10",
+      "auditDate": "2026-10-13",
       "previous": {
         "auditDate": "2026-10-04",
         "status": "partial",

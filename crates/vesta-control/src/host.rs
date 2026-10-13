@@ -135,6 +135,8 @@ impl AutomationDriver {
         runtime: Arc<std::sync::OnceLock<crate::operations::RuntimeHandle>>,
         backup_events: mpsc::Receiver<BackupEvent>,
         start_on_agent_start: bool,
+        actions: Arc<HostActions>,
+        game_directory: std::path::PathBuf,
     ) -> Result<Self, HostError> {
         use std::sync::atomic::{AtomicBool, Ordering};
         let stop = Arc::new(AtomicBool::new(false));
@@ -174,6 +176,7 @@ impl AutomationDriver {
                         .map(|d| d.as_millis() as i64)
                         .unwrap_or(0);
                     let _ = automation.tick(now);
+                    let _ = actions.expire_bans(&game_directory);
                     while let Ok(event) = backup_events.try_recv() {
                         let _ = automation.publish(match event {
                             BackupEvent::Completed { profile, .. } => {
@@ -625,23 +628,21 @@ fn compose(
             ))
         }
     };
-    let automation = Arc::new(
-        Automation::new(
-            db.clone(),
-            Arc::new(HostActions::new(
-                db.clone(),
-                cell.clone(),
-                backups.clone(),
-                files.clone(),
-            )),
-        )
-        .map_err(HostError::Identity)?,
-    );
+    let actions = Arc::new(HostActions::new(
+        db.clone(),
+        cell.clone(),
+        backups.clone(),
+        files.clone(),
+    ));
+    let automation =
+        Arc::new(Automation::new(db.clone(), actions.clone()).map_err(HostError::Identity)?);
     let driver = AutomationDriver::start(
         automation.clone(),
         cell.clone(),
         backup_events,
         config.start_on_agent_start(),
+        actions,
+        config.game().to_path_buf(),
     )?;
     // Last: once the driver runs, failures must go through observation-only shutdown.
     let runtime = match supervisor {

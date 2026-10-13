@@ -311,6 +311,11 @@ is null; persistent monotonic stopped-control generations are not introduced.
 | GET `/console` | optional `limit`, `cursor` | 200 `{items:[{cursor,text:string,truncated:boolean}],next_cursor:string,latest_cursor:string}` | `console.read` |
 | GET `/console/stream` | native WebSocket upgrade, bearer, no body/query/cookie/Origin | 101; availability, line and gap messages below | `console.read` |
 | POST `/console/command` | `{"expected_generation":"<hex>","line":"say hello"}` + key | 202 `Operation` | existing `console.write` |
+| POST `/players/moderate` | closed action-tagged request below + `Idempotency-Key` | 202 `Operation`; OP prepares an exact confirmation token | `players.moderate`, or `players.operator` for OP/de-OP |
+| GET `/players/moderation` | optional scoped cursor, limit 1–100 | 200 `{items:[ModerationHistory],next_cursor}` | `players.view` |
+| GET `/players/bans` | no body/query | 200 `{items:[{name,uuid,reason,created,expires,source}]}` | `players.view` |
+| GET `/players/ops` | no body/query | 200 `{items:[{name,uuid,level,bypassesPlayerLimit}]}` | `players.view` |
+| GET `/players/whitelist` | no body/query | 200 `{items:[{name,uuid}]}` | `players.view` |
 | GET `/players` | no body/query | 200 unknown `{known:false,player_count:null,items:null}`; known `{known:true,generation:hex,player_count:integer,items:[{name:string}]}` | `players.view` |
 | GET `/pack` | no body/query | 200 `{hosted_revision:decimal-string-or-null,minimum_revision:decimal-string-or-null,status:"published\|unpublished"}` | `status.view` |
 | POST `/pack/publish` | `{"expected_revision":"0"}` + key; zero means unpublished | 200 `{outcome:"succeeded",hosted_revision:decimal-string,minimum_revision:decimal-string}` | `pack.publish` |
@@ -432,8 +437,8 @@ Remaining gaps: detailed operation result/error projection, retained expiring
 pagination snapshots, persistent stopped-control generations and paginated player
 collections. Section 2.2 implements a bounded files/content/server-properties
 subset. Other unimplemented management paths remain authenticated 501
-placeholders. No capabilities were added or admitted into automatic role
-sources. TLS inert-child tests cover start → running → graceful stop → stopped,
+placeholders. F34 separately appends players.operator for owner/administrator;
+no new authority is admitted into automatic role sources. TLS inert-child tests cover start → running → graceful stop → stopped,
 confirmed kill, command delivery, real redacted HTTP/stream content, known players,
 and durable pack publish/minimum outcomes.
 
@@ -1335,3 +1340,82 @@ Add `decompress=1` to `files/content`, `files/tail` or `files/lines` to read a r
 - **Text pages:** `files/tail` and `files/lines` revalidate the held file after scanning. If it changed, they return 412 `precondition_failed` instead of a page carrying mixed text and a stale ETag; reopen and retry with the new observation.
 - **Resume:** send `Range: bytes=N-` with `If-Range: <etag>` from the first response to get 206 with the rest of the file. If the ETag no longer matches, the whole current file is sent again as 200. Only `bytes=N-` is accepted; any other form, or `N` at or beyond the end, returns 416 `range_not_satisfiable`.
 - **Limits:** downloads share the two-at-a-time disk read budget with ranged reads (503 `temporarily_unavailable` when busy) and the connection throughput floor, so a stalled client is dropped. Opening integrity fingerprinting adds a complete read of the requested interval before response headers, although memory stays bounded to fixed-size chunks. Large or slow files can incur substantial startup latency or exceed the existing request/admission timeout; that refusal is intentional rather than weakening the strong-ETag integrity check. A file changing during this opening pass can likewise be refused; retry once a stable opening observation is available.
+
+## Typed moderation (F34, implemented 2026-10-13)
+
+POST `/players/moderate` accepts one internally tagged, unknown-field-denying object:
+`{action,player,expected_generation,reason?,duration_seconds?,confirmation?}`.
+Actions are `kick`, `ban`, `pardon`, `whitelist_add`, `whitelist_remove`,
+`op`, `deop`, `kill`, and `lightning`. Only kick/ban accept reason; only ban
+accepts duration_seconds (60–31,536,000, absent/null means permanent). Only OP
+accepts confirmation: prepare with no token, then resubmit the identical intent
+and Idempotency-Key with the returned token in `confirmation`. The token uses the
+existing exact actor/device/payload/generation-bound confirmation mechanism.
+OP/de-OP require the separately appended `players.operator` capability, granted by
+default only to owner/administrator. All other actions require `players.moderate`.
+ConsoleWrite is neither required nor sufficient. Moderator has player visibility
+and typed moderation but no raw console authority by default.
+
+Players are Java Edition ASCII `[A-Za-z0-9_]{1,16}` names, not UUIDs/selectors.
+Reason is trimmed, 1–256 characters and at most 512 UTF-8 bytes if supplied;
+invalid reasons return the existing invalid_request code. Every control character
+and Unicode line/paragraph separator is refused, even at trimmed edges. A ban without reason
+renders/stores the fixed default “Banned by an operator.” Reasons remain trailing
+arguments, never command verbs or additional lines. Commands are rendered on the
+server and use the same generation-bound fresh-policy native-write guard as console
+commands. No execute-as-player action exists; lightning uses `execute at`, never
+`execute as`. Lightning requires Java 1.13+; a known earlier configured version
+returns 412 `lightning_unsupported_version`. Unknown/non-numeric version identifiers
+cannot establish compatibility and retain the documented 1.13+ prerequisite.
+
+Actions require the exact Running generation. Admission is not delivery and a
+succeeded operation means **native acknowledgement of the fixed stdin write**, not
+proof Minecraft applied the action. No console-output parsing invents application
+success. Existing fixed admission errors apply: 400 `invalid_request`, 403
+`management_forbidden`, 409 `idempotency_conflict`/`confirmation_invalid` or
+`operation_conflict`, and 412 `precondition_failed`.
+
+Bans, ops and whitelist are protected/no-follow reads of the configured game root,
+bounded to 1 MiB and 10,000 entries each. Missing files mean empty lists; malformed,
+oversize or unreadable files return 503 `players_file_malformed`,
+`players_file_too_large`, or `players_file_unavailable`, without document contents.
+Entries written by the server are display-only: names are bounded (1–64 characters,
+no control characters) rather than restricted to the Java Edition command set, so
+offline-mode names do not hide the whole list. OP level (1–4) is read-only. Vanilla has no per-player op-level command: changing it
+requires a stopped-server ops.json edit, which is out of scope for these routes.
+
+History records actor/device/operation/action/player/effective reason/duration,
+created_at_ms, expires_at_ms, outcome and expiry_state. The operation admission,
+history insertion and operation.submit audit commit together. Audit metadata includes
+action, player and reasonGiven, **not reason text**. History is included in schema-v22
+credential-free recovery export. Page cursors use the server-bound moderation scope.
+
+The existing one-second agent automation driver sweeps at most 32 due successful
+temporary bans per tick. Duration runs from native-write acknowledgement, not queue
+wait. It uses the original principal's keyless automation device
+and current policy; lost authority marks expiry blocked and inserts an inbox warning
+in the same writer. Stopped games keep expiry pending. Pardon admission and its
+submitted state/operation reference commit together; pre-effect failure can retry on
+a later generation, while an uncertain started write is never blindly repeated.
+Later ban/re-ban/permanent ban/manual pardon supersedes older expiry case-insensitively,
+including a queued expiry's fresh effect guard. The sweeper checks the bounded current
+banned-players.json entry and exact effective reason; missing/changed entries are
+superseded with an inbox warning; malformed/unavailable documents leave intent pending and are retried (the game rewrites the file in place); if the file is still unreadable one hour after expiry, the expiry is blocked with an inbox warning and no pardon is sent.
+External edits can still race that observation and a native write (no filesystem/game transaction exists).
+Expiry is durable across ordinary agent restarts; recovery import preserves history,
+not missing operation execution state, so uncertain/submitted history requires manual
+review rather than an invented replay. IP bans, mute, teleport and inventory remain
+out of scope.
+
+### Ban plugins are not supported yet
+
+Vesta currently offers only its own vanilla-command moderation. Ban plugins such as
+LiteBans, LibertyBans, AdvancedBan and BanManager often replace /ban, /pardon and
+/kick and store bans in their own database instead of banned-players.json. With
+such a plugin, Vesta commands may be handled by the plugin; the vanilla ban/OP/
+whitelist read views and Vesta history do not reflect plugin ban databases. History
+covers only actions issued through Vesta: bans made in-game are not recorded.
+A temporary ban whose current vanilla file entry cannot be confirmed is marked
+superseded and produces an inbox warning, not a silent permanent ban. Review that
+ban manually. Plugin and connector integration is future work; there are no plugin
+adapters or plugin settings in this feature.

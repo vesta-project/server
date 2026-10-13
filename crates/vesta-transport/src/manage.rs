@@ -20,6 +20,8 @@ use vesta_control::{
 mod automation;
 #[path = "manage_files.rs"]
 pub(super) mod files;
+#[path = "manage_moderation.rs"]
+mod moderation;
 #[path = "manage_permissions.rs"]
 mod permissions;
 
@@ -35,6 +37,7 @@ pub(super) fn automation_endpoint(path: &str) -> bool {
 }
 pub(super) fn implemented(path: &str) -> bool {
     automation::implemented(path)
+        || moderation::implemented(path)
         || files::implemented(path)
         || permissions::implemented(path)
         || matches!(
@@ -339,6 +342,9 @@ pub(super) struct Request<'a> {
     pub if_range: Option<&'a str>,
 }
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
+    if moderation::implemented(request.path) {
+        return moderation::dispatch(host, request);
+    }
     if automation::implemented(request.path) {
         return automation::dispatch(host, request);
     }

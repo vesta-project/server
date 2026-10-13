@@ -3,7 +3,7 @@ use super::{
     domain::{OperationsResult, invalid},
     input::{PreparedOperation, Requirement, digest},
 };
-use crate::identity::Capability;
+use crate::{identity::Capability, moderation::ModerationAction};
 use serde::{Deserialize, Serialize};
 use vesta_game_runtime::process::GenerationId;
 
@@ -17,6 +17,10 @@ pub enum GameCommand {
     Console {
         expected_generation: GenerationId,
         line: String,
+    },
+    Moderate {
+        expected_generation: GenerationId,
+        action: ModerationAction,
     },
     Stop {
         expected_generation: GenerationId,
@@ -38,6 +42,7 @@ impl GameCommand {
         match self {
             Self::Start => "game.start",
             Self::Console { .. } => "game.console",
+            Self::Moderate { .. } => "players.moderate",
             Self::Stop { .. } => "game.stop",
             Self::Restart { .. } => "game.restart",
             Self::ForceKill { .. } => "game.force_kill",
@@ -46,6 +51,17 @@ impl GameCommand {
     pub(super) fn canonical_input(&self) -> OperationsResult<String> {
         match self {
             Self::Start => Ok("{}".to_owned()),
+            Self::Moderate {
+                expected_generation,
+                action,
+            } => {
+                let action = action.clone().validated().map_err(|_| invalid())?;
+                serde_json::to_string(&ModerationInput {
+                    expected_generation: expected_generation.to_hex(),
+                    action,
+                })
+                .map_err(|_| invalid())
+            }
             Self::Console {
                 expected_generation,
                 line,
@@ -116,6 +132,13 @@ struct ConsoleInput {
     line: String,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ModerationInput {
+    expected_generation: String,
+    action: ModerationAction,
+}
+
 // Serde's derived struct visitors can also accept positional sequences. The
 // durable lifecycle contract is an object, never a second array representation.
 // This is only a root-shape guard; serde still validates the whole JSON text,
@@ -129,6 +152,14 @@ fn object_input<T: serde::de::DeserializeOwned>(raw: &str) -> OperationsResult<T
 
 pub(super) fn derive(kind: &str, raw: &str) -> OperationsResult<Option<PreparedOperation>> {
     let command = match kind {
+        "players.moderate" => {
+            let input: ModerationInput = object_input(raw)?;
+            GameCommand::Moderate {
+                expected_generation: GenerationId::parse_hex(&input.expected_generation)
+                    .map_err(|_| invalid())?,
+                action: input.action.validated().map_err(|_| invalid())?,
+            }
+        }
         "game.console" => {
             let input: ConsoleInput = object_input(raw)?;
             GameCommand::Console {
@@ -171,6 +202,15 @@ pub(super) fn derive(kind: &str, raw: &str) -> OperationsResult<Option<PreparedO
             format!("game:generation:{}", expected_generation.to_hex()),
             false,
             false,
+        ),
+        GameCommand::Moderate {
+            expected_generation,
+            action,
+        } => (
+            action.capability(),
+            format!("game:generation:{}", expected_generation.to_hex()),
+            false,
+            matches!(action, ModerationAction::Op { .. }),
         ),
         GameCommand::Start => (Capability::LifecycleStart, "game".to_owned(), false, false),
         GameCommand::Stop {
@@ -254,6 +294,62 @@ mod tests {
             ] {
                 invalid_input(kind, input);
             }
+        }
+    }
+
+    #[test]
+    fn moderation_binding_is_closed_canonical_and_derives_authority() {
+        let generation = GenerationId::parse_hex("00112233445566778899aabbccddeeff").unwrap();
+        for (action, capability, confirmation) in [
+            (
+                ModerationAction::Kick {
+                    player: "Alex".into(),
+                    reason: Some("why".into()),
+                },
+                Capability::PlayersModerate,
+                false,
+            ),
+            (
+                ModerationAction::Op {
+                    player: "Alex".into(),
+                },
+                Capability::PlayersOperator,
+                true,
+            ),
+            (
+                ModerationAction::Deop {
+                    player: "Alex".into(),
+                },
+                Capability::PlayersOperator,
+                false,
+            ),
+        ] {
+            let command = GameCommand::Moderate {
+                expected_generation: generation,
+                action,
+            };
+            let raw = command.canonical_input().unwrap();
+            let plan = derive("players.moderate", &raw).unwrap().unwrap();
+            assert_eq!(plan.command, Some(command));
+            assert_eq!(plan.requirements[0].capability, capability);
+            assert_eq!(plan.resources, vec![GAME_LOCK.to_owned()]);
+            assert_eq!(plan.requires_confirmation, confirmation);
+            assert!(!plan.effect_idempotent);
+            assert_eq!(
+                derive("players.moderate", &plan.canonical_input)
+                    .unwrap()
+                    .unwrap()
+                    .canonical_input,
+                raw
+            );
+        }
+        for input in [
+            "[]",
+            r#"{"expected_generation":"00112233445566778899aabbccddeeff","action":{"action":"kick","player":"@a"}}"#,
+            r#"{"expected_generation":"00112233445566778899aabbccddeeff","action":{"action":"op","player":"Alex","reason":"why"}}"#,
+            r#"{"expected_generation":"00112233445566778899aabbccddeeff","action":{"action":"pardon","player":"Alex"},"capability":"console.write"}"#,
+        ] {
+            invalid_input("players.moderate", input);
         }
     }
 

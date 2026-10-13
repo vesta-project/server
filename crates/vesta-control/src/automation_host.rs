@@ -37,6 +37,10 @@ pub struct HostActions {
     trash: TrashResults,
 }
 
+/// How long after expiry an unreadable banned-players.json is retried before the
+/// temporary ban is blocked for manual review.
+pub(crate) const UNREADABLE_BAN_FILE_GRACE_MS: i64 = 60 * 60 * 1000;
+
 impl HostActions {
     pub fn new(
         db: StateDatabase,
@@ -114,6 +118,107 @@ impl HostActions {
             principal: principal.clone(),
             device: DeviceId::parse(&device).map_err(|_| ActionError::Unavailable)?,
         })
+    }
+
+    /// Bounded durable temporary-ban sweep. Original actor, current automation-device policy.
+    /// An unreadable ban file defers expiry; after UNREADABLE_BAN_FILE_GRACE_MS the row is
+    /// blocked with a notification rather than retried silently forever.
+    pub(crate) fn expire_bans(&self, directory: &std::path::Path) -> Result<(), ()> {
+        let now = self.db.clock().millis();
+        let rows = self.db.read(|c| {
+            let mut q = c.prepare("SELECT id,principal_id,player,reason,expires_at FROM moderation_actions WHERE server_id=? AND expiry_state='pending' AND outcome='succeeded' AND expires_at<=? ORDER BY expires_at,id LIMIT 32")?;
+            let rows = q.query_map(params![self.db.server_id(), now], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<String>>(3)?,r.get::<_,i64>(4)?)))?.collect::<Result<Vec<_>,_>>()?;
+            Ok(rows)
+        }).map_err(|_| ())?;
+        let mut entries = None;
+        for (id, principal, player, reason, expires_at) in rows {
+            let principal = PrincipalId::parse(&principal).map_err(|_| ())?;
+            let subject = self.subject(&principal);
+            let allowed = match &subject {
+                Ok(subject) => self
+                    .db
+                    .read_with(|s| -> crate::Result<bool> {
+                        Ok(matches!(
+                            crate::identity::policy_in(
+                                s.connection(),
+                                self.db.server_id(),
+                                now,
+                                Some(subject)
+                            )?
+                            .check(Capability::PlayersModerate, None),
+                            crate::identity::Decision::Allow
+                        ))
+                    })
+                    .map_err(|_| ())?,
+                Err(ActionError::Forbidden) => false,
+                Err(_) => return Err(()),
+            };
+            if !allowed {
+                self.db.write_with(|t| -> crate::Result<()> {
+                    if t.connection().execute("UPDATE moderation_actions SET expiry_state='blocked' WHERE id=? AND expiry_state='pending'", [id])? != 0 {
+                        crate::automation::insert_notification(t.connection(), now, crate::automation::Severity::Warning, "Temporary ban expiry blocked", &format!("Temporary ban #{id} for {player}: the original actor no longer has moderation authority. Review the ban manually."), "moderation")?;
+                    }
+                    Ok(())
+                }).map_err(|_| ())?;
+                continue;
+            }
+            let snapshot = self
+                .runtime()
+                .map_err(|_| ())?
+                .game_snapshot()
+                .map_err(|_| ())?;
+            if snapshot.phase != crate::operations::ProcessPhase::Running {
+                continue;
+            }
+            let Some(generation) = snapshot.generation else {
+                continue;
+            };
+            // The game rewrites its ban file in place, so a failed read may be a
+            // half-written save: retry on later ticks instead of guessing. Only
+            // persistent unreadability is surfaced, and nothing is pardoned.
+            let Some(list) = entries
+                .get_or_insert_with(|| crate::moderation::bans(directory).ok())
+                .as_ref()
+            else {
+                if now.saturating_sub(expires_at) >= UNREADABLE_BAN_FILE_GRACE_MS {
+                    self.db.write_with(|t| -> crate::Result<()> {
+                        if t.connection().execute("UPDATE moderation_actions SET expiry_state='blocked' WHERE id=? AND expiry_state='pending'", [id])? != 0 {
+                            crate::automation::insert_notification(t.connection(), now, crate::automation::Severity::Warning, "Temporary ban expiry needs review", &format!("Temporary ban #{id} for {player}: banned-players.json could not be read for an hour after expiry. No pardon was sent. Review the ban manually."), "moderation")?;
+                        }
+                        Ok(())
+                    }).map_err(|_| ())?;
+                }
+                continue;
+            };
+            let matching = {
+                list.iter().any(|v| {
+                    v.name.eq_ignore_ascii_case(&player)
+                        && Some(v.reason.as_str()) == reason.as_deref()
+                })
+            };
+            if !matching {
+                self.db.write_with(|t| -> crate::Result<()> {
+                    if t.connection().execute("UPDATE moderation_actions SET expiry_state='superseded' WHERE id=? AND expiry_state='pending'", [id])? != 0 {
+                        crate::automation::insert_notification(t.connection(), now, crate::automation::Severity::Warning, "Temporary ban expiry not confirmed", &format!("Temporary ban #{id} for {player}: the current vanilla entry is missing or changed. No pardon was sent. Review manually; ban plugins are not supported yet."), "moderation")?;
+                    }
+                    Ok(())
+                }).map_err(|_| ())?;
+                continue;
+            }
+            // Submission atomically tests pending intent and stores its operation id.
+            // Exact binding checks again before native write, including later supersession.
+            match self.runtime().map_err(|_| ())?.submit_moderation_expiry(
+                &subject.map_err(|_| ())?,
+                generation,
+                player,
+                id,
+            ) {
+                Ok(_) => {}
+                Err(e) if matches!(e.code(), "binding_mismatch" | "forbidden") => {}
+                Err(_) => return Err(()),
+            }
+        }
+        Ok(())
     }
 
     fn required(action: &Action) -> Result<Option<Capability>, ActionError> {

@@ -21,6 +21,25 @@ const MAX_ROWS: u64 = 5_000_000;
 // Public-key digests and audit chain hashes are not hashes of secrets. The one
 // explicitly specified binary encoding is management_device_keys.public_key_hex.
 const INCLUDED: &[(&str, &[&str])] = &[
+    (
+        "moderation_actions",
+        &[
+            "id",
+            "server_id",
+            "principal_id",
+            "device_id",
+            "operation_id",
+            "action",
+            "player",
+            "reason",
+            "duration_seconds",
+            "expires_at",
+            "created_at",
+            "outcome",
+            "expiry_state",
+            "expiry_operation_id",
+        ],
+    ),
     ("server_identity", &["singleton", "server_id", "created_at"]),
     (
         "principals",

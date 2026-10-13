@@ -25,6 +25,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         19 => apply_v19(c),
         20 => apply_v20(c),
         21 => apply_v21(c),
+        22 => apply_v22(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -967,6 +968,37 @@ fn apply_v21(c: &Connection) -> crate::Result<()> {
         DROP TRIGGER role_capabilities_builtin_no_insert;
         INSERT OR IGNORE INTO role_capabilities(role_id,capability,scope)
             SELECT id,'backups.configure','*' FROM roles WHERE id='owner';
+        CREATE TRIGGER role_capabilities_builtin_no_insert BEFORE INSERT ON role_capabilities
+        WHEN (SELECT builtin FROM roles WHERE id = NEW.role_id) = 1
+        BEGIN SELECT RAISE(ABORT, 'builtin roles are immutable'); END;
+    "#)?;
+    Ok(())
+}
+
+/// Typed moderation history and durable temporary-ban expiry bookkeeping.
+fn apply_v22(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(r#"
+        CREATE TABLE moderation_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            server_id TEXT NOT NULL,
+            principal_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            operation_id TEXT NOT NULL UNIQUE,
+            action TEXT NOT NULL CHECK(action IN ('kick','ban','pardon','whitelist_add','whitelist_remove','op','deop','kill','lightning')),
+            player TEXT NOT NULL CHECK(length(player) BETWEEN 1 AND 16),
+            reason TEXT,
+            duration_seconds INTEGER CHECK(duration_seconds BETWEEN 60 AND 31536000),
+            expires_at INTEGER CHECK(expires_at>=0),
+            created_at INTEGER NOT NULL CHECK(created_at>=0),
+            outcome TEXT NOT NULL,
+            expiry_state TEXT NOT NULL CHECK(expiry_state IN ('none','pending','submitted','completed','blocked','superseded','uncertain')),
+            expiry_operation_id TEXT UNIQUE
+        ) STRICT;
+        CREATE INDEX moderation_history ON moderation_actions(server_id,id);
+        CREATE INDEX moderation_expiry ON moderation_actions(expiry_state,expires_at,id);
+        DROP TRIGGER role_capabilities_builtin_no_insert;
+        INSERT OR IGNORE INTO role_capabilities(role_id,capability,scope)
+            SELECT id,'players.operator','*' FROM roles WHERE id IN ('owner','administrator');
         CREATE TRIGGER role_capabilities_builtin_no_insert BEFORE INSERT ON role_capabilities
         WHEN (SELECT builtin FROM roles WHERE id = NEW.role_id) = 1
         BEGIN SELECT RAISE(ABORT, 'builtin roles are immutable'); END;

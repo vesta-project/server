@@ -27,6 +27,7 @@
 //! capacity pressure skips new occurrences and records a notification.
 mod cron;
 mod inbox;
+pub(crate) use inbox::insert as insert_notification;
 mod model;
 mod receipt;
 mod service;

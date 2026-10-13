@@ -58,6 +58,7 @@ const MUST_BE_EMPTY: &[&str] = &[
     "notifications",
     "notification_state",
     "backup_policy",
+    "moderation_actions",
     "pack_minimum_policy",
     "settings",
     "audit_events",

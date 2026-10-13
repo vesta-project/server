@@ -255,7 +255,7 @@ mod tests {
         let bytes = fs::read(&output).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["format"], "vesta-recovery-export");
-        assert_eq!(summary.tables, 20);
+        assert_eq!(summary.tables, 21);
         assert_eq!(
             publish_export(&db, &output, None),
             Err("local_destination_exists_or_unavailable")

@@ -4,8 +4,8 @@ Date: **2026-10-09**. Status: **implemented and Windows-tested bounded compositi
 
 This is a Rust-native trusted host composition over the existing state, identity and
 owned game-process components. It supersedes the staged-only execution scope in
-[RUST_OPERATIONS_KERNEL_PLAN.md](../archive/RUST_OPERATIONS_KERNEL_PLAN.md) for these three
-closed actions, not for arbitrary handlers or the complete Java wrapper rebuild.
+[RUST_OPERATIONS_KERNEL_PLAN.md](../archive/RUST_OPERATIONS_KERNEL_PLAN.md) for this closed
+action inventory, not for arbitrary handlers or the complete Java wrapper rebuild.
 Executed results belong to [the integration record](../archive/RUST_INTEGRATED_MIGRATION_PASS.md),
 not to this API description.
 
@@ -17,14 +17,23 @@ not to this API description.
 - `GameCommand::Start`: canonical `{}`, `lifecycle.start`, fixed `game.generation` lock.
 - `GameCommand::Stop { expected_generation }`: exact opaque generation, `lifecycle.stop`,
   the same fixed lock, idempotent action declaration.
+- `GameCommand::Restart { expected_generation }`: current lifecycle.restart authority.
+- `GameCommand::Console { expected_generation, line }`: separately authorized console.write.
+- `GameCommand::Moderate { expected_generation, action }`: closed validated typed actions,
+  players.moderate except OP/de-OP (players.operator); OP requires exact confirmation.
+  Reasons are trimmed, at most 256 characters and 512 UTF-8 bytes; the native
+  1024-byte guarded-line ceiling stays unchanged. Running-only, same guarded stdin
+  write. Success proves delivery, not game application.
+  History and temporary expiry are durable schema-v22 records. See
+  [the implemented management contract](management-api-contract.md#typed-moderation-f34-implemented-2026-10-13).
 - `GameCommand::ForceKill { expected_generation }`: exact generation, `lifecycle.force_kill`,
   the same fixed lock, explicit confirmation, non-idempotent action declaration.
 
-Clients cannot supply capabilities, locksets, safety flags, source revisions, stdin commands,
+Lifecycle/moderation clients cannot supply capabilities, locksets, safety flags, source revisions, stdin commands,
 executables, paths, URLs or launch arguments. Generation hex is a strict lowercase 32-digit
 lookup encoding, not a PID, attachment mechanism or authorization proof. Subjects are trusted
-application lookup keys, **not authenticated transport evidence**. No remote route or production
-OS-local authority issuer is provided. Passwords, Minecraft receipts, OP, loopback and possession
+application lookup keys, **not authenticated transport evidence**. Authenticated management
+routes live in the transport composition, not in this trusted application API. Passwords, Minecraft receipts, OP, loopback and possession
 of a process/connector do not create administration.
 
 `OperationRuntime::open(operations, LaunchSpec)` acquires this database directory's actual
@@ -116,3 +125,16 @@ flow, installer activation/update/world restore or full host executable is suppl
 Java behavior accounting, the complete original requirements, platform/MSRV/release gates and
 final independent whole-rebuild review remain separate and unfinished. Only owned inert native
 children and local SQLite/filesystem fixtures may be used for this candidate's Windows tests.
+
+### Ban plugins are not supported yet
+
+Vesta currently offers only its own vanilla-command moderation. Ban plugins such as
+LiteBans, LibertyBans, AdvancedBan and BanManager often replace /ban, /pardon and
+/kick and store bans in their own database instead of banned-players.json. With
+such a plugin, Vesta commands may be handled by the plugin; the vanilla ban/OP/
+whitelist read views and Vesta history do not reflect plugin ban databases. History
+covers only actions issued through Vesta: bans made in-game are not recorded.
+A temporary ban whose current vanilla file entry cannot be confirmed is marked
+superseded and produces an inbox warning, not a silent permanent ban. Review that
+ban manually. Plugin and connector integration is future work; there are no plugin
+adapters or plugin settings in this feature.

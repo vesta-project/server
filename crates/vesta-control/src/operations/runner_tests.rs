@@ -1250,3 +1250,6 @@ fn explicit_restart_timeout_never_starts_a_second_generation() {
         Some("game_stop_timeout")
     );
 }
+
+#[path = "moderation_tests.rs"]
+mod moderation_tests;

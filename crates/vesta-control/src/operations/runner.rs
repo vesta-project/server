@@ -193,6 +193,28 @@ impl RuntimeHandle {
             &command.canonical_input()?,
             Some(idempotency_key),
             Some(&self.shared.view),
+            None,
+        )
+    }
+
+    pub(crate) fn submit_moderation_expiry(
+        &self,
+        subject: &crate::identity::Subject,
+        generation: GenerationId,
+        player: String,
+        id: i64,
+    ) -> OperationsResult<super::Admission> {
+        let command = GameCommand::Moderate {
+            expected_generation: generation,
+            action: crate::moderation::ModerationAction::Pardon { player },
+        };
+        self.operations.admit_with_view(
+            subject,
+            command.operation_type(),
+            &command.canonical_input()?,
+            Some(&format!("moderation-expiry:{id}:{}", generation.to_hex())),
+            Some(&self.shared.view),
+            Some(id),
         )
     }
 
@@ -711,7 +733,18 @@ impl Driver {
             Ok(command) => command,
             Err(error) => return self.refused(claim, error),
         };
+        let command = match command {
+            GameCommand::Moderate {
+                expected_generation,
+                action,
+            } => GameCommand::Console {
+                expected_generation,
+                line: action.render().map_err(|_| super::domain::invalid())?,
+            },
+            other => other,
+        };
         match command {
+            GameCommand::Moderate { .. } => unreachable!("rendered above"),
             GameCommand::Console {
                 expected_generation,
                 line,

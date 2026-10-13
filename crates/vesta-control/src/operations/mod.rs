@@ -19,7 +19,9 @@ pub(crate) use properties_confirmation::{
 mod domain;
 mod game;
 mod input;
+mod moderation;
 mod players;
+pub use moderation::ModerationHistory;
 mod queue;
 pub mod readiness;
 mod replay;
@@ -254,7 +256,14 @@ impl Operations {
         raw_input: &str,
         idempotency_key: Option<&str>,
     ) -> OperationsResult<Admission> {
-        self.admit_with_view(subject, operation_type, raw_input, idempotency_key, None)
+        self.admit_with_view(
+            subject,
+            operation_type,
+            raw_input,
+            idempotency_key,
+            None,
+            None,
+        )
     }
     fn admit_with_view(
         &self,
@@ -263,6 +272,7 @@ impl Operations {
         raw_input: &str,
         idempotency_key: Option<&str>,
         view: Option<&game::LiveGameView>,
+        expiry: Option<i64>,
     ) -> OperationsResult<Admission> {
         if idempotency_key.is_some_and(|key| !text(key, 128)) {
             let error = invalid();
@@ -314,8 +324,10 @@ impl Operations {
                     plan.command.as_ref().ok_or_else(invalid)?,
                     &view.revision()?,
                 )?;
-                if matches!(plan.command, Some(GameCommand::Console { .. }))
-                    && view.snapshot()?.phase != ProcessPhase::Running
+                if matches!(
+                    plan.command,
+                    Some(GameCommand::Console { .. } | GameCommand::Moderate { .. })
+                ) && view.snapshot()?.phase != ProcessPhase::Running
                 {
                     return Err(OperationError::rejected(
                         OperationErrorCode::BindingMismatch,
@@ -323,6 +335,26 @@ impl Operations {
                 }
             }
             let op = repo.insert(subject, &plan, idempotency_key)?;
+            if let Some(GameCommand::Moderate { action, .. }) = &plan.command {
+                moderation::insert(&repo, subject, &op, action, expiry)?;
+            }
+            let mut metadata = vec![
+                (
+                    "state".to_owned(),
+                    Some(op.summary.state.as_str().to_owned()),
+                ),
+                ("payloadHash".to_owned(), Some(plan.payload_hash.clone())),
+            ];
+            if let Some(GameCommand::Moderate { action, .. }) = &plan.command {
+                metadata.extend([
+                    ("action".to_owned(), Some(action.kind().to_owned())),
+                    ("player".to_owned(), Some(action.player().to_owned())),
+                    (
+                        "reasonGiven".to_owned(),
+                        Some(action.reason().is_some().to_string()),
+                    ),
+                ]);
+            }
             self.audit.append(
                 repo.connection(),
                 &AuditRecord::new(
@@ -331,13 +363,7 @@ impl Operations {
                     operation_target(&op.summary.id),
                     "accepted".to_owned(),
                     Some(op.summary.id.as_str().to_owned()),
-                    [
-                        (
-                            "state".to_owned(),
-                            Some(op.summary.state.as_str().to_owned()),
-                        ),
-                        ("payloadHash".to_owned(), Some(plan.payload_hash.clone())),
-                    ],
+                    metadata,
                 )?,
             )?;
             self.append_event(&repo, "operation.created", &op.summary)?;
@@ -441,6 +467,7 @@ impl Operations {
         op: &StoredOperation,
     ) -> OperationsResult<PreparedOperation> {
         let plan = self.verified_plan(repo, op)?;
+        moderation::check_expiry(repo, op)?;
         self.authorize_plan(repo, &op.subject, &plan)?;
         Ok(plan)
     }
@@ -483,6 +510,7 @@ impl Operations {
         after: &StoredOperation,
         before: OperationState,
     ) -> OperationsResult<()> {
+        moderation::outcome(repo, after)?;
         self.audit.append(
             repo.connection(),
             &AuditRecord::new(
@@ -511,6 +539,7 @@ impl Operations {
         before: OperationState,
         authority_denial: Option<&'static str>,
     ) -> OperationsResult<()> {
+        moderation::outcome(repo, after)?;
         if after.operation_type == "game.console" {
             self.audit.append(
                 repo.connection(),
@@ -563,6 +592,7 @@ impl Operations {
         repo: &Repository<'_>,
         after: &StoredOperation,
     ) -> OperationsResult<()> {
+        moderation::outcome(repo, after)?;
         self.audit.append(
             repo.connection(),
             &AuditRecord::new(
