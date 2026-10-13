@@ -64,9 +64,11 @@ fn management_metrics_routes_are_bounded_passive_and_identity_protected() {
         Some(&viewer),
     );
     assert_eq!(range.status, 200);
-    let point = &range.json()["data"]["points"][0];
-    assert!(point["numeric"]["avg"].is_null());
-    assert_eq!(point["numeric"]["unknown_count"], 1);
+    let data = &range.json()["data"];
+    assert_eq!(data["timestamps"], serde_json::json!([at]));
+    assert!(data["series"]["tps"]["avg"][0].is_null());
+    assert_eq!(data["series"]["tps"]["known_count"][0], 0);
+    assert_eq!(data["series"]["tps"]["unknown_count"][0], 1);
     for path in [
         "metrics/current?extra=1",
         "metrics?series=bogus&from=0&to=1",
@@ -120,4 +122,267 @@ fn management_metrics_routes_are_bounded_passive_and_identity_protected() {
             .status,
         200
     );
+}
+
+fn metrics_raw(
+    f: &Fixture,
+    path: &str,
+    session: Option<&str>,
+    validator: Option<&str>,
+) -> WireReply {
+    let authorization = session
+        .map(|token| format!("Authorization: Bearer {token}\r\n"))
+        .unwrap_or_default();
+    let validator = validator
+        .map(|tag| format!("If-None-Match: {tag}\r\n"))
+        .unwrap_or_default();
+    f.raw(
+        format!(
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n{authorization}{validator}\r\n"
+        )
+        .as_bytes(),
+    )
+}
+
+#[test]
+fn metrics_policy_uses_host_fallback_and_revisioned_storage_with_config_capabilities() {
+    use vesta_control::identity::BuiltinRole;
+
+    let f = Fixture::new("minecraft", 8, 4096, 5);
+    let (viewer_device, viewer_key) = enroll_management(&f, BuiltinRole::Viewer);
+    let viewer = management_session(&f, &viewer_device, &viewer_key);
+    let (owner_device, owner_key) = enroll_management(&f, BuiltinRole::Owner);
+    let owner = management_session(&f, &owner_device, &owner_key);
+
+    f.host()
+        .database()
+        .write(|c| {
+            let principal: String = c.query_row(
+                "SELECT principal_id FROM devices WHERE id=?",
+                [&viewer_device],
+                |r| r.get(0),
+            )?;
+            c.execute(
+                "INSERT INTO principal_overrides(id,principal_id,capability,scope,effect,granted_by,created_at) VALUES('metrics-config-view-only',?,'config.view','*','allow','fixture',?)",
+                rusqlite::params![principal, f.host().database().clock().millis()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let fallback = f.request("GET", "/api/v3/manage/metrics/policy", b"", Some(&viewer));
+    assert_eq!(fallback.status, 200);
+    let fallback = fallback.json()["data"].clone();
+    assert_eq!(fallback["source"], "host_config");
+    assert!(fallback["revision"].is_null());
+    assert_eq!(fallback["settings"]["sample_seconds"], 10);
+    assert_eq!(fallback["command_polling"]["enabled"], false);
+    assert_eq!(fallback["command_polling"]["interval_seconds"], 60);
+    assert_eq!(fallback["command_polling_writes_console"], true);
+
+    let settings = serde_json::to_value(vesta_control::config::MetricsSettings::default()).unwrap();
+    let document = serde_json::json!({
+        "expected_revision": null,
+        "settings": settings,
+        "command_polling": {"enabled": true, "interval_seconds": 120}
+    });
+    let body = serde_json::to_vec(&document).unwrap();
+    management_reply_error(
+        &f.request("PUT", "/api/v3/manage/metrics/policy", &body, Some(&viewer)),
+        403,
+        "management_forbidden",
+    );
+
+    let stored = f.request("PUT", "/api/v3/manage/metrics/policy", &body, Some(&owner));
+    assert_eq!(stored.status, 200);
+    assert_eq!(stored.json()["data"]["source"], "stored");
+    assert_eq!(stored.json()["data"]["revision"], 1);
+    let readback = f.request("GET", "/api/v3/manage/metrics/policy", b"", Some(&owner));
+    assert_eq!(readback.status, 200);
+    let readback = readback.json()["data"].clone();
+    assert_eq!(readback["source"], "stored");
+    assert_eq!(readback["revision"], 1);
+    assert_eq!(readback["settings"]["sample_seconds"], 10);
+    assert_eq!(readback["command_polling"]["enabled"], true);
+    assert_eq!(readback["command_polling"]["interval_seconds"], 120);
+
+    let mut stale = document.clone();
+    stale["expected_revision"] = serde_json::Value::Null;
+    management_reply_error(
+        &f.request(
+            "PUT",
+            "/api/v3/manage/metrics/policy",
+            &serde_json::to_vec(&stale).unwrap(),
+            Some(&owner),
+        ),
+        409,
+        "metrics_policy_conflict",
+    );
+
+    let mut invalid = document.clone();
+    invalid["expected_revision"] = serde_json::json!(1);
+    invalid["settings"]["sample_seconds"] = serde_json::json!(4);
+    management_reply_error(
+        &f.request(
+            "PUT",
+            "/api/v3/manage/metrics/policy",
+            &serde_json::to_vec(&invalid).unwrap(),
+            Some(&owner),
+        ),
+        400,
+        "invalid_request",
+    );
+    let mut unexpected = document;
+    unexpected["unexpected"] = serde_json::json!(true);
+    management_reply_error(
+        &f.request(
+            "PUT",
+            "/api/v3/manage/metrics/policy",
+            &serde_json::to_vec(&unexpected).unwrap(),
+            Some(&owner),
+        ),
+        400,
+        "invalid_request",
+    );
+
+    let audit_count: i64 = f
+        .host()
+        .database()
+        .read(|c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE action='metrics.policy.update' AND target='metrics-policy'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .unwrap();
+    assert_eq!(audit_count, 1);
+}
+
+#[test]
+fn metrics_etags_are_exact_authorized_and_cursor_only_ranges_are_empty() {
+    use vesta_control::identity::BuiltinRole;
+
+    let f = Fixture::new("minecraft", 8, 4096, 5);
+    let (device, key) = enroll_management(&f, BuiltinRole::Owner);
+    let session = management_session(&f, &device, &key);
+
+    let settings = vesta_control::config::MetricsSettings {
+        enabled: false,
+        ..vesta_control::config::MetricsSettings::default()
+    };
+    let disabled = serde_json::json!({"expected_revision": null, "settings": settings});
+    assert_eq!(
+        f.request(
+            "PUT",
+            "/api/v3/manage/metrics/policy",
+            &serde_json::to_vec(&disabled).unwrap(),
+            Some(&session)
+        )
+        .status,
+        200
+    );
+    let current = metrics_raw(&f, "/api/v3/manage/metrics/current", Some(&session), None);
+    assert_eq!(current.status, 200);
+    let mut current_tag = current.headers.get("etag").expect("current ETag").clone();
+    let mut not_modified = metrics_raw(
+        &f,
+        "/api/v3/manage/metrics/current",
+        Some(&session),
+        Some(&current_tag),
+    );
+    // One sampler observation may already be in flight when disable commits.
+    // A changed revision correctly yields 200; retry using its fresh validator.
+    for _ in 0..8 {
+        if not_modified.status == 304 {
+            break;
+        }
+        assert_eq!(not_modified.status, 200);
+        current_tag = not_modified
+            .headers
+            .get("etag")
+            .expect("fresh current ETag")
+            .clone();
+        not_modified = metrics_raw(
+            &f,
+            "/api/v3/manage/metrics/current",
+            Some(&session),
+            Some(&current_tag),
+        );
+    }
+    assert_eq!(not_modified.status, 304);
+    assert!(not_modified.body.is_empty());
+    assert_eq!(not_modified.headers.get("etag"), Some(&current_tag));
+    management_reply_error(
+        &metrics_raw(
+            &f,
+            "/api/v3/manage/metrics/current",
+            None,
+            Some(&current_tag),
+        ),
+        401,
+        "management_session_invalid",
+    );
+    for malformed in ["*", r#"W/"weak""#, r#""one",two"#] {
+        management_reply_error(
+            &metrics_raw(
+                &f,
+                "/api/v3/manage/metrics/current",
+                Some(&session),
+                Some(malformed),
+            ),
+            400,
+            "invalid_request",
+        );
+    }
+
+    let path = "/api/v3/manage/metrics?series=tps&from=0&to=1&resolution=raw";
+    let range = metrics_raw(&f, path, Some(&session), None);
+    assert_eq!(range.status, 200);
+    let range_tag = range.headers.get("etag").expect("range ETag").clone();
+    let unchanged = metrics_raw(&f, path, Some(&session), Some(&range_tag));
+    assert_eq!(unchanged.status, 304);
+    assert!(unchanged.body.is_empty());
+    assert_eq!(unchanged.headers.get("etag"), Some(&range_tag));
+    let stale = metrics_raw(&f, path, Some(&session), Some(r#""metrics-0-stale""#));
+    assert_eq!(stale.status, 200);
+    assert!(stale.json()["data"].is_object());
+
+    let cursor = range.json()["data"]["cursor"].as_i64().unwrap();
+    let empty = metrics_raw(&f, &format!("{path}&after={cursor}"), Some(&session), None);
+    assert_eq!(empty.status, 200);
+    let data = empty.json()["data"].clone();
+    assert_eq!(data["timestamps"], serde_json::json!([]));
+    assert_eq!(data["series"]["tps"]["avg"], serde_json::json!([]));
+    assert_eq!(
+        data["series"]["tps"]["unknown_count"],
+        serde_json::json!([])
+    );
+    let changed_policy = serde_json::json!({
+        "expected_revision": 1,
+        "settings": vesta_control::config::MetricsSettings {
+            enabled: false, sample_seconds: 5,
+            ..vesta_control::config::MetricsSettings::default()
+        }
+    });
+    assert_eq!(
+        f.request(
+            "PUT",
+            "/api/v3/manage/metrics/policy",
+            &serde_json::to_vec(&changed_policy).unwrap(),
+            Some(&session)
+        )
+        .status,
+        200
+    );
+    let changed = metrics_raw(&f, path, Some(&session), Some(&range_tag));
+    assert_eq!(
+        changed.status, 200,
+        "policy changes invalidate range validators before sampling"
+    );
+    assert_ne!(changed.headers.get("etag"), Some(&range_tag));
+    assert_eq!(changed.json()["data"]["bucket_millis"], 5000);
+    let incremental = metrics_raw(&f, &format!("{path}&after={cursor}"), Some(&session), None);
+    assert_eq!(incremental.json()["data"]["retention_gap"], true);
 }

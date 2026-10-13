@@ -13,6 +13,16 @@ use vesta_state::StateDatabase;
 pub(crate) struct Sampler {
     db: StateDatabase,
     settings: MetricsSettings,
+    host_network: super::network::Delta,
+    tick_detection: super::ticks::Detection,
+    tick_adapter: Option<super::ticks::Adapter>,
+    tick_pending: Option<std::sync::mpsc::Receiver<Result<super::ticks::Observation, ()>>>,
+    tick_next: Option<Instant>,
+    tick_latest: Option<(super::ticks::Observation, Instant)>,
+    tick_revision: Option<i64>,
+    tick_generation: Option<GenerationId>,
+    tick_reason: &'static str,
+    was_enabled: bool,
     game: PathBuf,
     backup: Option<PathBuf>,
     due: Option<Instant>,
@@ -34,6 +44,16 @@ impl Sampler {
         Self {
             db,
             settings,
+            host_network: super::network::Delta::default(),
+            tick_detection: super::ticks::Detection::unknown(),
+            tick_adapter: None,
+            tick_pending: None,
+            tick_next: None,
+            tick_latest: None,
+            tick_revision: None,
+            tick_generation: None,
+            tick_reason: "command polling disabled",
+            was_enabled: false,
             game,
             backup,
             due: None,
@@ -46,12 +66,31 @@ impl Sampler {
             initialized: false,
         }
     }
+    pub(crate) fn with_tick_detection(mut self, detection: super::ticks::Detection) -> Self {
+        self.tick_detection = detection;
+        self
+    }
     pub(crate) fn tick(&mut self, runtime: &RuntimeHandle, at: i64) {
+        let Ok((revision, document)) = self.db.read(|c| super::effective_policy(c, self.settings))
+        else {
+            // Unreadable stored policy cannot authorize command polling or sampling.
+            return;
+        };
+        let settings = document.settings;
         let now = Instant::now();
+        self.track_ticks(runtime, revision, document, now);
+        if self.was_enabled != settings.enabled {
+            self.host_network = super::network::Delta::default();
+            self.game_cpu = native::CpuDelta::default();
+            self.agent_cpu = native::CpuDelta::default();
+            self.host_cpu = None;
+            self.due = None;
+            self.was_enabled = settings.enabled;
+        }
         let due = self.due.is_none_or(|last| {
-            now.duration_since(last) >= Duration::from_secs(self.settings.sample_seconds)
+            now.duration_since(last) >= Duration::from_secs(settings.sample_seconds)
         });
-        let activity = if self.settings.enabled {
+        let activity = if settings.enabled {
             self.scan(runtime, at)
         } else {
             Vec::new()
@@ -59,7 +98,7 @@ impl Sampler {
         if !due && activity.is_empty() {
             return;
         }
-        let sample = if due && self.settings.enabled {
+        let sample = if due && settings.enabled {
             Some(self.sample(runtime, at, now))
         } else {
             None
@@ -67,13 +106,100 @@ impl Sampler {
         if due {
             self.due = Some(now);
         }
+        let recorded = self.db.write(|c| {
+            storage::record(c, sample.as_ref(), &activity, at, settings)?;
+            c.query_row(
+                "SELECT revision FROM metrics_status WHERE singleton=1",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(Into::into)
+        });
+        match recorded {
+            Ok(revision) => runtime.metrics_published(revision),
+            Err(_) => self.gap = true,
+        }
+    }
+    fn track_ticks(
+        &mut self,
+        runtime: &RuntimeHandle,
+        revision: Option<i64>,
+        document: super::PolicyDocument,
+        now: Instant,
+    ) {
+        let generation = runtime.game_snapshot().ok().and_then(|s| s.generation);
+        if self.tick_revision != revision || self.tick_generation != generation {
+            self.tick_revision = revision;
+            self.tick_generation = generation;
+            self.tick_pending = None;
+            self.tick_latest = None;
+            self.tick_next = None;
+            self.tick_adapter = self.tick_detection.adapter();
+        }
+        if !document.settings.enabled || !document.command_polling.enabled || revision.is_none() {
+            self.tick_pending = None;
+            self.tick_latest = None;
+            self.tick_next = None;
+            self.tick_reason = "command polling disabled";
+            return;
+        }
+        let Some(adapter) = self.tick_adapter else {
+            self.tick_reason = self.tick_detection.reason();
+            return;
+        };
+        let ready = runtime.readiness().is_ok_and(|r| {
+            r.generation == generation
+                && r.readiness == crate::operations::readiness::Readiness::Ready
+        });
+        if !ready || generation.is_none() {
+            self.tick_pending = None;
+            self.tick_latest = None;
+            self.tick_reason = "game is not ready";
+            return;
+        }
+        let interval = Duration::from_secs(document.command_polling.interval_seconds);
+        if let Some(receiver) = &self.tick_pending {
+            match receiver.try_recv() {
+                Ok(Ok(value)) => {
+                    let mut latest = self
+                        .tick_latest
+                        .map_or(super::ticks::Observation::default(), |(v, _)| v);
+                    if value.tps.is_some() {
+                        latest.tps = value.tps;
+                    }
+                    if value.mspt.is_some() {
+                        latest.mspt = value.mspt;
+                    }
+                    self.tick_latest = Some((latest, now));
+                    self.tick_reason = "command output observed within correlation window";
+                    self.tick_pending = None;
+                    self.tick_adapter = Some(adapter.next());
+                }
+                Ok(Err(())) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.tick_pending = None;
+                    self.tick_latest = None;
+                    self.tick_reason = "tick command timed out or output was unrecognized";
+                    self.tick_next = Some(now + interval.saturating_mul(4));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         if self
-            .db
-            .write(|c| storage::record(c, sample.as_ref(), &activity, at, self.settings))
-            .is_err()
+            .tick_latest
+            .is_some_and(|(_, at)| now.saturating_duration_since(at) > interval.saturating_mul(3))
         {
-            // Cursor has advanced, but persistence failed. Never silently imply completeness.
-            self.gap = true;
+            self.tick_latest = None;
+        }
+        if self.tick_pending.is_none() && self.tick_next.is_none_or(|next| now >= next) {
+            self.tick_pending = runtime.metrics_poll(
+                generation.expect("ready generation"),
+                self.tick_adapter.expect("selected adapter"),
+                revision.expect("stored consent"),
+            );
+            self.tick_next = Some(now + interval);
+            if self.tick_pending.is_none() {
+                self.tick_reason = "tick command writer is busy";
+            }
         }
     }
     fn scan(&mut self, runtime: &RuntimeHandle, at: i64) -> Vec<Activity> {
@@ -174,6 +300,7 @@ impl Sampler {
         let agent = native::process(std::process::id(), None);
         let agent_cpu = self.agent_cpu.observe(std::process::id(), agent, now);
         let host = native::host();
+        let (received, sent) = self.host_network.observe(super::network::interfaces(), now);
         let host_cpu = match (self.host_cpu.take(), host.cpu) {
             (Some((old_busy, old_total)), Some((busy, total))) => busy
                 .checked_sub(old_busy)
@@ -203,7 +330,11 @@ impl Sampler {
             crate::operations::readiness::Readiness::Ready => "ready",
             crate::operations::readiness::Readiness::Degraded(_) => "degraded",
         });
-        Sample::new(
+        let tick = self
+            .tick_latest
+            .filter(|_| generation == self.tick_generation)
+            .map_or(super::ticks::Observation::default(), |(value, _)| value);
+        let mut sample = Sample::new(
             at,
             generation.map(|g| g.to_hex()),
             phase.into(),
@@ -223,13 +354,17 @@ impl Sampler {
                     .map(|v| v as f64),
                 players.map(|(online, _)| f64::from(online)),
                 players.map(|(_, max)| f64::from(max)),
-                host.received.map(|v| v as f64),
-                host.sent.map(|v| v as f64),
-                None,
-                None,
+                received,
+                sent,
+                tick.tps,
+                tick.mspt,
                 None,
                 None,
             ],
-        )
+        );
+        sample.tick_source =
+            (tick.tps.is_some() || tick.mspt.is_some()).then(|| "command".to_owned());
+        sample.tick_reason = Some(self.tick_reason.to_owned());
+        sample
     }
 }

@@ -34,6 +34,9 @@ pub(super) fn permission_endpoint(path: &str) -> bool {
 pub(super) fn file_endpoint(path: &str) -> bool {
     files::implemented(path)
 }
+pub(super) fn metrics_endpoint(path: &str) -> bool {
+    metrics::implemented(path)
+}
 pub(super) fn automation_endpoint(path: &str) -> bool {
     automation::implemented(path)
 }

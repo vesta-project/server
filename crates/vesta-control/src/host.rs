@@ -567,6 +567,7 @@ fn compose(
     let releases = Arc::new(PackReleases::open(db).map_err(HostError::Release)?);
     let graceful_stop = launch.graceful_stop();
     let spec = launch.into_launch_spec(None).map_err(HostError::Launch)?;
+    let tick_detection = crate::metrics::ticks::detect(&spec, config.game());
     let operations = Operations::new(db.clone()).map_err(HostError::Operation)?;
     // The status probe target comes from server.properties at open time; a changed
     // port is picked up when the agent is restarted.
@@ -653,7 +654,8 @@ fn compose(
                 crate::config::BackupRepository::Local(path) => Some(path.clone()),
                 crate::config::BackupRepository::S3(_) => None,
             }),
-        ),
+        )
+        .with_tick_detection(tick_detection),
     )?;
     // Last: once the driver runs, failures must go through observation-only shutdown.
     let runtime = match supervisor {

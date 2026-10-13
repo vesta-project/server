@@ -505,6 +505,104 @@ fn realtime_two_ping_floods_do_not_starve_http_requests() {
     );
 }
 
+fn metrics_websocket(f: &Fixture, token: &str) -> Result<RealtimePeer, u16> {
+    let mut request = format!(
+        "wss://localhost:{}/api/v3/manage/metrics/stream",
+        f.address.port()
+    )
+    .into_client_request()
+    .unwrap();
+    request
+        .headers_mut()
+        .insert("authorization", format!("Bearer {token}").parse().unwrap());
+    match tungstenite::client(request, f.stream()) {
+        Ok((peer, reply)) => {
+            assert_eq!(reply.status().as_u16(), 101);
+            assert!(
+                !reply
+                    .headers()
+                    .keys()
+                    .any(|name| name.as_str().starts_with("access-control-"))
+            );
+            Ok(peer)
+        }
+        Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(reply))) => {
+            Err(reply.status().as_u16())
+        }
+        Err(error) => panic!("owned metrics upgrade failed: {error}"),
+    }
+}
+fn metrics_activity(f: &Fixture, name: &str) {
+    f.host()
+        .database()
+        .write(|c| {
+            let id: i64 = c.query_row(
+                "SELECT COALESCE(MAX(id),0)+1 FROM metrics_activity",
+                [],
+                |r| r.get(0),
+            )?;
+            let at = f.host().database().clock().millis();
+            c.execute(
+                "INSERT INTO metrics_activity(id,at,generation,name,kind,bytes) VALUES(?,?,'00112233445566778899aabbccddeeff',?,'join',100)",
+                rusqlite::params![id, at, name],
+            )?;
+            c.execute(
+                "UPDATE metrics_status SET storage_bytes=storage_bytes+100 WHERE singleton=1",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+}
+fn metrics_policy_sample_period(f: &Fixture, token: &str, seconds: u64) {
+    let mut settings =
+        serde_json::to_value(vesta_control::config::MetricsSettings::default()).unwrap();
+    settings["sample_seconds"] = serde_json::json!(seconds);
+    let body = serde_json::to_vec(&serde_json::json!({
+        "expected_revision": null,
+        "settings": settings
+    }))
+    .unwrap();
+    let reply = f.request("PUT", "/api/v3/manage/metrics/policy", &body, Some(token));
+    assert_eq!(
+        reply.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&reply.body)
+    );
+}
+fn assert_no_player_event(peer: &mut RealtimePeer, name: &str) {
+    peer.get_mut()
+        .sock
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline {
+        match peer.read() {
+            Ok(Message::Text(text)) => {
+                let notice: serde_json::Value = serde_json::from_str(&text).unwrap();
+                assert_ne!(notice["type"], "metrics.player_activity", "{notice}");
+                assert!(!notice.to_string().contains(name), "{notice}");
+            }
+            Ok(Message::Ping(_)) => peer.flush().unwrap(),
+            Ok(other) => panic!("unexpected metrics notice during identity check: {other:?}"),
+            Err(tungstenite::Error::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                break;
+            }
+            Err(error) => panic!("metrics identity check failed: {error}"),
+        }
+    }
+    peer.get_mut()
+        .sock
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+}
+
 pub(super) fn console_websocket(f: &Fixture, token: &str) -> Result<RealtimePeer, u16> {
     let mut request = format!(
         "wss://localhost:{}/api/v3/manage/console/stream",
@@ -548,4 +646,100 @@ fn console_stream_checks_capability_bounds_connections_and_rechecks_revocation()
     f.host().management().revoke_local(&device).unwrap();
     realtime_close(&mut first, CloseCode::Policy);
     realtime_close(&mut second, CloseCode::Policy);
+}
+
+#[test]
+fn metrics_stream_snapshots_samples_latest_activity_and_rechecks_both_capabilities() {
+    use vesta_control::identity::BuiltinRole;
+
+    let f = Fixture::new("minecraft", 8, 4096, 5);
+    let (device, key) = enroll_management(&f, BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    let (moderator_device, moderator_key) = enroll_management(&f, BuiltinRole::Moderator);
+    let moderator = management_session(&f, &moderator_device, &moderator_key);
+    assert_eq!(metrics_websocket(&f, &moderator).err(), Some(403));
+
+    metrics_policy_sample_period(&f, &token, 5);
+    let mut first = metrics_websocket(&f, &token).unwrap();
+    let mut second = metrics_websocket(&f, &token).unwrap();
+    for peer in [&mut first, &mut second] {
+        peer.get_mut()
+            .sock
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let snapshot = realtime_json(peer);
+        assert_eq!(snapshot["type"], "metrics.snapshot");
+        assert_eq!(snapshot["api_version"], "3");
+        assert!(snapshot["columns"]["timestamps"].is_array());
+        assert!(snapshot["columns"]["series"]["tps"]["avg"].is_array());
+        assert!(snapshot["status"].is_object());
+        assert!(snapshot["cursor"].as_i64().is_some());
+    }
+    assert_eq!(metrics_websocket(&f, &token).err(), Some(503));
+    second.close(None).unwrap();
+    assert!(matches!(second.read().unwrap(), Message::Close(_)));
+
+    metrics_activity(&f, "VisiblePlayer");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut saw_sample = false;
+    let mut saw_player = false;
+    while !saw_sample || !saw_player {
+        assert!(
+            Instant::now() < deadline,
+            "metrics publication did not arrive"
+        );
+        let notice = realtime_json(&mut first);
+        match notice["type"].as_str().unwrap_or_default() {
+            "metrics.gap" => assert_eq!(notice["mode"], "latest_only"),
+            "metrics.sample" => {
+                saw_sample = true;
+                assert!(notice["columns"]["timestamps"].is_array());
+            }
+            "metrics.player_activity" => {
+                saw_player = true;
+                assert_eq!(notice["event"]["name"], "VisiblePlayer");
+                assert_eq!(notice["event"]["kind"], "join");
+            }
+            kind => panic!("unexpected metrics notice {kind}: {notice}"),
+        }
+    }
+
+    f.host()
+        .database()
+        .write(|c| {
+            let principal: String = c.query_row(
+                "SELECT principal_id FROM devices WHERE id=?",
+                [&device],
+                |r| r.get(0),
+            )?;
+            c.execute(
+                "INSERT INTO principal_overrides(id,principal_id,capability,scope,effect,granted_by,created_at) VALUES('metrics-player-view-deny',?,'players.view','*','deny','fixture',?)",
+                rusqlite::params![principal, f.host().database().clock().millis()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    metrics_activity(&f, "HiddenPlayer");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "metrics publication after revocation did not arrive"
+        );
+        let notice = realtime_json(&mut first);
+        match notice["type"].as_str().unwrap_or_default() {
+            "metrics.gap" => assert_eq!(notice["mode"], "latest_only"),
+            "metrics.sample" => break,
+            kind => panic!("unexpected metrics notice after PlayersView denial {kind}: {notice}"),
+        }
+    }
+    assert_no_player_event(&mut first, "HiddenPlayer");
+
+    f.host().database().write(|c| {
+        let principal: String = c.query_row("SELECT principal_id FROM devices WHERE id=?", [&device], |r| r.get(0))?;
+        c.execute("INSERT INTO principal_overrides(id,principal_id,capability,scope,effect,granted_by,created_at) VALUES('metrics-view-deny',?,'metrics.view','*','deny','fixture',?)", rusqlite::params![principal, f.host().database().clock().millis()])?;
+        Ok(())
+    }).unwrap();
+    realtime_close(&mut first, CloseCode::Policy);
+    // The second connection completed its normal close handshake above.
 }

@@ -532,3 +532,44 @@ remain release gates.
 - Existing Windows API licensing, provenance, native-platform test, and release
   intake caveats still apply. Other platform support is handled by native
   implementations and may report metrics unknown.
+
+## Windows host-network observation (2026-10-13)
+
+- Host interface counters use the already pinned `windows-sys = 0.61.2`, enabling
+  its existing `Win32_NetworkManagement_IpHelper` and
+  `Win32_NetworkManagement_Ndis` features. These are sufficient for the native
+  interface-table API used here; no Winsock feature is required. The implementation
+  reads native interface table counters; no package/version or
+  `Cargo.lock` change, executable, service, driver, ETW session or network listener
+  is introduced.
+- Only operationally up physical Ethernet and Wi-Fi interface types are
+  whitelisted. Linux additionally requires the interface's `/sys/class/net/<name>/device`
+  metadata; Windows requires the hardware interface flag and `TunnelType == 0`.
+  Down, loopback, tunnel, virtual bridges/VPN Ethernet, virtual point-to-point and
+  unrecognized interface types are excluded to avoid duplicate traffic counting.
+  Membership changes, read failures and counter resets make the interval unknown.
+  These host-wide rates are not assigned to the game process. Per-process Windows
+  network accounting remains unknown without a separate, materially more invasive
+  source such as ETW.
+- Interface identity and byte counters are sampled as observations, not as proof of
+  an application connection. Existing Windows API licensing, provenance and native
+  platform/release verification caveats still apply.
+
+## Receipt-gated Minecraft tick polling (2026-10-13)
+
+- `vesta-control` implements opt-in console command polling using the existing
+  `serde_json` dependency to read the bounded local `control/receipt.json` launch
+  receipt. It adds no package, executable, driver, service, network listener,
+  connector or JMX/RMI connection. The receipt's launch program, working directory
+  and literal argument suffix must match the current launch specification; untrusted
+  status-ping metadata is not used to select commands. Only receipt schema 1/2 and
+  a bounded 64-KiB receipt are accepted.
+- The command driver reuses existing guarded game-console writing and native write
+  receipts, then correlates only anchored INFO output within a three-second / 128-line
+  horizon. It checks readiness and stored opt-in consent before enqueueing, while
+  waiting and before publishing. No polling is performed for external/mismatched
+  launches or unsupported versions; per-process network remains unknown.
+- Dependency/package availability and this source description do not establish live
+  Minecraft output compatibility, a complete software-version matrix, release
+  provenance, vulnerability status, or cross-platform behavior. Those remain
+  verification/release gates.

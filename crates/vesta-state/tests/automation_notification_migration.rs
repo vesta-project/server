@@ -14,6 +14,7 @@ fn v17_upgrade_preserves_identity_and_protected_backup_and_seeds_exact_defaults(
     let directory = f.db.directory().clone();
     let server = f.db.server_id().to_owned();
     f.db.write(|c| {
+        c.execute_batch(support::REMOVE_V24_SCHEMA)?;
         c.execute_batch(support::REMOVE_V23_SCHEMA)?;
         c.execute_batch(support::REMOVE_V22_SCHEMA)?;
         c.execute_batch(support::REMOVE_V18_SCHEMA)?;
@@ -189,6 +190,7 @@ fn failed_v18_migration_rolls_back_tables_and_version() {
     let f = Fixture::open();
     let directory = f.db.directory().clone();
     f.db.write(|c| {
+        c.execute_batch(support::REMOVE_V24_SCHEMA)?;
         c.execute_batch(support::REMOVE_V23_SCHEMA)?;
         c.execute_batch(support::REMOVE_V22_SCHEMA)?;
         c.execute_batch(support::REMOVE_V18_SCHEMA)?;

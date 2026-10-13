@@ -80,7 +80,9 @@ pub(super) async fn route(
         None
     };
     let conditional_header = |name: &str| -> Result<Option<String>, ()> {
-        if !super::manage::file_endpoint(&path) {
+        if !(super::manage::file_endpoint(&path)
+            || name == "if-none-match" && super::manage::metrics_endpoint(&path))
+        {
             return Ok(None);
         }
         let count = request.headers().get_all(name).iter().count();
@@ -136,7 +138,9 @@ pub(super) async fn route(
     }
     if matches!(
         path.as_str(),
-        "/api/v3/manage/console/stream" | "/api/v3/manage/files/follow"
+        "/api/v3/manage/console/stream"
+            | "/api/v3/manage/files/follow"
+            | "/api/v3/manage/metrics/stream"
     ) && method == Method::GET
     {
         return super::realtime::upgrade(request, state).await;

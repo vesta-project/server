@@ -75,7 +75,7 @@ fn bucket(
     let data = encode(&accumulator)?;
     let names = encode(&names)?;
     let bytes = (data.len() + names.len() + 64) as i64;
-    c.execute(&format!("INSERT INTO {table}(bucket_start,data,player_names,names_complete,bytes) VALUES(?,?,?,?,?) ON CONFLICT(bucket_start) DO UPDATE SET data=excluded.data,player_names=excluded.player_names,names_complete=excluded.names_complete,bytes=excluded.bytes"), params![at,data,names,complete,bytes])?;
+    c.execute(&format!("INSERT INTO {table}(bucket_start,data,player_names,names_complete,bytes,revision) VALUES(?,?,?,?,?,(SELECT revision+1 FROM metrics_status WHERE singleton=1)) ON CONFLICT(bucket_start) DO UPDATE SET data=excluded.data,player_names=excluded.player_names,names_complete=excluded.names_complete,bytes=excluded.bytes,revision=excluded.revision"), params![at,data,names,complete,bytes])?;
     account(c, bytes - old_bytes)
 }
 
@@ -86,6 +86,11 @@ pub(super) fn record(
     at: i64,
     settings: MetricsSettings,
 ) -> Result<()> {
+    let old_skips: i64 = c.query_row(
+        "SELECT clock_skips FROM metrics_status WHERE singleton=1",
+        [],
+        |r| r.get(0),
+    )?;
     let mut events = activity.to_vec();
     let mut accepted = sample;
     if let Some(sample) = sample {
@@ -120,7 +125,7 @@ pub(super) fn record(
     }
     if let Some(sample) = accepted {
         let columns = SERIES.join(",");
-        let placeholders = (0..SERIES.len() + 5)
+        let placeholders = (0..SERIES.len() + 7)
             .map(|_| "?")
             .collect::<Vec<_>>()
             .join(",");
@@ -138,8 +143,20 @@ pub(super) fn record(
         values.extend(SERIES.map(|name| {
             sample.values[name].map_or(rusqlite::types::Value::Null, rusqlite::types::Value::Real)
         }));
+        values.push(
+            sample
+                .tick_source
+                .clone()
+                .map_or(rusqlite::types::Value::Null, Into::into),
+        );
         values.push(bytes.into());
-        let inserted = c.execute(&format!("INSERT OR IGNORE INTO metrics_raw(sampled_at,generation,phase,readiness,{columns},bytes) VALUES({placeholders})"),params_from_iter(values))?;
+        let revision: i64 = c.query_row(
+            "SELECT revision+1 FROM metrics_status WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )?;
+        values.push(revision.into());
+        let inserted = c.execute(&format!("INSERT OR IGNORE INTO metrics_raw(sampled_at,generation,phase,readiness,{columns},tick_source,bytes,revision) VALUES({placeholders})"),params_from_iter(values))?;
         if inserted != 0 {
             let old_len:i64=c.query_row("SELECT COALESCE(length(CAST(latest_json AS BLOB)),0) FROM metrics_status WHERE singleton=1",[],|r|r.get(0))?;
             account(c, bytes + latest_json.len() as i64 - old_len)?;
@@ -186,7 +203,29 @@ pub(super) fn record(
             )?;
         }
     }
-    cleanup(c, at, settings)
+    let before: i64 = c.query_row(
+        "SELECT pruned_rows FROM metrics_status WHERE singleton=1",
+        [],
+        |r| r.get(0),
+    )?;
+    cleanup(c, at, settings)?;
+    let after: i64 = c.query_row(
+        "SELECT pruned_rows FROM metrics_status WHERE singleton=1",
+        [],
+        |r| r.get(0),
+    )?;
+    let skips: i64 = c.query_row(
+        "SELECT clock_skips FROM metrics_status WHERE singleton=1",
+        [],
+        |r| r.get(0),
+    )?;
+    if accepted.is_some() || !events.is_empty() || after != before || skips != old_skips {
+        c.execute(
+            "UPDATE metrics_status SET revision=revision+1 WHERE singleton=1",
+            [],
+        )?;
+    }
+    Ok(())
 }
 fn prune(c: &Connection, table: &str, key: &str, cutoff: Option<i64>) -> Result<i64> {
     let filter = cutoff.map_or(String::new(), |_| format!("WHERE {key} < ?"));
@@ -202,7 +241,7 @@ fn prune(c: &Connection, table: &str, key: &str, cutoff: Option<i64>) -> Result<
     }
     if !selected.is_empty() {
         account(c, -bytes)?;
-        c.execute("UPDATE metrics_status SET pruned_rows=pruned_rows+?,pruned_bytes=pruned_bytes+?,activity_pruned=MAX(activity_pruned,?) WHERE singleton=1",params![selected.len() as i64,bytes,table=="metrics_activity"])?;
+        c.execute("UPDATE metrics_status SET prune_revision=revision+1,pruned_rows=pruned_rows+?,pruned_bytes=pruned_bytes+?,activity_pruned=MAX(activity_pruned,?) WHERE singleton=1",params![selected.len() as i64,bytes,table=="metrics_activity"])?;
     }
     Ok(selected.len() as i64)
 }
@@ -233,7 +272,7 @@ fn cleanup(c: &Connection, now: i64, settings: MetricsSettings) -> Result<()> {
     ] {
         if table == "metrics_activity" {
             // IDs need not have increasing wall time after a clock correction.
-            for _ in 0..4 {
+            for _ in 0..1 {
                 let ids: Vec<(i64, i64)> = c
                     .prepare(
                         "SELECT id,bytes FROM metrics_activity WHERE at<? ORDER BY at,id LIMIT 512",
@@ -248,10 +287,10 @@ fn cleanup(c: &Connection, now: i64, settings: MetricsSettings) -> Result<()> {
                     c.execute("DELETE FROM metrics_activity WHERE id=?", [id])?;
                 }
                 account(c, -bytes)?;
-                c.execute("UPDATE metrics_status SET pruned_rows=pruned_rows+?,pruned_bytes=pruned_bytes+?,activity_pruned=1 WHERE singleton=1",params![ids.len() as i64,bytes])?;
+                c.execute("UPDATE metrics_status SET prune_revision=revision+1,pruned_rows=pruned_rows+?,pruned_bytes=pruned_bytes+?,activity_pruned=1 WHERE singleton=1",params![ids.len() as i64,bytes])?;
             }
         } else {
-            for _ in 0..4 {
+            for _ in 0..1 {
                 if prune(c, table, key, Some(now.saturating_sub(keep)))? < BATCH {
                     break;
                 }
@@ -264,7 +303,7 @@ fn cleanup(c: &Connection, now: i64, settings: MetricsSettings) -> Result<()> {
         ("metrics_daily", "bucket_start"),
         ("metrics_activity", "id"),
     ] {
-        for _ in 0..16 {
+        for _ in 0..1 {
             let size: i64 = c.query_row(
                 "SELECT storage_bytes FROM metrics_status WHERE singleton=1",
                 [],
@@ -290,14 +329,19 @@ fn cleanup(c: &Connection, now: i64, settings: MetricsSettings) -> Result<()> {
 }
 
 pub(crate) fn current(c: &Connection) -> Result<Current> {
-    let status=c.query_row("SELECT last_at,storage_bytes,clock_skips,clock_steps,pruned_rows,pruned_bytes,activity_pruned FROM metrics_status WHERE singleton=1",[],|r|Ok(Status{last_at:r.get(0)?,storage_bytes:r.get(1)?,clock_skips:r.get(2)?,clock_steps:r.get(3)?,pruned_rows:r.get(4)?,pruned_bytes:r.get(5)?,activity_pruned:r.get(6)?}))?;
+    let status=c.query_row("SELECT last_at,storage_bytes,clock_skips,clock_steps,pruned_rows,pruned_bytes,activity_pruned,revision FROM metrics_status WHERE singleton=1",[],|r|Ok(Status{last_at:r.get(0)?,storage_bytes:r.get(1)?,clock_skips:r.get(2)?,clock_steps:r.get(3)?,pruned_rows:r.get(4)?,pruned_bytes:r.get(5)?,activity_pruned:r.get(6)?,revision:r.get(7)?}))?;
     let latest: Option<String> = c.query_row(
         "SELECT latest_json FROM metrics_status WHERE singleton=1",
         [],
         |r| r.get(0),
     )?;
     let sample = latest.map(|v| decode::<Sample>(&v)).transpose()?;
-    Ok(Current { sample, status })
+    let columns = Columnar::sample(sample.as_ref());
+    Ok(Current {
+        sample,
+        columns,
+        status,
+    })
 }
 pub(crate) fn range(
     c: &Connection,

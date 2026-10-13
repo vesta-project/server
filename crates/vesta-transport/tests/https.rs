@@ -251,7 +251,11 @@ fn read_buffered_reply(reader: &mut impl BufRead) -> std::io::Result<WireReply> 
             .any(|name| name.starts_with("access-control-")),
         "CORS must be absent"
     );
-    let size: usize = headers.get("content-length").unwrap().parse().unwrap();
+    let size: usize = if status == 204 || status == 304 || (100..200).contains(&status) {
+        0
+    } else {
+        headers.get("content-length").unwrap().parse().unwrap()
+    };
     // Ranges and text pages are capped at 4 MiB; whole-file downloads in these fixtures
     // stay below 16 MiB. The cap only keeps the test reader bounded.
     assert!(size <= 16 * 1024 * 1024);

@@ -43,6 +43,9 @@ fn inert_game_fixture() {
         }
     });
     println!("inert-operation-fixture-ready");
+    if std::path::Path::new("metrics-tick-fixture").is_file() {
+        println!("[12:00:00] [Server thread/INFO]: Done (1.234s)! For help, type \"help\"");
+    }
     std::io::stdout().flush().unwrap();
     fs::write("operation-ready", b"ready").unwrap();
     loop {
@@ -54,6 +57,13 @@ fn inert_game_fixture() {
             Ok(line) => {
                 writeln!(commands, "{line}").unwrap();
                 commands.flush().unwrap();
+                if std::path::Path::new("metrics-tick-fixture").is_file() && line == "tps" {
+                    println!("[12:00:01 INFO]: <Alex> TPS from last 1m, 5m, 15m: 1.0, 1.0, 1.0");
+                    if !std::path::Path::new("metrics-tick-no-response").is_file() {
+                        println!("[12:00:01 INFO]: TPS from last 1m, 5m, 15m: 19.5, 19.8, 20.0");
+                    }
+                    std::io::stdout().flush().unwrap();
+                }
                 if line == "stop" && !ignored {
                     std::process::exit(0);
                 }
@@ -475,13 +485,14 @@ fn returned_stop_ack_with_second_owned_writer_draining_retains_lock_until_actual
     second_entered_rx.recv_timeout(WAIT).unwrap();
     assert_eq!(second_receipt.try_result(), None);
     let operations = owner.operations().clone();
-    let (shared, players) = DriverState::new(&owner, &game);
+    let (shared, players, ticks) = DriverState::new(&owner, &game);
     let mut driver = FixtureDriver {
         driver: Driver {
             local_receiver: mpsc::sync_channel(1).1,
             owner,
             game,
             players,
+            ticks,
             active: Some(Active::StopWrite {
                 claim,
                 generation,
@@ -703,13 +714,14 @@ fn delayed_stop(
         })
         .unwrap();
     let operations = owner.operations().clone();
-    let (shared, players) = DriverState::new(&owner, &game);
+    let (shared, players, ticks) = DriverState::new(&owner, &game);
     let driver = FixtureDriver {
         driver: Driver {
             local_receiver: mpsc::sync_channel(1).1,
             owner,
             game,
             players,
+            ticks,
             active: Some(Active::StopWrite {
                 claim,
                 generation,
@@ -767,13 +779,14 @@ fn pending_player_query_timeout_retains_driver_database_and_lifecycle_exclusion(
         })
         .unwrap();
     entered_rx.recv_timeout(WAIT).unwrap();
-    let (shared, players) = DriverState::new(&owner, &game);
+    let (shared, players, ticks) = DriverState::new(&owner, &game);
     let driver = FixtureDriver {
         driver: Driver {
             local_receiver: mpsc::sync_channel(1).1,
             owner,
             game,
             players,
+            ticks,
             active: None,
             shared: shared.clone(),
             stop_wait: Duration::from_millis(25),
@@ -1007,13 +1020,14 @@ fn delayed_stop_ack(
     assert_eq!(receipt.try_result(), None);
     assert!(harness.facts(&stop).0);
     let operations = owner.operations().clone();
-    let (shared, players) = DriverState::new(&owner, &game);
+    let (shared, players, ticks) = DriverState::new(&owner, &game);
     let mut driver = FixtureDriver {
         driver: Driver {
             local_receiver: mpsc::sync_channel(1).1,
             owner,
             game,
             players,
+            ticks,
             active: Some(Active::StopWrite {
                 claim,
                 generation,
@@ -1056,7 +1070,7 @@ fn delayed_stop_ack(
 fn dispatch_driver(harness: &Harness, probe: Option<fn(&mut Driver)>) -> FixtureDriver {
     let owner = harness.operations.open_owner().unwrap();
     let game = GameLifecycle::new(harness.launch());
-    let (shared, players) = DriverState::new(&owner, &game);
+    let (shared, players, ticks) = DriverState::new(&owner, &game);
     let (release, _) = mpsc::channel();
     FixtureDriver {
         driver: Driver {
@@ -1064,6 +1078,7 @@ fn dispatch_driver(harness: &Harness, probe: Option<fn(&mut Driver)>) -> Fixture
             owner,
             game,
             players,
+            ticks,
             active: None,
             shared,
             stop_wait: Duration::from_millis(25),

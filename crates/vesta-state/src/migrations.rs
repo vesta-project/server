@@ -27,6 +27,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         21 => apply_v21(c),
         22 => apply_v22(c),
         23 => apply_v23(c),
+        24 => apply_v24(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -1055,6 +1056,24 @@ fn apply_v23(c: &Connection) -> crate::Result<()> {
             pruned_bytes INTEGER NOT NULL DEFAULT 0, activity_pruned INTEGER NOT NULL DEFAULT 0
         ) STRICT;
         INSERT INTO metrics_status(singleton) VALUES(1);
+    "#)?;
+    Ok(())
+}
+
+/// Runtime metrics policy and change tracking. An absent policy row means host config applies.
+fn apply_v24(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(r#"
+        ALTER TABLE metrics_raw ADD COLUMN tick_source TEXT;
+        ALTER TABLE metrics_raw ADD COLUMN revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0);
+        ALTER TABLE metrics_5m ADD COLUMN revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0);
+        ALTER TABLE metrics_daily ADD COLUMN revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0);
+        ALTER TABLE metrics_status ADD COLUMN revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0);
+        ALTER TABLE metrics_status ADD COLUMN prune_revision INTEGER NOT NULL DEFAULT 0 CHECK(prune_revision >= 0);
+        CREATE TABLE metrics_policy (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+            revision INTEGER NOT NULL CHECK(revision>0),
+            document TEXT NOT NULL
+        ) STRICT;
     "#)?;
     Ok(())
 }

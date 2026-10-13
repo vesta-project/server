@@ -1,5 +1,13 @@
 //! Local bounded telemetry. Unknown values stay NULL; no console commands are sent.
+mod fetch;
+pub(crate) use fetch::fetch;
+pub use fetch::{Columnar, Fetch, Fetched, MAX_SERIES};
 mod native;
+mod network;
+mod policy;
+pub(crate) mod ticks;
+pub use policy::{CommandPolling, Document as PolicyDocument, Policy};
+pub(crate) use policy::{effective as effective_policy, get as get_policy};
 mod sampler;
 pub(crate) mod storage;
 pub(crate) use sampler::Sampler;
@@ -36,6 +44,10 @@ pub struct Sample {
     pub readiness: String,
     pub values: BTreeMap<String, Option<f64>>,
     pub unknown: Vec<String>,
+    #[serde(default)]
+    pub tick_source: Option<String>,
+    #[serde(default)]
+    pub tick_reason: Option<String>,
 }
 impl Sample {
     pub(crate) fn new(
@@ -62,6 +74,8 @@ impl Sample {
             readiness,
             values,
             unknown,
+            tick_source: None,
+            tick_reason: None,
         }
     }
 }
@@ -96,9 +110,16 @@ pub(crate) struct Accumulator {
     pub joins: u64,
     pub leaves: u64,
     pub gaps: u64,
+    #[serde(default)]
+    pub tick_source: Option<String>,
 }
 impl Accumulator {
     fn sample(&mut self, sample: &Sample) {
+        if self.series.is_empty() {
+            self.tick_source = sample.tick_source.clone();
+        } else if self.tick_source != sample.tick_source {
+            self.tick_source = None;
+        }
         for name in SERIES {
             let numeric = self.series.entry(name.to_owned()).or_default();
             numeric.sum = self.sums.get(name).copied().unwrap_or(0.0);
@@ -170,10 +191,12 @@ pub struct Status {
     pub pruned_rows: i64,
     pub pruned_bytes: i64,
     pub activity_pruned: bool,
+    pub revision: i64,
 }
 #[derive(Serialize)]
 pub struct Current {
     pub sample: Option<Sample>,
+    pub columns: Columnar,
     pub status: Status,
 }
 

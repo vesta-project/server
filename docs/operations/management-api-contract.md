@@ -317,8 +317,11 @@ is null; persistent monotonic stopped-control generations are not introduced.
 | GET `/players/ops` | no body/query | 200 `{items:[{name,uuid,level,bypassesPlayerLimit}]}` | `players.view` |
 | GET `/players/whitelist` | no body/query | 200 `{items:[{name,uuid}]}` | `players.view` |
 | GET `/players` | no body/query | 200 unknown `{known:false,player_count:null,items:null}`; known `{known:true,generation:hex,player_count:integer,items:[{name:string}]}` | `players.view` |
-| GET `/metrics/current` | no body/query | 200 latest metrics observation and collection/status markers | `MetricsView` |
-| GET `/metrics` | exactly `series`, `from`, `to`, optional `resolution=auto\|raw\|5m\|daily` | 200 bounded metric points; more than 2,000 points is refused, never truncated | `MetricsView` |
+| GET `/metrics/current` | no body/query; optional single strong `If-None-Match` | 200 latest `{sample,columns,status}`; exact matching revision ETag returns authorized 304; wildcard/list/weak/malformed validators return 400 | `MetricsView` |
+| GET `/metrics` | `series` (1–8 unique closed names), `from`, `to`; optional `resolution=auto\|raw\|5m\|daily`, `max_points=1..2000`, `after` revision and single strong `If-None-Match` | 200 changed columnar buckets with shared timestamps/cursor; `after` equal to current cursor returns empty columns with 200; exact matching ETag may return authorized 304, stale ETag returns 200; invalid validator forms return 400. Inclusive span ≤5 years (raw ≤7 days); `retention_gap` signals full refresh | `MetricsView` |
+| GET `/metrics/policy` | no body/query | 200 effective host/stored policy, revision and explicit console-write warning | `ConfigView` |
+| PUT `/metrics/policy` | `{expected_revision,settings,command_polling?}` | 200 stored revision; optimistic conflict 409 `metrics_policy_conflict`; audited | `ConfigEdit` |
+| GET `/metrics/stream` | Native WebSocket upgrade, bearer, no body/query/cookie/Origin | 101; bounded latest-only metrics snapshot/sample/gap and separately authorized player activity notices | `MetricsView` |
 | GET `/players/activity` | optional numeric `after` event ID; optional `limit` 1–100 | 200 bounded ordered activity events and numeric `next_after` cursor (or null); event page may include observed join/leave names | `PlayersView` |
 | GET `/pack` | no body/query | 200 `{hosted_revision:decimal-string-or-null,minimum_revision:decimal-string-or-null,status:"published\|unpublished"}` | `status.view` |
 | POST `/pack/publish` | `{"expected_revision":"0"}` + key; zero means unpublished | 200 `{outcome:"succeeded",hosted_revision:decimal-string,minimum_revision:decimal-string}` | `pack.publish` |
@@ -327,8 +330,11 @@ is null; persistent monotonic stopped-control generations are not introduced.
 
 Metrics configuration, closed series, collection boundaries, retention, storage-budget
 semantics, unknown values, activity parsing and exact query rules are specified in the
-[F35 metrics contract](metrics.md). Routes are read-only; they never issue a game
-command, list players to derive online counts, or expose daily player identities.
+[F35 metrics contract](metrics.md). Metrics HTTP read routes never issue a game command
+or list players to derive online counts. Separately, the background sampler may issue
+receipt-gated tick commands only under explicit stored `command_polling.enabled=true`
+consent; that source writes to the game console and remains unknown for unsupported or
+external launches. Metrics routes never expose daily player identities.
 
 ### Mutation ownership and idempotency
 

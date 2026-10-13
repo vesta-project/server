@@ -221,6 +221,7 @@ const EXCLUDED: &[&str] = &[
     "metrics_daily",
     "metrics_activity",
     "metrics_status",
+    "metrics_policy",
     "workflow_runs",
     "run_steps",
     "pack_releases",

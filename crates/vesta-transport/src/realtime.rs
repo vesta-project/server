@@ -132,7 +132,8 @@ impl Sockets {
 pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) -> Reply {
     let console = request.uri().path() == "/api/v3/manage/console/stream";
     let follow = request.uri().path() == "/api/v3/manage/files/follow";
-    let management = console || follow;
+    let metrics = request.uri().path() == "/api/v3/manage/metrics/stream";
+    let management = console || follow || metrics;
     let error = |status, code| {
         if management {
             super::manage::error(
@@ -175,7 +176,7 @@ pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) 
     {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
-    let installed = if follow || (console && request.uri().query().is_none()) {
+    let installed = if follow || ((console || metrics) && request.uri().query().is_none()) {
         Some(0)
     } else {
         installed
@@ -271,7 +272,11 @@ pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) 
                     host.management()
                         .authorize(
                             secret.as_str(),
-                            vesta_control::identity::Capability::ConsoleRead,
+                            if metrics {
+                                vesta_control::identity::Capability::MetricsView
+                            } else {
+                                vesta_control::identity::Capability::ConsoleRead
+                            },
                             None,
                         )
                         .map_err(|e| Box::new(super::manage::management_error(e)))?;
@@ -360,6 +365,8 @@ pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) 
         if let Some(secret) = console_secret {
             if let Some((path, cursor)) = follow_target {
                 connected_follow(socket, owned, secret, path, cursor).await;
+            } else if metrics {
+                connected_metrics(socket, owned, secret).await;
             } else {
                 connected_console(socket, owned, secret).await;
             }
@@ -697,6 +704,162 @@ async fn connected_follow(
                     Some(Ok(Message::Close(_))) => { let _ = tokio::time::timeout(SEND_TIMEOUT, socket.flush()).await; return CloseCode::Normal; }
                     None => return CloseCode::Normal,
                     _ => return CloseCode::Policy,
+                }
+            }
+        }
+    }.await;
+    let _ = send(
+        &mut socket,
+        Message::Close(Some(CloseFrame {
+            code: close,
+            reason: "".into(),
+        })),
+    )
+    .await;
+}
+
+/// Watch holds one revision, not a queue. On wake we fetch one latest snapshot
+/// and at most 32 latest player events; missed revisions are explicitly marked.
+async fn metrics_snapshot(
+    state: &Arc<Shared>,
+    secret: &str,
+    after: Option<i64>,
+) -> Result<vesta_control::operations::MetricsLive, Refusal> {
+    admitted(
+        &state.realtime_jobs,
+        &state.stop,
+        SEND_TIMEOUT.min(state.timeout),
+        || {
+            let host = state.host.clone();
+            let token = zeroize::Zeroizing::new(secret.to_owned());
+            move || {
+                let subject = host
+                    .management()
+                    .authorize(
+                        token.as_str(),
+                        vesta_control::identity::Capability::MetricsView,
+                        None,
+                    )
+                    .map_err(|_| Refusal::Revoked)?;
+                host.runtime()
+                    .operations_service()
+                    .metrics_live(&subject, after)
+                    .map_err(|e| {
+                        if e.code() == "forbidden" {
+                            Refusal::Revoked
+                        } else {
+                            Refusal::Unavailable
+                        }
+                    })
+            }
+        },
+    )
+    .await
+}
+/// Every individual frame obtains fresh authority, including a player event
+/// after an earlier event stalled in the socket writer. PlayersView revocation
+/// filters identities without granting permission merely from the first snapshot.
+async fn metrics_authorized(
+    state: &Arc<Shared>,
+    secret: &str,
+    players: bool,
+) -> Result<bool, Refusal> {
+    admitted(
+        &state.realtime_jobs,
+        &state.stop,
+        SEND_TIMEOUT.min(state.timeout),
+        || {
+            let host = state.host.clone();
+            let token = zeroize::Zeroizing::new(secret.to_owned());
+            move || {
+                host.management()
+                    .authorize(
+                        token.as_str(),
+                        vesta_control::identity::Capability::MetricsView,
+                        None,
+                    )
+                    .map_err(|_| Refusal::Revoked)?;
+                Ok(!players
+                    || host
+                        .management()
+                        .authorize(
+                            token.as_str(),
+                            vesta_control::identity::Capability::PlayersView,
+                            None,
+                        )
+                        .is_ok())
+            }
+        },
+    )
+    .await
+}
+async fn connected_metrics(
+    mut socket: Socket,
+    state: Arc<Shared>,
+    secret: zeroize::Zeroizing<String>,
+) {
+    let mut stop = state.stop.clone();
+    // Subscribe before the initial read. A concurrent publication remains pending.
+    let mut notifications = state.host.runtime().metrics_notifications();
+    let close=async {
+        let initial=match metrics_snapshot(&state,secret.as_str(),None).await {Ok(v)=>v,Err(e)=>return e.close_code()};
+        let mut revision=initial.current.status.revision;
+        let mut sampled=initial.current.sample.as_ref().map(|s|s.sampled_at);
+        let mut player_cursor=initial.activity_cursor;
+        let mut dropped_activity=false;
+        if let Err(e)=metrics_authorized(&state,secret.as_str(),false).await {return e.close_code();}
+        let notice=serde_json::json!({"type":"metrics.snapshot","api_version":"3","cursor":revision,"columns":initial.current.columns,"status":initial.current.status});
+        if send(&mut socket,Message::Text(notice.to_string())).await.is_err() {return CloseCode::Away;}
+        let mut heartbeat=tokio::time::interval_at(tokio::time::Instant::now()+HEARTBEAT,HEARTBEAT);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut activity=Instant::now();let mut controls=ControlRate::new(activity);
+        loop {
+            tokio::select! {
+                _=stop.changed()=>return CloseCode::Away,
+                _=tokio::time::sleep_until((activity+IDLE).into())=>return CloseCode::Policy,
+                changed=notifications.changed()=>{
+                    if changed.is_err() {return CloseCode::Away;}
+                    // Borrow-and-update only the signal; authoritative data is read freshly.
+                    let _=*notifications.borrow_and_update();
+                    let latest=match metrics_snapshot(&state,secret.as_str(),Some(player_cursor)).await {Ok(v)=>v,Err(e)=>return e.close_code()};
+                    let new_revision=latest.current.status.revision;
+                    if new_revision>revision.saturating_add(1) || latest.activity_gap || dropped_activity {
+                        if let Err(e)=metrics_authorized(&state,secret.as_str(),false).await {return e.close_code();}
+                        let notice=serde_json::json!({"type":"metrics.gap","api_version":"3","cursor":new_revision,"mode":"latest_only"});
+                        if send(&mut socket,Message::Text(notice.to_string())).await.is_err() {return CloseCode::Away;}
+                    }
+                    dropped_activity=false;
+                    let at=latest.current.sample.as_ref().map(|s|s.sampled_at);
+                    if at!=sampled {
+                        if let Err(e)=metrics_authorized(&state,secret.as_str(),false).await {return e.close_code();}
+                        let notice=serde_json::json!({"type":"metrics.sample","api_version":"3","cursor":new_revision,"columns":latest.current.columns});
+                        if send(&mut socket,Message::Text(notice.to_string())).await.is_err() {return CloseCode::Away;}
+                        sampled=at;
+                    }
+                    for event in latest.activity {
+                        if notifications.has_changed().unwrap_or(false) {
+                            // Never walk an old page while new samples accumulate.
+                            dropped_activity=true;break;
+                        }
+                        match metrics_authorized(&state,secret.as_str(),true).await {Ok(true)=>{},Ok(false)=>break,Err(e)=>return e.close_code()}
+                        let notice=serde_json::json!({"type":"metrics.player_activity","api_version":"3","cursor":new_revision,"event":event});
+                        if send(&mut socket,Message::Text(notice.to_string())).await.is_err() {return CloseCode::Away;}
+                    }
+                    revision=new_revision;player_cursor=latest.activity_cursor;
+                }
+                _=heartbeat.tick()=>{
+                    if let Err(e)=metrics_authorized(&state,secret.as_str(),false).await {return e.close_code();}
+                    if send(&mut socket,Message::Ping(Vec::new())).await.is_err() {return CloseCode::Away;}
+                }
+                message=socket.next()=>match message {
+                    Some(Ok(Message::Ping(_) | Message::Pong(_)))=>{
+                        if !controls.admit(Instant::now()) {return CloseCode::Policy;}
+                        activity=Instant::now();
+                        if !matches!(tokio::time::timeout(SEND_TIMEOUT,socket.flush()).await,Ok(Ok(()))) {return CloseCode::Away;}
+                    }
+                    Some(Ok(Message::Close(_)))=>{let _=tokio::time::timeout(SEND_TIMEOUT,socket.flush()).await;return CloseCode::Normal;}
+                    None=>return CloseCode::Normal,
+                    _=>return CloseCode::Policy,
                 }
             }
         }

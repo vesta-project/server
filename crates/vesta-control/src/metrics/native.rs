@@ -12,8 +12,6 @@ pub(super) struct Host {
     pub cpu: Option<(u64, u64)>, // busy, total native ticks
     pub memory_used: Option<u64>,
     pub memory_total: Option<u64>,
-    pub received: Option<u64>,
-    pub sent: Option<u64>,
 }
 #[derive(Default)]
 pub(super) struct CpuDelta {
@@ -130,7 +128,6 @@ pub(super) fn host() -> Host {
         memory_used: known
             .then(|| memory.ullTotalPhys.checked_sub(memory.ullAvailPhys))
             .flatten(),
-        ..Host::default()
     }
 }
 
@@ -174,7 +171,7 @@ fn unix_units() -> Option<(u64, u64)> {
     ))
 }
 #[cfg(unix)]
-fn bounded(path: &str, limit: u64) -> Option<String> {
+pub(super) fn bounded(path: &str, limit: u64) -> Option<String> {
     use std::io::Read;
     let mut bytes = Vec::new();
     std::fs::File::open(path)
@@ -223,23 +220,6 @@ pub(super) fn host() -> Host {
             .memory_total
             .zip(get("MemAvailable:"))
             .and_then(|(t, a)| t.checked_sub(a));
-    }
-    if let Some(net) = bounded("/proc/net/dev", 65536) {
-        let totals = net
-            .lines()
-            .skip(2)
-            .try_fold((0u64, 0u64), |(rx, tx), line| {
-                let (_, values) = line.split_once(':')?;
-                let fields: Vec<_> = values.split_whitespace().collect();
-                Some((
-                    rx.checked_add(fields.first()?.parse().ok()?)?,
-                    tx.checked_add(fields.get(8)?.parse().ok()?)?,
-                ))
-            });
-        if let Some((rx, tx)) = totals {
-            host.received = Some(rx);
-            host.sent = Some(tx);
-        }
     }
     host
 }

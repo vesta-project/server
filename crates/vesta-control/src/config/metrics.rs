@@ -1,8 +1,8 @@
 //! Bounded local telemetry settings. This table deliberately uses snake_case keys.
 use super::{ConfigError, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MetricsSettings {
     pub enabled: bool,
@@ -25,12 +25,12 @@ impl Default for MetricsSettings {
     }
 }
 impl MetricsSettings {
-    pub(super) fn validated(self) -> Result<Self> {
+    pub fn validated(self) -> Result<Self> {
         if !(5..=60).contains(&self.sample_seconds)
             || !(1..=168).contains(&self.raw_retention_hours)
-            || !(1..=90).contains(&self.five_minute_retention_days)
-            || !(1..=730).contains(&self.daily_retention_days)
-            || !(1_048_576..=1_073_741_824).contains(&self.max_storage_bytes)
+            || !(1..=365).contains(&self.five_minute_retention_days)
+            || !(1..=1825).contains(&self.daily_retention_days)
+            || !(1_048_576..=8_589_934_592).contains(&self.max_storage_bytes)
         {
             return Err(ConfigError::InvalidDocument);
         }
@@ -49,7 +49,7 @@ mod tests {
             "sample_seconds=4",
             "sample_seconds=61",
             "raw_retention_hours=0",
-            "daily_retention_days=731",
+            "daily_retention_days=1826",
             "max_storage_bytes=0",
         ] {
             let settings: MetricsSettings = toml::from_str(input).unwrap();

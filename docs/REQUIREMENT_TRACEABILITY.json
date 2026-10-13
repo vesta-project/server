@@ -1595,7 +1595,9 @@
       "phase": "P7",
       "status": "not_verified",
       "tests": [],
-      "evidence": []
+      "evidence": [
+        "Implementation references: docs/operations/metrics.md; crates/vesta-control/src/metrics/sampler.rs, ticks.rs, network.rs; crates/vesta-control/src/operations/tick_poll.rs. Source/tests have not been verified by a focused run in this documentation update."
+      ]
     },
     {
       "id": "server-operations-005",
@@ -3094,9 +3096,16 @@
       "text": "Raw operational samples are retained for 24 hours at approximately ten-second resolution.",
       "textSha256": "add49cad8f77ad96e6e43f034d96295e103871857e321255dd8ef6465acd9a10",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/metrics/tests.rs",
+        "crates/vesta-control/src/operations/metrics_tests.rs",
+        "crates/vesta-transport/tests/https/metrics.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "2026-10-14: 28 focused metrics tests and 4 HTTPS metrics tests passed on Windows. Defaults and exact 24h/30d/365d cleanup boundaries, bounded cleanup/storage, mutable aggregate cursors, audited policy conflict/rollback, conditional cache invalidation and opt-in polling covered. Linux native collection and live Minecraft compatibility remain unverified."
+      ]
     },
     {
       "id": "metrics-retention-002",
@@ -3105,9 +3114,16 @@
       "text": "Five-minute aggregates are retained for 30 days.",
       "textSha256": "4b0a30868e0a8490367c1b6898ff5fa5c6278e29a4ed3b63bb7276e60c703277",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/metrics/tests.rs",
+        "crates/vesta-control/src/operations/metrics_tests.rs",
+        "crates/vesta-transport/tests/https/metrics.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "2026-10-14: 28 focused metrics tests and 4 HTTPS metrics tests passed on Windows. Defaults and exact 24h/30d/365d cleanup boundaries, bounded cleanup/storage, mutable aggregate cursors, audited policy conflict/rollback, conditional cache invalidation and opt-in polling covered. Linux native collection and live Minecraft compatibility remain unverified."
+      ]
     },
     {
       "id": "metrics-retention-003",
@@ -3116,9 +3132,16 @@
       "text": "Daily summaries are retained for one year.",
       "textSha256": "ec17ac1bbc0dd6012aec3bf490b1346f09439357a9cfbee2753b10920fc6ac7c",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/metrics/tests.rs",
+        "crates/vesta-control/src/operations/metrics_tests.rs",
+        "crates/vesta-transport/tests/https/metrics.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "2026-10-14: 28 focused metrics tests and 4 HTTPS metrics tests passed on Windows. Defaults and exact 24h/30d/365d cleanup boundaries, bounded cleanup/storage, mutable aggregate cursors, audited policy conflict/rollback, conditional cache invalidation and opt-in polling covered. Linux native collection and live Minecraft compatibility remain unverified."
+      ]
     },
     {
       "id": "metrics-retention-004",
@@ -3127,9 +3150,16 @@
       "text": "Retention and total metrics storage have configurable ceilings and cleanup is performed locally.",
       "textSha256": "8b1a5bd80f466ed05aed5d0ff952514b1b5fcbfce4e9b224df8b8f2708b23040",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/metrics/tests.rs",
+        "crates/vesta-control/src/operations/metrics_tests.rs",
+        "crates/vesta-transport/tests/https/metrics.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "2026-10-14: 28 focused metrics tests and 4 HTTPS metrics tests passed on Windows. Defaults and exact 24h/30d/365d cleanup boundaries, bounded cleanup/storage, mutable aggregate cursors, audited policy conflict/rollback, conditional cache invalidation and opt-in polling covered. Linux native collection and live Minecraft compatibility remain unverified."
+      ]
     },
     {
       "id": "resource-controls-and-diagnostics-001",

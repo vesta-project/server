@@ -69,13 +69,24 @@ struct DriverState {
     observation: Mutex<Observation>,
     view: Arc<LiveGameView>,
     players: QueryEndpoint,
+    ticks: super::tick_poll::Endpoint,
     console: vesta_game_runtime::console::ConsoleCapture,
     player_count: Mutex<Option<(GenerationId, u32, i64, u64)>>,
+    metrics: tokio::sync::watch::Sender<i64>,
 }
 impl DriverState {
-    fn new(owner: &OwnerSession, game: &GameLifecycle) -> (Arc<Self>, QueryDriver) {
+    fn new(
+        owner: &OwnerSession,
+        game: &GameLifecycle,
+    ) -> (Arc<Self>, QueryDriver, super::tick_poll::Driver) {
         let stopping = owner.stop_flag();
         let (players, queries) = QueryDriver::new(
+            owner.operations().clone(),
+            stopping.clone(),
+            game.view.clone(),
+            game.console.clone(),
+        );
+        let (ticks, tick_driver) = super::tick_poll::Driver::new(
             owner.operations().clone(),
             stopping.clone(),
             game.view.clone(),
@@ -87,10 +98,13 @@ impl DriverState {
                 observation: Mutex::new(Observation::default()),
                 view: game.view.clone(),
                 players,
+                ticks,
                 console: game.console.clone(),
                 player_count: Mutex::new(None),
+                metrics: tokio::sync::watch::channel(0).0,
             }),
             queries,
+            tick_driver,
         )
     }
     fn error(&self, code: &'static str) {
@@ -250,8 +264,31 @@ impl RuntimeHandle {
             ));
         }
     }
+    /// Latest-only notification, not a data/authority queue. Subscribe before
+    /// reading the initial snapshot to avoid racing a sampler publication.
+    pub fn metrics_notifications(&self) -> tokio::sync::watch::Receiver<i64> {
+        self.shared.metrics.subscribe()
+    }
+    pub(crate) fn metrics_published(&self, revision: i64) {
+        self.shared.metrics.send_if_modified(|old| {
+            if *old == revision {
+                false
+            } else {
+                *old = revision;
+                true
+            }
+        });
+    }
     pub fn game_snapshot(&self) -> OperationsResult<ProcessSnapshot> {
         self.shared.view.snapshot()
+    }
+    pub(crate) fn metrics_poll(
+        &self,
+        generation: GenerationId,
+        adapter: crate::metrics::ticks::Adapter,
+        revision: i64,
+    ) -> Option<std::sync::mpsc::Receiver<Result<crate::metrics::ticks::Observation, ()>>> {
+        self.shared.ticks.submit(generation, adapter, revision)
     }
     pub(crate) fn metrics_identity(&self) -> Option<(GenerationId, u32, u64)> {
         self.shared.view.native_identity()
@@ -347,13 +384,14 @@ impl OperationRuntime {
         let owner = operations.open_owner()?;
         let operations = owner.operations().clone();
         let start_block = game.start_block.clone();
-        let (shared, players) = DriverState::new(&owner, &game);
+        let (shared, players, ticks) = DriverState::new(&owner, &game);
         let (local_sender, local_receiver) = mpsc::sync_channel(1);
         let mut worker = Driver {
             local_receiver,
             owner,
             game,
             players,
+            ticks,
             active: None,
             shared: shared.clone(),
             stop_wait,
@@ -502,6 +540,7 @@ struct Driver {
     owner: OwnerSession,
     game: GameLifecycle,
     players: QueryDriver,
+    ticks: super::tick_poll::Driver,
     active: Option<Active>,
     shared: Arc<DriverState>,
     stop_wait: Duration,
@@ -550,7 +589,15 @@ impl Driver {
             }
             if let Some(error) = self.players.advance(
                 &mut self.game,
-                self.active.is_none(),
+                self.active.is_none() && !self.ticks.writer_pending(),
+                self.observation_uncertain.is_some(),
+            ) {
+                self.note_observation_failure(error);
+                first_failure.get_or_insert_with(|| OperationError::from(error));
+            }
+            if let Some(error) = self.ticks.advance(
+                &mut self.game,
+                self.active.is_none() && !self.players.writer_pending(),
                 self.observation_uncertain.is_some(),
             ) {
                 self.note_observation_failure(error);
@@ -566,7 +613,10 @@ impl Driver {
                     || self.observation_uncertain.is_some()
                 {
                     Err("local_runtime_unavailable")
-                } else if self.active.is_some() || self.players.writer_pending() {
+                } else if self.active.is_some()
+                    || self.players.writer_pending()
+                    || self.ticks.writer_pending()
+                {
                     Err("local_runtime_busy")
                 } else {
                     self.execute_local(request.action)
@@ -591,10 +641,16 @@ impl Driver {
                         first_failure.get_or_insert(error);
                     }
                 }
-                if self.active.is_none() && !self.game.retains_native_child() {
+                if self.active.is_none()
+                    && !self.game.retains_native_child()
+                    && !self.ticks.writer_pending()
+                {
                     return first_failure.map_or(Ok(()), Err);
                 }
-            } else if self.active.is_none() && !self.players.writer_pending() {
+            } else if self.active.is_none()
+                && !self.players.writer_pending()
+                && !self.ticks.writer_pending()
+            {
                 match self.owner.claim_next_with_revision(&self.game.revision()) {
                     Ok(Some(claim)) => {
                         self.shared.active(Some(claim.id().clone()));

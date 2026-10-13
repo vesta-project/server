@@ -8,6 +8,7 @@ fn original_v11_upgrades_access_defaults_without_weakening_builtin_protection() 
     let server = f.db.server_id().to_owned();
     let directory = f.db.directory().clone();
     f.db.write(|c| {
+        c.execute_batch(support::REMOVE_V24_SCHEMA)?;
         c.execute_batch(support::REMOVE_V23_SCHEMA)?; c.execute_batch(support::REMOVE_V22_SCHEMA)?; c.execute_batch(support::REMOVE_V18_SCHEMA)?; c.execute_batch(support::REMOVE_V16_SCHEMA)?; c.execute_batch("DROP TABLE management_file_outcomes; DROP TABLE management_pack_outcomes; DROP TABLE pack_minimum_policy; DROP TABLE management_device_keys; DROP TABLE management_pairing_codes; DROP TABLE management_owner_links; DROP TABLE user_minecraft_accounts; DROP TABLE user_default_roles; DROP TABLE device_password_grants; DROP TABLE access_role_sources; DELETE FROM role_capabilities WHERE role_id IN ('public','player'); DELETE FROM roles WHERE id IN ('public','player'); DROP TRIGGER role_capabilities_builtin_no_delete; DELETE FROM role_capabilities WHERE capability IN ('public.info','pack.download','pack.realtime'); CREATE TRIGGER role_capabilities_builtin_no_delete BEFORE DELETE ON role_capabilities WHEN (SELECT builtin FROM roles WHERE id=OLD.role_id)=1 BEGIN SELECT RAISE(ABORT,'builtin roles are immutable'); END; PRAGMA user_version=11;")?;
         Ok(())
     }).unwrap();

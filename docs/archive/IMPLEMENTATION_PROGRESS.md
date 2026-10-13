@@ -101,3 +101,9 @@ The new domain classes are not hooked up as replacement authority. Passing legac
 Remaining verification includes frontend typecheck/build/Vitest/i18n, full launcher workspace tests, Linux sockets/permissions/services, clean Windows installation/services, real Minecraft/loader matrix, signing/distribution, and independent security review. None was run or certified by this checkpoint.
 
 Opus programmers completed bounded production partitions and the parent performed review/tests/integration fixes. Opus reached HTTP 429 while finishing follow-up edits; this is a resource boundary, not completion of P0–P8. Resume from the commits and explicit gaps above rather than widening remote authority around unimplemented adapters.
+
+## Stats follow-up reviewed on 2026-10-14
+
+The Rust metrics follow-up adds Windows/Linux physical-interface counter deltas, schema-v24 stored telemetry policy, bounded columnar revision cursors and ETags, latest-only authorized WebSocket updates, and default-off receipt-gated command polling for TPS/MSPT. Policy updates invalidate range caches and incremental projections in the same transaction as their audit event.
+
+Verification on Windows: 28 focused metrics tests and 4 HTTPS metrics tests passed, including explicit 24h/30d/365d cleanup boundaries and audit rollback. All 164 Node tests and strict workspace Clippy passed. The full workspace run is recorded separately in SERVER_SOFTWARE_STATUS.json. Linux native collection and live Minecraft parser compatibility remain unverified. Diagnostic bundles, metrics export, resource enforcement and the remaining product/launcher work are still incomplete.

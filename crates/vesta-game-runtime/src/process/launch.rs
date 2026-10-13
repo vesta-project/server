@@ -51,6 +51,21 @@ impl LaunchSpec {
         Ok(spec)
     }
 
+    /// Read-only literal identity for trusted host composition (e.g. matching an
+    /// installation receipt). These observations confer no process/launch authority.
+    pub fn literal_program(&self) -> &std::path::Path {
+        &self.program
+    }
+    pub fn literal_args(&self) -> &[String] {
+        &self.args
+    }
+    pub fn working_directory(&self) -> &std::path::Path {
+        &self.cwd
+    }
+    pub fn graceful_stop(&self) -> GracefulStop {
+        self.stop
+    }
+
     fn validate(&self) -> Result<(), RuntimeError> {
         let program = path_text(&self.program)?;
         path_text(&self.cwd)?;
