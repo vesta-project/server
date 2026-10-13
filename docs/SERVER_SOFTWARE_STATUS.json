@@ -62,6 +62,70 @@
         "failed": 0
       },
       "limitations": "No live Minecraft compatibility, Linux native collection, diagnostic bundle, resource enforcement or complete launcher hosting UI verification."
+    },
+    "sleepMotd": {
+      "date": "2026-10-14",
+      "native": {
+        "passed": 227,
+        "failed": 0,
+        "ignored": 0
+      },
+      "operations": {
+        "passed": 161,
+        "failed": 0,
+        "ignored": 0
+      },
+      "configuration": {
+        "passed": 36,
+        "failed": 0,
+        "ignored": 0
+      },
+      "minecraftAdmission": {
+        "passed": 36,
+        "failed": 0,
+        "ignored": 0
+      },
+      "https": {
+        "passed": 100,
+        "failed": 0,
+        "ignored": 0
+      },
+      "focusedSleep": {
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0
+      },
+      "focusedMotd": {
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0
+      },
+      "recoveryExport": {
+        "passed": 6,
+        "failed": 0
+      },
+      "frontend": {
+        "typecheck": "passed",
+        "tests": 459,
+        "localization": "passed",
+        "productionBuild": "passed"
+      },
+      "limitations": "No Linux/live Minecraft/client compatibility or new frontend hosting/editor verification. Focused suites cover final review changes; broad operation/HTTPS runs precede metadata/export refinements.",
+      "finalProperties": {
+        "passed": 5,
+        "failed": 0
+      },
+      "finalPresentation": {
+        "passed": 2,
+        "failed": 0
+      },
+      "strictClippy": "passed",
+      "formatting": "passed",
+      "node": {
+        "passed": 164,
+        "failed": 0
+      },
+      "commit": "7724a9f"
     }
   },
   "features": [
@@ -770,31 +834,53 @@
     {
       "id": "F32",
       "name": "Sleep, offline status and wake-on-join",
-      "status": "not_started",
+      "status": "partial",
       "phase": 7,
-      "current": "Sleep/status packet handling and a rate-limited join-wake coordinator are absent; MOTD/sleep behavior is declared future work.",
-      "evidence": [],
+      "current": "Rust implements opt-in actor-bound sleep and network wake, temporary bounded status/login responses, durable coalescing/cooldown, acknowledged warning countdown, reconciled zero-player evidence and final policy/console/operation gates. Actual process owners release the port before all launch paths; same-address updates retain clients and wake budgets. Public lifecycle/MOTD API is present. Linux/live-client compatibility and launcher hosting state screens remain unverified/incomplete.",
+      "evidence": [
+        "crates/vesta-control/src/operations/sleep_tests.rs",
+        "crates/vesta-game-runtime/tests/offline.rs",
+        "crates/vesta-supervisor/src/server.rs",
+        "crates/vesta-transport/tests/https/presentation.rs",
+        "crates/vesta-control/src/sleep.rs",
+        "crates/vesta-control/src/motd/mod.rs",
+        "crates/vesta-control/src/motd/tests.rs",
+        "crates/vesta-control/src/operations/motd_tests.rs",
+        "crates/vesta-state/tests/sleep_export.rs",
+        "docs/operations/sleep-and-motd.md"
+      ],
       "acceptance": "Never wake on ping; join wake rate-limited; honest retry/startup/offline responses.",
-      "auditDate": "2026-10-10",
+      "auditDate": "2026-10-14",
       "previous": {
         "auditDate": "2026-10-04",
         "status": "not_started",
         "current": "No game-port sleep/status responder or wake coordinator located.",
         "evidence": []
-      }
+      },
+      "reauditNote": "Windows native/operation/configuration/HTTPS checks passed; frontend baseline passed. This is backend coverage, not a live compatibility or completed hosting UI claim. Maintenance overlay remains F31 work."
     },
     {
       "id": "F33",
       "name": "MOTD/settings placeholders and lifecycle presentation",
-      "status": "prototype",
+      "status": "partial",
       "phase": 7,
-      "current": "Rust has validated host configuration and pack status responses, but no online/offline MOTD templates, launcher lifecycle presentation, or state-aware live-change/restart reporting; MOTD work is future scope.",
+      "current": "Rust implements state templates, safe placeholders, structured previews, sanitized 64x64 PNG icons with generated fallback, audited optimistic policy and two-line Unicode/color live server.properties edits with restart reporting. App/offline templates do not alter live Minecraft responses. Frontend visual editor/hosting views and connector dynamic live presentation remain incomplete.",
       "evidence": [
         "crates/vesta-control/src/config/mod.rs",
-        "crates/vesta-transport/src/routes.rs"
+        "crates/vesta-transport/src/routes.rs",
+        "crates/vesta-control/src/operations/sleep_tests.rs",
+        "crates/vesta-game-runtime/tests/offline.rs",
+        "crates/vesta-supervisor/src/server.rs",
+        "crates/vesta-transport/tests/https/presentation.rs",
+        "crates/vesta-control/src/sleep.rs",
+        "crates/vesta-control/src/motd/mod.rs",
+        "crates/vesta-control/src/motd/tests.rs",
+        "crates/vesta-control/src/operations/motd_tests.rs",
+        "crates/vesta-state/tests/sleep_export.rs",
+        "docs/operations/sleep-and-motd.md"
       ],
       "acceptance": "Online/offline templates; status in launcher; live changes state reload/restart requirements.",
-      "auditDate": "2026-10-10",
+      "auditDate": "2026-10-14",
       "previous": {
         "auditDate": "2026-10-04",
         "status": "prototype",
@@ -803,7 +889,8 @@
         "javaEvidence": [
           "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
         ]
-      }
+      },
+      "reauditNote": "Windows native/operation/configuration/HTTPS checks passed; frontend baseline passed. This is backend coverage, not a live compatibility or completed hosting UI claim. Maintenance overlay remains F31 work."
     },
     {
       "id": "F34",

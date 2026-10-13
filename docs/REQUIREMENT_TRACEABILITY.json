@@ -1802,9 +1802,18 @@
       "text": "Optional sleep mode gracefully stops Minecraft after a configurable period with zero players, while the Vesta agent remains online. The public API and launcher distinguish `sleeping`, `waking`, `starting`, `maintenance`, `crash_loop`, `recovery_required`, and ordinary `offline` states.",
       "textSha256": "8c3da462996929236b992a4ec163f1c706d2fa18ee25990efb7259000120ca0f",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/operations/sleep_tests.rs",
+        "crates/vesta-game-runtime/tests/offline.rs",
+        "crates/vesta-supervisor/src/server.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Windows socket/owned-process tests verify no ping wake, source budgets, durable coalescing, actual child port handoff, warning acknowledgement, unknown/join/hold deferral, fresh authority/intent gates and crash-loop refusal. Linux/live Minecraft/loader/client matrix and launcher state screens remain unverified; complete version-specific online-player-set adapters and maintenance overlay remain incomplete."
+      ]
     },
     {
       "id": "lifecycle-maintenance-and-sleep-mode-010",
@@ -1813,9 +1822,18 @@
       "text": "While sleeping or otherwise intentionally offline, a lightweight Java Edition status responder may temporarily own the Minecraft TCP port. It returns a configurable protocol-compatible status/MOTD and can trigger a queued start on a login connection. Server-list status pings never wake Minecraft.",
       "textSha256": "9dd03dea0762d3f5a0c2cdae5eebdfc78a38c017949d285fe05dc0314fc86a9a",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/operations/sleep_tests.rs",
+        "crates/vesta-game-runtime/tests/offline.rs",
+        "crates/vesta-supervisor/src/server.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Windows socket/owned-process tests verify no ping wake, source budgets, durable coalescing, actual child port handoff, warning acknowledgement, unknown/join/hold deferral, fresh authority/intent gates and crash-loop refusal. Linux/live Minecraft/loader/client matrix and launcher state screens remain unverified; complete version-specific online-player-set adapters and maintenance overlay remain incomplete."
+      ]
     },
     {
       "id": "lifecycle-maintenance-and-sleep-mode-011",
@@ -1824,9 +1842,18 @@
       "text": "A login connection that triggers wake receives a configurable disconnect response such as \"Server is starting; reconnect shortly.\" Vesta does not claim that the original login session can be transparently transferred to a process that has not started.",
       "textSha256": "7474a825e3c973dcbfabdf9f1397330241c9e291b19e3bd808c94d88ba14cc1a",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/operations/sleep_tests.rs",
+        "crates/vesta-game-runtime/tests/offline.rs",
+        "crates/vesta-supervisor/src/server.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Windows socket/owned-process tests verify no ping wake, source budgets, durable coalescing, actual child port handoff, warning acknowledgement, unknown/join/hold deferral, fresh authority/intent gates and crash-loop refusal. Linux/live Minecraft/loader/client matrix and launcher state screens remain unverified; complete version-specific online-player-set adapters and maintenance overlay remain incomplete."
+      ]
     },
     {
       "id": "lifecycle-maintenance-and-sleep-mode-012",
@@ -1835,9 +1862,18 @@
       "text": "Concurrent or repeated login attempts coalesce onto one durable start operation and are rate-limited per source address. They cannot create parallel launches or bypass a start cooldown.",
       "textSha256": "0c20439df4a7e7f5c71d6d1ecf88c950f5b1f3cbb937ce44064477a70fb81600",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/operations/sleep_tests.rs",
+        "crates/vesta-game-runtime/tests/offline.rs",
+        "crates/vesta-supervisor/src/server.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Windows socket/owned-process tests verify no ping wake, source budgets, durable coalescing, actual child port handoff, warning acknowledgement, unknown/join/hold deferral, fresh authority/intent gates and crash-loop refusal. Linux/live Minecraft/loader/client matrix and launcher state screens remain unverified; complete version-specific online-player-set adapters and maintenance overlay remain incomplete."
+      ]
     },
     {
       "id": "lifecycle-maintenance-and-sleep-mode-013",
@@ -1846,9 +1882,18 @@
       "text": "Before Minecraft starts, the status responder closes and releases the game port; readiness requires successful process bind and status probing. When the actual server is online it owns the port and its normal status response unless a future always-on proxy mode is explicitly enabled.",
       "textSha256": "0af27ca3d6c15e89a01d0d09f0517d88f2e87362372371cab542e8c349088d8f",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/operations/sleep_tests.rs",
+        "crates/vesta-game-runtime/tests/offline.rs",
+        "crates/vesta-supervisor/src/server.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Windows socket/owned-process tests verify no ping wake, source budgets, durable coalescing, actual child port handoff, warning acknowledgement, unknown/join/hold deferral, fresh authority/intent gates and crash-loop refusal. Linux/live Minecraft/loader/client matrix and launcher state screens remain unverified; complete version-specific online-player-set adapters and maintenance overlay remain incomplete."
+      ]
     },
     {
       "id": "lifecycle-maintenance-and-sleep-mode-014",
@@ -1857,9 +1902,18 @@
       "text": "Wake behavior reports compatibility limitations for CGNAT tunnels, TCP forwarding services, modded handshakes, multiple game ports, and status bots. Status monitoring remains available without waking the process. Any compatible login attempt may request wake; authorization is still enforced by Minecraft after startup because the temporary responder cannot securely authenticate a UUID.",
       "textSha256": "08fed9bf9625ed610ed32da59ac1bcd0749589f25dbcd5454e472b389dd456c7",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/operations/sleep_tests.rs",
+        "crates/vesta-game-runtime/tests/offline.rs",
+        "crates/vesta-supervisor/src/server.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Windows socket/owned-process tests verify no ping wake, source budgets, durable coalescing, actual child port handoff, warning acknowledgement, unknown/join/hold deferral, fresh authority/intent gates and crash-loop refusal. Linux/live Minecraft/loader/client matrix and launcher state screens remain unverified; complete version-specific online-player-set adapters and maintenance overlay remain incomplete."
+      ]
     },
     {
       "id": "lifecycle-maintenance-and-sleep-mode-015",
@@ -1868,9 +1922,18 @@
       "text": "Vesta does not place an always-on proxy in front of a running server in the baseline. The temporary responder cannot transparently transfer the triggering login connection and does not intercept live traffic.",
       "textSha256": "5580dea5b9c0102a7b0866e26f82fddc57f6f6adb828f14deeeaa7966613d34d",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/operations/sleep_tests.rs",
+        "crates/vesta-game-runtime/tests/offline.rs",
+        "crates/vesta-supervisor/src/server.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Windows socket/owned-process tests verify no ping wake, source budgets, durable coalescing, actual child port handoff, warning acknowledgement, unknown/join/hold deferral, fresh authority/intent gates and crash-loop refusal. Linux/live Minecraft/loader/client matrix and launcher state screens remain unverified; complete version-specific online-player-set adapters and maintenance overlay remain incomplete."
+      ]
     },
     {
       "id": "lifecycle-maintenance-and-sleep-mode-016",
@@ -1879,9 +1942,18 @@
       "text": "Automatic sleep performs a configurable in-game warning/countdown, is cancelled if a player joins, and is deferred while incompatible backup, update, maintenance, restore, or file operations are active.",
       "textSha256": "aebefc14fe24b219a4741ef20dd5d3067d47f242eee9dabf5f98fd76fdcb8d0e",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/operations/sleep_tests.rs",
+        "crates/vesta-game-runtime/tests/offline.rs",
+        "crates/vesta-supervisor/src/server.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Windows socket/owned-process tests verify no ping wake, source budgets, durable coalescing, actual child port handoff, warning acknowledgement, unknown/join/hold deferral, fresh authority/intent gates and crash-loop refusal. Linux/live Minecraft/loader/client matrix and launcher state screens remain unverified; complete version-specific online-player-set adapters and maintenance overlay remain incomplete."
+      ]
     },
     {
       "id": "lifecycle-maintenance-and-sleep-mode-017",
@@ -1890,9 +1962,18 @@
       "text": "Once the crash-loop breaker activates, network wake attempts return the configured unhealthy status/message but cannot start Minecraft until an authorized user clears the condition.",
       "textSha256": "2fbe093b6fe86dea33f97fd6ef118f0030632c6c889608ebb4dfc7a56cb30f7c",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/operations/sleep_tests.rs",
+        "crates/vesta-game-runtime/tests/offline.rs",
+        "crates/vesta-supervisor/src/server.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Windows socket/owned-process tests verify no ping wake, source budgets, durable coalescing, actual child port handoff, warning acknowledgement, unknown/join/hold deferral, fresh authority/intent gates and crash-loop refusal. Linux/live Minecraft/loader/client matrix and launcher state screens remain unverified; complete version-specific online-player-set adapters and maintenance overlay remain incomplete."
+      ]
     },
     {
       "id": "lifecycle-maintenance-and-sleep-mode-018",
@@ -1901,9 +1982,18 @@
       "text": "Without a connector, server-type/version-specific console parsers maintain the observed online-player set from join, leave, kick, and shutdown events. Vesta reconciles that set after startup and whenever evidence is incomplete so a missed line cannot incorrectly trigger sleep.",
       "textSha256": "90f3720640f6f498409bcad4c18072f4d0c6a027ed1996ef539087b764f9c72b",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/operations/sleep_tests.rs",
+        "crates/vesta-game-runtime/tests/offline.rs",
+        "crates/vesta-supervisor/src/server.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Windows socket/owned-process tests verify no ping wake, source budgets, durable coalescing, actual child port handoff, warning acknowledgement, unknown/join/hold deferral, fresh authority/intent gates and crash-loop refusal. Linux/live Minecraft/loader/client matrix and launcher state screens remain unverified; complete version-specific online-player-set adapters and maintenance overlay remain incomplete."
+      ]
     },
     {
       "id": "minecraft-status-and-motd-001",
@@ -1912,9 +2002,18 @@
       "text": "Status configuration distinguishes an online/live MOTD from offline-state templates. Templates exist for sleeping, waking, starting, maintenance, stopping, crash loop, recovery required, and ordinary offline states.",
       "textSha256": "3b4e5a4df834d600e0b5781eb07f72ea51c429586a8f6eec4ae115f26adbd6c3",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/motd/tests.rs",
+        "crates/vesta-control/src/operations/motd_tests.rs",
+        "crates/vesta-control/src/config/properties.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Safe state templates/placeholders, bounded structured previews, icon fallback/sanitization, truthful offline counts, audited optimistic settings and two-line Unicode/color Java-properties edits tested on Windows. New frontend editor/hosting views and Linux/live Minecraft matrix remain incomplete/unverified; dynamic live connector presentation is not implemented."
+      ]
     },
     {
       "id": "minecraft-status-and-motd-002",
@@ -1923,9 +2022,18 @@
       "text": "Templates support documented safe placeholders such as server name, current state, player counts, Minecraft/loader version, maintenance reason, queued operation, elapsed state time, estimated readiness when known, and a concise public-safe failure code. Secret paths, exception text, and administrative detail are never available as public placeholders.",
       "textSha256": "6c373ac33a9acd39d9a9ad00bf2a55be6c4d33f3913c24b8774ff633b1d80830",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/motd/tests.rs",
+        "crates/vesta-control/src/operations/motd_tests.rs",
+        "crates/vesta-control/src/config/properties.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Safe state templates/placeholders, bounded structured previews, icon fallback/sanitization, truthful offline counts, audited optimistic settings and two-line Unicode/color Java-properties edits tested on Windows. New frontend editor/hosting views and Linux/live Minecraft matrix remain incomplete/unverified; dynamic live connector presentation is not implemented."
+      ]
     },
     {
       "id": "minecraft-status-and-motd-003",
@@ -1934,9 +2042,18 @@
       "text": "The editor provides a two-line visual preview, Minecraft color/style controls, placeholder insertion and preview values, protocol-limit validation, and an authorized raw-text mode.",
       "textSha256": "a0c01eea457b682d3bb401afecb34c969ec08850a1ae22d557cd26af081ea3e4",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/motd/tests.rs",
+        "crates/vesta-control/src/operations/motd_tests.rs",
+        "crates/vesta-control/src/config/properties.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Safe state templates/placeholders, bounded structured previews, icon fallback/sanitization, truthful offline counts, audited optimistic settings and two-line Unicode/color Java-properties edits tested on Windows. New frontend editor/hosting views and Linux/live Minecraft matrix remain incomplete/unverified; dynamic live connector presentation is not implemented."
+      ]
     },
     {
       "id": "minecraft-status-and-motd-004",
@@ -1945,9 +2062,18 @@
       "text": "Owners may configure a normal icon and state-specific icons for offline, sleeping, starting, maintenance, and unhealthy/failure responses, with a generated fallback when a selected asset is invalid.",
       "textSha256": "f26b6e273dca466941592a173f8dfe9f244b6349b5ea6860ddd99d4d4f5ec017",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/motd/tests.rs",
+        "crates/vesta-control/src/operations/motd_tests.rs",
+        "crates/vesta-control/src/config/properties.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Safe state templates/placeholders, bounded structured previews, icon fallback/sanitization, truthful offline counts, audited optimistic settings and two-line Unicode/color Java-properties edits tested on Windows. New frontend editor/hosting views and Linux/live Minecraft matrix remain incomplete/unverified; dynamic live connector presentation is not implemented."
+      ]
     },
     {
       "id": "minecraft-status-and-motd-005",
@@ -1956,9 +2082,18 @@
       "text": "Offline-state status defaults to a truthful `0/0` player display. Maximum players and displayed version text may be configured per state, but Vesta does not fabricate named or nonzero online players.",
       "textSha256": "f03c7e78858acce9ed3005d5b449edc612f60331985712188ab5e97586447d7f",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/motd/tests.rs",
+        "crates/vesta-control/src/operations/motd_tests.rs",
+        "crates/vesta-control/src/config/properties.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Safe state templates/placeholders, bounded structured previews, icon fallback/sanitization, truthful offline counts, audited optimistic settings and two-line Unicode/color Java-properties edits tested on Windows. New frontend editor/hosting views and Linux/live Minecraft matrix remain incomplete/unverified; dynamic live connector presentation is not implemented."
+      ]
     },
     {
       "id": "minecraft-status-and-motd-006",
@@ -1967,9 +2102,18 @@
       "text": "The structured server-settings editor manages the ordinary live MOTD in `server.properties`, reports its reload/restart behavior, and preserves raw editing access for authorized users.",
       "textSha256": "e697aa44f8f9dcc3a9738d3b933f30de84ca4e543237805131e103896202076b",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/motd/tests.rs",
+        "crates/vesta-control/src/operations/motd_tests.rs",
+        "crates/vesta-control/src/config/properties.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Safe state templates/placeholders, bounded structured previews, icon fallback/sanitization, truthful offline counts, audited optimistic settings and two-line Unicode/color Java-properties edits tested on Windows. New frontend editor/hosting views and Linux/live Minecraft matrix remain incomplete/unverified; dynamic live connector presentation is not implemented."
+      ]
     },
     {
       "id": "minecraft-status-and-motd-007",
@@ -1978,9 +2122,18 @@
       "text": "Vesta uses a safe server-specific reload only when the implementation proves one is supported. It does not invoke broad plugin reload commands merely to refresh an MOTD; otherwise the setting is marked Minecraft-restart-required.",
       "textSha256": "cc2cdb0fc9ee52a31c1a9f3e58e7f04886f9b9e61392cff70234834a8663aa88",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/motd/tests.rs",
+        "crates/vesta-control/src/operations/motd_tests.rs",
+        "crates/vesta-control/src/config/properties.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Safe state templates/placeholders, bounded structured previews, icon fallback/sanitization, truthful offline counts, audited optimistic settings and two-line Unicode/color Java-properties edits tested on Windows. New frontend editor/hosting views and Linux/live Minecraft matrix remain incomplete/unverified; dynamic live connector presentation is not implemented."
+      ]
     },
     {
       "id": "minecraft-status-and-motd-008",
@@ -1989,9 +2142,18 @@
       "text": "When a compatible connector is installed, it may implement dynamic online status-ping/MOTD responses without rewriting `server.properties`. Without a connector, the actual running server owns its live status response and Vesta does not claim it can override that response dynamically.",
       "textSha256": "5306ffdc75c8cd708d9d6bf75c16cc5f0bc34b865009d2c269d440a445e5463f",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/motd/tests.rs",
+        "crates/vesta-control/src/operations/motd_tests.rs",
+        "crates/vesta-control/src/config/properties.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Safe state templates/placeholders, bounded structured previews, icon fallback/sanitization, truthful offline counts, audited optimistic settings and two-line Unicode/color Java-properties edits tested on Windows. New frontend editor/hosting views and Linux/live Minecraft matrix remain incomplete/unverified; dynamic live connector presentation is not implemented."
+      ]
     },
     {
       "id": "minecraft-status-and-motd-009",
@@ -2000,9 +2162,18 @@
       "text": "The launcher/app status uses the same canonical lifecycle state and template inputs as the game-port responder, while presenting authorized diagnostic details separately from public MOTD text.",
       "textSha256": "f1bb7624a8f21158ea95bb3250be9d21e79d1f6de6cf6a15ee152fe7b5388606",
       "phase": "P7",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "crates/vesta-control/src/motd/tests.rs",
+        "crates/vesta-control/src/operations/motd_tests.rs",
+        "crates/vesta-control/src/config/properties.rs",
+        "crates/vesta-transport/tests/https/presentation.rs"
+      ],
+      "evidence": [
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "docs/operations/sleep-and-motd.md",
+        "2026-10-14: Safe state templates/placeholders, bounded structured previews, icon fallback/sanitization, truthful offline counts, audited optimistic settings and two-line Unicode/color Java-properties edits tested on Windows. New frontend editor/hosting views and Linux/live Minecraft matrix remain incomplete/unverified; dynamic live connector presentation is not implemented."
+      ]
     },
     {
       "id": "files-and-content-001",

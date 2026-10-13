@@ -39,8 +39,8 @@ test('partial evidence names real test sources and retains a limitation statemen
       } else if (source.startsWith('crates/vesta-server-install/')) {
         assert.match(source, /^crates\/vesta-server-install\/src\/tests\/[a-z_]+\.rs$/);
         assert.ok(existsSync(new URL('../' + source, import.meta.url)), source);
-      } else if (/^crates\/vesta-(control|state|transport)\//.test(source)) {
-        assert.match(source, /^crates\/vesta-(control|state|transport)\/(src|tests)\/.+\.rs$/);
+      } else if (/^crates\/vesta-(control|state|transport|game-runtime|supervisor)\//.test(source)) {
+        assert.match(source, /^crates\/vesta-(control|state|transport|game-runtime|supervisor)\/(src|tests)\/.+\.rs$/);
         assert.ok(existsSync(new URL('../' + source, import.meta.url)), source);
       } else {
         assert.match(source, /^(core|wrapper)\/src\/test\/java\/.+Test\.java$/);
