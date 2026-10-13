@@ -213,6 +213,11 @@ impl RemoteProcess {
         self.health.launch_unresolved
     }
 
+    /// Trusted protected-record context for passive metrics; no new IPC operation.
+    pub fn metrics_record_source(&self) -> (&str, &str) {
+        (&self.state, &self.launch_identity)
+    }
+
     pub fn snapshot(&self) -> ProcessSnapshot {
         self.snapshot
     }

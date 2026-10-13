@@ -22,6 +22,9 @@
 //! Config, launch and TLS credential documents must be excluded by host file/pack
 //! composition using `host_protected_paths`, including while those files are absent.
 
+mod metrics;
+pub use metrics::MetricsSettings;
+
 use crate::files::{self, FileError, RelativePath};
 use crate::packs::SelectedDirectories;
 use serde::de::{self, MapAccess, SeqAccess, Visitor, value::MapAccessDeserializer};
@@ -535,6 +538,7 @@ pub struct HostConfiguration {
     supervision: Supervision,
     restart: Option<RestartSettings>,
     backups: Option<BackupSettings>,
+    metrics: MetricsSettings,
     start_on_agent_start: bool,
 }
 impl fmt::Debug for HostConfiguration {
@@ -786,6 +790,11 @@ impl HostConfiguration {
             supervision,
             restart,
             backups,
+            metrics: document
+                .metrics
+                .map(|v| v.0)
+                .unwrap_or_default()
+                .validated()?,
             start_on_agent_start,
         })
     }
@@ -857,6 +866,9 @@ impl HostConfiguration {
     /// Opt-in: start the game when the agent starts, only if nothing is running.
     pub fn start_on_agent_start(&self) -> bool {
         self.start_on_agent_start
+    }
+    pub fn metrics(&self) -> MetricsSettings {
+        self.metrics
     }
     pub fn backups(&self) -> Option<&BackupSettings> {
         self.backups.as_ref()
@@ -1104,6 +1116,7 @@ struct Document {
     listener: Table<WireListener>,
     process: Option<Table<WireProcess>>,
     backups: Option<Table<WireBackups>>,
+    metrics: Option<Table<MetricsSettings>>,
 }
 
 #[derive(Deserialize)]

@@ -14,6 +14,7 @@ pub mod content;
 pub mod files;
 pub mod host;
 pub mod identity;
+pub mod metrics;
 pub mod minecraft_admission;
 pub mod moderation;
 pub mod operations;

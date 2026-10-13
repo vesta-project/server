@@ -518,3 +518,17 @@ remain release gates.
 - Plaintext export remains the default; backup repositories remain unencrypted.
   No password storage, bundled executable, dependency provenance certification,
   MSRV execution or non-Windows validation is introduced by this change.
+
+## Windows process-memory observation (2026-10-13)
+
+- Windows process RSS/working-set observation uses `GetProcessMemoryInfo` from the
+  already pinned `windows-sys = 0.61.2`, enabling its existing
+  `Win32_System_ProcessStatus` feature. Host memory observation uses
+  `GlobalMemoryStatusEx`/`MEMORYSTATUSEX`, enabling the same crate's existing
+  `Win32_System_SystemInformation` feature. These are feature-only additions: no
+  crate/package or lockfile change is required. Process memory observation is limited
+  to the already-owned, identity-checked process handle; it does not introduce process
+  injection, enumeration, or a new privilege.
+- Existing Windows API licensing, provenance, native-platform test, and release
+  intake caveats still apply. Other platform support is handled by native
+  implementations and may report metrics unknown.

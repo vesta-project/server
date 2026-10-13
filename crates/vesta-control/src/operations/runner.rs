@@ -253,6 +253,9 @@ impl RuntimeHandle {
     pub fn game_snapshot(&self) -> OperationsResult<ProcessSnapshot> {
         self.shared.view.snapshot()
     }
+    pub(crate) fn metrics_identity(&self) -> Option<(GenerationId, u32, u64)> {
+        self.shared.view.native_identity()
+    }
     pub fn game_observation(&self) -> OperationsResult<(ProcessSnapshot, Option<u64>)> {
         self.shared.view.observation()
     }

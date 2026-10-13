@@ -444,6 +444,9 @@ fn schema_four_to_current_preserves_data_backup_and_pending_expiry_plans() {
         BTreeSet::from([
             "backup_jobs_history",
             "backup_jobs_queue",
+            "moderation_expiry",
+            "moderation_history",
+            "metrics_activity_time",
             "file_intents_pending",
             "file_trash_expiry",
             "management_file_outcomes_retention",
@@ -456,7 +459,7 @@ fn schema_four_to_current_preserves_data_backup_and_pending_expiry_plans() {
             "notifications_created",
             "notification_state_notification",
         ]),
-        "v5 through v19 add expiry, intent, retention, automation, notification and backup job indexes",
+        "v5 through v23 add expiry, intent, retention, automation, notification, backup job, moderation and metrics indexes",
     );
     let assignment_ddl = post_indexes
         .iter()

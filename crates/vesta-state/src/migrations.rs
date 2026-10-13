@@ -26,6 +26,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         20 => apply_v20(c),
         21 => apply_v21(c),
         22 => apply_v22(c),
+        23 => apply_v23(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -1002,6 +1003,58 @@ fn apply_v22(c: &Connection) -> crate::Result<()> {
         CREATE TRIGGER role_capabilities_builtin_no_insert BEFORE INSERT ON role_capabilities
         WHEN (SELECT builtin FROM roles WHERE id = NEW.role_id) = 1
         BEGIN SELECT RAISE(ABORT, 'builtin roles are immutable'); END;
+    "#)?;
+    Ok(())
+}
+
+fn apply_v23(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(r#"
+        CREATE TABLE metrics_raw (
+            sampled_at INTEGER PRIMARY KEY, generation TEXT, phase TEXT NOT NULL, readiness TEXT NOT NULL,
+            game_cpu_percent REAL,
+            game_memory_bytes REAL,
+            agent_cpu_percent REAL,
+            agent_memory_bytes REAL,
+            host_cpu_percent REAL,
+            host_memory_used_bytes REAL,
+            host_memory_total_bytes REAL,
+            game_disk_free_bytes REAL,
+            backup_disk_free_bytes REAL,
+            players_online REAL,
+            players_max REAL,
+            host_network_received_bytes REAL,
+            host_network_sent_bytes REAL,
+            tps REAL,
+            mspt REAL,
+            game_network_received_bytes REAL,
+            game_network_sent_bytes REAL,
+            bytes INTEGER NOT NULL CHECK(bytes >= 0)
+        ) STRICT;
+        CREATE TABLE metrics_5m (
+            bucket_start INTEGER PRIMARY KEY, data TEXT NOT NULL, player_names TEXT NOT NULL DEFAULT '[]',
+            names_complete INTEGER NOT NULL DEFAULT 1 CHECK(names_complete IN (0,1)),
+            bytes INTEGER NOT NULL CHECK(bytes >= 0)
+        ) STRICT;
+        CREATE TABLE metrics_daily (
+            bucket_start INTEGER PRIMARY KEY, data TEXT NOT NULL, player_names TEXT NOT NULL DEFAULT '[]',
+            names_complete INTEGER NOT NULL DEFAULT 1 CHECK(names_complete IN (0,1)),
+            bytes INTEGER NOT NULL CHECK(bytes >= 0)
+        ) STRICT;
+        CREATE TABLE metrics_activity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, generation TEXT, name TEXT,
+            kind TEXT NOT NULL CHECK(kind IN ('join','leave','gap','clock_step')),
+            bytes INTEGER NOT NULL CHECK(bytes >= 0),
+            CHECK ((kind IN ('join','leave') AND name IS NOT NULL AND generation IS NOT NULL) OR
+                   (kind IN ('gap','clock_step') AND name IS NULL))
+        ) STRICT;
+        CREATE INDEX metrics_activity_time ON metrics_activity(at,id);
+        CREATE TABLE metrics_status (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1), last_at INTEGER, latest_json TEXT,
+            storage_bytes INTEGER NOT NULL DEFAULT 128, clock_skips INTEGER NOT NULL DEFAULT 0,
+            clock_steps INTEGER NOT NULL DEFAULT 0, pruned_rows INTEGER NOT NULL DEFAULT 0,
+            pruned_bytes INTEGER NOT NULL DEFAULT 0, activity_pruned INTEGER NOT NULL DEFAULT 0
+        ) STRICT;
+        INSERT INTO metrics_status(singleton) VALUES(1);
     "#)?;
     Ok(())
 }

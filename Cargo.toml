@@ -51,7 +51,7 @@ flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backe
 hex = "=0.4.3"
 tempfile = "=3.27.0"
 libc = "=0.2.183"
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Memory", "Win32_System_Threading", "Win32_System_SystemServices", "Win32_System_WindowsProgramming"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Memory", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_SystemServices", "Win32_System_WindowsProgramming"] }
 
 [workspace.lints.rust]
 # Only isolated, reviewed native adapters and owned test fixtures may opt into unsafe calls.

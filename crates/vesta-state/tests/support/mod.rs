@@ -150,6 +150,10 @@ pub fn remove_directory_link(link: &Path) -> io::Result<()> {
     }
 }
 
+/// V23 metrics additions. Usable inside an existing transaction.
+#[allow(dead_code)]
+pub const REMOVE_V23_SCHEMA: &str = "DROP TABLE metrics_activity; DROP TABLE metrics_status; DROP TABLE metrics_daily; DROP TABLE metrics_5m; DROP TABLE metrics_raw;";
+
 /// V22 additions (player moderation). Usable inside an existing transaction.
 #[allow(dead_code)]
 pub const REMOVE_V22_SCHEMA: &str = "DROP TABLE moderation_actions; DROP TRIGGER role_capabilities_builtin_no_delete; DELETE FROM role_capabilities WHERE capability='players.operator'; CREATE TRIGGER role_capabilities_builtin_no_delete BEFORE DELETE ON role_capabilities WHEN (SELECT builtin FROM roles WHERE id=OLD.role_id)=1 BEGIN SELECT RAISE(ABORT,'builtin roles are immutable'); END;";
@@ -168,6 +172,7 @@ pub const REMOVE_V16_SCHEMA: &str = "DROP TABLE management_invitation_issuers; D
 /// Remove current file/pack-management and unified-auth additions before constructing an owned
 /// pre-V12 migration fixture. Marker-only downgrades are not old schemas.
 pub fn remove_v12_schema(connection: &rusqlite::Connection) {
+    connection.execute_batch(REMOVE_V23_SCHEMA).unwrap();
     connection.execute_batch(REMOVE_V22_SCHEMA).unwrap();
     connection.execute_batch(REMOVE_V18_SCHEMA).unwrap();
     connection.execute_batch("BEGIN IMMEDIATE;

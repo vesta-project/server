@@ -28,6 +28,8 @@ pub(super) struct LiveGameView {
     /// Supervisor conditions; `None` when this agent owns the game itself.
     supervision: RwLock<Option<vesta_supervisor::wire::Health>>,
     readiness: RwLock<ReadinessView>,
+    native_identity: RwLock<Option<(GenerationId, u32, u64)>>,
+    supervisor_record_source: Option<(String, String)>,
 }
 impl LiveGameView {
     fn new(snapshot: ProcessSnapshot) -> Self {
@@ -36,11 +38,28 @@ impl LiveGameView {
             revision_usable: AtomicBool::new(true),
             started: RwLock::new(None),
             supervision: RwLock::new(None),
+            native_identity: RwLock::new(None),
+            supervisor_record_source: None,
             readiness: RwLock::new(ReadinessView {
                 readiness: Readiness::Stopped,
                 probed: false,
+                players: None,
+                generation: None,
             }),
         }
+    }
+    pub(super) fn native_identity(&self) -> Option<(GenerationId, u32, u64)> {
+        let generation = self.snapshot().ok()?.generation?;
+        if let Some((state, identity)) = &self.supervisor_record_source {
+            let state = vesta_state::StateDirectory::new(state, None).ok()?;
+            let record = vesta_supervisor::record::read(&state.supervisor().ok()?).ok()??;
+            return (record.generation == generation.to_hex()
+                && record.launch_identity == *identity
+                && record.liveness() == vesta_supervisor::native::Liveness::Alive)
+                .then_some((generation, record.pid, record.process_start));
+        }
+        let value = *self.native_identity.read().ok()?;
+        value.filter(|(g, _, _)| *g == generation)
     }
     pub(super) fn readiness(&self) -> OperationsResult<ReadinessView> {
         self.readiness
@@ -156,6 +175,7 @@ pub(super) struct GameLifecycle {
     readiness: ReadinessWatch,
     /// Console cursor just before the latest local launch: later lines are its output.
     local_floor: Option<(GenerationId, u64)>,
+    local_identity: Option<(GenerationId, u32, u64)>,
     /// Held by maintenance (stopped backups) to refuse every start, including restarts.
     pub(super) start_block: StartGate,
 }
@@ -167,6 +187,7 @@ impl GameLifecycle {
         Self {
             readiness: ReadinessWatch::new(ReadinessConfig::default(), console.clone()),
             local_floor: None,
+            local_identity: None,
             start_block: StartGate::default(),
             process: ProcessBackend::Local(process),
             console,
@@ -177,10 +198,14 @@ impl GameLifecycle {
     /// A game owned by the separate supervisor. Its launch definition lives there.
     pub(super) fn supervised(remote: RemoteProcess) -> Self {
         let console = remote.console();
-        let view = Arc::new(LiveGameView::new(remote.snapshot()));
+        let mut view = LiveGameView::new(remote.snapshot());
+        let (state, identity) = remote.metrics_record_source();
+        view.supervisor_record_source = Some((state.to_owned(), identity.to_owned()));
+        let view = Arc::new(view);
         Self {
             readiness: ReadinessWatch::new(ReadinessConfig::default(), console.clone()),
             local_floor: None,
+            local_identity: None,
             start_block: StartGate::default(),
             process: ProcessBackend::Supervised(remote),
             console,
@@ -197,7 +222,24 @@ impl GameLifecycle {
                 .map_err(|_| StateError::new("state_game_view_unavailable"))? =
                 Some(remote.health());
         }
-        self.view.publish(self.process.snapshot())
+        let snapshot = self.process.snapshot();
+        let identity = match &self.process {
+            ProcessBackend::Local(_) => self.local_identity,
+            ProcessBackend::Supervised(_) => None,
+        }
+        .filter(|(g, _, _)| {
+            snapshot.generation == Some(*g)
+                && matches!(
+                    snapshot.phase,
+                    ProcessPhase::Running | ProcessPhase::Stopping
+                )
+        });
+        *self
+            .view
+            .native_identity
+            .write()
+            .map_err(|_| StateError::new("state_game_view_unavailable"))? = identity;
+        self.view.publish(snapshot)
     }
     /// Share the host's maintenance gate (stopped backups block starts through it).
     pub(super) fn with_start_gate(mut self, gate: StartGate) -> Self {
@@ -235,7 +277,14 @@ impl GameLifecycle {
         Ok(())
     }
     pub(super) fn observe(&mut self) -> Result<ProcessSnapshot, RuntimeError> {
-        self.process.poll()
+        let snapshot = self.process.poll()?;
+        if matches!(
+            snapshot.phase,
+            ProcessPhase::Stopped | ProcessPhase::Draining
+        ) {
+            self.local_identity = None;
+        }
+        Ok(snapshot)
     }
     pub(super) fn revision(&self) -> SourceRevision {
         revision(self.process.snapshot())
@@ -281,7 +330,17 @@ impl GameLifecycle {
             // Native preflight/RNG/worker preparation happen before that callback.
             (ProcessBackend::Local(process), Some(launch)) => {
                 let floor = self.console.snapshot(0, 1).map(|page| page.latest_cursor);
+                let before = process.snapshot().generation;
                 let started = process.start_guarded(launch, guard);
+                // Capture once immediately after spawn, while ownership retains the
+                // unreaped child/native handle. Never learn a replacement PID later.
+                if process.snapshot().generation != before {
+                    self.local_identity = process.native_id().and_then(|pid| {
+                        let generation = process.snapshot().generation?;
+                        let start = vesta_supervisor::native::process_start(pid)?;
+                        Some((generation, pid, start))
+                    });
+                }
                 if let (Ok(generation), Ok(floor)) = (&started, floor) {
                     self.local_floor = Some((*generation, floor));
                 }
@@ -389,5 +448,56 @@ impl ProcessBackend {
             Self::Local(process) => process.acknowledge_guarded_stop(generation),
             Self::Supervised(remote) => remote.acknowledge_guarded_stop(generation),
         }
+    }
+}
+
+#[cfg(test)]
+mod metrics_tests {
+    use super::*;
+    #[test]
+    fn metrics_supervised_identity_checks_protected_generation_launch_and_native_start() {
+        let root = tempfile::tempdir().unwrap();
+        let state = vesta_state::StateDirectory::new(root.path().join("state"), None).unwrap();
+        state.prepare().unwrap();
+        let directory = state.supervisor().unwrap();
+        let generation = GenerationId::parse_hex(&"01".repeat(16)).unwrap();
+        let pid = std::process::id();
+        let start = vesta_supervisor::native::process_start(pid).unwrap();
+        let mut record = vesta_supervisor::record::GenerationRecord {
+            version: 1,
+            generation: generation.to_hex(),
+            pid,
+            process_start: start,
+            boot_id: vesta_supervisor::native::boot_id(),
+            launch_identity: "02".repeat(32),
+        };
+        let mut snapshot = GameProcess::new(ConsoleCapture::new()).snapshot();
+        snapshot.generation = Some(generation);
+        snapshot.phase = ProcessPhase::Running;
+        let mut view = LiveGameView::new(snapshot);
+        view.supervisor_record_source = Some((
+            root.path().join("state").to_str().unwrap().to_owned(),
+            record.launch_identity.clone(),
+        ));
+        vesta_supervisor::record::write(&directory, &record).unwrap();
+        assert_eq!(view.native_identity(), Some((generation, pid, start)));
+        for changed in 0..3 {
+            vesta_supervisor::record::clear(&directory).unwrap();
+            match changed {
+                0 => record.generation = "03".repeat(16),
+                1 => {
+                    record.generation = generation.to_hex();
+                    record.launch_identity = "04".repeat(32);
+                }
+                _ => {
+                    record.launch_identity = "02".repeat(32);
+                    record.process_start = start.wrapping_add(1);
+                }
+            }
+            vesta_supervisor::record::write(&directory, &record).unwrap();
+            assert!(view.native_identity().is_none());
+        }
+        vesta_supervisor::record::clear(&directory).unwrap();
+        assert!(view.native_identity().is_none());
     }
 }

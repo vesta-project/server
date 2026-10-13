@@ -1251,5 +1251,7 @@ fn explicit_restart_timeout_never_starts_a_second_generation() {
     );
 }
 
+#[path = "metrics_tests.rs"]
+mod metrics_tests;
 #[path = "moderation_tests.rs"]
 mod moderation_tests;

@@ -317,10 +317,18 @@ is null; persistent monotonic stopped-control generations are not introduced.
 | GET `/players/ops` | no body/query | 200 `{items:[{name,uuid,level,bypassesPlayerLimit}]}` | `players.view` |
 | GET `/players/whitelist` | no body/query | 200 `{items:[{name,uuid}]}` | `players.view` |
 | GET `/players` | no body/query | 200 unknown `{known:false,player_count:null,items:null}`; known `{known:true,generation:hex,player_count:integer,items:[{name:string}]}` | `players.view` |
+| GET `/metrics/current` | no body/query | 200 latest metrics observation and collection/status markers | `MetricsView` |
+| GET `/metrics` | exactly `series`, `from`, `to`, optional `resolution=auto\|raw\|5m\|daily` | 200 bounded metric points; more than 2,000 points is refused, never truncated | `MetricsView` |
+| GET `/players/activity` | optional numeric `after` event ID; optional `limit` 1–100 | 200 bounded ordered activity events and numeric `next_after` cursor (or null); event page may include observed join/leave names | `PlayersView` |
 | GET `/pack` | no body/query | 200 `{hosted_revision:decimal-string-or-null,minimum_revision:decimal-string-or-null,status:"published\|unpublished"}` | `status.view` |
 | POST `/pack/publish` | `{"expected_revision":"0"}` + key; zero means unpublished | 200 `{outcome:"succeeded",hosted_revision:decimal-string,minimum_revision:decimal-string}` | `pack.publish` |
 | POST `/pack/minimum` | `{"expected_revision":"2","minimum_revision":"2"}` + key | same synchronous 200 outcome shape | `pack.force_update` only |
 | GET `/audit` | optional `limit`, `cursor` | 200 `{items:[{cursor,at_ms:integer,action:string,outcome:string}],next_cursor:string-or-null}` | `audit.view` |
+
+Metrics configuration, closed series, collection boundaries, retention, storage-budget
+semantics, unknown values, activity parsing and exact query rules are specified in the
+[F35 metrics contract](metrics.md). Routes are read-only; they never issue a game
+command, list players to derive online counts, or expose daily player identities.
 
 ### Mutation ownership and idempotency
 

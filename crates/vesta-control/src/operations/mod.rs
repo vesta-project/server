@@ -19,6 +19,7 @@ pub(crate) use properties_confirmation::{
 mod domain;
 mod game;
 mod input;
+mod metrics;
 mod moderation;
 mod players;
 pub use moderation::ModerationHistory;

@@ -793,15 +793,26 @@
     {
       "id": "F35",
       "name": "Metrics, diagnostics and resource budgets",
-      "status": "prototype",
+      "status": "implemented",
       "phase": 7,
-      "current": "Rust exposes process lifecycle and live-player observations, but no unknown-labelled metrics, configurable 24h/30d/1y metrics retention, or redacted manual export; metrics retention was declared future work.",
+      "current": "Rust provides bounded local metrics and player-activity observations with explicit unknowns, configurable retention and storage budgets, incremental aggregates, gap/status records and MetricsView/PlayersView authorization. TPS/MSPT and per-process network remain unknown; no metrics export or diagnostic bundle is provided.",
       "evidence": [
-        "crates/vesta-game-runtime/src/process/mod.rs",
-        "crates/vesta-game-runtime/src/players.rs"
+        "crates/vesta-control/src/config/metrics.rs",
+        "crates/vesta-control/src/metrics/mod.rs",
+        "crates/vesta-control/src/metrics/native.rs",
+        "crates/vesta-control/src/metrics/sampler.rs",
+        "crates/vesta-control/src/metrics/storage.rs",
+        "crates/vesta-control/src/metrics/tests.rs",
+        "crates/vesta-control/src/operations/metrics.rs",
+        "crates/vesta-transport/src/manage_metrics.rs",
+        "crates/vesta-transport/tests/https/metrics.rs",
+        "crates/vesta-state/src/migrations.rs",
+        "crates/vesta-state/tests/metrics_migration.rs",
+        "docs/operations/metrics.md",
+        "docs/operations/management-api-contract.md"
       ],
-      "acceptance": "Unknown metrics labelled; 24h/30d/1y retention tiers configurable; redacted manual export.",
-      "auditDate": "2026-10-10",
+      "acceptance": "Unknown metrics labelled; 24h/30d/1y retention tiers configurable; bounded authorized observations and activity; local storage budget.",
+      "auditDate": "2026-10-13",
       "previous": {
         "auditDate": "2026-10-04",
         "status": "prototype",

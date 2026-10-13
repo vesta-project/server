@@ -2763,5 +2763,7 @@ mod management_permissions;
 #[path = "support/management_automation.rs"]
 mod management_automation;
 
+#[path = "https/metrics.rs"]
+mod metrics;
 #[path = "https/moderation.rs"]
 mod moderation;

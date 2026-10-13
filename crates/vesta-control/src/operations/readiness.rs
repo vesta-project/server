@@ -28,6 +28,9 @@ pub struct ReadinessView {
     pub readiness: Readiness,
     /// False when no status probe address is known: readiness is log-only.
     pub probed: bool,
+    /// Most recent successful status ping (at most 30 seconds old), never `list`.
+    pub players: Option<(u32, u32)>,
+    pub generation: Option<GenerationId>,
 }
 
 pub(super) struct ReadinessWatch {
@@ -38,6 +41,7 @@ pub(super) struct ReadinessWatch {
     probe: Option<(GenerationId, mpsc::Receiver<ProbeResult>, JoinHandle<()>)>,
     tracked: Option<Instant>,
     timeout: Duration,
+    players: Option<(Instant, StatusSummary)>,
 }
 impl ReadinessWatch {
     pub(super) fn new(config: ReadinessConfig, console: ConsoleCapture) -> Self {
@@ -50,6 +54,7 @@ impl ReadinessWatch {
             probe: None,
             tracked: None,
             timeout,
+            players: None,
         }
     }
 
@@ -63,6 +68,7 @@ impl ReadinessWatch {
         let now = Instant::now();
         if self.generation != generation {
             self.generation = generation;
+            self.players = None;
             match generation {
                 Some(_) => {
                     self.tracker.generation_started(now);
@@ -95,6 +101,11 @@ impl ReadinessWatch {
         ReadinessView {
             readiness: self.tracker.state(now),
             probed: self.tracker.probe_configured(),
+            generation: self.generation,
+            players: self
+                .players
+                .filter(|(at, _)| now.duration_since(*at) <= Duration::from_secs(30))
+                .map(|(_, s)| (s.online, s.max)),
         }
     }
 
@@ -142,10 +153,9 @@ impl ReadinessWatch {
         }
         // Discard results for a generation that is no longer current.
         if self.generation == Some(generation) {
-            self.tracker.record_probe(
-                now,
-                result.map_or(Err(ProbeError::Connect), |(_, result)| result),
-            );
+            let result = result.map_or(Err(ProbeError::Connect), |(_, result)| result);
+            self.players = result.ok().map(|s| (now, s));
+            self.tracker.record_probe(now, result);
         }
     }
 
@@ -297,5 +307,50 @@ mod tests {
         watch.tracked = None;
         let view = watch.track(Some(generation(5)), None);
         assert_ne!(view.readiness, Readiness::Ready);
+    }
+
+    #[test]
+    fn metrics_ping_counts_are_fresh_and_generation_bound() {
+        let console = ConsoleCapture::new();
+        let mut watch = ReadinessWatch::new(ReadinessConfig::default(), console);
+        let first = generation(6);
+        settle(&mut watch, Some(first));
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender
+            .send((
+                first,
+                Ok(StatusSummary {
+                    online: 2,
+                    max: 20,
+                    protocol: 47,
+                }),
+            ))
+            .unwrap();
+        watch.probe = Some((first, receiver, std::thread::spawn(|| {})));
+        watch.collect_probe(Instant::now());
+        assert_eq!(settle(&mut watch, Some(first)).players, Some((2, 20)));
+        watch.players = Some((
+            Instant::now() - Duration::from_secs(31),
+            StatusSummary {
+                online: 2,
+                max: 20,
+                protocol: 47,
+            },
+        ));
+        assert!(settle(&mut watch, Some(first)).players.is_none());
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender.send((first, Err(ProbeError::Connect))).unwrap();
+        watch.probe = Some((first, receiver, std::thread::spawn(|| {})));
+        watch.collect_probe(Instant::now());
+        assert!(settle(&mut watch, Some(first)).players.is_none());
+        watch.players = Some((
+            Instant::now(),
+            StatusSummary {
+                online: 2,
+                max: 20,
+                protocol: 47,
+            },
+        ));
+        assert!(settle(&mut watch, Some(generation(7))).players.is_none());
     }
 }

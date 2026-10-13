@@ -137,6 +137,7 @@ impl AutomationDriver {
         start_on_agent_start: bool,
         actions: Arc<HostActions>,
         game_directory: std::path::PathBuf,
+        mut metrics: crate::metrics::Sampler,
     ) -> Result<Self, HostError> {
         use std::sync::atomic::{AtomicBool, Ordering};
         let stop = Arc::new(AtomicBool::new(false));
@@ -175,6 +176,7 @@ impl AutomationDriver {
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_millis() as i64)
                         .unwrap_or(0);
+                    metrics.tick(&runtime, now);
                     let _ = automation.tick(now);
                     let _ = actions.expire_bans(&game_directory);
                     while let Ok(event) = backup_events.try_recv() {
@@ -643,6 +645,15 @@ fn compose(
         config.start_on_agent_start(),
         actions,
         config.game().to_path_buf(),
+        crate::metrics::Sampler::new(
+            db.clone(),
+            config.metrics(),
+            config.game().to_path_buf(),
+            config.backups().and_then(|b| match &b.repository {
+                crate::config::BackupRepository::Local(path) => Some(path.clone()),
+                crate::config::BackupRepository::S3(_) => None,
+            }),
+        ),
     )?;
     // Last: once the driver runs, failures must go through observation-only shutdown.
     let runtime = match supervisor {
