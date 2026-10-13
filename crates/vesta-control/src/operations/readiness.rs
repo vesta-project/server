@@ -191,7 +191,15 @@ impl Drop for ReadinessWatch {
 
 /// Probe address from the game's `server.properties`, if readable.
 pub fn probe_from_properties(text: &str) -> Option<SocketAddr> {
-    vesta_game_runtime::readiness::probe_address(text)
+    let mut address = crate::config::game_bind_address(text.as_bytes())?;
+    if address.ip().is_unspecified() {
+        address.set_ip(if address.is_ipv4() {
+            std::net::Ipv4Addr::LOCALHOST.into()
+        } else {
+            std::net::Ipv6Addr::LOCALHOST.into()
+        });
+    }
+    Some(address)
 }
 
 #[cfg(test)]

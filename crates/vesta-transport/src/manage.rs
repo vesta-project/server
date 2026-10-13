@@ -26,6 +26,8 @@ mod metrics;
 mod moderation;
 #[path = "manage_permissions.rs"]
 mod permissions;
+#[path = "manage_presentation.rs"]
+pub(super) mod presentation;
 
 static REQUEST: AtomicU64 = AtomicU64::new(1);
 pub(super) fn permission_endpoint(path: &str) -> bool {
@@ -42,6 +44,7 @@ pub(super) fn automation_endpoint(path: &str) -> bool {
 }
 pub(super) fn implemented(path: &str) -> bool {
     automation::implemented(path)
+        || presentation::implemented(path)
         || moderation::implemented(path)
         || metrics::implemented(path)
         || files::implemented(path)
@@ -348,6 +351,9 @@ pub(super) struct Request<'a> {
     pub if_range: Option<&'a str>,
 }
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
+    if presentation::implemented(request.path) {
+        return presentation::dispatch(host, request);
+    }
     if moderation::implemented(request.path) {
         return moderation::dispatch(host, request);
     }
@@ -643,8 +649,12 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             let supervisor = supervision.map(|h| {
                 json!({"orphan_running":h.orphan_running,"launch_unresolved":h.launch_unresolved,"observation_failed":h.observation_failed,"crash_restart_enabled":h.restart_enabled,"crash_loop":h.crash_loop,"restart_state_unsaved":h.restart_state_unsaved,"recent_crashes":h.recent_crashes,"restart_pending_ms":h.restart_pending_ms.map(|v| v.to_string())})
             });
+            let lifecycle = match host.sleep().public_state(runtime) {
+                Ok(v) => v,
+                Err(code) => return error(StatusCode::SERVICE_UNAVAILABLE, code),
+            };
             ok(
-                json!({"state":phase,"generation":snapshot.generation.map(GenerationId::to_hex),"player_count":count.map(|v| v.0),"player_count_known":count.is_some(),"player_count_observed_at_ms":count.map(|v| v.1),"uptime_seconds":uptime.map(|v| v.to_string()),"supervision":if supervision.is_some() {"separate"} else {"in_process"},"supervisor":supervisor,"readiness":ready_state,"readiness_reason":ready_reason,"readiness_evidence":if readiness.probed {"log_and_probe"} else {"log_only"}}),
+                json!({"state":phase,"lifecycle":lifecycle,"generation":snapshot.generation.map(GenerationId::to_hex),"player_count":count.map(|v| v.0),"player_count_known":count.is_some(),"player_count_observed_at_ms":count.map(|v| v.1),"uptime_seconds":uptime.map(|v| v.to_string()),"supervision":if supervision.is_some() {"separate"} else {"in_process"},"supervisor":supervisor,"readiness":ready_state,"readiness_reason":ready_reason,"readiness_evidence":if readiness.probed {"log_and_probe"} else {"log_only"}}),
             )
         }
         "operations" => {

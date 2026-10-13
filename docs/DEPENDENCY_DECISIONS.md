@@ -573,3 +573,7 @@ remain release gates.
   Minecraft output compatibility, a complete software-version matrix, release
   provenance, vulnerability status, or cross-platform behavior. Those remain
   verification/release gates.
+
+## Temporary Java Edition responder and MOTD rendering (2026-10-14)
+
+The game-runtime crate now directly uses the workspace-pinned serde_json to validate and encode bounded status/disconnect packets. Cargo.lock changes only that local dependency edge: no external package or version is added. Socket ownership stays in the existing native game owner/supervisor rather than adding a proxy, executable or third-party service. The control renderer uses the existing base64 and flate2 dependencies for bounded 64x64 PNG validation/re-encoding and a generated fallback; metadata is stripped. Linux and live Minecraft/client compatibility remain release gates.

@@ -93,11 +93,21 @@ fn classify(code: &str) -> Option<RuntimeError> {
     .into_iter()
     .find(|error| error.code() == code)
 }
+fn classify_offline_code(code: &str) -> &'static str {
+    match code {
+        "offline_stale_generation" => "offline_stale_generation",
+        "offline_process_unproven" => "offline_process_unproven",
+        "offline_bind_failed" => "offline_bind_failed",
+        "offline_release_uncertain" => "offline_release_uncertain",
+        _ => "offline_configuration_failed",
+    }
+}
 
 /// Refusals that prove nothing was spawned or written.
 fn refused_without_effect(code: &str) -> Option<RuntimeError> {
     match code {
         "supervisor_launch_mismatch"
+        | "supervisor_crash_loop"
         | "supervisor_orphan_running"
         | "supervisor_launch_unresolved"
         | "supervisor_shutting_down" => Some(RuntimeError::AlreadyOwned),
@@ -121,6 +131,22 @@ fn valid_command(line: &str) -> bool {
 }
 
 impl RemoteProcess {
+    pub fn configure_offline(
+        &self,
+        configuration: Option<vesta_game_runtime::offline::Configuration>,
+    ) -> Result<Vec<std::net::IpAddr>> {
+        match self.client.call(
+            Op::Offline {
+                expected_generation: self.snapshot.generation.map(|g| g.to_hex()),
+                configuration,
+            },
+            SYNC_WAIT,
+        )? {
+            Reply::Offline { wakes } if wakes.len() <= 16 => Ok(wakes),
+            Reply::Refused { code } => Err(classify_offline_code(&code)),
+            _ => Err("offline_configuration_failed"),
+        }
+    }
     /// Attach to a running supervisor bound to the same launch definition. Nothing is
     /// launched; an existing generation is adopted for observation and control.
     pub fn attach(client: Arc<SupervisorClient>, launch_identity: String) -> Result<Self> {
@@ -460,6 +486,24 @@ impl RemoteProcess {
             guard,
         )
     }
+    pub fn queue_sleep_stop_guarded<E, F>(
+        &mut self,
+        generation: GenerationId,
+        guard: F,
+    ) -> std::result::Result<GuardedInput<E>, RuntimeError>
+    where
+        E: Send + 'static,
+        F: FnMut() -> std::result::Result<(), E> + Send + 'static,
+    {
+        self.require_running(generation)?;
+        self.dispatch(
+            Op::SleepStop {
+                generation: generation.to_hex(),
+                expect_latest: 0,
+            },
+            guard,
+        )
+    }
 
     pub fn queue_list_guarded<E, F>(
         &mut self,
@@ -535,6 +579,14 @@ impl RemoteProcess {
                         .prepare()
                         .map_err(|_| GuardedError::Runtime(RuntimeError::StdinUnavailable))?;
                     let op = match op {
+                        Op::SleepStop { generation, .. } => {
+                            let mirror = mirror.lock().unwrap_or_else(|poison| poison.into_inner());
+                            guard().map_err(GuardedError::Guard)?;
+                            Op::SleepStop {
+                                generation,
+                                expect_latest: mirror.cursor,
+                            }
+                        }
                         Op::List { generation, .. } => {
                             let mirror = mirror.lock().unwrap_or_else(|poison| poison.into_inner());
                             guard().map_err(GuardedError::Guard)?;

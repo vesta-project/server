@@ -272,8 +272,23 @@ pub(crate) fn unescape(raw: &str) -> Result<String, AdmissionDataError> {
                 if hex.len() != 4 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
                     return Err(AdmissionDataError::Malformed);
                 }
-                let code =
+                let mut code =
                     u32::from_str_radix(&hex, 16).map_err(|_| AdmissionDataError::Malformed)?;
+                if (0xd800..=0xdbff).contains(&code) {
+                    if chars.next() != Some('\\') || chars.next() != Some('u') {
+                        return Err(AdmissionDataError::Malformed);
+                    }
+                    let low: String = chars.by_ref().take(4).collect();
+                    if low.len() != 4 || !low.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        return Err(AdmissionDataError::Malformed);
+                    }
+                    let low =
+                        u32::from_str_radix(&low, 16).map_err(|_| AdmissionDataError::Malformed)?;
+                    if !(0xdc00..=0xdfff).contains(&low) {
+                        return Err(AdmissionDataError::Malformed);
+                    }
+                    code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00);
+                }
                 out.push(char::from_u32(code).ok_or(AdmissionDataError::Malformed)?);
             }
             other => out.push(other),

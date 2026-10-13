@@ -81,6 +81,7 @@ pub(super) async fn route(
     };
     let conditional_header = |name: &str| -> Result<Option<String>, ()> {
         if !(super::manage::file_endpoint(&path)
+            || super::manage::presentation::implemented(&path)
             || name == "if-none-match" && super::manage::metrics_endpoint(&path))
         {
             return Ok(None);
@@ -130,10 +131,16 @@ pub(super) async fn route(
                     | "/api/v2/realtime/ticket"
             ) | (
                 "GET",
-                "/api/v2/pack/status" | "/api/v2/pack/artifact" | "/api/v2/realtime"
+                "/api/v2/pack/status"
+                    | "/api/v2/pack/artifact"
+                    | "/api/v2/realtime"
+                    | "/api/v3/status"
             )
         );
     if !recognized {
+        if path == "/api/v3/status" {
+            return super::manage::error(StatusCode::NOT_FOUND, "endpoint_not_found");
+        }
         return error(StatusCode::NOT_FOUND, "endpoint_not_found");
     }
     if matches!(
@@ -149,7 +156,7 @@ pub(super) async fn route(
         return super::realtime::upgrade(request, state).await;
     }
     let error = |status, code| {
-        if operational {
+        if operational || path == "/api/v3/status" {
             super::manage::error(status, code)
         } else {
             error(status, code)
@@ -199,7 +206,8 @@ pub(super) async fn route(
         && (method == Method::PUT
             || method == Method::PATCH
             || (method == Method::DELETE && path.starts_with("/api/v3/manage/roles/"))))
-        || (super::manage::automation_endpoint(&path)
+        || ((super::manage::automation_endpoint(&path)
+            || super::manage::presentation::implemented(&path))
             && matches!(method, Method::POST | Method::PUT | Method::DELETE)))
         && (request.headers().get_all("content-type").iter().count() != 1
             || request
@@ -257,7 +265,8 @@ pub(super) async fn route(
     } else {
         &state.jobs
     };
-    jobs.execute_for(operational, move || {
+    let version3 = operational || path == "/api/v3/status";
+    jobs.execute_for(version3, move || {
         if operational {
             return super::manage::dispatch(
                 &host,
@@ -319,6 +328,16 @@ fn dispatch(
     downloads: Requester,
     tls: Arc<crate::tls::Material>,
 ) -> Reply {
+    if path == "/api/v3/status" {
+        let runtime = host.runtime();
+        let presentation = match host.sleep().public_presentation(runtime) {
+            Ok(v) => v,
+            Err(code) => return super::manage::error(StatusCode::SERVICE_UNAVAILABLE, code),
+        };
+        return json(
+            serde_json::json!({"api_version":"3","server_id":host.management().server_id(),"state":presentation.state,"motd":presentation}),
+        );
+    }
     if matches!(path, "/api/v2/discovery" | "/api/v2/pack/status") {
         let admitted = host.with_policy(|p| {
             host.sessions()

@@ -17,10 +17,12 @@ pub mod identity;
 pub mod metrics;
 pub mod minecraft_admission;
 pub mod moderation;
+pub mod motd;
 pub mod operations;
 pub mod pack_access;
 pub mod packs;
 pub mod recovery_export;
+pub mod sleep;
 pub mod whitelist;
 
 mod error;

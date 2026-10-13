@@ -73,6 +73,7 @@ struct DriverState {
     console: vesta_game_runtime::console::ConsoleCapture,
     player_count: Mutex<Option<(GenerationId, u32, i64, u64)>>,
     metrics: tokio::sync::watch::Sender<i64>,
+    offline: Mutex<OfflineDesired>,
 }
 impl DriverState {
     fn new(
@@ -102,6 +103,7 @@ impl DriverState {
                 console: game.console.clone(),
                 player_count: Mutex::new(None),
                 metrics: tokio::sync::watch::channel(0).0,
+                offline: Mutex::new(OfflineDesired::default()),
             }),
             queries,
             tick_driver,
@@ -123,6 +125,12 @@ impl DriverState {
     fn stop(&self) {
         self.stopping.store(true, Ordering::Release);
     }
+}
+#[derive(Default)]
+struct OfflineDesired {
+    configuration: Option<vesta_game_runtime::offline::Configuration>,
+    wakes: Vec<std::net::IpAddr>,
+    error: Option<&'static str>,
 }
 
 /// Concrete trusted host composition. Only the literal LaunchSpec passed by
@@ -193,6 +201,23 @@ pub struct RuntimeHandle {
     shared: Arc<DriverState>,
 }
 impl RuntimeHandle {
+    /// Trusted host adapter only. Actual socket changes run in the sole game owner.
+    pub(crate) fn configure_offline(
+        &self,
+        configuration: Option<vesta_game_runtime::offline::Configuration>,
+    ) -> Result<Vec<std::net::IpAddr>, &'static str> {
+        if let Some(config) = &configuration {
+            config.validate()?;
+        }
+        let mut desired = self
+            .shared
+            .offline
+            .lock()
+            .map_err(|_| "offline_configuration_failed")?;
+        desired.configuration = configuration;
+        let wakes = std::mem::take(&mut desired.wakes);
+        desired.error.take().map_or(Ok(wakes), Err)
+    }
     /// Check the server-owned live generation in the same admission writer,
     /// after exact retry retrieval and before creating a new operation.
     pub fn submit_game(
@@ -235,7 +260,7 @@ impl RuntimeHandle {
     pub(super) fn operations(&self) -> &Operations {
         &self.operations
     }
-    pub(super) fn source_revision(&self) -> OperationsResult<SourceRevision> {
+    pub(crate) fn source_revision(&self) -> OperationsResult<SourceRevision> {
         self.shared.view.revision()
     }
     pub(super) fn player_queries(&self) -> &QueryEndpoint {
@@ -566,6 +591,7 @@ impl Driver {
     }
 
     fn run(&mut self) -> OperationsResult<()> {
+        let mut offline_tick: Option<Instant> = None;
         let mut first_failure: Option<OperationError> =
             self.observation_uncertain.map(OperationError::from);
         loop {
@@ -582,6 +608,34 @@ impl Driver {
             }
             // Observation only: readiness failures never stop dispatch or effects.
             let _ = self.game.track_readiness();
+            if offline_tick.is_none_or(|at| at.elapsed() >= Duration::from_millis(250)) {
+                offline_tick = Some(Instant::now());
+                let configuration = self
+                    .shared
+                    .offline
+                    .lock()
+                    .ok()
+                    .and_then(|desired| desired.configuration.clone());
+                // Never bind to a live generation, even when desired policy persists.
+                let configuration = if self.game.process.snapshot().generation.is_none()
+                    && self.observation_uncertain.is_none()
+                    && !self.shared.stopping.load(Ordering::Acquire)
+                {
+                    configuration
+                } else {
+                    None
+                };
+                let result = self.game.configure_offline(configuration);
+                if let Ok(mut desired) = self.shared.offline.lock() {
+                    match result {
+                        Ok(wakes) => {
+                            let remaining = 16usize.saturating_sub(desired.wakes.len());
+                            desired.wakes.extend(wakes.into_iter().take(remaining));
+                        }
+                        Err(code) => desired.error = Some(code),
+                    }
+                }
+            }
             if let Err(error) = self.advance() {
                 self.shared.error(error.code());
                 self.shared.stop();
@@ -645,6 +699,11 @@ impl Driver {
                     && !self.game.retains_native_child()
                     && !self.ticks.writer_pending()
                 {
+                    if self.game.configure_offline(None).is_err() {
+                        first_failure.get_or_insert_with(|| {
+                            StateError::new("state_offline_release_uncertain").into()
+                        });
+                    }
                     return first_failure.map_or(Ok(()), Err);
                 }
             } else if self.active.is_none()
@@ -871,21 +930,52 @@ impl Driver {
             }
             | GameCommand::Restart {
                 expected_generation,
+            }
+            | GameCommand::Sleep {
+                expected_generation,
+                ..
             } => {
                 let restart = matches!(command, GameCommand::Restart { .. });
+                let sleep_cursor = match command {
+                    GameCommand::Sleep {
+                        expected_cursor, ..
+                    } => Some(expected_cursor),
+                    _ => None,
+                };
                 let native = match self.owner.native_effect_guard(&claim) {
                     Ok(native) => native,
                     Err(error) => return self.refused(claim, error),
                 };
                 let view = self.game.view.clone();
                 // Callback owns exact kernel core/DB lease/OS lock. The reserved
+                let console = self.game.console.clone();
                 // native generation cannot change before this writer returns.
-                let result = self
-                    .game
-                    .process
-                    .queue_stop_guarded(expected_generation, move || {
-                        native.begin_effect(&view.revision()?)
-                    });
+                let guard = move || {
+                    if let Some(cursor) = sleep_cursor {
+                        let readiness = view.readiness()?;
+                        let current = console
+                            .snapshot(0, 1)
+                            .map_err(|_| StateError::new("state_sleep_evidence_unavailable"))?;
+                        if readiness.generation != Some(expected_generation)
+                            || !matches!(readiness.players, Some((0, _)))
+                            || current.latest_cursor != cursor
+                        {
+                            return Err(OperationError::rejected(
+                                OperationErrorCode::CancellationRequested,
+                            ));
+                        }
+                    }
+                    native.begin_effect(&view.revision()?)
+                };
+                let result = if sleep_cursor.is_some() {
+                    self.game
+                        .process
+                        .queue_sleep_stop_guarded(expected_generation, guard)
+                } else {
+                    self.game
+                        .process
+                        .queue_stop_guarded(expected_generation, guard)
+                };
                 match result {
                     Ok(receipt) => {
                         self.active = Some(Active::StopWrite {
@@ -1019,6 +1109,16 @@ impl Driver {
                     });
                 }
                 Some(Err(GuardedError::Guard(error))) => self.refused(claim, error)?,
+                Some(Err(GuardedError::Runtime(RuntimeError::StdinBusy))) => {
+                    // Supervisor's console horizon refused before any bytes were
+                    // written. This fixed no-effect refusal is not uncertainty.
+                    self.owner.finish(
+                        claim,
+                        FinishOutcome::Failed {
+                            code: RuntimeError::StdinBusy.code(),
+                        },
+                    )?;
+                }
                 Some(Err(GuardedError::Runtime(error))) => {
                     // Partial native write or lost writer proof is uncertainty.
                     // Retain exact claim until actual child exit + every IO join.

@@ -406,6 +406,12 @@ impl RecoveryExport {
                 .filter(|n| *n <= MAX_ROWS)
                 .ok_or_else(|| StateError::new("state_export_row_limit"))?;
             for row in &table.rows {
+                // Configuration is portable; queued lifecycle intent and native
+                // observation state must never be resurrected by an import.
+                if name == "settings" && row.get(1).and_then(Value::as_str) == Some("sleep-runtime")
+                {
+                    return Err(invalid());
+                }
                 if row.len() != columns.len() {
                     return Err(invalid());
                 }
@@ -478,7 +484,12 @@ fn write_snapshot(
             } else {
                 columns.join(",")
             };
-            let sql = format!("SELECT {selection} FROM {table}");
+            let filter = if table == "settings" {
+                " WHERE key <> 'sleep-runtime'"
+            } else {
+                ""
+            };
+            let sql = format!("SELECT {selection} FROM {table}{filter}");
             let mut statement = c.prepare(&sql)?;
             let mut rows = statement.query([])?;
             let mut first = true;

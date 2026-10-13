@@ -42,8 +42,14 @@ fn inert_game_fixture() {
             }
         }
     });
+    let sleep_address = fs::read_to_string("sleep-status-address")
+        .ok()
+        .map(|v| v.parse::<std::net::SocketAddr>().unwrap());
+    let _sleep_status=sleep_address.map(|address|vesta_game_runtime::offline::Responder::bind(vesta_game_runtime::offline::Configuration {
+        address, status_json:r#"{"version":{"name":"Owned fixture","protocol":767},"players":{"online":0,"max":20},"description":{"text":"Owned fixture"}}"#.into(),disconnect:"Owned fixture".into(),wake:false,
+    }).unwrap());
     println!("inert-operation-fixture-ready");
-    if std::path::Path::new("metrics-tick-fixture").is_file() {
+    if std::path::Path::new("metrics-tick-fixture").is_file() || sleep_address.is_some() {
         println!("[12:00:00] [Server thread/INFO]: Done (1.234s)! For help, type \"help\"");
     }
     std::io::stdout().flush().unwrap();
@@ -57,6 +63,20 @@ fn inert_game_fixture() {
             Ok(line) => {
                 writeln!(commands, "{line}").unwrap();
                 commands.flush().unwrap();
+                if sleep_address.is_some() {
+                    if line == "list" && !std::path::Path::new("sleep-no-list").is_file() {
+                        println!(
+                            "[12:00:01] [Server thread/INFO]: There are 0 of a max of 20 players online:"
+                        );
+                    }
+                    if let Some(warning) = line.strip_prefix("say ") {
+                        println!("[12:00:02] [Server thread/INFO]: [Server] {warning}");
+                    }
+                    if line == "list" && std::path::Path::new("sleep-join-after-list").is_file() {
+                        println!("[12:00:03] [Server thread/INFO]: Alex joined the game");
+                    }
+                    std::io::stdout().flush().unwrap();
+                }
                 if std::path::Path::new("metrics-tick-fixture").is_file() && line == "tps" {
                     println!("[12:00:01 INFO]: <Alex> TPS from last 1m, 5m, 15m: 1.0, 1.0, 1.0");
                     if !std::path::Path::new("metrics-tick-no-response").is_file() {
@@ -1270,3 +1290,7 @@ fn explicit_restart_timeout_never_starts_a_second_generation() {
 mod metrics_tests;
 #[path = "moderation_tests.rs"]
 mod moderation_tests;
+#[path = "motd_tests.rs"]
+mod motd_tests;
+#[path = "sleep_tests.rs"]
+mod sleep_tests;

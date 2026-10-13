@@ -23,6 +23,12 @@ pub const MAX_WAIT_MS: u32 = 300_000;
 pub enum Op {
     /// Identity, launch binding and current snapshot; no effect.
     Hello,
+    /// Temporary responder controlled by the concrete game owner. A generation
+    /// mismatch refuses configuration; returned source addresses are wake hints.
+    Offline {
+        expected_generation: Option<String>,
+        configuration: Option<vesta_game_runtime::offline::Configuration>,
+    },
     /// Snapshot plus console lines after the supervisor cursor; no effect.
     Sync {
         after: u64,
@@ -34,6 +40,10 @@ pub enum Op {
     /// Fixed graceful stop line, acknowledged after the actual stdin write.
     QueueStop {
         generation: String,
+    },
+    SleepStop {
+        generation: String,
+        expect_latest: u64,
     },
     /// Graceful stop and bounded wait for exit; never escalates to kill.
     Stop {
@@ -223,6 +233,9 @@ pub enum Reply {
     Resolved,
     RestartsReset,
     Configured,
+    Offline {
+        wakes: Vec<std::net::IpAddr>,
+    },
     Held {
         token: String,
     },

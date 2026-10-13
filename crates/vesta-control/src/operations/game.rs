@@ -178,6 +178,8 @@ pub(super) struct GameLifecycle {
     local_identity: Option<(GenerationId, u32, u64)>,
     /// Held by maintenance (stopped backups) to refuse every start, including restarts.
     pub(super) start_block: StartGate,
+    offline: Option<vesta_game_runtime::offline::Responder>,
+    offline_uncertain: bool,
 }
 impl GameLifecycle {
     pub(super) fn new(launch: LaunchSpec) -> Self {
@@ -189,6 +191,8 @@ impl GameLifecycle {
             local_floor: None,
             local_identity: None,
             start_block: StartGate::default(),
+            offline: None,
+            offline_uncertain: false,
             process: ProcessBackend::Local(process),
             console,
             launch: Some(launch),
@@ -207,6 +211,8 @@ impl GameLifecycle {
             local_floor: None,
             local_identity: None,
             start_block: StartGate::default(),
+            offline: None,
+            offline_uncertain: false,
             process: ProcessBackend::Supervised(remote),
             console,
             launch: None,
@@ -323,6 +329,16 @@ impl GameLifecycle {
         &mut self,
         guard: impl FnOnce(&SourceRevision) -> OperationsResult<()>,
     ) -> Result<GenerationId, GuardedError<super::OperationError>> {
+        if self.offline_uncertain {
+            return Err(RuntimeError::ObserveFailed.into());
+        }
+        if let Some(mut responder) = self.offline.take()
+            && responder.close().is_err()
+        {
+            self.view.invalidate_revision();
+            self.offline_uncertain = true;
+            return Err(RuntimeError::ObserveFailed.into());
+        }
         let guard =
             |snapshot: ProcessSnapshot| guard(&SourceRevision::for_game(snapshot.generation));
         match (&mut self.process, &self.launch) {
@@ -365,6 +381,40 @@ impl GameLifecycle {
                 remote.force_kill_guarded(generation, std::time::Duration::ZERO, guard)
             }
         }
+    }
+    pub(super) fn configure_offline(
+        &mut self,
+        configuration: Option<vesta_game_runtime::offline::Configuration>,
+    ) -> Result<Vec<std::net::IpAddr>, &'static str> {
+        if let ProcessBackend::Supervised(remote) = &self.process {
+            return remote.configure_offline(configuration);
+        }
+        if configuration.is_some() && self.process.snapshot().generation.is_some() {
+            return Err("offline_process_unproven");
+        }
+        if let (Some(responder), Some(config)) = (&mut self.offline, &configuration)
+            && responder.configuration().address == config.address
+        {
+            responder.update(config.clone())?;
+            return Ok(responder.take_wakes());
+        }
+        if self.offline.as_ref().map(|r| r.configuration()) != configuration.as_ref() {
+            if let Some(mut responder) = self.offline.take()
+                && responder.close().is_err()
+            {
+                self.offline_uncertain = true;
+                self.view.invalidate_revision();
+                return Err("offline_release_uncertain");
+            }
+            if let Some(config) = configuration {
+                self.offline = Some(vesta_game_runtime::offline::Responder::bind(config)?);
+            }
+        }
+        Ok(self
+            .offline
+            .as_ref()
+            .map(|r| r.take_wakes())
+            .unwrap_or_default())
     }
 }
 
@@ -424,6 +474,20 @@ impl ProcessBackend {
         match self {
             Self::Local(process) => process.queue_stop_guarded(generation, guard),
             Self::Supervised(remote) => remote.queue_stop_guarded(generation, guard),
+        }
+    }
+    pub(super) fn queue_sleep_stop_guarded<E, F>(
+        &mut self,
+        generation: GenerationId,
+        guard: F,
+    ) -> Result<GuardedInput<E>, RuntimeError>
+    where
+        E: Send + 'static,
+        F: FnMut() -> Result<(), E> + Send + 'static,
+    {
+        match self {
+            Self::Local(process) => process.queue_stop_guarded(generation, guard),
+            Self::Supervised(remote) => remote.queue_sleep_stop_guarded(generation, guard),
         }
     }
     pub(super) fn queue_list_guarded<E, F>(

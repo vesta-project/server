@@ -1433,3 +1433,7 @@ A temporary ban whose current vanilla file entry cannot be confirmed is marked
 superseded and produces an inbox warning, not a silent permanent ban. Review that
 ban manually. Plugin and connector integration is future work; there are no plugin
 adapters or plugin settings in this feature.
+
+## Sleep and MOTD presentation
+
+See [sleep-and-motd.md](sleep-and-motd.md) for GET/PUT `/api/v3/manage/sleep/policy`, GET/PUT `/api/v3/manage/motd/policy`, POST `/api/v3/manage/motd/preview`, and public GET `/api/v3/status`. Policy writes use optimistic revisions and atomic audits. The existing authenticated server status adds `lifecycle` without changing process `state`. Offline player identities/nonzero counts are never fabricated. Live MOTD still uses the authorized server.properties editor and requires Minecraft restart; offline/app templates do not alter the live game response.

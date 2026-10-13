@@ -103,6 +103,7 @@ struct Core {
     lease_stranded: bool,
     /// Last exited generation already classified as a stop or a crash.
     handled_exit: Option<GenerationId>,
+    offline: Option<vesta_game_runtime::offline::Responder>,
 }
 impl Core {
     /// Observe, classify exits and fire a due automatic restart.
@@ -403,6 +404,7 @@ pub async fn run(config: SupervisorConfig, stop: impl Future<Output = ()>) -> Re
         hold: None,
         lease_stranded,
         handled_exit: None,
+        offline: None,
     }));
     let result = serve(&endpoint, core, stop).await;
     drop(lock_file);
@@ -569,6 +571,36 @@ fn execute(core: &Shared, op: Op) -> Reply {
             core.process.acknowledge_guarded_stop(id).map_err(runtime)?;
             Ok(Reply::Delivered)
         }),
+        Op::SleepStop {
+            generation: text,
+            expect_latest,
+        } => generation(&text).and_then(|id| {
+            let receipt = {
+                let mut core = lock(core);
+                admit(&core)?;
+                let console = core.console.clone();
+                let receipt = core
+                    .process
+                    .queue_stop_guarded(id, move || {
+                        if console.snapshot(0, 1).map(|p| p.latest_cursor).ok()
+                            == Some(expect_latest)
+                        {
+                            Ok::<(), ()>(())
+                        } else {
+                            Err(())
+                        }
+                    })
+                    .map_err(runtime)?;
+                core.stop_requested(id);
+                receipt
+            };
+            let delivered = deliver(receipt);
+            let mut core = lock(core);
+            core.stop_delivered(id, delivered.is_ok());
+            delivered?;
+            core.process.acknowledge_guarded_stop(id).map_err(runtime)?;
+            Ok(Reply::Delivered)
+        }),
         Op::Command {
             generation: text,
             line,
@@ -620,6 +652,64 @@ fn execute(core: &Shared, op: Op) -> Reply {
             };
             deliver(receipt).map(|()| Reply::Delivered)
         }),
+        Op::Offline {
+            expected_generation,
+            configuration,
+        } => {
+            let mut core = lock(core);
+            core.observe_state();
+            let actual = core.process.snapshot().generation.map(|g| g.to_hex());
+            if core.stopping {
+                Err(refused("supervisor_shutting_down"))
+            } else if expected_generation != actual {
+                Err(refused("offline_stale_generation"))
+            } else if configuration.is_some()
+                && (actual.is_some()
+                    || core.orphan.is_some()
+                    || core.unresolved
+                    || core.observation_failed
+                    || core.intent_for.is_some())
+            {
+                Err(refused("offline_process_unproven"))
+            } else {
+                if let (Some(responder), Some(config)) = (&mut core.offline, &configuration)
+                    && responder.configuration().address == config.address
+                {
+                    if let Err(code) = responder.update(config.clone()) {
+                        return refused(code);
+                    }
+                    return Reply::Offline {
+                        wakes: responder.take_wakes(),
+                    };
+                }
+                let same =
+                    core.offline.as_ref().map(|r| r.configuration()) == configuration.as_ref();
+                if !same {
+                    if let Some(mut responder) = core.offline.take() {
+                        if responder.close().is_err() {
+                            core.observation_failed = true;
+                            return refused("offline_release_uncertain");
+                        }
+                    }
+                    if let Some(config) = configuration {
+                        if let Err(code) = config.validate() {
+                            return refused(code);
+                        }
+                        match vesta_game_runtime::offline::Responder::bind(config) {
+                            Ok(responder) => core.offline = Some(responder),
+                            Err(code) => return refused(code),
+                        }
+                    }
+                }
+                Ok(Reply::Offline {
+                    wakes: core
+                        .offline
+                        .as_ref()
+                        .map(|r| r.take_wakes())
+                        .unwrap_or_default(),
+                })
+            }
+        }
         Op::Stop {
             generation: text,
             wait_ms,
@@ -815,6 +905,9 @@ fn start(core: &Shared, launch_identity: &str) -> std::result::Result<Reply, Rep
         return Err(refused("supervisor_maintenance_hold"));
     }
     core.restarts.cancel_pending();
+    if core.health().crash_loop {
+        return Err(refused("supervisor_crash_loop"));
+    }
     if launch_identity != core.launch_identity {
         return Err(refused("supervisor_launch_mismatch"));
     }
@@ -845,6 +938,14 @@ impl Core {
         }
         if self.recorded.is_some() || self.process.snapshot().generation.is_some() {
             return Err(refused(RuntimeError::AlreadyOwned.code()));
+        }
+        // Every launch, including autonomous crash restart, relinquishes the
+        // responder before a game process can bind. A failed join is sticky.
+        if let Some(mut responder) = self.offline.take()
+            && responder.close().is_err()
+        {
+            self.observation_failed = true;
+            return Err(refused("offline_release_uncertain"));
         }
         // Lines after this cursor belong to the new generation.
         let floor = self
@@ -1448,6 +1549,7 @@ mod lease_tests {
                 hold: None,
                 lease_stranded: false,
                 handled_exit: None,
+                offline: None,
             }));
             Self {
                 core,
@@ -1524,6 +1626,32 @@ mod lease_tests {
                 .is_none()
         );
         assert!(matches!(barrier.try_result(), Some(Ok(()))));
+    }
+    #[test]
+    fn explicit_supervisor_start_cannot_bypass_a_suspended_crash_loop() {
+        let fixture = Fixture::new();
+        {
+            let mut core = lock(&fixture.core);
+            let policy = crate::restart::RestartPolicy::new(
+                1,
+                Duration::from_secs(600),
+                Duration::from_secs(1),
+                Duration::from_secs(10),
+            )
+            .unwrap();
+            core.restarts = Restarts::load(core.directory.clone(), Some(policy)).unwrap();
+            core.restarts.on_crash(Instant::now(), restart::now_ms());
+            assert!(core.health().crash_loop);
+        }
+        assert!(
+            matches!(start(&fixture.core,"test"),Err(Reply::Refused{code}) if code=="supervisor_crash_loop")
+        );
+        assert_eq!(
+            lock(&fixture.core).process.snapshot().generation,
+            Some(fixture.id)
+        );
+        lock(&fixture.core).restarts.reset().unwrap();
+        assert!(!lock(&fixture.core).health().crash_loop);
     }
 
     #[test]

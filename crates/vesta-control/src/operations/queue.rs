@@ -236,6 +236,15 @@ impl OwnerSession {
                 .command
                 .ok_or_else(|| rejected(OperationErrorCode::UnknownType))?;
             check_revision(&command, revision)?;
+            if matches!(command, GameCommand::Sleep { .. })
+                && crate::sleep::blocked_in(
+                    repo.connection(),
+                    repo.server,
+                    Some(op.summary.id.as_str()),
+                )?
+            {
+                return Err(rejected(OperationErrorCode::MaintenanceActive));
+            }
             let after = repo.mark_running(&op)?;
             self.core.ops.record_state(
                 repo,
@@ -529,6 +538,36 @@ impl OwnerCore {
                 .ok_or_else(|| rejected(OperationErrorCode::UnknownType))?;
             check_revision(&command, revision)?;
             self.require_dispatch()?;
+            if matches!(command, GameCommand::Sleep { .. }) {
+                crate::sleep::permit_operation_in(
+                    repo.connection(),
+                    repo.server,
+                    &op.subject,
+                    op.idempotency_key.as_deref(),
+                    false,
+                )
+                .map_err(sleep_policy_error)?;
+            }
+            if matches!(command, GameCommand::Start)
+                && op
+                    .idempotency_key
+                    .as_deref()
+                    .is_some_and(|key| key.starts_with("sleep-wake:"))
+            {
+                crate::sleep::permit_operation_in(
+                    repo.connection(),
+                    repo.server,
+                    &op.subject,
+                    op.idempotency_key.as_deref(),
+                    true,
+                )
+                .map_err(sleep_policy_error)?;
+            }
+            if matches!(command, GameCommand::Sleep { .. })
+                && crate::sleep::blocked_in(repo.connection(), repo.server, Some(id.as_str()))?
+            {
+                return Err(rejected(OperationErrorCode::MaintenanceActive));
+            }
             let after = repo.mark_effect(&op)?;
             self.ops.record_state(
                 repo,
@@ -578,6 +617,10 @@ pub(super) fn check_revision(
             expected_generation,
             ..
         }
+        | GameCommand::Sleep {
+            expected_generation,
+            ..
+        }
         | GameCommand::ForceKill {
             expected_generation,
         } => SourceRevision::for_game(Some(*expected_generation)),
@@ -589,6 +632,13 @@ pub(super) fn check_revision(
 }
 fn rejected(code: OperationErrorCode) -> OperationError {
     OperationError::rejected(code)
+}
+fn sleep_policy_error(error: StateError) -> OperationError {
+    if error.code() == "state_sleep_policy_changed" {
+        rejected(OperationErrorCode::CancellationRequested)
+    } else {
+        error.into()
+    }
 }
 
 fn reconcile(ops: &Operations) -> OperationsResult<()> {

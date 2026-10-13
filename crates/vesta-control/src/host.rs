@@ -115,10 +115,14 @@ pub struct Host {
     preparations: Arc<Vec<PackPreparation>>,
     releases: Arc<PackReleases>,
     graceful_stop: GracefulStop,
+    // Stop the coordinator before the runtime's observation-only destructor can
+    // wait for a locally owned child.
+    sleep_driver: Option<crate::sleep::Driver>,
     runtime: OperationRuntime,
     backups: Option<Arc<Backups>>,
     automation: Arc<Automation>,
     driver: Option<AutomationDriver>,
+    sleep: crate::sleep::Sleep,
 }
 
 /// Ticks schedules and turns runtime and backup facts into automation events.
@@ -459,6 +463,7 @@ impl Host {
             files: self.files.for_remote(),
             backups: self.backups.clone(),
             automation: self.automation.clone(),
+            sleep: self.sleep.clone(),
         }
     }
     /// Present only when `[backups]` is configured.
@@ -472,6 +477,7 @@ impl Host {
     /// Stop dispatch and wait up to `timeout` for the runtime to finish. The database
     /// is closed only after the runtime has really completed.
     pub fn shutdown(mut self, timeout: Duration) -> Result<HostShutdown, HostError> {
+        drop(self.sleep_driver.take());
         if let Some(driver) = self.driver.take() {
             driver.stop();
         }
@@ -584,6 +590,25 @@ fn compose(
     // The services reach the runtime through a cell filled right after it opens.
     let cell: Arc<std::sync::OnceLock<crate::operations::RuntimeHandle>> = Arc::default();
     let gate = crate::operations::StartGate::default();
+    let bind_address = files::read_local_document(&config.game().join(PROPERTIES_FILE), 64 * 1024)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .and_then(|text| crate::sleep::bind_from_properties(&text));
+    let sleep = crate::sleep::Sleep::new(
+        db.clone(),
+        gate.clone(),
+        bind_address,
+        readiness.probe,
+        config.pack().name().into(),
+    )
+    .with_metadata(
+        config.pack().minecraft_version(),
+        config.pack().version(),
+        config.pack().loader().map_or("vanilla", |l| l.version()),
+    );
+    let sleep_driver = sleep
+        .start_driver(cell.clone())
+        .map_err(HostError::Supervisor)?;
     let (event_sink, backup_events) = mpsc::channel();
     let backups = match config.backups() {
         None => None,
@@ -684,6 +709,8 @@ fn compose(
         backups,
         automation,
         driver: Some(driver),
+        sleep,
+        sleep_driver: Some(sleep_driver),
     })
 }
 
@@ -855,6 +882,7 @@ pub struct NetworkHost {
     files: FileBrowser,
     backups: Option<Arc<Backups>>,
     automation: Arc<Automation>,
+    sleep: crate::sleep::Sleep,
 }
 /// Owned local refresh composition. Dropping it signals and joins the worker,
 /// including any in-progress bounded document read. No remote management route.
@@ -873,6 +901,9 @@ impl Drop for AdmissionRefresh {
     }
 }
 impl NetworkHost {
+    pub fn sleep(&self) -> &crate::sleep::Sleep {
+        &self.sleep
+    }
     pub fn backups(&self) -> Option<&Arc<Backups>> {
         self.backups.as_ref()
     }

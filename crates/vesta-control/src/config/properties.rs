@@ -50,6 +50,30 @@ struct Document {
     values: BTreeMap<String, String>,
     blocks: Vec<(Option<String>, String)>,
 }
+/// Uses the same Java-properties decoding and duplicate-key checks as edits.
+pub(crate) fn game_bind_address(bytes: &[u8]) -> Option<std::net::SocketAddr> {
+    let document = Document::parse(bytes).ok()?;
+    let port = document
+        .values
+        .get("server-port")?
+        .trim()
+        .parse::<u16>()
+        .ok()?;
+    if port == 0 {
+        return None;
+    }
+    let ip = document
+        .values
+        .get("server-ip")
+        .map_or("", String::as_str)
+        .trim();
+    let ip = if ip.is_empty() {
+        std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+    } else {
+        ip.parse().ok()?
+    };
+    Some(std::net::SocketAddr::new(ip, port))
+}
 impl Document {
     fn parse(bytes: &[u8]) -> Result<Self, FileError> {
         if bytes.len() > MAX_SERVER_PROPERTIES_BYTES {
@@ -129,7 +153,22 @@ impl Document {
     }
 }
 fn escape(value: &str) -> String {
-    value.replace(' ', "\\ ")
+    value
+        .chars()
+        .map(|c| match c {
+            '\n' => "\\n".to_owned(),
+            '\r' => "\\r".to_owned(),
+            '\t' => "\\t".to_owned(),
+            '\\' => "\\\\".to_owned(),
+            ' ' => "\\ ".to_owned(),
+            c if !c.is_ascii() => c
+                .encode_utf16(&mut [0; 2])
+                .iter()
+                .map(|u| format!("\\u{u:04x}"))
+                .collect(),
+            c => c.to_string(),
+        })
+        .collect()
 }
 #[derive(Clone, Copy)]
 enum Kind {
@@ -168,12 +207,26 @@ fn schema(key: &str) -> Option<Kind> {
         "op-permission-level" | "function-permission-level" => Kind::Integer(1, 4),
         "difficulty" => Kind::Enum(&["peaceful", "easy", "normal", "hard"]),
         "gamemode" => Kind::Enum(&["survival", "creative", "adventure", "spectator"]),
-        "motd" => Kind::Text(256),
+        "motd" => Kind::Text(1024),
         "rcon.password" => Kind::Secret(128),
         _ => return None,
     })
 }
 fn validate(key: &str, value: &Value) -> Result<String, FileError> {
+    if key == "motd" {
+        let text = value.as_str().ok_or(FileError::InvalidPath)?;
+        if text.len() > 1024
+            || text.encode_utf16().count() > 512
+            || text.matches('\n').count() > 1
+            || text
+                .chars()
+                .any(|c| (c.is_control() && c != '\n') || matches!(c, '\\' | '/'))
+        {
+            return Err(FileError::InvalidPath);
+        }
+        crate::motd::component(text).map_err(|_| FileError::InvalidPath)?;
+        return Ok(text.to_owned());
+    }
     let kind = schema(key).ok_or(FileError::InvalidPath)?;
     Ok(match kind {
         Kind::Boolean => value.as_bool().ok_or(FileError::InvalidPath)?.to_string(),
@@ -261,6 +314,11 @@ impl<'a> ServerPropertiesEditor<'a> {
                         .filter(|n| (min..=max).contains(n))
                         .map_or(json!("[redacted]"), |n| json!(n)),
                     Some(Kind::Enum(choices)) if choices.contains(&value.as_str()) => json!(value),
+                    Some(Kind::Text(_))
+                        if key == "motd" && validate("motd", &json!(value)).is_ok() =>
+                    {
+                        json!(value)
+                    }
                     Some(Kind::Text(max))
                         if value.len() <= max
                             && value.is_ascii()
@@ -346,6 +404,46 @@ impl<'a> ServerPropertiesEditor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn game_endpoint_uses_canonical_java_keys_without_widening_escaped_bind_addresses() {
+        assert_eq!(
+            crate::operations::readiness::probe_from_properties(
+                "server\\u002dip=127.0.0.1\nserver\\u002dport=25570\n"
+            )
+            .unwrap(),
+            "127.0.0.1:25570".parse().unwrap()
+        );
+        assert_eq!(
+            crate::operations::readiness::probe_from_properties(
+                "server-ip=0.0.0.0\nserver-port=25565\n"
+            )
+            .unwrap(),
+            "127.0.0.1:25565".parse().unwrap()
+        );
+        assert_eq!(
+            game_bind_address(b"server\\u002dip=127.0.0.1\nserver\\u002dport=25570\n").unwrap(),
+            "127.0.0.1:25570".parse().unwrap()
+        );
+        assert!(game_bind_address(b"server-ip=127.0.0.1\nserver\\u002dip=0.0.0.0\n").is_none());
+        assert!(game_bind_address(b"server-port=0\n").is_none());
+    }
+    #[test]
+    fn live_motd_round_trips_styles_unicode_and_two_lines_without_property_injection() {
+        let text = "§aHello 😀\n§lWelcome";
+        assert_eq!(validate("motd", &json!(text)).unwrap(), text);
+        let doc = Document::parse(b"# retained\r\nmotd=old\r\nunknown=keep\r\n").unwrap();
+        let output = doc
+            .edited(&BTreeMap::from([("motd".into(), text.into())]))
+            .unwrap();
+        assert_eq!(Document::parse(&output).unwrap().values["motd"], text);
+        assert!(String::from_utf8(output).unwrap().contains("\\n"));
+        for text in ["a\nb\nc", "x\ronline-mode=false", "§z", "§"] {
+            assert!(validate("motd", &json!(text)).is_err());
+        }
+        assert!(crate::minecraft_admission::unescape("\\ud800").is_err());
+        assert!(crate::minecraft_admission::unescape("\\ud800\\u0041").is_err());
+        assert!(crate::minecraft_admission::unescape("\\udc00").is_err());
+    }
     #[test]
     fn schema_rejects_unknown_wrong_types_and_paths() {
         assert!(

@@ -25,6 +25,10 @@ pub enum GameCommand {
     Stop {
         expected_generation: GenerationId,
     },
+    Sleep {
+        expected_generation: GenerationId,
+        expected_cursor: u64,
+    },
     Restart {
         expected_generation: GenerationId,
     },
@@ -44,6 +48,7 @@ impl GameCommand {
             Self::Console { .. } => "game.console",
             Self::Moderate { .. } => "players.moderate",
             Self::Stop { .. } => "game.stop",
+            Self::Sleep { .. } => "game.sleep",
             Self::Restart { .. } => "game.restart",
             Self::ForceKill { .. } => "game.force_kill",
         }
@@ -51,6 +56,14 @@ impl GameCommand {
     pub(super) fn canonical_input(&self) -> OperationsResult<String> {
         match self {
             Self::Start => Ok("{}".to_owned()),
+            Self::Sleep {
+                expected_generation,
+                expected_cursor,
+            } => serde_json::to_string(&SleepInput {
+                expected_generation: expected_generation.to_hex(),
+                expected_cursor: *expected_cursor,
+            })
+            .map_err(|_| invalid()),
             Self::Moderate {
                 expected_generation,
                 action,
@@ -118,6 +131,12 @@ impl std::fmt::Debug for SourceRevision {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StartInput {}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SleepInput {
+    expected_generation: String,
+    expected_cursor: u64,
+}
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -172,6 +191,14 @@ pub(super) fn derive(kind: &str, raw: &str) -> OperationsResult<Option<PreparedO
             let _: StartInput = object_input(raw)?;
             GameCommand::Start
         }
+        "game.sleep" => {
+            let input: SleepInput = object_input(raw)?;
+            GameCommand::Sleep {
+                expected_generation: GenerationId::parse_hex(&input.expected_generation)
+                    .map_err(|_| invalid())?,
+                expected_cursor: input.expected_cursor,
+            }
+        }
         "game.stop" | "game.restart" | "game.force_kill" => {
             let input: GenerationInput = object_input(raw)?;
             let expected_generation =
@@ -221,6 +248,15 @@ pub(super) fn derive(kind: &str, raw: &str) -> OperationsResult<Option<PreparedO
             true,
             false,
         ),
+        GameCommand::Sleep {
+            expected_generation,
+            ..
+        } => (
+            Capability::LifecycleStop,
+            format!("game:generation:{}", expected_generation.to_hex()),
+            true,
+            false,
+        ),
         GameCommand::Restart {
             expected_generation,
         } => (
@@ -238,15 +274,24 @@ pub(super) fn derive(kind: &str, raw: &str) -> OperationsResult<Option<PreparedO
             true,
         ),
     };
+    let mut requirements = vec![Requirement {
+        capability,
+        resource: None,
+    }];
+    if matches!(command, GameCommand::Sleep { .. }) {
+        requirements.extend(
+            [Capability::ConsoleRead, Capability::PlayersView].map(|capability| Requirement {
+                capability,
+                resource: None,
+            }),
+        );
+    }
     Ok(Some(PreparedOperation {
         operation_type: kind.to_owned(),
         payload_hash: digest(&canonical_input),
         canonical_input,
         target,
-        requirements: vec![Requirement {
-            capability,
-            resource: None,
-        }],
+        requirements,
         resources: vec![GAME_LOCK.to_owned()],
         effect_idempotent,
         requires_confirmation,

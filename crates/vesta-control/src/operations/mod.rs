@@ -20,6 +20,8 @@ mod domain;
 mod game;
 mod input;
 mod metrics;
+pub(crate) mod motd;
+pub use motd::MotdPolicy;
 mod tick_poll;
 pub use metrics::MetricsLive;
 mod moderation;

@@ -1397,4 +1397,5 @@ enum WireListener {
 mod tests;
 
 mod properties;
+pub(crate) use properties::game_bind_address;
 pub use properties::{PropertiesPatch, ServerPropertiesEditor};
