@@ -17,7 +17,52 @@
       "failed": 0,
       "command": "node --test scripts/*.test.mjs"
     },
-    "limitations": "No live Minecraft, real provider, connector matrix, production deployment, Linux host, or penetration verification."
+    "limitations": "No live Minecraft, real provider, connector matrix, production deployment, Linux host, or penetration verification.",
+    "statsFollowup": {
+      "date": "2026-10-14",
+      "commits": [
+        "cc6766f",
+        "a160331"
+      ],
+      "focusedMetrics": {
+        "passed": 28,
+        "failed": 0,
+        "command": "cargo test -p vesta-control --lib metrics --offline --locked -- --test-threads=1"
+      },
+      "httpsMetrics": {
+        "passed": 4,
+        "failed": 0,
+        "command": "cargo test -p vesta-transport --test https metrics --offline --locked -- --test-threads=1"
+      },
+      "otherWorkspaceCrates": {
+        "summaries": 60,
+        "passed": 771,
+        "failed": 0,
+        "ignored": 0,
+        "command": "cargo test --workspace --exclude vesta-control --all-targets --offline --locked -- --test-threads=1"
+      },
+      "controlIntegrations": {
+        "summaries": 6,
+        "passed": 23,
+        "failed": 0,
+        "ignored": 0,
+        "command": "cargo test -p vesta-control --test <each integration target> --offline --locked -- --test-threads=1"
+      },
+      "initialWorkspaceRun": {
+        "summaries": 8,
+        "passed": 929,
+        "failed": 1,
+        "ignored": 0,
+        "note": "Control library finished with 881 passes and one schema-v8 fixture failure. The fixture omitted metrics_policy during simulated downgrade; fixed in a160331 and its exact regression passed. This workspace run started before the cache/retention review edits; those final-source changes passed the focused suites above."
+      },
+      "strictClippy": "passed: cargo clippy --workspace --all-targets --offline --locked -- -D warnings",
+      "formatting": "passed: cargo fmt --all -- --check",
+      "node": {
+        "passed": 164,
+        "failed": 0
+      },
+      "limitations": "No live Minecraft compatibility, Linux native collection, diagnostic bundle, resource enforcement or complete launcher hosting UI verification."
+    }
   },
   "features": [
     {
