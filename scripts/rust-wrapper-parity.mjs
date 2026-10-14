@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -183,7 +184,7 @@ function validateRequirementsSource(repoRoot, ledger, errors) {
   }
 }
 
-function validateInventory(manifest, repoRoot, knownRequirements, errors) {
+function validateInventory(manifest, repoRoot, knownRequirements, errors, javaRepoRoot) {
   if (!Array.isArray(manifest.inventory)) return;
   const rows = manifest.inventory;
   add(errors, sha256(canonicalInventory(rows)) === manifest.baselineInventorySha256, 'baseline Java path/hash digest does not match inventory');
@@ -227,7 +228,7 @@ function validateInventory(manifest, repoRoot, knownRequirements, errors) {
     add(errors, Array.isArray(row.gaps) && row.gaps.every((gap) => typeof gap === 'string'), `${where}.gaps must contain only strings: ${row.javaPath}`);
     add(errors, row.results && ['not_run', 'passed', 'failed', 'skipped', 'unverified'].includes(row.results.status), `${where}.results.status is invalid: ${row.javaPath}`);
 
-    const abs = repoFile(repoRoot, row.javaPath);
+    const abs = repoFile(javaRepoRoot, row.javaPath);
     add(errors, existsSync(abs), `inventory Java source is missing: ${row.javaPath}`);
     if (existsSync(abs) && typeof row.javaSha256 === 'string' && /^[a-f0-9]{64}$/.test(row.javaSha256)) {
       add(errors, sha256File(abs) === row.javaSha256, `baseline Java byte hash changed; explicitly review/update inventory: ${row.javaPath}`);
@@ -237,11 +238,11 @@ function validateInventory(manifest, repoRoot, knownRequirements, errors) {
     }
     for (const path of Array.isArray(row.testPaths) ? row.testPaths : []) {
       add(errors, isRelativeRepoPath(path) && javaRoots.some((testRoot) => testRoot.endsWith('src/test/java') && path.startsWith(`${testRoot}/`)) && path.endsWith('.java'), `invalid Java test path ${path} in ${row.javaPath}`);
-      if (isRelativeRepoPath(path)) add(errors, existsSync(repoFile(repoRoot, path)), `test path is missing: ${path} (referenced by ${row.javaPath})`);
+      if (isRelativeRepoPath(path)) add(errors, existsSync(repoFile(javaRepoRoot, path)), `test path is missing: ${path} (referenced by ${row.javaPath})`);
     }
     for (const path of Array.isArray(row.fixturePaths) ? row.fixturePaths : []) {
       add(errors, isRelativeRepoPath(path), `invalid fixture path ${path} in ${row.javaPath}`);
-      if (isRelativeRepoPath(path)) add(errors, existsSync(repoFile(repoRoot, path)), `fixture path is missing: ${path} (referenced by ${row.javaPath})`);
+      if (isRelativeRepoPath(path)) add(errors, existsSync(evidenceFile(repoRoot, javaRepoRoot, path)), `fixture path is missing: ${path} (referenced by ${row.javaPath})`);
     }
     if (row.rustCounterpart !== null) {
       add(errors, isRelativeRepoPath(row.rustCounterpart) && row.rustCounterpart.endsWith('.rs'), `invalid Rust counterpart path: ${row.rustCounterpart}`);
@@ -253,7 +254,7 @@ function validateInventory(manifest, repoRoot, knownRequirements, errors) {
     }
     for (const item of Array.isArray(row.evidence) ? row.evidence : []) {
       add(errors, item && typeof item === 'object' && isRelativeRepoPath(item.path) && typeof item.claim === 'string' && item.claim.trim().length > 0, `invalid path-backed evidence entry: ${row.javaPath}`);
-      if (item && isRelativeRepoPath(item.path)) add(errors, existsSync(repoFile(repoRoot, item.path)), `evidence path is missing: ${item.path}`);
+      if (item && isRelativeRepoPath(item.path)) add(errors, existsSync(evidenceFile(repoRoot, javaRepoRoot, item.path)), `evidence path is missing: ${item.path}`);
     }
     if (row.status === 'retained_java_plugin') add(errors, row.disposition === 'retain_java_plugin', `retained_java_plugin status requires retain_java_plugin disposition: ${row.javaPath}`);
     if (row.status === 'planned_safer_replacement') add(errors, row.disposition === 'safer_replacement', `planned_safer_replacement status requires safer_replacement disposition: ${row.javaPath}`);
@@ -268,7 +269,7 @@ function validateInventory(manifest, repoRoot, knownRequirements, errors) {
     }
   }
 
-  const discovered = discoverJavaInventory(repoRoot);
+  const discovered = discoverJavaInventory(javaRepoRoot);
   const actual = new Set(byPath.keys());
   for (const path of discovered) add(errors, actual.has(path), `Java source is absent from explicit inventory: ${path}`);
   for (const path of actual) add(errors, discovered.includes(path), `inventory contains an extra/non-source Java path: ${path}`);
@@ -279,7 +280,12 @@ function validateInventory(manifest, repoRoot, knownRequirements, errors) {
   }
 }
 
-export function validateParity(manifest, repoRoot, ledgerOverride) {
+function evidenceFile(repoRoot, javaRepoRoot, path) {
+  const isJava = ['core/', 'wrapper/', 'src/'].some((prefix) => path.startsWith(prefix));
+  return repoFile(isJava ? javaRepoRoot : repoRoot, path);
+}
+
+export function validateParity(manifest, repoRoot, ledgerOverride, javaRepoRoot = repoRoot) {
   const errors = [];
   validateManifestShape(manifest, errors);
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return errors;
@@ -291,13 +297,21 @@ export function validateParity(manifest, repoRoot, ledgerOverride) {
   const knownRequirements = validateBaseline(manifest, ledger, errors);
   validateRequirementsSource(repoRoot, ledger, errors);
   validateIndependentGates(manifest, repoRoot, errors);
-  validateInventory(manifest, repoRoot, knownRequirements, errors);
+  validateInventory(manifest, repoRoot, knownRequirements, errors, javaRepoRoot);
   return errors;
 }
 
-export function checkParity(repoRoot = root) {
+export function checkParity(repoRoot = root, javaRepoRoot = process.env.VESTA_JAVA_REPO || resolve(repoRoot, '../server-java')) {
   const manifest = JSON.parse(readFileSync(repoFile(repoRoot, manifestPath), 'utf8'));
-  const errors = validateParity(manifest, repoRoot);
+  const source = manifest.javaSource;
+  if (source?.repository !== 'https://github.com/vesta-project/server-java'
+      || !/^[a-f0-9]{40}$/.test(source?.revision ?? '')) {
+    throw new Error('Java migration source must pin the server-java repository and an exact commit');
+  }
+  if (!existsSync(javaRepoRoot)) throw new Error('Pinned Java checkout missing; clone server-java or set VESTA_JAVA_REPO');
+  const head = execFileSync('git', ['-C', javaRepoRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  if (head !== source.revision) throw new Error(`Java migration checkout must be at pinned revision ${source.revision}`);
+  const errors = validateParity(manifest, repoRoot, undefined, javaRepoRoot);
   if (errors.length) throw new Error(`Rust wrapper parity check failed:\n- ${errors.join('\n- ')}`);
   return { files: manifest.inventory.length, baselineRequirements: manifest.baselineRequirements.length };
 }

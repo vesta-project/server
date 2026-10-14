@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
+import { resolve, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { expectedLedger, extractRequirements } from './requirements-ledger.mjs';
 
 test('every baseline requirement bullet has a unique, phased traceability entry', () => {
@@ -43,8 +45,13 @@ test('partial evidence names real test sources and retains a limitation statemen
         assert.match(source, /^crates\/vesta-(control|state|transport|game-runtime|supervisor)\/(src|tests)\/.+\.rs$/);
         assert.ok(existsSync(new URL('../' + source, import.meta.url)), source);
       } else {
-        assert.match(source, /^(core|wrapper)\/src\/test\/java\/.+Test\.java$/);
-        assert.ok(existsSync(new URL('../' + source, import.meta.url)), source);
+        assert.match(source, /^server-java:(core|wrapper)\/src\/test\/java\/.+Test\.java$/);
+        const javaRepo = process.env.VESTA_JAVA_REPO
+          ? pathToFileURL(resolve(process.env.VESTA_JAVA_REPO) + sep)
+          : new URL('../../server-java/', import.meta.url);
+        if (existsSync(javaRepo)) {
+          assert.ok(existsSync(new URL(source.slice('server-java:'.length), javaRepo)), source);
+        }
       }
     }
   }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { discoverJavaInventory, validateParity } from './rust-wrapper-parity.mjs';
@@ -299,4 +299,20 @@ test('validates test and fixture pointers against inert repository files', (t) =
   writeFileSync(join(existing.repoRoot, 'fixtures/data.json'), '{}');
   existing.manifest.inventory[0].fixturePaths = ['fixtures/data.json'];
   assert.deepEqual(messages(existing), []);
+});
+
+test('split checkout resolves Java sources separately and still rejects missing or changed evidence', (t) => {
+  const fixture = makeFixture(t);
+  const javaRoot = mkdtempSync(join(tmpdir(), 'separate-java-'));
+  t.after(() => rmSync(javaRoot, { recursive: true, force: true }));
+  for (const dir of ['core', 'wrapper', 'src']) {
+    renameSync(join(fixture.repoRoot, dir), join(javaRoot, dir));
+  }
+  const validate = () => validateParity(fixture.manifest, fixture.repoRoot, fixture.ledger, javaRoot);
+  assert.deepEqual(validate(), []);
+  const source = fixture.manifest.inventory.find((row) => row.javaPath.endsWith('/Host.java'));
+  writeFileSync(join(javaRoot, source.javaPath), 'changed Java bytes');
+  assert.ok(validate().some((message) => message.includes('baseline Java byte hash changed')));
+  rmSync(join(javaRoot, source.javaPath));
+  assert.ok(validate().some((message) => message.includes('inventory Java source is missing')));
 });

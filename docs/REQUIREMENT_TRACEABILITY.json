@@ -24,7 +24,7 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -162,7 +162,7 @@
       "phase": "P3",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/MinecraftProcessLifecycleTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/runtime/MinecraftProcessLifecycleTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Failed stop cannot auto-kill or duplicate the fixture JVM. Supervisor update/activation/readiness and approved restart operation are not implemented.",
@@ -211,11 +211,11 @@
       "phase": "P3",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/launch/LaunchSpecTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/config/ConfigLoaderLaunchTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/LaunchShapesProcessTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLaunchShapesTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/server/LegacyPowerRouteLaunchTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/launch/LaunchSpecTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/config/ConfigLoaderLaunchTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/runtime/LaunchShapesProcessTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLaunchShapesTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/server/LegacyPowerRouteLaunchTest.java"
       ],
       "evidence": [
         "2026-10-05 Windows: fresh server 687-test suite passed. The typed launch definition (java-jar, java-argfile, native) with an explicit working directory is evidenced with real owned child processes: literal arguments with no shell interpolation, strict value validation without echo, a strict [launch] configuration that fails closed on any conflict with the legacy keys, known no-effect preflight failures and a graceful stop that is never invented (an unsupported stop is rejected before any gate, state change or console write). Authorized remote registration or editing of launch definitions, local-only protection of changes, script presets, Linux/native execution and real server software remain unverified and not implemented.",
@@ -331,7 +331,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -359,7 +359,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -376,7 +376,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -393,7 +393,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -410,7 +410,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -427,7 +427,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -499,8 +499,8 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/operations/PolicyOperationAuthorityTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/operations/PolicyOperationAuthorityTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -530,9 +530,9 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/operations/PolicyConfirmationServiceTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/operations/PolicyConfirmationServiceTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Exact principal/device/action/target/payload/revision/expiry, single use, rejection burn and audit rollback passed. Canonical authority and authoritative revision/prepare-confirm handlers/UI remain absent.",
@@ -550,7 +550,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -578,7 +578,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -595,7 +595,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -612,7 +612,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -629,7 +629,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -646,7 +646,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -663,7 +663,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -680,7 +680,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -697,7 +697,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -714,7 +714,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -731,7 +731,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -748,7 +748,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -765,7 +765,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/IdentityAuthorizationTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -837,7 +837,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/MinecraftProcessLifecycleTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/runtime/MinecraftProcessLifecycleTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Raw-console validator rejects controls/newlines/Unicode separators before stdin effect. Typed moderation identifiers/arguments and limited-action authority remain absent.",
@@ -1188,7 +1188,7 @@
       "phase": "P5",
       "status": "partially_verified",
       "tests": [
-        "core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java",
+        "server-java:core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java",
         "launcher-server-mvp:crates/piston-lib/tests/vesta_pack.rs"
       ],
       "evidence": [
@@ -1205,7 +1205,7 @@
       "phase": "P5",
       "status": "partially_verified",
       "tests": [
-        "core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java",
+        "server-java:core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java",
         "launcher-server-mvp:crates/piston-lib/tests/vesta_pack.rs"
       ],
       "evidence": [
@@ -1262,7 +1262,7 @@
       "phase": "P5",
       "status": "partially_verified",
       "tests": [
-        "core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java",
+        "server-java:core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java",
         "launcher-server-mvp:crates/piston-lib/tests/vesta_pack.rs",
         "launcher-server-mvp:crates/piston-lib/tests/vesta_import_limits.rs"
       ],
@@ -1316,7 +1316,7 @@
       "phase": "P5",
       "status": "partially_verified",
       "tests": [
-        "core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java",
+        "server-java:core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java",
         "launcher-server-mvp:crates/piston-lib/tests/vesta_pack.rs"
       ],
       "evidence": [
@@ -1472,8 +1472,8 @@
       "phase": "P5",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/files/ServerFileBoundaryTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/server/VestaHttpServerCommunicationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/files/ServerFileBoundaryTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/server/VestaHttpServerCommunicationTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Ordinary dotfiles visible; invariant state/config/custom TLS and linked entries excluded. Per-user filtering/full-route/OS isolation contract remains incomplete.",
@@ -1707,9 +1707,9 @@
       "phase": "P7",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/MinecraftProcessLifecycleTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/server/DurableLifecycleRouteTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/runtime/MinecraftProcessLifecycleTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/server/DurableLifecycleRouteTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Normal stop/STOPPING, timeout/interruption retention, delayed exit and no-duplicate restart passed. Force Kill authority/UI/workflow settings and supervisor remain absent.",
@@ -2184,8 +2184,8 @@
       "phase": "P4",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/files/ServerFileBoundaryTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/server/VestaHttpServerCommunicationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/files/ServerFileBoundaryTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/server/VestaHttpServerCommunicationTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Shared file/content invariant/custom-TLS protection, ordinary dotfiles and actual Windows junction rejection passed. Native ancestor races/hard links/all reparse subtypes/separate OS identities/SFTP remain unverified.",
@@ -2839,11 +2839,11 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/operations/PolicyOperationAuthorityTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/operations/PolicyOperationAuthorityTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Durable IDs/states/progress and exact actor/server/idempotency/safety binding passed. Production actions/executor and persisted requested inputs remain absent at this checkpoint.",
@@ -2876,10 +2876,10 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Persistence/reopen/service listing passed. Authorized reconnect/watch API and queue executor remain absent.",
@@ -2899,10 +2899,10 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Sorted atomic locks, concurrent non-overlap and FIFO conflict fairness passed. Real adapter/resource ownership remains absent.",
@@ -2933,10 +2933,10 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Claimed cancellation holds locks to explicit safe point; queued/awaiting cancellation passed. Real adapter safe points/UI remain absent.",
@@ -2967,10 +2967,10 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/operations/OperationRunnerTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Uncertain non-idempotent effects retain locks in recovery-required; safe work requeues; explicit resolution passed. Real crash/executor integration remains absent.",
@@ -3078,8 +3078,8 @@
       "phase": "P7",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/console/ConsoleBufferTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/MinecraftProcessLifecycleTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/console/ConsoleBufferTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/runtime/MinecraftProcessLifecycleTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. 10,000-line/2MiB UTF-8 ring and bounded oversized output passed without extra persisted console history. Independent supervisor remains absent.",
@@ -3095,7 +3095,7 @@
       "phase": "P7",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/MinecraftProcessLifecycleTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/runtime/MinecraftProcessLifecycleTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Actual fixture JVM drains without viewers; oversized tails discard and following lines survive. Independent supervisor and real Minecraft gates remain absent.",
@@ -3946,10 +3946,10 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/PasswordHasherTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/identity/PackPasswordServiceTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/security/PasswordKdfGateTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimePasswordTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/PasswordHasherTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/PackPasswordServiceTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/security/PasswordKdfGateTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimePasswordTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
@@ -4078,10 +4078,10 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/state/StateDatabaseTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/state/StateDatabaseLifecycleTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/state/PackPasswordMigrationTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/state/StateDatabaseTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/state/OperationInputMigrationTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/state/StateDatabaseLifecycleTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/state/PackPasswordMigrationTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Actual WAL/FK, identity, rollback, integrity and online pre-migration backup passed. Full migration/repair and local-filesystem gates remain open.",
@@ -4112,7 +4112,7 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/state/AuditEventsSettingsTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/state/AuditEventsSettingsTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Desired/effective/pending/stale-acknowledgement persistence passed. Runtime adapters and all apply modes remain absent.",
@@ -4150,9 +4150,9 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/state/StateDatabaseTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/config/DurableConfigLoaderTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/state/StateDatabaseTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeLifecycleTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/config/DurableConfigLoaderTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Corrupt/newer/FK-invalid database rejects. Minecraft launch gating and local repair remain unwired.",
@@ -4324,7 +4324,7 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/state/AuditEventsSettingsTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/state/AuditEventsSettingsTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Append-only/hash-chain tamper/startup rejection passed. Export, retention and external checkpoints remain absent.",
@@ -4351,8 +4351,8 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/state/AuditEventsSettingsTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/state/AuditEventsSettingsTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Bounded actor/device/source/action/target/outcome/operation audit passed. Authentication/source-address provenance and full route coverage remain absent.",
@@ -4379,8 +4379,8 @@
       "phase": "P1",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/state/AuditEventsSettingsTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/state/AuditEventsSettingsTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/operations/DurableOperationsTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: fresh server 224-test suite passed. Injected audit failure rolls back settings/operations/events/confirmations. Storage monitoring/reserves/export and real disk-full gates remain absent.",
@@ -4517,13 +4517,13 @@
       "phase": "P8",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/operations/OperationEventReplayServiceTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/state/EventLogBoundedScanTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeEventReplayTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/protocol/ServerFeatureProtocolTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/protocol/ServerFeatureCodecTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/protocol/ServerFeatureConformanceTest.java",
-        "wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeFeatureDiscoveryTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/operations/OperationEventReplayServiceTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/state/EventLogBoundedScanTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeEventReplayTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/protocol/ServerFeatureProtocolTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/protocol/ServerFeatureCodecTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/protocol/ServerFeatureConformanceTest.java",
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/runtime/AgentRuntimeFeatureDiscoveryTest.java"
       ],
       "evidence": [
         "2026-10-05 Windows: fresh server 579-test suite passed. Only the event-cursor, pagination and stable-error-code slice is evidenced, in-process: current exact tasks.view per page, server-bound canonical cursors over a finite window, explicit retention resync, strict sanitized operation-event projection and fixed redacted errors. The HTTPS/OpenAPI/stream surface, version negotiation, idempotency-key surface, deprecation policy, authenticated transport and snapshot-consistent resync remain unverified and not implemented.",
@@ -4587,7 +4587,7 @@
       "phase": "P2",
       "status": "partially_verified",
       "tests": [
-        "wrapper/src/test/java/com/vesta/wrapper/identity/PasswordHasherTest.java"
+        "server-java:wrapper/src/test/java/com/vesta/wrapper/identity/PasswordHasherTest.java"
       ],
       "evidence": [
         "docs/archive/IMPLEMENTATION_PROGRESS.md",

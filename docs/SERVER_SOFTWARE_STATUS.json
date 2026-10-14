@@ -146,10 +146,10 @@
         "status": "partial",
         "current": "Existing roots, config and instance registry exist; independent process/control-plane identities and tested Windows/Linux parity do not.",
         "evidence": [
-          "scripts/install.ps1"
+          "server-java:scripts/install.ps1"
         ],
         "javaEvidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/config/ConfigLoader.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/config/ConfigLoader.java"
         ]
       }
     },
@@ -169,8 +169,8 @@
         "status": "partial",
         "current": "Start/stop/restart/kill exist, but stop force-kills after ten seconds and control is owned by the agent JVM.",
         "evidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java",
-          "wrapper/src/main/java/com/vesta/wrapper/VestaWrapper.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java",
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/VestaWrapper.java"
         ]
       },
       "auditDate": "2026-10-10"
@@ -215,7 +215,7 @@
         "status": "partial",
         "current": "Installer/CLI create and control launch artifacts; seamless script inspection/adoption and robust detached-child adapters remain.",
         "evidence": [
-          "scripts/install.ps1"
+          "server-java:scripts/install.ps1"
         ]
       }
     },
@@ -264,8 +264,8 @@
         "current": "Link codes and bearers exist; canonical device principals, local owner bootstrap and device certificates are missing.",
         "evidence": [],
         "javaEvidence": [
-          "core/src/main/java/com/vesta/sync/auth/TokenService.java",
-          "wrapper/src/main/java/com/vesta/wrapper/ipc/ControlIpcServer.java"
+          "server-java:core/src/main/java/com/vesta/sync/auth/TokenService.java",
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/ipc/ControlIpcServer.java"
         ]
       }
     },
@@ -285,8 +285,8 @@
         "status": "partial",
         "current": "Session challenge and whitelist reader exist; binding to device principals, bans and policy reconciliation remain.",
         "evidence": [
-          "core/src/main/java/com/vesta/sync/auth/MinecraftSessionChallengeService.java",
-          "core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java"
+          "server-java:core/src/main/java/com/vesta/sync/auth/MinecraftSessionChallengeService.java",
+          "server-java:core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java"
         ]
       },
       "auditDate": "2026-10-10"
@@ -308,7 +308,7 @@
         "status": "prototype",
         "current": "Named capabilities exist within numeric levels derived from OP/permission nodes, not independent Vesta role assignments.",
         "evidence": [
-          "core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java"
+          "server-java:core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java"
         ]
       },
       "auditDate": "2026-10-10"
@@ -330,7 +330,7 @@
         "status": "not_started",
         "current": "Ordinary logs exist, but no durable exact-target confirmations or protected structured audit subsystem found.",
         "evidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
         ]
       },
       "auditDate": "2026-10-10"
@@ -351,8 +351,8 @@
         "status": "partial",
         "current": "TLS material and certificate fingerprint API exist; mutual TLS device lifecycle and renewal-safe identity separation remain.",
         "evidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/security/TlsMaterial.java",
-          "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/security/TlsMaterial.java",
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
         ]
       },
       "auditDate": "2026-10-10"
@@ -373,8 +373,8 @@
         "status": "prototype",
         "current": "MVP hashes human passwords with salted SHA-256 and persists plaintext security.password; no protected vault found.",
         "evidence": [
-          "core/src/main/java/com/vesta/sync/auth/TokenService.java",
-          "wrapper/src/main/java/com/vesta/wrapper/config/SecuritySettingsService.java"
+          "server-java:core/src/main/java/com/vesta/sync/auth/TokenService.java",
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/config/SecuritySettingsService.java"
         ]
       },
       "auditDate": "2026-10-10"
@@ -399,8 +399,8 @@
         "current": "HTTP/auth token buckets exist; transfer/storage quotas and coordinated resource budgets are incomplete.",
         "evidence": [],
         "javaEvidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/security/TokenBucketRateLimiter.java",
-          "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/security/TokenBucketRateLimiter.java",
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
         ]
       }
     },
@@ -420,8 +420,8 @@
         "status": "partial",
         "current": "HTTP/WebSocket and legacy TCP messages exist; target OpenAPI, durable cursors, idempotency and consistent errors remain.",
         "evidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java",
-          "wrapper/src/test/java/com/vesta/wrapper/server/VestaHttpServerCommunicationTest.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java",
+          "server-java:wrapper/src/test/java/com/vesta/wrapper/server/VestaHttpServerCommunicationTest.java"
         ]
       },
       "auditDate": "2026-10-10"
@@ -446,8 +446,8 @@
         "current": "Bounded in-memory console ring is present; focused existing ConsoleBuffer tests passed. This does not verify supervisor continuity.",
         "evidence": [],
         "javaEvidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/console/ConsoleBuffer.java",
-          "wrapper/src/test/java/com/vesta/wrapper/console/ConsoleBufferTest.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/console/ConsoleBuffer.java",
+          "server-java:wrapper/src/test/java/com/vesta/wrapper/console/ConsoleBufferTest.java"
         ]
       }
     },
@@ -471,7 +471,7 @@
         "current": "Live list-command parsing exists; persistent log offsets, rotation/gap reconciliation and reliable absence are missing.",
         "evidence": [],
         "javaEvidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java"
         ]
       }
     },
@@ -491,8 +491,8 @@
         "status": "partial",
         "current": "Basic sanitization/real-path checks exist; creation through symlink parents and protected-root coverage need hardening.",
         "evidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/files/FileBrowserService.java",
-          "wrapper/src/main/java/com/vesta/wrapper/content/ContentInstaller.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/files/FileBrowserService.java",
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/content/ContentInstaller.java"
         ]
       },
       "auditDate": "2026-10-10"
@@ -514,7 +514,7 @@
         "status": "partial",
         "current": "Read/write/delete exist with temporary-file replacement. No complete trash, optimistic edits, archives or resumable transfer engine found.",
         "evidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/files/FileBrowserService.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/files/FileBrowserService.java"
         ]
       },
       "auditDate": "2026-10-10"
@@ -551,8 +551,8 @@
         "status": "prototype",
         "current": "Live install/remove supports byte hashing; provider-resolution, expected-hash verification and restart activation are not complete.",
         "evidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/content/ContentInstaller.java",
-          "wrapper/src/main/java/com/vesta/wrapper/server/ServerState.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/content/ContentInstaller.java",
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/server/ServerState.java"
         ]
       },
       "auditDate": "2026-10-10"
@@ -573,8 +573,8 @@
         "status": "prototype",
         "current": "MVP can host platform/archive sources, but scan mode and generated packs read the live server tree.",
         "evidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/server/ServerState.java",
-          "core/src/main/java/com/vesta/sync/manifest/VestaPackBuilder.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/server/ServerState.java",
+          "server-java:core/src/main/java/com/vesta/sync/manifest/VestaPackBuilder.java"
         ]
       },
       "auditDate": "2026-10-10"
@@ -600,8 +600,8 @@
         "current": "Vesta index builder includes revision/minimum revision and external references; launcher-compatible schema fixtures need expansion.",
         "evidence": [],
         "javaEvidence": [
-          "core/src/main/java/com/vesta/sync/manifest/VestaPackBuilder.java",
-          "core/src/main/java/com/vesta/sync/manifest/ServerModpackManifest.java"
+          "server-java:core/src/main/java/com/vesta/sync/manifest/VestaPackBuilder.java",
+          "server-java:core/src/main/java/com/vesta/sync/manifest/ServerModpackManifest.java"
         ]
       }
     },
@@ -623,8 +623,8 @@
         "status": "prototype",
         "current": "Archive builder and configured revisions exist; durable publication transaction, automatic revision increment and scheduled activation remain.",
         "evidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/server/ServerState.java",
-          "core/src/main/java/com/vesta/sync/manifest/VestaPackBuilder.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/server/ServerState.java",
+          "server-java:core/src/main/java/com/vesta/sync/manifest/VestaPackBuilder.java"
         ]
       },
       "auditDate": "2026-10-10"
@@ -649,8 +649,8 @@
         "current": "Capabilities and revision fields exist; complete independent pack policy and minimum-version lifecycle remain.",
         "evidence": [],
         "javaEvidence": [
-          "core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java",
-          "core/src/main/java/com/vesta/sync/manifest/ServerModpackManifest.java"
+          "server-java:core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java",
+          "server-java:core/src/main/java/com/vesta/sync/manifest/ServerModpackManifest.java"
         ]
       }
     },
@@ -763,7 +763,7 @@
         "status": "not_started",
         "current": "HTTP actions are synchronous/ephemeral; no durable operation store or resource-lock recovery found.",
         "evidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
         ]
       },
       "auditDate": "2026-10-10"
@@ -827,7 +827,7 @@
         "current": "Whitelist read adapter exists; temporary maintenance restrictions and crash-safe reconciliation are absent.",
         "evidence": [],
         "javaEvidence": [
-          "core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java"
+          "server-java:core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java"
         ]
       }
     },
@@ -887,7 +887,7 @@
         "current": "Static descriptor/status exists; structured live/offline templates and state-aware game responses are absent.",
         "evidence": [],
         "javaEvidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
         ]
       },
       "reauditNote": "Windows native/operation/configuration/HTTPS checks passed; frontend baseline passed. This is backend coverage, not a live compatibility or completed hosting UI claim. Maintenance overlay remains F31 work."
@@ -917,8 +917,8 @@
         "current": "Online players and unrestricted console exist; separate safe moderation endpoints/history remain.",
         "evidence": [],
         "javaEvidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java",
-          "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java",
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
         ]
       }
     },
@@ -960,8 +960,8 @@
         "current": "Basic process/status/list snapshots exist; TPS adapters, storage-limited retention and redacted bundles remain.",
         "evidence": [],
         "javaEvidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java",
-          "wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java",
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/runtime/PlayersQuery.java"
         ]
       },
       "reauditNote": "Stats follow-up reviewed with Windows focused and HTTPS tests. Policy changes invalidate ETags and require incremental full-window refresh atomically with their audit. Diagnostic bundles, metrics export and resource enforcement remain outstanding; Linux/live-server adapter matrix unverified."
@@ -984,7 +984,7 @@
         "current": "Security TOML editor exists; server.properties/JVM/ban/loader schema-backed edits and apply modes are incomplete.",
         "evidence": [],
         "javaEvidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/config/SecuritySettingsService.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/config/SecuritySettingsService.java"
         ]
       }
     },
@@ -1024,7 +1024,7 @@
         "status": "prototype",
         "current": "Service scripts exist; verified separate game/control identities and sandbox/resource-limit profiles remain.",
         "evidence": [
-          "scripts/install.ps1"
+          "server-java:scripts/install.ps1"
         ]
       }
     },
@@ -1048,10 +1048,10 @@
         "status": "partial",
         "current": "Custom Java/JVM arguments and loader release matrix exist; guided game-runtime provisioning and 1.7+ test matrix remain.",
         "evidence": [
-          "scripts/install.ps1"
+          "server-java:scripts/install.ps1"
         ],
         "javaEvidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/runtime/MinecraftServerProcess.java"
         ]
       }
     },
@@ -1073,10 +1073,10 @@
         "status": "partial",
         "current": "Server descriptor/address utilities exist; end-to-end reachability diagnostics, ACME and reviewed proxy setup remain.",
         "evidence": [
-          "scripts/install.ps1"
+          "server-java:scripts/install.ps1"
         ],
         "javaEvidence": [
-          "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
+          "server-java:wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java"
         ]
       }
     },
@@ -1094,7 +1094,7 @@
         "status": "not_started",
         "current": "Distribution packaging exists, not signed rollback-protected updates and approved activation.",
         "evidence": [
-          "scripts/install.ps1"
+          "server-java:scripts/install.ps1"
         ]
       }
     },
@@ -1115,7 +1115,7 @@
         "status": "partial",
         "current": "Windows/Linux installers, registry/control CLI and service helpers exist; complete secure walkthrough/connector setup remain.",
         "evidence": [
-          "scripts/install.ps1"
+          "server-java:scripts/install.ps1"
         ]
       }
     },
@@ -1280,5 +1280,10 @@
       "command": ".\\gradlew.bat :core:test :wrapper:test --rerun-tasks --offline --console=plain",
       "limitations": "No live Minecraft, connector matrix, production deployment, Linux host, or security penetration verification."
     }
+  },
+  "repositorySplit": {
+    "date": "2026-10-14",
+    "javaRepository": "https://github.com/vesta-project/server-java",
+    "note": "Java wrapper/core/connectors and build/distribution scripts extracted with history. Original Java audit evidence is external; requirement and migration completion status unchanged."
   }
 }

@@ -111,3 +111,10 @@ Verification on Windows: 28 focused metrics tests and 4 HTTPS metrics tests pass
 ## Sleep and MOTD backend checkpoint (2026-10-14)
 
 F32/F33 now have a temporary status/login responder owned by the actual native game owner, durable actor-bound sleep/wake policy and intent, conservative zero-player reconciliation, acknowledged warning countdown, fresh effect guards, port handoff across local/supervised/automatic launch paths, and safe MOTD templates/icons/previews/settings. Pending sleep-runtime settings are excluded from portable recovery export and rejected on import. New backend native/operation/configuration/HTTPS checks pass; precise results are recorded in SERVER_SOFTWARE_STATUS.json. The current launcher typecheck and 459 frontend tests pass. Linux/live Minecraft compatibility, the hosting screens and visual MOTD editor remain incomplete/unverified. F31 maintenance overlay is not implemented by this checkpoint.
+
+
+## 2026-10-14 — Java repository extraction
+
+Java core, wrapper, connectors, Gradle/Stonecutter build, loader matrix and deployment tooling moved with path-filtered history to https://github.com/vesta-project/server-java (private), commit 26cbf7746bc8dbdd0887783cb760b118221fdb35. Wrapper retained pending migration/release gates. Rust remains the product specification and protocol authority. Java source content preserved with explicit LF checkout normalization; old byte hashes retained in migration accounting. Tracked files only were removed; local caches and server runtime data were left in place.
+
+Windows verification: Java 890 passed/1 platform assumption skipped, wrapper installDist built; Java Node protocol 141 passed and snapshot 14 files passed. Rust workspace all-targets check and strict Clippy passed; protocol 85 tests and pack 23 tests passed. Node checker suite 165 passed, including split Java source lookup regression. The actual external Java inventory validates against the immutable pin. Ordinary Rust CI is independent; the manual private-repository parity workflow needs SERVER_JAVA_READ_TOKEN. No loader/live Minecraft or Linux results claimed by this extraction.

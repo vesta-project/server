@@ -1495,7 +1495,7 @@
       "symbol": "FileStore",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "5c4bbdbae31a1862717685120c392ec4164a33b36b6aa6ea642b52b753d4a454",
+      "javaSha256": "97011cc7febb804b7580800e5aaa7fcda8f7e83de3bf1589be50072e7071db89",
       "rustCounterpart": "crates/vesta-control/src/packs/publish.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -1519,14 +1519,15 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "5c4bbdbae31a1862717685120c392ec4164a33b36b6aa6ea642b52b753d4a454"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/VestaSync.java",
       "symbol": "VestaSync",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "191d3634f90e8858b80a4350fa4eec83c88db38124fa0a766d40e96fe3382193",
+      "javaSha256": "a96f6d2d83fba0bac435a6637359cea8e69fedf3faea9a9b18a16ee4ba674b75",
       "rustCounterpart": null,
       "testPaths": [],
       "fixturePaths": [],
@@ -1542,39 +1543,15 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "191d3634f90e8858b80a4350fa4eec83c88db38124fa0a766d40e96fe3382193"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/AccessCapability.java",
       "symbol": "AccessCapability",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "41d55a347424f5c3758d29359ad92a1ca8161641a7ecb42a0d3f690c2fe009b8",
-      "rustCounterpart": null,
-      "testPaths": [
-        "core/src/test/java/com/vesta/sync/auth/CapabilityEngineTest.java"
-      ],
-      "fixturePaths": [],
-      "applicableRequirements": [],
-      "disposition": "pending_mapping",
-      "status": "not_migrated",
-      "rationale": "No direct Rust equivalent: this Java concept belongs to the legacy v1 authentication/authorization model and Rust deliberately uses a different pack-access/identity boundary. Legacy connector/API authority is intentionally not reproduced; see docs/JAVA_NETWORK_SURFACE.md §6.",
-      "gaps": [
-        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
-      ],
-      "rustTests": [],
-      "evidence": [],
-      "results": {
-        "status": "not_run",
-        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
-    },
-    {
-      "javaPath": "core/src/main/java/com/vesta/sync/auth/AccessControlConfig.java",
-      "symbol": "AccessControlConfig",
-      "kind": "production",
-      "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "229ebe16ff891ac5b283239e568fe5fb4df632a38e7c331ec6bfd187adc2e0a9",
+      "javaSha256": "d4c9b0c4d8faa70f8a565fbb034291daa469d2a1ad6126851a4c20187f3e39af",
       "rustCounterpart": null,
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/CapabilityEngineTest.java"
@@ -1593,14 +1570,41 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Legacy authority shortcut: Java pack password grants level 4 by default; do not reproduce as management authority."
+      "preExtractionJavaSha256": "41d55a347424f5c3758d29359ad92a1ca8161641a7ecb42a0d3f690c2fe009b8"
+    },
+    {
+      "javaPath": "core/src/main/java/com/vesta/sync/auth/AccessControlConfig.java",
+      "symbol": "AccessControlConfig",
+      "kind": "production",
+      "boundary": "shared_host_plugin_boundary",
+      "javaSha256": "6bfd82d3de26136654461f2b4e2b0028815e3a2c9118de731d96c25629b6f513",
+      "rustCounterpart": null,
+      "testPaths": [
+        "core/src/test/java/com/vesta/sync/auth/CapabilityEngineTest.java"
+      ],
+      "fixturePaths": [],
+      "applicableRequirements": [],
+      "disposition": "pending_mapping",
+      "status": "not_migrated",
+      "rationale": "No direct Rust equivalent: this Java concept belongs to the legacy v1 authentication/authorization model and Rust deliberately uses a different pack-access/identity boundary. Legacy connector/API authority is intentionally not reproduced; see docs/JAVA_NETWORK_SURFACE.md §6.",
+      "gaps": [
+        "No Rust parity mapping or completed migration evidence is recorded; requirement mapping is pending parent review."
+      ],
+      "rustTests": [],
+      "evidence": [],
+      "results": {
+        "status": "not_run",
+        "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
+      },
+      "notes": "Legacy authority shortcut: Java pack password grants level 4 by default; do not reproduce as management authority.",
+      "preExtractionJavaSha256": "229ebe16ff891ac5b283239e568fe5fb4df632a38e7c331ec6bfd187adc2e0a9"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/AuthGate.java",
       "symbol": "AuthGate, Outcome",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "5ff2e3e43be8dbbc14b7984bfad9b9d2a328d02b7ad945316bd60edada743c05",
+      "javaSha256": "1cbecb65b9a4012ea566fefe150e29b9f824f076dd056d2f41f78beaee722d82",
       "rustCounterpart": null,
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/AuthTest.java"
@@ -1618,14 +1622,15 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "5ff2e3e43be8dbbc14b7984bfad9b9d2a328d02b7ad945316bd60edada743c05"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/BearerTokenPersistence.java",
       "symbol": "BearerTokenPersistence, PersistedToken",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "82f4b0a88ef9507cc12bf40e6a531afb2992eef4f76abb81719a8880e23dd77f",
+      "javaSha256": "131767a1df53b012766573789d6cb822a282d0347cb13f2c12d8e496447289e9",
       "rustCounterpart": "crates/vesta-control/src/pack_access.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/BearerTokenPersistenceTest.java"
@@ -1652,14 +1657,15 @@
       "results": {
         "status": "unverified",
         "summary": "Persistence deliberately not reproduced."
-      }
+      },
+      "preExtractionJavaSha256": "82f4b0a88ef9507cc12bf40e6a531afb2992eef4f76abb81719a8880e23dd77f"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/BearerTokenStore.java",
       "symbol": "BearerTokenStore, Record",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "b9f1d245d0cee79e5147abaa15fd37348225d3af9aa58dc74175390f7ba8914a",
+      "javaSha256": "19cbecf4c1add35d273376498b5289173f003a2deb513bb4e485fdd6e92bcfb4",
       "rustCounterpart": "crates/vesta-control/src/pack_access.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/AuthTest.java",
@@ -1689,14 +1695,15 @@
       "results": {
         "status": "unverified",
         "summary": "Pack session store tests pass; management bearers deliberately absent."
-      }
+      },
+      "preExtractionJavaSha256": "b9f1d245d0cee79e5147abaa15fd37348225d3af9aa58dc74175390f7ba8914a"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/CapabilityEngine.java",
       "symbol": "CapabilityEngine, Action, Decision, AuthContext",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "d8629b9b0ca9c2e73ab2cbe8a3ef70eeaebd873cecaa26881f87473a3a9916f6",
+      "javaSha256": "c039303e0eb29bad16a514bf836ad5d63b2ce5f2ff5a7b3fb6fdfba5fde20a74",
       "rustCounterpart": null,
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/CapabilityEngineTest.java"
@@ -1715,14 +1722,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Legacy authority shortcut: Java maps Minecraft OP level directly to Vesta level; do not reproduce."
+      "notes": "Legacy authority shortcut: Java maps Minecraft OP level directly to Vesta level; do not reproduce.",
+      "preExtractionJavaSha256": "d8629b9b0ca9c2e73ab2cbe8a3ef70eeaebd873cecaa26881f87473a3a9916f6"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/CapabilityLevel.java",
       "symbol": "CapabilityLevel",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "5c753e898dd433da679ad45d835510c9a99705aa8df81fb9b2d1f60cec5985a0",
+      "javaSha256": "e9c2f5aa66799727a5d10558dbbaa13a70c97c758223fba29f8a8dd58d93d25d",
       "rustCounterpart": null,
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/CapabilityEngineTest.java"
@@ -1741,14 +1749,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Legacy authority shortcut: numeric OP-derived Vesta levels are not Rust management authority."
+      "notes": "Legacy authority shortcut: numeric OP-derived Vesta levels are not Rust management authority.",
+      "preExtractionJavaSha256": "5c753e898dd433da679ad45d835510c9a99705aa8df81fb9b2d1f60cec5985a0"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/LinkCodeService.java",
       "symbol": "LinkCodeService, PendingLink",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "2699e09fa95e4333e790c708d67cb5070be6b45c8f27a10f63a43e537491f871",
+      "javaSha256": "8e6fa1c29fe9a4e984dc453408613368db354c4076164075bfaae8727577c650",
       "rustCounterpart": null,
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/LinkCodeServiceTest.java"
@@ -1767,7 +1776,8 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Legacy authority shortcut: connector possession can mint link codes; do not reproduce."
+      "notes": "Legacy authority shortcut: connector possession can mint link codes; do not reproduce.",
+      "preExtractionJavaSha256": "2699e09fa95e4333e790c708d67cb5070be6b45c8f27a10f63a43e537491f871"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/MinecraftSessionChallengeService.java",
@@ -1823,7 +1833,7 @@
       "symbol": "MsaProfileVerifier, Profile",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "fec6d72f41766260ca66bf21e745b54a271af4e63d2c621a8049daa7b6bdac44",
+      "javaSha256": "fb35ac9674cb93fbe0df9c0100b834bf926ee52e757d017973935434435c159c",
       "rustCounterpart": "crates/vesta-control/src/identity/minecraft/provider.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -1863,14 +1873,15 @@
       "results": {
         "status": "passed",
         "summary": "2026-10-08 Windows 11 / Rust 1.96.0: executed bounded unit/reader/configuration/compile-fail regressions and fresh full workspace verification passed. This row is migrated, not verified; real transport and product composition remain gaps."
-      }
+      },
+      "preExtractionJavaSha256": "fec6d72f41766260ca66bf21e745b54a271af4e63d2c621a8049daa7b6bdac44"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/OpsJsonReader.java",
       "symbol": "OpsJsonReader",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "f102a6f3f0baf8599055f8981d5239316b57f7029ba4be780e5b74619702d4f8",
+      "javaSha256": "279064762e1fd9af19c7b463ca9e2e54f5c1035da3ccd7771afe177fd88cd60d",
       "rustCounterpart": null,
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/CapabilityEngineTest.java"
@@ -1889,14 +1900,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Legacy authority shortcut: live ops.json status must not grant Rust management authority."
+      "notes": "Legacy authority shortcut: live ops.json status must not grant Rust management authority.",
+      "preExtractionJavaSha256": "f102a6f3f0baf8599055f8981d5239316b57f7029ba4be780e5b74619702d4f8"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/OpsLevelProvider.java",
       "symbol": "OpsLevelProvider, None",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "b19bb2bdf47d7d39e621901ce3477f65e6a1e9157e1c8ee4b8af378049bed96b",
+      "javaSha256": "e772096972128e38a369dee1e734371592040202666ecdb15fd3138b49a99d09",
       "rustCounterpart": null,
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/CapabilityEngineTest.java"
@@ -1915,7 +1927,8 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Legacy authority shortcut: Minecraft OP status must not grant Rust management authority."
+      "notes": "Legacy authority shortcut: Minecraft OP status must not grant Rust management authority.",
+      "preExtractionJavaSha256": "b19bb2bdf47d7d39e621901ce3477f65e6a1e9157e1c8ee4b8af378049bed96b"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/RealtimeTicketService.java",
@@ -1957,7 +1970,7 @@
       "symbol": "SecurityCapabilities",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "fab1d0ce04d7e15d7011234484adc6cd30479942f06e70f6160af421b29d67f6",
+      "javaSha256": "4b6840f150669d78f42f95b8611ce2b513eb1288c4b9dca28d77243c906197f2",
       "rustCounterpart": null,
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/CapabilityEngineTest.java"
@@ -1975,14 +1988,15 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "fab1d0ce04d7e15d7011234484adc6cd30479942f06e70f6160af421b29d67f6"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/SecurityMode.java",
       "symbol": "SecurityMode",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "6daa332a9548156b7ba4dd2f709502a66e342d81224d974b702c7f9491940ebc",
+      "javaSha256": "ef0f36feafbdef949a451878f542837a785b0d9a8608fad960ddbc39712164d9",
       "rustCounterpart": null,
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/AuthTest.java",
@@ -2002,14 +2016,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Legacy authority shortcut: open mode authenticates everyone; Rust pack access is not management authority."
+      "notes": "Legacy authority shortcut: open mode authenticates everyone; Rust pack access is not management authority.",
+      "preExtractionJavaSha256": "6daa332a9548156b7ba4dd2f709502a66e342d81224d974b702c7f9491940ebc"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/auth/TokenService.java",
       "symbol": "TokenService",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "647f4dea3c02d99a722ec95291a690a4122e5b3d95b3eb3359edaf296bfb8f26",
+      "javaSha256": "485bee6ce0d95aa2fe95fa7239b3a6ae28309cb4491e379f5175230d8da04517",
       "rustCounterpart": null,
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/AuthTest.java",
@@ -2029,14 +2044,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Legacy authority shortcut: operator bearer possession is not Rust management authority."
+      "notes": "Legacy authority shortcut: operator bearer possession is not Rust management authority.",
+      "preExtractionJavaSha256": "647f4dea3c02d99a722ec95291a690a4122e5b3d95b3eb3359edaf296bfb8f26"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/hashing/FileHasher.java",
       "symbol": "FileHasher",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "4373bc5bd77c0ca9708027e06beb4e999c8260ce4e226d5d677dbf78921e6a17",
+      "javaSha256": "471f4a6938f4d183a8872fc01d89c0f5048e1f334dd12fff5ab48675b8adce8c",
       "rustCounterpart": "crates/vesta-control/src/files/mod.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/hashing/FileHasherTest.java"
@@ -2069,14 +2085,15 @@
       "results": {
         "status": "unverified",
         "summary": "Partial host-side SHA-256 behavior mapped; general Java hashing utility and connector mapping remain unresolved. Rust tests were inspected but not executed."
-      }
+      },
+      "preExtractionJavaSha256": "4373bc5bd77c0ca9708027e06beb4e999c8260ce4e226d5d677dbf78921e6a17"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/ipc/ControlCodec.java",
       "symbol": "ControlCodec",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "8afe86117eedb9053dffd35d2e128341330ab8c34d51125ed79fb430065de8c9",
+      "javaSha256": "ccf59dd30f548c29c5c1bfb019c8a7c8054aea80759face4421ff342fd563431",
       "rustCounterpart": null,
       "testPaths": [
         "core/src/test/java/com/vesta/sync/ipc/ControlCodecTest.java"
@@ -2095,14 +2112,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Control IPC is intentionally not implemented. See the Control IPC disposition below; do not add a Rust codec registry or endpoint."
+      "notes": "Control IPC is intentionally not implemented. See the Control IPC disposition below; do not add a Rust codec registry or endpoint.",
+      "preExtractionJavaSha256": "8afe86117eedb9053dffd35d2e128341330ab8c34d51125ed79fb430065de8c9"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/manifest/FileSource.java",
       "symbol": "FileSource",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "6d81c2e3173da747d5c48b8b6e39155832a7dc0670029585256da96bf2194826",
+      "javaSha256": "eb058d6fd0d6f52bce1a7b9931793b10f356d95892012675f150d54c4bf94661",
       "rustCounterpart": "crates/vesta-protocol/src/pack/catalogue.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/ManifestBuilderTest.java",
@@ -2131,14 +2149,15 @@
       "results": {
         "status": "unverified",
         "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
-      }
+      },
+      "preExtractionJavaSha256": "6d81c2e3173da747d5c48b8b6e39155832a7dc0670029585256da96bf2194826"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/manifest/KnownSourceRegistry.java",
       "symbol": "KnownSourceRegistry",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "a4058a2782f9372324116832f6b732b7ad796bc9f1a31489b43bd93676b62b9c",
+      "javaSha256": "b7f10d48dbbceeec5a209cc87fb8a859d2268d184ddc6cf6785b8c14cdf76319",
       "rustCounterpart": "crates/vesta-protocol/src/pack/sources.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/ManifestBuilderTest.java",
@@ -2166,14 +2185,15 @@
       "results": {
         "status": "unverified",
         "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
-      }
+      },
+      "preExtractionJavaSha256": "a4058a2782f9372324116832f6b732b7ad796bc9f1a31489b43bd93676b62b9c"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/manifest/LocalArchivePack.java",
       "symbol": "LocalArchivePack",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "0067d8aca31507123bcb378816602804aaf1ad94f767dde6b2cafb2ee62e810d",
+      "javaSha256": "097e1475a4a026fd331bfb90412ad19cd62987ab479a161f5fd98c2724d810bb",
       "rustCounterpart": "crates/vesta-control/src/packs/publish.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/LocalArchivePackTest.java",
@@ -2204,14 +2224,15 @@
       "results": {
         "status": "unverified",
         "summary": "Archive pinning and publication are tested; archive-mode manifest/catalogue/serving, family accounting and final review remain unfinished."
-      }
+      },
+      "preExtractionJavaSha256": "0067d8aca31507123bcb378816602804aaf1ad94f767dde6b2cafb2ee62e810d"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/manifest/ManifestBuilder.java",
       "symbol": "ManifestBuilder, ScanResult",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "252034f502b3904d216746b9cb734db4f9962f9970b7d60aa89314b693d77759",
+      "javaSha256": "68726c8e04dfdaf09af4520c3c53d423a55567fe71b7860195eb924e3775cb2c",
       "rustCounterpart": "crates/vesta-control/src/packs/mod.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/ManifestBuilderTest.java"
@@ -2242,14 +2263,15 @@
       "results": {
         "status": "unverified",
         "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
-      }
+      },
+      "preExtractionJavaSha256": "252034f502b3904d216746b9cb734db4f9962f9970b7d60aa89314b693d77759"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/manifest/ManifestFile.java",
       "symbol": "ManifestFile",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "ac788e8b5b40e55655e4dcc9ce74996bd2159f6175895e6de9000c9d0e7e5145",
+      "javaSha256": "b8ffe25e83e80c62626070fc0af38f62d79027540a41756daf2ac11c63f99197",
       "rustCounterpart": "crates/vesta-protocol/src/pack/catalogue.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/VestaPackBuilderTest.java",
@@ -2276,14 +2298,15 @@
       "results": {
         "status": "unverified",
         "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
-      }
+      },
+      "preExtractionJavaSha256": "ac788e8b5b40e55655e4dcc9ce74996bd2159f6175895e6de9000c9d0e7e5145"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/manifest/ModloaderInfo.java",
       "symbol": "ModloaderInfo",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "80b043fd747c0651e6aca1345f2cf2a01efeb5444beeb9f2dee81abfe9fd3a21",
+      "javaSha256": "ce6c4e38b84e6e57655fee73391c53e232ab021e5720750bd395194e4d5a8cbf",
       "rustCounterpart": "crates/vesta-protocol/src/pack/model.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/LocalArchivePackTest.java",
@@ -2313,14 +2336,15 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "80b043fd747c0651e6aca1345f2cf2a01efeb5444beeb9f2dee81abfe9fd3a21"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/manifest/ModpackMode.java",
       "symbol": "ModpackMode",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "bdb0e62c7dc2627ec1cddc1751853cce976c6cde1621c4af0a46d278da89b777",
+      "javaSha256": "b34d9e688f967daf082866fc4c77c195b8b4cb745f1608896175fef19233106d",
       "rustCounterpart": "crates/vesta-protocol/src/pack/catalogue.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/LocalArchivePackTest.java",
@@ -2347,14 +2371,15 @@
       "results": {
         "status": "unverified",
         "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
-      }
+      },
+      "preExtractionJavaSha256": "bdb0e62c7dc2627ec1cddc1751853cce976c6cde1621c4af0a46d278da89b777"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/manifest/ModpackState.java",
       "symbol": "ModpackState",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "a715c5f1e61ce4699882d32af43827b5a1936810d167e0d3354c2780f289c026",
+      "javaSha256": "2a6c46a9971d8bee074eeb45c5ade2df6c3a13cec722899de512b8bb8e59fcbd",
       "rustCounterpart": "crates/vesta-control/src/packs/releases.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/LocalArchivePackTest.java",
@@ -2409,14 +2434,15 @@
       "results": {
         "status": "unverified",
         "summary": "Release ledger tests pass; archive-mode manifest and serving remain unfinished."
-      }
+      },
+      "preExtractionJavaSha256": "a715c5f1e61ce4699882d32af43827b5a1936810d167e0d3354c2780f289c026"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/manifest/PackSource.java",
       "symbol": "PackSource",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "4919542050ac81436963e35e0cce467ad3b15028db49a62d0997ff001f752696",
+      "javaSha256": "e6d188761cbf0dcf87ec45952910c536912f97caf2256cb9e95ecc86f99d2016",
       "rustCounterpart": "crates/vesta-control/src/config/mod.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -2441,14 +2467,15 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "4919542050ac81436963e35e0cce467ad3b15028db49a62d0997ff001f752696"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/manifest/PrivateFileEntry.java",
       "symbol": "PrivateFileEntry",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "b4d3da0f636d02ec9738901ff008ea36658372d154839405b615e86af6e95dbb",
+      "javaSha256": "dad8a17e921b612d6b9f17dcfeed163eec4851493e0c9ac24ce74f0b1d2dcbcb",
       "rustCounterpart": "crates/vesta-control/src/packs/mod.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -2464,14 +2491,15 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "b4d3da0f636d02ec9738901ff008ea36658372d154839405b615e86af6e95dbb"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/manifest/ServerInfo.java",
       "symbol": "ServerInfo",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "8ec977b0b27086a55e4a5ae3406f635a0d29c29a11364c01c5365a1e78010ff3",
+      "javaSha256": "44ff1be6d2e624a55f29e5b2e924118a3423cc4d9dd332c4fbc91ff2e27c789a",
       "rustCounterpart": "crates/vesta-protocol/src/pack/join.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -2487,14 +2515,15 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "8ec977b0b27086a55e4a5ae3406f635a0d29c29a11364c01c5365a1e78010ff3"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/manifest/ServerModpackManifest.java",
       "symbol": "ServerModpackManifest",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "7aa75d7338e63e9a9dff1bd85aa31e2816afc7ce4cbfc9aadef74602a9ec10cc",
+      "javaSha256": "543f67606e08ec0e557096afed4deaab1b094ff5d7184c813fdcb3f4a37c0282",
       "rustCounterpart": "crates/vesta-protocol/src/pack/catalogue.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/LocalArchivePackTest.java",
@@ -2523,14 +2552,15 @@
       "results": {
         "status": "unverified",
         "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
-      }
+      },
+      "preExtractionJavaSha256": "7aa75d7338e63e9a9dff1bd85aa31e2816afc7ce4cbfc9aadef74602a9ec10cc"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/manifest/SyncAction.java",
       "symbol": "SyncAction",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "88d11d85451716a02ded185f17eba6b6511722b81ddc176248bb8cba0acde8e6",
+      "javaSha256": "04beec9382fe61b74da90f32f686b957ed6d0bcd95edada9370c31def5517f01",
       "rustCounterpart": "crates/vesta-protocol/src/pack/sync.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -2554,14 +2584,15 @@
       "results": {
         "status": "unverified",
         "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
-      }
+      },
+      "preExtractionJavaSha256": "88d11d85451716a02ded185f17eba6b6511722b81ddc176248bb8cba0acde8e6"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/manifest/UnresolvedPolicy.java",
       "symbol": "UnresolvedPolicy",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "ae30756fe49a77d1450d04d9b1078da78556b95f1857969c025edbf4137906d8",
+      "javaSha256": "4b7bd8d5adfb9d82aa8cbf920a29d8293759a89e54d2751bf12001b3767500fc",
       "rustCounterpart": "crates/vesta-control/src/packs/mod.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/ManifestBuilderTest.java",
@@ -2593,14 +2624,15 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "ae30756fe49a77d1450d04d9b1078da78556b95f1857969c025edbf4137906d8"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/manifest/VestaPackBuilder.java",
       "symbol": "VestaPackBuilder, Index, IndexFile, Env, Source",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "7523dac297429dd3f0c06f0a42959e8a09fb23a6e335e18448b3440db5ef8090",
+      "javaSha256": "eede2d416b2b25e18b160969a571a550905badd246d570a818fc26add89238b7",
       "rustCounterpart": "crates/vesta-control/src/packs/build.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/VestaPackBuilderTest.java",
@@ -2637,14 +2669,15 @@
       "results": {
         "status": "unverified",
         "summary": "Scoped hybrid construction and protected content-addressed publication are implemented and tested; catalogue/serving behavior, whole-family accounting and final review remain unresolved."
-      }
+      },
+      "preExtractionJavaSha256": "7523dac297429dd3f0c06f0a42959e8a09fb23a6e335e18448b3440db5ef8090"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/perm/PermissionChecker.java",
       "symbol": "PermissionChecker, Result, Unavailable, AllowAll, DenyAll",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "79619f1c85942b43bc00ab6d0a1476454fe0ba9c2834b08020c76688b68ba078",
+      "javaSha256": "31d139ae7af77c556d1fe5e0ce0527ea171ff42483fa4d12bade6dce6acd4830",
       "rustCounterpart": null,
       "testPaths": [],
       "fixturePaths": [],
@@ -2661,14 +2694,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Legacy authority shortcut: connector permission-check ALLOW responses must not grant Rust management authority."
+      "notes": "Legacy authority shortcut: connector permission-check ALLOW responses must not grant Rust management authority.",
+      "preExtractionJavaSha256": "79619f1c85942b43bc00ab6d0a1476454fe0ba9c2834b08020c76688b68ba078"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/Disconnect.java",
       "symbol": "Disconnect",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "439f8ea2dc51a7edd769ab14aff8627497faffb2f45e5701e63ff1989a9ba3e2",
+      "javaSha256": "6fcc4f6c352dc917ee8b553e4fd7bb0fc1239f75318d4a425991e0f727c739e3",
       "rustCounterpart": "crates/vesta-transport/src/realtime.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
@@ -2696,14 +2730,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented.",
+      "preExtractionJavaSha256": "439f8ea2dc51a7edd769ab14aff8627497faffb2f45e5701e63ff1989a9ba3e2"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/FileRequest.java",
       "symbol": "FileRequest",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "7b5c3a527fb07c739428c8788a24d70294596f2a73ed2f122a7fc680396e80e9",
+      "javaSha256": "bcdbb0c79583eb41fadba6e75f4d1e2d97b64995e7dea42dd64ccf47e8903caf",
       "rustCounterpart": "crates/vesta-transport/src/routes.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
@@ -2731,14 +2766,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented.",
+      "preExtractionJavaSha256": "7b5c3a527fb07c739428c8788a24d70294596f2a73ed2f122a7fc680396e80e9"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/FileResponse.java",
       "symbol": "FileResponse",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "b986e4079e015631a0e851ad89054c2ddc0d9f01dcea40d6b67d95dd876fe370",
+      "javaSha256": "c3610468408228984765f4cbc7f1a637a5d46ee7cf8611d48c1801cc8372bf57",
       "rustCounterpart": "crates/vesta-transport/src/lib.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
@@ -2766,14 +2802,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented.",
+      "preExtractionJavaSha256": "b986e4079e015631a0e851ad89054c2ddc0d9f01dcea40d6b67d95dd876fe370"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/Handshake.java",
       "symbol": "Handshake",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "f95085a9dbc0b770ae39773888db529d8ef0e40334305706534d6bca1b55aa69",
+      "javaSha256": "068a9f453542e8d6e93ed51a78d3db81a8cb8551298ef0931ae5bacc9201a49f",
       "rustCounterpart": "crates/vesta-transport/src/routes.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
@@ -2801,14 +2838,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented.",
+      "preExtractionJavaSha256": "f95085a9dbc0b770ae39773888db529d8ef0e40334305706534d6bca1b55aa69"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/HandshakeResponse.java",
       "symbol": "HandshakeResponse",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "d1c869d1c2e2e83a09c9aa1c6bd929fa62cf46cdd64005cfb9222722968623f1",
+      "javaSha256": "14f69c4b90d530094a7c52f413fb141f050c9c71e3ece17931ba72b460b05c30",
       "rustCounterpart": "crates/vesta-transport/src/routes.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
@@ -2836,14 +2874,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented.",
+      "preExtractionJavaSha256": "d1c869d1c2e2e83a09c9aa1c6bd929fa62cf46cdd64005cfb9222722968623f1"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/Heartbeat.java",
       "symbol": "Heartbeat",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "626d3d6410348875b702b33d610eeb6da8203f5ac000f5ed33c36956c599d093",
+      "javaSha256": "901bd1af3389d4810aae0869ad9199008dd036861d8f69ec7bdffa4e2fbf8137",
       "rustCounterpart": "crates/vesta-transport/src/realtime.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
@@ -2871,14 +2910,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented.",
+      "preExtractionJavaSha256": "626d3d6410348875b702b33d610eeb6da8203f5ac000f5ed33c36956c599d093"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/PushUpdateAvailable.java",
       "symbol": "PushUpdateAvailable",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "1e839e6921d04271a35540c8f7fd4e60627075a49f32e61175d0bb6c05caf65f",
+      "javaSha256": "b33bb92949e2b29ab4f79eb0e82cb267999800eac9be172f64101295b63d8e2b",
       "rustCounterpart": "crates/vesta-transport/src/realtime.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
@@ -2906,14 +2946,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented.",
+      "preExtractionJavaSha256": "1e839e6921d04271a35540c8f7fd4e60627075a49f32e61175d0bb6c05caf65f"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/SyncCheck.java",
       "symbol": "SyncCheck",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "6280192dd34762b527232e862b847931d7b912d82c7f0b03d2de538e089b160c",
+      "javaSha256": "568c60da37de8d9403eb65cf06c012e4c9c26f248cc2a1556f20684e9148c351",
       "rustCounterpart": "crates/vesta-protocol/src/pack/sync.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
@@ -2939,14 +2980,15 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "6280192dd34762b527232e862b847931d7b912d82c7f0b03d2de538e089b160c"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/SyncCheckResponse.java",
       "symbol": "SyncCheckResponse",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "f7f7d038972bd67b3fc338c1119a294e77a80492d8696bdc177fb492702cd90d",
+      "javaSha256": "dd2788cb7b34ffbb7641a77af35de7c6fae82a383fcf222607cb3e6ce3951776",
       "rustCounterpart": "crates/vesta-protocol/src/pack/sync.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
@@ -2972,14 +3014,15 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "f7f7d038972bd67b3fc338c1119a294e77a80492d8696bdc177fb492702cd90d"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/SyncComplete.java",
       "symbol": "SyncComplete",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "5d016155124a18e72ba35fbc93613e818091523c01691996e8daf7df432e8bb3",
+      "javaSha256": "8d7d7b0e6cd9978fc2ace99bc1fe1ed3a521fd50029de8ae28cc0b1baed1b43c",
       "rustCounterpart": null,
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
@@ -2998,14 +3041,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "No Rust server acknowledgement endpoint is provided; the client persists its installed revision and rechecks pack status. See the TCP sync disposition below."
+      "notes": "No Rust server acknowledgement endpoint is provided; the client persists its installed revision and rechecks pack status. See the TCP sync disposition below.",
+      "preExtractionJavaSha256": "5d016155124a18e72ba35fbc93613e818091523c01691996e8daf7df432e8bb3"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/protocol/TcpMessageCodec.java",
       "symbol": "TcpMessageCodec",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "0e4c5716166b01099f29dc19562cb78795b2604a8fdce8b9d276e84a9afd2032",
+      "javaSha256": "cc14fb1a6459cd6dc494e4c7f158c33185928faddb9bb9c3774c1ef627ae7242",
       "rustCounterpart": "crates/vesta-protocol/src/framing.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
@@ -3031,14 +3075,15 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "0e4c5716166b01099f29dc19562cb78795b2604a8fdce8b9d276e84a9afd2032"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/sync/ManifestDiffer.java",
       "symbol": "ManifestDiffer",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "43f0f05db778b28a6cb496a5f193dabe5679686cfde141abd2ba6242a6c957fc",
+      "javaSha256": "9a8458d5cce938c0c735fea52a7b9c6e736054a7b9201b5ed8e181bfade04b68",
       "rustCounterpart": "crates/vesta-protocol/src/pack/sync.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/sync/ManifestDifferTest.java"
@@ -3064,14 +3109,15 @@
       "results": {
         "status": "unverified",
         "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
-      }
+      },
+      "preExtractionJavaSha256": "43f0f05db778b28a6cb496a5f193dabe5679686cfde141abd2ba6242a6c957fc"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/sync/SyncCheckResult.java",
       "symbol": "SyncCheckResult",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "11b79f7af003f5df60868e2d5916ff37f89d96bb5fd3903c2f6482659422a9c8",
+      "javaSha256": "fe34bb1ffce5ed7a70b32b5ed9f57fdec59ca3074688cb48c27381cb5a453e4c",
       "rustCounterpart": "crates/vesta-protocol/src/pack/sync.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/sync/SyncCheckServiceTest.java"
@@ -3097,14 +3143,15 @@
       "results": {
         "status": "unverified",
         "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
-      }
+      },
+      "preExtractionJavaSha256": "11b79f7af003f5df60868e2d5916ff37f89d96bb5fd3903c2f6482659422a9c8"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/sync/SyncCheckService.java",
       "symbol": "SyncCheckService",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "3e0de624960253a2bebaad5621b14b8f4a85e4de9b755ae27f6c27a986fb4abb",
+      "javaSha256": "a151c2f3babf4f305b8685261b3019c93fdcb16908b4e3f75bf6f8de8a70e74a",
       "rustCounterpart": "crates/vesta-protocol/src/pack/sync.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/sync/SyncCheckServiceTest.java"
@@ -3130,14 +3177,15 @@
       "results": {
         "status": "unverified",
         "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
-      }
+      },
+      "preExtractionJavaSha256": "3e0de624960253a2bebaad5621b14b8f4a85e4de9b755ae27f6c27a986fb4abb"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/util/PathSanitizer.java",
       "symbol": "PathSanitizer",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "22fad30504e24b91328ba47196612f749b422de9d4fb553ca952f37d8c45b3d1",
+      "javaSha256": "08982ad31f3cd98bdd5bb02798bbae64cc7f9abd2685ecc4e7c08866910a3cdc",
       "rustCounterpart": "crates/vesta-control/src/files/path.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/util/PathSanitizerTest.java"
@@ -3163,14 +3211,15 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "22fad30504e24b91328ba47196612f749b422de9d4fb553ca952f37d8c45b3d1"
     },
     {
       "javaPath": "core/src/main/java/com/vesta/sync/util/PublicEndpoint.java",
       "symbol": "PublicEndpoint",
       "kind": "production",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "04566549b314c0d9cbf827c71450d2a872bfbb41658c0387d3298fd2be6b7291",
+      "javaSha256": "7d9d2d2f9d4f3669d62d8eb765b62a18e3606e597426ef0eb46574ed235eeeee",
       "rustCounterpart": null,
       "testPaths": [
         "core/src/test/java/com/vesta/sync/util/PublicEndpointTest.java"
@@ -3188,7 +3237,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "04566549b314c0d9cbf827c71450d2a872bfbb41658c0387d3298fd2be6b7291"
     },
     {
       "javaPath": "core/src/test/java/com/vesta/sync/auth/AuthTest.java",
@@ -3196,7 +3246,7 @@
       "testFamily": "com.vesta.sync.auth:Auth",
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "211ab0a358a367b9a6adda29c057b241685665d816e8907a455e187914f12e3e",
+      "javaSha256": "7f95542a27d48cfc44853a0bdadc5dbeb71f42aacefce386e787a829ae8f4a2b",
       "rustCounterpart": null,
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/AuthTest.java"
@@ -3217,7 +3267,8 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Legacy authority assertions for open-mode authentication and bearer access are not reproduced as Rust management authority."
+      "notes": "Legacy authority assertions for open-mode authentication and bearer access are not reproduced as Rust management authority.",
+      "preExtractionJavaSha256": "211ab0a358a367b9a6adda29c057b241685665d816e8907a455e187914f12e3e"
     },
     {
       "javaPath": "core/src/test/java/com/vesta/sync/auth/BearerTokenPersistenceTest.java",
@@ -3225,7 +3276,7 @@
       "testFamily": "com.vesta.sync.auth:BearerTokenPersistence",
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "f9c499cb8c7c14aed87224a6b6f42599dae5882e4fa5597bee38bd3927fd4b81",
+      "javaSha256": "7a4ee3550b2dec8842f6a2b003f80680a680fffd7c66775d97c26ca010ae923e",
       "rustCounterpart": "crates/vesta-control/src/pack_access.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/BearerTokenPersistenceTest.java"
@@ -3254,7 +3305,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "f9c499cb8c7c14aed87224a6b6f42599dae5882e4fa5597bee38bd3927fd4b81"
     },
     {
       "javaPath": "core/src/test/java/com/vesta/sync/auth/CapabilityEngineTest.java",
@@ -3262,7 +3314,7 @@
       "testFamily": "com.vesta.sync.auth:CapabilityEngine",
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "5b52261bcedb40e72a0e56282b40865aa8df16aaac7d60bb21b51aa2274d924d",
+      "javaSha256": "0eb2b7792dbb9398aaea52f641e5fe25d0d5c9acaee219dde4ce56a876ea8cbc",
       "rustCounterpart": null,
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/CapabilityEngineTest.java"
@@ -3281,7 +3333,8 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Legacy authority assertions for direct Minecraft OP-to-Vesta-level mapping are intentionally not reproduced."
+      "notes": "Legacy authority assertions for direct Minecraft OP-to-Vesta-level mapping are intentionally not reproduced.",
+      "preExtractionJavaSha256": "5b52261bcedb40e72a0e56282b40865aa8df16aaac7d60bb21b51aa2274d924d"
     },
     {
       "javaPath": "core/src/test/java/com/vesta/sync/auth/LinkCodeServiceTest.java",
@@ -3289,7 +3342,7 @@
       "testFamily": "com.vesta.sync.auth:LinkCodeService",
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "02dd0f05ff8ff0d5ab7d97b66d08f9bf205b5c70970d4ddf66a5d1384f4132c3",
+      "javaSha256": "3347fe5e3611978a43e30fcc7876ca530e903fd3fee8e56e394ee8c857b43088",
       "rustCounterpart": null,
       "testPaths": [
         "core/src/test/java/com/vesta/sync/auth/LinkCodeServiceTest.java"
@@ -3308,7 +3361,8 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Legacy authority assertion for connector-issued redeemable link codes is intentionally not reproduced."
+      "notes": "Legacy authority assertion for connector-issued redeemable link codes is intentionally not reproduced.",
+      "preExtractionJavaSha256": "02dd0f05ff8ff0d5ab7d97b66d08f9bf205b5c70970d4ddf66a5d1384f4132c3"
     },
     {
       "javaPath": "core/src/test/java/com/vesta/sync/auth/MinecraftSessionChallengeServiceTest.java",
@@ -3449,7 +3503,7 @@
       "testFamily": "com.vesta.sync.hashing:FileHasher",
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "46262396f1953b15ef74e9abd84a7c30f090daeee00fc1f704261118361714df",
+      "javaSha256": "a5084efe9dfd456333d821e5ae72826a83ebf914ad33c483be5e9b72cf5ca02c",
       "rustCounterpart": "crates/vesta-control/src/files/pack_root.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/hashing/FileHasherTest.java"
@@ -3475,7 +3529,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "46262396f1953b15ef74e9abd84a7c30f090daeee00fc1f704261118361714df"
     },
     {
       "javaPath": "core/src/test/java/com/vesta/sync/ipc/ControlCodecTest.java",
@@ -3483,7 +3538,7 @@
       "testFamily": "com.vesta.sync.ipc:ControlCodec",
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "1d7ed6ce9ac8bc4789389f7aa7e8d54672b9a9652891e065dd4c9c133a694134",
+      "javaSha256": "43df4d1f33717c0aa14fe1a4df412feaff021eefc5b501b9f23dd40c277fb8ee",
       "rustCounterpart": null,
       "testPaths": [
         "core/src/test/java/com/vesta/sync/ipc/ControlCodecTest.java"
@@ -3502,7 +3557,8 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "No codec replacement test applies because Rust ControlCodec is intentionally omitted. See the Control IPC disposition below."
+      "notes": "No codec replacement test applies because Rust ControlCodec is intentionally omitted. See the Control IPC disposition below.",
+      "preExtractionJavaSha256": "1d7ed6ce9ac8bc4789389f7aa7e8d54672b9a9652891e065dd4c9c133a694134"
     },
     {
       "javaPath": "core/src/test/java/com/vesta/sync/manifest/LocalArchivePackTest.java",
@@ -3510,7 +3566,7 @@
       "testFamily": "com.vesta.sync.manifest:LocalArchivePack",
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "9156a2df24063262d3810fdf9c2c8a2c348a08121ef0ba5b8c6118497d12a703",
+      "javaSha256": "37576aa4baf1cc60bdae8a83b044cd66a66d539c11c96fe1fdfde8ae92cabff6",
       "rustCounterpart": "crates/vesta-control/src/packs/mod.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/LocalArchivePackTest.java"
@@ -3536,7 +3592,8 @@
       "results": {
         "status": "unverified",
         "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
-      }
+      },
+      "preExtractionJavaSha256": "9156a2df24063262d3810fdf9c2c8a2c348a08121ef0ba5b8c6118497d12a703"
     },
     {
       "javaPath": "core/src/test/java/com/vesta/sync/manifest/ManifestBuilderTest.java",
@@ -3544,7 +3601,7 @@
       "testFamily": "com.vesta.sync.manifest:ManifestBuilder",
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "a431215d0549e0992e74ea262c7247a7c45ca1ae230f2687061a782af10af593",
+      "javaSha256": "d10f3e68d02a9b2fadcc8a2aa5a8eb4a615467d75b5542bd99c0f2d0c80f2c25",
       "rustCounterpart": "crates/vesta-control/src/packs/mod.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/ManifestBuilderTest.java"
@@ -3570,7 +3627,8 @@
       "results": {
         "status": "unverified",
         "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
-      }
+      },
+      "preExtractionJavaSha256": "a431215d0549e0992e74ea262c7247a7c45ca1ae230f2687061a782af10af593"
     },
     {
       "javaPath": "core/src/test/java/com/vesta/sync/manifest/ModpackStatePlatformTest.java",
@@ -3612,7 +3670,7 @@
       "testFamily": "com.vesta.sync.manifest:VestaPackBuilder",
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "73c79a0ba2cc702bde22891eb9fd40a0cbcafe41ebb1549fb5748f9a5a073de5",
+      "javaSha256": "25fb28949d799f67d80c7ca8f52169aca3df6a39b27e1e55aa546ac19c1098f3",
       "rustCounterpart": "crates/vesta-control/src/packs/build_tests.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/manifest/VestaPackBuilderTest.java"
@@ -3645,7 +3703,8 @@
       "results": {
         "status": "unverified",
         "summary": "Hybrid/index and published regular-file assertions are tested; complete family verification and final review remain unfinished."
-      }
+      },
+      "preExtractionJavaSha256": "73c79a0ba2cc702bde22891eb9fd40a0cbcafe41ebb1549fb5748f9a5a073de5"
     },
     {
       "javaPath": "core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java",
@@ -3691,7 +3750,7 @@
       "testFamily": "com.vesta.sync.protocol:TcpMessageCodec",
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "7d818d128eb610644353e7e6dcc305312ed0410deafbe72613a8a145cde70502",
+      "javaSha256": "da58e509d534a9a0eee5688fb911355a30267d2a38b6b65e0419ca023fbe88d0",
       "rustCounterpart": "crates/vesta-protocol/src/framing_tests.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/protocol/TcpMessageCodecTest.java"
@@ -3717,7 +3776,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "7d818d128eb610644353e7e6dcc305312ed0410deafbe72613a8a145cde70502"
     },
     {
       "javaPath": "core/src/test/java/com/vesta/sync/sync/ManifestDifferTest.java",
@@ -3725,7 +3785,7 @@
       "testFamily": "com.vesta.sync.sync:ManifestDiffer",
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "329fdf2f976e5506e75cb314d7731b384a1c39a5da5e1c14a3cc3afee2c92194",
+      "javaSha256": "83f045f063a77f608941ef8336472cc10caa761dd8991c41f0ce4732685f4a3f",
       "rustCounterpart": "crates/vesta-protocol/src/pack/sync.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/sync/ManifestDifferTest.java"
@@ -3751,7 +3811,8 @@
       "results": {
         "status": "unverified",
         "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
-      }
+      },
+      "preExtractionJavaSha256": "329fdf2f976e5506e75cb314d7731b384a1c39a5da5e1c14a3cc3afee2c92194"
     },
     {
       "javaPath": "core/src/test/java/com/vesta/sync/sync/SyncCheckServiceTest.java",
@@ -3759,7 +3820,7 @@
       "testFamily": "com.vesta.sync.sync:SyncCheckService",
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "ace1ccb88c42e6f511b6c3b74f8d7320fd18ace5eb46ea6bbb4435b4471174b7",
+      "javaSha256": "ca2b53532ebd8f13dea3d62df4e0f4a969bcbe1bd98463ca5e7e8bd4e0945f86",
       "rustCounterpart": "crates/vesta-protocol/src/pack/sync.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/sync/SyncCheckServiceTest.java"
@@ -3785,7 +3846,8 @@
       "results": {
         "status": "unverified",
         "summary": "Mapped to existing Rust source and tests; execution not performed for this accounting update."
-      }
+      },
+      "preExtractionJavaSha256": "ace1ccb88c42e6f511b6c3b74f8d7320fd18ace5eb46ea6bbb4435b4471174b7"
     },
     {
       "javaPath": "core/src/test/java/com/vesta/sync/util/PathSanitizerTest.java",
@@ -3793,7 +3855,7 @@
       "testFamily": "com.vesta.sync.util:PathSanitizer",
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "967ff6c7d6adfcc48055e9dc45f39cad151a69ac7f8720011407dbbf1fe99d53",
+      "javaSha256": "da497773454ef29970fc92fb5ed935ab576dc64e052229a0bf4a82592aa2aa94",
       "rustCounterpart": "crates/vesta-control/src/files/path.rs",
       "testPaths": [
         "core/src/test/java/com/vesta/sync/util/PathSanitizerTest.java"
@@ -3819,7 +3881,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "967ff6c7d6adfcc48055e9dc45f39cad151a69ac7f8720011407dbbf1fe99d53"
     },
     {
       "javaPath": "core/src/test/java/com/vesta/sync/util/PublicEndpointTest.java",
@@ -3827,7 +3890,7 @@
       "testFamily": "com.vesta.sync.util:PublicEndpoint",
       "kind": "test",
       "boundary": "shared_host_plugin_boundary",
-      "javaSha256": "6852e849d00561d05d09e6ab1db9f581d5e07820338344590a88b4d8484f8ff2",
+      "javaSha256": "c4911ed8e4a8598394c3f90c19d7ec405e2eae37006057da5168b90500e9c999",
       "rustCounterpart": null,
       "testPaths": [
         "core/src/test/java/com/vesta/sync/util/PublicEndpointTest.java"
@@ -3845,140 +3908,15 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "6852e849d00561d05d09e6ab1db9f581d5e07820338344590a88b4d8484f8ff2"
     },
     {
       "javaPath": "src/main/java/com/vesta/loader/ModLog.java",
       "symbol": "ModLog",
       "kind": "production",
       "boundary": "plugin_boundary",
-      "javaSha256": "bbf2dfc00beac5e601632897f07c7463bb57998015ed853e6d4601a9b8ba48f2",
-      "rustCounterpart": null,
-      "testPaths": [],
-      "fixturePaths": [],
-      "applicableRequirements": [],
-      "disposition": "retain_java_plugin",
-      "status": "retained_java_plugin",
-      "rationale": "This source belongs to the existing Minecraft mod/plugin integration under src; retain it as the Java connector boundary rather than treating it as host wrapper parity. No Rust host parity is claimed.",
-      "gaps": [],
-      "rustTests": [],
-      "evidence": [],
-      "results": {
-        "status": "not_run",
-        "summary": "Plugin retention classification only; no plugin or host parity tests were run."
-      }
-    },
-    {
-      "javaPath": "src/main/java/com/vesta/loader/PermissionBridge.java",
-      "symbol": "PermissionBridge",
-      "kind": "production",
-      "boundary": "plugin_boundary",
-      "javaSha256": "95d3aef4cbc717e6ed53652742eab717d058d49883026f77df769ebbcb62d24b",
-      "rustCounterpart": null,
-      "testPaths": [],
-      "fixturePaths": [],
-      "applicableRequirements": [],
-      "disposition": "retain_java_plugin",
-      "status": "retained_java_plugin",
-      "rationale": "This source belongs to the existing Minecraft mod/plugin integration under src; retain it as the Java connector boundary rather than treating it as host wrapper parity. No Rust host parity is claimed.",
-      "gaps": [],
-      "rustTests": [],
-      "evidence": [],
-      "results": {
-        "status": "not_run",
-        "summary": "Plugin retention classification only; no plugin or host parity tests were run."
-      }
-    },
-    {
-      "javaPath": "src/main/java/com/vesta/loader/SyncStatus.java",
-      "symbol": "SyncStatus",
-      "kind": "production",
-      "boundary": "plugin_boundary",
-      "javaSha256": "73bb23f62b2a6f9740c97d764bbd404a3d4acb78e3d35946601a89b14f877b27",
-      "rustCounterpart": null,
-      "testPaths": [],
-      "fixturePaths": [],
-      "applicableRequirements": [],
-      "disposition": "retain_java_plugin",
-      "status": "retained_java_plugin",
-      "rationale": "This source belongs to the existing Minecraft mod/plugin integration under src; retain it as the Java connector boundary rather than treating it as host wrapper parity. No Rust host parity is claimed.",
-      "gaps": [],
-      "rustTests": [],
-      "evidence": [],
-      "results": {
-        "status": "not_run",
-        "summary": "Plugin retention classification only; no plugin or host parity tests were run."
-      }
-    },
-    {
-      "javaPath": "src/main/java/com/vesta/loader/VestaCommands.java",
-      "symbol": "VestaCommands, Messenger",
-      "kind": "production",
-      "boundary": "plugin_boundary",
-      "javaSha256": "21e4cad5f6973ad9fb008f738d47b100c3585530ec44520fc5bf81f9a1e6b29a",
-      "rustCounterpart": null,
-      "testPaths": [],
-      "fixturePaths": [],
-      "applicableRequirements": [],
-      "disposition": "retain_java_plugin",
-      "status": "retained_java_plugin",
-      "rationale": "This source belongs to the existing Minecraft mod/plugin integration under src; retain it as the Java connector boundary rather than treating it as host wrapper parity. No Rust host parity is claimed.",
-      "gaps": [],
-      "rustTests": [],
-      "evidence": [],
-      "results": {
-        "status": "not_run",
-        "summary": "Plugin retention classification only; no plugin or host parity tests were run."
-      }
-    },
-    {
-      "javaPath": "src/main/java/com/vesta/loader/VestaMod.java",
-      "symbol": "VestaMod",
-      "kind": "production",
-      "boundary": "plugin_boundary",
-      "javaSha256": "d933c946a92dd39ae1c8985c5f2354284792ca8c80d9164924b4414bbc252657",
-      "rustCounterpart": null,
-      "testPaths": [],
-      "fixturePaths": [],
-      "applicableRequirements": [],
-      "disposition": "retain_java_plugin",
-      "status": "retained_java_plugin",
-      "rationale": "This source belongs to the existing Minecraft mod/plugin integration under src; retain it as the Java connector boundary rather than treating it as host wrapper parity. No Rust host parity is claimed.",
-      "gaps": [],
-      "rustTests": [],
-      "evidence": [],
-      "results": {
-        "status": "not_run",
-        "summary": "Plugin retention classification only; no plugin or host parity tests were run."
-      }
-    },
-    {
-      "javaPath": "src/main/java/com/vesta/loader/VestaSyncManager.java",
-      "symbol": "VestaSyncManager",
-      "kind": "production",
-      "boundary": "plugin_boundary",
-      "javaSha256": "9c8e51984f34e14eb58086f5d64c2894b1d6e0dc4255b42827d8206b202cb6b9",
-      "rustCounterpart": null,
-      "testPaths": [],
-      "fixturePaths": [],
-      "applicableRequirements": [],
-      "disposition": "retain_java_plugin",
-      "status": "retained_java_plugin",
-      "rationale": "This source belongs to the existing Minecraft mod/plugin integration under src; retain it as the Java connector boundary rather than treating it as host wrapper parity. No Rust host parity is claimed.",
-      "gaps": [],
-      "rustTests": [],
-      "evidence": [],
-      "results": {
-        "status": "not_run",
-        "summary": "Plugin retention classification only; no plugin or host parity tests were run."
-      }
-    },
-    {
-      "javaPath": "src/main/java/com/vesta/loader/ipc/ControlIpcClient.java",
-      "symbol": "ControlIpcClient",
-      "kind": "production",
-      "boundary": "plugin_boundary",
-      "javaSha256": "250cf4a9ea2e2f88c579aa223c4e1b1ae7335e7ddcf4ff7ef5d6896266377e75",
+      "javaSha256": "bf8547a1ecf1701d0f632a34a341a36f7f692810aec962d8fd70bdcdc103c974",
       "rustCounterpart": null,
       "testPaths": [],
       "fixturePaths": [],
@@ -3993,14 +3931,147 @@
         "status": "not_run",
         "summary": "Plugin retention classification only; no plugin or host parity tests were run."
       },
-      "notes": "Retained Java client remains incompatible pending plugin-repository v2 client/detection work. Control IPC is intentionally omitted; see the Control IPC disposition below."
+      "preExtractionJavaSha256": "bbf2dfc00beac5e601632897f07c7463bb57998015ed853e6d4601a9b8ba48f2"
+    },
+    {
+      "javaPath": "src/main/java/com/vesta/loader/PermissionBridge.java",
+      "symbol": "PermissionBridge",
+      "kind": "production",
+      "boundary": "plugin_boundary",
+      "javaSha256": "892558a5940ff30e3b79f3162932a96016e1c1fecda233ca9b2aab90002306a6",
+      "rustCounterpart": null,
+      "testPaths": [],
+      "fixturePaths": [],
+      "applicableRequirements": [],
+      "disposition": "retain_java_plugin",
+      "status": "retained_java_plugin",
+      "rationale": "This source belongs to the existing Minecraft mod/plugin integration under src; retain it as the Java connector boundary rather than treating it as host wrapper parity. No Rust host parity is claimed.",
+      "gaps": [],
+      "rustTests": [],
+      "evidence": [],
+      "results": {
+        "status": "not_run",
+        "summary": "Plugin retention classification only; no plugin or host parity tests were run."
+      },
+      "preExtractionJavaSha256": "95d3aef4cbc717e6ed53652742eab717d058d49883026f77df769ebbcb62d24b"
+    },
+    {
+      "javaPath": "src/main/java/com/vesta/loader/SyncStatus.java",
+      "symbol": "SyncStatus",
+      "kind": "production",
+      "boundary": "plugin_boundary",
+      "javaSha256": "6ece4e0a4abf5daaea5633db6f7196b965a66e340fcf9714b3bad632c8bc033b",
+      "rustCounterpart": null,
+      "testPaths": [],
+      "fixturePaths": [],
+      "applicableRequirements": [],
+      "disposition": "retain_java_plugin",
+      "status": "retained_java_plugin",
+      "rationale": "This source belongs to the existing Minecraft mod/plugin integration under src; retain it as the Java connector boundary rather than treating it as host wrapper parity. No Rust host parity is claimed.",
+      "gaps": [],
+      "rustTests": [],
+      "evidence": [],
+      "results": {
+        "status": "not_run",
+        "summary": "Plugin retention classification only; no plugin or host parity tests were run."
+      },
+      "preExtractionJavaSha256": "73bb23f62b2a6f9740c97d764bbd404a3d4acb78e3d35946601a89b14f877b27"
+    },
+    {
+      "javaPath": "src/main/java/com/vesta/loader/VestaCommands.java",
+      "symbol": "VestaCommands, Messenger",
+      "kind": "production",
+      "boundary": "plugin_boundary",
+      "javaSha256": "1a606449b8bfc3cbf031c54aaee60d285fe548dc83c1fbdfa6d6d8c167b6a960",
+      "rustCounterpart": null,
+      "testPaths": [],
+      "fixturePaths": [],
+      "applicableRequirements": [],
+      "disposition": "retain_java_plugin",
+      "status": "retained_java_plugin",
+      "rationale": "This source belongs to the existing Minecraft mod/plugin integration under src; retain it as the Java connector boundary rather than treating it as host wrapper parity. No Rust host parity is claimed.",
+      "gaps": [],
+      "rustTests": [],
+      "evidence": [],
+      "results": {
+        "status": "not_run",
+        "summary": "Plugin retention classification only; no plugin or host parity tests were run."
+      },
+      "preExtractionJavaSha256": "21e4cad5f6973ad9fb008f738d47b100c3585530ec44520fc5bf81f9a1e6b29a"
+    },
+    {
+      "javaPath": "src/main/java/com/vesta/loader/VestaMod.java",
+      "symbol": "VestaMod",
+      "kind": "production",
+      "boundary": "plugin_boundary",
+      "javaSha256": "cce1c2e57aa1427b5ea05ce42a6d7b8f9afb64ba050d8a16abb70b683eee44d9",
+      "rustCounterpart": null,
+      "testPaths": [],
+      "fixturePaths": [],
+      "applicableRequirements": [],
+      "disposition": "retain_java_plugin",
+      "status": "retained_java_plugin",
+      "rationale": "This source belongs to the existing Minecraft mod/plugin integration under src; retain it as the Java connector boundary rather than treating it as host wrapper parity. No Rust host parity is claimed.",
+      "gaps": [],
+      "rustTests": [],
+      "evidence": [],
+      "results": {
+        "status": "not_run",
+        "summary": "Plugin retention classification only; no plugin or host parity tests were run."
+      },
+      "preExtractionJavaSha256": "d933c946a92dd39ae1c8985c5f2354284792ca8c80d9164924b4414bbc252657"
+    },
+    {
+      "javaPath": "src/main/java/com/vesta/loader/VestaSyncManager.java",
+      "symbol": "VestaSyncManager",
+      "kind": "production",
+      "boundary": "plugin_boundary",
+      "javaSha256": "0a4bcdab39bceb0d6e1c0895b009aab3a564caf72fa375efa4b6acbcafd7e756",
+      "rustCounterpart": null,
+      "testPaths": [],
+      "fixturePaths": [],
+      "applicableRequirements": [],
+      "disposition": "retain_java_plugin",
+      "status": "retained_java_plugin",
+      "rationale": "This source belongs to the existing Minecraft mod/plugin integration under src; retain it as the Java connector boundary rather than treating it as host wrapper parity. No Rust host parity is claimed.",
+      "gaps": [],
+      "rustTests": [],
+      "evidence": [],
+      "results": {
+        "status": "not_run",
+        "summary": "Plugin retention classification only; no plugin or host parity tests were run."
+      },
+      "preExtractionJavaSha256": "9c8e51984f34e14eb58086f5d64c2894b1d6e0dc4255b42827d8206b202cb6b9"
+    },
+    {
+      "javaPath": "src/main/java/com/vesta/loader/ipc/ControlIpcClient.java",
+      "symbol": "ControlIpcClient",
+      "kind": "production",
+      "boundary": "plugin_boundary",
+      "javaSha256": "f859d00b61210d3830cc8d01997cabb045a46e829633985bf61f03b3085578cb",
+      "rustCounterpart": null,
+      "testPaths": [],
+      "fixturePaths": [],
+      "applicableRequirements": [],
+      "disposition": "retain_java_plugin",
+      "status": "retained_java_plugin",
+      "rationale": "This source belongs to the existing Minecraft mod/plugin integration under src; retain it as the Java connector boundary rather than treating it as host wrapper parity. No Rust host parity is claimed.",
+      "gaps": [],
+      "rustTests": [],
+      "evidence": [],
+      "results": {
+        "status": "not_run",
+        "summary": "Plugin retention classification only; no plugin or host parity tests were run."
+      },
+      "notes": "Retained Java client remains incompatible pending plugin-repository v2 client/detection work. Control IPC is intentionally omitted; see the Control IPC disposition below.",
+      "preExtractionJavaSha256": "250cf4a9ea2e2f88c579aa223c4e1b1ae7335e7ddcf4ff7ef5d6896266377e75"
     },
     {
       "javaPath": "src/main/java/com/vesta/loader/platform/BukkitEntrypoint.java",
       "symbol": "BukkitEntrypoint",
       "kind": "production",
       "boundary": "plugin_boundary",
-      "javaSha256": "3d8484ca33f9b195ada81d1c2cb056096cbf1d9cff6c59c87b0b2c7928b12525",
+      "javaSha256": "8e5d6857f1825d8abcd8d2430c8a90d1f03c2244784b063e8a6518c78a38ea4b",
       "rustCounterpart": null,
       "testPaths": [],
       "fixturePaths": [],
@@ -4014,14 +4085,15 @@
       "results": {
         "status": "not_run",
         "summary": "Plugin retention classification only; no plugin or host parity tests were run."
-      }
+      },
+      "preExtractionJavaSha256": "3d8484ca33f9b195ada81d1c2cb056096cbf1d9cff6c59c87b0b2c7928b12525"
     },
     {
       "javaPath": "src/main/java/com/vesta/loader/platform/BukkitVestaMessenger.java",
       "symbol": "BukkitVestaMessenger",
       "kind": "production",
       "boundary": "plugin_boundary",
-      "javaSha256": "720d8f6e630783417876aa71ee9fcf6c4b8cb8eda3af252628cd1ebd4afc766c",
+      "javaSha256": "2f2c58b8c7427990e3fd65f91e8cee1c339f5ecad3543ca3f7818a5de453e3f6",
       "rustCounterpart": null,
       "testPaths": [],
       "fixturePaths": [],
@@ -4035,14 +4107,15 @@
       "results": {
         "status": "not_run",
         "summary": "Plugin retention classification only; no plugin or host parity tests were run."
-      }
+      },
+      "preExtractionJavaSha256": "720d8f6e630783417876aa71ee9fcf6c4b8cb8eda3af252628cd1ebd4afc766c"
     },
     {
       "javaPath": "src/main/java/com/vesta/loader/platform/FabricCommandHooks.java",
       "symbol": "FabricCommandHooks",
       "kind": "production",
       "boundary": "plugin_boundary",
-      "javaSha256": "a36859fc70529f5590b35a4484aad5e3d2ef901f32b80ce54f629b0daa6bf0d5",
+      "javaSha256": "728ad922eb5e5d0e5dd0562e793043de1784014684266863eaf248fde69882d4",
       "rustCounterpart": null,
       "testPaths": [],
       "fixturePaths": [],
@@ -4056,14 +4129,15 @@
       "results": {
         "status": "not_run",
         "summary": "Plugin retention classification only; no plugin or host parity tests were run."
-      }
+      },
+      "preExtractionJavaSha256": "a36859fc70529f5590b35a4484aad5e3d2ef901f32b80ce54f629b0daa6bf0d5"
     },
     {
       "javaPath": "src/main/java/com/vesta/loader/platform/FabricEntrypoint.java",
       "symbol": "FabricEntrypoint",
       "kind": "production",
       "boundary": "plugin_boundary",
-      "javaSha256": "9b1a6acdf70ce043e3a30b139671584a869dd098055dbdae9f30d2525d22d406",
+      "javaSha256": "7a34950528e39de128ef8ef2debf945e4e77b2b1b909b2fc47e26a45a9e7d92b",
       "rustCounterpart": null,
       "testPaths": [],
       "fixturePaths": [],
@@ -4077,14 +4151,15 @@
       "results": {
         "status": "not_run",
         "summary": "Plugin retention classification only; no plugin or host parity tests were run."
-      }
+      },
+      "preExtractionJavaSha256": "9b1a6acdf70ce043e3a30b139671584a869dd098055dbdae9f30d2525d22d406"
     },
     {
       "javaPath": "src/main/java/com/vesta/loader/platform/ModdedVestaMessenger.java",
       "symbol": "ModdedVestaMessenger",
       "kind": "production",
       "boundary": "plugin_boundary",
-      "javaSha256": "04e45ef3986111c90ac18fb829abf61688099f4e86f327deaa2820a7041b9f0f",
+      "javaSha256": "29766d0d4393e0ca1b87d984262cbc66b41ce4cd7a693060e324c2eaca610474",
       "rustCounterpart": null,
       "testPaths": [],
       "fixturePaths": [],
@@ -4098,14 +4173,15 @@
       "results": {
         "status": "not_run",
         "summary": "Plugin retention classification only; no plugin or host parity tests were run."
-      }
+      },
+      "preExtractionJavaSha256": "04e45ef3986111c90ac18fb829abf61688099f4e86f327deaa2820a7041b9f0f"
     },
     {
       "javaPath": "src/main/java/com/vesta/loader/platform/NeoForgeEntrypoint.java",
       "symbol": "NeoForgeEntrypoint, Commands",
       "kind": "production",
       "boundary": "plugin_boundary",
-      "javaSha256": "34c553e56acfdd982697dfbf040fedb90c3361f993ca201c10a57b004ee5293e",
+      "javaSha256": "72473fff282b3b9f1139e507b60d78cb938bdad71a0a6f18bd5c8399a9e81671",
       "rustCounterpart": null,
       "testPaths": [],
       "fixturePaths": [],
@@ -4119,14 +4195,15 @@
       "results": {
         "status": "not_run",
         "summary": "Plugin retention classification only; no plugin or host parity tests were run."
-      }
+      },
+      "preExtractionJavaSha256": "34c553e56acfdd982697dfbf040fedb90c3361f993ca201c10a57b004ee5293e"
     },
     {
       "javaPath": "src/main/java/com/vesta/loader/platform/PaperEntrypoint.java",
       "symbol": "PaperEntrypoint",
       "kind": "production",
       "boundary": "plugin_boundary",
-      "javaSha256": "fa0e3856acc173680e532461462b2969e7722ab60f6315b08f30f7f4927746d6",
+      "javaSha256": "01ecf007d3cb048828e0d48c3fe1e842cd210d3b412747f1cdf0e026e33e6bf1",
       "rustCounterpart": null,
       "testPaths": [],
       "fixturePaths": [],
@@ -4140,14 +4217,15 @@
       "results": {
         "status": "not_run",
         "summary": "Plugin retention classification only; no plugin or host parity tests were run."
-      }
+      },
+      "preExtractionJavaSha256": "fa0e3856acc173680e532461462b2969e7722ab60f6315b08f30f7f4927746d6"
     },
     {
       "javaPath": "src/main/java/com/vesta/loader/platform/PaperVestaMessenger.java",
       "symbol": "PaperVestaMessenger",
       "kind": "production",
       "boundary": "plugin_boundary",
-      "javaSha256": "3a3a1e91a9007d1249dcee3b55990c163192fe2e05cea25d59e9021efc174d8e",
+      "javaSha256": "379b95b07d7992aab8c1cdecd6ec02563ee356f2a6c8ad67d288402ff81779ff",
       "rustCounterpart": null,
       "testPaths": [],
       "fixturePaths": [],
@@ -4161,14 +4239,15 @@
       "results": {
         "status": "not_run",
         "summary": "Plugin retention classification only; no plugin or host parity tests were run."
-      }
+      },
+      "preExtractionJavaSha256": "3a3a1e91a9007d1249dcee3b55990c163192fe2e05cea25d59e9021efc174d8e"
     },
     {
       "javaPath": "src/main/java/com/vesta/loader/platform/QuiltEntrypoint.java",
       "symbol": "QuiltEntrypoint",
       "kind": "production",
       "boundary": "plugin_boundary",
-      "javaSha256": "beeb3f9f51ee6aee90f8f5259bfaeb55931199c6e968529f55ecf06ec523cb36",
+      "javaSha256": "070fe5753aca238ae95f4498e05e4292305f45219914159a702e75b3681c47ba",
       "rustCounterpart": null,
       "testPaths": [],
       "fixturePaths": [],
@@ -4182,14 +4261,15 @@
       "results": {
         "status": "not_run",
         "summary": "Plugin retention classification only; no plugin or host parity tests were run."
-      }
+      },
+      "preExtractionJavaSha256": "beeb3f9f51ee6aee90f8f5259bfaeb55931199c6e968529f55ecf06ec523cb36"
     },
     {
       "javaPath": "src/main/java/com/vesta/loader/server/ModHttpServer.java",
       "symbol": "ModHttpServer",
       "kind": "production",
       "boundary": "plugin_boundary",
-      "javaSha256": "6420c975bb7215890e5caa7c62265ceff1f00856d5512a8ecadf5af0e2ee38c4",
+      "javaSha256": "0f09aa869b7095d4c75a4c90ac24789a622553345544bd6fb40133927af66ed1",
       "rustCounterpart": null,
       "testPaths": [],
       "fixturePaths": [],
@@ -4203,14 +4283,15 @@
       "results": {
         "status": "not_run",
         "summary": "Plugin retention classification only; no plugin or host parity tests were run."
-      }
+      },
+      "preExtractionJavaSha256": "6420c975bb7215890e5caa7c62265ceff1f00856d5512a8ecadf5af0e2ee38c4"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/VestaWrapper.java",
       "symbol": "VestaWrapper",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "1ec87df3c21c376f55f015dc79500a5939de05a8f11e0ebf4f7a33907e5c1751",
+      "javaSha256": "160751c72dff05ea12dc1a777e9b0dc5f85bc672d5121d2045c8d06526df7232",
       "rustCounterpart": "apps/vesta-agent/src/main.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -4234,7 +4315,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "1ec87df3c21c376f55f015dc79500a5939de05a8f11e0ebf4f7a33907e5c1751"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/audit/AuditActor.java",
@@ -4430,7 +4512,7 @@
       "symbol": "AuthService",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "e3d47fdf90d70349df4762566ec66b8e6ddca91bdf3fda9b22fa9df5f0e05412",
+      "javaSha256": "db9802e2a8b63e274b573be94edb47ec77bd0ebaf6dad36a24188ce2a2eeddc9",
       "rustCounterpart": "crates/vesta-control/src/pack_access.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -4467,7 +4549,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "e3d47fdf90d70349df4762566ec66b8e6ddca91bdf3fda9b22fa9df5f0e05412"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/authorization/AuthorizationService.java",
@@ -4660,7 +4743,7 @@
       "symbol": "ConfigLoader, ConfigException",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "910920b8ca4b96cb6ccaf14296f313fbce39f663f98157e2a8b5f694aa1a9910",
+      "javaSha256": "492c6ea704ed26023f40e0ab92f9afaf81558f3be1060c18a2837b13b37ef0c2",
       "rustCounterpart": "crates/vesta-control/src/config/mod.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/config/ConfigLoaderLaunchTest.java",
@@ -4695,14 +4778,15 @@
       "results": {
         "status": "unverified",
         "summary": "Partial mapping only; Rust config tests were inspected but not executed."
-      }
+      },
+      "preExtractionJavaSha256": "910920b8ca4b96cb6ccaf14296f313fbce39f663f98157e2a8b5f694aa1a9910"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/config/SecuritySettingsService.java",
       "symbol": "SecuritySettingsService",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "b1103d05877f2c2722c04d236d70221d8b14a4d23b0d8a44d06f891fd1b6747d",
+      "javaSha256": "75ec1718332c63fdc7e1c54330e14c1665cbb18f87e02e894654614dc8151fa4",
       "rustCounterpart": "crates/vesta-control/src/identity/pack_passwords.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/config/SecuritySettingsServiceTest.java"
@@ -4741,7 +4825,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "b1103d05877f2c2722c04d236d70221d8b14a4d23b0d8a44d06f891fd1b6747d"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/config/WrapperConfig.java",
@@ -4790,7 +4875,7 @@
       "symbol": "ConsoleBuffer, Line, Snapshot",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "3967fed641f0c099c3f6add9f6e989a9ee49ccd4302a4db249569ef40897a2bc",
+      "javaSha256": "625abe97187bf2596270a0b83e2bebb42fb6a3c7e008d9ec9b24fcfe014b78bf",
       "rustCounterpart": "crates/vesta-game-runtime/src/console.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/console/ConsoleBufferTest.java"
@@ -4833,7 +4918,8 @@
       "results": {
         "status": "unverified",
         "summary": "Rust source and cited test bodies inspected; tests were not executed."
-      }
+      },
+      "preExtractionJavaSha256": "3967fed641f0c099c3f6add9f6e989a9ee49ccd4302a4db249569ef40897a2bc"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/content/ContentInstaller.java",
@@ -5407,7 +5493,7 @@
       "symbol": "ControlIpcServer, Peer",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "982419f2c994268f8587b1663aca144b210351f28779ea312d566559eab1c44b",
+      "javaSha256": "f17f3432f1e0fd2eeef18052230fb52c65690628c4b63894ca3d385dc37fb2da",
       "rustCounterpart": null,
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/ipc/ControlIpcContractTest.java"
@@ -5426,7 +5512,8 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Rust IPC listener is intentionally omitted; see the Control IPC disposition below. Do not reproduce unauthenticated connector authority."
+      "notes": "Rust IPC listener is intentionally omitted; see the Control IPC disposition below. Do not reproduce unauthenticated connector authority.",
+      "preExtractionJavaSha256": "982419f2c994268f8587b1663aca144b210351f28779ea312d566559eab1c44b"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/launch/LaunchSpec.java",
@@ -6790,7 +6877,7 @@
       "symbol": "TlsMaterial",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "63e52f6e1cae3f7e03c2f33f047cad0a489db06434ed839498f6ff30f181089d",
+      "javaSha256": "c702041a818e8345b8b0731776468b932a686e339224b3f1f34b32674b8cc8c3",
       "rustCounterpart": "crates/vesta-transport/src/tls.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -6815,7 +6902,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "63e52f6e1cae3f7e03c2f33f047cad0a489db06434ed839498f6ff30f181089d"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/security/TokenBucketRateLimiter.java",
@@ -6863,7 +6951,7 @@
       "symbol": "WhitelistService",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "9b62571e55ab42a0aed0aed55166b268583ba78eb7fb2360686a84857b96bbc7",
+      "javaSha256": "5ab440f667c61e242eb9628c1b5063cbfefb54208900f6f24ad6cefb00fa14be",
       "rustCounterpart": "crates/vesta-control/src/whitelist.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -6894,14 +6982,15 @@
       "results": {
         "status": "unverified",
         "summary": "Parser, loading and pack-access composition tests pass."
-      }
+      },
+      "preExtractionJavaSha256": "9b62571e55ab42a0aed0aed55166b268583ba78eb7fb2360686a84857b96bbc7"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/ClientConnection.java",
       "symbol": "ClientConnection",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "0aa7b34d01a3b3eb7e52bd238a345382c77500dcb2b247843cd439b732df2ea7",
+      "javaSha256": "12836bfa795f10147f72e9ab848514cc8f7184f475589aab4f5707950845e0ae",
       "rustCounterpart": "crates/vesta-transport/src/lib.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -6927,14 +7016,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented.",
+      "preExtractionJavaSha256": "0aa7b34d01a3b3eb7e52bd238a345382c77500dcb2b247843cd439b732df2ea7"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/MessageRouter.java",
       "symbol": "MessageRouter, MessageHandler",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "037f4557bba4461415c95bcc2fa8d9d156c030e8b20776c357a5842bf3f52381",
+      "javaSha256": "09b852e187eb542257b00c0d56eca6cd6ccbac2a7b1391645b482a21c69d6452",
       "rustCounterpart": "crates/vesta-transport/src/routes.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -6960,14 +7050,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented.",
+      "preExtractionJavaSha256": "037f4557bba4461415c95bcc2fa8d9d156c030e8b20776c357a5842bf3f52381"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/ServerState.java",
       "symbol": "ServerState",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "8909b53931c3e7c4062c5b46cf50c8412d9ca16096e654149d957ce892d2b0af",
+      "javaSha256": "6ca0458d9e1377247f055fc27fb176e14fc502ef7d93c72041cf1a227d78e825",
       "rustCounterpart": "crates/vesta-control/src/host.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/server/DurableLifecycleRouteTest.java",
@@ -7028,14 +7119,15 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "8909b53931c3e7c4062c5b46cf50c8412d9ca16096e654149d957ce892d2b0af"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/Session.java",
       "symbol": "Session",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "a089e3f4cff69a84840f545add2763d1447a5caddb113361480d6c3ca4d756e9",
+      "javaSha256": "a2b6d8ac9468fe72b8793cfbc94b9c00f36120cf4ae4d769cb95a7baa16d7183",
       "rustCounterpart": "crates/vesta-control/src/pack_access.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -7061,14 +7153,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented.",
+      "preExtractionJavaSha256": "a089e3f4cff69a84840f545add2763d1447a5caddb113361480d6c3ca4d756e9"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/SessionManager.java",
       "symbol": "SessionManager",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "498727161d894aa8544299e696a0be045eede8a0e2e0f880f43517f3d68a8bbd",
+      "javaSha256": "0bf23d3b4430bedc1b60b3fa0087c2eab11bb2bbc7134ad523eac9804158f386",
       "rustCounterpart": "crates/vesta-control/src/pack_access.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -7093,14 +7186,15 @@
       "results": {
         "status": "unverified",
         "summary": "Session store exists; transport does not."
-      }
+      },
+      "preExtractionJavaSha256": "498727161d894aa8544299e696a0be045eede8a0e2e0f880f43517f3d68a8bbd"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/TcpSyncServer.java",
       "symbol": "TcpSyncServer, HttpProxyTask",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "53cbbbde3490ed663c9357fafdeccdf991db1a2ad9f882a8500eaae33f76dde0",
+      "javaSha256": "da2cc6e92948e4265f78751f98eeb34001d5d84f05473dd7673aae5619640cd3",
       "rustCounterpart": null,
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/server/TcpPushUpdateAvailableTest.java"
@@ -7119,14 +7213,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "TCP sync listener intentionally superseded/forbidden; see the TCP sync disposition below. Do not add a Rust TCP sync listener."
+      "notes": "TCP sync listener intentionally superseded/forbidden; see the TCP sync disposition below. Do not add a Rust TCP sync listener.",
+      "preExtractionJavaSha256": "53cbbbde3490ed663c9357fafdeccdf991db1a2ad9f882a8500eaae33f76dde0"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/VestaHttpServer.java",
       "symbol": "VestaHttpServer",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "7fa73d9e0a22ddf8a5ddd3d8aec40c7f63767d9213623a671233754610953ceb",
+      "javaSha256": "1085fc698aee9f688853f41f55b5ca9b8dcf699867a2520fc4a033bfb20fdfb1",
       "rustCounterpart": "crates/vesta-transport/src/routes.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/server/DurableLifecycleRouteTest.java",
@@ -7163,14 +7258,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Legacy authority shortcuts: loopback power/security-admin/devtools access is not reproduced; Rust transport exposes pack-only routes."
+      "notes": "Legacy authority shortcuts: loopback power/security-admin/devtools access is not reproduced; Rust transport exposes pack-only routes.",
+      "preExtractionJavaSha256": "7fa73d9e0a22ddf8a5ddd3d8aec40c7f63767d9213623a671233754610953ceb"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/VestaRealtimeSocket.java",
       "symbol": "VestaRealtimeSocket",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "88cee9b1a59437f33a4dd1664d994e8667e412dc0a660d1e0f21213ea71d4f8c",
+      "javaSha256": "978d95287929b1b4e39d0dcff6c61a93274757fe8243e3fe5305a20397dc0051",
       "rustCounterpart": "crates/vesta-transport/src/realtime.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -7196,14 +7292,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented.",
+      "preExtractionJavaSha256": "88cee9b1a59437f33a4dd1664d994e8667e412dc0a660d1e0f21213ea71d4f8c"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/handlers/DisconnectHandler.java",
       "symbol": "DisconnectHandler",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "0ca9fad33fdef18f7d12ac31f6cc22ba7fddc287a9560344f94ace051a4e8845",
+      "javaSha256": "aefd00d92106ea70815a5ed35c0fb3163c938e8bf605f174ce951d601a4603a3",
       "rustCounterpart": "crates/vesta-transport/src/realtime.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -7229,14 +7326,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented.",
+      "preExtractionJavaSha256": "0ca9fad33fdef18f7d12ac31f6cc22ba7fddc287a9560344f94ace051a4e8845"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/handlers/FileRequestHandler.java",
       "symbol": "FileRequestHandler",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "8dde2046b59006067065826940f6a5a89803b389278d3e2852b4454a1d983eef",
+      "javaSha256": "19d46001c08239a9b586e55bde1b05c8df208b229e0f3d6cdf0cdc17ac67908f",
       "rustCounterpart": "crates/vesta-transport/src/routes.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -7262,14 +7360,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented.",
+      "preExtractionJavaSha256": "8dde2046b59006067065826940f6a5a89803b389278d3e2852b4454a1d983eef"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/handlers/HandshakeHandler.java",
       "symbol": "HandshakeHandler",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "830cae1f2dbe664521036b8bead706b37149c05d8c67ff8b7e979197c2e69652",
+      "javaSha256": "9ad34fac48b7bf9a0ba62d30d034c14d445cd76e90ecb683d858cc08d34541e7",
       "rustCounterpart": "crates/vesta-transport/src/routes.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -7295,14 +7394,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented.",
+      "preExtractionJavaSha256": "830cae1f2dbe664521036b8bead706b37149c05d8c67ff8b7e979197c2e69652"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/handlers/HeartbeatHandler.java",
       "symbol": "HeartbeatHandler",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "6f238d349aa18ed34450675c3f89fb5e2fc35f7f4a12a6e85aac5319861447da",
+      "javaSha256": "4ae0d17f7998bdaa808d4dcdd6d77186f00ce71c48d7c1e9ae5657c64084403f",
       "rustCounterpart": "crates/vesta-transport/src/realtime.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -7328,14 +7428,15 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented.",
+      "preExtractionJavaSha256": "6f238d349aa18ed34450675c3f89fb5e2fc35f7f4a12a6e85aac5319861447da"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/server/handlers/SyncCheckHandler.java",
       "symbol": "SyncCheckHandler",
       "kind": "production",
       "boundary": "host",
-      "javaSha256": "ce05076e688155e054fea65399f507bcae7be1a6f1b0efda9eccba1fb9802a07",
+      "javaSha256": "74e5404edbd5acbbf62680da6779458c2215283224b9e6c7dfce91e38fb3b4dc",
       "rustCounterpart": "crates/vesta-transport/src/routes.rs",
       "testPaths": [],
       "fixturePaths": [],
@@ -7361,7 +7462,8 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented.",
+      "preExtractionJavaSha256": "ce05076e688155e054fea65399f507bcae7be1a6f1b0efda9eccba1fb9802a07"
     },
     {
       "javaPath": "wrapper/src/main/java/com/vesta/wrapper/state/EventLog.java",
@@ -7736,7 +7838,7 @@
       "testFamily": "com.vesta.wrapper.config:ConfigLoaderSecurity",
       "kind": "test",
       "boundary": "host",
-      "javaSha256": "a7f50a5f679a58b9461c1931cf940902a852c980f664da9b993456be79adccd2",
+      "javaSha256": "5147939f8fe1324e5090afc71d2b2ea28d5f0869542c98446adec0f80ff455de",
       "rustCounterpart": "crates/vesta-control/src/config/mod.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/config/ConfigLoaderSecurityTest.java"
@@ -7762,7 +7864,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "a7f50a5f679a58b9461c1931cf940902a852c980f664da9b993456be79adccd2"
     },
     {
       "javaPath": "wrapper/src/test/java/com/vesta/wrapper/config/DurableConfigLoaderTest.java",
@@ -7804,7 +7907,7 @@
       "testFamily": "com.vesta.wrapper.config:SecuritySettingsService",
       "kind": "test",
       "boundary": "host",
-      "javaSha256": "1d5bd62cd74843fc35ed3a64f53a2fbfac8bd56f9c91ceb15e5a5e6244371a26",
+      "javaSha256": "3dca1b1e9ad9d3e7cdc54aa325e57e510bb112398f101bb056566d2cd62213c5",
       "rustCounterpart": "crates/vesta-control/src/identity/pack_passwords.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/config/SecuritySettingsServiceTest.java"
@@ -7843,7 +7946,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "1d5bd62cd74843fc35ed3a64f53a2fbfac8bd56f9c91ceb15e5a5e6244371a26"
     },
     {
       "javaPath": "wrapper/src/test/java/com/vesta/wrapper/console/ConsoleBufferTest.java",
@@ -7851,7 +7955,7 @@
       "testFamily": "com.vesta.wrapper.console:ConsoleBuffer",
       "kind": "test",
       "boundary": "host",
-      "javaSha256": "bd9748df877c129b1804f02e22541f67377635e9e75dc4b74770cf66c2361a97",
+      "javaSha256": "e22548180f0213f43339ef124eb1e1bc011ad2506388b257a73fd72d34f194b9",
       "rustCounterpart": "crates/vesta-game-runtime/src/console.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/console/ConsoleBufferTest.java"
@@ -7894,7 +7998,8 @@
       "results": {
         "status": "unverified",
         "summary": "Rust test bodies inspected for matching bounds and paging; tests were not executed."
-      }
+      },
+      "preExtractionJavaSha256": "bd9748df877c129b1804f02e22541f67377635e9e75dc4b74770cf66c2361a97"
     },
     {
       "javaPath": "wrapper/src/test/java/com/vesta/wrapper/content/ContentInstallerTest.java",
@@ -7902,7 +8007,7 @@
       "testFamily": "com.vesta.wrapper.content:ContentInstaller",
       "kind": "test",
       "boundary": "host",
-      "javaSha256": "57e87cb61950fe5372552b1b20389d65ba7d86bb5d294220d6ee7372bde88712",
+      "javaSha256": "34c9c60891ceca6c5c8c5dbfad0fae62b92b9b94715897d3eb2a20600e370d94",
       "rustCounterpart": "crates/vesta-control/src/content/mod.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/content/ContentInstallerTest.java"
@@ -7934,7 +8039,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "57e87cb61950fe5372552b1b20389d65ba7d86bb5d294220d6ee7372bde88712"
     },
     {
       "javaPath": "wrapper/src/test/java/com/vesta/wrapper/files/FileBrowserServiceTest.java",
@@ -7942,7 +8048,7 @@
       "testFamily": "com.vesta.wrapper.files:FileBrowserService",
       "kind": "test",
       "boundary": "host",
-      "javaSha256": "95949d223a479d370170978afda85960d78e7de61549e83836528a65bd453eb6",
+      "javaSha256": "9eba0531d683b9c94dade7a2af5dab8d1869603770722517a93dab5d6509ad5b",
       "rustCounterpart": "crates/vesta-control/src/files/mod.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/files/FileBrowserServiceTest.java"
@@ -7991,7 +8097,8 @@
       "results": {
         "status": "unverified",
         "summary": "Both methods mapped; parent auto-creation deliberately absent."
-      }
+      },
+      "preExtractionJavaSha256": "95949d223a479d370170978afda85960d78e7de61549e83836528a65bd453eb6"
     },
     {
       "javaPath": "wrapper/src/test/java/com/vesta/wrapper/files/ServerFileBoundaryTest.java",
@@ -8201,7 +8308,7 @@
       "testFamily": "com.vesta.wrapper.ipc:ControlIpcContract",
       "kind": "test",
       "boundary": "host",
-      "javaSha256": "66111c399db02d737929607eda3782ee063495c13b5f2a1e31db10826e36b7f8",
+      "javaSha256": "a5b0a199f5976fc997956560f8ccdedeb194a843557a40a03d99581918d0f434",
       "rustCounterpart": null,
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/ipc/ControlIpcContractTest.java"
@@ -8220,7 +8327,8 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "This legacy unauthenticated permission-authority contract is intentionally not reproduced. See the Control IPC disposition below."
+      "notes": "This legacy unauthenticated permission-authority contract is intentionally not reproduced. See the Control IPC disposition below.",
+      "preExtractionJavaSha256": "66111c399db02d737929607eda3782ee063495c13b5f2a1e31db10826e36b7f8"
     },
     {
       "javaPath": "wrapper/src/test/java/com/vesta/wrapper/launch/LaunchSpecTest.java",
@@ -9297,7 +9405,7 @@
       "testFamily": "com.vesta.wrapper.server:TcpPushUpdateAvailable",
       "kind": "test",
       "boundary": "host",
-      "javaSha256": "89cd39b8cc6dad974ff5b69b2fef93e8137f189c92b360bc75be406b28888cc7",
+      "javaSha256": "8ae4aaa6b7d65747ea33af03cf39ad0b99eda3dfe1f28c6f9ea8bb1ec662ea44",
       "rustCounterpart": "crates/vesta-transport/src/realtime.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/server/TcpPushUpdateAvailableTest.java"
@@ -9325,7 +9433,8 @@
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
       },
-      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented."
+      "notes": "Semantic v2 HTTPS/WebSocket replacement, not Java TCP wire compatibility. See the TCP sync disposition below; no TCP listener or legacy message registry is implemented.",
+      "preExtractionJavaSha256": "89cd39b8cc6dad974ff5b69b2fef93e8137f189c92b360bc75be406b28888cc7"
     },
     {
       "javaPath": "wrapper/src/test/java/com/vesta/wrapper/server/VestaHttpServerCommunicationTest.java",
@@ -9333,7 +9442,7 @@
       "testFamily": "com.vesta.wrapper.server:VestaHttpServerCommunication",
       "kind": "test",
       "boundary": "host",
-      "javaSha256": "5092ea36012f81e11e07bee6d2128fb6feabcaa819f0bf02cb234c2add3d8f2c",
+      "javaSha256": "0d6ccd430b99549315296ac10465da76a5ffccaa74d19a55185347942274e43f",
       "rustCounterpart": "crates/vesta-transport/src/lib.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/server/VestaHttpServerCommunicationTest.java"
@@ -9380,7 +9489,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "5092ea36012f81e11e07bee6d2128fb6feabcaa819f0bf02cb234c2add3d8f2c"
     },
     {
       "javaPath": "wrapper/src/test/java/com/vesta/wrapper/server/VestaHttpServerTlsFingerprintTest.java",
@@ -9388,7 +9498,7 @@
       "testFamily": "com.vesta.wrapper.server:VestaHttpServerTlsFingerprint",
       "kind": "test",
       "boundary": "host",
-      "javaSha256": "d3b4f574c299c51287a6c90fb16e5b0c849779c4feb2b22df85307543ea7de38",
+      "javaSha256": "1f0ce931d55442b5daa0cf29ff0b0292ac928a3d11e88c0a77558a7648f8cf5f",
       "rustCounterpart": "crates/vesta-transport/src/tls.rs",
       "testPaths": [
         "wrapper/src/test/java/com/vesta/wrapper/server/VestaHttpServerTlsFingerprintTest.java"
@@ -9415,7 +9525,8 @@
       "results": {
         "status": "not_run",
         "summary": "Migration parity and target-language tests have not been assessed by this baseline inventory."
-      }
+      },
+      "preExtractionJavaSha256": "d3b4f574c299c51287a6c90fb16e5b0c849779c4feb2b22df85307543ea7de38"
     },
     {
       "javaPath": "wrapper/src/test/java/com/vesta/wrapper/state/AuditEventsSettingsTest.java",
@@ -9710,7 +9821,7 @@
       }
     }
   ],
-  "baselineInventorySha256": "f8557e2a9002c3e21c54631fbec295315829a7a12ec9e6af2f17ac491c3df5d6",
+  "baselineInventorySha256": "86f60021df8e1e8ddb3570756eccc631f139588b69d5d8bf8fd0a31a844710e0",
   "checkerScopeNote": "This checker validates inventory and evidence structure only; it is not a test runner and is not security certification.",
   "finalIndependentSolReview": {
     "status": "failed",
@@ -9753,5 +9864,10 @@
       "status": "not_run",
       "evidence": []
     }
+  },
+  "extractionNote": "Java sources relocated without semantic edits; LF checkout enforced by server-java .gitattributes. Changed byte hashes retain preExtractionJavaSha256 for the original mixed-ending baseline. No migration status promoted.",
+  "javaSource": {
+    "repository": "https://github.com/vesta-project/server-java",
+    "revision": "26cbf7746bc8dbdd0887783cb760b118221fdb35"
   }
 }

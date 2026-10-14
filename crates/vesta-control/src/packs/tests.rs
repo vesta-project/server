@@ -456,7 +456,7 @@ mode = 'disabled'
         .unwrap();
     let actual: serde_json::Value = serde_json::from_slice(&index).unwrap();
     let mut expected: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../core/src/test/resources/vesta-builder-v1.json"
+        "../../../../protocol/pack-v1/fixtures/vesta-builder-v1.json"
     ))
     .unwrap();
     // Compare the full independent fixture, including both provider hashes.

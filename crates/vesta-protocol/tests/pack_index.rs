@@ -6,7 +6,7 @@ use vesta_protocol::pack::{
 };
 
 const GOLDEN_INDEX: &[u8] =
-    include_bytes!("../../../core/src/test/resources/vesta-builder-v1.json");
+    include_bytes!("../../../protocol/pack-v1/fixtures/vesta-builder-v1.json");
 
 fn manifest_with_files(mods: Vec<BuilderFile>, overrides: Vec<BuilderFile>) -> BuilderManifest {
     BuilderManifest {

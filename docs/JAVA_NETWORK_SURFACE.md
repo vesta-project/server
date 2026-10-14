@@ -1,5 +1,9 @@
 # Java wrapper network surface (migration input)
 
+The Java sources cited below now live in
+[vesta-project/server-java](https://github.com/vesta-project/server-java).
+This remains historical migration evidence; it does not describe the Rust agent.
+
 Read-only inventory of the endpoints the Java host exposes, used to plan the Rust transport wave.
 Drafted by a Bunny helper (self-reported `space-bunny-free`) on 2026-10-09; the parent spot-checked
 the loopback power bypass, connector link codes, CORS reflection and OP-level mapping against source
