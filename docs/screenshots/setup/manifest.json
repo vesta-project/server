@@ -5,13 +5,13 @@
       "id": "welcome",
       "title": "Welcome to Vesta",
       "file": "welcome.png",
-      "ansiSha256": "a77d15911963e92015e602d80db15f7145336f8200e36403df21d56ae9a37086"
+      "ansiSha256": "9697dcaa81a2d20010e8950b44dc8bf5c226a9c2b112a3ef324cbb54de1565b0"
     },
     {
       "id": "welcome-existing",
       "title": "Welcome to Vesta",
       "file": "welcome-existing.png",
-      "ansiSha256": "b4eb9bce198e97c87a247a09fae5447349276fda226efd5d643bae6585c00727"
+      "ansiSha256": "3d6775bcc131fa5efa228cc188dc3e56c29d8cc855e0e517aeacb4bff02cdf19"
     },
     {
       "id": "location-new",
@@ -35,31 +35,67 @@
       "id": "existing-unavailable",
       "title": "Connect an existing server",
       "file": "existing-unavailable.png",
-      "ansiSha256": "fe138f0078bbb2501ae2c0cfc194075ca0f68ee85659d64062f7006b3d7a61b2"
+      "ansiSha256": "c56a8bed0c5242a4829455bd327d6610f3fc7f30776984abdf8fe68cabd5ac19"
     },
     {
       "id": "existing-not-detected",
       "title": "Connect an existing server",
       "file": "existing-not-detected.png",
-      "ansiSha256": "e12163c63de90bb7b30843b380a96fa6e0b021a0b2efbb959195fb2e93050325"
+      "ansiSha256": "590607a98de684d549ea313b790372e3bbdde9223692c1b8a7500113c2286246"
+    },
+    {
+      "id": "port-default",
+      "title": "Which port should Vesta use?",
+      "file": "port-default.png",
+      "ansiSha256": "2ae425bdb3abd17f5357b99d0d980c5104d0d1ffbf811d0703a0315c1c606912"
+    },
+    {
+      "id": "port-custom",
+      "title": "Which port should Vesta use?",
+      "file": "port-custom.png",
+      "ansiSha256": "952eca38f7e78bd7fa934efce2606b6d717005511bf3fc7652843cac5cabc370"
+    },
+    {
+      "id": "port-busy",
+      "title": "Which port should Vesta use?",
+      "file": "port-busy.png",
+      "ansiSha256": "f4c57b8499faddef2374227692f877146fd19c27f392c5afb0e9b828993ed0db"
+    },
+    {
+      "id": "port-recheck",
+      "title": "Which port should Vesta use?",
+      "file": "port-recheck.png",
+      "ansiSha256": "2e0d6395861d27380c49022e1c91f0648c6169d275f514e6763f494f8953f306"
+    },
+    {
+      "id": "external-check",
+      "title": "Check external access?",
+      "file": "external-check.png",
+      "ansiSha256": "6242642203b4c3cc33ebad24f83a506995f84b8d6f9236b0ae5b28168ee2c6b8"
+    },
+    {
+      "id": "external-skip",
+      "title": "Check external access?",
+      "file": "external-skip.png",
+      "ansiSha256": "68a061dd03de4a8064b15e4f9889f2df7da65314238a26a8177637de9b3e3351"
     },
     {
       "id": "checks",
-      "title": "Checking this computer",
+      "title": "Connection checks",
       "file": "checks.png",
-      "ansiSha256": "34327be3d6f1e31f4631d73715274ef1bc1d47f23418585d266a5fcc61bd8174"
+      "ansiSha256": "59974a1028196d7204bafde71a885b1873706d663d2bf2efe23a896d4d384716"
     },
     {
       "id": "existing-detected",
-      "title": "Checking this computer",
+      "title": "Connection checks",
       "file": "existing-detected.png",
-      "ansiSha256": "5629138e52914ed0d21885aeb67790c1f1044fd02ab71757336210e7fd34756b"
+      "ansiSha256": "31f665606af1da41c1ea53d62c9ec1414d96c26c4ade1aeeb17b6b16010c70e3"
     },
     {
       "id": "port-conflict",
-      "title": "Choose an available local port",
+      "title": "Choose a custom port",
       "file": "port-conflict.png",
-      "ansiSha256": "b40ea438beacc1bf14681542ebb9a2e28dd1710760d8ef7652b13c4a3cdf13ed"
+      "ansiSha256": "8099b463738b8b6824a5e6dc590927819c4763a0735d4ee8b9c1d6f9a0a19e10"
     },
     {
       "id": "startup",
@@ -83,55 +119,73 @@
       "id": "review",
       "title": "Ready to set up your host",
       "file": "review.png",
-      "ansiSha256": "0e1159251ca179e0ce8030e9d8485a3dd639827f8047810cf94e0691ff1f14c6"
+      "ansiSha256": "4741f7bfe4d5d8decb1ef66901ccab10220ffe35271303619d5a648e64397ae1"
     },
     {
       "id": "review-existing",
       "title": "Ready to set up your host",
       "file": "review-existing.png",
-      "ansiSha256": "ea74bddab918909920dbc4043131c9d9ae9fb76bbc06304dcead8ceec6e486a0"
+      "ansiSha256": "01b7b74d344167bc229d48658a2342039dd1ecf3849515167631529e2cf534cc"
     },
     {
       "id": "review-back",
       "title": "Ready to set up your host",
       "file": "review-back.png",
-      "ansiSha256": "10ea3c80ba0275393d5e9585d4ea26e6f314ac116d0915ae01eae756dbd4cae9"
+      "ansiSha256": "0b7e5e87a4ad54eff2964e5cf4260be5386063b9a78e03ea7c6e62b5f747e115"
     },
     {
       "id": "progress-preparing",
       "title": "Preparing your host",
       "file": "progress-preparing.png",
-      "ansiSha256": "c9fa5eded5c3e1fddf785e9fb0629ba93d8d4a2475665d39c246ab83e76e2750"
+      "ansiSha256": "80338149c8527979508de4b72a89dab45a7840629013bb8fbea5ff6741e4e82d"
     },
     {
       "id": "progress-installing",
       "title": "Preparing your host",
       "file": "progress-installing.png",
-      "ansiSha256": "67e2cd8493d3e90525e1436bd0858a87b8ed87175935f6461677cf84794d77fa"
+      "ansiSha256": "45197e42ce525eb7b02f9af7ea065c88c190d7d6bb8d9d5757f5664e5ad4f158"
     },
     {
       "id": "progress-startup",
       "title": "Preparing your host",
       "file": "progress-startup.png",
-      "ansiSha256": "31c27249b2e1186603e07bfab02cd0f18447c1ba562a727e5140f04fecb75a88"
+      "ansiSha256": "198364be4a84129d045fd042d9f779a920485b47966d7e7b2601649a80c95891"
     },
     {
       "id": "progress-verifying",
       "title": "Preparing your host",
       "file": "progress-verifying.png",
-      "ansiSha256": "55fef012c1afe3254f69da2d5ca46189bd7f13bb182378dc83d60e0877ae0e46"
+      "ansiSha256": "12629415736dcdc46dd7c8e73c52250f3b6f8787ce63633b0b78e80409f8c0c6"
     },
     {
       "id": "complete",
       "title": "Your host is ready",
       "file": "complete.png",
-      "ansiSha256": "7afb0c7523c6a57fad3f875f210904b9f2197ffcbe4cfd2dd16e7dcc09cb2d53"
+      "ansiSha256": "ed70f63e71acd439dedafdd3232acd8cab501480a76dddb185f77a1512917c81"
     },
     {
       "id": "complete-manual",
       "title": "Your host is ready",
       "file": "complete-manual.png",
-      "ansiSha256": "199e134be258ffa1da32c4c995abd4b5967a64097dbd57c8f99b9703178b206d"
+      "ansiSha256": "56aee14bd15488903cbed3e5f5e63b197d7ff1394f61c5799171a7b7b586e80a"
+    },
+    {
+      "id": "external-reachable",
+      "title": "Your host is ready",
+      "file": "external-reachable.png",
+      "ansiSha256": "ba1a72aa90b62f71660fc169d1c7085346bd66ebaa95a91caf9bf962cfa921d2"
+    },
+    {
+      "id": "external-unreachable",
+      "title": "Your host is ready",
+      "file": "external-unreachable.png",
+      "ansiSha256": "f47e3e55645078b9509effa0c69690f9b4b4511c7ebade215a47b2a477ce693c"
+    },
+    {
+      "id": "external-unavailable",
+      "title": "Your host is ready",
+      "file": "external-unavailable.png",
+      "ansiSha256": "a90012849240f19501570156aae2c9a71d511fce1d39839cc18fd964d17f46a2"
     },
     {
       "id": "failure",
@@ -161,7 +215,7 @@
       "id": "cancelled",
       "title": "Setup cancelled",
       "file": "cancelled.png",
-      "ansiSha256": "3ef4ac8d37f7b5461a4d8ea1d853fca2e05dcdae71a242c1ad0c189aa3a9d064"
+      "ansiSha256": "6fd7011eba765c82ad6d63ef212eb9472fc7a3ce7dd65d25603bc6d3dd5e67b3"
     },
     {
       "id": "resume",
@@ -185,7 +239,7 @@
       "id": "plain",
       "title": "Your host is ready",
       "file": "plain.png",
-      "ansiSha256": "2c20a07bdd6a23ae1bcab1f7cb111d2505214b26ba9c9d59fb9476b674b6af02"
+      "ansiSha256": "06bb41d444505fd5aa3c4e571787620ff55efd3dd86f5ee3a908c570b2728834"
     }
   ]
 }
