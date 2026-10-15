@@ -18,6 +18,7 @@ out/
 .project
 .classpath
 target/
+node_modules/
 run/
 run-server/
 demo-server/*

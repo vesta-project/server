@@ -8,6 +8,7 @@ members = [
     "crates/vesta-server-install",
     "crates/vesta-supervisor",
     "apps/vesta-agent",
+    "apps/vesta-setup",
 ]
 resolver = "3"
 

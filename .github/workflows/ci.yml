@@ -21,6 +21,7 @@ jobs:
       - name: Check protocol conformance and requirement ledger
         run: |
           node --test scripts/*.test.mjs
+          node --test scripts/bootstrap/*.test.mjs
           node scripts/requirements-ledger.mjs --check
           node scripts/build-roadmap-html.mjs --check
 
