@@ -84,6 +84,7 @@ fn answers(root: PathBuf) -> Answers {
         existing_server: None,
         startup: Startup::Manual,
         port: port(),
+        external_probe: None,
     }
 }
 fn port() -> u16 {
@@ -278,13 +279,21 @@ fn real_pending_host_verifies_tls_resumes_identity_and_rejects_wrong_identity() 
     let mut bundle = Bundle::new(true);
     let release = release::load(bundle.source()).unwrap();
     let temp = tempfile::tempdir().unwrap();
-    let a = answers(temp.path().join("host"));
+    let mut a = answers(temp.path().join("host"));
+    a.external_probe = Some(vesta_setup::network::ExternalProbe {
+        url: format!("https://127.0.0.1:{}/v1/check", port()),
+        consent: true,
+    });
     let _running = RunningHost {
         root: a.root.clone(),
     };
     let receipt = engine::prepare(&a, &release, &mut |_, _, _, _| {}).unwrap();
     assert!(host::ready(&receipt));
     assert_eq!(receipt.phase, "ready");
+    assert_eq!(
+        receipt.external_status,
+        vesta_setup::network::ExternalStatus::Unavailable
+    );
     assert!(!a.root.join("game").exists());
     let descriptor: serde_json::Value =
         serde_json::from_slice(&fs::read(a.root.join("private/handoff.json")).unwrap()).unwrap();
@@ -356,6 +365,7 @@ fn interrupted_key_creation_recovers_without_rotating_the_private_key() {
         phase: "preparing".into(),
         tls_sha256: String::new(),
         startup_registered: false,
+        external_status: Default::default(),
     };
     engine::write_private(
         &a.root,
@@ -505,5 +515,181 @@ fn preview_export_is_new_only_and_uses_real_renderer_output() {
                 width: 88
             }
         )
+    );
+}
+
+#[test]
+fn default_and_custom_ports_are_validated_and_rechecked_against_real_listeners() {
+    use vesta_setup::{network, wizard};
+    let temp = tempfile::tempdir().unwrap();
+    let a = answers(temp.path().join("host"));
+    let mut json = serde_json::to_value(&a).unwrap();
+    json.as_object_mut().unwrap().remove("port");
+    let path = temp.path().join("answers.json");
+    fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+    assert_eq!(
+        engine::read_answers(&path).unwrap().port,
+        network::DEFAULT_PORT
+    );
+    for invalid in ["0", "65536", "not a port", "-1"] {
+        assert!(wizard::validate_port(invalid).is_err());
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let selected = listener.local_addr().unwrap().port().to_string();
+    assert!(
+        wizard::validate_port(&selected)
+            .unwrap_err()
+            .contains("already in use")
+    );
+    drop(listener);
+    wizard::validate_port(&selected).unwrap();
+}
+
+#[test]
+fn external_diagnostics_require_consent_bind_the_reply_and_never_turn_failure_into_setup_failure() {
+    use vesta_setup::network::{
+        self, ExternalProbe, ExternalStatus, ProbeClient, ProbeRequest, ProbeResponse,
+    };
+    struct Probe(u8);
+    impl ProbeClient for Probe {
+        fn check(&self, _url: &str, r: &ProbeRequest) -> Result<ProbeResponse, String> {
+            if self.0 == 2 {
+                return Err("unavailable".into());
+            }
+            let mut response = ProbeResponse {
+                schema: r.schema,
+                port: r.port,
+                installation_id: r.installation_id.clone(),
+                tls_sha256: r.tls_sha256.clone(),
+                nonce: r.nonce.clone(),
+                reachable: self.0 != 1,
+            };
+            match self.0 {
+                3 => response.nonce = "0".repeat(32),
+                4 => response.port = r.port.saturating_sub(1),
+                5 => response.installation_id = "0".repeat(32),
+                6 => response.tls_sha256 = "0".repeat(64),
+                7 => response.schema = 9,
+                _ => {}
+            }
+            Ok(response)
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let mut receipt = Receipt {
+        schema: 1,
+        installation_id: "a".repeat(32),
+        answers: answers(temp.path().join("host")),
+        release_version: "0.1.0".into(),
+        release_manifest_sha256: "a".repeat(64),
+        phase: "ready".into(),
+        tls_sha256: "b".repeat(64),
+        startup_registered: false,
+        external_status: ExternalStatus::NotChecked,
+    };
+    assert_eq!(
+        network::diagnose(&receipt, &Probe(0)),
+        ExternalStatus::NotChecked
+    );
+    let mut configuration = ExternalProbe {
+        url: "https://probe.example.org/v1/check".into(),
+        consent: true,
+    };
+    configuration.validate().unwrap();
+    receipt.answers.external_probe = Some(configuration.clone());
+    assert_eq!(
+        network::diagnose(&receipt, &Probe(0)),
+        ExternalStatus::Reachable
+    );
+    assert_eq!(
+        network::diagnose(&receipt, &Probe(1)),
+        ExternalStatus::Unreachable
+    );
+    for mode in 2..=7 {
+        assert_eq!(
+            network::diagnose(&receipt, &Probe(mode)),
+            ExternalStatus::Unavailable
+        );
+    }
+    configuration.consent = false;
+    assert!(configuration.validate().is_err());
+    receipt.answers.external_probe = Some(configuration.clone());
+    assert_eq!(
+        network::diagnose(&receipt, &Probe(0)),
+        ExternalStatus::Unavailable
+    );
+    for url in [
+        "http://probe.example.org/v1/check",
+        "https://owner:secret@probe.example.org/v1/check",
+        "https://probe.example.org/v1/check?token=secret",
+        "https://probe.example.org/v1/check#fragment",
+    ] {
+        configuration.url = url.into();
+        configuration.consent = true;
+        assert!(configuration.validate().is_err());
+    }
+}
+
+#[test]
+fn setup_copy_is_concise_and_cancellation_uses_the_finish_step() {
+    assert_eq!(engine::cancelled_view().step, 6);
+    for (id, view) in visual_states::all() {
+        let text = ui::render(
+            &view,
+            ui::Theme {
+                color: false,
+                unicode: true,
+                width: 88,
+            },
+        )
+        .to_lowercase();
+        for removed in ["java", "eula", "in the app", "app onboarding"] {
+            assert!(
+                !text.contains(removed),
+                "{id} retains unnecessary copy: {removed}"
+            );
+        }
+    }
+}
+
+#[test]
+fn paths_use_native_separators_without_reinterpreting_unix_names() {
+    use std::path::Path;
+    use vesta_setup::paths;
+    #[cfg(windows)]
+    {
+        assert_eq!(
+            paths::display(Path::new("C:/Vesta/host/private/handoff.json")),
+            r"C:\Vesta\host\private\handoff.json"
+        );
+        assert_eq!(
+            paths::display(Path::new(r"\\?\UNC\Host\Share\Vesta")),
+            r"\\Host\Share\Vesta"
+        );
+        assert_eq!(
+            paths::comparable(Path::new(r"\\?\C:\Vesta\host")),
+            paths::comparable(Path::new("c:/vesta//host/"))
+        );
+    }
+    #[cfg(unix)]
+    {
+        let path = Path::new(r"/tmp/Host\literal");
+        assert_eq!(paths::normalize(path), path);
+        assert_ne!(
+            paths::comparable(path),
+            paths::comparable(Path::new("/tmp/Host/literal"))
+        );
+        assert_ne!(
+            paths::comparable(path),
+            paths::comparable(Path::new(r"/tmp/host\literal"))
+        );
+    }
+    assert!(
+        engine::guard(Path::new(if cfg!(windows) {
+            "C:/Vesta/../escape"
+        } else {
+            "/tmp/Vesta/../escape"
+        }))
+        .is_err()
     );
 }

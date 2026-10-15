@@ -1,7 +1,8 @@
 //! One active prompt, inline redraw, arrow keys, back navigation and plain fallback.
 use crate::{
     engine::{self, Answers, Result, Startup},
-    platform,
+    network::{self, ExternalProbe},
+    paths, platform,
     ui::{self, Row, TaskStatus, Tone, View},
 };
 use crossterm::{
@@ -277,16 +278,8 @@ pub fn welcome_view(selected: usize) -> View {
             "Let's prepare a home for your Minecraft server.",
         ),
         &[
-            (
-                "Set up a new host",
-                "Install the foundations; choose Minecraft in the app.",
-                false,
-            ),
-            (
-                "Connect an existing server",
-                "Keep its files in place and finish adoption in the app.",
-                false,
-            ),
+            ("Set up a new host", "", false),
+            ("Connect an existing server", "", false),
         ],
         selected,
     )
@@ -321,7 +314,7 @@ pub fn resume_view(answers: &Answers, selected: usize) -> View {
     );
     v.rows.push(Row::Detail {
         label: "Location".into(),
-        value: answers.root.display().to_string(),
+        value: paths::display(&answers.root),
     });
     with_choices(
         v,
@@ -341,22 +334,57 @@ pub fn resume_view(answers: &Answers, selected: usize) -> View {
     )
 }
 pub fn checks_view(answers: &Answers) -> View {
-    let mut v = view(
-        3,
-        "Checking this computer",
-        "Everything needed to prepare the Vesta host.",
-    );
-    v.rows=vec![Row::Task{label:format!("Host platform · {}",platform::target().unwrap_or("unsupported")),status:TaskStatus::Done},Row::Task{label:"Local connection port is available".into(),status:TaskStatus::Done},Row::Detail{label:"Java runtime".into(),value:"Selected later with Minecraft in the app".into()},Row::Notice{tone:Tone::Info,text:"Vesta needs no Java or Rust installation. Host components are provided by the verified release bundle.".into()},Row::Detail{label:"Connection".into(),value:format!("Port {} · this computer",answers.port)}];
+    let mut v = view(3, "Connection checks", "");
+    v.rows = vec![Row::Task {
+        label: format!("Port {} is available locally", answers.port),
+        status: TaskStatus::Done,
+    }];
     if let Some(path) = &answers.existing_server {
         v.rows.push(Row::Detail {
             label: "Existing server detected".into(),
-            value: path.display().to_string(),
+            value: paths::display(path),
         });
     }
+    with_choices(v, &[("Continue", "", false)], 0)
+}
+pub fn port_view(available: bool, selected: usize) -> View {
+    let mut v = view(3, "Which port should Vesta use?", "HTTPS connection port");
+    if !available {
+        v.rows.push(Row::Notice {
+            tone: Tone::Warning,
+            text: format!("Port {} is already in use.", network::DEFAULT_PORT),
+        });
+    }
+    let mut choices = vec![
+        ("Use 8443 · default", "", !available),
+        ("Use a custom port", "", false),
+    ];
+    if !available {
+        choices.push(("Recheck port 8443", "", false));
+    }
+    with_choices(v, &choices, selected)
+}
+pub fn external_view(url: &str, selected: usize) -> View {
+    let mut v = view(
+        3,
+        "Check external access?",
+        "The checker receives your public IP, port and TLS fingerprint.",
+    );
+    v.rows.push(Row::Detail {
+        label: "Checker".into(),
+        value: url.into(),
+    });
     with_choices(
         v,
-        &[("Continue", "Review how this host should start.", false)],
-        0,
+        &[
+            (
+                "Run external check",
+                "An unsuccessful check will not block setup.",
+                false,
+            ),
+            ("Skip", "", false),
+        ],
+        selected,
     )
 }
 pub fn review_view(answers: &Answers, selected: usize) -> View {
@@ -368,14 +396,7 @@ pub fn review_view(answers: &Answers, selected: usize) -> View {
     v.rows = vec![
         Row::Detail {
             label: "Install location".into(),
-            value: answers.root.display().to_string(),
-        },
-        Row::Detail {
-            label: "Existing server".into(),
-            value: answers.existing_server.as_ref().map_or_else(
-                || "Choose Minecraft in the app".into(),
-                |p| p.display().to_string(),
-            ),
+            value: paths::display(&answers.root),
         },
         Row::Detail {
             label: "Startup".into(),
@@ -389,21 +410,19 @@ pub fn review_view(answers: &Answers, selected: usize) -> View {
             label: "Connection".into(),
             value: format!("https://127.0.0.1:{}", answers.port),
         },
-        Row::Notice {
-            tone: Tone::Info,
-            text: "Minecraft files and EULA acceptance are handled later in the app.".into(),
-        },
     ];
+    if let Some(path) = &answers.existing_server {
+        v.rows.insert(
+            1,
+            Row::Detail {
+                label: "Existing server".into(),
+                value: paths::display(path),
+            },
+        );
+    }
     with_choices(
         v,
-        &[
-            (
-                "Install Vesta host",
-                "Verify release signatures, install components, and check the local connection.",
-                false,
-            ),
-            ("Go back", "Change the startup preference.", false),
-        ],
+        &[("Install Vesta host", "", false), ("Go back", "", false)],
         selected,
     )
 }
@@ -418,8 +437,10 @@ pub fn ask(terminal: &mut Terminal) -> Result<Answers> {
         root: engine::default_root(),
         existing_server: None,
         startup: Startup::Manual,
-        port: 8443,
+        port: network::DEFAULT_PORT,
+        external_probe: None,
     };
+    let probe_url = std::env::var("VESTA_SETUP_PROBE_URL").ok();
     loop {
         match stage {
             0 => match choose(
@@ -460,7 +481,9 @@ pub fn ask(terminal: &mut Terminal) -> Result<Answers> {
                             Ok(())
                         },
                     )? {
-                        Answer::Next(p) => answers.existing_server = Some(PathBuf::from(p)),
+                        Answer::Next(p) => {
+                            answers.existing_server = Some(paths::normalize(&PathBuf::from(p)))
+                        }
                         Answer::Back => {
                             stage = 0;
                             continue;
@@ -472,7 +495,7 @@ pub fn ask(terminal: &mut Terminal) -> Result<Answers> {
                     2,
                     "Where should Vesta live?",
                     "Dedicated Vesta installation folder",
-                    answers.root.display().to_string(),
+                    paths::display(&answers.root),
                     |text| {
                         let mut candidate = answers.clone();
                         candidate.root = PathBuf::from(text);
@@ -480,7 +503,7 @@ pub fn ask(terminal: &mut Terminal) -> Result<Answers> {
                     },
                 )? {
                     Answer::Next(p) => {
-                        answers.root = PathBuf::from(p);
+                        answers.root = paths::normalize(&PathBuf::from(p));
                         stage = 2;
                     }
                     Answer::Back => {
@@ -492,7 +515,7 @@ pub fn ask(terminal: &mut Terminal) -> Result<Answers> {
                 }
             }
             2 => {
-                if answers.root.join("private/setup.json").exists() {
+                if answers.root.join("private").join("setup.json").exists() {
                     let prior = engine::read_receipt(&answers.root)?;
                     match choose(terminal, resume_view(&prior.answers, 0), 0)? {
                         Answer::Next(0) => {
@@ -506,28 +529,44 @@ pub fn ask(terminal: &mut Terminal) -> Result<Answers> {
                         }
                     }
                 }
-                if !engine::port_available(answers.port) {
-                    match input(
+                let available = engine::port_available(network::DEFAULT_PORT);
+                let selected = usize::from(!available || answers.port != network::DEFAULT_PORT);
+                match choose(terminal, port_view(available, selected), selected)? {
+                    Answer::Next(0) => answers.port = network::DEFAULT_PORT,
+                    Answer::Next(1) => match input(
                         terminal,
                         3,
-                        "Choose an available local port",
-                        "The usual port is busy. Use another port for this host.",
-                        answers.port.saturating_add(1).to_string(),
-                        |text| {
-                            text.parse::<u16>()
-                                .ok()
-                                .filter(|p| *p > 0 && engine::port_available(*p))
-                                .map(|_| ())
-                                .ok_or("That port is unavailable. Choose another port.".into())
-                        },
+                        "Choose a custom port",
+                        "Port (1–65535)",
+                        answers.port.to_string(),
+                        validate_port,
                     )? {
-                        Answer::Next(p) => {
-                            answers.port = p.parse().map_err(|_| "setup_port_invalid")?
+                        Answer::Next(port) => {
+                            answers.port = port.parse().map_err(|_| "setup_port_invalid")?
                         }
-                        Answer::Back => {
-                            stage = 1;
-                            continue;
+                        Answer::Back => continue,
+                    },
+                    Answer::Next(_) => continue,
+                    Answer::Back => {
+                        stage = 1;
+                        continue;
+                    }
+                }
+                if validate_port(&answers.port.to_string()).is_err() {
+                    continue;
+                }
+                if let Some(url) = &probe_url {
+                    match choose(terminal, external_view(url, 0), 0)? {
+                        Answer::Next(0) => {
+                            let probe = ExternalProbe {
+                                url: url.clone(),
+                                consent: true,
+                            };
+                            probe.validate()?;
+                            answers.external_probe = Some(probe);
                         }
+                        Answer::Next(_) => answers.external_probe = None,
+                        Answer::Back => continue,
                     }
                 }
                 platform::target()?;
@@ -560,6 +599,17 @@ pub fn ask(terminal: &mut Terminal) -> Result<Answers> {
             },
         }
     }
+}
+pub fn validate_port(text: &str) -> Result<()> {
+    let port = text
+        .parse::<u16>()
+        .ok()
+        .filter(|p| *p > 0)
+        .ok_or("Enter a port between 1 and 65535.")?;
+    if !engine::port_available(port) {
+        return Err("That port is already in use. Choose another port or retry.".into());
+    }
+    Ok(())
 }
 fn friendly(code: &str) -> String {
     match code{

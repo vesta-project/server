@@ -18,8 +18,8 @@ use std::{
 };
 
 fn raw_credentials(root: &Path) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
-    let cert = engine::read_private(&root.join("private/certificate.pem"), 16384)?;
-    let key = engine::read_private(&root.join("private/key.pem"), 16384)?;
+    let cert = engine::read_private(&root.join("private").join("certificate.pem"), 16384)?;
+    let key = engine::read_private(&root.join("private").join("key.pem"), 16384)?;
     let certificates: Vec<_> = CertificateDer::pem_slice_iter(&cert)
         .collect::<std::result::Result<_, _>>()
         .map_err(|_| "setup_tls_invalid")?;
@@ -57,7 +57,7 @@ pub fn serve(root: &Path) -> Result<()> {
     directory
         .prepare()
         .map_err(|_| "setup_private_directory_refused")?;
-    let lock_path = root.join("private/host.lock");
+    let lock_path = root.join("private").join("host.lock");
     engine::guard(&lock_path)?;
     let lock = OpenOptions::new()
         .create(true)
@@ -76,7 +76,7 @@ pub fn serve(root: &Path) -> Result<()> {
     }
     // An explicit new host invocation consumes a previous clean stop request.
     // Hold the host lock first so a duplicate invocation cannot cancel a stop.
-    let stop = root.join("private/stop-request");
+    let stop = root.join("private").join("stop-request");
     if stop.exists() {
         if engine::read_private(&stop, 128)? != receipt.installation_id.as_bytes() {
             return Err("setup_stop_request_invalid".into());
@@ -103,7 +103,7 @@ pub fn serve(root: &Path) -> Result<()> {
     loop {
         if checked.elapsed() >= Duration::from_millis(250) {
             checked = Instant::now();
-            let stop = root.join("private/stop-request");
+            let stop = root.join("private").join("stop-request");
             if stop.exists()
                 && engine::read_private(&stop, 128)
                     .is_ok_and(|b| b == receipt.installation_id.as_bytes())

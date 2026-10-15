@@ -1064,14 +1064,18 @@
       "name": "Network discovery, NAT and optional proxy setup",
       "status": "prototype",
       "phase": 8,
-      "current": "Rust implements versioned server-scoped discovery and TLS transport, but no LAN/direct/VPN/proxy reachability diagnostics, CGNAT diagnosis, consented probes, or NAT setup; NAT/proxy setup is declared future work.",
+      "current": "Rust implements versioned discovery, TLS transport, default/custom port selection, local TLS listener checks, and consented external diagnostics through a configurable stateless HTTPS probe. A deployable probe service and focused TLS/protocol tests exist; public deployment, LAN/direct/VPN/proxy coexistence, CGNAT diagnosis, firewall configuration and NAT setup remain unverified or incomplete.",
       "evidence": [
+        "apps/vesta-setup/src/network.rs",
+        "apps/vesta-setup/tests/setup.rs",
+        "scripts/reachability-probe/server.mjs",
+        "scripts/reachability-probe/server.test.mjs",
         "crates/vesta-protocol/src/discovery.rs",
         "crates/vesta-protocol/tests/discovery.rs",
         "crates/vesta-transport/src/lib.rs"
       ],
       "acceptance": "Local/LAN/direct/VPN/proxy coexist; CGNAT diagnosed; probe consent; no required relay.",
-      "auditDate": "2026-10-10",
+      "auditDate": "2026-10-15",
       "previous": {
         "auditDate": "2026-10-04",
         "status": "partial",

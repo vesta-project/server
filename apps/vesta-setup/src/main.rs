@@ -1,7 +1,7 @@
 use std::{path::PathBuf, process::ExitCode};
 use vesta_setup::{engine, host, release::Source, ui, visual_states, wizard};
 
-const HELP: &str = "Vesta host setup\n\n  vesta-setup --bundle-url <https-directory> --manifest-sha256 <hex> --release-key <hex>\n  vesta-setup --bundle-dir <directory> --manifest-sha256 <hex> --release-key <hex>\n              [--answers <json-file> --yes] [--no-color] [--ascii]\n  vesta-setup preview [--state <name> | --export <new-directory>] [--no-color] [--ascii]\n  vesta-setup <host|status|stop|activate> --root <installation-directory>\n\nInteractive setup prepares a host for app onboarding. Minecraft and Java selection remain in the app.\n";
+const HELP: &str = "Vesta host setup\n\n  vesta-setup --bundle-url <https-directory> --manifest-sha256 <hex> --release-key <hex>\n  vesta-setup --bundle-dir <directory> --manifest-sha256 <hex> --release-key <hex>\n              [--answers <json-file> --yes] [--no-color] [--ascii]\n  vesta-setup preview [--state <name> | --export <new-directory>] [--no-color] [--ascii]\n  vesta-setup <host|status|stop|activate> --root <installation-directory>\n\nInteractive Vesta host setup. Default HTTPS port: 8443.\n";
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -59,7 +59,7 @@ fn run() -> Result<(), String> {
                 let receipt = engine::read_receipt(&root)?;
                 println!(
                     "{}",
-                    serde_json::json!({"phase":receipt.phase,"installation_id":receipt.installation_id,"pending_host_ready":host::ready(&receipt)})
+                    serde_json::json!({"phase":receipt.phase,"installation_id":receipt.installation_id,"pending_host_ready":host::ready(&receipt),"external_access":receipt.external_status})
                 );
                 Ok(())
             }

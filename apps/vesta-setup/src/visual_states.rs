@@ -2,6 +2,8 @@
 //! These values contain no real machine paths, keys, credentials, or identities.
 use crate::{
     engine::{self, Answers, Receipt, Startup},
+    network::ExternalStatus,
+    paths,
     ui::View,
     wizard,
 };
@@ -18,6 +20,7 @@ fn answers() -> Answers {
         existing_server: None,
         startup: Startup::Automatic,
         port: 8443,
+        external_probe: None,
     }
 }
 fn receipt(answers: Answers) -> Receipt {
@@ -30,6 +33,7 @@ fn receipt(answers: Answers) -> Receipt {
         phase: "ready".into(),
         tls_sha256: "8a2c714f9d33ae068155c47a20bef4bfa7ba65d4bd369c88dc404ffd923402e7".into(),
         startup_registered: true,
+        external_status: ExternalStatus::NotChecked,
     }
 }
 pub fn all() -> Vec<(&'static str, View)> {
@@ -42,13 +46,8 @@ pub fn all() -> Vec<(&'static str, View)> {
     }));
     let mut manual = fresh.clone();
     manual.startup = Startup::Manual;
-    let root = fresh.root.display().to_string();
-    let game = existing
-        .existing_server
-        .as_ref()
-        .unwrap()
-        .display()
-        .to_string();
+    let root = paths::display(&fresh.root);
+    let game = paths::display(existing.existing_server.as_ref().unwrap());
     let location = || {
         wizard::input_view(
             2,
@@ -91,7 +90,11 @@ pub fn all() -> Vec<(&'static str, View)> {
                 2,
                 "Connect an existing server",
                 "Existing Minecraft server folder",
-                "/missing/minecraft▏",
+                if cfg!(windows) {
+                    r"D:\Missing\minecraft▏"
+                } else {
+                    "/missing/minecraft▏"
+                },
                 Some("Choose an existing server directory.".into()),
             ),
         ),
@@ -101,9 +104,25 @@ pub fn all() -> Vec<(&'static str, View)> {
                 2,
                 "Connect an existing server",
                 "Existing Minecraft server folder",
-                "/home/alex/Documents▏",
+                if cfg!(windows) {
+                    r"C:\Users\Alex\Documents▏"
+                } else {
+                    "/home/alex/Documents▏"
+                },
                 Some("No Minecraft server files were detected in this directory.".into()),
             ),
+        ),
+        ("port-default", wizard::port_view(true, 0)),
+        ("port-custom", wizard::port_view(true, 1)),
+        ("port-busy", wizard::port_view(false, 1)),
+        ("port-recheck", wizard::port_view(false, 2)),
+        (
+            "external-check",
+            wizard::external_view("https://probe.example.org/v1/check", 0),
+        ),
+        (
+            "external-skip",
+            wizard::external_view("https://probe.example.org/v1/check", 1),
         ),
         ("checks", wizard::checks_view(&fresh)),
         ("existing-detected", wizard::checks_view(&existing)),
@@ -111,10 +130,10 @@ pub fn all() -> Vec<(&'static str, View)> {
             "port-conflict",
             wizard::input_view(
                 3,
-                "Choose an available local port",
-                "The usual port is busy. Use another port for this host.",
+                "Choose a custom port",
+                "Port (1–65535)",
                 "8444▏",
-                Some("That port is unavailable. Choose another port.".into()),
+                Some("That port is already in use. Choose another port or retry.".into()),
             ),
         ),
         ("startup", wizard::startup_view(true, 0)),
@@ -150,6 +169,18 @@ pub fn all() -> Vec<(&'static str, View)> {
         ),
         ("complete", engine::complete_view(&receipt(fresh.clone()))),
         ("complete-manual", engine::complete_view(&receipt(manual))),
+        (
+            "external-reachable",
+            external_result(&fresh, ExternalStatus::Reachable),
+        ),
+        (
+            "external-unreachable",
+            external_result(&fresh, ExternalStatus::Unreachable),
+        ),
+        (
+            "external-unavailable",
+            external_result(&fresh, ExternalStatus::Unavailable),
+        ),
         ("failure", engine::failure_view("setup_write_failed")),
         (
             "failure-signature",
@@ -169,4 +200,9 @@ pub fn all() -> Vec<(&'static str, View)> {
         ("narrow", location()),
         ("plain", engine::complete_view(&receipt(fresh))),
     ]
+}
+fn external_result(answers: &Answers, status: ExternalStatus) -> View {
+    let mut result = receipt(answers.clone());
+    result.external_status = status;
+    engine::complete_view(&result)
 }

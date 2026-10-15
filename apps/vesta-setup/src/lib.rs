@@ -1,6 +1,8 @@
 //! OS-local host preparation. This never grants a Minecraft identity or starts a game.
 pub mod engine;
 pub mod host;
+pub mod network;
+pub mod paths;
 pub mod platform;
 pub mod release;
 pub mod ui;

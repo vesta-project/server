@@ -1,6 +1,7 @@
 //! Journalled host preparation. Existing Minecraft files are only observed.
 use crate::{
-    platform,
+    network::{self, ExternalProbe, ExternalStatus},
+    paths, platform,
     release::Release,
     ui::{Row, TaskStatus, Tone, View},
 };
@@ -28,7 +29,10 @@ pub struct Answers {
     pub root: PathBuf,
     pub existing_server: Option<PathBuf>,
     pub startup: Startup,
+    #[serde(default = "network::default_port")]
     pub port: u16,
+    #[serde(default)]
+    pub external_probe: Option<ExternalProbe>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +45,8 @@ pub struct Receipt {
     pub phase: String,
     pub tls_sha256: String,
     pub startup_registered: bool,
+    #[serde(default)]
+    pub external_status: ExternalStatus,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,9 +64,16 @@ pub fn default_root() -> PathBuf {
     #[cfg(not(windows))]
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
-    base.unwrap_or_else(|| PathBuf::from("/var/empty"))
-        .join("Vesta/hosts/default")
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
+        });
+    paths::normalize(
+        &base
+            .unwrap_or_else(|| PathBuf::from("/var/empty"))
+            .join("Vesta")
+            .join("hosts")
+            .join("default"),
+    )
 }
 pub fn guard(path: &Path) -> Result<()> {
     if !path.is_absolute()
@@ -118,25 +131,15 @@ pub fn read_answers(path: &Path) -> Result<Answers> {
             .map_err(|_| "setup_directory_unavailable")?
             .join(path)
     };
-    let answers: Answers = serde_json::from_slice(&read_private(&path, 16384)?)
+    let mut answers: Answers = serde_json::from_slice(&read_private(&path, 16384)?)
         .map_err(|_| "setup_answers_invalid")?;
     validate_answers(&answers)?;
+    answers.root = paths::normalize(&answers.root);
+    answers.existing_server = answers.existing_server.as_deref().map(paths::normalize);
     Ok(answers)
 }
 fn comparable(path: &Path) -> String {
-    let text = path
-        .to_string_lossy()
-        .replace('\\', "/")
-        .trim_start_matches("//?/")
-        .to_owned();
-    #[cfg(windows)]
-    {
-        text.to_lowercase()
-    }
-    #[cfg(not(windows))]
-    {
-        text
-    }
+    paths::comparable(path)
 }
 fn overlaps(left: &Path, right: &Path) -> bool {
     let a = comparable(left).trim_end_matches('/').to_owned();
@@ -148,6 +151,9 @@ pub fn validate_answers(answers: &Answers) -> Result<()> {
         return Err("setup_answers_invalid".into());
     }
     platform::target()?;
+    if let Some(probe) = &answers.external_probe {
+        probe.validate()?;
+    }
     guard(&answers.root)?;
     if answers.root.parent().is_none()
         || answers.root.parent().is_some_and(|p| p.parent().is_none())
@@ -176,7 +182,7 @@ pub fn validate_answers(answers: &Answers) -> Result<()> {
         let contents = fs::read_dir(&answers.root)
             .map_err(|_| "setup_path_unavailable")?
             .next();
-        if contents.is_some() && !answers.root.join("private/setup.json").is_file() {
+        if contents.is_some() && !answers.root.join("private").join("setup.json").is_file() {
             return Err("setup_directory_not_empty".into());
         }
     }
@@ -187,9 +193,11 @@ pub fn port_available(port: u16) -> bool {
 }
 pub fn read_receipt(root: &Path) -> Result<Receipt> {
     guard(root)?;
-    let r: Receipt =
-        serde_json::from_slice(&read_private(&root.join("private/setup.json"), 32768)?)
-            .map_err(|_| "setup_receipt_invalid")?;
+    let r: Receipt = serde_json::from_slice(&read_private(
+        &root.join("private").join("setup.json"),
+        32768,
+    )?)
+    .map_err(|_| "setup_receipt_invalid")?;
     if r.schema != 1
         || comparable(&r.answers.root) != comparable(root)
         || r.installation_id.len() != 32
@@ -290,7 +298,7 @@ pub fn prepare(
 ) -> Result<Receipt> {
     release.ensure_intact()?;
     validate_answers(answers)?;
-    let previous = if answers.root.join("private/setup.json").exists() {
+    let previous = if answers.root.join("private").join("setup.json").exists() {
         Some(read_receipt(&answers.root)?)
     } else {
         None
@@ -320,7 +328,7 @@ pub fn prepare(
         .and_then(|dir| dir.prepare())
         .map_err(|_| "setup_private_directory_refused")?;
     let directory = private_directory(&answers.root)?;
-    let lock_path = answers.root.join("private/setup.lock");
+    let lock_path = answers.root.join("private").join("setup.lock");
     guard(&lock_path)?;
     let lock = OpenOptions::new()
         .create(true)
@@ -334,7 +342,7 @@ pub fn prepare(
         .map_err(|_| "setup_private_permissions_failed")?;
     lock.try_lock_exclusive()
         .map_err(|_| "setup_already_running")?;
-    let receipt_path = answers.root.join("private/setup.json");
+    let receipt_path = answers.root.join("private").join("setup.json");
     let mut receipt = if receipt_path.exists() {
         let r = read_receipt(&answers.root)?;
         if r.answers != *answers || r.release_manifest_sha256 != release.manifest_hash() {
@@ -351,6 +359,7 @@ pub fn prepare(
             phase: "preparing".into(),
             tls_sha256: String::new(),
             startup_registered: false,
+            external_status: ExternalStatus::NotChecked,
         }
     };
     if !port_available(answers.port) && !crate::host::ready(&receipt) {
@@ -360,14 +369,18 @@ pub fn prepare(
     progress("preparing", "Creating private host storage", 0, 0);
     progress("preparing", "Creating the local TLS identity", 0, 0);
     if receipt.tls_sha256.is_empty() {
-        let has_key = answers.root.join("private/key.pem").exists();
-        let has_cert = answers.root.join("private/certificate.pem").exists();
+        let has_key = answers.root.join("private").join("key.pem").exists();
+        let has_cert = answers
+            .root
+            .join("private")
+            .join("certificate.pem")
+            .exists();
         if has_cert && !has_key {
             return Err("setup_tls_partial_recovery_required".into());
         }
         if !has_cert {
             let key = if has_key {
-                let bytes = read_private(&answers.root.join("private/key.pem"), 16384)?;
+                let bytes = read_private(&answers.root.join("private").join("key.pem"), 16384)?;
                 rcgen::KeyPair::from_pem(
                     std::str::from_utf8(&bytes).map_err(|_| "setup_tls_invalid")?,
                 )
@@ -406,7 +419,7 @@ pub fn prepare(
     progress("startup", "Starting the host", 0, 0);
     if !crate::host::ready(&receipt) {
         // A previous explicit local stop is not a permanent startup disablement.
-        let stop = answers.root.join("private/stop-request");
+        let stop = answers.root.join("private").join("stop-request");
         guard(&stop)?;
         if stop.exists() {
             fs::remove_file(&stop).map_err(|_| "setup_restart_failed")?;
@@ -428,6 +441,10 @@ pub fn prepare(
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     receipt.phase = "ready".into();
+    if answers.external_probe.is_some() {
+        progress("verifying", "Checking external access", 0, 0);
+    }
+    receipt.external_status = network::diagnose(&receipt, &network::HttpsProbe);
     journal(&answers.root, &receipt)?;
     Ok(receipt)
 }
@@ -465,7 +482,7 @@ pub fn progress_view(phase: &str, file: &str, done: u64, total: u64) -> View {
     View {
         step: 6,
         heading: "Preparing your host".into(),
-        description: vec!["Your Minecraft files stay in their current location.".into()],
+        description: vec![],
         rows,
         hint: "Interrupted setup can be resumed with the same options.".into(),
     }
@@ -475,22 +492,15 @@ pub fn complete_view(receipt: &Receipt) -> View {
     View {
         step: 6,
         heading: "Your host is ready".into(),
-        description: vec![
-            "Vesta is installed and the local connection is verified.".into(),
-            "Continue setup in the app.".into(),
-        ],
+        description: vec!["Vesta is installed and the local connection is open.".into()],
         rows: vec![
-            Row::Notice {
-                tone: Tone::Success,
-                text: "Waiting for app onboarding".into(),
+            Row::Detail {
+                label: "External access".into(),
+                value: receipt.external_status.label().into(),
             },
             Row::Detail {
                 label: "Connection".into(),
                 value: h.endpoint,
-            },
-            Row::Detail {
-                label: "TLS fingerprint".into(),
-                value: h.tls_sha256,
             },
             Row::Detail {
                 label: "Startup".into(),
@@ -501,20 +511,11 @@ pub fn complete_view(receipt: &Receipt) -> View {
                 },
             },
             Row::Detail {
-                label: "Handoff file".into(),
-                value: receipt
-                    .answers
-                    .root
-                    .join("private/handoff.json")
-                    .display()
-                    .to_string(),
-            },
-            Row::Notice {
-                tone: Tone::Info,
-                text: "Choose Minecraft, Java, owner access and backups in Vesta.".into(),
+                label: "Installed in".into(),
+                value: paths::display(&receipt.answers.root),
             },
         ],
-        hint: "Keep this connection and TLS fingerprint for the app.".into(),
+        hint: String::new(),
     }
 }
 pub fn failure_view(code: &str) -> View {
@@ -551,7 +552,7 @@ pub fn failure_view(code: &str) -> View {
 }
 pub fn cancelled_view() -> View {
     View {
-        step: 1,
+        step: 6,
         heading: "Setup cancelled".into(),
         description: vec!["No installation was started.".into()],
         rows: vec![],

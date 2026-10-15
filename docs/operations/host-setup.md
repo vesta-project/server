@@ -4,7 +4,7 @@
 
 The setup CLI targets Windows x86-64, Linux x86-64, and Linux ARM64. Automatic startup is available on Windows when PowerShell and Task Scheduler are available, and on Linux when the current user's systemd session is available. macOS and other targets are unsupported. Windows is the only OS with host-side test coverage at present; no Linux installation or login-session test is recorded. There is no live Minecraft launch in this setup path.
 
-The focused verification includes 12 Rust integration tests, three release-packager tests, and 31 captured production-renderer states. A real pending TLS host, resume/recovery, manual stop/restart, signature and artifact rejection, strict headless input, Windows junction rejection, and terminal frame bounds are covered. Automatic startup registration was not installed on the development machine. The automation terminal did not expose interactive stdin to Rust, so end-to-end keyboard interaction remains a manual check in Windows Terminal and a Linux terminal.
+The focused verification includes 16 Rust integration tests, three release-packager tests, five external-probe tests, and 40 captured production-renderer states. A real pending TLS host, resume/recovery, manual stop/restart, signature and artifact rejection, strict headless input, Windows junction rejection, port rechecks, platform path handling, external-result validation, and terminal frame bounds are covered. Automatic startup registration was not installed on the development machine. The automation terminal did not expose interactive stdin to Rust, so end-to-end keyboard interaction remains a manual check in Windows Terminal and a Linux terminal.
 
 ## Install interactively
 
@@ -18,7 +18,7 @@ vesta-setup --bundle-dir <release-directory> \
 
 For an HTTPS release, replace `--bundle-dir <release-directory>` with `--bundle-url <https-base-url>`. A local release directory contains `manifest.json`, `manifest.sig`, and the listed artifacts. Setup checks the pinned manifest, signature, target, and artifact hashes before installing. Do not copy verification values from an untrusted source.
 
-The interactive wizard chooses a dedicated Vesta host folder, optionally records the location of an existing Minecraft directory, checks the local port, and asks whether the host should start at user sign-in or manually. An existing game directory remains in place; Vesta installs to a separate host root. No game files are launched or changed by this setup stage. Java selection and server configuration happen later in the app.
+The interactive wizard chooses a dedicated Vesta host folder, optionally records the location of an existing Minecraft directory, offers the default HTTPS port 8443 or a custom port, checks availability, and asks whether the host should start at user sign-in or manually. A busy default port can be rechecked. The TLS listener is verified after startup. An existing game directory remains in place; Vesta installs to a separate host root. No game files are launched or changed by this setup stage.
 
 `--no-color` disables terminal colors and `--ascii` uses ASCII framing. Setup checks terminal capabilities and may require an interactive terminal for the wizard.
 
@@ -45,7 +45,17 @@ Schema version 1 accepts exactly these fields. Paths must be absolute; the host 
 }
 ```
 
-`existing_server` is either `null` or an absolute path to a detected existing Minecraft server directory. `startup` is `manual` or `automatic`. `port` is a nonzero TCP port and must be available on IPv4 loopback. Unknown fields, relative paths, overlapping paths, link/reparse-point paths, and non-empty unrelated destination folders are rejected. If setup already began in the destination, rerun with the same answer values and the same release manifest to resume; changing either requires a new host root.
+`existing_server` is either `null` or an absolute path to a detected existing Minecraft server directory. `startup` is `manual` or `automatic`. `port` defaults to 8443 when omitted; a custom port must be nonzero and available on IPv4 loopback. The optional `external_probe` field is described below. Unknown fields, relative paths, overlapping paths, link/reparse-point paths, and non-empty unrelated destination folders are rejected. Windows accepts either slash spelling and displays native backslashes; Unix preserves case and literal backslashes in filenames. If setup already began in the destination, rerun with the same answer values and the same release manifest to resume; changing either requires a new host root.
+
+## External reachability checks
+
+An external check is separate from the required local TLS readiness check. Configure an operator-hosted HTTPS probe using `VESTA_SETUP_PROBE_URL=https://probe.example.org/v1/check` before starting interactive setup. The wizard asks before sending the public source address, selected port, and TLS fingerprint to that service. Without a configured probe, setup reports external access as not checked. No third-party checker is silently selected.
+
+Headless answers can include `"external_probe": {"url": "https://probe.example.org/v1/check", "consent": true}`. The URL must be clean HTTPS without credentials, query parameters, or fragments. Explicit consent is required. Probe checks are bounded to eight seconds and reject redirects, oversized or malformed replies, and mismatched request nonces, installation IDs, ports, or TLS fingerprints.
+
+External results are `reachable`, `unreachable`, `unavailable`, or `not_checked`; none prevents a locally ready installation from completing. Local readiness proves that the TLS listener is running on this computer, not that a firewall or router permits internet access. The pending host remains loopback-only, so direct public access is expected to be unreachable unless an explicitly configured forwarding path reaches it. Setup does not silently change firewall rules, NAT mappings, or listener exposure.
+
+The stateless service and its deployment contract are documented in [scripts/reachability-probe](../../scripts/reachability-probe/README.md). Deploy it on a separate public network; there is no published Vesta probe URL in this repository. It probes only its request's TCP source address, verifies the pinned pending-host identity, and accepts no arbitrary target address. A reverse proxy that replaces the source with a private address is unsupported.
 
 ## Host lifecycle commands
 
@@ -58,7 +68,7 @@ vesta-setup stop --root <host-root>
 vesta-setup activate --root <host-root>
 ```
 
-`status` prints JSON with `phase`, `installation_id`, and `pending_host_ready`. The readiness value checks the pending local setup endpoint; it is not a Minecraft or management readiness signal.
+`status` prints JSON with `phase`, `installation_id`, `pending_host_ready`, and the last `external_access` result. The readiness value checks the pending local setup endpoint; it is not a Minecraft or management readiness signal. The external result is a setup-time snapshot, not continuous monitoring.
 
 `host` runs the host process in the foreground. Before activation it serves only the pending local readiness endpoint. After activation it starts the installed `vesta-agent` with the host configuration. The normal installer launches this process in the background so setup can verify the endpoint before it exits.
 

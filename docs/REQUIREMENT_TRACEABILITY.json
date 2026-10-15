@@ -4278,9 +4278,16 @@
       "text": "Optional external port/reachability testing discloses that the public address is sent to a remote probe. Owners may instead complete an end-to-end test from a paired launcher on another network.",
       "textSha256": "e2a745e7ee7fedb6155c4fb505d90ef15649f1447369d45bd9ade26fa4e69e1f",
       "phase": "P8",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "apps/vesta-setup/tests/setup.rs",
+        "scripts/reachability-probe/server.test.mjs"
+      ],
+      "evidence": [
+        "2026-10-15: configurable stateless HTTPS probe, interactive public-address disclosure, explicit headless consent, bounded identity-bound results, and nonblocking failures. Public off-network deployment and paired-launcher alternative remain unverified.",
+        "apps/vesta-setup/src/wizard.rs",
+        "apps/vesta-setup/src/network.rs"
+      ]
     },
     {
       "id": "installation-experience-005",

@@ -15,6 +15,7 @@ cargo check --workspace --all-targets --locked
 cargo test --workspace --locked
 node --test scripts/*.test.mjs
 node --test scripts/bootstrap/*.test.mjs
+node --test scripts/reachability-probe/*.test.mjs
 node scripts/requirements-ledger.mjs --check
 node scripts/build-roadmap-html.mjs --check
 ```
