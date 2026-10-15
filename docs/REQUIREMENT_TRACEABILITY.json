@@ -4300,9 +4300,14 @@
       "text": "Advanced/headless installations support documented non-interactive flags or an answer file using the same validation and backup acknowledgements.",
       "textSha256": "dfc5e1a7b801ba59a7327fc6d6987220507094f9dc185fbe2b148470cebeddc5",
       "phase": "P8",
-      "status": "not_verified",
-      "tests": [],
-      "evidence": []
+      "status": "partially_verified",
+      "tests": [
+        "apps/vesta-setup/tests/setup.rs"
+      ],
+      "evidence": [
+        "2026-10-15 source review: vesta-setup supports documented --answers <json-file> --yes mode, strict schema validation shared with interactive setup, and pinned signed-release inputs. Backup acknowledgements and successful headless production-release coverage remain unverified.",
+        "docs/operations/host-setup.md"
+      ]
     },
     {
       "id": "installation-experience-007",

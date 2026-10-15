@@ -134,13 +134,15 @@
       "name": "Deployment and instance scope",
       "status": "prototype",
       "phase": 1,
-      "current": "Rust has protected server-install roots and a server-scoped discovery contract, but no agent installer/adoption flow or persisted instance registry proving existing data stays in place and server_id survives restart.",
+      "current": "Rust host setup now installs into a separate protected host root and can record an existing Minecraft directory without moving it. App-level adoption and a persisted instance registry proving server_id survives restart remain unimplemented.",
       "evidence": [
+        "apps/vesta-setup/src/engine.rs",
+        "apps/vesta-setup/tests/setup.rs",
         "crates/vesta-server-install/src/install.rs",
         "crates/vesta-protocol/src/discovery.rs"
       ],
       "acceptance": "Install alongside an existing server without moving its data; preserve server_id across restart.",
-      "auditDate": "2026-10-10",
+      "auditDate": "2026-10-15",
       "previous": {
         "auditDate": "2026-10-04",
         "status": "partial",
@@ -1033,8 +1035,10 @@
       "name": "Java runtime and compatibility matrix",
       "status": "partial",
       "phase": 3,
-      "current": "Rust launches the game as a separate process and can probe a configured Java runtime, with loader/runtime planning tests; a tested adapter-capability compatibility matrix across game/loader/platform combinations is not established.",
+      "current": "Rust launches the game as a separate process and can probe a configured Java runtime, with loader/runtime planning tests. The host setup CLI explicitly defers Java selection to app onboarding; managed Java and a tested adapter-capability compatibility matrix remain absent.",
       "evidence": [
+        "apps/vesta-setup/src/wizard.rs",
+        "apps/vesta-setup/src/engine.rs",
         "crates/vesta-game-runtime/src/launch_config/mod.rs",
         "crates/vesta-game-runtime/src/process/launch.rs",
         "crates/vesta-server-install/src/runtime.rs",
@@ -1042,7 +1046,7 @@
         "crates/vesta-server-install/src/tests/loaders.rs"
       ],
       "acceptance": "Game runtime independent of agent runtime; adapter capabilities match tested combinations.",
-      "auditDate": "2026-10-10",
+      "auditDate": "2026-10-15",
       "previous": {
         "auditDate": "2026-10-04",
         "status": "partial",
@@ -1103,13 +1107,16 @@
       "name": "Installer, CLI and nonintrusive uninstall",
       "status": "partial",
       "phase": 8,
-      "current": "Rust server-install library (crates/vesta-server-install) provides approval-gated installs for Vanilla, Paper, Folia and Purpur, download-only Fabric and Quilt bundles, verified transfers, a bounded execution workspace and receipts. Forge and NeoForge, managed Java, the setup walkthrough and uninstall are not implemented, and the Java one-liner scripts still perform the real install.",
+      "current": "Rust vesta-setup now provides signed-release verification, interactive and answer-file CLI setup, journaled host installation, a loopback-only pending TLS readiness endpoint, status/stop/activation commands, and current-user logon startup. App onboarding, Java selection, Minecraft installation/adoption, and guided uninstall remain incomplete; this host installer does not satisfy the full F42 acceptance scope.",
       "evidence": [
+        "apps/vesta-setup/src",
+        "apps/vesta-setup/tests/setup.rs",
         "crates/vesta-server-install/src",
-        "apps/vesta-agent/src"
+        "apps/vesta-agent/src",
+        "docs/operations/host-setup.md"
       ],
       "acceptance": "Preserve worlds/scripts/settings; opt-in connector; secure defaults and advanced answers.",
-      "auditDate": "2026-10-10",
+      "auditDate": "2026-10-15",
       "previous": {
         "auditDate": "2026-10-04",
         "status": "partial",

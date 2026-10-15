@@ -8,6 +8,7 @@ cargo check --workspace --all-targets --locked
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 node --test scripts/*.test.mjs
+node --test scripts/bootstrap/*.test.mjs
 node scripts/requirements-ledger.mjs --check
 node scripts/build-roadmap-html.mjs --check
 ```

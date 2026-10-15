@@ -1,1 +1,2 @@
 protocol/** -text
+scripts/bootstrap/*.sh text eol=lf

@@ -1,0 +1,191 @@
+{
+  "source": "Compiled vesta-setup production view constructors; deterministic preview data",
+  "states": [
+    {
+      "id": "welcome",
+      "title": "Welcome to Vesta",
+      "file": "welcome.png",
+      "ansiSha256": "a77d15911963e92015e602d80db15f7145336f8200e36403df21d56ae9a37086"
+    },
+    {
+      "id": "welcome-existing",
+      "title": "Welcome to Vesta",
+      "file": "welcome-existing.png",
+      "ansiSha256": "b4eb9bce198e97c87a247a09fae5447349276fda226efd5d643bae6585c00727"
+    },
+    {
+      "id": "location-new",
+      "title": "Where should Vesta live?",
+      "file": "location-new.png",
+      "ansiSha256": "350e860b8154952cdc55e4d218083d6b7a3c3be09bd3a695e1fd323434518099"
+    },
+    {
+      "id": "location-existing",
+      "title": "Connect an existing server",
+      "file": "location-existing.png",
+      "ansiSha256": "e775b5c3454b2460ddae14da2f28f393295e2528f7766c14a0f16b62c9ca152b"
+    },
+    {
+      "id": "location-invalid",
+      "title": "Where should Vesta live?",
+      "file": "location-invalid.png",
+      "ansiSha256": "b6d27a93ea4750875ed38c8011e7b6d39382fe287f27b70ebebbdfab202a94e2"
+    },
+    {
+      "id": "existing-unavailable",
+      "title": "Connect an existing server",
+      "file": "existing-unavailable.png",
+      "ansiSha256": "fe138f0078bbb2501ae2c0cfc194075ca0f68ee85659d64062f7006b3d7a61b2"
+    },
+    {
+      "id": "existing-not-detected",
+      "title": "Connect an existing server",
+      "file": "existing-not-detected.png",
+      "ansiSha256": "e12163c63de90bb7b30843b380a96fa6e0b021a0b2efbb959195fb2e93050325"
+    },
+    {
+      "id": "checks",
+      "title": "Checking this computer",
+      "file": "checks.png",
+      "ansiSha256": "34327be3d6f1e31f4631d73715274ef1bc1d47f23418585d266a5fcc61bd8174"
+    },
+    {
+      "id": "existing-detected",
+      "title": "Checking this computer",
+      "file": "existing-detected.png",
+      "ansiSha256": "5629138e52914ed0d21885aeb67790c1f1044fd02ab71757336210e7fd34756b"
+    },
+    {
+      "id": "port-conflict",
+      "title": "Choose an available local port",
+      "file": "port-conflict.png",
+      "ansiSha256": "b40ea438beacc1bf14681542ebb9a2e28dd1710760d8ef7652b13c4a3cdf13ed"
+    },
+    {
+      "id": "startup",
+      "title": "How should Vesta start?",
+      "file": "startup.png",
+      "ansiSha256": "d0810bebc89045417cffdb4b969426977cf61c0b01f3be147c293430aa08dbc7"
+    },
+    {
+      "id": "startup-manual",
+      "title": "How should Vesta start?",
+      "file": "startup-manual.png",
+      "ansiSha256": "bada571f48fc22ff31bde9b83aff8b2f16e7007798ff03c6537396f48cd83c55"
+    },
+    {
+      "id": "startup-unavailable",
+      "title": "How should Vesta start?",
+      "file": "startup-unavailable.png",
+      "ansiSha256": "590d7fa5f0051cac8f19fa08c8ede5564d30fd5fbf9a0d449193b4bcd447cb62"
+    },
+    {
+      "id": "review",
+      "title": "Ready to set up your host",
+      "file": "review.png",
+      "ansiSha256": "0e1159251ca179e0ce8030e9d8485a3dd639827f8047810cf94e0691ff1f14c6"
+    },
+    {
+      "id": "review-existing",
+      "title": "Ready to set up your host",
+      "file": "review-existing.png",
+      "ansiSha256": "ea74bddab918909920dbc4043131c9d9ae9fb76bbc06304dcead8ceec6e486a0"
+    },
+    {
+      "id": "review-back",
+      "title": "Ready to set up your host",
+      "file": "review-back.png",
+      "ansiSha256": "10ea3c80ba0275393d5e9585d4ea26e6f314ac116d0915ae01eae756dbd4cae9"
+    },
+    {
+      "id": "progress-preparing",
+      "title": "Preparing your host",
+      "file": "progress-preparing.png",
+      "ansiSha256": "c9fa5eded5c3e1fddf785e9fb0629ba93d8d4a2475665d39c246ab83e76e2750"
+    },
+    {
+      "id": "progress-installing",
+      "title": "Preparing your host",
+      "file": "progress-installing.png",
+      "ansiSha256": "67e2cd8493d3e90525e1436bd0858a87b8ed87175935f6461677cf84794d77fa"
+    },
+    {
+      "id": "progress-startup",
+      "title": "Preparing your host",
+      "file": "progress-startup.png",
+      "ansiSha256": "31c27249b2e1186603e07bfab02cd0f18447c1ba562a727e5140f04fecb75a88"
+    },
+    {
+      "id": "progress-verifying",
+      "title": "Preparing your host",
+      "file": "progress-verifying.png",
+      "ansiSha256": "55fef012c1afe3254f69da2d5ca46189bd7f13bb182378dc83d60e0877ae0e46"
+    },
+    {
+      "id": "complete",
+      "title": "Your host is ready",
+      "file": "complete.png",
+      "ansiSha256": "7afb0c7523c6a57fad3f875f210904b9f2197ffcbe4cfd2dd16e7dcc09cb2d53"
+    },
+    {
+      "id": "complete-manual",
+      "title": "Your host is ready",
+      "file": "complete-manual.png",
+      "ansiSha256": "199e134be258ffa1da32c4c995abd4b5967a64097dbd57c8f99b9703178b206d"
+    },
+    {
+      "id": "failure",
+      "title": "Setup needs your attention",
+      "file": "failure.png",
+      "ansiSha256": "9654bb9cbbdc1fb64ad63aa8432ab7fc4302e040cfc69067a53b0d74117f7ef2"
+    },
+    {
+      "id": "failure-signature",
+      "title": "Setup needs your attention",
+      "file": "failure-signature.png",
+      "ansiSha256": "b9102aebbbb476627cf509ed125424884d83b8ab40eb37e14f9b64cf0bb2b45b"
+    },
+    {
+      "id": "failure-startup",
+      "title": "Setup needs your attention",
+      "file": "failure-startup.png",
+      "ansiSha256": "329c38f4dd1e9579f557819d9a80499a186feed60e30be7965700ee6d8826338"
+    },
+    {
+      "id": "failure-space",
+      "title": "Setup needs your attention",
+      "file": "failure-space.png",
+      "ansiSha256": "499b815aed2644eec5e3b8e531c930bfff2f660d825c692817cfc4a2f117a0dd"
+    },
+    {
+      "id": "cancelled",
+      "title": "Setup cancelled",
+      "file": "cancelled.png",
+      "ansiSha256": "3ef4ac8d37f7b5461a4d8ea1d853fca2e05dcdae71a242c1ad0c189aa3a9d064"
+    },
+    {
+      "id": "resume",
+      "title": "Finish your previous setup",
+      "file": "resume.png",
+      "ansiSha256": "a3985a568dc0440007da1e3b3c736250ac89c4b7b1d99209ff4eaedbcff723cf"
+    },
+    {
+      "id": "resume-another",
+      "title": "Finish your previous setup",
+      "file": "resume-another.png",
+      "ansiSha256": "790db9e41c89f061853d10ca9ebee6481cc831db289bf0444c0e58b3a7c1446b"
+    },
+    {
+      "id": "narrow",
+      "title": "Where should Vesta live?",
+      "file": "narrow.png",
+      "ansiSha256": "ae2dd4696efd2c0abcfb5514b0131b645b356c9d8966a26e93a22bf67a2e8df0"
+    },
+    {
+      "id": "plain",
+      "title": "Your host is ready",
+      "file": "plain.png",
+      "ansiSha256": "2c20a07bdd6a23ae1bcab1f7cb111d2505214b26ba9c9d59fb9476b674b6af02"
+    }
+  ]
+}
