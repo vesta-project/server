@@ -5,13 +5,13 @@
       "id": "welcome",
       "title": "Welcome to Vesta",
       "file": "welcome.png",
-      "ansiSha256": "9697dcaa81a2d20010e8950b44dc8bf5c226a9c2b112a3ef324cbb54de1565b0"
+      "ansiSha256": "06ddb6f46cad46b6da2a23d06583e02b188a62e7977d377b0d54ab2f9bcd2e80"
     },
     {
       "id": "welcome-existing",
       "title": "Welcome to Vesta",
       "file": "welcome-existing.png",
-      "ansiSha256": "3d6775bcc131fa5efa228cc188dc3e56c29d8cc855e0e517aeacb4bff02cdf19"
+      "ansiSha256": "4c0f1d4dcc74d389ad388f37192e5c543f323a71587c821f02abc8c21cbba642"
     },
     {
       "id": "location-new",
@@ -47,49 +47,49 @@
       "id": "port-default",
       "title": "Which port should Vesta use?",
       "file": "port-default.png",
-      "ansiSha256": "2ae425bdb3abd17f5357b99d0d980c5104d0d1ffbf811d0703a0315c1c606912"
+      "ansiSha256": "feaa60c491a3d7fd279b0a289fc6d8dec44895849b7380783ceaf142f55fee18"
     },
     {
       "id": "port-custom",
       "title": "Which port should Vesta use?",
       "file": "port-custom.png",
-      "ansiSha256": "952eca38f7e78bd7fa934efce2606b6d717005511bf3fc7652843cac5cabc370"
+      "ansiSha256": "daea2dab35729fb027b94050b6677238358fa5397c5c93ed0dd7c1f1fc3346e1"
     },
     {
       "id": "port-busy",
       "title": "Which port should Vesta use?",
       "file": "port-busy.png",
-      "ansiSha256": "f4c57b8499faddef2374227692f877146fd19c27f392c5afb0e9b828993ed0db"
+      "ansiSha256": "c4d9203d6efe1c86dd393b5ed7aeba00863a223f0a9c9ac2b91266b6440d04fc"
     },
     {
       "id": "port-recheck",
       "title": "Which port should Vesta use?",
       "file": "port-recheck.png",
-      "ansiSha256": "2e0d6395861d27380c49022e1c91f0648c6169d275f514e6763f494f8953f306"
+      "ansiSha256": "0b4137fdfc3a30c138cec27e70ab2b7271e96b1ebd169c910bb8ca1065b2718a"
     },
     {
       "id": "external-check",
       "title": "Check external access?",
       "file": "external-check.png",
-      "ansiSha256": "6242642203b4c3cc33ebad24f83a506995f84b8d6f9236b0ae5b28168ee2c6b8"
+      "ansiSha256": "6d5af7f507f761664b356cd5f37a026bfb8903c9ffff873669ed2d874529c0ab"
     },
     {
       "id": "external-skip",
       "title": "Check external access?",
       "file": "external-skip.png",
-      "ansiSha256": "68a061dd03de4a8064b15e4f9889f2df7da65314238a26a8177637de9b3e3351"
+      "ansiSha256": "fac9d73f0c430b00a529d3f9eb84fa5cc1eec01898b7bae7c44365f9503fad87"
     },
     {
       "id": "checks",
       "title": "Connection checks",
       "file": "checks.png",
-      "ansiSha256": "59974a1028196d7204bafde71a885b1873706d663d2bf2efe23a896d4d384716"
+      "ansiSha256": "153d38c9a5aeebb1642bef1c9d4f9c37c986dd0933346ce03b174821b1b66f06"
     },
     {
       "id": "existing-detected",
       "title": "Connection checks",
       "file": "existing-detected.png",
-      "ansiSha256": "31f665606af1da41c1ea53d62c9ec1414d96c26c4ade1aeeb17b6b16010c70e3"
+      "ansiSha256": "6951ab45df3078b4c2be0f923a0c9200c428064b5270ff4b17c1fc4e2e4ed78a"
     },
     {
       "id": "port-conflict",
@@ -101,37 +101,37 @@
       "id": "startup",
       "title": "How should Vesta start?",
       "file": "startup.png",
-      "ansiSha256": "d0810bebc89045417cffdb4b969426977cf61c0b01f3be147c293430aa08dbc7"
+      "ansiSha256": "081a34ce90b8102fa0acf99a7eaa308972edf50847fc71e4acff687421d01886"
     },
     {
       "id": "startup-manual",
       "title": "How should Vesta start?",
       "file": "startup-manual.png",
-      "ansiSha256": "bada571f48fc22ff31bde9b83aff8b2f16e7007798ff03c6537396f48cd83c55"
+      "ansiSha256": "c914680f3eb8b3e98cfa9e05fa729b95c7b4b1ff9f1c7ae67061461b8a333dfc"
     },
     {
       "id": "startup-unavailable",
       "title": "How should Vesta start?",
       "file": "startup-unavailable.png",
-      "ansiSha256": "590d7fa5f0051cac8f19fa08c8ede5564d30fd5fbf9a0d449193b4bcd447cb62"
+      "ansiSha256": "3b8fb92833d74c8b99278dc10b237242178a0e061b63548231618efb044b7a20"
     },
     {
       "id": "review",
       "title": "Ready to set up your host",
       "file": "review.png",
-      "ansiSha256": "4741f7bfe4d5d8decb1ef66901ccab10220ffe35271303619d5a648e64397ae1"
+      "ansiSha256": "372ae7156031dac02a1e729ac978badf1cd815e8da184e6276a00f401ab947e8"
     },
     {
       "id": "review-existing",
       "title": "Ready to set up your host",
       "file": "review-existing.png",
-      "ansiSha256": "01b7b74d344167bc229d48658a2342039dd1ecf3849515167631529e2cf534cc"
+      "ansiSha256": "40b8240c1d65d09ff0f94ca1e2dd820c6af985af15eecece5ab55adffa33b7b8"
     },
     {
       "id": "review-back",
       "title": "Ready to set up your host",
       "file": "review-back.png",
-      "ansiSha256": "0b7e5e87a4ad54eff2964e5cf4260be5386063b9a78e03ea7c6e62b5f747e115"
+      "ansiSha256": "18e361ba083df75f5f04a6dc27e06c6d1c674af4b36903a5498c34ef7f292391"
     },
     {
       "id": "progress-preparing",
@@ -221,13 +221,13 @@
       "id": "resume",
       "title": "Finish your previous setup",
       "file": "resume.png",
-      "ansiSha256": "a3985a568dc0440007da1e3b3c736250ac89c4b7b1d99209ff4eaedbcff723cf"
+      "ansiSha256": "175ef0948b62618907550c254e69b7dace1b97fb28b40016408833d1e83e0ddf"
     },
     {
       "id": "resume-another",
       "title": "Finish your previous setup",
       "file": "resume-another.png",
-      "ansiSha256": "790db9e41c89f061853d10ca9ebee6481cc831db289bf0444c0e58b3a7c1446b"
+      "ansiSha256": "7870c24e80e1a1d494fcf5cd7024ec1d9cacbf213e61fea8b48912af7c7011a0"
     },
     {
       "id": "narrow",

@@ -142,8 +142,25 @@ pub fn render(view: &View, theme: Theme) -> String {
     if !view.rows.is_empty() {
         lines.push(StyledLine::new(String::new(), TEXT));
     }
+    let mut previous: Option<&Row> = None;
     for row in view.rows.iter().take(100) {
+        if matches!(row, Row::Empty) {
+            section_gap(&mut lines);
+            previous = None;
+            continue;
+        }
+        if previous.is_some_and(|previous| {
+            !matches!(
+                (previous, row),
+                (Row::Choice { .. }, Row::Choice { .. })
+                    | (Row::Detail { .. }, Row::Detail { .. })
+                    | (Row::Task { .. }, Row::Task { .. })
+            )
+        }) {
+            section_gap(&mut lines);
+        }
         render_row(row, &theme, content_width, &mut lines);
+        previous = Some(row);
     }
     while lines.last().is_some_and(|line| line.text.is_empty()) {
         lines.pop();
@@ -166,6 +183,12 @@ pub fn render(view: &View, theme: Theme) -> String {
 
 const TEXT_BOLD: &str = "1;38;2;243;244;248";
 
+fn section_gap(lines: &mut Vec<StyledLine>) {
+    if lines.last().is_some_and(|line| !line.text.is_empty()) {
+        lines.push(StyledLine::new(String::new(), TEXT));
+    }
+}
+
 fn render_row(row: &Row, theme: &Theme, width: usize, out: &mut Vec<StyledLine>) {
     match row {
         Row::Choice {
@@ -187,11 +210,16 @@ fn render_row(row: &Row, theme: &Theme, width: usize, out: &mut Vec<StyledLine>)
             } else {
                 TEXT
             };
-            out.extend(
-                wrap(&sanitize(&format!("{} {}{}", marker, label, suffix)), width)
-                    .into_iter()
-                    .map(|s| StyledLine::new(s, label_style)),
-            );
+            for (i, part) in wrap(
+                &sanitize(&format!("{label}{suffix}")),
+                width.saturating_sub(2),
+            )
+            .into_iter()
+            .enumerate()
+            {
+                let prefix = if i == 0 { marker } else { " " };
+                out.push(StyledLine::new(format!("{prefix} {part}"), label_style));
+            }
             let help = sanitize(description);
             if !help.is_empty() {
                 out.extend(
@@ -200,7 +228,6 @@ fn render_row(row: &Row, theme: &Theme, width: usize, out: &mut Vec<StyledLine>)
                         .map(|s| StyledLine::new(format!("    {}", s), MUTED)),
                 );
             }
-            out.push(StyledLine::new(String::new(), TEXT));
         }
         Row::Input {
             label,
@@ -242,7 +269,6 @@ fn render_row(row: &Row, theme: &Theme, width: usize, out: &mut Vec<StyledLine>)
                         .map(|s| StyledLine::new(s, RED)),
                 );
             }
-            out.push(StyledLine::new(String::new(), TEXT));
         }
         Row::Detail { label, value } => {
             let label = sanitize(label);
@@ -297,7 +323,6 @@ fn render_row(row: &Row, theme: &Theme, width: usize, out: &mut Vec<StyledLine>)
                 };
                 out.push(StyledLine::new(text, style));
             }
-            out.push(StyledLine::new(String::new(), TEXT));
         }
         Row::Empty => out.push(StyledLine::new(String::new(), TEXT)),
     }
