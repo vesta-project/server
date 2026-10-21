@@ -201,22 +201,23 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     };
     match host.management().permission_mutate(token, key, command) {
         Ok(mut v) => {
-            if action == "invitations" && method == Method::POST {
-                if let Some(code) = v.get("code").and_then(|v| v.as_str()) {
-                    let endpoint = match host.configuration().listener() {
-                        vesta_control::config::ListenerDescription::Tls(listener) => {
-                            listener.public_endpoint()
-                        }
-                        _ => None,
-                    };
-                    let link = vesta_control::identity::management::pairing_link(
-                        endpoint,
-                        request.tls_fingerprint,
-                        code,
-                        host.management().server_id(),
-                    );
-                    v["pairing_link"] = serde_json::json!(link);
-                }
+            if action == "invitations"
+                && method == Method::POST
+                && let Some(code) = v.get("code").and_then(|v| v.as_str())
+            {
+                let endpoint = match host.configuration().listener() {
+                    vesta_control::config::ListenerDescription::Tls(listener) => {
+                        listener.public_endpoint()
+                    }
+                    _ => None,
+                };
+                let link = vesta_control::identity::management::pairing_link(
+                    endpoint,
+                    request.tls_fingerprint,
+                    code,
+                    host.management().server_id(),
+                );
+                v["pairing_link"] = serde_json::json!(link);
             }
             ok(if action == "server" {
                 server(host, v)
