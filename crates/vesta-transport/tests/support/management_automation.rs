@@ -508,3 +508,39 @@ fn backup_tls_composite_cursor_and_literal_restore_validation_precede_service_lo
         assert_eq!(reply.json()["error"]["code"], "invalid_request");
     }
 }
+
+#[test]
+fn snapshot_list_and_detail_strict_wire_queries() {
+    let f = Fixture::new("minecraft", 8, 16384, 5);
+    let (_, _, owner, _) = actor(&f, BuiltinRole::Owner);
+    for path in [
+        "backups/snapshots?profile=daily&limit=1",
+        "backups/safety-snapshots?profile=daily&limit=100",
+        "backups/snapshots/0123456789abcdef0123456789abcdef?profile=daily",
+    ] {
+        let reply = send(&f, "GET", path, b"", Some(&owner), None);
+        assert_eq!(reply.status, 404);
+        assert_eq!(reply.json()["error"]["code"], "backups_not_configured");
+    }
+    for path in [
+        "backups/snapshots?profile=daily&limit=101",
+        "backups/snapshots?profile=daily&before=bogus",
+        "backups/snapshots/0123456789abcdef0123456789abcdef?profile=daily&limit=1",
+        "backups/snapshots/not-an-id?profile=daily",
+    ] {
+        let reply = send(&f, "GET", path, b"", Some(&owner), None);
+        assert_eq!(reply.status, 400);
+    }
+    assert_eq!(
+        send(
+            &f,
+            "GET",
+            "backups/snapshots/0123456789abcdef0123456789abcdef?profile=daily",
+            b"",
+            None,
+            None
+        )
+        .status,
+        401
+    );
+}

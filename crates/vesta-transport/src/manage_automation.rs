@@ -1,6 +1,7 @@
 //! Closed management adapter for workflows, the inbox and backup jobs.
 use super::{Request, decode, envelope, error, management_error, ok};
 use crate::Reply;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use http::{Method, StatusCode};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -37,6 +38,7 @@ enum Route<'a> {
     Backups,
     BackupJob(&'a str),
     Snapshots,
+    Snapshot(&'a str),
     SafetySnapshots,
     Storage,
     Policy,
@@ -113,6 +115,8 @@ fn route(path: &str) -> Option<Route<'_>> {
                 .and_then(|s| resource(s, "backups/jobs/"))
             {
                 Route::ResolveRecovery(id)
+            } else if let Some(id) = resource(action, "backups/snapshots/") {
+                Route::Snapshot(id)
             } else if let Some(id) = resource(action, "backups/jobs/") {
                 Route::BackupJob(id)
             } else {
@@ -252,6 +256,7 @@ fn capability(route: Route<'_>, method: &Method) -> Capability {
         Route::Backups
         | Route::BackupJob(_)
         | Route::Snapshots
+        | Route::Snapshot(_)
         | Route::SafetySnapshots
         | Route::Storage => Capability::BackupsView,
         Route::Backup => Capability::BackupsCreate,
@@ -844,6 +849,7 @@ fn get(
         Route::Backups
         | Route::BackupJob(_)
         | Route::Snapshots
+        | Route::Snapshot(_)
         | Route::SafetySnapshots
         | Route::Storage
         | Route::Policy => {
@@ -856,11 +862,110 @@ fn get(
         Err(e) => control_failure(e, false),
     }
 }
+struct SnapshotPage<'a> {
+    profile: &'a str,
+    before: Option<(String, String)>,
+    limit: usize,
+}
+fn snapshot_cursor(server: &str, profile: &str, safety: bool, time: &str, id: &str) -> String {
+    URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&(server, profile, safety, time, id)).expect("snapshot cursor"))
+}
+fn snapshot_page<'a>(
+    server: &str,
+    safety: bool,
+    query: Option<&'a str>,
+) -> Option<SnapshotPage<'a>> {
+    let (mut profile_name, mut before, mut limit) = (None, None, 50);
+    for (key, value) in query_parts(query)? {
+        match key {
+            "profile" if profile(value) => profile_name = Some(value),
+            "limit" => limit = usize::try_from(number(value)?).ok()?,
+            "before" => before = Some(value),
+            _ => return None,
+        }
+    }
+    let profile = profile_name?;
+    if !(1..=100).contains(&limit) {
+        return None;
+    }
+    let before = if let Some(value) = before {
+        Some({
+            let decoded = URL_SAFE_NO_PAD.decode(value).ok()?;
+            let (bound_server, bound_profile, bound_safety, time, id): (
+                String,
+                String,
+                bool,
+                String,
+                String,
+            ) = serde_json::from_slice(&decoded).ok()?;
+            (bound_server == server
+                && bound_profile == profile
+                && bound_safety == safety
+                && snapshot_time(&time)
+                && engine::valid_snapshot_id(&id))
+            .then_some((time, id))
+        }?)
+    } else {
+        None
+    };
+    Some(SnapshotPage {
+        profile,
+        before,
+        limit,
+    })
+}
+fn valid_snapshots(snapshots: &[engine::Snapshot]) -> bool {
+    snapshots.iter().all(|v| {
+        engine::valid_snapshot_id(&v.id)
+            && snapshot_time(&v.time)
+            && v.tags.len() <= 32
+            && v.tags.iter().all(|t| {
+                !t.is_empty()
+                    && t.len() <= 80
+                    && t.bytes().all(|b| {
+                        b.is_ascii_alphanumeric() || matches!(b, b'=' | b'-' | b'_' | b'.')
+                    })
+            })
+    })
+}
+fn snapshot_projection(
+    server: &str,
+    profile: &str,
+    safety: bool,
+    mut snapshots: Vec<engine::Snapshot>,
+    before: Option<&(String, String)>,
+    limit: usize,
+) -> Result<Value, BackupError> {
+    if !valid_snapshots(&snapshots) {
+        return Err(BackupError::Unavailable);
+    }
+    snapshots.sort_by(|a, b| b.time.cmp(&a.time).then_with(|| b.id.cmp(&a.id)));
+    if let Some((time, id)) = before {
+        snapshots.retain(|v| (&v.time, &v.id) < (time, id));
+    }
+    let more = snapshots.len() > limit;
+    snapshots.truncate(limit);
+    Ok(
+        json!({"profile":profile,"snapshots":snapshots.iter().map(|v|json!({"id":v.id,"time":v.time})).collect::<Vec<_>>(),"next_before":if more {snapshots.last().map(|v|snapshot_cursor(server,profile,safety,&v.time,&v.id))} else {None}}),
+    )
+}
+fn snapshot_detail(
+    profile: &str,
+    id: &str,
+    snapshots: Vec<engine::Snapshot>,
+) -> Result<Value, BackupError> {
+    if !valid_snapshots(&snapshots) {
+        return Err(BackupError::Unavailable);
+    }
+    Ok(snapshots.into_iter().find(|v|v.id==id).map(|v|json!({"profile":profile,"snapshot":{"id":v.id,"time":v.time,"size_bytes":null,"added_bytes":null,"file_count":null,"tags":v.tags}})).unwrap_or(Value::Null))
+}
 fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<&str>) -> Reply {
     enum Query<'a> {
         Jobs(Option<(i64, String)>, usize),
         Job(&'a str),
-        Snapshots(&'a str, bool),
+        Snapshots(&'a str, bool, Option<(String, String)>, usize),
+        Snapshot(&'a str, &'a str),
         Storage,
         Policy,
     }
@@ -873,6 +978,21 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
         }
         Route::BackupJob(id) if query.is_none() && PrincipalId::parse(id).is_ok() => Query::Job(id),
         Route::Snapshots | Route::SafetySnapshots => {
+            let Some(page) = snapshot_page(
+                host.management().server_id(),
+                matches!(route, Route::SafetySnapshots),
+                query,
+            ) else {
+                return invalid();
+            };
+            Query::Snapshots(
+                page.profile,
+                matches!(route, Route::SafetySnapshots),
+                page.before,
+                page.limit,
+            )
+        }
+        Route::Snapshot(id) if engine::valid_snapshot_id(id) => {
             let Some(parts) = query_parts(query) else {
                 return invalid();
             };
@@ -882,7 +1002,7 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
             if !profile(value) {
                 return invalid();
             }
-            Query::Snapshots(value, matches!(route, Route::SafetySnapshots))
+            Query::Snapshot(value, id)
         }
         Route::Storage if query.is_none() => Query::Storage,
         Route::Policy if query.is_none() => Query::Policy,
@@ -892,7 +1012,10 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
         return backup_failure(BackupError::Disabled);
     };
     // Both list the repository under the same single-listing bound.
-    let snapshot_listing = matches!(&query, Query::Snapshots(_, _) | Query::Storage);
+    let snapshot_listing = matches!(
+        &query,
+        Query::Snapshots(..) | Query::Snapshot(..) | Query::Storage
+    );
     let result=match query {
         Query::Jobs(before,limit)=>backups.jobs(before.as_ref().map(|(timestamp,id)|(*timestamp,id.as_str())),limit).map(|jobs| {
             let profiles=backups.policy().profiles.iter().map(|p|json!({"name":p.name,"mode":match p.mode {BackupMode::Online=>"online",BackupMode::Stopped=>"stopped"},"keep_last":p.keep_last,"keep_daily":p.keep_daily,"keep_weekly":p.keep_weekly,"keep_monthly":p.keep_monthly,"on_mutation":match p.on_mutation {MutationPolicy::Warn=>"warn",MutationPolicy::FailWorld=>"fail-world",MutationPolicy::FailAny=>"fail-any"},"warn_seconds":p.warn_seconds,"max_snapshots":p.max_snapshots})).collect::<Vec<_>>();
@@ -903,14 +1026,15 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
             if job.kind != "restore_in_place" { data["restore_mode"] = json!("inspection_only"); }
             Ok(data)
         },Ok(None)=>Err(BackupError::UnknownJob),Err(e)=>Err(e)},
-        Query::Snapshots(profile,safety)=>(if safety {backups.safety_snapshots(profile)} else {backups.snapshots(profile)}).and_then(|snapshots| {
-            if snapshots.iter().any(|v|!engine::valid_snapshot_id(&v.id)||!snapshot_time(&v.time)) {return Err(BackupError::Unavailable);}
-            Ok(json!({"profile":profile,"snapshots":snapshots.iter().map(|v|json!({"id":v.id,"time":v.time})).collect::<Vec<_>>() }))
+        Query::Snapshots(profile,safety,before,limit)=>(if safety {backups.safety_snapshots(profile)} else {backups.snapshots(profile)}).and_then(|snapshots| {
+            snapshot_projection(host.management().server_id(),profile,safety,snapshots,before.as_ref(),limit)
         }),
+        Query::Snapshot(profile,id)=>backups.snapshots(profile).and_then(|snapshots|snapshot_detail(profile,id,snapshots)),
         Query::Storage => backups.storage().map(|status| storage_json(&status)),
         Query::Policy => Ok(policy_json(&backups.policy())),
     };
     match result {
+        Ok(Value::Null) => error(StatusCode::NOT_FOUND, "resource_not_found"),
         Ok(v) => ok(v),
         Err(e) => backup_read_failure(e, snapshot_listing),
     }
@@ -1179,6 +1303,70 @@ fn mutate_restore(host: &NetworkHost, subject: &Subject, route: Route<'_>, bytes
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn snapshot_pages_are_bounded_stable_and_scope_bound() {
+        let make = |n: u8, time: &str| engine::Snapshot {
+            id: format!("{n:032x}"),
+            time: time.into(),
+            tags: vec!["profile=daily".into()],
+        };
+        let values = vec![
+            make(1, "2026-10-22T00:00:00.000Z"),
+            make(2, "2026-10-22T00:00:00.000Z"),
+            make(3, "2026-10-21T00:00:00.000Z"),
+        ];
+        let first = snapshot_projection("server", "daily", false, values.clone(), None, 1).unwrap();
+        assert_eq!(first["snapshots"][0]["id"], format!("{:032x}", 2));
+        let cursor = first["next_before"].as_str().unwrap();
+        let query = format!("profile=daily&limit=1&before={cursor}");
+        let page = snapshot_page("server", false, Some(&query)).unwrap();
+        assert!(snapshot_page("other", false, Some(&query)).is_none());
+        assert!(snapshot_page("server", true, Some(&query)).is_none());
+        assert!(snapshot_page("server", false, Some(&query.replace("daily", "weekly"))).is_none());
+        let second = snapshot_projection(
+            "server",
+            "daily",
+            false,
+            values.clone(),
+            page.before.as_ref(),
+            1,
+        )
+        .unwrap();
+        assert_eq!(second["snapshots"][0]["id"], format!("{:032x}", 1));
+        let final_page = snapshot_projection(
+            "server",
+            "daily",
+            false,
+            values.clone(),
+            page.before.as_ref(),
+            100,
+        )
+        .unwrap();
+        assert_eq!(final_page["snapshots"].as_array().unwrap().len(), 2);
+        assert!(final_page["next_before"].is_null());
+        let detail = snapshot_detail("daily", &format!("{:032x}", 1), values).unwrap();
+        assert_eq!(detail["snapshot"]["tags"], json!(["profile=daily"]));
+        for field in ["size_bytes", "added_bytes", "file_count"] {
+            assert!(detail["snapshot"][field].is_null());
+        }
+        for query in [
+            "profile=daily&limit=0",
+            "profile=daily&limit=101",
+            "profile=daily&profile=weekly",
+            "profile=daily&before=bad",
+            "profile=daily&offset=1",
+        ] {
+            assert!(snapshot_page("server", false, Some(query)).is_none());
+        }
+        assert!(
+            snapshot_detail("daily", &"0".repeat(32), Vec::new())
+                .unwrap()
+                .is_null()
+        );
+        let mut corrupt = make(1, "2026-10-22T00:00:00.000Z");
+        corrupt.tags = vec!["/private/path".into()];
+        assert!(snapshot_detail("daily", &corrupt.id.clone(), vec![corrupt]).is_err());
+    }
     use super::*;
     #[test]
     fn in_place_dtos_are_closed_and_safety_is_default() {

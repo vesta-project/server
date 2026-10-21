@@ -1699,3 +1699,35 @@ PUT/DELETE missing or malformed conditions return 400; valid unmet conditions re
 412. Successful retries replay their receipts even after later changes. Icon
 conditions and bytes are part of the idempotent intent. Icon writes do not change
 the server text revision. All these routes reject query strings.
+
+
+## Backup snapshot pages and detail
+
+All routes require current `backups.view` and use the normal JSON envelope.
+
+- `GET /backups/snapshots?profile=daily[&before=<opaque>&limit=50]` and
+  `GET /backups/safety-snapshots?profile=daily[&before=<opaque>&limit=50]` return
+  `{ "profile":"daily","snapshots":[{"id":"32-lowercase-hex","time":"2026-10-22T00:00:00.000Z"}],"next_before":null }`.
+  `profile` remains required. Limit defaults to 50 and is 1-100; the old unbounded
+  list is now newest first, with ID descending as the timestamp tie-breaker.
+  Pass `next_before` unchanged to continue; it is null when exhausted. Cursor is
+  bound to server, profile and normal/safety collection, and contains its ordering
+  position, so removal of the cursor snapshot does not invalidate continuation.
+  Unknown/duplicate/malformed parameters and foreign cursors return 400. These
+  metadata reads still share the engine's one-listing budget and bounded
+  repository scan (at most 10,000 snapshots); busy listing returns 503
+  `temporarily_unavailable`. Pagination bounds response size, not repository I/O.
+- `GET /backups/snapshots/{id}?profile=daily` returns
+  `{ "profile":"daily","snapshot":{"id":"32-lowercase-hex","time":"2026-10-22T00:00:00.000Z","size_bytes":null,"added_bytes":null,"file_count":null,"tags":["profile=daily"]} }`.
+  This reuses cheap tag metadata for committed snapshots in that profile; unknown
+  ID/profile membership returns 404 `resource_not_found`. Size, newly added bytes
+  and file count are not present in the engine's cheap index, so remain null.
+  No manifest/world scan is performed to invent these numbers. Safety-only
+  snapshots are listed separately and have no new detail route. Disabled backups
+  and unknown profile retain existing 404 `backups_not_configured` /
+  `backup_profile_unknown` errors. GET bodies are empty.
+
+Unified `/activity` was deliberately deferred. Operations, backup jobs, file
+intents and pack publications have different retention, actor visibility and
+cursor stores; merging them safely is more than an additive quick projection.
+Existing operations/activity, backup-job and audit endpoints remain available.
