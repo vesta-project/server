@@ -8,6 +8,7 @@ use vesta_control::{
     identity::management::permissions::{
         AccessPatch, DeviceRename, Invitation, PermissionError, PermissionMutation,
         PermissionQuery, RoleInput, RolePatch, UserRoles,
+        branding::{MAX_ICON_BYTES, ServerPatch, icon_etag},
     },
 };
 
@@ -17,7 +18,7 @@ pub(super) fn implemented(path: &str) -> bool {
     };
     matches!(
         action,
-        "users" | "roles" | "access-sources" | "invitations" | "devices"
+        "users" | "roles" | "access-sources" | "invitations" | "devices" | "server" | "server/icon"
     ) || resource(action, "users").is_some()
         || resource(action, "roles").is_some()
         || resource(action, "devices").is_some()
@@ -100,6 +101,16 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     let action = path
         .strip_prefix("/api/v3/manage/")
         .expect("management route");
+    if action == "server/icon" {
+        return icon(host, request, token);
+    }
+    if request.if_match.is_some()
+        || request.if_none_match.is_some()
+        || request.range.is_some()
+        || request.if_range.is_some()
+    {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
     if bytes.len() > 16384 {
         return error(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large");
     }
@@ -121,6 +132,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
             }
             match action {
+                "server" => PermissionQuery::Server,
                 "roles" => PermissionQuery::Roles,
                 "access-sources" => PermissionQuery::Access,
                 _ => {
@@ -135,7 +147,11 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             }
         };
         return match host.management().permission_query(token, query) {
-            Ok(v) => ok(v),
+            Ok(v) => ok(if action == "server" {
+                server(host, v)
+            } else {
+                v
+            }),
             Err(e) => failure(e),
         };
     }
@@ -143,6 +159,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
     let command = match (method.as_str(), action) {
+        ("PATCH", "server") => decode::<ServerPatch>(bytes).map(PermissionMutation::Server),
         ("POST", "roles") => decode::<RoleInput>(bytes).map(PermissionMutation::CreateRole),
         ("PATCH", "access-sources") => decode::<AccessPatch>(bytes).map(PermissionMutation::Access),
         ("POST", "invitations") => decode::<Invitation>(bytes).map(PermissionMutation::Invitation),
@@ -201,7 +218,99 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                     v["pairing_link"] = serde_json::json!(link);
                 }
             }
-            ok(v)
+            ok(if action == "server" {
+                server(host, v)
+            } else {
+                v
+            })
+        }
+        Err(e) => failure(e),
+    }
+}
+
+fn server(host: &NetworkHost, mut value: serde_json::Value) -> serde_json::Value {
+    let pack = host.configuration().pack();
+    if value["name"].is_null() {
+        value["name"] = serde_json::json!(pack.name());
+    }
+    if value["description"].is_null() {
+        value["description"] = serde_json::json!(pack.description());
+    }
+    value["server_id"] = serde_json::json!(host.management().server_id());
+    value["agent_version"] = serde_json::json!(env!("CARGO_PKG_VERSION"));
+    value["minecraft_version"] = serde_json::json!(pack.minecraft_version());
+    value["pack_version"] = serde_json::json!(pack.version());
+    value["configured_mode"] = serde_json::json!("same_account");
+    value
+}
+fn strong_etag(value: &str) -> bool {
+    value.len() == 66
+        && value.starts_with('"')
+        && value.ends_with('"')
+        && value.as_bytes()[1..65]
+            .iter()
+            .all(|v| matches!(v,b'0'..=b'9'|b'a'..=b'f'))
+}
+fn icon(host: &NetworkHost, request: Request<'_>, token: &str) -> Reply {
+    if request.query.is_some() || request.range.is_some() || request.if_range.is_some() {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if request.bytes.len() > MAX_ICON_BYTES {
+        return error(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large");
+    }
+    if request.method == Method::GET {
+        if !request.bytes.is_empty()
+            || request.if_match.is_some()
+            || request.if_none_match.is_some()
+        {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        return match host.management().branding_icon(token) {
+            Ok(Some(bytes)) => {
+                let etag = icon_etag(&bytes);
+                let mut reply = super::response(StatusCode::OK, bytes, "image/png");
+                reply
+                    .headers_mut()
+                    .insert("etag", etag.parse().expect("hex ETag"));
+                reply
+            }
+            Ok(None) => error(StatusCode::NOT_FOUND, "resource_not_found"),
+            Err(e) => failure(e),
+        };
+    }
+    let Some(key) = request.idempotency else {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let command = match request.method.as_str() {
+        "PUT" => {
+            let expected = match (request.if_match, request.if_none_match) {
+                (Some(value), None) if strong_etag(value) => Some(value.to_owned()),
+                (None, Some("*")) => None,
+                _ => return error(StatusCode::BAD_REQUEST, "invalid_request"),
+            };
+            PermissionMutation::PutIcon(expected, request.bytes.to_vec())
+        }
+        "DELETE" if request.bytes.is_empty() && request.if_none_match.is_none() => {
+            let Some(expected) = request.if_match.filter(|v| strong_etag(v)) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            PermissionMutation::DeleteIcon(expected.to_owned())
+        }
+        _ => return error(StatusCode::BAD_REQUEST, "invalid_request"),
+    };
+    match host.management().permission_mutate(token, key, command) {
+        Ok(value) => {
+            let etag = value
+                .get("etag")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+            let mut reply = ok(value);
+            if let Some(etag) = etag {
+                reply
+                    .headers_mut()
+                    .insert("etag", etag.parse().expect("hex ETag"));
+            }
+            reply
         }
         Err(e) => failure(e),
     }

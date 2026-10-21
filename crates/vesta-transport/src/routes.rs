@@ -81,7 +81,8 @@ pub(super) async fn route(
         None
     };
     let conditional_header = |name: &str| -> Result<Option<String>, ()> {
-        if !(super::manage::file_endpoint(&path)
+        if !(super::manage::permission_endpoint(&path)
+            || super::manage::file_endpoint(&path)
             || super::manage::presentation::implemented(&path)
             || name == "if-none-match"
                 && (super::manage::metrics_endpoint(&path)
@@ -193,7 +194,8 @@ pub(super) async fn route(
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
     if ((super::manage::permission_endpoint(&path)
-        && (method == Method::PUT
+        && (method == Method::POST
+            || (method == Method::PUT && path != "/api/v3/manage/server/icon")
             || method == Method::PATCH
             || (method == Method::DELETE && path.starts_with("/api/v3/manage/roles/"))))
         || ((super::manage::automation_endpoint(&path)
@@ -205,6 +207,17 @@ pub(super) async fn route(
                 .get("content-type")
                 .and_then(|v| v.to_str().ok())
                 != Some("application/json"))
+    {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if path == "/api/v3/manage/server/icon"
+        && method == Method::PUT
+        && (request.headers().get_all("content-type").iter().count() != 1
+            || request
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                != Some("image/png"))
     {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }

@@ -662,15 +662,6 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         return envelope(StatusCode::ACCEPTED, json!({"data":summary(&value)}));
     }
     match action {
-        "server" => {
-            if query.is_some() {
-                return error(StatusCode::BAD_REQUEST, "invalid_request");
-            }
-            let pack = host.configuration().pack();
-            ok(
-                json!({"server_id":host.management().server_id(),"name":pack.name(),"agent_version":env!("CARGO_PKG_VERSION"),"minecraft_version":pack.minecraft_version(),"pack_version":pack.version(),"configured_mode":"same_account"}),
-            )
-        }
         "operations" => {
             let mut kind = None;
             let mut actor_me = false;

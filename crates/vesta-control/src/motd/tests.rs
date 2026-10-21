@@ -107,3 +107,29 @@ fn icon_validator_strips_metadata_and_rejects_corruption_size_and_deflate_bombs(
         format!("data:image/png;base64,{}", STANDARD.encode(valid))
     );
 }
+
+#[test]
+fn branding_png_validator_accepts_bounded_dimensions_and_rejects_bombs() {
+    for side in [64u32, 128, 512] {
+        let mut header = Vec::new();
+        header.extend_from_slice(&side.to_be_bytes());
+        header.extend_from_slice(&side.to_be_bytes());
+        header.extend_from_slice(&[8, 6, 0, 0, 0]);
+        let raw = vec![0; side as usize * (1 + side as usize * 4)];
+        let png = encode_icon(&header, &raw);
+        assert!(normalize_branding_icon(&png).is_some());
+        if side != 64 {
+            assert!(normalize_icon(&png).is_none());
+        }
+        let bomb = encode_icon(&header, &vec![0; raw.len() + 1]);
+        assert!(normalize_branding_icon(&bomb).is_none());
+    }
+    for side in [63u32, 513] {
+        let mut header = Vec::new();
+        header.extend_from_slice(&side.to_be_bytes());
+        header.extend_from_slice(&side.to_be_bytes());
+        header.extend_from_slice(&[8, 6, 0, 0, 0]);
+        assert!(normalize_branding_icon(&encode_icon(&header, &[0])).is_none());
+    }
+    assert!(normalize_branding_icon(&vec![0; 256 * 1024 + 1]).is_none());
+}

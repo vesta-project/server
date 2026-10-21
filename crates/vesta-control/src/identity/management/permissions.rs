@@ -6,6 +6,9 @@ use crate::identity::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+#[path = "branding.rs"]
+pub mod branding;
+
 const MAX_RECEIPTS: i64 = 4096;
 /// Receipts answer retries for this long, then are purged in bounded batches.
 const RECEIPT_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
@@ -105,6 +108,9 @@ pub enum PermissionMutation {
     RevokeDevice(String),
     RevokeInvitation(String),
     RenameDevice(String, DeviceRename),
+    Server(branding::ServerPatch),
+    PutIcon(Option<String>, Vec<u8>),
+    DeleteIcon(String),
 }
 impl PermissionMutation {
     fn capability(&self) -> Option<Capability> {
@@ -115,6 +121,7 @@ impl PermissionMutation {
             Self::Access(_) => Capability::AccessSourcesManage,
             Self::Invitation(_) | Self::RevokeInvitation(_) => Capability::InvitationsCreate,
             Self::RenameDevice(_, _) => return None,
+            Self::Server(_) | Self::PutIcon(..) | Self::DeleteIcon(_) => Capability::ConfigEdit,
             Self::RevokeDevice(_) => Capability::DevicesRevoke,
         })
     }
@@ -129,6 +136,9 @@ impl PermissionMutation {
             Self::RevokeDevice(id) => ("DELETE", format!("devices/{id}")),
             Self::RevokeInvitation(id) => ("DELETE", format!("invitations/{id}")),
             Self::RenameDevice(id, _) => ("PATCH", format!("devices/{id}")),
+            Self::Server(_) => ("PATCH", "server".into()),
+            Self::PutIcon(..) => ("PUT", "server/icon".into()),
+            Self::DeleteIcon(_) => ("DELETE", "server/icon".into()),
         }
     }
 }
@@ -137,6 +147,7 @@ pub enum PermissionQuery {
     User(String),
     Roles,
     Access,
+    Server,
     Devices(String),
     ManageableDevices { offset: u32, limit: u16 },
     Invitations { offset: u32, limit: u16 },
@@ -442,7 +453,8 @@ impl ManagementAccess {
             let policy=repo.policy(Some(&subject))?;
             let capability=match &query { PermissionQuery::Access=>Capability::AccessSourcesManage,
                 PermissionQuery::Devices(_) | PermissionQuery::ManageableDevices{..}=>Capability::DevicesRevoke,
-                PermissionQuery::Invitations{..}=>Capability::InvitationsCreate,_=>Capability::PrincipalsView };
+                PermissionQuery::Invitations{..}=>Capability::InvitationsCreate,
+                PermissionQuery::Server=>Capability::StatusView,_=>Capability::PrincipalsView };
             require(&policy,capability)?;
             match query {
                 PermissionQuery::Users{offset,limit}=> {
@@ -462,21 +474,15 @@ impl ManagementAccess {
                 }
                 PermissionQuery::ManageableDevices{offset,limit} => {
                     valid_page(offset, limit)?;
-                    // Device registration is globally bounded to 1000; filter ranks before paging.
-                    let mut statement=repo.connection().prepare("SELECT d.id,d.principal_id,coalesce(n.name,p.display_name),d.label,d.created_at,d.revoked_at IS NOT NULL FROM devices d JOIN principals p ON p.id=d.principal_id LEFT JOIN user_minecraft_names n ON n.principal_id=p.id WHERE d.server_id=? AND p.status='active' ORDER BY d.id LIMIT 1001")?;
-                    let rows=statement.query_map([self.server_id()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?,r.get::<_,bool>(5)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-                    if rows.len()>1000 {return Err(PermissionError::Saturated);}
-                    let mut devices=Vec::new();
-                    for (id,principal,name,label,created,revoked) in rows {
-                        let user=principal_id(&principal)?;
-                        if user==subject.principal || repo.rank(&user)?<policy.rank() {
-                            devices.push(json!({"id":id,"user":{"id":principal,"display_name":name},"name":label,"created_at_ms":created,"last_seen_at_ms":null,"revoked":revoked,"current":id==subject.device.as_str()}));
-                        }
-                    }
-                    let more=devices.len()>offset as usize+usize::from(limit);
-                    let devices=devices.into_iter().skip(offset as usize).take(usize::from(limit)).collect::<Vec<_>>();
+                    let mut statement=repo.connection().prepare("SELECT d.id,d.principal_id,coalesce(n.name,p.display_name),d.label,d.created_at,d.revoked_at IS NOT NULL FROM devices d JOIN principals p ON p.id=d.principal_id LEFT JOIN user_minecraft_names n ON n.principal_id=p.id WHERE d.server_id=? AND p.status='active' AND (d.principal_id=? OR coalesce((SELECT max(r.rank) FROM role_assignments a JOIN roles r ON r.id=a.role_id WHERE a.principal_id=d.principal_id AND a.revoked_at IS NULL AND (a.expires_at IS NULL OR a.expires_at>?)),0)<?) ORDER BY d.id LIMIT ? OFFSET ?")?;
+                    let mut devices=statement.query_map(params![self.server_id(),subject.principal.as_str(),repo.now,policy.rank(),i64::from(limit)+1,offset],|r| {
+                        let id:String=r.get(0)?;
+                        Ok(json!({"id":id,"user":{"id":r.get::<_,String>(1)?,"display_name":r.get::<_,String>(2)?},"name":r.get::<_,String>(3)?,"created_at_ms":r.get::<_,i64>(4)?,"last_seen_at_ms":null,"revoked":r.get::<_,bool>(5)?,"current":id==subject.device.as_str()}))
+                    })?.collect::<rusqlite::Result<Vec<_>>>()?;
+                    let more=devices.len()>usize::from(limit); devices.truncate(usize::from(limit));
                     Ok(json!({"devices":devices,"next_offset":more.then_some(offset+u32::from(limit))}))
                 }
+                PermissionQuery::Server=>branding::projection(repo),
                 PermissionQuery::User(id)=>user_value(repo,&id).map(with_version),
                 PermissionQuery::Roles=>Ok(json!({"roles":role_values(repo)?})),
                 PermissionQuery::Access=>Ok(with_version(json!({"settings":access::source_settings(repo)?}))),
@@ -490,6 +496,14 @@ impl ManagementAccess {
                     Ok(json!({"devices":devices}))
                 }
             }
+        })
+    }
+    pub fn branding_icon(&self, token: &str) -> AdminResult<Option<Vec<u8>>> {
+        let (subject, expires, monotonic) = self.permission_session(token)?;
+        self.admin_write(|repo| {
+            session_current(repo.now, expires, monotonic)?;
+            require(&repo.policy(Some(&subject))?, Capability::StatusView)?;
+            branding::icon(repo)
         })
     }
     fn admin_write<T>(
@@ -530,7 +544,13 @@ impl ManagementAccess {
         .map_err(|_| PermissionError::InvalidRequest)?;
         let key_hash = digest::digest(&digest::SHA256, &scope);
         let intent = serde_json::to_vec(&command).map_err(|_| PermissionError::InvalidRequest)?;
-        if intent.len() > 16384 {
+        if intent.len()
+            > if matches!(command, PermissionMutation::PutIcon(..)) {
+                1_100_000
+            } else {
+                16384
+            }
+        {
             return Err(PermissionError::InvalidRequest);
         }
         let intent_hash = digest::digest(&digest::SHA256, &intent);
@@ -566,6 +586,11 @@ impl ManagementAccess {
     ) -> AdminResult<Value> {
         let by = subject.principal.as_str();
         match command {
+            PermissionMutation::Server(input) => branding::patch(repo, input),
+            PermissionMutation::PutIcon(expected, bytes) => {
+                branding::put_icon(repo, expected.as_deref(), bytes)
+            }
+            PermissionMutation::DeleteIcon(expected) => branding::delete_icon(repo, expected),
             PermissionMutation::UserRoles(id, input) => {
                 if input.add.len() + input.remove.len() > 64
                     || input.add.is_empty() && input.remove.is_empty()

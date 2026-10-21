@@ -444,7 +444,19 @@ pub fn fallback_icon() -> Vec<u8> {
 }
 /// Re-encode validated pixels to strip private text/metadata from selected icons.
 pub fn normalize_icon(bytes: &[u8]) -> Option<Vec<u8>> {
-    if bytes.len() > 65536 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+    normalize_png(bytes, 65536, 64, 64)
+}
+/// Bounded RGB/RGBA 8-bit, non-interlaced PNG branding image; strip ancillary metadata.
+pub fn normalize_branding_icon(bytes: &[u8]) -> Option<Vec<u8>> {
+    normalize_png(bytes, 256 * 1024, 64, 512)
+}
+fn normalize_png(
+    bytes: &[u8],
+    maximum: usize,
+    minimum_side: u32,
+    maximum_side: u32,
+) -> Option<Vec<u8>> {
+    if bytes.len() > maximum || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return None;
     }
     let mut at = 8;
@@ -464,7 +476,10 @@ pub fn normalize_icon(bytes: &[u8]) -> Option<Vec<u8>> {
         }
         match kind {
             b"IHDR" if at == 8 && len == 13 => {
-                if payload[..8] != [0, 0, 0, 64, 0, 0, 0, 64]
+                let width = u32::from_be_bytes(payload[..4].try_into().ok()?);
+                let height = u32::from_be_bytes(payload[4..8].try_into().ok()?);
+                if width != height
+                    || !(minimum_side..=maximum_side).contains(&width)
                     || payload[8] != 8
                     || !matches!(payload[9], 2 | 6)
                     || payload[10..] != [0, 0, 0]
@@ -490,8 +505,9 @@ pub fn normalize_icon(bytes: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let header = header?;
-    let row = 1 + 64 * if header[9] == 6 { 4 } else { 3 };
-    let expected = 64 * row;
+    let side = u32::from_be_bytes(header[..4].try_into().ok()?) as usize;
+    let row = 1 + side * if header[9] == 6 { 4 } else { 3 };
+    let expected = side * row;
     let mut decoder = flate2::read::ZlibDecoder::new(compressed.as_slice());
     let mut raw = Vec::new();
     (&mut decoder)
@@ -504,7 +520,8 @@ pub fn normalize_icon(bytes: &[u8]) -> Option<Vec<u8>> {
     {
         return None;
     }
-    Some(encode_icon(header, &raw))
+    let normalized = encode_icon(header, &raw);
+    (normalized.len() <= maximum).then_some(normalized)
 }
 
 #[cfg(test)]

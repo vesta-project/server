@@ -1654,3 +1654,48 @@ Inventory pagination defaults to offset 0 / limit 50; limit is 1-100, offset is
 Duplicate/unknown/malformed query keys are 400. GET bodies and DELETE bodies are
 empty; JSON mutation objects reject unknown/duplicate fields. These offset views
 are current-state views, so concurrent changes can shift pages.
+
+
+## Server branding
+
+Branding uses `config.edit`: these are durable server-owned settings, with the
+same authority as other presentation configuration. GETs retain `status.view`,
+matching existing server identity visibility. The settings and normalized icon
+survive restart and are included in credential-free recovery export. They do not
+change pack name/version, discovery manifests, live server.properties, Minecraft
+`server-icon.png`, or the separately configured sleep/MOTD policy icons. Existing
+Minecraft presentation uses state-specific MOTD icons; it has no shared live
+server-icon setting to update safely from this route.
+
+- `GET /server` retains all fields and adds `description` and `revision`:
+  `{ "server_id":"id","name":"Hosted","description":null,"revision":"0","agent_version":"0.1.0","minecraft_version":"1.21.1","pack_version":"1.0.0","configured_mode":"same_account" }`.
+  Before a branding override, name/description fall back to trusted pack metadata.
+  Revision is a decimal string, initially `"0"`, incremented on each successful PATCH.
+- `PATCH /server`: strict JSON `{ "expected_revision":"0","name":"My server","description":"Welcome" }`.
+  At least one optional string is required; null is invalid. Omitted fields are
+  preserved. Name: 1-128 Unicode scalars, at most 512 UTF-8 bytes, not all whitespace,
+  no controls. Description: 0-1024 scalars and at most 4096 UTF-8 bytes; LF is the
+  only permitted control. Empty description clears its text. Returns the complete
+  GET shape at the new revision. Stale revision: 412 `precondition_failed`.
+- `GET /server/icon`: 200 raw `image/png` bytes with strong `ETag: "<lowercase SHA-256>"`
+  of the returned normalized PNG; 404 `resource_not_found` when unset. No JSON
+  envelope for successful bytes; errors retain it. No conditional GET or ranges.
+- `PUT /server/icon`: exactly one `Content-Type: image/png`, raw PNG up to 262144
+  bytes, `Idempotency-Key`, and either `If-None-Match: *` (create only) or exact
+  strong `If-Match: "<sha256>"` (replace). No wildcard/list/weak If-Match. Returns
+  `{ "etag":"\"<sha256>\"" }`, also in the ETag header. PNG must be square,
+  64-512 pixels inclusive, RGB/RGBA 8-bit and non-interlaced. CRCs, chunk ordering,
+  deflate length/checksum and row filter values are validated with bounded
+  decompression; ancillary metadata is stripped. Other PNG encodings return 400
+  `invalid_request`. The normalized output also fits 256 KiB. Invalid PNG is 400;
+  oversized input 413 `request_too_large` (the configured listener body cap may be
+  lower). ETag describes stored normalized output, not the submitted file bytes.
+- `DELETE /server/icon`: empty body, `Idempotency-Key` and exact strong `If-Match`;
+  returns `{ "deleted":true }`. Unset is 404; stale condition is 412.
+
+PATCH and icon mutations check current `config.edit` inside the settings writer;
+setting change, `management.permissions.mutate` audit and durable receipt are atomic.
+PUT/DELETE missing or malformed conditions return 400; valid unmet conditions return
+412. Successful retries replay their receipts even after later changes. Icon
+conditions and bytes are part of the idempotent intent. Icon writes do not change
+the server text revision. All these routes reject query strings.

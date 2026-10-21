@@ -656,3 +656,209 @@ fn invitation_inventory_revoke_and_own_device_rename() {
     );
     assert_eq!(user(&f, &token, &owner)["device_count"], 1);
 }
+
+fn icon_request(f: &Fixture, method: &str, bytes: &[u8], token: &str, headers: &str) -> WireReply {
+    let mut stream = f.stream();
+    write!(stream,"{method} /api/v3/manage/server/icon HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n",bytes.len()).unwrap();
+    stream.write_all(bytes).unwrap();
+    stream.flush().unwrap();
+    read_reply(stream).unwrap()
+}
+#[test]
+fn branding_revision_png_conditions_and_idempotency_over_tls() {
+    let f = Fixture::new("minecraft", 8, 300000, 5);
+    let (_, _, token) = actor(&f, BuiltinRole::Owner);
+    let (_, _, viewer) = actor(&f, BuiltinRole::Viewer);
+    let null = serde_json::Value::Null;
+    let before = send(&f, "GET", "server", &null, Some(&token), None);
+    assert_eq!(before.status, 200);
+    assert_eq!(before.json()["data"]["revision"], "0");
+    assert_eq!(before.json()["data"]["name"], "Hosted");
+    let patch =
+        serde_json::json!({"expected_revision":"0","name":"My server","description":"Welcome"});
+    let result = send(
+        &f,
+        "PATCH",
+        "server",
+        &patch,
+        Some(&token),
+        Some("branding-patch-00000001"),
+    );
+    assert_eq!(result.status, 200);
+    assert_eq!(result.json()["data"]["revision"], "1");
+    assert_eq!(result.json()["data"]["description"], "Welcome");
+    assert_eq!(
+        send(
+            &f,
+            "PATCH",
+            "server",
+            &patch,
+            Some(&token),
+            Some("branding-patch-00000001")
+        )
+        .json()["data"],
+        result.json()["data"]
+    );
+    management_reply_error(
+        &send(
+            &f,
+            "PATCH",
+            "server",
+            &patch,
+            Some(&token),
+            Some("branding-patch-stale-01"),
+        ),
+        412,
+        "precondition_failed",
+    );
+    management_reply_error(
+        &send(
+            &f,
+            "PATCH",
+            "server",
+            &patch,
+            Some(&viewer),
+            Some("branding-patch-viewer-01"),
+        ),
+        403,
+        "management_forbidden",
+    );
+    for body in [
+        serde_json::json!({"expected_revision":"1"}),
+        serde_json::json!({"expected_revision":"1","name":null}),
+        serde_json::json!({"expected_revision":"1","name":"x","extra":true}),
+    ] {
+        management_reply_error(
+            &send(
+                &f,
+                "PATCH",
+                "server",
+                &body,
+                Some(&token),
+                Some("branding-patch-invalid-01"),
+            ),
+            400,
+            "invalid_request",
+        );
+    }
+    management_reply_error(
+        &icon_request(&f, "GET", &[], &token, ""),
+        404,
+        "resource_not_found",
+    );
+    let png = vesta_control::motd::fallback_icon();
+    management_reply_error(
+        &icon_request(
+            &f,
+            "PUT",
+            &png,
+            &token,
+            "Idempotency-Key: branding-icon-no-cond-01\r\n",
+        ),
+        400,
+        "invalid_request",
+    );
+    management_reply_error(
+        &icon_request(
+            &f,
+            "PUT",
+            b"broken",
+            &token,
+            "Idempotency-Key: branding-icon-broken-01\r\nIf-None-Match: *\r\n",
+        ),
+        400,
+        "invalid_request",
+    );
+    let create = "Idempotency-Key: branding-icon-create-01\r\nIf-None-Match: *\r\n";
+    let put = icon_request(&f, "PUT", &png, &token, create);
+    assert_eq!(put.status, 200);
+    let etag = put.json()["data"]["etag"].as_str().unwrap().to_owned();
+    assert_eq!(
+        put.headers.get("etag").map(String::as_str),
+        Some(etag.as_str())
+    );
+    assert_eq!(icon_request(&f, "PUT", &png, &token, create).status, 200);
+    management_reply_error(
+        &icon_request(
+            &f,
+            "PUT",
+            &png,
+            &token,
+            "Idempotency-Key: branding-icon-create-02\r\nIf-None-Match: *\r\n",
+        ),
+        412,
+        "precondition_failed",
+    );
+    let get = icon_request(&f, "GET", &[], &viewer, "");
+    assert_eq!(get.status, 200);
+    assert_eq!(get.body, png);
+    assert_eq!(
+        get.headers.get("etag").map(String::as_str),
+        Some(etag.as_str())
+    );
+    assert_eq!(
+        get.headers.get("content-type").map(String::as_str),
+        Some("image/png")
+    );
+    let stale = format!(
+        "Idempotency-Key: branding-icon-stale-01\r\nIf-Match: \"{}\"\r\n",
+        "0".repeat(64)
+    );
+    management_reply_error(
+        &icon_request(&f, "DELETE", &[], &token, &stale),
+        412,
+        "precondition_failed",
+    );
+    let delete = format!("Idempotency-Key: branding-icon-delete-01\r\nIf-Match: {etag}\r\n");
+    management_reply_error(
+        &icon_request(&f, "DELETE", &[], &viewer, &delete),
+        403,
+        "management_forbidden",
+    );
+    assert_eq!(icon_request(&f, "DELETE", &[], &token, &delete).status, 200);
+    assert_eq!(icon_request(&f, "DELETE", &[], &token, &delete).status, 200);
+    management_reply_error(
+        &icon_request(&f, "GET", &[], &token, ""),
+        404,
+        "resource_not_found",
+    );
+    management_reply_error(
+        &icon_request(&f, "PUT", &vec![0; 262145], &token, create),
+        413,
+        "request_too_large",
+    );
+}
+
+#[test]
+fn invitation_link_uses_configured_endpoint_and_current_tls_fingerprint() {
+    let f = Fixture::configured_with_options(
+        "minecraft",
+        8,
+        16384,
+        5,
+        false,
+        "public-endpoint = 'https://[2001:db8::1]:8443/a%20b/'",
+    );
+    let (_, _, token) = actor(&f, BuiltinRole::Owner);
+    let reply = send(
+        &f,
+        "POST",
+        "invitations",
+        &serde_json::json!({"role":"viewer","expires_minutes":10}),
+        Some(&token),
+        Some("invitation-public-link-001"),
+    );
+    assert_eq!(reply.status, 200);
+    let data = reply.json()["data"].clone();
+    let expected = vesta_control::identity::management::pairing_link(
+        Some("https://[2001:db8::1]:8443/a%20b/"),
+        Some(&f.transport.as_ref().unwrap().tls_fingerprint().unwrap()),
+        data["code"].as_str().unwrap(),
+        f.host().database().server_id(),
+    )
+    .unwrap();
+    assert_eq!(data["pairing_link"], expected);
+    assert!(expected.starts_with(
+        "vesta://pair?endpoint=https%3A%2F%2F%5B2001%3Adb8%3A%3A1%5D%3A8443%2Fa%2520b%2F&code="
+    ));
+}

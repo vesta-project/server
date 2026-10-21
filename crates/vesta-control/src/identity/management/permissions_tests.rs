@@ -860,3 +860,34 @@ fn role_rank_increase_checks_dependents_overrides_and_other_assigned_roles() {
         );
     }
 }
+
+#[test]
+fn branding_audit_failure_rolls_back_setting_and_receipt() {
+    let f = Fixture::new();
+    let (_, session) = actor(&f, BuiltinRole::Owner);
+    f.db.write(|c| {c.execute_batch("CREATE TRIGGER fail_branding_audit BEFORE INSERT ON audit_events WHEN NEW.action='management.permissions.mutate' BEGIN SELECT RAISE(ABORT,'fixture'); END;")?;Ok(())}).unwrap();
+    let command = PermissionMutation::Server(branding::ServerPatch {
+        expected_revision: "0".into(),
+        name: Some("Brand".into()),
+        description: None,
+    });
+    assert_eq!(
+        run(&f, &session, "branding-rollback-00001", command.clone()),
+        Err(PermissionError::Unavailable)
+    );
+    assert_eq!(
+        f.service
+            .permission_query(session.secret.expose(), PermissionQuery::Server)
+            .unwrap()["revision"],
+        "0"
+    );
+    f.db.write(|c| {
+        c.execute_batch("DROP TRIGGER fail_branding_audit;")?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        run(&f, &session, "branding-rollback-00001", command).unwrap()["revision"],
+        "1"
+    );
+}
