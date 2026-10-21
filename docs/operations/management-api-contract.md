@@ -1608,3 +1608,49 @@ It requires current `automation.view` and uses the same bounded run projection
 as `/automation/workflows/{id}/runs`: `{runs:[...],next_after:string|null}`.
 List entries omit workflow definitions; per-run detail remains the existing
 `/automation/runs/{id}` route. Pagination and cursor semantics are unchanged.
+
+
+## Launcher invitation and device inventory (schema v25)
+
+All shapes below are `data` inside `{ "api_version":"3", "request_id":"...", "data":... }`.
+Errors use the existing envelope/status codes. Mutations require exactly one
+`Idempotency-Key` (16-128 visible ASCII bytes); receipts are scoped to server,
+principal, device, method and route. Current session and policy are checked in the
+writer before mutation or receipt replay. Mutation, audit
+`management.permissions.mutate` (target is the route), and receipt commit together.
+
+- `GET /invitations?offset=0&limit=50`: requires `invitations.create`.
+  Returns `{ "invitations":[{"id":"opaque","role":{"id":"viewer","name":"Viewer","rank":20},"created_at_ms":0,"expires_at_ms":1,"created_by":{"display_name":"Alice"}}],"next_offset":null }`.
+  Only pending unexpired remotely created invitations visible to their creator or
+  callers strictly above the invited role's current rank are included. Local CLI
+  pairing codes have no remote creator and are not listed. Codes and hashes never
+  appear. IDs are random and independent of the enrollment secret/hash; v25 assigns
+  IDs to existing remote invitations. Redemption/expiry/revocation remove visibility.
+- `POST /invitations` keeps `{role,expires_minutes}` and all existing response fields,
+  adding `id` and first-response `pairing_link`:
+  `{ "issued":true,"id":"opaque","code":"one-time-code","role":"viewer","expires_at_ms":1,"pairing_link":null }`.
+  With configured listener `public-endpoint` and current listener TLS fingerprint,
+  the link is `vesta://pair?endpoint=<encoded>&code=<encoded>&fp=<encoded>&sid=<encoded>`,
+  exactly the CLI format. Address is never inferred from request headers. Receipts
+  retain the ID and old nonsecret fields, omitting both `code` and `pairing_link` on
+  replay. Existing creation/delegation/rank rules are unchanged.
+- `DELETE /invitations/{id}`: empty body; `invitations.create` and either creator
+  principal or strictly higher rank than the invited role. Returns `{ "revoked":true }`.
+  Unknown, redeemed or expired IDs return 404 `resource_not_found`; an existing
+  target outside the rank rule returns 403. A successful retry replays its receipt.
+- `GET /devices?offset=0&limit=50`: requires `devices.revoke`; lists own devices and
+  devices of active users strictly below caller rank, including revoked devices.
+  Returns `{ "devices":[{"id":"device-id","user":{"id":"user-id","display_name":"Alice"},"name":"Desktop","created_at_ms":0,"last_seen_at_ms":null,"revoked":false,"current":true}],"next_offset":null }`.
+  `current` compares the calling device ID; another device of the same user is false.
+  Last-seen is currently unrecorded and always null. Keyless automation devices may
+  appear as devices of their owning user. Historical revoked devices remain visible.
+- `PATCH /devices/{id}`: strict JSON `{ "name":"My desktop" }`, own principal only;
+  requires a current management session, with no additional capability. DeviceLabel
+  validation is unchanged. Returns `{ "id":"device-id","name":"My desktop" }`.
+  Renaming another user's device is forbidden even for owner. Unknown IDs are 404.
+
+Inventory pagination defaults to offset 0 / limit 50; limit is 1-100, offset is
+0-1,000,000. Filtering precedes pagination. `next_offset` is null when exhausted.
+Duplicate/unknown/malformed query keys are 400. GET bodies and DELETE bodies are
+empty; JSON mutation objects reject unknown/duplicate fields. These offset views
+are current-state views, so concurrent changes can shift pages.

@@ -631,3 +631,20 @@ pub use access::{AccessSettings, DeviceSessionReference};
 pub mod permissions;
 
 mod session;
+
+/// Shared CLI/HTTP invitation URI. Address is operator-configured, never a Host header.
+pub fn pairing_link(
+    endpoint: Option<&str>,
+    fingerprint: Option<&str>,
+    code: &str,
+    server: &str,
+) -> Option<String> {
+    let (endpoint, fingerprint) = (endpoint?, fingerprint?);
+    let mut link = url::Url::parse("vesta://pair").expect("fixed pairing URL");
+    link.query_pairs_mut()
+        .append_pair("endpoint", endpoint)
+        .append_pair("code", code)
+        .append_pair("fp", fingerprint)
+        .append_pair("sid", server);
+    Some(link.into())
+}

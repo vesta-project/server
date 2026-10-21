@@ -39,6 +39,7 @@ fn v19_backup_jobs_upgrade_keeps_rows_and_admits_confirmed_in_place_restores() {
     let f = Fixture::open();
     let directory = f.db.directory().clone();
     f.db.write(|c| {
+        c.execute_batch(support::REMOVE_V25_SCHEMA)?;
         c.execute_batch(support::REMOVE_V24_SCHEMA)?;
         c.execute_batch(support::REMOVE_V23_SCHEMA)?;
         c.execute_batch(support::REMOVE_V22_SCHEMA)?;

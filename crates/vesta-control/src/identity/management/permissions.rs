@@ -89,6 +89,11 @@ pub struct Invitation {
     pub role: String,
     pub expires_minutes: u16,
 }
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceRename {
+    pub name: String,
+}
 #[derive(Clone, Serialize)]
 pub enum PermissionMutation {
     UserRoles(String, UserRoles),
@@ -98,17 +103,20 @@ pub enum PermissionMutation {
     Access(AccessPatch),
     Invitation(Invitation),
     RevokeDevice(String),
+    RevokeInvitation(String),
+    RenameDevice(String, DeviceRename),
 }
 impl PermissionMutation {
-    fn capability(&self) -> Capability {
-        match self {
+    fn capability(&self) -> Option<Capability> {
+        Some(match self {
             Self::UserRoles(_, _) => Capability::PrincipalsManage,
             Self::CreateRole(_) => Capability::RolesCreate,
             Self::PatchRole(_, _) | Self::DeleteRole(_, _) => Capability::RolesManage,
             Self::Access(_) => Capability::AccessSourcesManage,
-            Self::Invitation(_) => Capability::InvitationsCreate,
+            Self::Invitation(_) | Self::RevokeInvitation(_) => Capability::InvitationsCreate,
+            Self::RenameDevice(_, _) => return None,
             Self::RevokeDevice(_) => Capability::DevicesRevoke,
-        }
+        })
     }
     fn route(&self) -> (&'static str, String) {
         match self {
@@ -119,6 +127,8 @@ impl PermissionMutation {
             Self::Access(_) => ("PATCH", "access-sources".into()),
             Self::Invitation(_) => ("POST", "invitations".into()),
             Self::RevokeDevice(id) => ("DELETE", format!("devices/{id}")),
+            Self::RevokeInvitation(id) => ("DELETE", format!("invitations/{id}")),
+            Self::RenameDevice(id, _) => ("PATCH", format!("devices/{id}")),
         }
     }
 }
@@ -128,6 +138,14 @@ pub enum PermissionQuery {
     Roles,
     Access,
     Devices(String),
+    ManageableDevices { offset: u32, limit: u16 },
+    Invitations { offset: u32, limit: u16 },
+}
+fn valid_page(offset: u32, limit: u16) -> AdminResult<()> {
+    if offset > 1_000_000 || !(1..=100).contains(&limit) {
+        return Err(PermissionError::InvalidRequest);
+    }
+    Ok(())
 }
 fn require(policy: &PolicySnapshot, capability: Capability) -> AdminResult<()> {
     if policy.check(capability, None).allowed() {
@@ -423,7 +441,8 @@ impl ManagementAccess {
             session_current(repo.now, expires, monotonic)?;
             let policy=repo.policy(Some(&subject))?;
             let capability=match &query { PermissionQuery::Access=>Capability::AccessSourcesManage,
-                PermissionQuery::Devices(_)=>Capability::DevicesRevoke,_=>Capability::PrincipalsView };
+                PermissionQuery::Devices(_) | PermissionQuery::ManageableDevices{..}=>Capability::DevicesRevoke,
+                PermissionQuery::Invitations{..}=>Capability::InvitationsCreate,_=>Capability::PrincipalsView };
             require(&policy,capability)?;
             match query {
                 PermissionQuery::Users{offset,limit}=> {
@@ -433,6 +452,30 @@ impl ManagementAccess {
                     let more=ids.len()>usize::from(limit);
                     let users=ids.iter().take(usize::from(limit)).map(|id|user_value(repo,id).map(with_version)).collect::<AdminResult<Vec<_>>>()?;
                     Ok(json!({"users":users,"next_offset":more.then_some(offset+u32::from(limit))}))
+                }
+                PermissionQuery::Invitations{offset,limit} => {
+                    valid_page(offset, limit)?;
+                    let mut statement=repo.connection().prepare("SELECT i.id,c.role_id,r.name,r.rank,c.created_at,c.expires_at,coalesce(n.name,p.display_name) FROM management_invitation_ids i JOIN management_pairing_codes c ON c.code_hash=i.code_hash JOIN management_invitation_issuers a ON a.code_hash=c.code_hash JOIN roles r ON r.id=c.role_id JOIN principals p ON p.id=a.principal_id LEFT JOIN user_minecraft_names n ON n.principal_id=p.id WHERE c.server_id=? AND c.expires_at>? AND (a.principal_id=? OR r.rank<?) ORDER BY c.created_at DESC,i.id LIMIT ? OFFSET ?")?;
+                    let mut invitations=statement.query_map(params![self.server_id(),repo.now,subject.principal.as_str(),policy.rank(),i64::from(limit)+1,offset],|r|Ok(json!({"id":r.get::<_,String>(0)?,"role":{"id":r.get::<_,String>(1)?,"name":r.get::<_,String>(2)?,"rank":r.get::<_,i32>(3)?},"created_at_ms":r.get::<_,i64>(4)?,"expires_at_ms":r.get::<_,i64>(5)?,"created_by":{"display_name":r.get::<_,String>(6)?}})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                    let more=invitations.len()>usize::from(limit); invitations.truncate(usize::from(limit));
+                    Ok(json!({"invitations":invitations,"next_offset":more.then_some(offset+u32::from(limit))}))
+                }
+                PermissionQuery::ManageableDevices{offset,limit} => {
+                    valid_page(offset, limit)?;
+                    // Device registration is globally bounded to 1000; filter ranks before paging.
+                    let mut statement=repo.connection().prepare("SELECT d.id,d.principal_id,coalesce(n.name,p.display_name),d.label,d.created_at,d.revoked_at IS NOT NULL FROM devices d JOIN principals p ON p.id=d.principal_id LEFT JOIN user_minecraft_names n ON n.principal_id=p.id WHERE d.server_id=? AND p.status='active' ORDER BY d.id LIMIT 1001")?;
+                    let rows=statement.query_map([self.server_id()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?,r.get::<_,bool>(5)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                    if rows.len()>1000 {return Err(PermissionError::Saturated);}
+                    let mut devices=Vec::new();
+                    for (id,principal,name,label,created,revoked) in rows {
+                        let user=principal_id(&principal)?;
+                        if user==subject.principal || repo.rank(&user)?<policy.rank() {
+                            devices.push(json!({"id":id,"user":{"id":principal,"display_name":name},"name":label,"created_at_ms":created,"last_seen_at_ms":null,"revoked":revoked,"current":id==subject.device.as_str()}));
+                        }
+                    }
+                    let more=devices.len()>offset as usize+usize::from(limit);
+                    let devices=devices.into_iter().skip(offset as usize).take(usize::from(limit)).collect::<Vec<_>>();
+                    Ok(json!({"devices":devices,"next_offset":more.then_some(offset+u32::from(limit))}))
                 }
                 PermissionQuery::User(id)=>user_value(repo,&id).map(with_version),
                 PermissionQuery::Roles=>Ok(json!({"roles":role_values(repo)?})),
@@ -494,7 +537,8 @@ impl ManagementAccess {
         self.admin_write(|repo| {
             session_current(repo.now, expires, monotonic)?;
             let policy=repo.policy(Some(&subject))?;
-            require(&policy,command.capability())?;
+            if policy.principal()!=Some(&subject.principal) {return Err(PermissionError::Forbidden);}
+            if let Some(capability)=command.capability() {require(&policy,capability)?;}
             let previous:Option<(Vec<u8>,String)>=repo.connection().query_row("SELECT intent_hash,result_json FROM management_permission_receipts WHERE key_hash=?",[key_hash.as_ref()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
             if let Some((hash,result))=previous {
                 if hash!=intent_hash.as_ref() {return Err(PermissionError::IdempotencyConflict);}
@@ -761,6 +805,11 @@ impl ManagementAccess {
                         expires
                     ],
                 )?;
+                let id = random_secret()?;
+                repo.connection().execute(
+                    "INSERT INTO management_invitation_ids(id,code_hash) VALUES(?,?)",
+                    params![id.expose(), hash.as_slice()],
+                )?;
                 repo.connection().execute(
                     "INSERT INTO management_invitation_issuers VALUES(?,?,?)",
                     params![
@@ -770,8 +819,36 @@ impl ManagementAccess {
                     ],
                 )?;
                 Ok(
-                    json!({"issued":true,"code":code.expose(),"role":input.role,"expires_at_ms":expires}),
+                    json!({"issued":true,"id":id.expose(),"code":code.expose(),"role":input.role,"expires_at_ms":expires}),
                 )
+            }
+            PermissionMutation::RevokeInvitation(id) => {
+                let found:Option<(Vec<u8>,String,i32)>=repo.connection().query_row("SELECT c.code_hash,a.principal_id,r.rank FROM management_invitation_ids i JOIN management_pairing_codes c ON c.code_hash=i.code_hash JOIN management_invitation_issuers a ON a.code_hash=c.code_hash JOIN roles r ON r.id=c.role_id WHERE i.id=? AND c.server_id=? AND c.expires_at>?",params![id,self.server_id(),repo.now],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+                let (hash, creator, rank) = found.ok_or(PermissionError::NotFound)?;
+                if creator != by && rank >= policy.rank() {
+                    return Err(PermissionError::Forbidden);
+                }
+                repo.connection().execute(
+                    "DELETE FROM management_pairing_codes WHERE code_hash=?",
+                    [hash],
+                )?;
+                Ok(json!({"revoked":true}))
+            }
+            PermissionMutation::RenameDevice(id, input) => {
+                let device = DeviceId::parse(id).map_err(|_| PermissionError::InvalidRequest)?;
+                let principal = repo
+                    .device_principal(&device)
+                    .map_err(|_| PermissionError::NotFound)?;
+                if principal != subject.principal {
+                    return Err(PermissionError::Forbidden);
+                }
+                let name =
+                    DeviceLabel::parse(&input.name).map_err(|_| PermissionError::InvalidRequest)?;
+                repo.connection().execute(
+                    "UPDATE devices SET label=? WHERE id=?",
+                    params![name.as_str(), id],
+                )?;
+                Ok(json!({"id":id,"name":name.as_str()}))
             }
             PermissionMutation::RevokeDevice(id) => {
                 let device = DeviceId::parse(id).map_err(|_| PermissionError::InvalidRequest)?;

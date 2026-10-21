@@ -562,14 +562,7 @@ fn pairing_link(
     code: &str,
     server: &str,
 ) -> Option<String> {
-    let (endpoint, fingerprint) = (endpoint?, fingerprint?);
-    let mut link = url::Url::parse("vesta://pair").expect("fixed pairing URL");
-    link.query_pairs_mut()
-        .append_pair("endpoint", endpoint)
-        .append_pair("code", code)
-        .append_pair("fp", fingerprint)
-        .append_pair("sid", server);
-    Some(link.into())
+    vesta_control::identity::management::pairing_link(endpoint, fingerprint, code, server)
 }
 
 #[cfg(test)]

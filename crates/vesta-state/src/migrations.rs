@@ -28,6 +28,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         22 => apply_v22(c),
         23 => apply_v23(c),
         24 => apply_v24(c),
+        25 => apply_v25(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -1074,6 +1075,19 @@ fn apply_v24(c: &Connection) -> crate::Result<()> {
             revision INTEGER NOT NULL CHECK(revision>0),
             document TEXT NOT NULL
         ) STRICT;
+    "#)?;
+    Ok(())
+}
+
+/// Public invitation identifiers never derive from enrollment secrets or their hashes.
+fn apply_v25(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(r#"
+        CREATE TABLE management_invitation_ids (
+            id TEXT PRIMARY KEY,
+            code_hash BLOB NOT NULL UNIQUE REFERENCES management_pairing_codes(code_hash) ON DELETE CASCADE
+        ) STRICT;
+        INSERT INTO management_invitation_ids(id,code_hash)
+            SELECT lower(hex(randomblob(16))),code_hash FROM management_invitation_issuers;
     "#)?;
     Ok(())
 }

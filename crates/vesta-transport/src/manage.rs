@@ -382,6 +382,7 @@ fn cursor(server: &str, scope: &str, value: impl std::fmt::Display) -> String {
 }
 
 pub(super) struct Request<'a> {
+    pub tls_fingerprint: Option<&'a str>,
     pub method: &'a Method,
     pub path: &'a str,
     pub query: Option<&'a str>,

@@ -9,6 +9,7 @@ fn v22_upgrade_creates_metrics_state_and_keeps_it_out_of_recovery_exports() {
     fixture
         .db
         .write(|connection| {
+            connection.execute_batch(support::REMOVE_V25_SCHEMA)?;
             connection.execute_batch(support::REMOVE_V24_SCHEMA)?;
             connection.execute_batch(support::REMOVE_V23_SCHEMA)?;
             connection.execute_batch("PRAGMA user_version=22;")?;
@@ -19,7 +20,7 @@ fn v22_upgrade_creates_metrics_state_and_keeps_it_out_of_recovery_exports() {
 
     let db = StateDatabase::open(directory, fixture.clock.clone()).unwrap();
     assert_eq!(db.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
-    assert_eq!(db.schema_version().unwrap(), 24);
+    assert_eq!(db.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
     db.read(|connection| {
         for table in [
             "metrics_raw",
@@ -93,6 +94,7 @@ fn v23_upgrade_adds_nullable_tick_source_revision_and_persistent_policy() {
     fixture
         .db
         .write(|connection| {
+            connection.execute_batch(support::REMOVE_V25_SCHEMA)?;
             connection.execute_batch(support::REMOVE_V24_SCHEMA)?;
             connection.execute("INSERT INTO metrics_raw(sampled_at,phase,readiness,bytes) VALUES(100,'stopped','unknown',0)", [])?;
             connection.execute("INSERT INTO metrics_5m(bucket_start,data,bytes) VALUES(300,'{}',0)", [])?;
@@ -104,7 +106,7 @@ fn v23_upgrade_adds_nullable_tick_source_revision_and_persistent_policy() {
     fixture.db.close().unwrap();
 
     let db = StateDatabase::open(directory.clone(), fixture.clock.clone()).unwrap();
-    assert_eq!(db.schema_version().unwrap(), 24);
+    assert_eq!(db.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
     db.read(|connection| {
         for (table, key_column, key) in [
             ("metrics_raw", "sampled_at", 100_i64),

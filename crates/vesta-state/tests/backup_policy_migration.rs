@@ -8,6 +8,7 @@ fn v20_upgrade_adds_the_backup_policy_table_and_owner_only_configure() {
     let f = Fixture::open();
     let directory = f.db.directory().clone();
     f.db.write(|c| {
+        c.execute_batch(support::REMOVE_V25_SCHEMA)?;
         c.execute_batch(support::REMOVE_V24_SCHEMA)?;
         c.execute_batch(support::REMOVE_V23_SCHEMA)?;
         c.execute_batch(support::REMOVE_V22_SCHEMA)?;

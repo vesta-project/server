@@ -482,3 +482,177 @@ fn permission_tls_no_pack_authority_unknown_fields_and_required_idempotency() {
         "invalid_request",
     );
 }
+
+#[test]
+fn invitation_inventory_revoke_and_own_device_rename() {
+    let f = Fixture::new("minecraft", 8, 16384, 5);
+    let (owner, device, token) = actor(&f, BuiltinRole::Owner);
+    let (_, other, viewer) = actor(&f, BuiltinRole::Viewer);
+    let created = send(
+        &f,
+        "POST",
+        "invitations",
+        &serde_json::json!({"role":"viewer","expires_minutes":10}),
+        Some(&token),
+        Some("invitation-inventory-0001"),
+    );
+    assert_eq!(created.status, 200);
+    let data = created.json()["data"].clone();
+    let id = data["id"].as_str().unwrap();
+    assert_ne!(id, data["code"].as_str().unwrap());
+    assert!(data["pairing_link"].is_null());
+    let retry = send(
+        &f,
+        "POST",
+        "invitations",
+        &serde_json::json!({"role":"viewer","expires_minutes":10}),
+        Some(&token),
+        Some("invitation-inventory-0001"),
+    );
+    assert_eq!(retry.json()["data"]["id"], id);
+    assert!(retry.json()["data"].get("code").is_none());
+    assert!(retry.json()["data"].get("pairing_link").is_none());
+    let list = send(
+        &f,
+        "GET",
+        "invitations?limit=1",
+        &serde_json::Value::Null,
+        Some(&token),
+        None,
+    );
+    assert_eq!(list.status, 200);
+    let entry = &list.json()["data"]["invitations"][0];
+    assert_eq!(entry["id"], id);
+    assert_eq!(entry["role"]["id"], "viewer");
+    assert_eq!(entry.as_object().unwrap().len(), 5);
+    assert!(entry["created_by"]["display_name"].is_string());
+    management_reply_error(
+        &send(
+            &f,
+            "GET",
+            "invitations",
+            &serde_json::Value::Null,
+            Some(&viewer),
+            None,
+        ),
+        403,
+        "management_forbidden",
+    );
+    let path = format!("invitations/{id}");
+    assert_eq!(
+        send(
+            &f,
+            "DELETE",
+            &path,
+            &serde_json::Value::Null,
+            Some(&token),
+            Some("invitation-revoke-000001")
+        )
+        .status,
+        200
+    );
+    assert_eq!(
+        send(
+            &f,
+            "DELETE",
+            &path,
+            &serde_json::Value::Null,
+            Some(&token),
+            Some("invitation-revoke-000001")
+        )
+        .status,
+        200
+    );
+    assert_eq!(
+        send(
+            &f,
+            "GET",
+            "invitations",
+            &serde_json::Value::Null,
+            Some(&token),
+            None
+        )
+        .json()["data"]["invitations"],
+        serde_json::json!([])
+    );
+    let devices = send(
+        &f,
+        "GET",
+        "devices?limit=1",
+        &serde_json::Value::Null,
+        Some(&token),
+        None,
+    );
+    assert_eq!(devices.status, 200);
+    assert_eq!(devices.json()["data"]["next_offset"], 1);
+    let entry = &devices.json()["data"]["devices"][0];
+    assert!(entry["user"]["display_name"].is_string());
+    assert!(entry["created_at_ms"].is_number());
+    assert!(entry["last_seen_at_ms"].is_null());
+    assert_eq!(entry["current"], entry["id"] == device);
+    let path = format!("devices/{other}");
+    management_reply_error(
+        &send(
+            &f,
+            "PATCH",
+            &path,
+            &serde_json::json!({"name":"Other"}),
+            Some(&token),
+            Some("device-rename-other-0001"),
+        ),
+        403,
+        "management_forbidden",
+    );
+    let path = format!("devices/{device}");
+    let name = serde_json::json!({"name":"My desktop"});
+    let renamed = send(
+        &f,
+        "PATCH",
+        &path,
+        &name,
+        Some(&token),
+        Some("device-rename-self-00001"),
+    );
+    assert_eq!(renamed.status, 200);
+    assert_eq!(
+        renamed.json()["data"],
+        serde_json::json!({"id":device,"name":"My desktop"})
+    );
+    assert_eq!(
+        send(
+            &f,
+            "PATCH",
+            &path,
+            &name,
+            Some(&token),
+            Some("device-rename-self-00001")
+        )
+        .status,
+        200
+    );
+    management_reply_error(
+        &send(
+            &f,
+            "PATCH",
+            &path,
+            &serde_json::json!({"name":"Changed"}),
+            Some(&token),
+            Some("device-rename-self-00001"),
+        ),
+        409,
+        "idempotency_conflict",
+    );
+    management_reply_error(
+        &send(
+            &f,
+            "PATCH",
+            &path,
+            &serde_json::json!({"name":"x","extra":true}),
+            Some(&token),
+            Some("device-rename-strict-001"),
+        ),
+        400,
+        "invalid_request",
+    );
+    assert_eq!(user(&f, &token, &owner)["device_count"], 1);
+}

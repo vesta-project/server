@@ -258,9 +258,15 @@ pub(super) async fn route(
     let version3 = operational || path == "/api/v3/status";
     jobs.execute_for(version3, move || {
         if operational {
+            let fingerprint = if path == "/api/v3/manage/invitations" && method == Method::POST {
+                tls.fingerprint().ok()
+            } else {
+                None
+            };
             return super::manage::dispatch(
                 &host,
                 super::manage::Request {
+                    tls_fingerprint: fingerprint.as_deref(),
                     method: &method,
                     path: &path,
                     query: query.as_deref(),

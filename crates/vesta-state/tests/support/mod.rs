@@ -150,6 +150,10 @@ pub fn remove_directory_link(link: &Path) -> io::Result<()> {
     }
 }
 
+/// V25 public invitation IDs.
+#[allow(dead_code)]
+pub const REMOVE_V25_SCHEMA: &str = "DROP TABLE management_invitation_ids;";
+
 /// V24 metrics additions. Usable inside an existing transaction.
 #[allow(dead_code)]
 pub const REMOVE_V24_SCHEMA: &str = "DROP TABLE metrics_policy; ALTER TABLE metrics_status DROP COLUMN prune_revision; ALTER TABLE metrics_status DROP COLUMN revision; ALTER TABLE metrics_daily DROP COLUMN revision; ALTER TABLE metrics_5m DROP COLUMN revision; ALTER TABLE metrics_raw DROP COLUMN revision; ALTER TABLE metrics_raw DROP COLUMN tick_source;";
@@ -176,6 +180,7 @@ pub const REMOVE_V16_SCHEMA: &str = "DROP TABLE management_invitation_issuers; D
 /// Remove current file/pack-management and unified-auth additions before constructing an owned
 /// pre-V12 migration fixture. Marker-only downgrades are not old schemas.
 pub fn remove_v12_schema(connection: &rusqlite::Connection) {
+    connection.execute_batch(REMOVE_V25_SCHEMA).unwrap();
     connection.execute_batch(REMOVE_V24_SCHEMA).unwrap();
     connection.execute_batch(REMOVE_V23_SCHEMA).unwrap();
     connection.execute_batch(REMOVE_V22_SCHEMA).unwrap();

@@ -60,6 +60,7 @@ fn populated_v12_to_v13_preserves_existing_rows_and_adds_empty_pack_management_t
         connection.execute("INSERT INTO device_password_grants VALUES ('preserved-device','player',9)", [])?;
         connection.execute("INSERT INTO pack_releases VALUES (?,7,3,'preserved-pack','catalogue',?,321,23)", params![server,"b".repeat(64)])?;
         // Reconstruct v12 by removing all later management outcome tables.
+        connection.execute_batch(support::REMOVE_V25_SCHEMA)?;
         connection.execute_batch(support::REMOVE_V24_SCHEMA)?;
         connection.execute_batch(support::REMOVE_V23_SCHEMA)?;
         connection.execute_batch(support::REMOVE_V22_SCHEMA)?; connection.execute_batch(support::REMOVE_V18_SCHEMA)?; connection.execute_batch(support::REMOVE_V16_SCHEMA)?;

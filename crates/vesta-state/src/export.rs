@@ -202,6 +202,7 @@ const EXCLUDED: &[&str] = &[
     "bootstrap_codes",
     "management_pairing_codes",
     "management_invitation_issuers",
+    "management_invitation_ids",
     "management_owner_links",
     "confirmations",
     "management_permission_receipts",

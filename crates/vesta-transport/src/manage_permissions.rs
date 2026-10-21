@@ -6,8 +6,8 @@ use serde::Deserialize;
 use vesta_control::{
     host::NetworkHost,
     identity::management::permissions::{
-        AccessPatch, Invitation, PermissionError, PermissionMutation, PermissionQuery, RoleInput,
-        RolePatch, UserRoles,
+        AccessPatch, DeviceRename, Invitation, PermissionError, PermissionMutation,
+        PermissionQuery, RoleInput, RolePatch, UserRoles,
     },
 };
 
@@ -15,10 +15,13 @@ pub(super) fn implemented(path: &str) -> bool {
     let Some(action) = path.strip_prefix("/api/v3/manage/") else {
         return false;
     };
-    matches!(action, "users" | "roles" | "access-sources" | "invitations")
-        || resource(action, "users").is_some()
+    matches!(
+        action,
+        "users" | "roles" | "access-sources" | "invitations" | "devices"
+    ) || resource(action, "users").is_some()
         || resource(action, "roles").is_some()
         || resource(action, "devices").is_some()
+        || resource(action, "invitations").is_some()
         || user_child(action, "roles").is_some()
         || user_child(action, "devices").is_some()
 }
@@ -104,11 +107,15 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         if !bytes.is_empty() {
             return error(StatusCode::BAD_REQUEST, "invalid_request");
         }
-        let query = if action == "users" {
+        let query = if matches!(action, "users" | "devices" | "invitations") {
             let Some((offset, limit)) = pagination(query) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
             };
-            PermissionQuery::Users { offset, limit }
+            match action {
+                "devices" => PermissionQuery::ManageableDevices { offset, limit },
+                "invitations" => PermissionQuery::Invitations { offset, limit },
+                _ => PermissionQuery::Users { offset, limit },
+            }
         } else {
             if query.is_some() {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
@@ -142,15 +149,27 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         ("PUT", _) => user_child(action, "roles").and_then(|id| {
             decode::<UserRoles>(bytes).map(|v| PermissionMutation::UserRoles(id.into(), v))
         }),
-        ("PATCH", _) => resource(action, "roles").and_then(|id| {
-            decode::<RolePatch>(bytes).map(|v| PermissionMutation::PatchRole(id.into(), v))
-        }),
+        ("PATCH", _) => {
+            if let Some(id) = resource(action, "devices") {
+                decode::<DeviceRename>(bytes)
+                    .map(|v| PermissionMutation::RenameDevice(id.into(), v))
+            } else {
+                resource(action, "roles").and_then(|id| {
+                    decode::<RolePatch>(bytes).map(|v| PermissionMutation::PatchRole(id.into(), v))
+                })
+            }
+        }
         ("DELETE", _) => {
             if let Some(id) = resource(action, "roles") {
                 decode::<DeleteRole>(bytes)
                     .map(|v| PermissionMutation::DeleteRole(id.into(), v.expected_version))
             } else if bytes.is_empty() {
-                resource(action, "devices").map(|id| PermissionMutation::RevokeDevice(id.into()))
+                resource(action, "devices")
+                    .map(|id| PermissionMutation::RevokeDevice(id.into()))
+                    .or_else(|| {
+                        resource(action, "invitations")
+                            .map(|id| PermissionMutation::RevokeInvitation(id.into()))
+                    })
             } else {
                 None
             }
@@ -164,7 +183,26 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     };
     match host.management().permission_mutate(token, key, command) {
-        Ok(v) => ok(v),
+        Ok(mut v) => {
+            if action == "invitations" && method == Method::POST {
+                if let Some(code) = v.get("code").and_then(|v| v.as_str()) {
+                    let endpoint = match host.configuration().listener() {
+                        vesta_control::config::ListenerDescription::Tls(listener) => {
+                            listener.public_endpoint()
+                        }
+                        _ => None,
+                    };
+                    let link = vesta_control::identity::management::pairing_link(
+                        endpoint,
+                        request.tls_fingerprint,
+                        code,
+                        host.management().server_id(),
+                    );
+                    v["pairing_link"] = serde_json::json!(link);
+                }
+            }
+            ok(v)
+        }
         Err(e) => failure(e),
     }
 }

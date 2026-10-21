@@ -7,6 +7,7 @@ fn v21_upgrade_adds_moderation_history_and_operator_capability_without_mutable_b
     let f = Fixture::open();
     let directory = f.db.directory().clone();
     f.db.write(|c| {
+        c.execute_batch(support::REMOVE_V25_SCHEMA)?;
         c.execute_batch(support::REMOVE_V24_SCHEMA)?;
         c.execute_batch(support::REMOVE_V23_SCHEMA)?;
         c.execute_batch(support::REMOVE_V22_SCHEMA)?;
