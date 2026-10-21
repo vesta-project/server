@@ -1926,7 +1926,8 @@ fn management_read_projections_are_bounded_and_do_not_invent_players() {
     }
     let audit = f.request("GET", "/api/v3/manage/audit", b"", Some(&token));
     for item in audit.json()["data"]["items"].as_array().unwrap() {
-        assert!(item.get("target").is_none());
+        assert!(item["target"].is_null() || item["target"].is_string());
+        assert!(item["actor"].is_object());
         assert!(item.get("metadata").is_none());
         assert!(item.get("principal_id").is_none());
         assert!(item.get("device_id").is_none());

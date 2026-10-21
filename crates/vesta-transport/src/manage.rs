@@ -11,8 +11,9 @@ use vesta_control::{
     host::NetworkHost,
     identity::{Capability, management::ManagementError},
     operations::{
-        Admission, ConfirmationToken, GameCommand, GenerationId, OperationError,
-        OperationErrorCode, OperationId, OperationState, OperationSummary,
+        ActivityActor, ActivitySummary, Admission, ConfirmationToken, GameCommand, GenerationId,
+        OperationActivity, OperationError, OperationErrorCode, OperationId, OperationState,
+        OperationSummary,
     },
 };
 
@@ -131,6 +132,42 @@ fn operation_error(e: OperationError) -> Reply {
 fn summary(v: &OperationSummary) -> Value {
     json!({"operation_id":v.id.as_str(), "state":v.state.as_str(), "progress_percent":v.progress_percent, "cancel_requested":v.cancel_requested, "created_at_ms":v.created_at_ms, "updated_at_ms":v.updated_at_ms, "finished_at_ms":v.finished_at_ms})
 }
+fn activity(
+    host: &NetworkHost,
+    value: &(OperationSummary, OperationActivity),
+) -> Result<Value, ManagementError> {
+    let mut details = value.1.clone();
+    redact_actor(host, &mut details.actor)?;
+    match &mut details.summary {
+        Some(ActivitySummary::Console { command }) => *command = redact_text(host, command)?,
+        Some(ActivitySummary::Moderation {
+            reason: Some(reason),
+            ..
+        }) => *reason = redact_text(host, reason)?,
+        _ => {}
+    }
+    let mut result = summary(&value.0);
+    result.as_object_mut().expect("object").extend(
+        serde_json::to_value(details)
+            .expect("typed Activity")
+            .as_object()
+            .expect("object")
+            .clone(),
+    );
+    Ok(result)
+}
+fn redact_actor(host: &NetworkHost, actor: &mut ActivityActor) -> Result<(), ManagementError> {
+    if let ActivityActor::Principal {
+        display_name,
+        device_name,
+        ..
+    } = actor
+    {
+        *display_name = redact_text(host, display_name)?;
+        *device_name = redact_text(host, device_name)?;
+    }
+    Ok(())
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Empty {}
@@ -186,6 +223,10 @@ fn pack_outcome(value: vesta_control::packs::PackOutcome) -> Reply {
 }
 /// Replace only exact known configured absolute paths and retained agent-issued credentials.
 pub(super) fn redact_console(host: &NetworkHost, text: &str) -> Result<String, ManagementError> {
+    Ok(redact_credential_boundaries(&redact_text(host, text)?))
+}
+/// Complete typed fields have no capture boundary fragments; preserve ordinary words.
+fn redact_text(host: &NetworkHost, text: &str) -> Result<String, ManagementError> {
     let config = host.configuration();
     let mut paths: Vec<String> = config
         .host_protected_paths()
@@ -214,7 +255,7 @@ pub(super) fn redact_console(host: &NetworkHost, text: &str) -> Result<String, M
     for path in variants {
         text = text.replace(&path, "[redacted]");
     }
-    Ok(redact_credential_boundaries(&text))
+    Ok(text)
 }
 
 /// Hash-only stores cannot identify incomplete credentials. A 43-byte credential
@@ -630,28 +671,63 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             )
         }
         "operations" => {
-            let Some((after, limit)) =
-                page(query, "operations", host.management().server_id(), 100)
-            else {
+            let mut kind = None;
+            let mut actor_me = false;
+            let mut paging = Vec::new();
+            if let Some(query) = query {
+                if query.is_empty() || query.len() > 700 {
+                    return error(StatusCode::BAD_REQUEST, "invalid_request");
+                }
+                for field in query.split('&') {
+                    if field.is_empty() {
+                        return error(StatusCode::BAD_REQUEST, "invalid_request");
+                    }
+                    match field.split_once('=') {
+                        Some(("kind", value))
+                            if kind.is_none()
+                                && vesta_control::operations::valid_activity_kind(value) =>
+                        {
+                            kind = Some(value)
+                        }
+                        Some(("actor", "me")) if !actor_me => actor_me = true,
+                        Some(("kind" | "actor", _)) => {
+                            return error(StatusCode::BAD_REQUEST, "invalid_request");
+                        }
+                        _ => paging.push(field),
+                    }
+                }
+            }
+            let paging = paging.join("&");
+            let Some((after, limit)) = page(
+                (!paging.is_empty()).then_some(paging.as_str()),
+                "operations",
+                host.management().server_id(),
+                100,
+            ) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
             };
             let Ok(after) = i64::try_from(after) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
             };
-            match operations.list(&subject, after, limit + 1) {
-                Ok(mut page) => {
-                    let more = page.items.len() > limit;
-                    page.items.truncate(limit);
+            match operations.activity_list(&subject, after, limit + 1, kind, actor_me) {
+                Ok(mut items) => {
+                    let more = items.len() > limit;
+                    items.truncate(limit);
                     let next = if more {
-                        page.items
+                        items
                             .last()
-                            .map(|v| cursor(host.management().server_id(), "operations", v.seq))
+                            .map(|v| cursor(host.management().server_id(), "operations", v.0.seq))
                     } else {
                         None
                     };
-                    ok(
-                        json!({"items":page.items.iter().map(summary).collect::<Vec<_>>(),"next_cursor":next}),
-                    )
+                    match items
+                        .iter()
+                        .map(|v| activity(host, v))
+                        .collect::<Result<Vec<_>, _>>()
+                    {
+                        Ok(items) => ok(json!({"items":items,"next_cursor":next})),
+                        Err(e) => management_error(e),
+                    }
                 }
                 Err(e) => operation_error(e),
             }
@@ -667,6 +743,15 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             match operations.audit_notices(&subject, after, limit) {
                 Ok(mut items) => {
                     for item in &mut items {
+                        if let Err(e) = redact_actor(host, &mut item.actor) {
+                            return management_error(e);
+                        }
+                        if let Some(target) = &mut item.target {
+                            match redact_text(host, target) {
+                                Ok(v) => *target = v,
+                                Err(e) => return management_error(e),
+                            }
+                        }
                         item.cursor = cursor(host.management().server_id(), "audit", &item.cursor);
                     }
                     let next = items.last().map(|v| v.cursor.clone());
@@ -748,8 +833,11 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             else {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
             };
-            match operations.get(&subject, &id) {
-                Ok(Some(v)) => ok(summary(&v)),
+            match operations.activity_get(&subject, &id) {
+                Ok(Some(v)) => match activity(host, &v) {
+                    Ok(v) => ok(v),
+                    Err(e) => management_error(e),
+                },
                 Ok(None) => error(StatusCode::NOT_FOUND, "resource_not_found"),
                 Err(e) => operation_error(e),
             }

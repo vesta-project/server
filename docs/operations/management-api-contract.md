@@ -1516,3 +1516,88 @@ adapters or plugin settings in this feature.
 ## Sleep and MOTD presentation
 
 See [sleep-and-motd.md](sleep-and-motd.md) for GET/PUT `/api/v3/manage/sleep/policy`, GET/PUT `/api/v3/manage/motd/policy`, POST `/api/v3/manage/motd/preview`, and public GET `/api/v3/status`. Policy writes use optimistic revisions and atomic audits. The existing authenticated server status adds `lifecycle` without changing process `state`. Offline player identities/nonzero counts are never fabricated. Live MOTD still uses the authorized server.properties editor and requires Minecraft restart; offline/app templates do not alter the live game response.
+
+## Activity operation details and audit identities
+
+GET `/api/v3/manage/operations` and `/operations/{id}` retain all existing fields
+and add these fields (normal API envelope and list pagination are unchanged):
+
+```json
+{
+  "operation_id": "example-operation",
+  "state": "succeeded",
+  "progress_percent": 100,
+  "cancel_requested": false,
+  "created_at_ms": 1791115200000,
+  "updated_at_ms": 1791115200001,
+  "finished_at_ms": 1791115200001,
+  "kind": "console.command",
+  "actor": {"principal_id":"principal-id","display_name":"PlayerOne","device_name":"Desktop"},
+  "summary": {"command":"say Hello, players!"},
+  "summary_purged": false,
+  "outcome": "stdin_written"
+}
+```
+
+`kind` is closed: `lifecycle.start`, `lifecycle.stop`, `lifecycle.restart`,
+`lifecycle.kill`, `lifecycle.sleep`, `console.command`, `players.moderate`, `other`.
+These are the bindings currently stored in the operation ledger. Backups,
+workflow runs, file intents and pack publications have their own APIs/journals;
+they are not fabricated into this ledger. Future operation bindings require
+an explicit projection before any request input can be disclosed.
+
+Every read checks **current `tasks.view`**. Console `summary.command` additionally
+requires current `console.read` **or the same initiating principal** (including
+another enrolled device). Otherwise summary is `{"command_redacted":true}`.
+The complete validated command line is preserved, subject to the same exact
+known configured-path and retained agent-issued credential replacements as
+console output. Output-only masking of incomplete credential fragments at
+capture boundaries does not apply to complete typed fields. This deterministic
+redaction is not a general detector for arbitrary third-party passwords.
+Names and free-text moderation reasons also use known credential/path redaction.
+Credentials, absolute host paths, hashes and raw exception/result text are never
+added as diagnostic fields.
+
+Moderation requires current `players.view`, with no issuer exception. Its summary
+is `{"action":"ban","player":"PlayerOne","reason":"Griefing","duration_seconds":3600}`;
+reason and duration are omitted when absent. Without that capability the summary
+is `{"details_redacted":true}`. Lifecycle summary is
+`{"target_generation":"32-lowercase-hex","result_generation":"32-lowercase-hex"}`.
+Start has `target_generation:null`; result is included only when recorded and
+validated. Kill additionally includes `confirmed:true|false`, based on a consumed
+confirmation receipt, never a supplied boolean. No generation is a PID.
+
+`outcome` is null before completion. Its closed vocabulary is `stdin_written`,
+`process_exited`, `process_started`, `succeeded`, `cancelled`, `recovery_required`,
+`timeout`, `stale_generation`, `write_failed`, `forbidden`, `input_unavailable`,
+`confirmation_rejected`, `maintenance_active`, `failed`. `stdin_written` means
+native delivery was acknowledged, not that Minecraft/plugin semantics succeeded.
+Unrecognized stored errors become `failed`.
+
+Purging follows existing retention: `summary:null, summary_purged:true` when
+canonical input is purged, even for its issuer. No audit/history fallback rebuilds
+that summary. Legacy/unrecognized/unavailable/corrupt canonical input yields
+`summary:null, summary_purged:false`; safe lifecycle/outcome fields remain.
+
+The list accepts optional `kind=<one-closed-kind>` and `actor=me`; filters apply
+before the bounded page limit. `me` matches the initiating principal across devices,
+including that principal's automation device. Duplicate/unknown filters are 400.
+The native internal lifecycle journal remains input-free historical invalidations;
+there is currently no remote operations stream. Consumers refresh the authorized
+detail/list projection rather than receiving canonical inputs in event payloads.
+
+GET `/api/v3/manage/audit` still requires current `audit.view`. Each item keeps
+`cursor,at_ms,action,outcome` and adds `actor` with the same shape above and
+`target:string|null`. Labels resolve from retained identity rows, preferring the
+linked Minecraft name to the principal label. Revocation does not erase historical
+attribution. Keyless automation devices resolve to
+`{"kind":"workflow","name":"Vesta automation"}`; system/unresolved actors resolve
+to `{"kind":"system","name":"Vesta agent"}` (automation engine records use
+`{"kind":"workflow","name":"Workflow engine"}`). Arbitrary stored source text
+is never echoed. Safe file-mutation targets are validated relative paths from the
+allowlisted audit path field; server-properties targets are `server.properties`.
+Retained role-update records resolve the current role name; operation records
+with a retained moderation target resolve the player name only with current
+`players.view`. Deleted/unresolvable roles have null labels.
+Unknown, absolute, traversal, protected and abbreviated paths produce null. Raw
+metadata, payloads, audit-chain hashes and credentials remain withheld.

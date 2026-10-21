@@ -583,7 +583,7 @@ impl<'a> Repository<'a> {
     }
 }
 
-fn bounded(column: &'static str, max: usize) -> String {
+pub(super) fn bounded(column: &'static str, max: usize) -> String {
     format!(
         "CASE WHEN typeof({column})='text' AND length(CAST({column} AS BLOB)) BETWEEN 1 AND {max} \
              AND instr({column},char(0))=0 THEN {column} END"
