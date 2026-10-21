@@ -64,7 +64,7 @@ pub(super) fn patch(repo: &Repository<'_>, input: &ServerPatch) -> AdminResult<V
         .filter(|v| *v >= 0 && v.to_string() == input.expected_revision)
         .ok_or(PermissionError::InvalidRequest)?;
     let mut value = projection(repo)?;
-    if value["revision"] != expected.to_string() {
+    if value["revision"].as_str() != Some(input.expected_revision.as_str()) {
         return Err(PermissionError::PreconditionFailed);
     }
     if expected == i64::MAX {
