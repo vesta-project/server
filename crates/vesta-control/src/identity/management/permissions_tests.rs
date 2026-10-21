@@ -891,3 +891,123 @@ fn branding_audit_failure_rolls_back_setting_and_receipt() {
         "1"
     );
 }
+
+#[test]
+fn invitation_creator_exception_current_capability_expiry_and_device_rank_filtering() {
+    let f = Fixture::new();
+    let (_, owner) = actor(&f, BuiltinRole::Owner);
+    let (admin, admin_session) = actor(&f, BuiltinRole::Administrator);
+    let _viewer = actor(&f, BuiltinRole::Viewer);
+    let invite = || {
+        PermissionMutation::Invitation(Invitation {
+            role: "viewer".into(),
+            expires_minutes: 10,
+        })
+    };
+    let owners = run(&f, &owner, "owner-invitation-000001", invite()).unwrap();
+    let own = run(&f, &admin_session, "admin-invitation-000001", invite()).unwrap();
+    let observer = create(
+        &f,
+        &owner,
+        "Inventory observer",
+        10,
+        &[
+            Capability::InvitationsCreate,
+            Capability::DevicesRevoke,
+            Capability::StatusView,
+        ],
+    );
+    let role = observer["id"].as_str().unwrap();
+    f.db.write(|c| {
+        c.execute(
+            "UPDATE role_assignments SET role_id=? WHERE principal_id=?",
+            rusqlite::params![role, admin.principal_id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let listed = f
+        .service
+        .permission_query(
+            admin_session.secret.expose(),
+            PermissionQuery::Invitations {
+                offset: 0,
+                limit: 100,
+            },
+        )
+        .unwrap();
+    assert_eq!(listed["invitations"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["invitations"][0]["id"], own["id"]);
+    assert_eq!(
+        run(
+            &f,
+            &admin_session,
+            "revoke-other-invite-0001",
+            PermissionMutation::RevokeInvitation(owners["id"].as_str().unwrap().into())
+        ),
+        Err(PermissionError::Forbidden)
+    );
+    let devices = f
+        .service
+        .permission_query(
+            admin_session.secret.expose(),
+            PermissionQuery::ManageableDevices {
+                offset: 0,
+                limit: 100,
+            },
+        )
+        .unwrap();
+    assert_eq!(devices["devices"].as_array().unwrap().len(), 1);
+    assert_eq!(devices["devices"][0]["id"], admin.device_id);
+    assert_eq!(
+        run(
+            &f,
+            &admin_session,
+            "revoke-own-invite-000001",
+            PermissionMutation::RevokeInvitation(own["id"].as_str().unwrap().into())
+        )
+        .unwrap(),
+        json!({"revoked":true})
+    );
+    f.db.write(|c| {
+        c.execute(
+            "UPDATE role_assignments SET role_id='viewer' WHERE principal_id=?",
+            [&admin.principal_id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        run(
+            &f,
+            &admin_session,
+            "revoke-own-invite-000001",
+            PermissionMutation::RevokeInvitation(own["id"].as_str().unwrap().into())
+        ),
+        Err(PermissionError::Forbidden)
+    );
+    f.clock
+        .0
+        .fetch_add(11 * 60 * 1000, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        f.service
+            .permission_query(
+                owner.secret.expose(),
+                PermissionQuery::Invitations {
+                    offset: 0,
+                    limit: 100
+                }
+            )
+            .unwrap()["invitations"],
+        json!([])
+    );
+    assert_eq!(
+        run(
+            &f,
+            &owner,
+            "revoke-expired-invite-01",
+            PermissionMutation::RevokeInvitation(owners["id"].as_str().unwrap().into())
+        ),
+        Err(PermissionError::NotFound)
+    );
+}
