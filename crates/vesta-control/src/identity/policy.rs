@@ -194,6 +194,37 @@ impl PolicySnapshot {
                 .iter()
                 .any(|g| g.capability() == capability && g.scope().is_all())
     }
+    /// Informational capability presence: at least one resource passes the real
+    /// evaluator. This never authorizes a caller-selected resource or an effect.
+    pub(crate) fn has_effective_capability(&self, capability: Capability) -> bool {
+        if !capability.scoped() {
+            return self.check(capability, None).allowed();
+        }
+        for grant in self.allows.iter().filter(|g| g.capability() == capability) {
+            if grant.scope().is_all() {
+                // No stored exact/subtree scope can deny root; an all-scope deny
+                // is still evaluated by check, along with identity and tier rules.
+                if self.check(capability, Some(&Resource::ROOT)).allowed() {
+                    return true;
+                }
+                continue;
+            }
+            let text = grant.scope().text();
+            let subtree = text.strip_suffix("/**");
+            let Ok(resource) = Resource::parse(subtree.unwrap_or(&text)) else {
+                continue;
+            };
+            if self.check(capability, Some(&resource)).allowed()
+                || subtree.is_some()
+                    && self
+                        .check_any_direct_child(capability, &resource, "")
+                        .allowed()
+            {
+                return true;
+            }
+        }
+        false
+    }
     /// Network admission before a server-resolved leaf name is known. Establishes
     /// only that at least one direct child with this suffix is currently writable;
     /// the resolved name must still pass the ordinary exact-resource check.

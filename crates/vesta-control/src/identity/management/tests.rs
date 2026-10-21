@@ -1090,3 +1090,67 @@ fn self_projection_resolves_safe_default_sources_and_expired_overrides() {
         Err(ManagementError::SessionInvalid)
     ));
 }
+
+#[test]
+fn self_projection_includes_scoped_grants_only_when_a_resource_survives_denies() {
+    let f = Fixture::new();
+    let (device, key) = normal(&f);
+    let token = f.session(&device, &key);
+    let whitelist = Whitelist::default();
+    let bans = BanList::default();
+    let access = policy(&f, &whitelist, &bans);
+    let has_files = || {
+        f.service
+            .session_projection(token.secret.expose(), &access)
+            .unwrap()["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("files.read"))
+    };
+    f.db.write(|c| {
+        c.execute("INSERT INTO principal_overrides(id,principal_id,capability,scope,effect,granted_by,created_at) VALUES('scope-allow',?,'files.read','logs/**','allow','test',0)",[&device.principal_id])?;
+        Ok(())
+    }).unwrap();
+    assert!(has_files());
+    f.db.write(|c| {
+        c.execute("INSERT INTO principal_overrides(id,principal_id,capability,scope,effect,granted_by,created_at) VALUES('scope-deny',?,'files.read','logs','deny','test',0)",[&device.principal_id])?;
+        Ok(())
+    }).unwrap();
+    assert!(
+        has_files(),
+        "denying the directory leaves permitted child resources"
+    );
+    f.db.write(|c| {
+        c.execute(
+            "UPDATE principal_overrides SET scope='LOGS/**' WHERE id='scope-deny'",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(
+        !has_files(),
+        "covering case-insensitive deny removes the capability"
+    );
+    f.db.write(|c| {
+        c.execute(
+            "UPDATE principal_overrides SET expires_at=? WHERE id='scope-deny'",
+            [f.clock.millis()],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(
+        has_files(),
+        "expired deny is excluded by the live evaluator"
+    );
+    f.db.write(|c| {
+        c.execute("UPDATE principal_overrides SET scope='logs/latest.log' WHERE id='scope-allow'",[])?;
+        c.execute("UPDATE principal_overrides SET scope='LOGS/LATEST.LOG',expires_at=NULL WHERE id='scope-deny'",[])?;
+        Ok(())
+    }).unwrap();
+    assert!(
+        !has_files(),
+        "a denied exact leaf leaves no invented resource grant"
+    );
+}

@@ -254,14 +254,15 @@ canonical device session, including pack-only users. The POST compatibility alia
 for session issuance is unchanged. Success uses the standard V3 envelope:
 
 ```json
-{"api_version":"3","request_id":"request-1","data":{"server_id":"server-uuid","principal_id":"user-uuid","device_id":"device-uuid","roles":[{"id":"viewer","name":"Viewer","rank":20}],"capabilities":["public.info","status.view","metrics.view"],"session_expires_at_ms":1791116100000}}
+{"api_version":"3","request_id":"request-1","data":{"server_id":"server-uuid","principal_id":"user-uuid","device_id":"device-uuid","roles":[{"id":"public","name":"Public","rank":1}],"capabilities":["public.info"],"session_expires_at_ms":1791116100000}}
 ```
 
 Roles include current explicit and applicable safe automatic sources, deduplicated
 by ID. Capabilities use the live authorization policy, including explicit denies,
 expired grants, current whitelist/bans and password revision. A scoped capability
-is listed only when held over all resources without an overlapping deny; narrower
-resource grants cannot be represented by this flat list and are omitted. This is
+is listed only when at least one resource passes the same live evaluator; covering
+denies remove it. Presence never implies access to every path: the flat list
+does not describe scopes, and each operation still checks its exact resource. This is
 an informational UI hint, never authority for an effect. No credentials, keys or
 audit entries are emitted by the read. Invalid/revoked/expired sessions return the
 V3 401 `management_session_invalid` envelope.
@@ -291,7 +292,7 @@ Only a syntactically valid, known, unexpired bearer that passes live identity
 validation selects that bucket. Revoked/unknown/duplicate/malformed bearers cannot
 bypass the anonymous budget. Route authority checks remain independent.
 
-TLS `[listener]` accepts optional integer settings (each bounded to 1?60000):
+TLS `[listener]` accepts optional integer settings (each bounded to 1-60000):
 `peer-requests-per-minute` defaults to **60**, `peer-connections-per-minute` to
 **120**, and `session-requests-per-minute` to **300**. Limits are token buckets
 with an initial burst equal to the configured rate and continuous refill over 60
@@ -396,7 +397,7 @@ is null; persistent monotonic stopped-control generations are not introduced.
 | GET `/metrics` | `series` (1–8 unique closed names), `from`, `to`; optional `resolution=auto\|raw\|5m\|daily`, `max_points=1..2000`, `after` revision and single strong `If-None-Match` | 200 changed columnar buckets with shared timestamps/cursor; `after` equal to current cursor returns empty columns with 200; exact matching ETag may return authorized 304, stale ETag returns 200; invalid validator forms return 400. Inclusive span ≤5 years (raw ≤7 days); `retention_gap` signals full refresh | `MetricsView` |
 | GET `/metrics/policy` | no body/query | 200 effective host/stored policy, revision and explicit console-write warning | `ConfigView` |
 | PUT `/metrics/policy` | `{expected_revision,settings,command_polling?}` | 200 stored revision; optimistic conflict 409 `metrics_policy_conflict`; audited | `ConfigEdit` |
-| GET `/metrics/stream` | Native WebSocket upgrade, bearer, no body/query/cookie/Origin | 101; bounded latest-only metrics snapshot/sample/gap and separately authorized player activity notices | `MetricsView` |
+| GET `/metrics/stream` | Native WebSocket upgrade, bearer, no body/query/cookie/Origin | 101; bounded latest-only metrics snapshot/sample/gap and separately authorized player activity and status notices | `MetricsView`; status also requires `status.view` |
 | GET `/players/activity` | optional numeric `after` event ID; optional `limit` 1–100 | 200 bounded ordered activity events and numeric `next_after` cursor (or null); event page may include observed join/leave names | `PlayersView` |
 | GET `/pack` | no body/query | 200 `{hosted_revision:decimal-string-or-null,minimum_revision:decimal-string-or-null,status:"published\|unpublished"}` | `status.view` |
 | POST `/pack/publish` | `{"expected_revision":"0"}` + key; zero means unpublished | 200 `{outcome:"succeeded",hosted_revision:decimal-string,minimum_revision:decimal-string}` | `pack.publish` |

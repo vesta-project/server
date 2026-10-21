@@ -1,6 +1,6 @@
 //! Informational projection only. Every effect still resolves current authority.
 use super::*;
-use crate::identity::{Capability, ResourceScope};
+use crate::identity::Capability;
 use crate::pack_access::PackAccessPolicy;
 use serde_json::{Value, json};
 
@@ -45,12 +45,8 @@ impl ManagementAccess {
                     let allowed = if access::safe(capability) {
                         self.pack_grant_in(repo, &subject, capability, access)
                             .map(|grant| grant.is_some())
-                    } else if capability.scoped() {
-                        // A flat string cannot describe resource scopes: advertise only
-                        // capabilities held over all resources, excluding any overlap deny.
-                        Ok(policy.holds_entirely(capability, &ResourceScope::ALL))
                     } else {
-                        Ok(policy.check(capability, None).allowed())
+                        Ok(policy.has_effective_capability(capability))
                     };
                     match allowed {
                         Ok(true) => Some(Ok(capability.id())),
