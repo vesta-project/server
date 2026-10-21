@@ -1601,3 +1601,10 @@ with a retained moderation target resolve the player name only with current
 `players.view`. Deleted/unresolvable roles have null labels.
 Unknown, absolute, traversal, protected and abbreviated paths produce null. Raw
 metadata, payloads, audit-chain hashes and credentials remain withheld.
+
+GET `/api/v3/manage/automation/runs?after=<run-id>&limit=<1..100>` now exposes
+cross-workflow run history, including retained runs whose workflow was deleted.
+It requires current `automation.view` and uses the same bounded run projection
+as `/automation/workflows/{id}/runs`: `{runs:[...],next_after:string|null}`.
+List entries omit workflow definitions; per-run detail remains the existing
+`/automation/runs/{id}` route. Pagination and cursor semantics are unchanged.

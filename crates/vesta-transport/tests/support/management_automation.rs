@@ -238,6 +238,45 @@ fn workflow_tls_owner_crud_manual_run_and_idempotent_replay() {
     );
     assert_eq!(replay.status, 200);
     assert_eq!(replay.json()["data"], deleted.json()["data"]);
+    let history = send(
+        &f,
+        "GET",
+        "automation/runs?limit=1",
+        b"",
+        Some(&owner),
+        None,
+    );
+    assert_eq!(history.status, 200);
+    let history = history.json();
+    assert_eq!(history["data"]["runs"][0]["id"], run_id);
+    assert!(history["data"]["runs"][0].get("definition").is_none());
+    assert_eq!(history["data"]["next_after"], run_id);
+    let next = send(
+        &f,
+        "GET",
+        &format!("automation/runs?limit=1&after={run_id}"),
+        b"",
+        Some(&owner),
+        None,
+    );
+    assert!(next.json()["data"]["runs"].as_array().unwrap().is_empty());
+    assert_eq!(
+        send(
+            &f,
+            "GET",
+            "automation/runs?limit=0",
+            b"",
+            Some(&owner),
+            None
+        )
+        .status,
+        400
+    );
+    let (_, _, viewer, _) = actor(&f, BuiltinRole::Viewer);
+    assert_eq!(
+        send(&f, "GET", "automation/runs", b"", Some(&viewer), None).status,
+        403
+    );
 }
 
 #[test]

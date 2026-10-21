@@ -26,6 +26,7 @@ enum Route<'a> {
     Enabled(&'a str),
     Manual(&'a str),
     WorkflowRuns(&'a str),
+    Runs,
     Run(&'a str),
     Steps(&'a str),
     Discard(&'a str),
@@ -56,6 +57,7 @@ fn route(path: &str) -> Option<Route<'_>> {
     let action = path.strip_prefix("/api/v3/manage/")?;
     Some(match action {
         "automation/workflows" => Route::Workflows,
+        "automation/runs" => Route::Runs,
         "notifications" => Route::Notifications,
         "notifications/unread" => Route::Unread,
         "notifications/read" => Route::Read,
@@ -807,11 +809,15 @@ fn get(
         Route::Workflow(id) if query.is_none() => automation
             .get_workflow(subject, id)
             .map(|v| json!({"workflow":workflow(&v,true)})),
-        Route::WorkflowRuns(id) => {
+        Route::WorkflowRuns(_) | Route::Runs => {
             let Some((after, limit)) = id_page(query) else {
                 return invalid();
             };
-            automation.list_runs(subject,Some(id),after,limit).map(|v|json!({"runs":v.iter().map(|v|run(v,false)).collect::<Vec<_>>(),"next_after":if v.len()==limit {v.last().map(|v|v.id.as_str())} else {None}}))
+            let workflow_id = match route {
+                Route::WorkflowRuns(id) => Some(id),
+                _ => None,
+            };
+            automation.list_runs(subject,workflow_id,after,limit).map(|v|json!({"runs":v.iter().map(|v|run(v,false)).collect::<Vec<_>>(),"next_after":if v.len()==limit {v.last().map(|v|v.id.as_str())} else {None}}))
         }
         Route::Run(id) if query.is_none() => automation
             .get_run(subject, id)
