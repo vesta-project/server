@@ -2128,6 +2128,83 @@ fn management_audit_tail_withholds_untrusted_actor_target_and_payload_fields() {
 }
 
 #[test]
+fn management_audit_projects_identity_and_safe_relative_targets() {
+    use vesta_state::audit::{AuditActor, AuditLog, AuditRecord};
+    let f = Fixture::new("minecraft", 8, 4096, 3);
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    let principal = f
+        .host()
+        .database()
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT principal_id FROM devices WHERE id=?",
+                [&device],
+                |r| r.get::<_, String>(0),
+            )?)
+        })
+        .unwrap();
+    let audit = AuditLog::new(f.host().database().clone()).unwrap();
+    for path in [
+        "config/example.toml",
+        "../private/secret",
+        "C:/private/secret",
+    ] {
+        audit
+            .append_record(
+                &AuditRecord::new(
+                    AuditActor::new(principal.clone(), device.clone(), "files".into()).unwrap(),
+                    "files.write".into(),
+                    "file".into(),
+                    "success".into(),
+                    None,
+                    [
+                        ("path".into(), Some(path.into())),
+                        ("sha256".into(), Some("private-hash-marker".into())),
+                    ],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    let reply = f.request("GET", "/api/v3/manage/audit?limit=3", b"", Some(&token));
+    assert_eq!(reply.status, 200);
+    reply.hides("private-hash-marker");
+    reply.hides("../private/secret");
+    reply.hides("C:/private/secret");
+    let value = reply.json();
+    let items = value["data"]["items"].as_array().unwrap();
+    assert_eq!(items[0]["actor"]["principal_id"], principal);
+    assert!(items[0]["actor"]["display_name"].is_string());
+    assert!(items[0]["actor"]["device_name"].is_string());
+    assert_eq!(items[0]["target"], "config/example.toml");
+    assert!(items[1]["target"].is_null());
+    assert!(items[2]["target"].is_null());
+    audit
+        .append_record(
+            &AuditRecord::new(
+                AuditActor::new(principal.clone(), device.clone(), "management".into()).unwrap(),
+                "management.permissions.mutate".into(),
+                "roles/viewer".into(),
+                "success".into(),
+                None,
+                [],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let role = f.request("GET", "/api/v3/manage/audit?limit=1", b"", Some(&token));
+    assert_eq!(role.json()["data"]["items"][0]["target"], "Viewer");
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Viewer);
+    let viewer = management_session(&f, &device, &key);
+    assert_eq!(
+        f.request("GET", "/api/v3/manage/audit", b"", Some(&viewer))
+            .status,
+        403
+    );
+}
+
+#[test]
 fn management_stale_kill_and_stop_refuse_before_operation_admission() {
     let f = Fixture::new("minecraft", 8, 4096, 3);
     let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
@@ -2391,7 +2468,7 @@ fn management_console_redacts_truncated_and_split_live_credentials_over_tls_and_
         "owned-boundary-stop-0001",
         &serde_json::json!({"expected_generation":generation}),
     );
-    assert_eq!(stop.status, 202);
+    assert_eq!(stop.status, 202, "{}", stop.json());
     management_wait_operation(
         &f,
         &token,
@@ -2454,6 +2531,63 @@ fn management_tls_inert_lifecycle_command_console_and_known_players() {
         .unwrap()
         .to_owned();
     management_wait_operation(&f, &token, &id);
+    let detail = f.request(
+        "GET",
+        &format!("/api/v3/manage/operations/{id}"),
+        b"",
+        Some(&token),
+    );
+    assert_eq!(detail.status, 200);
+    detail.hides(&token);
+    detail.hides(&path);
+    detail.hides(&code);
+    let details = detail.json();
+    assert_eq!(details["data"]["kind"], "console.command");
+    assert_eq!(
+        details["data"]["summary"]["command"],
+        "say marker-actual-output [redacted] [redacted] [redacted]"
+    );
+    assert_eq!(details["data"]["outcome"], "stdin_written");
+    assert_eq!(details["data"]["summary_purged"], false);
+    assert!(details["data"]["actor"]["principal_id"].is_string());
+    for field in [
+        "operation_id",
+        "state",
+        "progress_percent",
+        "cancel_requested",
+        "created_at_ms",
+        "updated_at_ms",
+        "finished_at_ms",
+    ] {
+        assert!(details["data"].get(field).is_some(), "legacy field {field}");
+    }
+    let filtered = f.request(
+        "GET",
+        "/api/v3/manage/operations?kind=console.command&actor=me&limit=1",
+        b"",
+        Some(&token),
+    );
+    assert_eq!(filtered.status, 200);
+    assert_eq!(filtered.json()["data"]["items"][0], details["data"]);
+    for query in [
+        "kind=unknown",
+        "actor=someone",
+        "kind=other&kind=other",
+        "kind=other&",
+        "actor=me&actor=me",
+        "limit=0",
+    ] {
+        assert_eq!(
+            f.request(
+                "GET",
+                &format!("/api/v3/manage/operations?{query}"),
+                b"",
+                Some(&token)
+            )
+            .status,
+            400
+        );
+    }
     let retry = management_mutation(
         &f,
         &token,

@@ -26,6 +26,293 @@ const STATES: [OperationState; 9] = [
 ];
 const INPUT: &str = r#"{"version":1,"paths":["world"],"value":"sentinel-input"}"#;
 
+#[test]
+fn activity_projects_typed_inputs_with_current_capabilities_and_purge() {
+    let f = Fixture::open();
+    let generation = "00112233445566778899aabbccddeeff";
+    // Use the exact canonical order emitted by GameCommand (struct order, not map order).
+    let raw = format!(
+        "{{\"expected_generation\":\"{generation}\",\"line\":{}}}",
+        serde_json::to_string("say Hello, players!").unwrap()
+    );
+    f.db.write(|c| {
+        c.execute(
+            "UPDATE operations SET type='game.console',input_json=?,payload_hash=? WHERE id=?",
+            params![
+                raw,
+                hex::encode(Sha256::digest(raw.as_bytes())),
+                id(5).as_str()
+            ],
+        )?;
+        c.execute(
+            "INSERT INTO user_minecraft_names(principal_id,name) VALUES (?,'PlayerOne')",
+            [f.viewer.principal.as_str()],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let (old, details) = f
+        .operations
+        .activity_get(&f.viewer, &id(5))
+        .unwrap()
+        .unwrap();
+    assert_eq!(Some(old), f.operations.get(&f.viewer, &id(5)).unwrap());
+    let value = serde_json::to_value(details).unwrap();
+    assert_eq!(value["kind"], "console.command");
+    assert_eq!(value["actor"]["display_name"], "PlayerOne");
+    assert_eq!(value["actor"]["device_name"], "Fixture");
+    assert_eq!(value["actor"]["principal_id"], f.viewer.principal.as_str());
+    assert_eq!(value["summary"]["command"], "say Hello, players!");
+    assert_eq!(value["outcome"], "stdin_written");
+    let value = serde_json::to_value(
+        f.operations
+            .activity_get(&f.other, &id(5))
+            .unwrap()
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    assert_eq!(
+        value["summary"],
+        serde_json::json!({"command_redacted":true})
+    );
+    // A different enrolled device of the same principal retains the issuer exception.
+    let value = serde_json::to_value(
+        f.operations
+            .activity_get(&f.second_device, &id(5))
+            .unwrap()
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    assert_eq!(value["summary"]["command"], "say Hello, players!");
+    f.db.write(|c| {
+        c.execute("INSERT INTO principal_overrides(id,principal_id,capability,scope,effect,granted_by,created_at) VALUES ('activity-read',?,'console.read','*','allow','fixture',?)",params![f.other.principal.as_str(),NOW])?;
+        Ok(())
+    }).unwrap();
+    let value = serde_json::to_value(
+        f.operations
+            .activity_get(&f.other, &id(5))
+            .unwrap()
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    assert_eq!(value["summary"]["command"], "say Hello, players!");
+    f.db.write(|c| {
+        c.execute(
+            "UPDATE principal_overrides SET effect='deny' WHERE id='activity-read'",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let value = serde_json::to_value(
+        f.operations
+            .activity_get(&f.other, &id(5))
+            .unwrap()
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    assert_eq!(
+        value["summary"],
+        serde_json::json!({"command_redacted":true})
+    );
+    f.db.write(|c| {
+        c.execute(
+            "UPDATE operations SET input_json=NULL,input_status='purged' WHERE id=?",
+            [id(5).as_str()],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let value = serde_json::to_value(
+        f.operations
+            .activity_get(&f.viewer, &id(5))
+            .unwrap()
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    assert_eq!(value["summary"], serde_json::Value::Null);
+    assert_eq!(value["summary_purged"], true);
+    assert_eq!(value["outcome"], "stdin_written");
+    assert_eq!(
+        f.operations
+            .activity_list(&f.viewer, 0, 1, Some("console.command"), true)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        f.operations
+            .activity_list(&f.other, 0, 10, Some("console.command"), true)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        f.operations
+            .activity_list(&f.viewer, 0, 10, Some("arbitrary"), false)
+            .is_err()
+    );
+    assert!(f.operations.activity_get(&f.ungranted, &id(5)).is_err());
+    f.revoke();
+    assert!(f.operations.activity_get(&f.viewer, &id(5)).is_err());
+}
+
+#[test]
+fn activity_moderation_lifecycle_outcomes_and_legacy_are_allowlisted() {
+    let f = Fixture::open();
+    let raw = "{\"expected_generation\":\"00112233445566778899aabbccddeeff\",\"action\":{\"action\":\"ban\",\"player\":\"PlayerOne\",\"reason\":\"Griefing\",\"duration_seconds\":3600}}";
+    f.db.write(|c| {
+        c.execute(
+            "UPDATE operations SET type='players.moderate',input_json=?,payload_hash=? WHERE id=?",
+            params![
+                raw,
+                hex::encode(Sha256::digest(raw.as_bytes())),
+                id(5).as_str()
+            ],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let value = serde_json::to_value(
+        f.operations
+            .activity_get(&f.other, &id(5))
+            .unwrap()
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    assert_eq!(
+        value["summary"],
+        serde_json::json!({"action":"ban","player":"PlayerOne","reason":"Griefing","duration_seconds":3600})
+    );
+    f.db.write(|c| {
+        c.execute("INSERT INTO principal_overrides(id,principal_id,capability,scope,effect,granted_by,created_at) VALUES ('activity-players',?,'players.view','*','deny','fixture',?)",params![f.viewer.principal.as_str(),NOW])?;
+        Ok(())
+    }).unwrap();
+    let value = serde_json::to_value(
+        f.operations
+            .activity_get(&f.viewer, &id(5))
+            .unwrap()
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    assert_eq!(
+        value["summary"],
+        serde_json::json!({"details_redacted":true})
+    );
+    for (code, expected) in [
+        ("game_stale_generation", "stale_generation"),
+        ("game_stop_timeout", "timeout"),
+        ("game_stdin_unavailable", "write_failed"),
+        ("secret-exception-path", "failed"),
+    ] {
+        f.db.write(|c| {
+            c.execute(
+                "UPDATE operations SET error_code=? WHERE id=?",
+                params![code, id(6).as_str()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let value = serde_json::to_value(
+            f.operations
+                .activity_get(&f.viewer, &id(6))
+                .unwrap()
+                .unwrap()
+                .1,
+        )
+        .unwrap();
+        assert_eq!(value["outcome"], expected);
+        assert_eq!(value["summary"], serde_json::Value::Null);
+        assert_eq!(value["kind"], "other");
+    }
+    f.db.write(|c| {
+        c.execute("UPDATE operations SET type='game.start',input_json='{}',payload_hash=?,result_json=? WHERE id=?",params![hex::encode(Sha256::digest(b"{}")),"{\"generation\":\"00112233445566778899aabbccddeeff\",\"private\":\"secret\"}",id(5).as_str()])?;
+        Ok(())
+    }).unwrap();
+    let value = serde_json::to_value(
+        f.operations
+            .activity_get(&f.viewer, &id(5))
+            .unwrap()
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    assert_eq!(
+        value["summary"],
+        serde_json::json!({"target_generation":null,"result_generation":"00112233445566778899aabbccddeeff"})
+    );
+    assert_eq!(value["outcome"], "process_started");
+    let value = serde_json::to_value(
+        f.operations
+            .activity_get(&f.viewer, &id(8))
+            .unwrap()
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    assert_eq!(value["outcome"], "recovery_required");
+}
+
+#[test]
+fn activity_automation_identity_and_audit_player_targets_are_authorized() {
+    use vesta_state::audit::{AuditActor, AuditRecord};
+    let f = Fixture::open();
+    f.db.write(|c| {
+        c.execute("UPDATE devices SET public_key_sha256=? WHERE id=?",params![format!("{:x}",Sha256::digest(format!("vesta-automation-device:{}",f.viewer.principal.as_str()))),f.viewer.device.as_str()])?;
+        c.execute("INSERT INTO principal_overrides(id,principal_id,capability,scope,effect,granted_by,created_at) VALUES ('activity-audit',?,'audit.view','*','allow','fixture',?)",params![f.other.principal.as_str(),NOW])?;
+        c.execute("INSERT INTO moderation_actions(server_id,principal_id,device_id,operation_id,action,player,created_at,outcome,expiry_state) VALUES (?,?,?,?,'kick','PlayerOne',?,'succeeded','none')",params![f.db.server_id(),f.viewer.principal.as_str(),f.viewer.device.as_str(),id(5).as_str(),NOW])?;
+        Ok(())
+    }).unwrap();
+    let details = serde_json::to_value(
+        f.operations
+            .activity_get(&f.other, &id(5))
+            .unwrap()
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    assert_eq!(
+        details["actor"],
+        serde_json::json!({"kind":"workflow","name":"Vesta automation"})
+    );
+    f.audit
+        .append_record(
+            &AuditRecord::new(
+                AuditActor::system("operation-kernel".into()).unwrap(),
+                "operation.finish".into(),
+                "operation:observed-5".into(),
+                "ok".into(),
+                Some(id(5).as_str().into()),
+                [],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let notice = f
+        .operations
+        .audit_notices(&f.other, 0, 1)
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(notice.target.as_deref(), Some("PlayerOne"));
+    f.db.write(|c| {
+        c.execute("INSERT INTO principal_overrides(id,principal_id,capability,scope,effect,granted_by,created_at) VALUES ('activity-player-target',?,'players.view','*','deny','fixture',?)",params![f.other.principal.as_str(),NOW])?;
+        Ok(())
+    }).unwrap();
+    assert!(
+        f.operations.audit_notices(&f.other, 0, 1).unwrap()[0]
+            .target
+            .is_none()
+    );
+    assert!(f.operations.audit_notices(&f.viewer, 0, 1).is_err());
+}
+
 struct FixedClock;
 impl Clock for FixedClock {
     fn millis(&self) -> i64 {
