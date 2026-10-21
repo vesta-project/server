@@ -131,7 +131,16 @@ pub async fn create(options: Create, base: &Path) -> Result<()> {
     let plan = installer
         .plan(options.software, &selection, &java, &reporter)
         .await
-        .map_err(|_| "local_install_plan_failed")?;
+        .map_err(|error| match error {
+            vesta_server_install::InstallError::RuntimeIncompatible => {
+                "local_install_java_incompatible_select_supported_java"
+            }
+            vesta_server_install::InstallError::RuntimeUnknown
+            | vesta_server_install::InstallError::RuntimeFailed => {
+                "local_install_java_unavailable_check_java_path"
+            }
+            _ => "local_install_plan_failed",
+        })?;
     println!(
         "install_plan={}; software={}; version={}; warning_count={}; eula=not_accepted",
         plan.hash(),
