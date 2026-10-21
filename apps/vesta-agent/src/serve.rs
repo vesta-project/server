@@ -124,6 +124,12 @@ pub async fn run(source: &Path, base: &Path, local_only: bool) -> ExitCode {
         host.runtime().local_handle(),
         host.management().clone(),
         transport.as_ref().map(Transport::fingerprint_handle),
+        match host.configuration().listener() {
+            vesta_control::config::ListenerDescription::Tls(listener) => {
+                listener.public_endpoint().map(str::to_owned)
+            }
+            _ => None,
+        },
     )
     .await
     {

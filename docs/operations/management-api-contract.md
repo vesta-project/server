@@ -91,7 +91,17 @@ inventories refuse pending pagination. `access set` requires at least one settin
 rejects duplicates/unknown flags, and validates every automatic role before its
 transactional audited update. Show/set return the canonical source settings as JSON.
 
-Pair prints one JSON object with `code`, `server_id`, `role`, `expires_at_ms`. Only a
+Pair prints one JSON object with `code`, `server_id`, `role`, `expires_at_ms`,
+`tls_sha256_fingerprint` and `pairing_link`. The fingerprint uses the same live
+reloadable leaf-DER SHA-256 source as `owner link`; it is null for local-only serve.
+Optional `[listener] public-endpoint = "https://host.example:8443/"` advertises the
+HTTPS base URL (default absent; max 2048 bytes; no userinfo, query or fragment).
+It is never inferred from a bind address or request header. When both endpoint
+and TLS fingerprint are available, `pairing_link` is
+`vesta://pair?endpoint=<percent-encoded HTTPS URL>&code=<code>&fp=<lowercase SHA-256 hex>&sid=<server_id>`;
+otherwise it is null. Query values are percent-encoded exactly once. This link
+contains a pairing secret; handle it like the code, never as proof of authority.
+Only a
 server/purpose-bound SHA-256 digest of the random 32-byte code is persisted. A code
 survives restart until consumed/expired. Redemption consumes the code, creates or
 attaches the device to its canonical user, assigns the locally selected role,

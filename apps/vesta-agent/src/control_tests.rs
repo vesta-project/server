@@ -87,6 +87,7 @@ fn protected_channel_start_stop_restart_pending_eula_and_absent_agent() {
             owned.runtime.local_handle(),
             vesta_control::identity::management::ManagementAccess::new(db.clone()).unwrap(),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -109,6 +110,8 @@ fn protected_channel_start_stop_restart_pending_eula_and_absent_agent() {
         .unwrap()
         .unwrap();
         assert_eq!(paired["role"], "administrator");
+        assert!(paired["tls_sha256_fingerprint"].is_null());
+        assert!(paired["pairing_link"].is_null());
         assert_eq!(paired["code"].as_str().unwrap().len(), 43);
         assert_eq!(
             control::request_data(

@@ -447,8 +447,13 @@ pub struct TlsListener {
     max_connections: u16,
     max_request_bytes: u32,
     request_timeout_seconds: u16,
+    public_endpoint: Option<String>,
 }
 impl TlsListener {
+    /// Operator-advertised HTTPS base URL; never inferred from bind or peer headers.
+    pub fn public_endpoint(&self) -> Option<&str> {
+        self.public_endpoint.as_deref()
+    }
     pub fn bind(&self) -> IpAddr {
         self.bind
     }
@@ -605,6 +610,7 @@ impl HostConfiguration {
                 max_connections,
                 max_request_bytes,
                 request_timeout_seconds,
+                public_endpoint,
             } => {
                 let bind = bind
                     .parse::<IpAddr>()
@@ -619,6 +625,24 @@ impl HostConfiguration {
                 {
                     return Err(ConfigError::InvalidListener);
                 }
+                let public_endpoint = public_endpoint
+                    .map(|text| {
+                        let url =
+                            url::Url::parse(&text).map_err(|_| ConfigError::InvalidListener)?;
+                        if text.len() > 2048
+                            || text.chars().any(char::is_control)
+                            || url.scheme() != "https"
+                            || url.host_str().is_none()
+                            || !url.username().is_empty()
+                            || url.password().is_some()
+                            || url.query().is_some()
+                            || url.fragment().is_some()
+                        {
+                            return Err(ConfigError::InvalidListener);
+                        }
+                        Ok(url.to_string())
+                    })
+                    .transpose()?;
                 let certificate = resolve_value(base, &certificate)?;
                 let private_key = resolve_value(base, &private_key)?;
                 if same_spelling(&certificate, &private_key)
@@ -638,6 +662,7 @@ impl HostConfiguration {
                     max_connections,
                     max_request_bytes,
                     request_timeout_seconds,
+                    public_endpoint,
                 })
             }
         };
@@ -1390,6 +1415,8 @@ enum WireListener {
         max_connections: u16,
         max_request_bytes: u32,
         request_timeout_seconds: u16,
+        #[serde(default)]
+        public_endpoint: Option<String>,
     },
 }
 

@@ -1399,3 +1399,39 @@ fn backup_limits_parse_sizes_and_refuse_zero_caps() {
         refused(parse(&bad, &base), ConfigError::InvalidDocument);
     }
 }
+
+#[test]
+fn advertised_pairing_endpoint_is_explicit_bounded_https() {
+    let temp = tempfile::tempdir().unwrap();
+    let original = tls_document();
+    let config = parse(&original, temp.path()).unwrap();
+    let ListenerDescription::Tls(tls) = config.listener() else {
+        panic!("tls")
+    };
+    assert_eq!(tls.public_endpoint(), None);
+    for endpoint in ["https://example.test:8443/", "https://[2001:db8::1]/vesta/"] {
+        let text = original.replace(
+            "mode = 'tls'",
+            &format!("mode = 'tls'\npublic-endpoint = '{endpoint}'"),
+        );
+        let config = parse(&text, temp.path()).unwrap();
+        let ListenerDescription::Tls(tls) = config.listener() else {
+            panic!("tls")
+        };
+        assert_eq!(tls.public_endpoint(), Some(endpoint));
+    }
+    for endpoint in [
+        "http://example.test/",
+        "https://u:p@example.test/",
+        "https://example.test/?token=x",
+        "https://example.test/#x",
+        "relative",
+        &format!("https://example.test/{}", "a".repeat(2048)),
+    ] {
+        let text = original.replace(
+            "mode = 'tls'",
+            &format!("mode = 'tls'\npublic-endpoint = '{endpoint}'"),
+        );
+        assert!(parse(&text, temp.path()).is_err(), "{endpoint}");
+    }
+}

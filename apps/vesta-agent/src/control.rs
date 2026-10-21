@@ -128,6 +128,7 @@ async fn serve_stream<S: AsyncRead + AsyncWrite + Unpin>(
     runtime: &LocalRuntime,
     management: &vesta_control::identity::management::ManagementAccess,
     fingerprint: Option<&vesta_transport::TlsFingerprint>,
+    public_endpoint: Option<&str>,
 ) -> Result<()> {
     let request = match tokio::time::timeout(IO_WAIT, read_frame(stream)).await {
         Ok(Ok(bytes)) => decode(&bytes),
@@ -153,8 +154,14 @@ async fn serve_stream<S: AsyncRead + AsyncWrite + Unpin>(
         {
             let management = management.clone();
             let fingerprint = fingerprint.cloned();
+            let public_endpoint = public_endpoint.map(str::to_owned);
             match tokio::task::spawn_blocking(move || {
-                management_op(&management, request.op, fingerprint.as_ref())
+                management_op(
+                    &management,
+                    request.op,
+                    fingerprint.as_ref(),
+                    public_endpoint.as_deref(),
+                )
             })
             .await
             {
@@ -229,6 +236,7 @@ impl Server {
         runtime: LocalRuntime,
         management: vesta_control::identity::management::ManagementAccess,
         fingerprint: Option<vesta_transport::TlsFingerprint>,
+        public_endpoint: Option<String>,
     ) -> Result<Self> {
         if !crate::cli::valid_name(&name) {
             return Err("local_control_name_invalid");
@@ -279,7 +287,7 @@ impl Server {
                         if stream.peer_cred().map_err(|_| "local_control_acl_refused")?.uid() != linux_uid() { continue; }
                         stream
                     };
-                    let _ = serve_stream(&mut stream, &name, &game, &runtime, &management, fingerprint.as_ref()).await;
+                    let _ = serve_stream(&mut stream, &name, &game, &runtime, &management, fingerprint.as_ref(), public_endpoint.as_deref()).await;
                 }
                 Ok(())
             }.await;
@@ -301,6 +309,7 @@ impl Server {
                 runtime,
                 management,
                 fingerprint,
+                public_endpoint,
             );
             return Err("local_platform_unsupported");
         };
@@ -410,15 +419,25 @@ fn management_op(
     service: &vesta_control::identity::management::ManagementAccess,
     op: Op,
     fingerprint: Option<&vesta_transport::TlsFingerprint>,
+    public_endpoint: Option<&str>,
 ) -> Result<serde_json::Value> {
     match op {
         Op::Pair { role, minutes } => {
             let role = crate::cli::pair_role(&role).ok_or("local_control_invalid_request")?;
+            let fingerprint = fingerprint
+                .map(|f| f.current().map_err(|_| "local_tls_unavailable"))
+                .transpose()?;
             let code = service
                 .issue_local(role, minutes)
                 .map_err(|_| "local_management_refused")?;
+            let pairing_link = pairing_link(
+                public_endpoint,
+                fingerprint.as_deref(),
+                code.secret.expose(),
+                service.server_id(),
+            );
             Ok(
-                serde_json::json!({"code": code.secret.expose(), "expires_at_ms": code.expires_at_ms, "server_id": service.server_id(), "role": role.id()}),
+                serde_json::json!({"code": code.secret.expose(), "expires_at_ms": code.expires_at_ms, "server_id": service.server_id(), "role": role.id(), "tls_sha256_fingerprint": fingerprint, "pairing_link": pairing_link}),
             )
         }
         Op::OwnerLink { uuid, role } => {
@@ -533,5 +552,41 @@ mod tests {
             let read = read_frame(&mut bytes.as_slice()).await.unwrap();
             assert!(matches!(decode(&read).unwrap().op, Op::Stop));
         });
+    }
+}
+
+/// Serialize all query values, including nested endpoint delimiters, exactly once.
+fn pairing_link(
+    endpoint: Option<&str>,
+    fingerprint: Option<&str>,
+    code: &str,
+    server: &str,
+) -> Option<String> {
+    let (endpoint, fingerprint) = (endpoint?, fingerprint?);
+    let mut link = url::Url::parse("vesta://pair").expect("fixed pairing URL");
+    link.query_pairs_mut()
+        .append_pair("endpoint", endpoint)
+        .append_pair("code", code)
+        .append_pair("fp", fingerprint)
+        .append_pair("sid", server);
+    Some(link.into())
+}
+
+#[cfg(test)]
+mod pairing_tests {
+    use super::pairing_link;
+    #[test]
+    fn link_encodes_endpoint_and_requires_both_trust_and_address() {
+        let fp = "a".repeat(64);
+        let endpoint = "https://[2001:db8::1]:8443/a%20b/";
+        let link = pairing_link(Some(endpoint), Some(&fp), "code", "server").unwrap();
+        assert!(link.starts_with("vesta://pair?endpoint=https%3A%2F%2F%5B2001%3Adb8%3A%3A1%5D%3A8443%2Fa%2520b%2F&code=code&fp="));
+        let url = url::Url::parse(&link).unwrap();
+        let pairs: std::collections::BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(pairs["endpoint"], endpoint);
+        assert_eq!(pairs["fp"], fp);
+        assert_eq!(pairs["sid"], "server");
+        assert!(pairing_link(None, Some(&fp), "code", "server").is_none());
+        assert!(pairing_link(Some(endpoint), None, "code", "server").is_none());
     }
 }
