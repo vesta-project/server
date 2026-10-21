@@ -247,6 +247,25 @@ returns `device_id`, and uses the canonical UUID user; clients then use signed
 session issuance. V2 status/artifact/ticket/realtime endpoints consume canonical
 sessions or explicitly configured anonymous capabilities.
 
+### Authenticated self projection
+
+`GET /api/v3/manage/session` accepts no body or query and requires only a valid
+canonical device session, including pack-only users. The POST compatibility alias
+for session issuance is unchanged. Success uses the standard V3 envelope:
+
+```json
+{"api_version":"3","request_id":"request-1","data":{"server_id":"server-uuid","principal_id":"user-uuid","device_id":"device-uuid","roles":[{"id":"viewer","name":"Viewer","rank":10}],"capabilities":["public.info","status.view","metrics.view"],"session_expires_at_ms":1791116100000}}
+```
+
+Roles include current explicit and applicable safe automatic sources, deduplicated
+by ID. Capabilities use the live authorization policy, including explicit denies,
+expired grants, current whitelist/bans and password revision. A scoped capability
+is listed only when held over all resources without an overlapping deny; narrower
+resource grants cannot be represented by this flat list and are omitted. This is
+an informational UI hint, never authority for an effect. No credentials, keys or
+audit entries are emitted by the read. Invalid/revoked/expired sessions return the
+V3 401 `management_session_invalid` envelope.
+
 ### Capability-checked placeholders and fixed errors
 
 Other paths at/below `/api/v3/manage` require a valid device session and live

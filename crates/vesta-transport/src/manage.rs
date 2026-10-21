@@ -351,6 +351,21 @@ pub(super) struct Request<'a> {
     pub if_range: Option<&'a str>,
 }
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
+    if request.path == "/api/v3/manage/session" {
+        if request.method != Method::GET || request.query.is_some() || !request.bytes.is_empty() {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        let Some(token) = request.authorization else {
+            return error(StatusCode::UNAUTHORIZED, "management_session_invalid");
+        };
+        return match host.with_policy(|policy| host.management().session_projection(token, policy))
+        {
+            Ok(Ok(value)) => ok(value),
+            Ok(Err(e)) => management_error(e),
+            Err(_) => error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
+        };
+    }
+
     if presentation::implemented(request.path) {
         return presentation::dispatch(host, request);
     }

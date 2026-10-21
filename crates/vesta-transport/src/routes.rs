@@ -69,7 +69,8 @@ pub(super) async fn route(
         original_path.to_owned()
     };
     let method = request.method().clone();
-    let operational = super::manage::implemented(&path);
+    let operational = super::manage::implemented(&path)
+        || path == "/api/v3/manage/session" && method == Method::GET;
     let idempotency = if request.headers().get_all("idempotency-key").iter().count() == 1 {
         request
             .headers()

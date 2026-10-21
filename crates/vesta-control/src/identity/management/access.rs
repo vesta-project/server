@@ -379,6 +379,107 @@ impl ManagementAccess {
             })
         }
     }
+    pub(super) fn automatic_roles(
+        &self,
+        repo: &Repository<'_>,
+        subject: &Subject,
+        policy: &PackAccessPolicy<'_>,
+    ) -> Result<(Vec<String>, PackGrant)> {
+        let settings = sources(repo)?;
+        let default: Option<String> = repo
+            .connection()
+            .query_row(
+                "SELECT role_id FROM user_default_roles WHERE principal_id=?",
+                [subject.principal.as_str()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let mut roles = Vec::new();
+        if let Some(role) = default {
+            role_allows(repo, &role, Capability::PublicInfo)?;
+            roles.push(role);
+        }
+        let uuid: Option<String>=repo.connection().query_row("SELECT minecraft_uuid FROM user_minecraft_accounts WHERE server_id=? AND principal_id=?",params![self.server_id(),subject.principal.as_str()],|r|r.get(0)).optional()?;
+        let mut grant = PackGrant::Role;
+        if let Some(uuid) = uuid {
+            let player = MinecraftUuid::parse(&uuid).map_err(|_| ManagementError::Unavailable)?;
+            if settings.whitelist_enabled
+                && policy.properties.is_some_and(|p| p.online_mode())
+                && policy.whitelist.contains(player)
+                && !policy.bans.contains(player)
+            {
+                role_allows(repo, &settings.whitelist, Capability::PublicInfo)?;
+                roles.push(settings.whitelist.clone());
+                grant = PackGrant::Minecraft(player);
+            }
+        }
+        let password: Option<(String, i64)> = repo
+            .connection()
+            .query_row(
+                "SELECT role_id,password_revision FROM device_password_grants WHERE device_id=?",
+                [subject.device.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((role, revision)) = password {
+            let active: Option<i64> = repo
+                .connection()
+                .query_row(
+                    "SELECT revision FROM pack_passwords WHERE server_id=? AND revoked_at IS NULL",
+                    [self.server_id()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if active == Some(revision)
+                && policy.mode == PackAccessMode::MinecraftOrPassword
+                && policy
+                    .password
+                    .is_some_and(|r| i64::try_from(r.value()).ok() == Some(revision))
+            {
+                role_allows(repo, &role, Capability::PublicInfo)?;
+                roles.push(role);
+                grant = PackGrant::Password(
+                    crate::identity::PasswordRevision::new(
+                        u64::try_from(revision).map_err(|_| ManagementError::Unavailable)?,
+                    )
+                    .map_err(|_| ManagementError::Unavailable)?,
+                );
+            } else {
+                repo.connection().execute(
+                    "DELETE FROM device_password_grants WHERE device_id=?",
+                    [subject.device.as_str()],
+                )?;
+            }
+        }
+        Ok((roles, grant))
+    }
+    pub(super) fn pack_grant_in(
+        &self,
+        repo: &Repository<'_>,
+        subject: &Subject,
+        capability: Capability,
+        policy: &PackAccessPolicy<'_>,
+    ) -> Result<Option<PackGrant>> {
+        self.subject_in(repo, &subject.device)?;
+        let current = repo.policy(Some(subject))?;
+        let decision = current.check(capability, None);
+        let legacy = current.check(Capability::PackAccess, None);
+        let alias = matches!(
+            capability,
+            Capability::PackDownload | Capability::PackRealtime
+        );
+        if decision == Decision::Deny(DenyReason::ExplicitDeny)
+            || alias && legacy == Decision::Deny(DenyReason::ExplicitDeny)
+        {
+            return Ok(None);
+        }
+        let (roles, grant) = self.automatic_roles(repo, subject, policy)?;
+        let mut allowed = decision.allowed() || alias && legacy.allowed();
+        for role in roles {
+            allowed |= role_allows(repo, &role, capability)?;
+        }
+        Ok(allowed.then_some(grant))
+    }
     pub fn authorize_pack(
         &self,
         reference: DeviceSessionReference,
@@ -411,37 +512,23 @@ impl ManagementAccess {
             Some((session.subject.clone(), session.monotonic_expires))
         };
         self.write(|repo| {
-            let settings=sources(repo)?;
-            let Some((subject,expires_at))=&observation else {
-                if !role_allows(repo,&settings.anonymous,capability)? {return Err(ManagementError::Forbidden);}
-                return Ok(Some(PackSession {grant:PackGrant::Role,expires_at:now+std::time::Duration::from_secs(60)}));
-            };
-            self.subject_in(repo,&subject.device)?;
-            let current=repo.policy(Some(subject))?;
-            let decision=current.check(capability,None);
-            if matches!(capability,Capability::PackDownload|Capability::PackRealtime) && current.check(Capability::PackAccess,None)==Decision::Deny(DenyReason::ExplicitDeny) {return Err(ManagementError::Forbidden);}
-            if decision==Decision::Deny(DenyReason::ExplicitDeny) {return Err(ManagementError::Forbidden);}
-            let explicit=decision.allowed() || (matches!(capability,Capability::PackDownload|Capability::PackRealtime) && current.check(Capability::PackAccess,None).allowed());
-            let default: Option<String>=repo.connection().query_row("SELECT role_id FROM user_default_roles WHERE principal_id=?",[subject.principal.as_str()],|r|r.get(0)).optional()?;
-            let mut allowed=explicit;
-            if let Some(role)=default {allowed|=role_allows(repo,&role,capability)?;}
-            let uuid: Option<String>=repo.connection().query_row("SELECT minecraft_uuid FROM user_minecraft_accounts WHERE server_id=? AND principal_id=?",params![self.server_id(),subject.principal.as_str()],|r|r.get(0)).optional()?;
-            let mut grant=PackGrant::Role;
-            if let Some(uuid)=uuid {
-                let player=MinecraftUuid::parse(&uuid).map_err(|_|ManagementError::Unavailable)?;
-                if settings.whitelist_enabled && policy.properties.is_some_and(|p|p.online_mode()) && policy.whitelist.contains(player) && !policy.bans.contains(player) {
-                    allowed|=role_allows(repo,&settings.whitelist,capability)?;grant=PackGrant::Minecraft(player);
+            let settings = sources(repo)?;
+            let Some((subject, expires_at)) = &observation else {
+                if !role_allows(repo, &settings.anonymous, capability)? {
+                    return Err(ManagementError::Forbidden);
                 }
-            }
-            let password: Option<(String,i64)>=repo.connection().query_row("SELECT role_id,password_revision FROM device_password_grants WHERE device_id=?",[subject.device.as_str()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-            if let Some((role,revision))=password {
-                let active:Option<i64>=repo.connection().query_row("SELECT revision FROM pack_passwords WHERE server_id=? AND revoked_at IS NULL",[self.server_id()],|r|r.get(0)).optional()?;
-                if active==Some(revision) && policy.mode==PackAccessMode::MinecraftOrPassword && policy.password.is_some_and(|r|i64::try_from(r.value()).ok()==Some(revision)) {
-                    allowed|=role_allows(repo,&role,capability)?;grant=PackGrant::Password(crate::identity::PasswordRevision::new(u64::try_from(revision).map_err(|_|ManagementError::Unavailable)?).map_err(|_|ManagementError::Unavailable)?);
-                } else {repo.connection().execute("DELETE FROM device_password_grants WHERE device_id=?",[subject.device.as_str()])?;}
-            }
-            Ok(allowed.then_some(PackSession {grant,expires_at:*expires_at}))
-        })?.ok_or(ManagementError::Forbidden)
+                return Ok(Some(PackSession {
+                    grant: PackGrant::Role,
+                    expires_at: now + std::time::Duration::from_secs(60),
+                }));
+            };
+            let grant = self.pack_grant_in(repo, subject, capability, policy)?;
+            Ok(grant.map(|grant| PackSession {
+                grant,
+                expires_at: *expires_at,
+            }))
+        })?
+        .ok_or(ManagementError::Forbidden)
     }
 }
 

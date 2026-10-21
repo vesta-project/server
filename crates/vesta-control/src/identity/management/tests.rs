@@ -961,3 +961,132 @@ fn automation_and_notifications_defaults_are_management_not_automatic_access() {
         }
     }
 }
+
+#[test]
+fn self_projection_is_live_deny_first_expiry_aware_and_has_no_audit() {
+    let f = Fixture::new();
+    let (device, key) = f.enroll(BuiltinRole::Viewer);
+    let token = f.session(&device, &key);
+    let whitelist = Whitelist::default();
+    let bans = BanList::default();
+    let access = policy(&f, &whitelist, &bans);
+    let audit = || {
+        f.db.read(|c| {
+            Ok(c.query_row("SELECT count(*) FROM audit_events", [], |r| {
+                r.get::<_, i64>(0)
+            })?)
+        })
+        .unwrap()
+    };
+    let before = audit();
+    let first = f
+        .service
+        .session_projection(token.secret.expose(), &access)
+        .unwrap();
+    assert_eq!(first["principal_id"], device.principal_id);
+    assert_eq!(first["device_id"], device.device_id);
+    assert_eq!(first["session_expires_at_ms"], token.expires_at_ms);
+    assert!(
+        first["roles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == "viewer")
+    );
+    assert!(
+        first["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("status.view"))
+    );
+    assert_eq!(audit(), before);
+    f.db.write(|c| {
+        c.execute("INSERT INTO principal_overrides(id,principal_id,capability,scope,effect,granted_by,created_at) VALUES('self-deny',?,'status.view','*','deny','test',0)", [&device.principal_id])?;
+        Ok(())
+    }).unwrap();
+    let denied = f
+        .service
+        .session_projection(token.secret.expose(), &access)
+        .unwrap();
+    assert!(
+        !denied["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("status.view"))
+    );
+    f.db.write(|c| {
+        c.execute(
+            "UPDATE role_assignments SET expires_at=? WHERE principal_id=?",
+            params![f.clock.millis(), device.principal_id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let expired = f
+        .service
+        .session_projection(token.secret.expose(), &access)
+        .unwrap();
+    assert!(
+        !expired["roles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == "viewer")
+    );
+    assert!(
+        !expired["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("metrics.view"))
+    );
+    f.service.revoke_local(&device.device_id).unwrap();
+    assert!(matches!(
+        f.service.session_projection(token.secret.expose(), &access),
+        Err(ManagementError::SessionInvalid)
+    ));
+}
+
+#[test]
+fn self_projection_resolves_safe_default_sources_and_expired_overrides() {
+    let f = Fixture::new();
+    let (device, key) = normal(&f);
+    let token = f.session(&device, &key);
+    let whitelist = Whitelist::default();
+    let bans = BanList::default();
+    let access = policy(&f, &whitelist, &bans);
+    f.db.write(|c| {
+        c.execute("UPDATE user_default_roles SET role_id='player' WHERE principal_id=?",[&device.principal_id])?;
+        c.execute("INSERT INTO principal_overrides(id,principal_id,capability,scope,effect,granted_by,created_at,expires_at) VALUES('expired-allow',?,'metrics.view','*','allow','test',0,?)", params![device.principal_id,f.clock.millis()])?;
+        Ok(())
+    }).unwrap();
+    let value = f
+        .service
+        .session_projection(token.secret.expose(), &access)
+        .unwrap();
+    for cap in ["public.info", "pack.download", "pack.realtime"] {
+        assert!(
+            value["capabilities"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!(cap))
+        );
+    }
+    assert!(
+        !value["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("metrics.view"))
+    );
+    assert!(
+        value["roles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == "player")
+    );
+    f.clock.0.fetch_add(SESSION_TTL_MS, Ordering::SeqCst);
+    assert!(matches!(
+        f.service.session_projection(token.secret.expose(), &access),
+        Err(ManagementError::SessionInvalid)
+    ));
+}

@@ -2773,3 +2773,42 @@ mod metrics;
 mod moderation;
 #[path = "https/presentation.rs"]
 mod presentation;
+
+#[test]
+fn self_session_get_accepts_pack_only_and_keeps_post_issuance() {
+    let f = Fixture::new("minecraft", 8, 4096, 3);
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::PackUser);
+    let token = management_session(&f, &device, &key); // Exercises the unchanged POST alias.
+    let path = "/api/v3/manage/session";
+    let reply = f.request("GET", path, b"", Some(&token));
+    assert_eq!(reply.status, 200);
+    assert_eq!(reply.json()["api_version"], "3");
+    assert_eq!(reply.json()["data"]["device_id"], device);
+    assert!(
+        reply.json()["data"]["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("pack.download"))
+    );
+    management_reply_error(
+        &f.request("GET", path, b"", None),
+        401,
+        "management_session_invalid",
+    );
+    for (path, body) in [
+        ("/api/v3/manage/session?extra=1", b"".as_slice()),
+        (path, b"{}".as_slice()),
+    ] {
+        management_reply_error(
+            &f.request("GET", path, body, Some(&token)),
+            400,
+            "invalid_request",
+        );
+    }
+    f.host().management().revoke_local(&device).unwrap();
+    management_reply_error(
+        &f.request("GET", path, b"", Some(&token)),
+        401,
+        "management_session_invalid",
+    );
+}
