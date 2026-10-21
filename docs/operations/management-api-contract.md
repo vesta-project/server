@@ -1648,6 +1648,7 @@ writer before mutation or receipt replay. Mutation, audit
   requires a current management session, with no additional capability. DeviceLabel
   validation is unchanged. Returns `{ "id":"device-id","name":"My desktop" }`.
   Renaming another user's device is forbidden even for owner. Unknown IDs are 404.
+  Own revoked-device labels may also be renamed; this never reactivates the device.
 
 Inventory pagination defaults to offset 0 / limit 50; limit is 1-100, offset is
 0-1,000,000. Filtering precedes pagination. `next_offset` is null when exhausted.

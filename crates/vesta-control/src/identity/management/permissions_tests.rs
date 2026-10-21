@@ -1011,3 +1011,38 @@ fn invitation_creator_exception_current_capability_expiry_and_device_rank_filter
         Err(PermissionError::NotFound)
     );
 }
+
+#[test]
+fn own_revoked_device_labels_can_be_renamed_without_reactivating_them() {
+    let f = Fixture::new();
+    let (owner, session) = actor(&f, BuiltinRole::Owner);
+    f.db.write(|c| {
+        c.execute("INSERT INTO devices(id,server_id,principal_id,label,public_key_sha256,created_at,revoked_at,revoked_by) VALUES('retired-device',?,?,'Retired',?,1,2,'fixture')",rusqlite::params![f.db.server_id(),owner.principal_id,"0".repeat(64)])?;
+        Ok(())
+    }).unwrap();
+    let result = run(
+        &f,
+        &session,
+        "rename-retired-device-01",
+        PermissionMutation::RenameDevice(
+            "retired-device".into(),
+            DeviceRename {
+                name: "Old laptop".into(),
+            },
+        ),
+    )
+    .unwrap();
+    assert_eq!(result, json!({"id":"retired-device","name":"Old laptop"}));
+    f.db.read(|c| {
+        assert_eq!(
+            c.query_row(
+                "SELECT label,revoked_at FROM devices WHERE id='retired-device'",
+                [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?))
+            )?,
+            ("Old laptop".into(), Some(2))
+        );
+        Ok(())
+    })
+    .unwrap();
+}

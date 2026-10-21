@@ -860,10 +860,16 @@ impl ManagementAccess {
                 Ok(json!({"revoked":true}))
             }
             PermissionMutation::RenameDevice(id, input) => {
-                let device = DeviceId::parse(id).map_err(|_| PermissionError::InvalidRequest)?;
-                let principal = repo
-                    .device_principal(&device)
-                    .map_err(|_| PermissionError::NotFound)?;
+                DeviceId::parse(id).map_err(|_| PermissionError::InvalidRequest)?;
+                let principal: Option<String> = repo
+                    .connection()
+                    .query_row(
+                        "SELECT principal_id FROM devices WHERE id=? AND server_id=?",
+                        params![id, self.server_id()],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                let principal = principal_id(&principal.ok_or(PermissionError::NotFound)?)?;
                 if principal != subject.principal {
                     return Err(PermissionError::Forbidden);
                 }
