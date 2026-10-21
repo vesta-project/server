@@ -1435,3 +1435,30 @@ fn advertised_pairing_endpoint_is_explicit_bounded_https() {
         assert!(parse(&text, temp.path()).is_err(), "{endpoint}");
     }
 }
+
+#[test]
+fn listener_rate_defaults_and_bounds() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = parse(&tls_document(), temp.path()).unwrap();
+    let ListenerDescription::Tls(tls) = config.listener() else {
+        panic!("tls")
+    };
+    assert_eq!(tls.peer_requests_per_minute(), 60);
+    assert_eq!(tls.peer_connections_per_minute(), 120);
+    assert_eq!(tls.session_requests_per_minute(), 300);
+    for key in [
+        "peer-requests-per-minute",
+        "peer-connections-per-minute",
+        "session-requests-per-minute",
+    ] {
+        for value in [0, 1, 60000, 60001] {
+            let text =
+                tls_document().replace("mode = 'tls'", &format!("mode = 'tls'\n{key} = {value}"));
+            assert_eq!(
+                parse(&text, temp.path()).is_ok(),
+                (1..=60000).contains(&value),
+                "{key}={value}"
+            );
+        }
+    }
+}

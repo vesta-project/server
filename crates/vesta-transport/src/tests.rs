@@ -136,6 +136,11 @@ fn rate_limit_retry_after_rounds_up_and_never_advertises_immediate_retry() {
         (Duration::from_secs(60), "60"),
         (Duration::MAX, "18446744073709551615"),
     ] {
+        let v3 = with_retry_after(
+            manage::error(StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+            duration,
+        );
+        assert_eq!(v3.headers()["retry-after"], seconds);
         let reply = rate_limited("peer_rate_limited", duration);
         assert_eq!(reply.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(reply.headers()["retry-after"], seconds);

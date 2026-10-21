@@ -448,11 +448,23 @@ pub struct TlsListener {
     max_request_bytes: u32,
     request_timeout_seconds: u16,
     public_endpoint: Option<String>,
+    peer_requests_per_minute: u32,
+    peer_connections_per_minute: u32,
+    session_requests_per_minute: u32,
 }
 impl TlsListener {
     /// Operator-advertised HTTPS base URL; never inferred from bind or peer headers.
     pub fn public_endpoint(&self) -> Option<&str> {
         self.public_endpoint.as_deref()
+    }
+    pub fn peer_requests_per_minute(&self) -> u32 {
+        self.peer_requests_per_minute
+    }
+    pub fn peer_connections_per_minute(&self) -> u32 {
+        self.peer_connections_per_minute
+    }
+    pub fn session_requests_per_minute(&self) -> u32 {
+        self.session_requests_per_minute
     }
     pub fn bind(&self) -> IpAddr {
         self.bind
@@ -611,11 +623,17 @@ impl HostConfiguration {
                 max_request_bytes,
                 request_timeout_seconds,
                 public_endpoint,
+                peer_requests_per_minute,
+                peer_connections_per_minute,
+                session_requests_per_minute,
             } => {
                 let bind = bind
                     .parse::<IpAddr>()
                     .map_err(|_| ConfigError::InvalidListener)?;
                 if port == 0
+                    || !(1..=60_000).contains(&peer_requests_per_minute)
+                    || !(1..=60_000).contains(&peer_connections_per_minute)
+                    || !(1..=60_000).contains(&session_requests_per_minute)
                     || max_connections == 0
                     || max_connections > MAX_CONNECTIONS
                     || max_request_bytes == 0
@@ -663,6 +681,9 @@ impl HostConfiguration {
                     max_request_bytes,
                     request_timeout_seconds,
                     public_endpoint,
+                    peer_requests_per_minute,
+                    peer_connections_per_minute,
+                    session_requests_per_minute,
                 })
             }
         };
@@ -1417,6 +1438,12 @@ enum WireListener {
         request_timeout_seconds: u16,
         #[serde(default)]
         public_endpoint: Option<String>,
+        #[serde(default = "default_peer_requests")]
+        peer_requests_per_minute: u32,
+        #[serde(default = "default_peer_connections")]
+        peer_connections_per_minute: u32,
+        #[serde(default = "default_session_requests")]
+        session_requests_per_minute: u32,
     },
 }
 
@@ -1426,3 +1453,13 @@ mod tests;
 mod properties;
 pub(crate) use properties::game_bind_address;
 pub use properties::{PropertiesPatch, ServerPropertiesEditor};
+
+fn default_peer_requests() -> u32 {
+    60
+}
+fn default_peer_connections() -> u32 {
+    120
+}
+fn default_session_requests() -> u32 {
+    300
+}

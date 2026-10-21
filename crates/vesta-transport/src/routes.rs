@@ -83,7 +83,8 @@ pub(super) async fn route(
     let conditional_header = |name: &str| -> Result<Option<String>, ()> {
         if !(super::manage::file_endpoint(&path)
             || super::manage::presentation::implemented(&path)
-            || name == "if-none-match" && super::manage::metrics_endpoint(&path))
+            || name == "if-none-match"
+                && super::manage::metrics_endpoint(&path))
         {
             return Ok(None);
         }
@@ -168,21 +169,8 @@ pub(super) async fn route(
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
     // Exactly one observed Authorization field; never accept query/cookie secrets.
-    let authorization = if request.headers().get_all("authorization").iter().count() == 1 {
-        request
-            .headers()
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .filter(|v| {
-                v.len() == 43
-                    && v.bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-            })
-            .map(|secret| zeroize::Zeroizing::new(secret.to_owned()))
-    } else {
-        None
-    };
+    let authorization =
+        bearer(request.headers()).map(|secret| zeroize::Zeroizing::new(secret.to_owned()));
     if management && !management_public && authorization.is_none() {
         return error(StatusCode::UNAUTHORIZED, "management_session_invalid");
     }
@@ -723,4 +711,21 @@ struct MinecraftEnrollment {
 struct DeviceEnrollment {
     device_name: String,
     public_key: String,
+}
+
+/// Exactly one syntactically valid bearer. No query, cookie or duplicate fallback.
+pub(super) fn bearer(headers: &http::HeaderMap) -> Option<&str> {
+    if headers.get_all("authorization").iter().count() != 1 {
+        return None;
+    }
+    headers
+        .get("authorization")?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+        .filter(|v| {
+            v.len() == 43
+                && v.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
 }

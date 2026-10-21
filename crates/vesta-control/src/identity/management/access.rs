@@ -361,6 +361,23 @@ impl ManagementAccess {
         stores.sessions.retain(|_, s| now < s.monotonic_expires);
         Ok(stores.sessions.len())
     }
+    /// Cheap hash lookup before admission; only a hint. `pack_reference(Some(token))`
+    /// must still validate the live identity before granting a session rate bucket.
+    pub fn known_session(&self, token: &str) -> bool {
+        if decode::<32>(token).is_err() {
+            return false;
+        }
+        self.stores.lock().ok().is_some_and(|stores| {
+            stores
+                .sessions
+                .get(&bound_hash(b"session", self.server_id(), token))
+                .is_some_and(|s| {
+                    s.server == self.server_id()
+                        && s.expires > self.now()
+                        && Instant::now() < s.monotonic_expires
+                })
+        })
+    }
     pub fn pack_reference(&self, token: Option<&str>) -> Result<DeviceSessionReference> {
         let server =
             ServerUuid::parse(self.server_id()).map_err(|_| ManagementError::Unavailable)?;

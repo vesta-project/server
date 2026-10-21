@@ -53,6 +53,16 @@ impl Fixture {
         Self::configured("minecraft", 8, 4096, 5, true)
     }
     fn configured(mode: &str, connections: u16, max_body: u32, timeout: u16, inert: bool) -> Self {
+        Self::configured_with_options(mode, connections, max_body, timeout, inert, "")
+    }
+    fn configured_with_options(
+        mode: &str,
+        connections: u16,
+        max_body: u32,
+        timeout: u16,
+        inert: bool,
+        options: &str,
+    ) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let base = temp.path();
         for dir in ["game/config", "bin", "private"] {
@@ -76,7 +86,7 @@ impl Fixture {
         std::fs::write(base.join("private/cert.pem"), CERT).unwrap();
         std::fs::write(base.join("private/key.pem"), KEY).unwrap();
         let document = format!(
-            "schema-version = 1\n[paths]\nstate = 'private-state'\ngame = 'game'\nscan-roots = ['game/config']\nlaunch-definition = 'private/launch.toml'\n[pack]\nname = 'Hosted'\nversion = '1.0.0'\nrevision = 1\nminimum-revision = 1\nminecraft-version = '1.21.1'\nunresolved-disposition = 'embed-public'\n[pack-access]\nmode = '{mode}'\n[listener]\nmode = 'tls'\nbind = '127.0.0.1'\nport = 25567\ncertificate = 'private/cert.pem'\nprivate-key = 'private/key.pem'\nmax-connections = {connections}\nmax-request-bytes = {max_body}\nrequest-timeout-seconds = {timeout}\n"
+            "schema-version = 1\n[paths]\nstate = 'private-state'\ngame = 'game'\nscan-roots = ['game/config']\nlaunch-definition = 'private/launch.toml'\n[pack]\nname = 'Hosted'\nversion = '1.0.0'\nrevision = 1\nminimum-revision = 1\nminecraft-version = '1.21.1'\nunresolved-disposition = 'embed-public'\n[pack-access]\nmode = '{mode}'\n[listener]\nmode = 'tls'\nbind = '127.0.0.1'\nport = 25567\ncertificate = 'private/cert.pem'\nprivate-key = 'private/key.pem'\nmax-connections = {connections}\nmax-request-bytes = {max_body}\nrequest-timeout-seconds = {timeout}\n{options}\n"
         );
         let config =
             HostConfiguration::parse_toml(document.as_bytes(), base, Path::new("host.toml"))
@@ -2811,4 +2821,58 @@ fn self_session_get_accepts_pack_only_and_keeps_post_issuance() {
         401,
         "management_session_invalid",
     );
+}
+
+#[test]
+fn valid_sessions_have_independent_configured_budgets_and_invalid_bearers_stay_anonymous() {
+    let f = Fixture::configured_with_options(
+        "minecraft",
+        8,
+        4096,
+        5,
+        false,
+        "peer-requests-per-minute = 12\nsession-requests-per-minute = 3",
+    );
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::PackUser);
+    let token = management_session(&f, &device, &key);
+    let (other, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::PackUser);
+    let second = management_session(&f, &other, &key);
+    for _ in 0..3 {
+        assert_eq!(
+            f.request("GET", "/api/v3/manage/session", b"", Some(&token))
+                .status,
+            200
+        );
+    }
+    let denied = f.request("GET", "/api/v3/manage/session", b"", Some(&token));
+    management_reply_error(&denied, 429, "rate_limited");
+    assert!(denied.headers["retry-after"].parse::<u64>().unwrap() >= 1);
+    assert_eq!(
+        f.request("GET", "/api/v3/manage/session", b"", Some(&second))
+            .status,
+        200
+    );
+    // Two enroll/session helpers consumed ten anonymous requests, independent
+    // of requests made with the valid bearer above.
+    for _ in 0..2 {
+        management_reply_error(
+            &f.request("GET", "/api/v3/manage/session", b"", Some(&"x".repeat(43))),
+            401,
+            "management_session_invalid",
+        );
+    }
+    for token in [None, Some("x".repeat(43)), Some("bad".into())] {
+        let denied = f.request("GET", "/api/v3/manage/session", b"", token.as_deref());
+        management_reply_error(&denied, 429, "rate_limited");
+        assert!(denied.headers["retry-after"].parse::<u64>().unwrap() >= 1);
+    }
+    assert_eq!(
+        f.request("GET", "/api/v3/manage/session", b"", Some(&second))
+            .status,
+        200
+    );
+    f.host().management().revoke_local(&other).unwrap();
+    let denied = f.request("GET", "/api/v3/manage/session", b"", Some(&second));
+    management_reply_error(&denied, 429, "rate_limited");
+    assert!(denied.headers.contains_key("retry-after"));
 }

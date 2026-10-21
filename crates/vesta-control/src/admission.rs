@@ -79,19 +79,22 @@ struct Bucket {
 
 /// Single-owner bounded map. Synchronization, if needed, belongs to the host;
 /// calling this component does not create detached cleanup tasks.
-pub struct PeerRateLimiter {
+pub type PeerRateLimiter = RateLimiter<IpAddr>;
+
+/// Bounded token buckets for trusted server-resolved keys (never raw credentials).
+pub struct RateLimiter<K> {
     policy: RatePolicy,
-    buckets: HashMap<IpAddr, Bucket>,
+    buckets: HashMap<K, Bucket>,
     observed: Option<Instant>,
 }
-impl fmt::Debug for PeerRateLimiter {
+impl<K> fmt::Debug for RateLimiter<K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PeerRateLimiter")
             .field("tracked_peers", &self.buckets.len())
             .finish_non_exhaustive()
     }
 }
-impl PeerRateLimiter {
+impl<K: Eq + std::hash::Hash> RateLimiter<K> {
     pub fn new(policy: RatePolicy) -> Self {
         Self {
             policy,
@@ -101,8 +104,8 @@ impl PeerRateLimiter {
     }
 
     /// Consume exactly one permit for the backend-observed peer address.
-    pub fn try_acquire(&mut self, peer: IpAddr) -> AdmissionDecision {
-        self.acquire_at(peer, Instant::now())
+    pub fn try_acquire_key(&mut self, key: K) -> AdmissionDecision {
+        self.acquire_key_at(key, Instant::now())
     }
 
     pub fn tracked_peers(&self) -> usize {
@@ -126,15 +129,10 @@ impl PeerRateLimiter {
         true
     }
 
-    fn acquire_at(&mut self, peer: IpAddr, now: Instant) -> AdmissionDecision {
+    fn acquire_key_at(&mut self, peer: K, now: Instant) -> AdmissionDecision {
         if !self.observe(now) {
             return AdmissionDecision::ClockUnavailable;
         }
-        // A dual-stack socket must not grant a second budget for the same IPv4 peer.
-        let peer = match peer {
-            IpAddr::V6(address) => address.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(peer),
-            _ => peer,
-        };
         let token = self.policy.window.as_nanos();
         let capacity = token * u128::from(self.policy.burst);
         if !self.buckets.contains_key(&peer) && self.buckets.len() == self.policy.peers {
@@ -173,6 +171,15 @@ impl PeerRateLimiter {
             now.duration_since(bucket.seen) < self.policy.idle || bucket.credit < capacity
         });
         before - self.buckets.len()
+    }
+}
+
+impl RateLimiter<IpAddr> {
+    pub fn try_acquire(&mut self, peer: IpAddr) -> AdmissionDecision {
+        self.acquire_at(peer, Instant::now())
+    }
+    fn acquire_at(&mut self, peer: IpAddr, now: Instant) -> AdmissionDecision {
+        self.acquire_key_at(peer.to_canonical(), now)
     }
 }
 
@@ -482,5 +489,37 @@ mod tests {
         let text = format!("{limiter:?}");
         assert!(!text.contains("192.0.2.1"));
         assert!(text.contains("tracked_peers"));
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+    #[test]
+    fn session_keys_are_independent_bounded_and_refill_without_eviction() {
+        let mut limiter = RateLimiter::<&str>::new(
+            RatePolicy::new(1, Duration::from_secs(60), 2, Duration::from_secs(120)).unwrap(),
+        );
+        let now = Instant::now();
+        assert_eq!(
+            limiter.acquire_key_at("session-a", now),
+            AdmissionDecision::Allowed
+        );
+        assert!(matches!(
+            limiter.acquire_key_at("session-a", now),
+            AdmissionDecision::RateLimited { .. }
+        ));
+        assert_eq!(
+            limiter.acquire_key_at("session-b", now),
+            AdmissionDecision::Allowed
+        );
+        assert_eq!(
+            limiter.acquire_key_at("session-c", now),
+            AdmissionDecision::Saturated
+        );
+        assert_eq!(
+            limiter.acquire_key_at("session-a", now + Duration::from_secs(60)),
+            AdmissionDecision::Allowed
+        );
     }
 }

@@ -55,7 +55,7 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 use vesta_control::{
-    admission::{AdmissionDecision, PeerRateLimiter, RatePolicy},
+    admission::{AdmissionDecision, PeerRateLimiter, RateLimiter, RatePolicy},
     config::TlsListener,
     host::NetworkHost,
 };
@@ -709,6 +709,8 @@ struct Shared {
     max_body: usize,
     timeout: Duration,
     limiter: Mutex<PeerRateLimiter>,
+    session_limiter:
+        Mutex<RateLimiter<vesta_control::identity::management::DeviceSessionReference>>,
     jobs: BlockingJobs,
     realtime_jobs: BlockingJobs,
     install_jobs: BlockingJobs,
@@ -803,8 +805,22 @@ async fn serve(
         max_body: config.max_request_bytes() as usize,
         timeout: Duration::from_secs(config.request_timeout_seconds().into()),
         limiter: Mutex::new(PeerRateLimiter::new(
-            RatePolicy::new(60, Duration::from_secs(60), 1024, Duration::from_secs(120))
-                .expect("fixed rate policy"),
+            RatePolicy::new(
+                config.peer_requests_per_minute(),
+                Duration::from_secs(60),
+                1024,
+                Duration::from_secs(120),
+            )
+            .expect("fixed rate policy"),
+        )),
+        session_limiter: Mutex::new(RateLimiter::new(
+            RatePolicy::new(
+                config.session_requests_per_minute(),
+                Duration::from_secs(60),
+                4096,
+                Duration::from_secs(120),
+            )
+            .expect("validated session rate policy"),
         )),
         downloads: Arc::new(Downloads::new(DOWNLOADS)),
         realtime: realtime::Sockets::new(),
@@ -815,8 +831,13 @@ async fn serve(
     });
     let handshakes = Arc::new(Semaphore::new(HANDSHAKES));
     let mut connection_limiter = PeerRateLimiter::new(
-        RatePolicy::new(120, Duration::from_secs(60), 1024, Duration::from_secs(120))
-            .expect("fixed connection rate policy"),
+        RatePolicy::new(
+            config.peer_connections_per_minute(),
+            Duration::from_secs(60),
+            1024,
+            Duration::from_secs(120),
+        )
+        .expect("fixed connection rate policy"),
     );
     let mut connections = JoinSet::new();
     loop {
@@ -890,19 +911,49 @@ async fn handle(
     peer: SocketAddr,
     state: Arc<Shared>,
 ) -> Result<Reply, Infallible> {
-    let operational = manage::implemented(request.uri().path());
-    let rate = state
-        .limiter
-        .lock()
-        .map(|mut limiter| limiter.try_acquire(peer.ip()))
-        .map_err(|_| ());
+    let operational = manage::implemented(request.uri().path())
+        || request.uri().path() == "/api/v3/manage/session"
+            && request.method() == http::Method::GET;
+    // Unknown/expired tokens stop at an in-memory hash lookup. Only a known token
+    // incurs a bounded blocking live-identity check; route authorization still runs.
+    let reference = if let Some(token) = routes::bearer(request.headers())
+        .filter(|token| state.host.management().known_session(token))
+    {
+        let access = state.host.management().clone();
+        let token = zeroize::Zeroizing::new(token.to_owned());
+        state.jobs.reap(false).await;
+        state
+            .jobs
+            .run(move || access.pack_reference(Some(token.as_str())))
+            .await
+            .ok()
+            .and_then(Result::ok)
+    } else {
+        None
+    };
+    let rate = if let Some(reference) = reference {
+        state
+            .session_limiter
+            .lock()
+            .map(|mut limiter| limiter.try_acquire_key(reference))
+            .map_err(|_| ())
+    } else {
+        state
+            .limiter
+            .lock()
+            .map(|mut limiter| limiter.try_acquire(peer.ip()))
+            .map_err(|_| ())
+    };
     if let Some(refusal) = routes::fixed_refusal(request.uri().path()) {
         return Ok(refusal);
     }
     let denial = match rate {
         Ok(AdmissionDecision::Allowed) => None,
         Ok(AdmissionDecision::RateLimited { retry_after }) => Some(if operational {
-            manage::error(StatusCode::TOO_MANY_REQUESTS, "rate_limited")
+            with_retry_after(
+                manage::error(StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+                retry_after,
+            )
         } else {
             rate_limited("peer_rate_limited", retry_after)
         }),
@@ -950,11 +1001,13 @@ fn error(status: StatusCode, code: &'static str) -> Reply {
 /// Delta-seconds must round up: a fractional refill interval must not tell a
 /// caller to retry before the next token. Other clients may consume that token.
 fn rate_limited(code: &'static str, retry_after: Duration) -> Reply {
+    with_retry_after(error(StatusCode::TOO_MANY_REQUESTS, code), retry_after)
+}
+fn with_retry_after(mut reply: Reply, retry_after: Duration) -> Reply {
     let seconds = retry_after
         .as_secs()
         .saturating_add(u64::from(retry_after.subsec_nanos() != 0))
         .max(1);
-    let mut reply = error(StatusCode::TOO_MANY_REQUESTS, code);
     reply.headers_mut().insert(
         http::header::RETRY_AFTER,
         seconds.to_string().parse().expect("decimal retry duration"),

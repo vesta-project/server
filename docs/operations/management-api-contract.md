@@ -284,8 +284,25 @@ session/nonces/identity are 401 `management_session_invalid`; denied management 
 failure is fixed 503 `management_saturated`/`management_unavailable`. Pack denial
 retains 401 `pack_session_invalid`; password refusal is 403 `pack_access_denied`.
 Verifier errors retain fixed `minecraft_*` responses. All handlers reuse bounded
-bodies, timeouts, blocking admission and the peer-IP limiter (60 requests/minute,
-1024 peers), with 429 `peer_rate_limited`. Secrets, SQL, rejected values and provider
+bodies, timeouts and blocking admission. Anonymous/invalid bearer traffic uses a
+peer-IP token bucket (1024 tracked IPs); valid device sessions use a separate
+per-session bucket (4096 tracked sessions) shared across peer addresses and routes.
+Only a syntactically valid, known, unexpired bearer that passes live identity
+validation selects that bucket. Revoked/unknown/duplicate/malformed bearers cannot
+bypass the anonymous budget. Route authority checks remain independent.
+
+TLS `[listener]` accepts optional integer settings (each bounded to 1?60000):
+`peer-requests-per-minute` defaults to **60**, `peer-connections-per-minute` to
+**120**, and `session-requests-per-minute` to **300**. Limits are token buckets
+with an initial burst equal to the configured rate and continuous refill over 60
+seconds. Connection admission remains per socket peer IP, before TLS, including
+valid sessions; exhausted connection admission drops the socket. Reuse connections.
+Active budgets are never evicted to admit new keys; full maps return 503.
+
+Every HTTP 429 includes `Retry-After` as positive integer delta-seconds rounded
+up to the next token. Operational routes (including GET session) use the V3
+`rate_limited` envelope; compatibility auth/pack routes retain `peer_rate_limited`
+(or their existing auth-specific code). No authority is conveyed by rate admission. Secrets, SQL, rejected values and provider
 diagnostics are never reflected in errors.
 
 ## 2.1 Operational management — implemented wire contract
