@@ -1,2 +1,3 @@
 protocol/** -text
 scripts/bootstrap/*.sh text eol=lf
+scripts/dev-test-server.sh text eol=lf
