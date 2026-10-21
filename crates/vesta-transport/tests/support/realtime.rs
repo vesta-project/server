@@ -674,6 +674,10 @@ fn metrics_stream_snapshots_samples_latest_activity_and_rechecks_both_capabiliti
         assert!(snapshot["columns"]["series"]["tps"]["avg"].is_array());
         assert!(snapshot["status"].is_object());
         assert!(snapshot["cursor"].as_i64().is_some());
+        let status = realtime_json(peer);
+        assert_eq!(status["type"], "status");
+        assert_eq!(status["data"]["state"], "stopped");
+        assert!(status.to_string().len() <= 4096);
     }
     assert_eq!(metrics_websocket(&f, &token).err(), Some(503));
     second.close(None).unwrap();
@@ -690,6 +694,7 @@ fn metrics_stream_snapshots_samples_latest_activity_and_rechecks_both_capabiliti
         );
         let notice = realtime_json(&mut first);
         match notice["type"].as_str().unwrap_or_default() {
+            "status" => assert!(notice["data"].is_object()),
             "metrics.gap" => assert_eq!(notice["mode"], "latest_only"),
             "metrics.sample" => {
                 saw_sample = true;
@@ -728,6 +733,7 @@ fn metrics_stream_snapshots_samples_latest_activity_and_rechecks_both_capabiliti
         );
         let notice = realtime_json(&mut first);
         match notice["type"].as_str().unwrap_or_default() {
+            "status" => assert!(notice["data"].is_object()),
             "metrics.gap" => assert_eq!(notice["mode"], "latest_only"),
             "metrics.sample" => break,
             kind => panic!("unexpected metrics notice after PlayersView denial {kind}: {notice}"),
@@ -742,4 +748,77 @@ fn metrics_stream_snapshots_samples_latest_activity_and_rechecks_both_capabiliti
     }).unwrap();
     realtime_close(&mut first, CloseCode::Policy);
     // The second connection completed its normal close handshake above.
+}
+
+#[test]
+fn status_stream_pushes_lifecycle_changes_without_telemetry_and_rechecks_status_view() {
+    let f = Fixture::inert();
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    let settings = vesta_control::config::MetricsSettings {
+        enabled: false,
+        ..Default::default()
+    };
+    assert_eq!(
+        f.request(
+            "PUT",
+            "/api/v3/manage/metrics/policy",
+            &serde_json::to_vec(&serde_json::json!({"expected_revision":null,"settings":settings}))
+                .unwrap(),
+            Some(&token)
+        )
+        .status,
+        200
+    );
+    let mut peer = metrics_websocket(&f, &token).unwrap();
+    assert_eq!(realtime_json(&mut peer)["type"], "metrics.snapshot");
+    let first = realtime_json(&mut peer);
+    assert_eq!(first["type"], "status");
+    assert_eq!(first["data"]["state"], "stopped");
+    let http = f.request("GET", "/api/v3/manage/server/status", b"", Some(&token));
+    assert_eq!(first["data"], http.json()["data"]);
+    assert_eq!(
+        first["etag"].as_str(),
+        http.headers.get("etag").map(String::as_str)
+    );
+    let generation = management_start_inert(&f, &token);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(Instant::now() < deadline, "running status was not pushed");
+        let notice = realtime_json(&mut peer);
+        if notice["type"] == "status" && notice["data"]["state"] == "running" {
+            assert_eq!(notice["data"]["generation"], generation);
+            assert_ne!(notice["etag"], first["etag"]);
+            assert!(notice.to_string().len() <= 4096);
+            break;
+        }
+    }
+    f.host().database().write(|c| {
+        let principal:String=c.query_row("SELECT principal_id FROM devices WHERE id=?",[&device],|r|r.get(0))?;
+        c.execute("INSERT INTO principal_overrides(id,principal_id,capability,scope,effect,granted_by,created_at) VALUES('status-deny',?,'status.view','*','deny','fixture',0)",[principal])?;
+        Ok(())
+    }).unwrap();
+    peer.close(None).unwrap();
+    let _ = peer.read();
+    // A fresh metrics connection is permitted but must withhold status entirely.
+    let mut peer = metrics_websocket(&f, &token).unwrap();
+    assert_eq!(realtime_json(&mut peer)["type"], "metrics.snapshot");
+    peer.get_mut()
+        .sock
+        .set_read_timeout(Some(Duration::from_millis(800)))
+        .unwrap();
+    match peer.read() {
+        Err(tungstenite::Error::Io(e))
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ) => {}
+        other => panic!("metrics-only subscriber received unexpected status: {other:?}"),
+    }
+    peer.get_mut()
+        .sock
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    f.host().management().revoke_local(&device).unwrap();
+    realtime_close(&mut peer, CloseCode::Policy);
 }

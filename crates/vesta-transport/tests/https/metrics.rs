@@ -386,3 +386,70 @@ fn metrics_etags_are_exact_authorized_and_cursor_only_ranges_are_empty() {
     let incremental = metrics_raw(&f, &format!("{path}&after={cursor}"), Some(&session), None);
     assert_eq!(incremental.json()["data"]["retention_gap"], true);
 }
+
+#[test]
+fn status_etag_is_strong_conditional_and_never_bypasses_authority() {
+    let f = Fixture::inert();
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    let path = "/api/v3/manage/server/status";
+    let first = metrics_raw(&f, path, Some(&token), None);
+    assert_eq!(first.status, 200);
+    let tag = &first.headers["etag"];
+    assert!(tag.starts_with("\"status-") && tag.ends_with('"'));
+    let repeat = metrics_raw(&f, path, Some(&token), None);
+    assert_eq!(
+        repeat.body, first.body,
+        "strong validator must identify byte-identical representation"
+    );
+    let unchanged = metrics_raw(&f, path, Some(&token), Some(tag));
+    assert_eq!(unchanged.status, 304);
+    assert!(unchanged.body.is_empty());
+    assert_eq!(unchanged.headers.get("etag"), Some(tag));
+    assert!(!unchanged.headers.contains_key("content-length"));
+    management_reply_error(
+        &metrics_raw(&f, path, None, Some(tag)),
+        401,
+        "management_session_invalid",
+    );
+    for malformed in ["*", "W/\"weak\"", "\"one\",\"two\""] {
+        management_reply_error(
+            &metrics_raw(&f, path, Some(&token), Some(malformed)),
+            400,
+            "invalid_request",
+        );
+    }
+    let duplicate = f.raw(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAuthorization: Bearer {token}\r\nIf-None-Match: {tag}\r\nIf-None-Match: {tag}\r\n\r\n").as_bytes());
+    management_reply_error(&duplicate, 400, "invalid_request");
+    f.host().database().write(|c| {
+        let principal:String=c.query_row("SELECT principal_id FROM devices WHERE id=?",[&device],|r|r.get(0))?;
+        c.execute("INSERT INTO principal_overrides(id,principal_id,capability,scope,effect,granted_by,created_at) VALUES('etag-status-deny',?,'status.view','*','deny','fixture',0)",[principal])?;
+        Ok(())
+    }).unwrap();
+    management_reply_error(
+        &metrics_raw(&f, path, Some(&token), Some(tag)),
+        403,
+        "management_forbidden",
+    );
+    f.host()
+        .database()
+        .write(|c| {
+            c.execute(
+                "DELETE FROM principal_overrides WHERE id='etag-status-deny'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let generation = management_start_inert(&f, &token);
+    let changed = metrics_raw(&f, path, Some(&token), Some(tag));
+    assert_eq!(changed.status, 200);
+    assert_ne!(&changed.headers["etag"], tag);
+    assert_eq!(changed.json()["data"]["generation"], generation);
+    f.host().management().revoke_local(&device).unwrap();
+    management_reply_error(
+        &metrics_raw(&f, path, Some(&token), Some(&changed.headers["etag"])),
+        401,
+        "management_session_invalid",
+    );
+}

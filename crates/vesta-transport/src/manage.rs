@@ -12,7 +12,7 @@ use vesta_control::{
     identity::{Capability, management::ManagementError},
     operations::{
         Admission, ConfirmationToken, GameCommand, GenerationId, OperationError,
-        OperationErrorCode, OperationId, OperationState, OperationSummary, ProcessPhase,
+        OperationErrorCode, OperationId, OperationState, OperationSummary,
     },
 };
 
@@ -28,6 +28,8 @@ mod moderation;
 mod permissions;
 #[path = "manage_presentation.rs"]
 pub(super) mod presentation;
+#[path = "manage_status.rs"]
+pub(super) mod status;
 
 static REQUEST: AtomicU64 = AtomicU64::new(1);
 pub(super) fn permission_endpoint(path: &str) -> bool {
@@ -351,6 +353,10 @@ pub(super) struct Request<'a> {
     pub if_range: Option<&'a str>,
 }
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
+    if request.path == "/api/v3/manage/server/status" {
+        return status::dispatch(host, request);
+    }
+
     if request.path == "/api/v3/manage/session" {
         if request.method != Method::GET || request.query.is_some() || !request.bytes.is_empty() {
             return error(StatusCode::BAD_REQUEST, "invalid_request");
@@ -621,55 +627,6 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             let pack = host.configuration().pack();
             ok(
                 json!({"server_id":host.management().server_id(),"name":pack.name(),"agent_version":env!("CARGO_PKG_VERSION"),"minecraft_version":pack.minecraft_version(),"pack_version":pack.version(),"configured_mode":"same_account"}),
-            )
-        }
-        "server/status" => {
-            if query.is_some() {
-                return error(StatusCode::BAD_REQUEST, "invalid_request");
-            }
-            let (snapshot, uptime) = match runtime.game_observation() {
-                Ok(value) => value,
-                Err(e) => return operation_error(e),
-            };
-            let phase = match snapshot.phase {
-                ProcessPhase::Stopped => "stopped",
-                ProcessPhase::Running => "running",
-                ProcessPhase::Stopping => "stopping",
-                ProcessPhase::Draining => "draining",
-            };
-            let count = runtime.last_player_count(snapshot.generation);
-            let supervision = match runtime.supervision() {
-                Ok(value) => value,
-                Err(e) => return operation_error(e),
-            };
-            let readiness = match runtime.readiness() {
-                Ok(value) => value,
-                Err(e) => return operation_error(e),
-            };
-            use vesta_control::operations::readiness::{DegradedReason, Readiness};
-            let (ready_state, ready_reason) = match readiness.readiness {
-                Readiness::Stopped => ("stopped", None),
-                Readiness::Starting => ("starting", None),
-                Readiness::Ready => ("ready", None),
-                Readiness::Degraded(reason) => (
-                    "degraded",
-                    Some(match reason {
-                        DegradedReason::StartupTimeout => "startup_timeout",
-                        DegradedReason::ProbeFailed => "probe_failed",
-                        DegradedReason::FatalOutput => "fatal_output",
-                        DegradedReason::ConsoleGap => "console_gap",
-                    }),
-                ),
-            };
-            let supervisor = supervision.map(|h| {
-                json!({"orphan_running":h.orphan_running,"launch_unresolved":h.launch_unresolved,"observation_failed":h.observation_failed,"crash_restart_enabled":h.restart_enabled,"crash_loop":h.crash_loop,"restart_state_unsaved":h.restart_state_unsaved,"recent_crashes":h.recent_crashes,"restart_pending_ms":h.restart_pending_ms.map(|v| v.to_string())})
-            });
-            let lifecycle = match host.sleep().public_state(runtime) {
-                Ok(v) => v,
-                Err(code) => return error(StatusCode::SERVICE_UNAVAILABLE, code),
-            };
-            ok(
-                json!({"state":phase,"lifecycle":lifecycle,"generation":snapshot.generation.map(GenerationId::to_hex),"player_count":count.map(|v| v.0),"player_count_known":count.is_some(),"player_count_observed_at_ms":count.map(|v| v.1),"uptime_seconds":uptime.map(|v| v.to_string()),"supervision":if supervision.is_some() {"separate"} else {"in_process"},"supervisor":supervisor,"readiness":ready_state,"readiness_reason":ready_reason,"readiness_evidence":if readiness.probed {"log_and_probe"} else {"log_only"}}),
             )
         }
         "operations" => {

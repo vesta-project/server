@@ -84,7 +84,8 @@ pub(super) async fn route(
         if !(super::manage::file_endpoint(&path)
             || super::manage::presentation::implemented(&path)
             || name == "if-none-match"
-                && super::manage::metrics_endpoint(&path))
+                && (super::manage::metrics_endpoint(&path)
+                    || path == "/api/v3/manage/server/status"))
         {
             return Ok(None);
         }

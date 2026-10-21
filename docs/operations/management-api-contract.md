@@ -254,7 +254,7 @@ canonical device session, including pack-only users. The POST compatibility alia
 for session issuance is unchanged. Success uses the standard V3 envelope:
 
 ```json
-{"api_version":"3","request_id":"request-1","data":{"server_id":"server-uuid","principal_id":"user-uuid","device_id":"device-uuid","roles":[{"id":"viewer","name":"Viewer","rank":10}],"capabilities":["public.info","status.view","metrics.view"],"session_expires_at_ms":1791116100000}}
+{"api_version":"3","request_id":"request-1","data":{"server_id":"server-uuid","principal_id":"user-uuid","device_id":"device-uuid","roles":[{"id":"viewer","name":"Viewer","rank":20}],"capabilities":["public.info","status.view","metrics.view"],"session_expires_at_ms":1791116100000}}
 ```
 
 Roles include current explicit and applicable safe automatic sources, deduplicated
@@ -326,6 +326,35 @@ bearer/key headers, non-object mutation JSON and bodies on GET are refused.
 No client executable, argv or URL is accepted as authority. Section 2.2 accepts
 validated game-root-relative resources and optimistic SHA-256 validators; neither
 grants authority or selects an agent/native executable.
+
+### Conditional status and push updates
+
+`GET /api/v3/manage/server/status` returns a strong `ETag` of the status data.
+`If-None-Match` accepts one strong quoted validator, as `/metrics/current` does;
+weak validators, wildcard, lists, duplicate fields and malformed values return
+400. A match returns 304, the same ETag, `Cache-Control: no-store`, and no body
+or Content-Length. Authentication and `status.view` are checked before a match.
+The 200 envelope's bounded `request_id` is `status-<SHA-256 hex>`, stable for an
+unchanged representation so the validator identifies byte-identical JSON.
+Changes to any field, including uptime seconds, change the validator.
+
+The existing `/api/v3/manage/metrics/stream` adds this message immediately after
+`metrics.snapshot` and whenever its latest observed status projection changes:
+
+```json
+{"type":"status","api_version":"3","etag":"\"status-<64 lowercase hex>\"","data":{"state":"stopped","lifecycle":"offline","generation":null,"player_count":null,"player_count_known":false,"player_count_observed_at_ms":null,"uptime_seconds":null,"supervision":"in_process","supervisor":null,"readiness":"stopped","readiness_reason":null,"readiness_evidence":"log_only"}}
+```
+
+`data` is exactly the HTTP status data; `etag` is the HTTP validator including
+quotes. Status observation runs at most every 250 ms independently of metrics
+sampling, even when telemetry is disabled. Delivery is latest-only: intervening
+changes may coalesce, slow writers have the existing bounded send deadline, and
+no event queue grows. Each status message is capped at 4096 UTF-8 bytes. The
+existing socket budget is unchanged. The stream still requires `metrics.view`;
+status messages additionally require current `status.view` on connect and before
+each push. A metrics-only subscriber receives no status; revoking `status.view`
+withholds future status frames while retaining authorized metrics delivery.
+Clients can ignore the additive `status` type. No extra public information is added.
 
 ### Exact endpoints and data shapes
 

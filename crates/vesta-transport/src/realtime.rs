@@ -793,6 +793,71 @@ async fn metrics_authorized(
     )
     .await
 }
+/// A latest-only status read, independently gated by StatusView. A metrics-only
+/// subscriber receives no status, and loss of StatusView does not grant or retain it.
+async fn status_snapshot(
+    state: &Arc<Shared>,
+    secret: &str,
+) -> Result<Option<(serde_json::Value, String)>, Refusal> {
+    admitted(
+        &state.realtime_jobs,
+        &state.stop,
+        SEND_TIMEOUT.min(state.timeout),
+        || {
+            let host = state.host.clone();
+            let token = zeroize::Zeroizing::new(secret.to_owned());
+            move || {
+                use vesta_control::identity::{Capability, management::ManagementError};
+                host.management()
+                    .authorize(token.as_str(), Capability::MetricsView, None)
+                    .map_err(|_| Refusal::Revoked)?;
+                match host
+                    .management()
+                    .authorize(token.as_str(), Capability::StatusView, None)
+                {
+                    Err(ManagementError::Forbidden) => return Ok(None),
+                    Err(_) => return Err(Refusal::Revoked),
+                    Ok(_) => {}
+                }
+                let data =
+                    super::manage::status::projection(&host).map_err(|_| Refusal::Unavailable)?;
+                let tag = super::manage::status::tag(&data);
+                Ok(Some((data, tag)))
+            }
+        },
+    )
+    .await
+}
+async fn push_status(
+    socket: &mut Socket,
+    state: &Arc<Shared>,
+    secret: &str,
+    last: &mut Option<String>,
+) -> Result<(), Refusal> {
+    let Some((data, etag)) = status_snapshot(state, secret).await? else {
+        *last = None;
+        return Ok(());
+    };
+    if last.as_ref() == Some(&etag) {
+        return Ok(());
+    }
+    let notice =
+        serde_json::json!({"type":"status","api_version":"3","etag":etag,"data":data}).to_string();
+    if notice.len() > 4096 {
+        return Err(Refusal::Unavailable);
+    }
+    // As with metrics frames, recheck after projection work and immediately
+    // before the bounded socket write; a cached projection grants no authority.
+    if status_snapshot(state, secret).await?.is_none() {
+        *last = None;
+        return Ok(());
+    }
+    send(socket, Message::Text(notice))
+        .await
+        .map_err(|_| Refusal::Unavailable)?;
+    *last = Some(etag);
+    Ok(())
+}
 async fn connected_metrics(
     mut socket: Socket,
     state: Arc<Shared>,
@@ -810,6 +875,12 @@ async fn connected_metrics(
         if let Err(e)=metrics_authorized(&state,secret.as_str(),false).await {return e.close_code();}
         let notice=serde_json::json!({"type":"metrics.snapshot","api_version":"3","cursor":revision,"columns":initial.current.columns,"status":initial.current.status});
         if send(&mut socket,Message::Text(notice.to_string())).await.is_err() {return CloseCode::Away;}
+        let mut status_tag=None;
+        if let Err(e)=push_status(&mut socket,&state,secret.as_str(),&mut status_tag).await {return e.close_code();}
+        // Status changes independently of telemetry (including disabled sampling).
+        // A single latest projection is retained; slow consumers never queue updates.
+        let mut status_tick=tokio::time::interval(Duration::from_millis(250));
+        status_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut heartbeat=tokio::time::interval_at(tokio::time::Instant::now()+HEARTBEAT,HEARTBEAT);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut activity=Instant::now();let mut controls=ControlRate::new(activity);
@@ -817,6 +888,9 @@ async fn connected_metrics(
             tokio::select! {
                 _=stop.changed()=>return CloseCode::Away,
                 _=tokio::time::sleep_until((activity+IDLE).into())=>return CloseCode::Policy,
+                _=status_tick.tick()=>{
+                    if let Err(e)=push_status(&mut socket,&state,secret.as_str(),&mut status_tag).await {return e.close_code();}
+                }
                 changed=notifications.changed()=>{
                     if changed.is_err() {return CloseCode::Away;}
                     // Borrow-and-update only the signal; authoritative data is read freshly.
