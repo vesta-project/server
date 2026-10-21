@@ -916,9 +916,15 @@ async fn handle(
             && request.method() == http::Method::GET;
     // Unknown/expired tokens stop at an in-memory hash lookup. Only a known token
     // incurs a bounded blocking live-identity check; route authorization still runs.
-    let reference = if let Some(token) = routes::bearer(request.headers())
-        .filter(|token| state.host.management().known_session(token))
-    {
+    let (known_token, lookup_unavailable) = match routes::bearer(request.headers()) {
+        Some(token) => match state.host.management().known_session(token) {
+            Ok(true) => (Some(token), false),
+            Ok(false) => (None, false),
+            Err(_) => (None, true),
+        },
+        None => (None, false),
+    };
+    let reference = if let Some(token) = known_token {
         let access = state.host.management().clone();
         let token = zeroize::Zeroizing::new(token.to_owned());
         state.jobs.reap(false).await;
@@ -974,6 +980,15 @@ async fn handle(
     };
     if let Some(reply) = denial {
         return Ok(reply);
+    }
+    // An unvalidated bearer never escapes anonymous accounting, even when
+    // store contention prevents the cheap lookup. Refuse without dispatching IO.
+    if lookup_unavailable {
+        return Ok(if operational {
+            manage::error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable")
+        } else {
+            error(StatusCode::SERVICE_UNAVAILABLE, "peer_capacity_unavailable")
+        });
     }
     let timeout = state.timeout;
     let result = tokio::time::timeout(timeout, routes::route(request, state, peer)).await;

@@ -290,7 +290,10 @@ peer-IP token bucket (1024 tracked IPs); valid device sessions use a separate
 per-session bucket (4096 tracked sessions) shared across peer addresses and routes.
 Only a syntactically valid, known, unexpired bearer that passes live identity
 validation selects that bucket. Revoked/unknown/duplicate/malformed bearers cannot
-bypass the anonymous budget. Route authority checks remain independent.
+bypass the anonymous budget. Route authority checks remain independent. The preliminary in-memory lookup is
+nonblocking: store contention applies anonymous accounting and returns a capacity
+refusal (503, or 429 if that anonymous bucket is exhausted), never admission to
+the larger session budget.
 
 TLS `[listener]` accepts optional integer settings (each bounded to 1-60000):
 `peer-requests-per-minute` defaults to **60**, `peer-connections-per-minute` to

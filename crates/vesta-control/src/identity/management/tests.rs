@@ -1154,3 +1154,32 @@ fn self_projection_includes_scoped_grants_only_when_a_resource_survives_denies()
         "a denied exact leaf leaves no invented resource grant"
     );
 }
+
+#[test]
+fn rate_preflight_is_nonblocking_and_never_treats_unknown_or_expired_tokens_as_known() {
+    let f = Fixture::new();
+    let (device, key) = normal(&f);
+    let token = f.session(&device, &key);
+    assert!(f.service.known_session(token.secret.expose()).unwrap());
+    assert!(
+        !f.service
+            .known_session(&URL_SAFE_NO_PAD.encode([0; 32]))
+            .unwrap()
+    );
+    assert!(!f.service.known_session("invalid").unwrap());
+    {
+        let held = f.service.stores.lock().unwrap();
+        let access = f.service.clone();
+        let credential = token.secret.expose().to_owned();
+        let (send, receive) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = send.send(access.known_session(&credential));
+        });
+        let observed = receive.recv_timeout(std::time::Duration::from_secs(2));
+        drop(held);
+        worker.join().unwrap();
+        assert!(matches!(observed, Ok(Err(ManagementError::Unavailable))));
+    }
+    f.clock.0.fetch_add(SESSION_TTL_MS, Ordering::SeqCst);
+    assert!(!f.service.known_session(token.secret.expose()).unwrap());
+}

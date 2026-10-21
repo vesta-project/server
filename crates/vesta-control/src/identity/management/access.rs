@@ -363,20 +363,24 @@ impl ManagementAccess {
     }
     /// Cheap hash lookup before admission; only a hint. `pack_reference(Some(token))`
     /// must still validate the live identity before granting a session rate bucket.
-    pub fn known_session(&self, token: &str) -> bool {
+    pub fn known_session(&self, token: &str) -> Result<bool> {
         if decode::<32>(token).is_err() {
-            return false;
+            return Ok(false);
         }
-        self.stores.lock().ok().is_some_and(|stores| {
-            stores
-                .sessions
-                .get(&bound_hash(b"session", self.server_id(), token))
-                .is_some_and(|s| {
-                    s.server == self.server_id()
-                        && s.expires > self.now()
-                        && Instant::now() < s.monotonic_expires
-                })
-        })
+        // Authentication currently retains the store lock across its live DB
+        // check. The transport's cheap preflight must never wait behind that IO.
+        let stores = self
+            .stores
+            .try_lock()
+            .map_err(|_| ManagementError::Unavailable)?;
+        Ok(stores
+            .sessions
+            .get(&bound_hash(b"session", self.server_id(), token))
+            .is_some_and(|s| {
+                s.server == self.server_id()
+                    && s.expires > self.now()
+                    && Instant::now() < s.monotonic_expires
+            }))
     }
     pub fn pack_reference(&self, token: Option<&str>) -> Result<DeviceSessionReference> {
         let server =
