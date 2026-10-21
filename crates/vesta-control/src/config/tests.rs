@@ -1421,6 +1421,8 @@ fn advertised_pairing_endpoint_is_explicit_bounded_https() {
         assert_eq!(tls.public_endpoint(), Some(endpoint));
     }
     for endpoint in [
+        " https://example.test/ ",
+        &format!("https://example.test/{}", "\u{e9}".repeat(400)),
         "http://example.test/",
         "https://u:p@example.test/",
         "https://example.test/?token=x",

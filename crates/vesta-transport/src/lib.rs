@@ -1,5 +1,5 @@
-//! Owned, bounded HTTPS transport for descriptive discovery and pack-only access.
-//! There is deliberately no canonical management authentication boundary here.
+//! Owned, bounded HTTPS transport for discovery, canonical device sessions,
+//! capability-checked management, pack access and bounded realtime delivery.
 //!
 //! A session bearer can mint a single-use realtime ticket with an empty
 //! `POST /api/v2/realtime/ticket`. Upgrade `GET /api/v2/realtime?installed=N`
@@ -922,12 +922,21 @@ async fn handle(
         let access = state.host.management().clone();
         let token = zeroize::Zeroizing::new(token.to_owned());
         state.jobs.reap(false).await;
-        state
+        match state
             .jobs
             .run(move || access.pack_reference(Some(token.as_str())))
             .await
-            .ok()
-            .and_then(Result::ok)
+        {
+            Ok(Ok(reference)) => Some(reference),
+            Ok(Err(vesta_control::identity::management::ManagementError::SessionInvalid)) => None,
+            _ => {
+                return Ok(if operational {
+                    manage::error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable")
+                } else {
+                    error(StatusCode::SERVICE_UNAVAILABLE, "peer_capacity_unavailable")
+                });
+            }
+        }
     } else {
         None
     };

@@ -648,6 +648,8 @@ impl HostConfiguration {
                         let url =
                             url::Url::parse(&text).map_err(|_| ConfigError::InvalidListener)?;
                         if text.len() > 2048
+                            || url.as_str().len() > 2048
+                            || text.trim() != text
                             || text.chars().any(char::is_control)
                             || url.scheme() != "https"
                             || url.host_str().is_none()
