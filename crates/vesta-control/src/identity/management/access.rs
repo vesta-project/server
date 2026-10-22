@@ -357,7 +357,9 @@ impl ManagementAccess {
             .lock()
             .map_err(|_| ManagementError::Unavailable)?;
         stores.prune(self.now());
-        let expired: Vec<_> = stores.sessions.iter()
+        let expired: Vec<_> = stores
+            .sessions
+            .iter()
             .filter(|(_, s)| now >= s.monotonic_expires)
             .map(|(key, _)| *key)
             .collect();

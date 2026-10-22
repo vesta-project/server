@@ -604,7 +604,10 @@ fn verified_minecraft_user_name_is_separate_from_device_label() {
         .service
         .permission_query(
             s.secret.expose(),
-            PermissionQuery::Users { offset: 0, limit: 100 },
+            PermissionQuery::Users {
+                offset: 0,
+                limit: 100,
+            },
         )
         .unwrap();
     assert_eq!(page["users"][0]["display_name"], "Fixture");

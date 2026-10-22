@@ -576,7 +576,10 @@ fn properties_redaction_preservation_preconditions_and_confirmation_receipts() {
     assert_eq!(read.json()["data"]["values"]["accepts-transfers"], false);
     assert_eq!(read.json()["data"]["values"]["generator-settings"], "{}");
     assert_eq!(read.json()["data"]["values"]["level-name"], "world");
-    assert_eq!(read.json()["data"]["values"]["management-server-secret"], "[redacted]");
+    assert_eq!(
+        read.json()["data"]["values"]["management-server-secret"],
+        "[redacted]"
+    );
     read.hides("fixture-management-secret");
     read.hides("fixture-secret");
     read.hides("C:\\private");

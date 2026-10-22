@@ -215,25 +215,38 @@ fn schema(key: &str) -> Option<Kind> {
 /// Reading a known vanilla setting does not grant remote editing authority.
 /// Unknown/modded keys remain hidden because they may contain credentials.
 fn read_schema(key: &str) -> Option<Kind> {
-    schema(key).or_else(|| Some(match key {
-        "accepts-transfers" | "broadcast-console-to-ops" | "broadcast-rcon-to-ops"
-        | "enable-code-of-conduct" | "enable-jmx-monitoring" | "generate-structures"
-        | "require-resource-pack" | "sync-chunk-writes" | "use-native-transport"
-        | "management-server-enabled"
-        | "management-server-tls-enabled" => Kind::Boolean,
-        "entity-broadcast-range-percentage" => Kind::Integer(10, 1000),
-        "max-chained-neighbor-updates" | "max-tick-time" => Kind::Integer(-1, i64::MAX),
-        "max-world-size" => Kind::Integer(1, 29_999_984),
-        "network-compression-threshold" => Kind::Integer(-1, i32::MAX as i64),
-        "rate-limit" | "pause-when-empty-seconds" | "chat-spam-threshold-seconds"
-        | "command-spam-threshold-seconds" | "status-heartbeat-interval" => Kind::Integer(0, i32::MAX as i64),
-        "management-server-port" => Kind::Integer(0, 65535),
-        "region-file-compression" => Kind::Enum(&["deflate", "lz4", "none"]),
-        "level-name" | "level-seed" | "level-type" | "server-ip" => Kind::Text(256),
-        "generator-settings" | "initial-disabled-packs" | "initial-enabled-packs"
-        | "bug-report-link" => Kind::Text(4096),
-        _ => return None,
-    }))
+    schema(key).or_else(|| {
+        Some(match key {
+            "accepts-transfers"
+            | "broadcast-console-to-ops"
+            | "broadcast-rcon-to-ops"
+            | "enable-code-of-conduct"
+            | "enable-jmx-monitoring"
+            | "generate-structures"
+            | "require-resource-pack"
+            | "sync-chunk-writes"
+            | "use-native-transport"
+            | "management-server-enabled"
+            | "management-server-tls-enabled" => Kind::Boolean,
+            "entity-broadcast-range-percentage" => Kind::Integer(10, 1000),
+            "max-chained-neighbor-updates" | "max-tick-time" => Kind::Integer(-1, i64::MAX),
+            "max-world-size" => Kind::Integer(1, 29_999_984),
+            "network-compression-threshold" => Kind::Integer(-1, i32::MAX as i64),
+            "rate-limit"
+            | "pause-when-empty-seconds"
+            | "chat-spam-threshold-seconds"
+            | "command-spam-threshold-seconds"
+            | "status-heartbeat-interval" => Kind::Integer(0, i32::MAX as i64),
+            "management-server-port" => Kind::Integer(0, 65535),
+            "region-file-compression" => Kind::Enum(&["deflate", "lz4", "none"]),
+            "level-name" | "level-seed" | "level-type" | "server-ip" => Kind::Text(256),
+            "generator-settings"
+            | "initial-disabled-packs"
+            | "initial-enabled-packs"
+            | "bug-report-link" => Kind::Text(4096),
+            _ => return None,
+        })
+    })
 }
 fn validate(key: &str, value: &Value) -> Result<String, FileError> {
     if key == "motd" {
@@ -483,15 +496,34 @@ mod tests {
     }
     #[test]
     fn read_only_vanilla_settings_do_not_become_editable_or_expose_secrets() {
-        for key in ["accepts-transfers", "broadcast-console-to-ops", "generate-structures", "level-name", "generator-settings", "initial-enabled-packs", "pause-when-empty-seconds", "status-heartbeat-interval"] {
+        for key in [
+            "accepts-transfers",
+            "broadcast-console-to-ops",
+            "generate-structures",
+            "level-name",
+            "generator-settings",
+            "initial-enabled-packs",
+            "pause-when-empty-seconds",
+            "status-heartbeat-interval",
+        ] {
             assert!(read_schema(key).is_some(), "readable: {key}");
             assert!(schema(key).is_none(), "still read-only: {key}");
             assert!(validate(key, &json!(true)).is_err());
         }
-        for key in ["management-server-secret", "management-server-tls-keystore-password", "management-server-tls-keystore", "resource-pack", "text-filtering-config", "unknown-plugin-secret"] {
+        for key in [
+            "management-server-secret",
+            "management-server-tls-keystore-password",
+            "management-server-tls-keystore",
+            "resource-pack",
+            "text-filtering-config",
+            "unknown-plugin-secret",
+        ] {
             assert!(read_schema(key).is_none(), "hidden: {key}");
         }
-        assert!(matches!(read_schema("rcon.password"), Some(Kind::Secret(_))));
+        assert!(matches!(
+            read_schema("rcon.password"),
+            Some(Kind::Secret(_))
+        ));
     }
     #[test]
     fn edits_preserve_unknown_comments_crlf_and_decode_aliases() {

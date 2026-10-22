@@ -148,12 +148,16 @@ impl Stores {
         let index = &mut self.console_credentials;
         self.challenges.retain(|_, v| {
             let keep = v.expires > now && std::time::Instant::now() < v.monotonic_expires;
-            if !keep { index.remove(&v.console_edges); }
+            if !keep {
+                index.remove(&v.console_edges);
+            }
             keep
         });
         self.sessions.retain(|_, v| {
             let keep = v.expires > now && std::time::Instant::now() < v.monotonic_expires;
-            if !keep { index.remove(&v.console_edges); }
+            if !keep {
+                index.remove(&v.console_edges);
+            }
             keep
         });
     }

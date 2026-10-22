@@ -223,7 +223,8 @@ fn pack_outcome(value: vesta_control::packs::PackOutcome) -> Reply {
 }
 /// Replace only exact known configured absolute paths and retained agent-issued credentials.
 pub(super) fn redact_console(host: &NetworkHost, text: &str) -> Result<String, ManagementError> {
-    host.management().redact_console_secret_edges(&redact_text(host, text)?)
+    host.management()
+        .redact_console_secret_edges(&redact_text(host, text)?)
 }
 /// Complete typed fields have no capture boundary fragments; preserve ordinary words.
 fn redact_text(host: &NetworkHost, text: &str) -> Result<String, ManagementError> {

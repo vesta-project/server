@@ -109,16 +109,38 @@ fn console_fragment_index_follows_live_credentials_and_releases_memory() {
     let f = Fixture::new();
     let (device, key) = f.enroll(BuiltinRole::Owner);
     let nonce = f.service.challenge(&device.device_id).unwrap();
-    assert_eq!(f.service.redact_console_secret_edges(&format!("nonce: {}", &nonce.expose()[..21])).unwrap(), "nonce: [redacted]");
+    assert_eq!(
+        f.service
+            .redact_console_secret_edges(&format!("nonce: {}", &nonce.expose()[..21]))
+            .unwrap(),
+        "nonce: [redacted]"
+    );
     let signature = key.sign(&session_message(f.service.server_id(), nonce.expose()));
-    let token = f.service.session(&device.device_id, nonce.expose(), &URL_SAFE_NO_PAD.encode(signature.as_ref())).unwrap();
-    assert_eq!(f.service.redact_console_secret_edges(&format!("token: {}", &token.secret.expose()[..21])).unwrap(), "token: [redacted]");
+    let token = f
+        .service
+        .session(
+            &device.device_id,
+            nonce.expose(),
+            &URL_SAFE_NO_PAD.encode(signature.as_ref()),
+        )
+        .unwrap();
+    assert_eq!(
+        f.service
+            .redact_console_secret_edges(&format!("token: {}", &token.secret.expose()[..21]))
+            .unwrap(),
+        "token: [redacted]"
+    );
     assert!(f.service.revoke_session(token.secret.expose()).unwrap());
     let stores = f.service.stores.lock().unwrap();
     assert!(stores.sessions.is_empty());
     assert!(stores.challenges.is_empty());
     // No credential history accumulates when sessions are consumed/revoked.
-    assert_eq!(stores.console_credentials.redact(&token.secret.expose()[..21]), &token.secret.expose()[..21]);
+    assert_eq!(
+        stores
+            .console_credentials
+            .redact(&token.secret.expose()[..21]),
+        &token.secret.expose()[..21]
+    );
 }
 #[test]
 fn concurrent_pair_redemption_is_single_use() {
