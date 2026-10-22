@@ -66,6 +66,43 @@ fn sleep_policy_is_off_revisioned_audited_and_revocable_without_panics() {
         Some("sleep_forbidden")
     );
 }
+
+#[test]
+fn disabled_sleep_uses_idle_cadence_but_offline_and_active_sleep_keep_fast_cadence() {
+    let h = Harness::new(false);
+    let a = address();
+    let gate = StartGate::default();
+    let s = service(&h, a, gate.clone());
+    let owned = owned(&h, a, gate);
+    let runtime = owned.runtime.network_handle();
+    let mut coordinator = Coordinator::default();
+    coordinator.tick_at(&s, &runtime, Instant::now()).unwrap();
+    assert_eq!(coordinator.poll_interval(), Duration::from_secs(1));
+    let mut revision = 0;
+    for policy in [
+        Policy {
+            enabled: true,
+            ..Policy::default()
+        },
+        Policy {
+            offline_status: true,
+            ..Policy::default()
+        },
+        Policy::default(),
+    ] {
+        let active = policy.enabled || policy.offline_status;
+        revision = s.configure(&h.subject, revision, policy).unwrap().revision;
+        coordinator.tick_at(&s, &runtime, Instant::now()).unwrap();
+        assert_eq!(
+            coordinator.poll_interval(),
+            if active {
+                Duration::from_millis(250)
+            } else {
+                Duration::from_secs(1)
+            }
+        );
+    }
+}
 #[test]
 fn sleep_reconciles_zero_waits_for_warning_then_gracefully_stops_and_marks_sleeping() {
     let h = Harness::new(false);

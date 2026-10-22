@@ -367,7 +367,7 @@ impl Sleep {
                         let _ = runtime.configure_offline(None);
                         coordinator.reset();
                     }
-                    thread::sleep(Duration::from_millis(250));
+                    thread::park_timeout(coordinator.poll_interval());
                 }
                 if let Some(runtime) = cell.get() {
                     let _ = runtime.configure_offline(None);
@@ -388,6 +388,7 @@ impl Drop for Driver {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         if let Some(worker) = self.worker.take() {
+            worker.thread().unpark();
             let _ = worker.join();
         }
     }
@@ -528,6 +529,7 @@ fn put<T: Serialize>(
 
 #[derive(Default)]
 pub(crate) struct Coordinator {
+    fast_poll: bool,
     generation: Option<GenerationId>,
     revision: i64,
     zero_since: Option<Instant>,
@@ -538,6 +540,13 @@ pub(crate) struct Coordinator {
     warning_text: Option<String>,
 }
 impl Coordinator {
+    pub(crate) fn poll_interval(&self) -> Duration {
+        if self.fast_poll {
+            Duration::from_millis(250)
+        } else {
+            Duration::from_secs(1)
+        }
+    }
     fn reset(&mut self) {
         self.warning_id = None;
         self.warning_text = None;
@@ -555,6 +564,9 @@ impl Coordinator {
         runtime: &RuntimeHandle,
         now: Instant,
     ) -> Result<(), &'static str> {
+        // No active sleep/offline feature: one bounded policy observation per
+        // second rather than four. Active wake/countdown cadence is unchanged.
+        self.fast_poll = false;
         let (revision, stored) = service
             .db
             .read(|c| load_policy(c, &service.db))
@@ -564,6 +576,7 @@ impl Coordinator {
             self.reset();
             return Ok(());
         };
+        self.fast_poll = stored.policy.enabled || stored.policy.offline_status;
         let subject = stored.subject()?;
         let snapshot = runtime
             .game_snapshot()
