@@ -837,6 +837,67 @@ fn chunked_body_is_stopped_at_limit_without_waiting_for_terminator() {
 }
 
 #[test]
+fn aggregate_body_budget_refuses_before_buffering_and_preserves_empty_reads() {
+    let f = Fixture::new("minecraft", 16, 1024 * 1024, 10);
+    let mut held = Vec::new();
+    for _ in 0..4 {
+        let mut stream = f.stream();
+        stream.write_all(b"POST /api/v2/auth/password HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 1048576\r\n\r\n{").unwrap();
+        stream.flush().unwrap();
+        held.push(stream);
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    f.request("POST", "/api/v2/discovery", b"{}", None)
+        .error(503, "transport_busy");
+    f.request("GET", "/api/v2/pack/status?installed=0", b"", None)
+        .error_if_unpublished();
+    drop(held);
+    let started = Instant::now();
+    loop {
+        let reply = f.request("POST", "/api/v2/discovery", b"{}", None);
+        if reply.status != 503 {
+            assert_eq!(reply.status, 400);
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "body permits leaked after disconnect"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn incomplete_tls_negotiation_has_a_deadline_independent_of_long_requests() {
+    let f = Fixture::new("minecraft", 16, 1024, 300);
+    let mut held = Vec::new();
+    for _ in 0..8 {
+        let mut socket = TcpStream::connect(f.address).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(8)))
+            .unwrap();
+        socket.write_all(&[0x16, 0x03, 0x03]).unwrap();
+        held.push(socket);
+    }
+    let started = Instant::now();
+    for socket in &mut held {
+        let mut byte = [0];
+        match socket.read(&mut byte) {
+            Ok(0) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) => {}
+            result => panic!("incomplete handshake retained its slot: {result:?}"),
+        }
+    }
+    assert!(started.elapsed() < Duration::from_secs(8));
+    f.request("GET", "/api/v2/pack/status?installed=0", b"", None)
+        .error_if_unpublished();
+}
+
+#[test]
 fn header_count_and_header_bytes_are_bounded() {
     let f = Fixture::new("minecraft", 8, 1024, 3);
     for request in [
@@ -2374,7 +2435,10 @@ fn assert_credential_boundary_lines(lines: &[serde_json::Value]) {
         "Starting Minecraft server on 127.0.0.1:25565",
         "WARNING: A restricted method in java.lang.System has been called",
     ] {
-        assert!(lines.iter().any(|line| line["text"] == text), "ordinary log must remain readable: {text}");
+        assert!(
+            lines.iter().any(|line| line["text"] == text),
+            "ordinary log must remain readable: {text}"
+        );
     }
     for offset in [1, 7, 21, 42] {
         let marker = format!(" boundary-{offset}: ");

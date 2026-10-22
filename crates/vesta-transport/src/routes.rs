@@ -1,7 +1,7 @@
 use super::{Reply, Shared, error, rate_limited, response};
 use http::{Method, Request, StatusCode};
 use http_body_util::BodyExt;
-use hyper::body::Incoming;
+use hyper::body::{Body, Incoming};
 use serde::Deserialize;
 use std::{
     sync::Arc,
@@ -231,8 +231,27 @@ pub(super) async fn route(
     {
         return error(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large");
     }
+    // Reserve the per-request maximum before buffering anything. Empty reads do
+    // not compete with uploads; unknown/chunked bodies cannot bypass admission.
+    let body_permit = if request.body().is_end_stream() {
+        None
+    } else {
+        match state.bodies.clone().try_acquire_many_owned(maximum as u32) {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                return super::with_retry_after(
+                    error(StatusCode::SERVICE_UNAVAILABLE, "transport_busy"),
+                    Duration::from_secs(1),
+                );
+            }
+        }
+    };
     let mut body = request.into_body();
-    let mut bytes = zeroize::Zeroizing::new(Vec::new());
+    let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(if body_permit.is_some() {
+        maximum
+    } else {
+        0
+    }));
     while let Some(frame) = body.frame().await {
         let Ok(frame) = frame else {
             return error(StatusCode::BAD_REQUEST, "invalid_request");
@@ -270,6 +289,9 @@ pub(super) async fn route(
     };
     let version3 = operational || path == "/api/v3/status";
     jobs.execute_for(version3, move || {
+        // Blocking work outlives a cancelled HTTP waiter: its bytes and permit
+        // must have the same owner, rather than releasing the budget too early.
+        let _body_permit = body_permit;
         if operational {
             let fingerprint = if path == "/api/v3/manage/invitations" && method == Method::POST {
                 tls.fingerprint().ok()

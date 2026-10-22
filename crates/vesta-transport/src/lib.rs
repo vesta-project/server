@@ -69,6 +69,12 @@ type Reply = Response<ReplyBody>;
 const DOWNLOADS: usize = 2;
 const BODY_CHUNK: usize = 64 * 1024;
 const HANDSHAKES: usize = 8;
+/// Independent of long HTTP/slow-transfer timeouts. Incomplete ClientHellos must
+/// not own every negotiation slot for the configured request timeout (up to 5m).
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Aggregate erasing request buffers, including bodies owned by blocking jobs
+/// after their HTTP waiter times out. Never scales with the connection cap.
+const REQUEST_BODY_BUDGET: usize = 4 * 1024 * 1024;
 /// Bytes per second a streaming artifact body must sustain, measured over each
 /// `request_timeout` window. A stalled or trickling peer loses its connection and
 /// with it every download permit held by its body and buffered chunks.
@@ -81,7 +87,7 @@ const DRAIN: Duration = Duration::from_secs(2 * BODY_CHUNK as u64 / MIN_DOWNLOAD
 const MAX_REQUESTS: usize = 32;
 
 /// Separate handshake/first-head, request, idle and artifact throughput budgets.
-/// Each uses `request_timeout`; downloads have no total-duration cap. Later
+/// HTTP phases use `request_timeout`; TLS has its own cap and downloads have no total-duration cap. Later
 /// requests start at their first read, not at head completion: partial reads never
 /// refresh that budget. Responses stay timed until their final socket flush.
 struct ConnectionDeadline {
@@ -707,6 +713,7 @@ struct Shared {
     tls: Arc<tls::Material>,
     host: NetworkHost,
     max_body: usize,
+    bodies: Arc<Semaphore>,
     timeout: Duration,
     limiter: Mutex<PeerRateLimiter>,
     session_limiter:
@@ -803,6 +810,7 @@ async fn serve(
         tls,
         host,
         max_body: config.max_request_bytes() as usize,
+        bodies: Arc::new(Semaphore::new(REQUEST_BODY_BUDGET)),
         timeout: Duration::from_secs(config.request_timeout_seconds().into()),
         limiter: Mutex::new(PeerRateLimiter::new(
             RatePolicy::new(
@@ -861,7 +869,7 @@ async fn serve(
                     let deadline = Arc::new(ConnectionDeadline::new(limit));
                     let watchdog = deadline.clone();
                     let work = async move {
-                        let Ok(stream) = tls.accept(socket).await else { return; };
+                        let Ok(Ok(stream)) = tokio::time::timeout(HANDSHAKE_TIMEOUT.min(limit), tls.accept(socket)).await else { return; };
                         drop(handshake);
                         let stream = DeadlineIo { inner: stream, deadline: deadline.clone() };
                         let requests = std::sync::atomic::AtomicUsize::new(0);
