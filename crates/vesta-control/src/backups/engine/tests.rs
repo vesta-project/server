@@ -648,6 +648,69 @@ fn snapshot_budget_includes_each_object_once_and_refuses_before_publication() {
 }
 
 #[test]
+fn promotion_accounts_growth_and_reserves_the_atomic_replacement_before_publish() {
+    let store = MemStore::default();
+    let engine = Engine::new(Box::new(store.clone()));
+    engine.init().unwrap();
+    let manifest = Manifest {
+        version: 1,
+        id: "cd".repeat(16),
+        time_ms: 1234,
+        dirs: vec![],
+        files: vec![],
+    };
+    let initial = vec!["vesta".into(), "candidate=quota".into()];
+    let added = engine.write_snapshot(&manifest, &initial, 0, None).unwrap();
+    let before = engine.usage().unwrap();
+    assert_eq!(before, added);
+    let key = format!("tags/{}", manifest.id);
+    let original = store.get(&key).unwrap();
+    let promoted = serde_json::to_vec(&TagRecord {
+        time_ms: 1234,
+        tags: vec![
+            "vesta".into(),
+            "candidate=quota".into(),
+            "profile=quota".into(),
+        ],
+    })
+    .unwrap();
+    let growth = (promoted.len() - original.len()) as u64;
+    for budget in [0, growth - 1] {
+        assert_eq!(
+            engine.tag_add_within(&manifest.id, &["profile=quota".into()], Some(budget), None),
+            Err(EngineError::LimitReached)
+        );
+        assert_eq!(store.get(&key).unwrap(), original);
+        assert!(engine.snapshots("profile=quota").unwrap().is_empty());
+    }
+    assert_eq!(
+        engine.tag_add_within(
+            &manifest.id,
+            &["profile=quota".into()],
+            Some(growth),
+            Some(promoted.len() as u64 - 1)
+        ),
+        Err(EngineError::DiskSpaceLow)
+    );
+    assert_eq!(store.get(&key).unwrap(), original);
+    assert_eq!(
+        engine.tag_add_within(
+            &manifest.id,
+            &["profile=quota".into()],
+            Some(growth),
+            Some(promoted.len() as u64)
+        ),
+        Ok(growth)
+    );
+    assert_eq!(engine.usage().unwrap(), added + growth);
+    assert_eq!(engine.snapshots("profile=quota").unwrap().len(), 1);
+    assert_eq!(
+        engine.tag_add_within(&manifest.id, &["profile=quota".into()], Some(0), None),
+        Ok(0)
+    );
+}
+
+#[test]
 fn apply_refuses_without_enough_free_space_before_any_change() {
     let source = game();
     let engine = Engine::new(Box::new(MemStore::default()));

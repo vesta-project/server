@@ -999,7 +999,7 @@ impl Inner {
             (result, before, after, kept)
         };
         // Phase 2: judge the snapshot; repository maintenance holds nothing else.
-        let summary = match result {
+        let mut summary = match result {
             Ok(summary) => summary,
             Err(EngineError::LimitReached) => return Outcome::failed(budget.exceeded()),
             Err(error) => return Outcome::failed(error.code()),
@@ -1012,16 +1012,28 @@ impl Inner {
             MutationPolicy::FailWorld => world_changed,
             MutationPolicy::FailAny => !changes.is_empty() || !kept || !complete,
         };
-        let promoted = if fail {
-            let _ = self
-                .engine
-                .tag_add(&summary.snapshot_id, &[REJECTED.to_owned()]);
-            false
+        // Promotion/rejection replaces the listing after the bounded backup.
+        // Charge its growth too, and preserve room for the atomic local write.
+        let tag = if fail {
+            REJECTED.to_owned()
         } else {
-            self.engine
-                .tag_add(&summary.snapshot_id, &[profile_tag(&profile.name)])
-                .is_ok()
+            profile_tag(&profile.name)
         };
+        let tagging = self
+            .disk_budget()
+            .map_err(|_| EngineError::DiskSpaceLow)
+            .and_then(|disk| {
+                self.engine.tag_add_within(
+                    &summary.snapshot_id,
+                    &[tag],
+                    budget.bytes.map(|b| b.saturating_sub(summary.data_added)),
+                    disk.bytes,
+                )
+            });
+        if let Ok(growth) = tagging {
+            summary.data_added += growth;
+        }
+        let promoted = !fail && tagging.is_ok();
         let mut retention_error = None;
         let retention = Retention {
             keep_last: profile.keep_last,
@@ -1061,8 +1073,12 @@ impl Inner {
             } else {
                 "backup_consistency_lost"
             })
-        } else if !promoted {
-            Some("backup_tag_failed")
+        } else if let Err(error) = tagging {
+            Some(if error == EngineError::LimitReached {
+                budget.exceeded()
+            } else {
+                error.code()
+            })
         } else {
             None
         };

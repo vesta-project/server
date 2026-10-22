@@ -522,12 +522,6 @@ impl Engine {
         Ok(total)
     }
 
-    fn write_tags(&self, id: &str, record: &TagRecord) -> Result<()> {
-        let bytes = serde_json::to_vec(record).map_err(|_| EngineError::Failed)?;
-        self.store.put(&format!("tags/{id}"), &bytes)?;
-        Ok(())
-    }
-
     /// The tags of one snapshot.
     pub fn snapshot_tags(&self, snapshot: &str) -> Result<Vec<String>> {
         if !valid_snapshot_id(snapshot) {
@@ -545,18 +539,40 @@ impl Engine {
 
     /// Add tags to one snapshot (promotes a checked candidate into its profile).
     pub fn tag_add(&self, snapshot: &str, tags: &[String]) -> Result<()> {
+        self.tag_add_within(snapshot, tags, None, None).map(|_| ())
+    }
+
+    /// Bound net repository growth and, separately, bytes needed for the atomic
+    /// replacement on local storage. Returns the listing's actual growth.
+    pub fn tag_add_within(
+        &self,
+        snapshot: &str,
+        tags: &[String],
+        growth_budget: Option<u64>,
+        write_budget: Option<u64>,
+    ) -> Result<u64> {
         if !valid_snapshot_id(snapshot) || tags.is_empty() || tags.iter().any(|t| !valid_tag(t)) {
             return Err(EngineError::Invalid);
         }
         let key = format!("tags/{snapshot}");
+        let old = self.store.get(&key)?;
         let mut record: TagRecord =
-            serde_json::from_slice(&self.store.get(&key)?).map_err(|_| EngineError::Corrupt)?;
+            serde_json::from_slice(&old).map_err(|_| EngineError::Corrupt)?;
         for tag in tags {
             if !record.tags.contains(tag) {
                 record.tags.push(tag.clone());
             }
         }
-        self.write_tags(snapshot, &record)
+        let bytes = serde_json::to_vec(&record).map_err(|_| EngineError::Failed)?;
+        let growth = (bytes.len() as u64).saturating_sub(old.len() as u64);
+        if growth_budget.is_some_and(|budget| growth > budget) {
+            return Err(EngineError::LimitReached);
+        }
+        if write_budget.is_some_and(|budget| bytes.len() as u64 > budget) {
+            return Err(EngineError::DiskSpaceLow);
+        }
+        self.store.put(&key, &bytes)?;
+        Ok(growth)
     }
 
     /// Bytes stored in the repository (every object, including unreferenced chunks that
