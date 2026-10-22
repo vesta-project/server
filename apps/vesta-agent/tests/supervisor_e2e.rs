@@ -222,13 +222,22 @@ fn agent_exit_keeps_the_game_and_a_supervisor_crash_blocks_duplicates() {
     supervisor.wait().unwrap();
     let orphan = layout.record().expect("record survives supervisor crash");
     assert!(orphan.held());
-    // The agent lost its supervisor: shutdown completes, reporting lost observation
-    // if the driver noticed in time. It never waits on, stops or kills the game.
+    // The agent lost its supervisor: shutdown reports either the observation
+    // failure or an unconfirmed offline-listener release, depending on which
+    // observes the dead channel first. It never waits on, stops or kills the game.
     match host.shutdown(Duration::from_secs(20)) {
         Ok(HostShutdown::Complete) => {}
-        Err(error) => assert_eq!(error.code(), "game_observe_failed"),
+        Err(error) => assert!(
+            matches!(
+                error.code(),
+                "game_observe_failed" | "state_offline_release_uncertain"
+            ),
+            "unexpected shutdown failure: {}",
+            error.code()
+        ),
         Ok(HostShutdown::TimedOut(_)) => panic!("shutdown must not wait for a lost supervisor"),
     }
+    assert!(orphan.held(), "agent shutdown must leave the orphan alive");
 
     let (mut replacement, client) = layout.spawn_supervisor();
     let remote = RemoteProcess::attach(
