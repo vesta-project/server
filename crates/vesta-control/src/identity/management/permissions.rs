@@ -281,7 +281,7 @@ fn user_value(repo: &Repository<'_>, id: &str) -> AdminResult<Value> {
     let name: Option<String> = repo
         .connection()
         .query_row(
-            "SELECT display_name FROM principals WHERE id=? AND server_id=? AND status='active'",
+            "SELECT coalesce(n.name,p.display_name) FROM principals p LEFT JOIN user_minecraft_names n ON n.principal_id=p.id WHERE p.id=? AND p.server_id=? AND p.status='active'",
             params![id, repo_server(repo)?],
             |r| r.get(0),
         )

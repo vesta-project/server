@@ -580,6 +580,45 @@ fn role_and_user_versions_idempotency_conflict_and_delete() {
     assert!(run(&f, &s, "delete-role-retry-0001", c).is_ok());
 }
 #[test]
+fn verified_minecraft_user_name_is_separate_from_device_label() {
+    let f = Fixture::new();
+    let (owner, k) = f.enroll(BuiltinRole::Owner);
+    let s = f.session(&owner, &k);
+    // Pairing without a Minecraft identity retains its original display name.
+    assert_eq!(
+        get(&f, &s, &owner.principal_id)["display_name"],
+        "Test device"
+    );
+    f.service
+        .enroll_minecraft_for(
+            super::profile(&f, super::USER_UUID),
+            "Test device",
+            &URL_SAFE_NO_PAD.encode(k.public_key().as_ref()),
+            Some(s.secret.expose()),
+        )
+        .unwrap();
+    let user = get(&f, &s, &owner.principal_id);
+    assert_eq!(user["display_name"], "Fixture");
+    assert_eq!(user["minecraft_accounts"][0]["name"], "Fixture");
+    let page = f
+        .service
+        .permission_query(
+            s.secret.expose(),
+            PermissionQuery::Users { offset: 0, limit: 100 },
+        )
+        .unwrap();
+    assert_eq!(page["users"][0]["display_name"], "Fixture");
+    let devices = f
+        .service
+        .permission_query(
+            s.secret.expose(),
+            PermissionQuery::Devices(owner.principal_id),
+        )
+        .unwrap();
+    assert_eq!(devices["devices"][0]["name"], "Test device");
+}
+
+#[test]
 fn users_pagination_devices_and_specific_capabilities() {
     let f = Fixture::new();
     let (owner, s) = actor(&f, BuiltinRole::Owner);
