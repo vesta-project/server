@@ -153,6 +153,35 @@ individual fixes; record the reason and validation here before broadening scope.
 
 ## Resume notes
 
+### Implementation checkpoint A
+
+- Server `774b2bf`: patched verifier 0.103.16 and roots 1.0.10; installer moves
+  from native reqwest 0.11 TLS to Rust TLS 0.12.28. 168 installer tests pass.
+- Launcher `cd67d95e`: pinned client moves to reqwest 0.12 / rustls 0.23 /
+  tungstenite 0.24, preserving real handshake signature verification. Both app
+  lockfiles pass the new trust regression gate. Legacy OAuth feature selection
+  no longer pulls rustls 0.21/obsolete roots; existing native TLS clients remain
+  OS trust dependent. Integration Mojang proof explicitly uses patched Rust TLS.
+  Truncated established TLS response bodies remain resumable with strong ETags.
+  50 focused transport/management/policy/scheduler tests and native rewrite check
+  pass (native check retains pre-existing unused/dead-code warnings).
+- Server `529d7e8`: snapshot manifest and listing admitted once before publication;
+  exact/one-byte-short quota test and actual store growth accounting pass, as do
+  all 13 engine tests.
+- Server `0e75165`: fixed 4 MiB aggregate body reservation, retained through blocking
+  completion, plus independent five-second TLS negotiation deadline. Real HTTPS
+  pressure/cancellation and incomplete-ClientHello tests pass. 42 transport unit
+  tests and workspace all-target check pass. Sustained adversarial connection
+  flooding still requires deployment-level protection.
+- Server `bddb114` only formats previously committed integration changes, restoring
+  the repository formatting gate; no behavior changes.
+- Commits in this review after the baseline are unsigned local commits: GPG waited
+  on interactive agent startup/lock state. No global signing setting changed.
+
+Next: launcher persistence/reconnect/journal lifecycle; frontend read recovery;
+staged-file ownership/cancellation; then consolidated validation and resource
+measurements. No live binary restarted or OS trust store modified in this review.
+
 The development agent is the updated staged binary at
 `%LOCALAPPDATA%/Temp/vesta-dev-server/bin/vesta-agent.exe`. It was restarted cleanly
 after a graceful Minecraft stop. Real authenticated management reads returned 200
