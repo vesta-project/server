@@ -199,7 +199,12 @@ impl RuntimeHandle {
             Ok(ConfirmationDecision::Accepted(after.summary))
         });
         match result.map_err(OperationError::from)? {
-            ConfirmationDecision::Accepted(summary) => Ok(summary),
+            ConfirmationDecision::Accepted(summary) => {
+                // Acceptance is the transition from confirmation-pending to the
+                // durable queue; an idle runner must observe it immediately.
+                self.notify_queued();
+                Ok(summary)
+            }
             ConfirmationDecision::Refused(error) => Err(error),
         }
     }

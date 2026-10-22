@@ -1,6 +1,42 @@
 use super::*;
 
 #[test]
+fn empty_queue_probe_does_not_wait_for_database_writer() {
+    use std::{sync::mpsc, thread, time::Duration};
+
+    let f = Fixture::open();
+    let owner = f.ops.open_owner().expect("owner");
+    let db = f.db.clone();
+    let (holding, held) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let writer = thread::spawn(move || {
+        db.write(|_| {
+            holding.send(()).unwrap();
+            released.recv().unwrap();
+            Ok(())
+        })
+        .unwrap();
+    });
+    held.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    let (done, completed) = mpsc::channel();
+    let claimant = thread::spawn(move || {
+        done.send(owner.has_queued()).unwrap();
+    });
+    // WAL reads can inspect an empty queue while a management write is in flight.
+    // Idle scheduling must never join the FIFO writer queue in this case.
+    let result = completed.recv_timeout(Duration::from_secs(1));
+    release.send(()).unwrap();
+    writer.join().unwrap();
+    claimant.join().unwrap();
+    assert!(
+        !result
+            .expect("idle queue probe was blocked behind a database writer")
+            .unwrap()
+    );
+}
+
+#[test]
 fn transitive_conflicting_fifo_reserves_full_locksets_but_independent_work_progresses() {
     let f = Fixture::open();
     let held = f.admit(&["a"], "held");

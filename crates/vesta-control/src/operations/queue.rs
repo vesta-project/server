@@ -212,6 +212,25 @@ impl OwnerSession {
         })
     }
 
+    /// Bounded idle-driver fallback. This is deliberately a query-only snapshot;
+    /// only an affirmative hint enters the immediate claim transaction.
+    pub(crate) fn has_queued(&self) -> OperationsResult<bool> {
+        self.core.require_healthy()?;
+        self.core
+            .ops
+            .db
+            .read(|connection| {
+                connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM operations WHERE server_id=? AND state='queued')",
+                        [self.core.ops.db.server_id()],
+                        |row| row.get(0),
+                    )
+                    .map_err(Into::into)
+            })
+            .map_err(OperationError::from)
+    }
+
     pub(crate) fn begin_run(
         &mut self,
         claim: &Claim,

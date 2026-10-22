@@ -329,6 +329,75 @@ fn autonomous_start_and_cooperative_guarded_stop_complete_real_exit_and_all_io_j
 }
 
 #[test]
+fn queue_wake_is_retained_when_admission_precedes_idle_wait() {
+    let wake = WorkWake::default();
+    let before_admission = wake.version();
+    wake.notify();
+    let started = Instant::now();
+    assert!(wake.wait_for_change(before_admission, Duration::from_secs(5)));
+    assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
+fn idle_runtime_dispatches_preexisting_and_directly_admitted_work() {
+    let harness = Harness::new(false);
+    // A durable operation can predate this runtime (for example, agent restart).
+    let start_id = harness.submit(GameCommand::Start);
+    let mut owned = harness.runtime(Duration::from_secs(1));
+    harness.wait_state(&start_id, super::super::OperationState::Succeeded);
+    wait_for(|| harness.cwd.join("operation-ready").exists());
+    let generation = owned.runtime.game_snapshot().unwrap().generation.unwrap();
+
+    // Lower-level admissions do not send a RuntimeHandle notification. The
+    // bounded read-only fallback must discover them even while the game is live.
+    let stop = harness.submit(GameCommand::Stop {
+        expected_generation: generation,
+    });
+    harness.wait_state(&stop, super::super::OperationState::Succeeded);
+    assert_eq!(
+        owned.runtime.game_snapshot().unwrap().phase,
+        ProcessPhase::Stopped
+    );
+    assert_eq!(
+        owned.runtime.shutdown(WAIT).unwrap(),
+        ShutdownOutcome::Complete
+    );
+}
+
+#[test]
+fn idle_runtime_wakes_for_network_admission_without_waiting_for_fallback() {
+    let harness = Harness::new(false);
+    let mut owned = harness.runtime(Duration::from_secs(1));
+    // Let the initial empty scan finish, then observe notification-driven pickup.
+    thread::sleep(Duration::from_millis(100));
+    let started = Instant::now();
+    let accepted = owned
+        .runtime
+        .network_handle()
+        .submit_game(&harness.subject, GameCommand::Start, "wake-idle-runtime")
+        .unwrap();
+    let super::super::Admission::Created(operation) = accepted else {
+        panic!("fresh intent")
+    };
+    wait_for(|| harness.state(&operation.id) != super::super::OperationState::Queued);
+    assert!(
+        started.elapsed() < IDLE_QUEUE_PROBE,
+        "network admission waited for idle fallback"
+    );
+    harness.wait_state(&operation.id, super::super::OperationState::Succeeded);
+    wait_for(|| harness.cwd.join("operation-ready").exists());
+    let generation = owned.runtime.game_snapshot().unwrap().generation.unwrap();
+    let stop = harness.submit(GameCommand::Stop {
+        expected_generation: generation,
+    });
+    harness.wait_state(&stop, super::super::OperationState::Succeeded);
+    assert_eq!(
+        owned.runtime.shutdown(WAIT).unwrap(),
+        ShutdownOutcome::Complete
+    );
+}
+
+#[test]
 fn acknowledged_uncooperative_stop_fails_boundedly_but_retains_generation_for_confirmed_force_kill()
 {
     let harness = Harness::new(true);
@@ -548,8 +617,9 @@ fn returned_stop_ack_with_second_owned_writer_draining_retains_lock_until_actual
         runtime: OperationRuntime {
             operations,
             start_block: Default::default(),
-            shared,
+            shared: shared.clone(),
             local: LocalRuntime {
+                wake: shared.wake.clone(),
                 sender: mpsc::sync_channel(1).0,
             },
             driver: Some(handle),
@@ -760,8 +830,9 @@ fn delayed_stop(
     let runtime = OperationRuntime {
         operations,
         start_block: Default::default(),
-        shared,
+        shared: shared.clone(),
         local: LocalRuntime {
+            wake: shared.wake.clone(),
             sender: mpsc::sync_channel(1).0,
         },
         driver: Some(handle),
@@ -821,8 +892,9 @@ fn pending_player_query_timeout_retains_driver_database_and_lifecycle_exclusion(
         runtime: OperationRuntime {
             start_block: Default::default(),
             operations: harness.operations.clone(),
-            shared,
+            shared: shared.clone(),
             local: LocalRuntime {
+                wake: shared.wake.clone(),
                 sender: mpsc::sync_channel(1).0,
             },
             driver: Some(handle),
@@ -1075,8 +1147,9 @@ fn delayed_stop_ack(
         runtime: OperationRuntime {
             operations,
             start_block: Default::default(),
-            shared,
+            shared: shared.clone(),
             local: LocalRuntime {
+                wake: shared.wake.clone(),
                 sender: mpsc::sync_channel(1).0,
             },
             driver: Some(handle),
@@ -1130,8 +1203,9 @@ fn late_dispatch_observation_failure_survives_successful_later_polls_and_real_ex
         runtime: OperationRuntime {
             operations,
             start_block: Default::default(),
-            shared,
+            shared: shared.clone(),
             local: LocalRuntime {
+                wake: shared.wake.clone(),
                 sender: mpsc::sync_channel(1).0,
             },
             driver: Some(handle),

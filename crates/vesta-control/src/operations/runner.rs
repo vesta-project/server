@@ -14,7 +14,7 @@ use std::{
     fmt,
     sync::mpsc,
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle},
@@ -27,6 +27,10 @@ use vesta_game_runtime::process::{
 use vesta_state::StateError;
 
 const DRIVER_INTERVAL: Duration = Duration::from_millis(5);
+// Direct Operations callers that bypass RuntimeHandle still get picked up, but
+// the idle driver does not acquire a SQLite writer transaction every 5 ms.
+const IDLE_QUEUE_PROBE: Duration = Duration::from_secs(1);
+const IDLE_WAKE_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_SHUTDOWN_WAIT: Duration = Duration::from_secs(300);
 const DEFAULT_STOP_WAIT: Duration = Duration::from_secs(10);
 
@@ -66,6 +70,8 @@ struct Observation {
 struct DriverState {
     // This is the kernel's exact shared stopping flag, not a delayed mirror.
     stopping: Arc<AtomicBool>,
+    queue_pending: AtomicBool,
+    wake: Arc<WorkWake>,
     observation: Mutex<Observation>,
     view: Arc<LiveGameView>,
     players: QueryEndpoint,
@@ -74,6 +80,41 @@ struct DriverState {
     player_count: Mutex<Option<(GenerationId, u32, i64, u64)>>,
     metrics: tokio::sync::watch::Sender<i64>,
     offline: Mutex<OfflineDesired>,
+}
+#[derive(Default)]
+struct WorkWake {
+    version: Mutex<u64>,
+    changed: Condvar,
+}
+impl WorkWake {
+    fn version(&self) -> u64 {
+        *self
+            .version
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+    fn notify(&self) {
+        let mut version = self
+            .version
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *version = version.wrapping_add(1);
+        self.changed.notify_all();
+    }
+    fn wait_for_change(&self, observed: u64, timeout: Duration) -> bool {
+        let version = self
+            .version
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *version != observed {
+            return true;
+        }
+        let (version, _) = self
+            .changed
+            .wait_timeout_while(version, timeout, |current| *current == observed)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *version != observed
+    }
 }
 impl DriverState {
     fn new(
@@ -96,6 +137,8 @@ impl DriverState {
         (
             Arc::new(Self {
                 stopping,
+                queue_pending: AtomicBool::new(true),
+                wake: Arc::default(),
                 observation: Mutex::new(Observation::default()),
                 view: game.view.clone(),
                 players,
@@ -124,6 +167,11 @@ impl DriverState {
     }
     fn stop(&self) {
         self.stopping.store(true, Ordering::Release);
+        self.wake.notify();
+    }
+    fn notify_queue(&self) {
+        self.queue_pending.store(true, Ordering::Release);
+        self.wake.notify();
     }
 }
 #[derive(Default)]
@@ -168,6 +216,7 @@ struct LocalRequest {
 #[derive(Clone)]
 pub struct LocalRuntime {
     sender: mpsc::SyncSender<LocalRequest>,
+    wake: Arc<WorkWake>,
 }
 impl LocalRuntime {
     pub fn request(&self, action: LocalAction) -> Result<(), &'static str> {
@@ -178,6 +227,9 @@ impl LocalRuntime {
                 mpsc::TrySendError::Full(_) => "local_runtime_busy",
                 mpsc::TrySendError::Disconnected(_) => "local_runtime_unavailable",
             })?;
+        // Wake an idle operation driver immediately; local work is not required
+        // to wait for the fallback durable-queue scan.
+        self.wake.notify();
         // Once queued the request is not cancelled by a caller timeout. Only the
         // sole owner produces an outcome; channel clients may lose that outcome.
         receiver.recv().map_err(|_| "local_runtime_unavailable")?
@@ -215,6 +267,7 @@ impl RuntimeHandle {
             .lock()
             .map_err(|_| "offline_configuration_failed")?;
         desired.configuration = configuration;
+        self.shared.wake.notify();
         let wakes = std::mem::take(&mut desired.wakes);
         desired.error.take().map_or(Ok(wakes), Err)
     }
@@ -226,14 +279,18 @@ impl RuntimeHandle {
         command: GameCommand,
         idempotency_key: &str,
     ) -> OperationsResult<super::Admission> {
-        self.operations.admit_with_view(
+        let result = self.operations.admit_with_view(
             subject,
             command.operation_type(),
             &command.canonical_input()?,
             Some(idempotency_key),
             Some(&self.shared.view),
             None,
-        )
+        );
+        if result.is_ok() {
+            self.shared.notify_queue();
+        }
+        result
     }
 
     pub(crate) fn submit_moderation_expiry(
@@ -247,14 +304,22 @@ impl RuntimeHandle {
             expected_generation: generation,
             action: crate::moderation::ModerationAction::Pardon { player },
         };
-        self.operations.admit_with_view(
+        let result = self.operations.admit_with_view(
             subject,
             command.operation_type(),
             &command.canonical_input()?,
             Some(&format!("moderation-expiry:{id}:{}", generation.to_hex())),
             Some(&self.shared.view),
             Some(id),
-        )
+        );
+        if result.is_ok() {
+            self.shared.notify_queue();
+        }
+        result
+    }
+
+    pub(super) fn notify_queued(&self) {
+        self.shared.notify_queue();
     }
 
     pub(super) fn operations(&self) -> &Operations {
@@ -410,6 +475,7 @@ impl OperationRuntime {
         let operations = owner.operations().clone();
         let start_block = game.start_block.clone();
         let (shared, players, ticks) = DriverState::new(&owner, &game);
+        let local_wake = shared.wake.clone();
         let (local_sender, local_receiver) = mpsc::sync_channel(1);
         let mut worker = Driver {
             local_receiver,
@@ -448,6 +514,7 @@ impl OperationRuntime {
             start_block,
             local: LocalRuntime {
                 sender: local_sender,
+                wake: local_wake,
             },
         })
     }
@@ -592,9 +659,13 @@ impl Driver {
 
     fn run(&mut self) -> OperationsResult<()> {
         let mut offline_tick: Option<Instant> = None;
+        let mut last_queue_probe = Instant::now();
         let mut first_failure: Option<OperationError> =
             self.observation_uncertain.map(OperationError::from);
         loop {
+            // Capture before observing/dispatching so a concurrent admission
+            // between an empty scan and the idle wait cannot be missed.
+            let wake_version = self.shared.wake.version();
             if let Err(error) = self.game.observe() {
                 self.note_observation_failure(error);
                 // No stale Running/Stopping snapshot can expire a stop deadline.
@@ -679,6 +750,27 @@ impl Driver {
                 // Do not dispatch another effect in the same observation cycle.
                 continue;
             }
+            if self.active.is_none()
+                && !self.players.writer_pending()
+                && !self.ticks.writer_pending()
+                && !self.shared.queue_pending.load(Ordering::Acquire)
+                && !self.shared.stopping.load(Ordering::Acquire)
+                && last_queue_probe.elapsed() >= IDLE_QUEUE_PROBE
+            {
+                last_queue_probe = Instant::now();
+                // RuntimeHandle admissions wake immediately. This bounded,
+                // read-only check discovers queued work admitted through the
+                // lower-level Operations facade or another owner path.
+                match self.owner.has_queued() {
+                    Ok(true) => self.shared.notify_queue(),
+                    Ok(false) => {}
+                    Err(error) => {
+                        self.shared.error(error.code());
+                        self.shared.stop();
+                        first_failure.get_or_insert(error);
+                    }
+                }
+            }
             if self.shared.stopping.load(Ordering::Acquire) {
                 self.owner.stop_claiming();
                 if !self.game.is_local()
@@ -709,11 +801,16 @@ impl Driver {
             } else if self.active.is_none()
                 && !self.players.writer_pending()
                 && !self.ticks.writer_pending()
+                && self.shared.queue_pending.swap(false, Ordering::AcqRel)
             {
                 match self.owner.claim_next_with_revision(&self.game.revision()) {
                     Ok(Some(claim)) => {
                         self.shared.active(Some(claim.id().clone()));
                         let result = self.execute(claim);
+                        // The claim scan may have consumed several queued rows
+                        // before finding one runnable operation. Scan again once
+                        // this operation has completed to preserve queue order.
+                        self.shared.queue_pending.store(true, Ordering::Release);
                         #[cfg(test)]
                         if let Some(probe) = self.after_dispatch.take() {
                             probe(self);
@@ -749,7 +846,18 @@ impl Driver {
                     }
                 }
             }
-            thread::sleep(DRIVER_INTERVAL);
+            let idle = self.active.is_none()
+                && !self.players.writer_pending()
+                && !self.ticks.writer_pending()
+                && self.game.process.snapshot().generation.is_none()
+                && !self.shared.stopping.load(Ordering::Acquire);
+            if idle {
+                self.shared
+                    .wake
+                    .wait_for_change(wake_version, IDLE_WAKE_INTERVAL);
+            } else {
+                thread::sleep(DRIVER_INTERVAL);
+            }
         }
     }
 
