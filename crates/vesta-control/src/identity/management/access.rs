@@ -367,8 +367,8 @@ impl ManagementAccess {
         if decode::<32>(token).is_err() {
             return Ok(false);
         }
-        // Authentication currently retains the store lock across its live DB
-        // check. The transport's cheap preflight must never wait behind that IO.
+        // Authentication can be doing a live DB check without the store lock;
+        // keep this transport preflight nonblocking even during session updates.
         let stores = self
             .stores
             .try_lock()

@@ -1183,3 +1183,86 @@ fn rate_preflight_is_nonblocking_and_never_treats_unknown_or_expired_tokens_as_k
     f.clock.0.fetch_add(SESSION_TTL_MS, Ordering::SeqCst);
     assert!(!f.service.known_session(token.secret.expose()).unwrap());
 }
+
+#[test]
+fn authenticated_status_checks_do_not_wait_for_an_unrelated_database_writer() {
+    use std::{sync::mpsc, thread, time::Duration};
+    let f = Fixture::new();
+    let (device, key) = f.enroll(BuiltinRole::Owner);
+    let token = f.session(&device, &key);
+    let db = f.db.clone();
+    let (holding, held) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let writer = thread::spawn(move || {
+        db.write(|_| {
+            holding.send(()).unwrap();
+            released.recv().unwrap();
+            Ok(())
+        })
+        .unwrap()
+    });
+    held.recv_timeout(Duration::from_secs(5)).unwrap();
+    let access = f.service.clone();
+    let credential = Zeroizing::new(token.secret.expose().to_owned());
+    let (done, completed) = mpsc::channel();
+    let authentication = thread::spawn(move || {
+        done.send(access.authorize(&credential, super::super::Capability::StatusView, None))
+            .unwrap();
+    });
+    let observed = completed.recv_timeout(Duration::from_secs(1));
+    // Always release and join before asserting, including on a regression.
+    release.send(()).unwrap();
+    writer.join().unwrap();
+    authentication.join().unwrap();
+    assert_eq!(
+        observed
+            .expect("read-only authentication joined the writer queue")
+            .unwrap()
+            .device
+            .as_str(),
+        device.device_id
+    );
+    assert!(f.service.known_session(token.secret.expose()).unwrap());
+    // The new read path still resolves revocation on the very next request.
+    f.service.revoke_local(&device.device_id).unwrap();
+    assert_eq!(
+        f.service.authorize(
+            token.secret.expose(),
+            super::super::Capability::StatusView,
+            None
+        ),
+        Err(ManagementError::SessionInvalid)
+    );
+}
+
+#[test]
+fn authenticated_checks_do_not_revive_revoked_sessions_or_cache_authority() {
+    let f = Fixture::new();
+    let (device, key) = f.enroll(BuiltinRole::Owner);
+    let token = f.session(&device, &key);
+    assert!(f.service.authenticate(token.secret.expose()).is_ok());
+    assert!(f.service.revoke_session(token.secret.expose()).unwrap());
+    assert_eq!(
+        f.service.authenticate(token.secret.expose()),
+        Err(ManagementError::SessionInvalid)
+    );
+    assert!(!f.service.known_session(token.secret.expose()).unwrap());
+    let next = f.session(&device, &key);
+    assert!(f.service.authenticate(next.secret.expose()).is_ok());
+    f.db.write(|c| {
+        c.execute(
+            "DELETE FROM role_assignments WHERE principal_id=?",
+            [&device.principal_id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        f.service.authorize(
+            next.secret.expose(),
+            super::super::Capability::StatusView,
+            None
+        ),
+        Err(ManagementError::Forbidden)
+    );
+}

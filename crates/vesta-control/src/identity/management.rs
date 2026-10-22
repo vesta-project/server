@@ -175,6 +175,19 @@ impl ManagementAccess {
             Err(_) => Err(ManagementError::Unavailable),
         }
     }
+    fn read<T>(&self, work: impl FnOnce(&Repository<'_>) -> Result<T>) -> Result<T> {
+        match self.db.read_with(|snapshot| {
+            work(&Repository::new(
+                snapshot.connection(),
+                self.server_id(),
+                self.now(),
+            ))
+        }) {
+            Ok(v) => Ok(v),
+            Err(TransactionError::Work(e)) => Err(e),
+            Err(_) => Err(ManagementError::Unavailable),
+        }
+    }
     fn audit(
         &self,
         repo: &Repository<'_>,
@@ -347,7 +360,11 @@ impl ManagementAccess {
         resource: Option<&super::Resource>,
     ) -> Result<Subject> {
         let subject = self.authenticate(token)?;
-        self.write(|repo| {
+        self.read(|repo| {
+            let (current, _) = self.subject_in(repo, &subject.device)?;
+            if current != subject {
+                return Err(ManagementError::SessionInvalid);
+            }
             let policy = repo.policy(Some(&subject))?;
             if !policy.has_current_identity() {
                 return Err(ManagementError::SessionInvalid);
@@ -524,22 +541,48 @@ impl ManagementAccess {
         if session.server != self.server_id() {
             return Err(ManagementError::SessionInvalid);
         }
-        let subject = session.subject.clone();
-        let expires = session.expires;
         if std::time::Instant::now() >= session.monotonic_expires {
             stores.sessions.remove(&hash);
             return Err(ManagementError::SessionInvalid);
         }
-        let result = self.write(|repo| {
-            if expires <= repo.now {
+        let session = (
+            session.subject.clone(),
+            session.server.clone(),
+            session.expires,
+            session.monotonic_expires,
+        );
+        drop(stores);
+
+        let result = self.read(|repo| {
+            if session.2 <= repo.now {
                 return Err(ManagementError::SessionInvalid);
             }
-            let (current, _) = self.subject_in(repo, &subject.device)?;
-            if current != subject {
+            let (current, _) = self.subject_in(repo, &session.0.device)?;
+            if current != session.0 {
                 return Err(ManagementError::SessionInvalid);
             }
             Ok(current)
         });
+
+        // The read snapshot can take time. Recheck the in-memory grant after it
+        // finishes so a concurrent logout/revoke or expiry cannot authenticate.
+        let mut stores = self
+            .stores
+            .lock()
+            .map_err(|_| ManagementError::Unavailable)?;
+        let current = stores.sessions.get(&hash).is_some_and(|current| {
+            current.subject == session.0
+                && current.server == session.1
+                && current.expires == session.2
+                && current.monotonic_expires == session.3
+                && current.server == self.server_id()
+                && current.expires > self.now()
+                && std::time::Instant::now() < current.monotonic_expires
+        });
+        if !current {
+            stores.sessions.remove(&hash);
+            return Err(ManagementError::SessionInvalid);
+        }
         if result.is_err() {
             stores.sessions.remove(&hash);
         }
