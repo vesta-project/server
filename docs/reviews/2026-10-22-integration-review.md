@@ -182,6 +182,43 @@ Next: launcher persistence/reconnect/journal lifecycle; frontend read recovery;
 staged-file ownership/cancellation; then consolidated validation and resource
 measurements. No live binary restarted or OS trust store modified in this review.
 
+### Implementation checkpoint B (2026-10-23)
+
+- Launcher `6999ad85`: view-owned automation reads use stable keys, latest-response
+  guards, disposal/obsolete-pagination cancellation, one retry timer, Retry-After
+  guidance and capped exponential backoff. Visible failures stay until recovery.
+  Successful list polling scales with pages read (at most 12 list requests/min).
+  41 focused frontend tests pass, including installed Solid diagnostic captures
+  for draft retention, out-of-order responses, disposal and transient recovery;
+  TypeScript passes. This is not a full visual/platform acceptance pass.
+- Launcher `6045bf91`: ordinary telemetry stays in memory rather than cloning,
+  serializing and fsyncing the profile each observation. Meaningful state changes
+  still persist. Disk commits move off the async worker, with an owned transaction
+  that commits memory too even if its waiter is cancelled. Removal saves a durable
+  vault-cleanup record first; vault failure cannot strand a listed credentialless
+  connection. Seven native store/credential tests pass (one opt-in live diagnostic
+  is intentionally ignored). A 60-observation fixture performs zero file changes.
+- Worker recovery now retains demand through transient credential construction
+  errors, with 1/2/4/.../60-second backoff. Trust/access failures stay blocked.
+  Status-only worker wakeups reduce from 10/s to 1/s; console remains 10/s and
+  metrics-only 4/s. Policy tests and native rewrite check pass; real vault-outage
+  recovery still needs a packaged integration exercise.
+- Upload staging now has a 64 MiB aggregate reservation, including file growth
+  while selected. Success/abort releases staged bytes but retains small retry
+  receipts; idle sweeps expire abandoned handles once/minute after the existing
+  one-hour lifetime. Unit tests cover pressure, actual temp-file deletion and
+  shared owners; all 22 real pinned-HTTPS fixtures pass after the change.
+- **Plan refinement / deferred policy:** do not automatically compact the intent
+  journal yet. Some single-use prepare receipts look terminal but must permanently
+  prevent replay after restart. A time-only deletion policy could weaken that
+  invariant. The 4,096 lifetime cap remains a confirmed concern. Design a bounded
+  anti-replay tombstone/intent-epoch policy for owner review before changing it;
+  this is a security contract change, not permission to evict uncertain history.
+
+Next: download cancellation with an explicit atomic-publication boundary; focused
+validation, measurements and final experience recommendations. Avoid live restarts
+while the owner is away.
+
 The development agent is the updated staged binary at
 `%LOCALAPPDATA%/Temp/vesta-dev-server/bin/vesta-agent.exe`. It was restarted cleanly
 after a graceful Minecraft stop. Real authenticated management reads returned 200
