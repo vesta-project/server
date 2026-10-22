@@ -219,11 +219,112 @@ Next: download cancellation with an explicit atomic-publication boundary; focuse
 validation, measurements and final experience recommendations. Avoid live restarts
 while the owner is away.
 
+### Implementation checkpoint C
+
+- Launcher `0190ab8c`: downloads have bounded, window-owned cancellation handles
+  exposed through the existing Activity cancel action. An atomic state transition
+  decides cancellation versus final destination publication; publication already
+  admitted cannot be reported cancelled. Window destruction cancels pending work,
+  while hide-to-tray preserves it. Nine client unit tests and all 23 pinned-HTTPS
+  fixtures pass, including mid-stream cancellation, preserved destination, temp
+  removal, released bulk admission, pre-cancel and successful subsequent download.
+- Launcher `b884c871`: credential deletion maintenance drains concurrent removals
+  and retries failed vault cleanup once/minute. Eight native store/credential
+  tests pass, one live-profile diagnostic intentionally ignored; strict client
+  all-target Clippy passes. Changed frontend files pass focused lint; 46 activity
+  tests pass (the old harness prints its pre-existing multiple-Solid warning).
+- Independent Luna review found and parent fixed post-check backup tag growth in
+  server `e3190ac`. Metadata promotion checks both net growth and full temporary
+  replacement space, and job accounting includes final listing growth. All 37
+  backup unit tests pass. Rejected wakeup hypothesis is explicitly labeled in the
+  launcher findings: installed Tokio guarantees `notify_waiters` wakeups from
+  `Notified` creation, even before first poll.
+- Broader server HTTPS run: 108 pass / 3 invitation failures. Investigation proved
+  the debug dependency cache contained schema version **24** while current source
+  declares **25**. Fresh release compilation was unaffected. Invalidated workspace
+  Rust source mtimes (no source content or dependency cache deleted) and rebuilt;
+  both focused invitation tests now pass. Added a startup table regression. This
+  is stale build evidence, not a production migration defect; revalidate affected
+  scenarios after rebuilding rather than trusting cached binaries.
+- Isolated release idle sample, Windows, pinned to CPU 0, no game/clients, loopback
+  TLS: 20.011 s wall / 0.65625 s CPU (3.279% of one core), 24.633 MiB working set /
+  3.445 MiB private. Repeat: 15.002 s / 0.484375 s (3.229%), 12.992 MiB working set /
+  3.770 MiB private. Fresh owned fixture each run; retained under the temp directory.
+  Binary SHA256 `C281E2B264531B0281F379A7157E3D67F9FB1925475DD67A26A02952D51DE267`.
+  These are baseline observations on this host, not proof of a low-end Linux/ARM
+  envelope. Twelve threads; platform thread descriptions were unavailable.
+
+Next: reduce measured idle polling without slowing active sleep/wake or controls,
+then rerun the isolated sample and record the remaining release/experience plan.
+
+### Historical live checkpoint (before the overnight changes)
+
+The following live observation predates the overnight work. It is not evidence
+that the newly committed binaries have been installed or tested in the running UI.
+
 The development agent is the updated staged binary at
 `%LOCALAPPDATA%/Temp/vesta-dev-server/bin/vesta-agent.exe`. It was restarted cleanly
 after a graceful Minecraft stop. Real authenticated management reads returned 200
 in 35–73 ms at that point. Do not assume those timings cover sleep transitions or
 slow hardware. The current frontend checkpoint is loaded by the running dev server.
 
-Next: narrow Luna scans; dependency trust inventory; technical primary-source
-research; validate and rank findings; write/review plan; implement in small commits.
+### Final implementation checkpoint D (2026-10-23)
+
+- Server `6fc111d`: disabled sleep policy observation reduces from four times/second
+  to once/second; active sleep/offline cadence stays 250 ms. Shutdown unparks the
+  driver before joining. All nine sleep tests pass. The owned release fixture
+  script is committed for repeatable measurements without touching the dev server.
+- After tuning: 20.011 s wall / 0.50000 s CPU = 2.499% of one core, working set
+  12.906 MiB / private 3.711 MiB. SHA256
+  `8B13E8267A379A641989D8F852C808584588DDEEBADB96809CB6C9BE4C0823AE`.
+  Fixture `vesta-idle-review-0f12c2df8cdb4d3b93041937f8c4ed94` under Windows temp.
+  Observed improvement is about 24% versus the first baseline, with host/cache
+  noise. This is not a target-machine guarantee; remaining idle CPU needs work.
+- Quiet repeat after all checks: same release SHA256, 20.016 s wall / 0.46875 s
+  CPU = 2.342% of one core, working set 13.031 MiB / private 3.984 MiB, 12 threads.
+  Fixture `vesta-idle-review-1712fd35ed784ea28939d11546b0bf95`. The two after
+  samples give an observed 24-29% reduction versus the first before sample;
+  retain the limitations above rather than advertising a universal speedup.
+- Launcher `83f03c9e`: progress uses time rather than a 512 KiB byte threshold,
+  bounding fast-link display updates to ten/second plus initial/final callbacks.
+  Small slow-link chunks can report without waiting for 512 KiB. Ten client unit
+  tests pass and all 23 pinned-HTTPS fixtures pass; strict client all-target Clippy
+  passes. The cancellation fixture initially failed after throttling exposed that
+  its stalled-stream branch was on the content route, not the download route;
+  corrected the fixture and verified real mid-stream cancellation.
+- Server `3c38305`: startup invitation inventory assertion. After rebuilding stale
+  workspace debug artifacts, the full HTTPS suite passes **111/111** (369.95 s,
+  serial). Strict workspace all-target Clippy and formatting pass on fresh source.
+- The [review results and experience roadmap](2026-10-23-review-results.md) capture
+  the remaining journal-policy decision, large-backup metadata memory exposure,
+  host/platform acceptance matrix and release trust limits. These are not hidden
+  by the completed small-host improvements.
+- Final launcher checks: 107 focused frontend tests and TypeScript pass; ten
+  client unit, 11 management, 12 policy, five scheduler and eight native store/
+  credential tests pass (one explicit live-profile diagnostic ignored), as do
+  the 23 HTTPS fixtures. Strict client Clippy and two lockfile trust gates pass.
+- Broader validation found a pre-existing supervisor crash test that accepted
+  only observation failure, not the offline-release failure that can win the
+  same dead-channel race. `b1407d7` accepts those exact outcomes, adds an explicit
+  assertion that the orphan survives shutdown, and preserves the duplicate-launch
+  and deliberate-exit checks. All three supervisor end-to-end tests pass.
+- `b2bcce1` retires discarded prototype test sources from nine requirement entries
+  while preserving historical notes, and corrects a validator that demanded the
+  oldest archive even for current setup/probe evidence. All 166 top-level Node
+  tests pass; requirement-ledger and roadmap freshness checks pass. No unrelated
+  repository or historical files were modified.
+
+- Consolidated fresh-source Rust validation completed successfully:
+  `cargo test --workspace --exclude vesta-agent --exclude vesta-transport --locked
+  -- --test-threads=2` passes, including all **924 control unit tests**, backup and
+  recovery integrations, 168 installer tests, 16 setup tests, state migrations,
+  process ownership and supervisor suites plus doctests. Agent unit/CLI suites
+  passed in the preceding broader run; the one overly narrow supervisor assertion
+  was corrected and its full three-test suite rerun successfully. Transport's
+  **42 unit tests** and **111 HTTPS tests** pass separately to avoid rerunning the
+  six-minute TLS suite without a new concern. Final strict workspace Clippy,
+  formatting and `git diff --check` pass.
+
+No live binary was restarted during the overnight work. No implementation task
+or delegated scan remains running. The remaining release/platform checks and
+owner policy decisions are listed in the results rather than claimed complete.
