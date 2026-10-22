@@ -15,7 +15,7 @@ sha2.workspace = true
 uuid.workspace = true
 # Match the companion's selected versions and transport features, not a new HTTP stack.
 tokio = { version = "=1.50.0", features = ["full"] }
-reqwest = { version = "=0.11.27", features = ["json", "stream", "multipart", "socks"] }
+reqwest = { version = "=0.12.28", default-features = false, features = ["json", "stream", "multipart", "socks", "rustls-tls"] }
 futures = "=0.3.32"
 thiserror = "=2.0.18"
 sha1 = "=0.10.6"
