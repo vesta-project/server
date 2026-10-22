@@ -348,8 +348,7 @@ impl ManagementAccess {
             .stores
             .lock()
             .map_err(|_| ManagementError::Unavailable)?
-            .sessions
-            .remove(&key)
+            .remove_session(&key)
             .is_some())
     }
     pub fn session_count(&self, now: Instant) -> Result<usize> {
@@ -358,7 +357,13 @@ impl ManagementAccess {
             .lock()
             .map_err(|_| ManagementError::Unavailable)?;
         stores.prune(self.now());
-        stores.sessions.retain(|_, s| now < s.monotonic_expires);
+        let expired: Vec<_> = stores.sessions.iter()
+            .filter(|(_, s)| now >= s.monotonic_expires)
+            .map(|(key, _)| *key)
+            .collect();
+        for key in expired {
+            stores.remove_session(&key);
+        }
         Ok(stores.sessions.len())
     }
     /// Cheap hash lookup before admission; only a hint. `pack_reference(Some(token))`
@@ -527,7 +532,7 @@ impl ManagementAccess {
                 .get(&reference.key)
                 .ok_or(ManagementError::SessionInvalid)?;
             if session.server != self.server_id() || now >= session.monotonic_expires {
-                stores.sessions.remove(&reference.key);
+                stores.remove_session(&reference.key);
                 return Err(ManagementError::SessionInvalid);
             }
             Some((session.subject.clone(), session.monotonic_expires))

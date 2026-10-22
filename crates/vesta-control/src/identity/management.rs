@@ -109,27 +109,53 @@ pub struct DeviceInfo {
     pub revoked: bool,
 }
 struct Challenge {
+    console_edges: Box<[Hash]>,
     device: DeviceId,
     expires: i64,
     monotonic_expires: std::time::Instant,
 }
 struct Session {
+    console_edges: Box<[Hash]>,
     subject: Subject,
     server: String,
     expires: i64,
     monotonic_expires: std::time::Instant,
 }
-#[derive(Default)]
 struct Stores {
+    console_credentials: console_redaction::CredentialIndex,
     challenges: HashMap<Hash, Challenge>,
     sessions: HashMap<Hash, Session>,
 }
 impl Stores {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            console_credentials: console_redaction::CredentialIndex::new()?,
+            challenges: HashMap::new(),
+            sessions: HashMap::new(),
+        })
+    }
+    fn remove_session(&mut self, hash: &Hash) -> Option<Session> {
+        let session = self.sessions.remove(hash)?;
+        self.console_credentials.remove(&session.console_edges);
+        Some(session)
+    }
+    fn remove_challenge(&mut self, hash: &Hash) -> Option<Challenge> {
+        let challenge = self.challenges.remove(hash)?;
+        self.console_credentials.remove(&challenge.console_edges);
+        Some(challenge)
+    }
     fn prune(&mut self, now: i64) {
-        self.challenges
-            .retain(|_, v| v.expires > now && std::time::Instant::now() < v.monotonic_expires);
-        self.sessions
-            .retain(|_, v| v.expires > now && std::time::Instant::now() < v.monotonic_expires);
+        let index = &mut self.console_credentials;
+        self.challenges.retain(|_, v| {
+            let keep = v.expires > now && std::time::Instant::now() < v.monotonic_expires;
+            if !keep { index.remove(&v.console_edges); }
+            keep
+        });
+        self.sessions.retain(|_, v| {
+            let keep = v.expires > now && std::time::Instant::now() < v.monotonic_expires;
+            if !keep { index.remove(&v.console_edges); }
+            keep
+        });
     }
 }
 #[derive(Clone)]
@@ -153,7 +179,7 @@ impl ManagementAccess {
             session_ttl_ms: ttl_ms,
             audit: AuditLog::new(db.clone())?,
             db,
-            stores: Arc::new(Mutex::new(Stores::default())),
+            stores: Arc::new(Mutex::new(Stores::new()?)),
         })
     }
     pub fn server_id(&self) -> &str {
@@ -409,9 +435,11 @@ impl ManagementAccess {
         self.write(|repo| self.subject_in(repo, &device).map(|_| ()))?;
         let nonce = random_secret()?;
         let expires = deadline(self.now(), CHALLENGE_TTL_MS)?;
+        let console_edges = stores.console_credentials.register(nonce.expose());
         stores.challenges.insert(
             bound_hash(b"challenge", self.server_id(), nonce.expose()),
             Challenge {
+                console_edges,
                 device,
                 expires,
                 monotonic_expires: std::time::Instant::now()
@@ -432,8 +460,7 @@ impl ManagementAccess {
         // Consume even failed signature/device attempts, including audit/capacity
         // failures. No challenge is ever restored after an attempted completion.
         let challenge = stores
-            .challenges
-            .remove(&bound_hash(b"challenge", self.server_id(), nonce))
+            .remove_challenge(&bound_hash(b"challenge", self.server_id(), nonce))
             .ok_or(invalid)?;
         if challenge.device != device {
             return Err(invalid);
@@ -460,9 +487,11 @@ impl ManagementAccess {
             )?;
             Ok((subject, expires))
         })?;
+        let console_edges = stores.console_credentials.register(secret.expose());
         stores.sessions.insert(
             bound_hash(b"session", self.server_id(), secret.expose()),
             Session {
+                console_edges,
                 subject,
                 server: self.server_id().to_owned(),
                 expires,
@@ -526,6 +555,15 @@ impl ManagementAccess {
         out.push_str(&text[last..]);
         Ok(out)
     }
+    /// Two keyed lookups, independent of the number of live sessions. Only
+    /// actual live session/challenge fragments are masked at physical line edges.
+    pub fn redact_console_secret_edges(&self, text: &str) -> Result<String> {
+        let stores = self
+            .stores
+            .lock()
+            .map_err(|_| ManagementError::Unavailable)?;
+        Ok(stores.console_credentials.redact(text))
+    }
     pub fn authenticate(&self, token: &str) -> Result<Subject> {
         decode::<32>(token).map_err(|_| ManagementError::SessionInvalid)?;
         let mut stores = self
@@ -542,7 +580,7 @@ impl ManagementAccess {
             return Err(ManagementError::SessionInvalid);
         }
         if std::time::Instant::now() >= session.monotonic_expires {
-            stores.sessions.remove(&hash);
+            stores.remove_session(&hash);
             return Err(ManagementError::SessionInvalid);
         }
         let session = (
@@ -580,11 +618,11 @@ impl ManagementAccess {
                 && std::time::Instant::now() < current.monotonic_expires
         });
         if !current {
-            stores.sessions.remove(&hash);
+            stores.remove_session(&hash);
             return Err(ManagementError::SessionInvalid);
         }
         if result.is_err() {
-            stores.sessions.remove(&hash);
+            stores.remove_session(&hash);
         }
         result
     }
@@ -669,6 +707,7 @@ fn device_actor(subject: &Subject) -> Result<AuditActor> {
 mod tests;
 
 mod access;
+mod console_redaction;
 pub use access::{AccessSettings, DeviceSessionReference};
 
 pub mod permissions;

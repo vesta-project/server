@@ -474,18 +474,18 @@ not retained by the agent, so arbitrary user-entered passwords, third-party
 secrets, unknown/expired credentials and differently rendered paths cannot be
 reliably identified by this rule. `console.read` is consequently a powerful grant
 for real server logs, not a promise that arbitrary game output is secret-free.
-Hash-only credential stores cannot recognize an incomplete token after capture
-truncation or a physical line split. As a conservative boundary rule, up to 42
-consecutive ASCII base64url bytes (`A-Z`, `a-z`, `0-9`, `_`, `-`) at **each** line
-edge are replaced with `[redacted]`, after complete known-material replacement.
-The rule applies to every line, including nontruncated lines, so both sides of
-newline splits remain protected independently of page/socket boundaries, stream
-interleaving and retention gaps. It can redact ordinary words at line edges, or
-all of a short ASCII-only line; it does not guess at interior text. This protects
-all incomplete fragments of the agent's 43-byte credentials without retaining
-plaintext tokens or exposing 42 bytes of a truncated token. Interior content and
-the original ring's truncation flag are preserved. HTTP and WebSocket use the
-same projection, and JSON escapes the resulting text.
+For live in-process session tokens and challenge nonces, issuance also registers
+process-keyed HMAC fingerprints of their 1–42 byte prefixes and suffixes. A line
+edge is masked only when it matches an actual registered fragment; ordinary
+Minecraft words, versions and ports remain readable. Registration ends when the
+credential is consumed, removed or pruned. The reference-counted index is bounded
+by the live challenge/session limits, and each line uses at most two indexed
+lookups, without retaining additional plaintext tokens. Both sides of physical
+newline splits and truncated line suffixes are covered independently of paging
+and streaming. Durable pairing codes retain full-token matching only: their
+hash-only records cannot identify arbitrary incomplete fragments after restart.
+Interior content and the original ring's truncation flag are preserved. HTTP and
+WebSocket use the same projection, and JSON escapes the resulting text.
 
 The existing capture limits remain 16,384 bytes per line, 10,000 retained lines,
 and 2 MiB of retained text. HTTP pages max 200 lines. Console continuation eviction
@@ -789,6 +789,11 @@ trusted Rust implementations. Tests use existing fakes, no real provider network
 Known valid values are typed; `rcon.password`, unknown values and malformed known
 projections are always `"[redacted]"`. Source max 65,536 bytes, 256 decoded keys,
 4096 bytes/original value. Duplicate decoded keys/escaped aliases are refused.
+GET also recognizes safe read-only vanilla settings such as world generation,
+pack selection, transfer/spam settings, compression and pause-when-empty. This
+read schema does not add PATCH authority. Management secrets, keystore paths and
+passwords, filtering configuration, private resource-pack URLs and unknown/modded
+keys stay hidden.
 PATCH accepts 1–32 unique known keys, rejecting unknown/duplicate changes and wrong
 types/ranges. Untouched physical blocks retain comments, unknown lines, escapes
 and line endings; changed keys serialize safely and final admission is revalidated.

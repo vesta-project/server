@@ -223,7 +223,7 @@ fn pack_outcome(value: vesta_control::packs::PackOutcome) -> Reply {
 }
 /// Replace only exact known configured absolute paths and retained agent-issued credentials.
 pub(super) fn redact_console(host: &NetworkHost, text: &str) -> Result<String, ManagementError> {
-    Ok(redact_credential_boundaries(&redact_text(host, text)?))
+    host.management().redact_console_secret_edges(&redact_text(host, text)?)
 }
 /// Complete typed fields have no capture boundary fragments; preserve ordinary words.
 fn redact_text(host: &NetworkHost, text: &str) -> Result<String, ManagementError> {
@@ -256,58 +256,6 @@ fn redact_text(host: &NetworkHost, text: &str) -> Result<String, ManagementError
         text = text.replace(&path, "[redacted]");
     }
     Ok(text)
-}
-
-/// Hash-only stores cannot identify incomplete credentials. A 43-byte credential
-/// split by capture truncation or a physical newline leaves at most 42 bytes at
-/// either edge. Mask those ASCII base64url edge bytes independently of adjacent
-/// pages, streams, retention gaps, or subscriber state. Interior text is preserved.
-fn redact_credential_boundaries(text: &str) -> String {
-    let candidate = |byte: &u8| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_');
-    let leading = text.bytes().take(42).take_while(candidate).count();
-    let trailing = text.bytes().rev().take(42).take_while(candidate).count();
-    let end = text.len().saturating_sub(trailing).max(leading);
-    let mut out = String::with_capacity(text.len() + 20);
-    if leading != 0 {
-        out.push_str("[redacted]");
-    }
-    out.push_str(&text[leading..end]);
-    if trailing != 0 && (end > leading || leading == 0) {
-        out.push_str("[redacted]");
-    }
-    out
-}
-
-#[cfg(test)]
-mod boundary_tests {
-    use super::redact_credential_boundaries;
-
-    #[test]
-    fn every_incomplete_credential_length_is_masked_at_either_edge() {
-        let token = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ";
-        assert_eq!(token.len(), 43);
-        for offset in 1..43 {
-            assert_eq!(
-                redact_credential_boundaries(&format!(" λ interior: {}", &token[..offset])),
-                " λ interior: [redacted]"
-            );
-            assert_eq!(
-                redact_credential_boundaries(&format!("{} :interior λ ", &token[offset..])),
-                "[redacted] :interior λ "
-            );
-            assert_eq!(redact_credential_boundaries(&token[..offset]), "[redacted]");
-        }
-        assert_eq!(
-            redact_credential_boundaries(" λ actual interior text λ "),
-            " λ actual interior text λ "
-        );
-        assert_eq!(redact_credential_boundaries(""), "");
-        assert_eq!(redact_credential_boundaries("[redacted]"), "[redacted]");
-        assert_eq!(
-            redact_credential_boundaries(&"a".repeat(100)),
-            format!("[redacted]{}[redacted]", "a".repeat(16))
-        );
-    }
 }
 
 #[derive(Deserialize)]

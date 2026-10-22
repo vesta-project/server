@@ -2277,6 +2277,14 @@ fn management_inert_child() {
             Ok(line) if line.starts_with("owned-credential-boundaries ") => {
                 let token = line.strip_prefix("owned-credential-boundaries ").unwrap();
                 assert_eq!(token.len(), 43);
+                for text in [
+                    "Starting minecraft server version 26.3",
+                    "Loading properties",
+                    "Starting Minecraft server on 127.0.0.1:25565",
+                    "WARNING: A restricted method in java.lang.System has been called",
+                ] {
+                    println!("{text}");
+                }
                 for offset in [1, 7, 21, 42] {
                     let marker = format!(" boundary-{offset}: ");
                     let fill = ".".repeat(16_384 - marker.len() - offset);
@@ -2360,6 +2368,14 @@ fn management_start_inert(f: &Fixture, token: &str) -> String {
         .to_owned()
 }
 fn assert_credential_boundary_lines(lines: &[serde_json::Value]) {
+    for text in [
+        "Starting minecraft server version 26.3",
+        "Loading properties",
+        "Starting Minecraft server on 127.0.0.1:25565",
+        "WARNING: A restricted method in java.lang.System has been called",
+    ] {
+        assert!(lines.iter().any(|line| line["text"] == text), "ordinary log must remain readable: {text}");
+    }
     for offset in [1, 7, 21, 42] {
         let marker = format!(" boundary-{offset}: ");
         let line = lines
