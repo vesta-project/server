@@ -68,9 +68,88 @@ provider/auth/download connections need separate analysis.
 
 ## Plan status
 
-Checkpoint complete. Review scans and trust inventory in progress. Do not present
-a final implementation plan until the evidence is consolidated and reviewed a
-second time. Subsequent sections will record that review and implementation.
+Checkpoint complete. Source scans are recorded alongside this ledger and in
+`launcher/docs/reviews/2026-10-22-launcher-integration-findings.md`.
+
+## Host target and constraints (owner, 2026-10-22)
+
+Target comfortable operation on 1–2 cores and 2–4 GB RAM, preserving resources for
+Minecraft. Favor low idle work, bounded memory/queues and adaptation to pressure.
+Breaking internal changes are acceptable before release; disruptive architecture,
+deployment or data changes still need the owner's later approval. Keep progress
+and unresolved questions on disk. Do not equate a debug Windows measurement with
+release performance on low-end Linux/ARM or with Minecraft's own memory needs.
+
+## Implementation plan — first pass
+
+1. **P0 trust:** update affected Rust verifier/root dependencies in both launcher
+   lockfiles and the server lockfile. Move the pinned management client off its
+   unsupported TLS branch, preserving leaf pins and handshake signature checks.
+   Use a patched Rust TLS path for integration's public Mojang proof and server
+   artifact downloads. Record remaining OS/WebView trust dependencies explicitly.
+2. **P1 host protection:** bound aggregate request-body ownership independently
+   of connection count; give TLS negotiation its own deadline. Keep authenticated
+   lifecycle controls separate from bulk transfers and bound work *before*
+   allocation/dispatch. Exercise slow clients and cancellation against fixtures.
+3. **P1 storage correctness:** fix backup manifest double charging. Verify the
+   listing record is also covered by the byte budget before publishing a snapshot.
+4. **P1 recovery/persistence:** verify and fix worker exit after transient local
+   credential errors, unbounded terminal intent retention, and removal ordering.
+   Audit telemetry-triggered synchronous metadata writes; remove unnecessary
+   writes without weakening durable mutation journals or enrollment safety.
+5. **P2 frontend resilience:** latest-response guards, stable identity dependencies,
+   bounded read retry with server cooldown guidance and cleanup on disposal for
+   automation history/details. Never automatically replay uncertain mutations.
+6. **P2 transfer lifecycle:** reclaim staged uploads on terminal/expiry/window
+   cleanup while preserving retry receipts, and add a real download cancellation
+   route if it can be integrated without a task-system redesign.
+7. Validate each batch with focused regressions; run relevant integration/type
+   checks once after changes settle. Record measurements, remaining gaps and an
+   experience roadmap. Commit logical batches; no pushes or unsolicited restarts.
+
+## Second plan review — parent challenge pass
+
+Reviewed against the source findings, requirements and the low-end host target:
+
+- Root removal alone cannot block cross-signed compromised intermediates: the
+  verifier update is mandatory. Pinned agent TLS is not public-CA validation, so
+  preserve exact DER pins and test both HTTP and WebSocket failures. Avoid a broad
+  unrelated launcher HTTP migration; native OS clients require vendor trust updates.
+- A body permit released when an HTTP future is dropped is insufficient: blocking
+  dispatch cannot be aborted. Move its permit with the erasing body into the
+  blocking closure and hold it through completion. Empty GETs must not compete
+  with bulk body readers. Fixed memory bounds are safer than RAM-driven increases.
+- A short TLS timeout improves recovery but does not prevent sustained admission
+  exhaustion. Keep that residual limitation visible; do not promise DoS immunity.
+- Backup listing bytes were omitted in addition to the manifest arithmetic bug.
+  Admit manifest plus listing together before either write; test exact/one-byte-
+  short boundaries and compare actual store growth with reported bytes.
+- Journal pruning must retain uncertain/nonterminal intents and a documented retry
+  horizon. A hard capacity is a bound, not adequate lifecycle management. Removal
+  must save metadata before deleting credentials, keeping cleanup recoverable.
+- Upload completion with a lost response must remain retryable. Terminal receipts
+  can outlive staged bytes; periodic cleanup must have bounded work and no lock
+  held across network IO. Download cancellation must stop before atomic publication.
+- Telemetry persistence and adaptive polling need measurements and source evidence;
+  do not change SQLite durability, shrink security logs or introduce a new executor
+  merely to improve a synthetic number. Existing channel streaming is appropriate.
+
+Plan accepted for incremental implementation. Newly discovered evidence may refine
+individual fixes; record the reason and validation here before broadening scope.
+
+## Technical research (primary sources)
+
+- Rust verifier distrust: https://rustsec.org/advisories/RUSTSEC-2026-0382 and
+  https://github.com/rustls/webpki/pull/546 (includes cross-sign path checks).
+- Root bundle: https://github.com/rustls/webpki-roots/releases/tag/v%2F1.0.10.
+- Tokio blocking tasks cannot be aborted once running; admission must outlive a
+  cancelled waiter: https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html.
+- Unbounded task queueing is not backpressure:
+  https://tokio.rs/tokio/tutorial/channels.
+- Tauri recommends channels for streaming:
+  https://v2.tauri.app/develop/calling-frontend/.
+- SQLite WAL NORMAL can lose commits on power failure. Preserve durability and
+  remove needless transactions instead: https://www.sqlite.org/wal.html.
 
 ## Resume notes
 
