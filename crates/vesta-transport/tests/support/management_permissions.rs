@@ -486,6 +486,21 @@ fn permission_tls_no_pack_authority_unknown_fields_and_required_idempotency() {
 #[test]
 fn invitation_inventory_revoke_and_own_device_rename() {
     let f = Fixture::new("minecraft", 8, 16384, 5);
+    let invitation_tables = f
+        .host()
+        .database()
+        .read(|c| {
+            Ok::<_, vesta_state::StateError>(c.query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE name='management_invitation_ids'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(
+        invitation_tables, 1,
+        "host startup must apply the invitation inventory migration"
+    );
     let (owner, device, token) = actor(&f, BuiltinRole::Owner);
     let (_, other, viewer) = actor(&f, BuiltinRole::Viewer);
     let created = send(
@@ -496,7 +511,12 @@ fn invitation_inventory_revoke_and_own_device_rename() {
         Some(&token),
         Some("invitation-inventory-0001"),
     );
-    assert_eq!(created.status, 200);
+    assert_eq!(
+        created.status,
+        200,
+        "invitation failure code: {:?}",
+        created.json()["error"]
+    );
     let data = created.json()["data"].clone();
     let id = data["id"].as_str().unwrap();
     assert_ne!(id, data["code"].as_str().unwrap());
