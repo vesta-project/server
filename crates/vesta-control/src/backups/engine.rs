@@ -120,7 +120,7 @@ pub struct BackupSummary {
     pub files_new: u64,
     pub files_changed: u64,
     pub files_unmodified: u64,
-    /// Compressed bytes newly written to the repository.
+    /// Bytes newly written to the repository, including snapshot listing metadata.
     pub data_added: u64,
     pub total_bytes_processed: u64,
 }
@@ -490,23 +490,36 @@ impl Engine {
             dirs,
             files: entries,
         };
-        let json = serde_json::to_vec(&manifest).map_err(|_| EngineError::Failed)?;
-        let object = compress(&json);
-        summary.data_added += object.len() as u64;
-        // Chunks first, then the manifest, then the listing record.
-        if !within(summary.data_added, object.len()) {
-            return Err(EngineError::LimitReached);
-        }
-        self.store.put(&format!("snapshots/{id}"), &object)?;
-        self.write_tags(
-            &id,
-            &TagRecord {
-                time_ms,
-                tags: tags.to_vec(),
-            },
-        )?;
+        summary.data_added = self.write_snapshot(&manifest, tags, summary.data_added, budget)?;
         summary.snapshot_id = id;
         Ok(summary)
+    }
+
+    fn write_snapshot(
+        &self,
+        manifest: &Manifest,
+        tags: &[String],
+        added: u64,
+        budget: Option<u64>,
+    ) -> Result<u64> {
+        let json = serde_json::to_vec(manifest).map_err(|_| EngineError::Failed)?;
+        let object = compress(&json);
+        let listing = serde_json::to_vec(&TagRecord {
+            time_ms: manifest.time_ms,
+            tags: tags.to_vec(),
+        })
+        .map_err(|_| EngineError::Failed)?;
+        let total = added
+            .checked_add(object.len() as u64)
+            .and_then(|n| n.checked_add(listing.len() as u64))
+            .filter(|n| budget.is_none_or(|b| *n <= b))
+            .ok_or(EngineError::LimitReached)?;
+        // Admit both objects before publishing either. Chunks first, then the
+        // manifest, then the listing record: no listed snapshot exceeds budget.
+        self.store
+            .put(&format!("snapshots/{}", manifest.id), &object)?;
+        self.store.put(&format!("tags/{}", manifest.id), &listing)?;
+        Ok(total)
     }
 
     fn write_tags(&self, id: &str, record: &TagRecord) -> Result<()> {

@@ -566,11 +566,12 @@ fn budgets_usage_and_retention_projection() {
         Err(EngineError::LimitReached)
     );
     assert!(engine.snapshots("profile=p").unwrap().is_empty());
+    let before = engine.usage().unwrap(); // A failed backup can leave unreferenced chunks.
     let summary = engine
         .backup_within(source.path(), &none, &tags("p"), None, Some(u64::MAX))
         .unwrap();
     let used = engine.usage().unwrap();
-    assert!(used >= summary.data_added && used > 0);
+    assert_eq!(used - before, summary.data_added);
     // With nothing new to store, even a tiny budget only has to fit the manifest.
     assert!(
         engine
@@ -599,6 +600,51 @@ fn budgets_usage_and_retention_projection() {
         engine.retained_after_backup("profile=p", keep_two).unwrap(),
         2
     );
+}
+
+#[test]
+fn snapshot_budget_includes_each_object_once_and_refuses_before_publication() {
+    let manifest = Manifest {
+        version: 1,
+        id: "ab".repeat(16),
+        time_ms: 1234,
+        dirs: vec![],
+        files: vec![],
+    };
+    let tags = tags("quota");
+    let store = MemStore::default();
+    let engine = Engine::new(Box::new(store.clone()));
+    engine.init().unwrap();
+    let added = 500;
+    let total = engine
+        .write_snapshot(&manifest, &tags, added, None)
+        .unwrap();
+    assert!(total > added);
+    let actual: u64 = store
+        .objects
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(key, _)| key.starts_with("snapshots/") || key.starts_with("tags/"))
+        .map(|(_, (bytes, _))| bytes.len() as u64)
+        .sum();
+    assert_eq!(total, added + actual);
+    for budget in [total - 1, added] {
+        let refused = MemStore::default();
+        let engine = Engine::new(Box::new(refused.clone()));
+        engine.init().unwrap();
+        assert_eq!(
+            engine.write_snapshot(&manifest, &tags, added, Some(budget)),
+            Err(EngineError::LimitReached)
+        );
+        assert_eq!(refused.keys("snapshots/"), 0);
+        assert_eq!(refused.keys("tags/"), 0);
+    }
+    assert_eq!(
+        engine.write_snapshot(&manifest, &tags, added, Some(total)),
+        Ok(total)
+    );
+    assert_eq!(engine.snapshots("profile=quota").unwrap().len(), 1);
 }
 
 #[test]
