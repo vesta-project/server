@@ -30,14 +30,13 @@ test('partial evidence names real test sources and retains a limitation statemen
   for (const entry of partial) {
     assert.ok(entry.tests.length > 0, entry.id);
     assert.ok(entry.evidence.some((e) => /remain|absent|unverified|not implemented|incomplete/i.test(e)), entry.id);
-    assert.ok(entry.evidence.includes('docs/archive/IMPLEMENTATION_PROGRESS.md'), entry.id);
+    assert.ok(entry.evidence.some((source) =>
+      /^(docs|apps|crates)\//.test(source)
+      && existsSync(new URL('../' + source, import.meta.url))), entry.id);
     for (const source of entry.tests) {
-      if (source.startsWith('launcher-server-mvp:')) {
-        assert.match(source, /^launcher-server-mvp:crates\/piston-lib\/(tests|src\/game\/server_install\/tests)\/.+\.rs$/);
-        const launcher = new URL('../../launcher-server-mvp/', import.meta.url);
-        if (existsSync(launcher)) {
-          assert.ok(existsSync(new URL(source.slice('launcher-server-mvp:'.length), launcher)), source);
-        }
+      if (source.startsWith('apps/vesta-setup/') || source.startsWith('scripts/reachability-probe/')) {
+        assert.match(source, /^(apps\/vesta-setup\/tests\/[a-z_]+\.rs|scripts\/reachability-probe\/[a-z_]+\.test\.mjs)$/);
+        assert.ok(existsSync(new URL('../' + source, import.meta.url)), source);
       } else if (source.startsWith('crates/vesta-server-install/')) {
         assert.match(source, /^crates\/vesta-server-install\/src\/tests\/[a-z_]+\.rs$/);
         assert.ok(existsSync(new URL('../' + source, import.meta.url)), source);

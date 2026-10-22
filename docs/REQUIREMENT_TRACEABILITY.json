@@ -961,13 +961,12 @@
       "text": "Pack state distinguishes the latest available revision from the minimum revision currently allowed to join.",
       "textSha256": "259e510d5c256a5a0a12885ad4fba177c76f0fe0737dc80e43f635e61f6d826a",
       "phase": "P5",
-      "status": "partially_verified",
-      "tests": [
-        "launcher-server-mvp:crates/piston-lib/tests/vesta_pack.rs"
-      ],
+      "status": "not_verified",
+      "tests": [],
       "evidence": [
         "2026-10-04 Windows: relevant assertions passed in server (224 tests) and/or piston-lib (161 tests) fresh suites. Distinct revision/minimumRevision retained; negative/inverted headers reject. Publish/access/join enforcement and UI remain absent.",
-        "docs/archive/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "2026-10-23: Prototype launcher test sources were discarded by owner direction and are historical evidence only, not verification of the current launcher rewrite. Current rewrite integration remains unverified for this compound requirement."
       ]
     },
     {
@@ -1188,12 +1187,12 @@
       "phase": "P5",
       "status": "partially_verified",
       "tests": [
-        "server-java:core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java",
-        "launcher-server-mvp:crates/piston-lib/tests/vesta_pack.rs"
+        "server-java:core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: relevant assertions passed in server (224 tests) and/or piston-lib (161 tests) fresh suites. Actual Java builder matches frozen Rust fixture: aliases/hashes/size/loader/revisions/environment. Signing/symlink/optional/instance-state integration remain absent.",
-        "docs/archive/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "2026-10-23: Prototype launcher test sources were discarded by owner direction and are historical evidence only, not verification of the current launcher rewrite. Current rewrite integration remains unverified for this compound requirement."
       ]
     },
     {
@@ -1205,14 +1204,14 @@
       "phase": "P5",
       "status": "partially_verified",
       "tests": [
-        "server-java:core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java",
-        "launcher-server-mvp:crates/piston-lib/tests/vesta_pack.rs"
+        "server-java:core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: relevant assertions passed in server (224 tests) and/or piston-lib (161 tests) fresh suites. Immutable provider IDs/URLs/hashes/provenance survive parsing; provider bytes not embedded. Full install/update provenance and CurseForge declared-path enforcement remain absent.",
         "2026-10-04 subsequent manual-import checkpoint: vesta_manual_import.rs verifies write-free immutable-ID resolution, declared-path enforcement rather than resolver filenames, exact size/every declared hash, persisted provider provenance and two distinct paths for one provider file. Signed publication, trusted update and real provider-download execution remain unverified.",
         "launcher-server-mvp:docs/VESTA_MANUAL_IMPORT_CHECKPOINT.md",
-        "docs/archive/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "2026-10-23: Prototype launcher test sources were discarded by owner direction and are historical evidence only, not verification of the current launcher rewrite. Current rewrite integration remains unverified for this compound requirement."
       ]
     },
     {
@@ -1222,13 +1221,12 @@
       "text": "Each published revision records an exact provider version/file ID and expected content hash. Editing the draft to select another provider version is normal, but a published revision never resolves a mutable `latest` selector or accepts different bytes under the same identity.",
       "textSha256": "37461b41d2948cc153b85c17c597191466f2dd0d355c44bf0b738fb46086eb05",
       "phase": "P5",
-      "status": "partially_verified",
-      "tests": [
-        "launcher-server-mvp:crates/piston-lib/tests/vesta_pack.rs"
-      ],
+      "status": "not_verified",
+      "tests": [],
       "evidence": [
         "2026-10-04 Windows: relevant assertions passed in server (224 tests) and/or piston-lib (161 tests) fresh suites. Invalid/mutable IDs, mismatched URLs and missing installer-required hashes reject. Signed publication/fail-closed provider execution remain absent.",
-        "docs/archive/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "2026-10-23: Prototype launcher test sources were discarded by owner direction and are historical evidence only, not verification of the current launcher rewrite. Current rewrite integration remains unverified for this compound requirement."
       ]
     },
     {
@@ -1262,15 +1260,14 @@
       "phase": "P5",
       "status": "partially_verified",
       "tests": [
-        "server-java:core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java",
-        "launcher-server-mvp:crates/piston-lib/tests/vesta_pack.rs",
-        "launcher-server-mvp:crates/piston-lib/tests/vesta_import_limits.rs"
+        "server-java:core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: relevant assertions passed in server (224 tests) and/or piston-lib (161 tests) fresh suites. Declared embedded overrides require exact size/every declared hash; undeclared files reject. Server workspace/upload/build and aggregate quotas remain absent.",
         "docs/archive/IMPLEMENTATION_PROGRESS.md",
         "launcher-server-mvp:docs/VESTA_IMPORT_LIMITS_CHECKPOINT.md",
-        "2026-10-05 Windows: Manual Vesta import archive/count/index/declared/embedded/header-expansion budgets and declared provider/client totals reject before resolver/base install/writes, with exact boundaries, overflow, owned cleanup and native Windows staging junction coverage. Actual provider download stream ceilings, central-directory allocation cap, global reservations/concurrency and server workspace quotas remain absent."
+        "2026-10-05 Windows: Manual Vesta import archive/count/index/declared/embedded/header-expansion budgets and declared provider/client totals reject before resolver/base install/writes, with exact boundaries, overflow, owned cleanup and native Windows staging junction coverage. Actual provider download stream ceilings, central-directory allocation cap, global reservations/concurrency and server workspace quotas remain absent.",
+        "2026-10-23: Prototype launcher test sources were discarded by owner direction and are historical evidence only, not verification of the current launcher rewrite. Current rewrite integration remains unverified for this compound requirement."
       ]
     },
     {
@@ -1280,14 +1277,13 @@
       "text": "Custom packs use the Vesta Pack manifest model aligned with the launcher's persisted instance/modpack state. The hosted representation is a small JSON manifest plus an optional compressed overrides archive, each hashed and bound to the same monotonic pack revision.",
       "textSha256": "6bfac5ad75ce14900f231534933db08efd3715c72f0f3df6b5d965cb708234dc",
       "phase": "P5",
-      "status": "partially_verified",
-      "tests": [
-        "launcher-server-mvp:crates/piston-lib/tests/vesta_manual_import.rs"
-      ],
+      "status": "not_verified",
+      "tests": [],
       "evidence": [
         "2026-10-04 Windows: manual-import manifest persistence retains revision/minimumRevision, archive digest, unverified trust, signature envelope and declared immutable provider identities; older manifests remain readable. Separate signed hosted manifest/overrides publication and authenticated network sync remain absent.",
         "launcher-server-mvp:docs/VESTA_MANUAL_IMPORT_CHECKPOINT.md",
-        "docs/archive/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "2026-10-23: Prototype launcher test sources were discarded by owner direction and are historical evidence only, not verification of the current launcher rewrite. Current rewrite integration remains unverified for this compound requirement."
       ]
     },
     {
@@ -1297,14 +1293,13 @@
       "text": "The launcher downloads referenced Modrinth/CurseForge artifacts directly from their provider. Missing or withdrawn content fails with a clear affected-file error. A validated provider-byte cache is optional, opt-in, storage-bounded, and subject to provider redistribution terms.",
       "textSha256": "da0f5317795686f93eb28a83c973c9f65902506133d25e2aaeb7967f8b20aada",
       "phase": "P5",
-      "status": "partially_verified",
-      "tests": [
-        "launcher-server-mvp:crates/piston-lib/tests/vesta_manual_import.rs"
-      ],
+      "status": "not_verified",
+      "tests": [],
       "evidence": [
         "2026-10-04 Windows: injected provider-resolution failures aggregate affected-file errors and abort write-free planning; missing/wrong SHA-1 and non-HTTPS responses reject. Declared targets, exact artifact sizes and every declared SHA-1/SHA-256/SHA-512 are checked, bypassing unverified label cache. Real provider downloads, signed/trusted sync, withdrawal behavior and global storage/concurrency quotas remain unverified.",
         "launcher-server-mvp:docs/VESTA_MANUAL_IMPORT_CHECKPOINT.md",
-        "docs/archive/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "2026-10-23: Prototype launcher test sources were discarded by owner direction and are historical evidence only, not verification of the current launcher rewrite. Current rewrite integration remains unverified for this compound requirement."
       ]
     },
     {
@@ -1316,14 +1311,14 @@
       "phase": "P5",
       "status": "partially_verified",
       "tests": [
-        "server-java:core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java",
-        "launcher-server-mvp:crates/piston-lib/tests/vesta_pack.rs"
+        "server-java:core/src/test/java/com/vesta/sync/manifest/VestaPackInteroperabilityTest.java"
       ],
       "evidence": [
         "2026-10-04 Windows: relevant assertions passed in server (224 tests) and/or piston-lib (161 tests) fresh suites. Java archive wire format and launcher canonical/legacy aliases parse. Vesta export rejects before output mutation. Signed portability/import authority remain absent.",
         "2026-10-04 subsequent manual-import checkpoint: 24 parent Rust import cases plus parent use-install-submit.test.ts and vesta-trust-prompt.test.tsx verify exact reviewed-digest acknowledgement, private snapshots, cancel/no install, metadata bypass rejection, unchanged unverified signature status, concurrent fresh-directory reservation and native Windows link-safe rollback. Canonical/legacy launch-intent coverage added; full Tauri execution, Vesta export and signed portability remain separate gates.",
         "launcher-server-mvp:docs/VESTA_MANUAL_IMPORT_CHECKPOINT.md",
-        "docs/archive/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "2026-10-23: Prototype launcher test sources were discarded by owner direction and are historical evidence only, not verification of the current launcher rewrite. Current rewrite integration remains unverified for this compound requirement."
       ]
     },
     {
@@ -1366,13 +1361,12 @@
       "text": "Executable permission is not a remotely supplied pack-manifest capability. Pack extraction uses safe platform defaults and cannot mark downloaded content executable merely because a manifest requests it.",
       "textSha256": "b080106413df2ea369abd08f982653aa13974fb8db6caa2da39fefe6a01c117e",
       "phase": "P5",
-      "status": "partially_verified",
-      "tests": [
-        "launcher-server-mvp:crates/piston-lib/tests/vesta_pack.rs"
-      ],
+      "status": "not_verified",
+      "tests": [],
       "evidence": [
         "2026-10-04 Windows: relevant assertions passed in server (224 tests) and/or piston-lib (161 tests) fresh suites. Executable ZIP modes/extensions and protected/traversal paths reject; existing destination links/junctions checked. Native hostile-ancestor isolation/full signed apply sandbox remain unverified.",
-        "docs/archive/IMPLEMENTATION_PROGRESS.md"
+        "docs/archive/IMPLEMENTATION_PROGRESS.md",
+        "2026-10-23: Prototype launcher test sources were discarded by owner direction and are historical evidence only, not verification of the current launcher rewrite. Current rewrite integration remains unverified for this compound requirement."
       ]
     },
     {
