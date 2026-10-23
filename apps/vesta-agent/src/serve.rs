@@ -38,6 +38,29 @@ pub async fn run(source: &Path, base: &Path, local_only: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Err(code) = crate::uninstall::check_start(&source) {
+        eprintln!("{code}");
+        return ExitCode::FAILURE;
+    }
+    let registry = source.parent().and_then(|directory| {
+        crate::servers::managed_lease(directory)
+            .map(|_| directory.parent().unwrap().parent().unwrap().to_owned())
+    });
+    let _registry_admission = match registry
+        .as_ref()
+        .map(|root| local_files::lock(&root.join("registry.lock")))
+        .transpose()
+    {
+        Ok(guard) => guard,
+        Err(code) => {
+            eprintln!("{code}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(code) = crate::uninstall::check_start(&source) {
+        eprintln!("{code}");
+        return ExitCode::FAILURE;
+    }
     // Excludes deletion across opening, all owned children, and actual shutdown.
     let lease_paths = [source.parent(), configuration.game().parent()]
         .into_iter()
@@ -62,6 +85,7 @@ pub async fn run(source: &Path, base: &Path, local_only: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    drop(_registry_admission);
     let directories = [source.parent(), configuration.game().parent()]
         .into_iter()
         .flatten()
@@ -146,7 +170,16 @@ pub async fn run(source: &Path, base: &Path, local_only: bool) -> ExitCode {
     } else {
         println!("serving; local_control_only; remote_management_refused");
     }
-    let signal_failed = wait_for_ctrl_c(transport.as_ref()).await.is_err();
+    let mut shutdown = control.shutdown_signal();
+    let already_requested = *shutdown.borrow();
+    let signal_failed = if already_requested {
+        false
+    } else {
+        tokio::select! {
+            result = wait_for_ctrl_c(transport.as_ref()) => result.is_err(),
+            _ = shutdown.changed() => false,
+        }
+    };
     if signal_failed {
         eprintln!("signal_wait_failed");
     }

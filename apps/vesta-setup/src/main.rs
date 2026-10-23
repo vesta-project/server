@@ -18,7 +18,7 @@ fn run() -> Result<(), String> {
     let mut i = usize::from(command.is_some());
     while i < args.len() {
         let key = &args[i];
-        if ["--yes", "--no-color", "--ascii"].contains(&key.as_str()) {
+        if ["--yes", "--no-color", "--ascii", "--plan"].contains(&key.as_str()) {
             if !flags.insert(key.clone()) {
                 return Err("setup_duplicate_option".into());
             }
@@ -31,6 +31,9 @@ fn run() -> Result<(), String> {
             "--manifest-sha256",
             "--release-key",
             "--answers",
+            "--asset-prefix",
+            "--server",
+            "--servers-root",
         ]
         .contains(&key.as_str())
         {
@@ -46,6 +49,21 @@ fn run() -> Result<(), String> {
             return Err("setup_unknown_option".into());
         }
         i += 1;
+    }
+    if command == Some("uninstall") {
+        if values.contains_key("--server") && values.contains_key("--root") {
+            return Err("setup_server_uninstall_uses_servers_root_only".into());
+        }
+        if flags
+            .iter()
+            .any(|f| f != "--plan" && f != "--no-color" && f != "--ascii")
+            || values.contains_key("--answers")
+            || values.contains_key("--state")
+            || values.contains_key("--export")
+        {
+            return Err("setup_uninstall_options_invalid_no_confirmation_bypass".into());
+        }
+        return uninstall(&values, flags.contains("--plan"));
     }
     if matches!(command, Some("host" | "stop" | "status" | "activate")) {
         if values.len() != 1 || !values.contains_key("--root") || !flags.is_empty() {
@@ -96,7 +114,14 @@ fn run() -> Result<(), String> {
     {
         return Err("setup_invalid_options".into());
     }
+    if flags.contains("--plan")
+        || values.contains_key("--server")
+        || values.contains_key("--servers-root")
+    {
+        return Err("setup_invalid_options".into());
+    }
     let source = Source {
+        asset_prefix: values.get("--asset-prefix").cloned(),
         local: values.get("--bundle-dir").map(PathBuf::from),
         base_url: values.get("--bundle-url").cloned(),
         manifest_sha256: values
@@ -133,9 +158,105 @@ fn run() -> Result<(), String> {
     }
 }
 
+fn uninstall(
+    values: &std::collections::BTreeMap<String, String>,
+    plan: bool,
+) -> Result<(), String> {
+    use std::process::Command;
+    let original_base = std::env::current_dir().map_err(|_| "setup_directory_unavailable")?;
+    let absolute = |value: &str| {
+        let p = PathBuf::from(value);
+        if p.is_absolute() {
+            p
+        } else {
+            original_base.join(p)
+        }
+    };
+    let mut args = vec![std::ffi::OsString::from("uninstall")];
+    if let Some(server) = values.get("--server") {
+        args.push(server.into());
+    } else if !values.contains_key("--root") {
+        return Err("setup_uninstall_root_required".into());
+    }
+    for key in ["--root", "--servers-root"] {
+        if let Some(value) = values.get(key) {
+            let path = absolute(value);
+            engine::guard(&path)?;
+            args.extend([std::ffi::OsString::from(key), path.into_os_string()]);
+        }
+    }
+    if plan {
+        args.push("--plan".into());
+    }
+    let executable = if values.contains_key("--bundle-url") || values.contains_key("--bundle-dir") {
+        let release = vesta_setup::release::load(Source {
+            local: values.get("--bundle-dir").map(PathBuf::from),
+            base_url: values.get("--bundle-url").cloned(),
+            manifest_sha256: values
+                .get("--manifest-sha256")
+                .cloned()
+                .ok_or("setup_manifest_pin_required")?,
+            release_key: values
+                .get("--release-key")
+                .cloned()
+                .ok_or("setup_release_key_required")?,
+            asset_prefix: values.get("--asset-prefix").cloned(),
+        })?;
+        let temporary = std::env::temp_dir().join(format!(
+            "vesta-uninstall-tools-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        vesta_state::StateDirectory::new(&temporary, None)
+            .and_then(|d| d.prepare())
+            .map_err(|_| "setup_uninstall_staging_failed")?;
+        release.install(&temporary, &mut |_, _, _| {})?;
+        temporary
+            .join("bin")
+            .join(format!("vesta{}", std::env::consts::EXE_SUFFIX))
+    } else {
+        if values.contains_key("--manifest-sha256")
+            || values.contains_key("--release-key")
+            || values.contains_key("--asset-prefix")
+        {
+            return Err("setup_uninstall_bundle_required_with_verification_options".into());
+        }
+        let root = values.get("--root").map(|v| absolute(v));
+        if let Some(root) = root {
+            root.join("bin")
+                .join(format!("vesta{}", std::env::consts::EXE_SUFFIX))
+        } else {
+            std::env::current_exe()
+                .map_err(|_| "setup_executable_unavailable")?
+                .with_file_name(format!("vesta{}", std::env::consts::EXE_SUFFIX))
+        }
+    };
+    engine::guard(&executable)?;
+    if let Some(root) = values.get("--root").map(|v| absolute(v)) {
+        let current = vesta_setup::paths::comparable(&original_base);
+        let root_key = vesta_setup::paths::comparable(&root);
+        if current == root_key || current.starts_with(&(root_key + "/")) {
+            std::env::set_current_dir(root.parent().ok_or("setup_uninstall_root_invalid")?)
+                .map_err(|_| "setup_directory_unavailable")?;
+        }
+    }
+    let status = Command::new(&executable)
+        .args(args)
+        .status()
+        .map_err(|_| "setup_uninstall_cli_unavailable")?;
+    if status.code() == Some(75) {
+        return Err("setup_uninstall_handed_off".into());
+    }
+    if status.success() {
+        Ok(())
+    } else {
+        Err("setup_uninstall_incomplete_or_cancelled".into())
+    }
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
+        Err(error) if error == "setup_uninstall_handed_off" => ExitCode::from(75),
         Err(error) if error == "setup_cancelled" => {
             println!(
                 "{}",

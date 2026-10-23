@@ -20,6 +20,7 @@ pub struct Source {
     pub base_url: Option<String>,
     pub manifest_sha256: String,
     pub release_key: String,
+    pub asset_prefix: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -41,8 +42,8 @@ pub struct Artifact {
 
 #[derive(Clone, Debug)]
 enum ArtifactSource {
-    Local(PathBuf),
-    Remote(String),
+    Local(PathBuf, String),
+    Remote(String, String),
 }
 
 #[derive(Clone, Debug)]
@@ -54,24 +55,35 @@ pub struct Release {
 }
 
 pub fn load(source: Source) -> Result<Release, String> {
+    let prefix = source.asset_prefix.unwrap_or_default();
+    if !matches!(
+        prefix.as_str(),
+        "" | "windows-x86_64-" | "linux-x86_64-" | "linux-aarch64-"
+    ) {
+        return Err("invalid asset prefix".into());
+    }
     let pin = decode_hex_exact(&source.manifest_sha256, 32, "invalid manifest hash")?;
     let key = decode_hex_exact(&source.release_key, 32, "invalid release key")?;
     let (artifact_source, manifest_bytes, signature_bytes) = match (source.local, source.base_url) {
         (Some(local), None) => {
             validate_local_directory(&local)?;
-            let manifest_path = local.join("manifest.json");
-            let signature_path = local.join("manifest.sig");
+            let manifest_path = local.join(format!("{prefix}manifest.json"));
+            let signature_path = local.join(format!("{prefix}manifest.sig"));
             let manifest =
                 read_local_bounded(&manifest_path, MAX_MANIFEST, "manifest unavailable")?;
             let signature =
                 read_local_bounded(&signature_path, MAX_SIGNATURE, "signature unavailable")?;
-            (ArtifactSource::Local(local), manifest, signature)
+            (
+                ArtifactSource::Local(local, prefix.clone()),
+                manifest,
+                signature,
+            )
         }
         (None, Some(base)) => {
             validate_base_url(&base)?;
             let agent = http_agent();
-            let manifest_url = format!("{base}/manifest.json");
-            let signature_url = format!("{base}/manifest.sig");
+            let manifest_url = format!("{base}/{prefix}manifest.json");
+            let signature_url = format!("{base}/{prefix}manifest.sig");
             let manifest = fetch_bounded(
                 &agent,
                 &manifest_url,
@@ -84,7 +96,11 @@ pub fn load(source: Source) -> Result<Release, String> {
                 MAX_SIGNATURE,
                 "signature download failed",
             )?;
-            (ArtifactSource::Remote(base), manifest, signature)
+            (
+                ArtifactSource::Remote(base, prefix.clone()),
+                manifest,
+                signature,
+            )
         }
         _ => return Err("invalid source".into()),
     };
@@ -113,6 +129,9 @@ pub fn load(source: Source) -> Result<Release, String> {
     let manifest: Manifest =
         serde_json::from_slice(&manifest_bytes).map_err(|_| "invalid manifest".to_string())?;
     validate_manifest(&manifest)?;
+    if !prefix.is_empty() && prefix != format!("{}-", manifest.target) {
+        return Err("asset prefix target mismatch".into());
+    }
     Ok(Release {
         verified_manifest: manifest.clone(),
         manifest_hash: hex::encode(pin),
@@ -172,17 +191,15 @@ impl Release {
                 Box<dyn Read>,
                 Option<ureq::http::Response<ureq::Body>>,
             ) = match &self.source {
-                ArtifactSource::Local(directory) => {
-                    let path = directory.join(&artifact.name);
+                ArtifactSource::Local(directory, prefix) => {
+                    let path = directory.join(format!("{prefix}{}", artifact.name));
                     validate_local_file(&path, directory)?;
                     let file = File::open(&path).map_err(|_| "artifact unavailable")?;
                     (Box::new(file), None)
                 }
-                ArtifactSource::Remote(base) => {
-                    let url = format!("{base}/{}", artifact.name);
-                    let response = http_agent()
-                        .get(&url)
-                        .call()
+                ArtifactSource::Remote(base, prefix) => {
+                    let url = format!("{base}/{prefix}{}", artifact.name);
+                    let response = download_response(&http_agent(), &url)
                         .map_err(|_| "artifact download failed")?;
                     if response.status() != 200 {
                         return Err("artifact download failed".into());
@@ -325,7 +342,7 @@ fn fetch_bounded(
     max: u64,
     error: &'static str,
 ) -> Result<Vec<u8>, String> {
-    let mut response = agent.get(url).call().map_err(|_| error.to_string())?;
+    let mut response = download_response(agent, url).map_err(|_| error.to_string())?;
     if response.status() != 200 {
         return Err(error.into());
     }
@@ -339,6 +356,50 @@ fn fetch_bounded(
         return Err(error.into());
     }
     Ok(bytes)
+}
+
+fn redirected_url(current: &url::Url, location: &str) -> Result<url::Url, String> {
+    let next = current
+        .join(location)
+        .map_err(|_| "invalid release redirect")?;
+    // CDN signatures commonly use a query. The initial operator URL is still
+    // clean, while bounded redirects may have a query; payload hashes/signatures
+    // remain required. Never forward credentials or downgrade to plaintext.
+    if next.scheme() != "https"
+        || !next.username().is_empty()
+        || next.password().is_some()
+        || next.fragment().is_some()
+        || next.as_str().len() > 8192
+    {
+        return Err("invalid release redirect".into());
+    }
+    Ok(next)
+}
+fn download_response(
+    agent: &ureq::Agent,
+    url: &str,
+) -> Result<ureq::http::Response<ureq::Body>, String> {
+    let mut current = url::Url::parse(url).map_err(|_| "invalid release URL")?;
+    for redirects in 0..=5 {
+        let response = agent
+            .get(current.as_str())
+            .call()
+            .map_err(|_| "release download failed")?;
+        if matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
+            if redirects == 5 {
+                return Err("too many release redirects".into());
+            }
+            let location = response
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .ok_or("release redirect missing location")?;
+            current = redirected_url(&current, location)?;
+        } else {
+            return Ok(response);
+        }
+    }
+    Err("too many release redirects".into())
 }
 
 fn read_local_bounded(path: &Path, max: u64, error: &'static str) -> Result<Vec<u8>, String> {
@@ -537,4 +598,32 @@ fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
         .zip(right)
         .fold(0u8, |diff, (a, b)| diff | (a ^ b))
         == 0
+}
+
+#[cfg(test)]
+mod redirect_tests {
+    use super::*;
+    #[test]
+    fn release_redirects_allow_https_cdn_signatures_but_not_downgrades_or_credentials() {
+        let from =
+            url::Url::parse("https://github.com/owner/repo/releases/download/tag/file").unwrap();
+        assert_eq!(
+            redirected_url(
+                &from,
+                "https://release-assets.githubusercontent.com/blob?sig=example"
+            )
+            .unwrap()
+            .query(),
+            Some("sig=example")
+        );
+        assert_eq!(redirected_url(&from, "/other").unwrap().scheme(), "https");
+        for location in [
+            "http://cdn.invalid/blob",
+            "https://user:secret@cdn.invalid/blob",
+            "https://cdn.invalid/blob#fragment",
+            "file:///tmp/file",
+        ] {
+            assert!(redirected_url(&from, location).is_err());
+        }
+    }
 }

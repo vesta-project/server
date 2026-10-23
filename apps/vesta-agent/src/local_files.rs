@@ -68,6 +68,12 @@ pub fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
         .map_err(|_| "local_write_failed")
 }
 pub fn lock(path: &Path) -> Result<File> {
+    crate::uninstall::check_start(path)?;
+    lock_for_uninstall(path)
+}
+/// The confirmed uninstall coordinator can acquire locks after its durable
+/// marker excludes normal local mutation/start paths.
+pub(crate) fn lock_for_uninstall(path: &Path) -> Result<File> {
     guard(path)?;
     let file = OpenOptions::new()
         .read(true)

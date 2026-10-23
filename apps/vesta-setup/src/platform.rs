@@ -67,6 +67,26 @@ pub fn enable_startup(root: &Path, executable: &Path, id: &str) -> Result<(), St
     }
 }
 
+/// Removes this installation's current-user startup registration, if present.
+/// The installation paths must still exist when this is called.
+pub fn disable_startup(root: &Path, executable: &Path, id: &str) -> Result<(), String> {
+    let (root, executable) = validate_installation(root, executable)?;
+    let name = startup_name(id)?;
+    #[cfg(windows)]
+    {
+        windows::disable(&root, &executable, &name)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux::disable(&root, &executable, &name)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = (root, executable, name);
+        Err("automatic startup is unsupported on this platform".into())
+    }
+}
+
 /// Launches `executable host --root root` as a background, non-window process.
 pub fn start_host(root: &Path, executable: &Path) -> Result<(), String> {
     let (root, executable) = validate_installation(root, executable)?;
@@ -313,6 +333,65 @@ exit 0
             Err("could not configure Windows startup".into())
         }
     }
+
+    pub fn disable(root: &Path, executable: &Path, name: &str) -> Result<(), String> {
+        let shell = super::find_executable("powershell.exe").ok_or("PowerShell is unavailable")?;
+        let root = root.to_string_lossy();
+        let executable = executable.to_string_lossy();
+        let task = ps_quote(name);
+        let user_args = format!("host --root {}", windows_arg(&root));
+        let script = format!(
+            r#"
+$ErrorActionPreference = 'Stop'
+try {{
+$taskName = {task}
+$user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$expectedArguments = {args}
+$existing = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {{ $_.TaskName -eq $taskName }})
+if ($existing.Count -eq 0) {{ exit 0 }}
+if ($existing.Count -ne 1) {{ exit 32 }}
+$t = $existing[0]
+$p = $t.Principal
+$actionMatches = ($t.Actions.Count -eq 1 -and $t.Actions[0].Execute -ceq {exe} -and $t.Actions[0].Arguments -ceq $expectedArguments)
+$principalMatches = (($p.UserId -ceq $sid -or $p.UserId -ceq $user) -and $p.LogonType -eq 'Interactive' -and $p.RunLevel -eq 'Limited')
+$triggerMatches = ($t.TaskPath -ceq '\' -and $t.Triggers.Count -eq 1 -and $t.Triggers[0].CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger' -and $t.Triggers[0].UserId -ceq $user)
+if (-not ($actionMatches -and $principalMatches -and $triggerMatches -and $t.Description -ceq 'Vesta host for current user')) {{ exit 32 }}
+Unregister-ScheduledTask -TaskName $taskName -TaskPath '\' -Confirm:$false
+}} catch {{
+    exit 1
+}}
+exit 0
+"#,
+            task = task,
+            exe = ps_quote(&executable),
+            args = ps_quote(&user_args)
+        );
+        let wide: Vec<u16> = script.encode_utf16().collect();
+        let mut bytes = Vec::with_capacity(wide.len() * 2);
+        for unit in wide {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        use std::os::windows::process::CommandExt;
+        let result = bounded_output(
+            Command::new(shell)
+                .arg("-NoProfile")
+                .arg("-NonInteractive")
+                .arg("-EncodedCommand")
+                .arg(&encoded)
+                .creation_flags(0x08000000),
+            false,
+        )
+        .map_err(|_| "could not remove Windows startup")?;
+        if result.status.success() {
+            Ok(())
+        } else if result.status.code() == Some(32) {
+            Err("startup task is not owned by this installation".into())
+        } else {
+            Err("could not remove Windows startup".into())
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -335,6 +414,21 @@ mod linux {
         }
         out.push('"');
         out
+    }
+
+    fn unit_contents(root: &Path, executable: &Path) -> String {
+        let root_s = root.to_string_lossy();
+        let exe_s = executable.to_string_lossy();
+        format!(
+            "[Unit]\nDescription=Vesta host for current user\n\n[Service]\nType=simple\nWorkingDirectory={}\nExecStart={} host --root {}\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n",
+            systemd_quote(&root_s),
+            systemd_quote(&exe_s),
+            systemd_quote(&root_s)
+        )
+    }
+
+    fn unit_is_owned(existing: &[u8], expected: &str) -> bool {
+        existing == expected.as_bytes()
     }
 
     fn unit_dir() -> Result<PathBuf, String> {
@@ -361,14 +455,7 @@ mod linux {
         let dir = unit_dir()?;
         ensure_safe_dir(&dir)?;
         let path = dir.join(format!("{name}.service"));
-        let root_s = root.to_string_lossy();
-        let exe_s = executable.to_string_lossy();
-        let contents = format!(
-            "[Unit]\nDescription=Vesta host for current user\n\n[Service]\nType=simple\nWorkingDirectory={}\nExecStart={} host --root {}\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n",
-            systemd_quote(&root_s),
-            systemd_quote(&exe_s),
-            systemd_quote(&root_s)
-        );
+        let contents = unit_contents(root, executable);
         match fs::symlink_metadata(&path) {
             Ok(meta) => {
                 if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > 16 * 1024 {
@@ -390,7 +477,7 @@ mod linux {
                     .take(16 * 1024 + 1)
                     .read_to_end(&mut existing)
                     .map_err(|_| "startup unit name is already in use")?;
-                if existing != contents.as_bytes() {
+                if !unit_is_owned(&existing, &contents) {
                     return Err("startup unit name is already in use".into());
                 }
                 systemctl(&["enable", "--now", &format!("{name}.service")])
@@ -438,6 +525,87 @@ mod linux {
         Ok(())
     }
 
+    pub fn disable(root: &Path, executable: &Path, name: &str) -> Result<(), String> {
+        let dir = unit_dir()?;
+        let path = match inspect_existing_unit_dir(&dir)? {
+            Some(()) => dir.join(format!("{name}.service")),
+            None => return Ok(()),
+        };
+        let expected = unit_contents(root, executable);
+        if !read_owned_unit(&path, &expected)? {
+            return Ok(());
+        }
+        if bounded_status(Command::new("systemctl").args(["--user", "show-environment"])).is_err() {
+            return Err("user systemd session is unavailable".into());
+        }
+
+        let unit = format!("{name}.service");
+        systemctl(&["stop", &unit]).map_err(|_| "could not stop user startup".to_string())?;
+        systemctl(&["disable", &unit]).map_err(|_| "could not disable user startup".to_string())?;
+
+        // Recheck immediately before unlinking so a replaced or edited entry is preserved.
+        if !read_owned_unit(&path, &expected)? {
+            return Err("startup unit changed while disabling".into());
+        }
+        fs::remove_file(&path).map_err(|_| "could not remove user startup unit".to_string())?;
+        systemctl(&["daemon-reload"])
+            .map_err(|_| "could not reload user startup units".to_string())?;
+        Ok(())
+    }
+
+    fn inspect_existing_unit_dir(path: &Path) -> Result<Option<()>, String> {
+        let mut current = PathBuf::from("/");
+        for component in path.components() {
+            match component {
+                std::path::Component::RootDir => continue,
+                std::path::Component::Normal(part) => current.push(part),
+                _ => return Err("user startup directory is invalid".into()),
+            }
+            match fs::symlink_metadata(&current) {
+                Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+                    return Err("user startup directory contains a link".into());
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(_) => return Err("could not inspect user startup directory".into()),
+            }
+        }
+        Ok(Some(()))
+    }
+
+    fn read_owned_unit(path: &Path, expected: &str) -> Result<bool, String> {
+        let meta = match fs::symlink_metadata(path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(_) => return Err("could not inspect startup unit".into()),
+        };
+        if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > 16 * 1024 {
+            return Err("startup unit name is already in use".into());
+        }
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(0x20000)
+            .open(path)
+            .map_err(|_| "startup unit name is already in use")?;
+        let opened_meta = file
+            .metadata()
+            .map_err(|_| "startup unit name is already in use")?;
+        if !opened_meta.is_file() || opened_meta.len() > 16 * 1024 {
+            return Err("startup unit name is already in use".into());
+        }
+        let mut contents = Vec::with_capacity(opened_meta.len() as usize);
+        file.take(16 * 1024 + 1)
+            .read_to_end(&mut contents)
+            .map_err(|_| "could not read startup unit")?;
+        if contents.len() > 16 * 1024 {
+            return Err("startup unit name is already in use".into());
+        }
+        if !unit_is_owned(&contents, expected) {
+            return Err("startup unit is not owned by this installation".into());
+        }
+        Ok(true)
+    }
+
     fn systemctl(args: &[&str]) -> Result<(), ()> {
         bounded_status(Command::new("systemctl").arg("--user").args(args)).map_err(|_| ())
     }
@@ -461,5 +629,38 @@ mod linux {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_name_uses_validated_installation_id_prefix() {
+        assert_eq!(
+            startup_name("0123456789abcdef").unwrap(),
+            "VestaHost-0123456789ab"
+        );
+        assert!(startup_name("0123456789a").is_err());
+        assert!(startup_name("0123456789ab/ef").is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_unit_ownership_requires_exact_content() {
+        let root = Path::new("/opt/Vesta root");
+        let executable = root.join("bin/vesta-setup");
+        let expected = linux::unit_contents(root, &executable);
+        assert!(linux::unit_is_owned(expected.as_bytes(), &expected));
+
+        let other_root = Path::new("/opt/Other root");
+        let foreign = linux::unit_contents(other_root, &other_root.join("bin/vesta-setup"));
+        assert!(!linux::unit_is_owned(foreign.as_bytes(), &expected));
+        assert!(!linux::unit_is_owned(b"", &expected));
+        assert!(!linux::unit_is_owned(
+            format!("{}# foreign edit", expected).as_bytes(),
+            &expected
+        ));
     }
 }

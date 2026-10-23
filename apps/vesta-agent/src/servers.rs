@@ -164,6 +164,16 @@ pub fn check_port(bind: IpAddr, port: u16) -> Result<()> {
     Ok(())
 }
 fn create_preflight(root: &Path, name: &str, bind: IpAddr, port: u16) -> Result<()> {
+    local_files::guard(&root.join("uninstall-pending"))?;
+    if root.join("uninstall-pending").exists() {
+        return Err("uninstall_pending_create_refused");
+    }
+    if root
+        .parent()
+        .is_some_and(|parent| parent.join("private/uninstall-pending").exists())
+    {
+        return Err("uninstall_pending_create_refused");
+    }
     let path = record_path(root, name)?;
     local_files::guard(&path)?;
     match fs::symlink_metadata(&path) {
@@ -316,12 +326,16 @@ pub fn managed_lease(directory: &Path) -> Option<PathBuf> {
     Some(directory.with_extension("operator-lock"))
 }
 pub fn delete(root: &Path, name: &str, confirm: &str) -> Result<PathBuf> {
+    let _registry = local_files::lock(&root.join("registry.lock"))?;
+    delete_guarded(root, name, confirm)
+}
+/// Caller holds the registry lock, including any reviewed uninstall snapshot.
+pub(crate) fn delete_guarded(root: &Path, name: &str, confirm: &str) -> Result<PathBuf> {
     if name != confirm {
         return Err("local_delete_confirmation_mismatch");
     }
     // No preparation on refusals: the name must already resolve.
     let server = resolve(root, name)?;
-    let _registry = local_files::lock(&root.join("registry.lock"))?;
     let _lease =
         local_files::lock(&managed_lease(&server.directory).ok_or("local_record_invalid")?)?;
     // Released OS locks do not prove an orphaned game stopped after a crash.

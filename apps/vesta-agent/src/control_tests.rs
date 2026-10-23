@@ -275,9 +275,12 @@ fn protected_channel_start_stop_restart_pending_eula_and_absent_agent() {
             .await
             .unwrap();
         assert_ne!(first, owned.runtime.game_snapshot().unwrap().generation);
-        control::request(db.directory().path(), "owned".into(), Op::Stop)
+        let shutdown = server.shutdown_signal();
+        assert!(!*shutdown.borrow());
+        control::request(db.directory().path(), "owned".into(), Op::Shutdown)
             .await
             .unwrap();
+        assert!(*shutdown.borrow());
         assert_eq!(
             owned.runtime.game_snapshot().unwrap().phase,
             ProcessPhase::Stopped

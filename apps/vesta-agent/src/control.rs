@@ -15,6 +15,7 @@ pub enum Op {
     Start,
     Stop,
     Restart,
+    Shutdown,
     Pair { role: String, minutes: u16 },
     DevicesList,
     OwnerLink { uuid: String, role: String },
@@ -123,6 +124,7 @@ fn endpoint(state: &Path) -> Result<PathBuf> {
 fn endpoint(_state: &Path) -> Result<PathBuf> {
     Err("local_platform_unsupported")
 }
+#[allow(clippy::too_many_arguments)] // One protected connection's existing runtime/context plus shutdown signal.
 async fn serve_stream<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     name: &str,
@@ -131,15 +133,38 @@ async fn serve_stream<S: AsyncRead + AsyncWrite + Unpin>(
     management: &vesta_control::identity::management::ManagementAccess,
     fingerprint: Option<&vesta_transport::TlsFingerprint>,
     public_endpoint: Option<&str>,
+    shutdown: &tokio::sync::watch::Sender<bool>,
 ) -> Result<()> {
     let request = match tokio::time::timeout(IO_WAIT, read_frame(stream)).await {
         Ok(Ok(bytes)) => decode(&bytes),
         _ => Err("local_control_invalid_frame"),
     };
     let mut data = None;
+    let mut requested_shutdown = false;
     let code = match request {
         Err(_) => Code::InvalidRequest,
         Ok(request) if request.name != name => Code::NameMismatch,
+        Ok(request) if matches!(request.op, Op::Shutdown) => {
+            let runtime = runtime.clone();
+            match tokio::task::spawn_blocking(move || {
+                let snapshot = runtime
+                    .game_snapshot()
+                    .map_err(|_| "local_observation_unavailable")?;
+                if snapshot.generation.is_some() {
+                    runtime.request(LocalAction::Stop)?;
+                }
+                Ok::<_, &'static str>(())
+            })
+            .await
+            {
+                Ok(Ok(())) => {
+                    requested_shutdown = true;
+                    Code::Complete
+                }
+                Ok(Err("local_stop_timed_out_no_force_kill")) => Code::StopTimedOutNoForceKill,
+                _ => Code::RuntimeRefused,
+            }
+        }
         Ok(request) if matches!(request.op, Op::Status | Op::PlayersList) => {
             let runtime = runtime.clone();
             match tokio::task::spawn_blocking(move || {
@@ -222,7 +247,7 @@ async fn serve_stream<S: AsyncRead + AsyncWrite + Unpin>(
             }
         }
     };
-    tokio::time::timeout(
+    let result = tokio::time::timeout(
         IO_WAIT,
         write_frame(
             stream,
@@ -234,7 +259,14 @@ async fn serve_stream<S: AsyncRead + AsyncWrite + Unpin>(
         ),
     )
     .await
-    .map_err(|_| "local_control_io_failed")?
+    .map_err(|_| "local_control_io_failed")
+    .and_then(|result| result);
+    // A lost reply does not cancel an admitted shutdown. This is a local-only
+    // request on the existing protected socket/pipe, never an HTTP capability.
+    if requested_shutdown {
+        let _ = shutdown.send(true);
+    }
+    result
 }
 #[cfg(target_os = "linux")]
 struct SocketCleanup {
@@ -262,6 +294,7 @@ impl Drop for SocketCleanup {
 pub struct Server {
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<Result<()>>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
 }
 impl Server {
     pub async fn start(
@@ -278,6 +311,7 @@ impl Server {
         }
         let endpoint = endpoint(state)?;
         let (stop, mut stopped) = tokio::sync::oneshot::channel();
+        let (shutdown, shutdown_receiver) = tokio::sync::watch::channel(false);
         #[cfg(windows)]
         let listener = crate::pipe_security::create(&endpoint, true, 2)?;
         #[cfg(target_os = "linux")]
@@ -322,7 +356,7 @@ impl Server {
                         if stream.peer_cred().map_err(|_| "local_control_acl_refused")?.uid() != linux_uid() { continue; }
                         stream
                     };
-                    let _ = serve_stream(&mut stream, &name, &game, &runtime, &management, fingerprint.as_ref(), public_endpoint.as_deref()).await;
+                    let _ = serve_stream(&mut stream, &name, &game, &runtime, &management, fingerprint.as_ref(), public_endpoint.as_deref(), &shutdown).await;
                 }
                 Ok(())
             }.await;
@@ -351,7 +385,11 @@ impl Server {
         Ok(Self {
             stop: Some(stop),
             task,
+            shutdown: shutdown_receiver,
         })
+    }
+    pub fn shutdown_signal(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.shutdown.clone()
     }
     pub async fn shutdown(mut self) -> Result<()> {
         if let Some(stop) = self.stop.take() {

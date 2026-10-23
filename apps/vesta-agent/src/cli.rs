@@ -12,6 +12,13 @@ pub enum Command {
     Help,
     CreateHelp,
     ManageHelp,
+    UninstallHelp,
+    Uninstall(crate::uninstall::Request),
+    UninstallExecute {
+        job: PathBuf,
+        token: String,
+    },
+    Shutdown(PathBuf),
     List {
         root: Option<PathBuf>,
         json: bool,
@@ -146,6 +153,18 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
     let args: Vec<_> = args.into_iter().collect();
     let command = args.first().and_then(|s| s.to_str()).ok_or(())?;
     match command {
+        "uninstall"
+            if args.len() == 2 && matches!(args[1].to_str(), Some("--help" | "-h" | "help")) =>
+        {
+            return Ok(Command::UninstallHelp);
+        }
+        "uninstall" => return crate::uninstall::parse(&args).map(Command::Uninstall),
+        "uninstall-execute" if args.len() == 3 => {
+            return Ok(Command::UninstallExecute {
+                job: PathBuf::from(&args[1]),
+                token: args[2].to_str().ok_or(())?.to_owned(),
+            });
+        }
         "create"
             if args.len() == 2 && matches!(args[1].to_str(), Some("--help" | "-h" | "help")) =>
         {
@@ -160,7 +179,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
             }
             if !matches!(
                 args.get(1).and_then(|s| s.to_str()),
-                Some("serve" | "status" | "check-config" | "version" | "update")
+                Some("serve" | "status" | "check-config" | "shutdown" | "version" | "update")
             ) {
                 return Err(());
             }
@@ -168,7 +187,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
         }
         "version" if args.len() == 1 => return Ok(Command::Version),
         "update" if args.len() == 1 => return Ok(Command::Update),
-        "status" | "check-config" | "serve" => {
+        "status" | "check-config" | "serve" | "shutdown" => {
             let mut at = 0;
             let source = PathBuf::from(value(&args, &mut at)?);
             let local_only = command == "serve" && args.len() == 3 && args[2] == "--local-only";
@@ -177,6 +196,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
             }
             return Ok(match command {
                 "status" => Command::Status(source),
+                "shutdown" => Command::Shutdown(source),
                 "check-config" => Command::Check(source),
                 _ => Command::Serve { source, local_only },
             });

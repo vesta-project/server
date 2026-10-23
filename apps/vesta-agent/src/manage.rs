@@ -136,6 +136,7 @@ impl Scope {
             });
         }
         let position = match op {
+            "uninstall" => 1,
             "config" | "start" | "stop" | "restart" | "pair" | "backup-init" | "backup-resolve"
             | "recovery-export" | "recovery-import" | "delete" | "resolve-launch"
             | "reset-restarts" => 1,

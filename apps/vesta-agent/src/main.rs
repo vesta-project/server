@@ -17,6 +17,8 @@ mod servers;
 mod sessions;
 mod status;
 mod supervision;
+mod uninstall;
+mod uninstall_fs;
 fn main() -> ExitCode {
     let command = match cli::parse(std::env::args_os().skip(1)) {
         Ok(command) => command,

@@ -296,6 +296,10 @@ pub fn prepare(
     release: &Release,
     progress: &mut dyn FnMut(&str, &str, u64, u64),
 ) -> Result<Receipt> {
+    guard(&answers.root.join("private/uninstall-pending"))?;
+    if answers.root.join("private/uninstall-pending").exists() {
+        return Err("setup_uninstall_pending".into());
+    }
     release.ensure_intact()?;
     validate_answers(answers)?;
     let previous = if answers.root.join("private").join("setup.json").exists() {
@@ -342,6 +346,9 @@ pub fn prepare(
         .map_err(|_| "setup_private_permissions_failed")?;
     lock.try_lock_exclusive()
         .map_err(|_| "setup_already_running")?;
+    if answers.root.join("private/uninstall-pending").exists() {
+        return Err("setup_uninstall_pending".into());
+    }
     let receipt_path = answers.root.join("private").join("setup.json");
     let mut receipt = if receipt_path.exists() {
         let r = read_receipt(&answers.root)?;

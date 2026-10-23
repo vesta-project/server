@@ -12,8 +12,32 @@ pub async fn run(command: Command, base: &Path) -> ExitCode {
 }
 pub async fn run_with_format(command: Command, base: &Path, format: Format) -> ExitCode {
     let result = match command {
+        Command::UninstallHelp => {
+            println!("{}", crate::uninstall::USAGE);
+            return ExitCode::SUCCESS;
+        }
+        Command::Uninstall(request) => return crate::uninstall::run(request, base).await,
+        Command::UninstallExecute { job, token } => {
+            return crate::uninstall::run_job(job, token).await;
+        }
+        Command::Shutdown(source) => {
+            let source = match local_files::absolute(&source, base) {
+                Ok(p) => p,
+                Err(code) => {
+                    eprintln!("{code}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            match HostConfiguration::load_file(&source, base) {
+                Ok(c) => match servers::control_name(&source) {
+                    Ok(name) => control::request(c.state(), name, control::Op::Shutdown).await,
+                    Err(code) => Err(code),
+                },
+                Err(_) => Err("local_config_unreadable"),
+            }
+        }
         Command::Help => {
-            println!("{}", crate::cli::USAGE);
+            println!("{}\n\n{}", crate::cli::USAGE, crate::uninstall::USAGE);
             return ExitCode::SUCCESS;
         }
         Command::ManageHelp => {

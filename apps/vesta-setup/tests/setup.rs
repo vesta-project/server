@@ -68,6 +68,7 @@ impl Bundle {
     }
     fn source(&self) -> Source {
         Source {
+            asset_prefix: None,
             local: Some(self.temp.path().to_owned()),
             base_url: None,
             manifest_sha256: hex::encode(Sha256::digest(
@@ -86,6 +87,39 @@ fn answers(root: PathBuf) -> Answers {
         port: port(),
         external_probe: None,
     }
+}
+
+#[test]
+fn target_prefixed_signed_release_assets_install_to_logical_filenames() {
+    let bundle = Bundle::new(false);
+    let prefix = format!("{}-", platform::target().unwrap());
+    let mut source = bundle.source();
+    for name in ["manifest.json", "manifest.sig"]
+        .iter()
+        .map(|n| n.to_string())
+        .chain(bundle.manifest.files.iter().map(|f| f.name.clone()))
+    {
+        fs::copy(
+            bundle.temp.path().join(&name),
+            bundle.temp.path().join(format!("{prefix}{name}")),
+        )
+        .unwrap();
+    }
+    source.asset_prefix = Some(prefix);
+    let release = release::load(source).unwrap();
+    let installed = tempfile::tempdir().unwrap();
+    release
+        .install(installed.path(), &mut |_, _, _| {})
+        .unwrap();
+    for artifact in &bundle.manifest.files {
+        assert_eq!(
+            fs::read(installed.path().join("bin").join(&artifact.name)).unwrap(),
+            fs::read(bundle.temp.path().join(&artifact.name)).unwrap()
+        );
+    }
+    let mut source = bundle.source();
+    source.asset_prefix = Some("../escape-".into());
+    assert!(release::load(source).is_err());
 }
 fn port() -> u16 {
     TcpListener::bind("127.0.0.1:0")

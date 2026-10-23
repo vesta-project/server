@@ -23,6 +23,7 @@ sha2.workspace = true
 fs2.workspace = true
 vesta-server-install = { path = "../../crates/vesta-server-install" }
 vesta-supervisor.workspace = true
+vesta-setup = { path = "../vesta-setup" }
 rustyline = { version = "18.0.1", default-features = false }
 
 [target.'cfg(windows)'.dependencies]

@@ -51,6 +51,10 @@ pub fn identity_fingerprint(root: &Path) -> Result<String> {
     Ok(fingerprint)
 }
 pub fn serve(root: &Path) -> Result<()> {
+    engine::guard(&root.join("private/uninstall-pending"))?;
+    if root.join("private/uninstall-pending").exists() {
+        return Err("setup_uninstall_pending".into());
+    }
     let receipt = engine::read_receipt(root)?;
     let directory = vesta_state::StateDirectory::new(root.join("private"), None)
         .map_err(|_| "setup_private_directory_refused")?;
@@ -71,6 +75,9 @@ pub fn serve(root: &Path) -> Result<()> {
         .map_err(|_| "setup_private_permissions_failed")?;
     lock.try_lock_exclusive()
         .map_err(|_| "setup_host_already_running")?;
+    if root.join("private/uninstall-pending").exists() {
+        return Err("setup_uninstall_pending".into());
+    }
     if receipt.phase == "activated" {
         return run_agent(root);
     }

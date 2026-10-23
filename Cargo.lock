@@ -2279,6 +2279,7 @@ dependencies = [
  "vesta-control",
  "vesta-game-runtime",
  "vesta-server-install",
+ "vesta-setup",
  "vesta-state",
  "vesta-supervisor",
  "vesta-transport",
