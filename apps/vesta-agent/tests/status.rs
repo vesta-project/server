@@ -202,11 +202,7 @@ fn strict_arguments_refuse_unknown_flags_and_design_only_mutations() {
         let output = command(temp.path(), &args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
         assert!(output.stdout.is_empty());
-        assert!(
-            output
-                .stderr
-                .starts_with(b"Usage: vesta-agent version | update | check-config <path>")
-        );
+        assert!(output.stderr.starts_with(b"Vesta agent\n"));
         assert_eq!(tree(temp.path()), before);
     }
 }

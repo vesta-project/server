@@ -165,19 +165,11 @@ fn unsupported_host_commands_and_extra_arguments_do_not_load_configuration() {
             .unwrap();
         assert_eq!(output.status.code(), Some(2));
         assert!(output.stdout.is_empty());
-        assert!(
-            output
-                .stderr
-                .starts_with(b"Usage: vesta-agent version | update | check-config <path>")
-        );
+        assert!(output.stderr.starts_with(b"Vesta agent\n"));
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
     }
     let output = command().arg("--help").output().unwrap();
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
-    assert!(
-        output
-            .stdout
-            .starts_with(b"Usage: vesta-agent version | update | check-config <path>")
-    );
+    assert!(output.stdout.starts_with(b"Vesta agent\n"));
 }

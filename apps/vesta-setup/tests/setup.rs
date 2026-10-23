@@ -20,6 +20,49 @@ struct Bundle {
     key: Ed25519KeyPair,
     manifest: Manifest,
 }
+
+#[test]
+fn uninstall_rejects_confirmation_bypasses_and_ambiguous_selection_without_side_effects() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("host").to_string_lossy().into_owned();
+    let registry = temporary
+        .path()
+        .join("registry")
+        .to_string_lossy()
+        .into_owned();
+    for (args, error) in [
+        (
+            vec!["uninstall", "--root", &root, "--yes"],
+            "setup_uninstall_options_invalid_no_confirmation_bypass",
+        ),
+        (
+            vec!["uninstall", "--root", &root, "--answers", "answers.json"],
+            "setup_uninstall_options_invalid_no_confirmation_bypass",
+        ),
+        (
+            vec![
+                "uninstall",
+                "--root",
+                &root,
+                "--server",
+                "owned",
+                "--servers-root",
+                &registry,
+            ],
+            "setup_server_uninstall_uses_servers_root_only",
+        ),
+        (vec!["uninstall"], "setup_uninstall_root_required"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_vesta-setup"))
+            .args(args)
+            .current_dir(temporary.path())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(error));
+        assert_eq!(fs::read_dir(temporary.path()).unwrap().count(), 0);
+    }
+}
 impl Bundle {
     fn new(real_setup: bool) -> Self {
         let temp = tempfile::tempdir().unwrap();

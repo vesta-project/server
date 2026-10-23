@@ -80,7 +80,13 @@ impl Tree {
             bytes: 0,
         };
         let mut pending = vec![(root.to_owned(), 0)];
+        let mut path_bytes = 0usize;
         while let Some((path, depth)) = pending.pop() {
+            let bytes = path.as_os_str().as_encoded_bytes().len();
+            path_bytes = path_bytes.saturating_add(bytes);
+            if bytes > 4096 || path_bytes > 64 * 1024 * 1024 {
+                return Err("uninstall_tree_limit_reached");
+            }
             if result.entries.len() >= MAX_ENTRIES || depth > 128 {
                 return Err("uninstall_tree_limit_reached");
             }
@@ -161,5 +167,28 @@ mod tests {
         std::os::unix::fs::symlink(temp.path().join("outside"), root.join("link")).unwrap();
         Tree::scan(&root).unwrap().remove().unwrap();
         assert_eq!(fs::read(temp.path().join("outside")).unwrap(), b"keep");
+    }
+    #[cfg(windows)]
+    #[test]
+    fn internal_junction_is_unlinked_without_traversing_its_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("owned");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("keep"), b"external").unwrap();
+        let result = std::process::Command::new("cmd.exe")
+            .args(["/C", "mklink", "/J"])
+            .arg(root.join("junction"))
+            .arg(&outside)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        Tree::scan(&root).unwrap().remove().unwrap();
+        assert_eq!(fs::read(outside.join("keep")).unwrap(), b"external");
     }
 }

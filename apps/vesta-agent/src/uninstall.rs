@@ -110,6 +110,12 @@ fn within(path: &Path, root: &Path) -> bool {
     let root = vesta_setup::paths::comparable(root);
     path == root || path.starts_with(&(root + "/"))
 }
+fn relocated(path: &Path, root: &Path, destination: &Path) -> Option<PathBuf> {
+    within(path, root).then(|| {
+        let relative: PathBuf = path.components().skip(root.components().count()).collect();
+        destination.join(relative)
+    })
+}
 fn plan(request: &Request, base: &Path) -> Result<Plan> {
     if let Some(selected) = &request.server {
         let registry = servers::root(request.registry.as_deref(), base)?;
@@ -354,12 +360,10 @@ fn review(plan: &Plan, choice: DataChoice, out: &mut impl Write) -> Result<()> {
                         out,
                         "  External registry/data remain in place. Preserved absolute paths may need reconfiguration on reinstall."
                     )?;
-                    if let Ok(relative) = plan.registry.strip_prefix(root) {
-                        writeln!(
-                            out,
-                            "  This registry moves to {}",
-                            plan.preservation.as_ref().unwrap().join(relative).display()
-                        )?;
+                    if let Some(location) =
+                        relocated(&plan.registry, root, plan.preservation.as_ref().unwrap())
+                    {
+                        writeln!(out, "  This registry moves to {}", location.display())?;
                     }
                 }
             }
@@ -487,22 +491,46 @@ async fn run_inner(request: Request, base: &Path) -> Result<()> {
         return Err("uninstall_interactive_terminal_required_no_yes_bypass");
     }
     let choice = confirm(&reviewed, &mut io::stdin().lock(), &mut io::stdout().lock())?;
-    if let Some(root) = &reviewed.installation {
-        if std::env::current_dir().is_ok_and(|cwd| within(&cwd, root)) {
-            std::env::set_current_dir(root.parent().ok_or("uninstall_path_refused")?)
-                .map_err(|_| "uninstall_working_directory_unavailable")?;
-        }
+    let cwd = std::env::current_dir().map_err(|_| "uninstall_working_directory_unavailable")?;
+    let destination = outside_removal_cwd(&reviewed, &cwd)?;
+    if destination != cwd {
+        std::env::set_current_dir(destination)
+            .map_err(|_| "uninstall_working_directory_unavailable")?;
     }
     #[cfg(windows)]
-    if reviewed
-        .installation
-        .as_ref()
-        .is_some_and(|root| std::env::current_exe().is_ok_and(|exe| within(&exe, root)))
     {
-        stage_self(reviewed, choice, request)?;
-        return Err("uninstall_handed_off");
+        let setup_parent = std::env::var("VESTA_UNINSTALL_SETUP_PID")
+            .ok()
+            .map(|value| value.parse::<u32>().map_err(|_| "uninstall_helper_invalid"))
+            .transpose()?
+            .filter(|pid| *pid != 0 && *pid != std::process::id());
+        if reviewed.installation.as_ref().is_some_and(|root| {
+            setup_parent.is_some() || std::env::current_exe().is_ok_and(|exe| within(&exe, root))
+        }) {
+            stage_self(reviewed, choice, request, setup_parent)?;
+            return Err("uninstall_handed_off");
+        }
     }
     execute(reviewed, choice, &request, base).await
+}
+
+// Windows retains the process working directory. Leave every selected tree,
+// including an external registry, before moving or removing any of them.
+fn outside_removal_cwd(reviewed: &Plan, cwd: &Path) -> Result<PathBuf> {
+    let roots: Vec<&Path> = if let Some(root) = &reviewed.installation {
+        vec![root, &reviewed.registry]
+    } else {
+        reviewed
+            .targets
+            .iter()
+            .map(|t| t.directory.as_path())
+            .collect()
+    };
+    let mut destination = cwd;
+    while roots.iter().any(|root| within(destination, root)) {
+        destination = destination.parent().ok_or("uninstall_path_refused")?;
+    }
+    Ok(destination.to_owned())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -510,13 +538,20 @@ async fn run_inner(request: Request, base: &Path) -> Result<()> {
 struct Job {
     token: String,
     parent: u32,
+    #[serde(default)]
+    setup_parent: Option<u32>,
     plan: Plan,
     choice: DataChoice,
     request: Request,
 }
 
 #[cfg(windows)]
-fn stage_self(plan: Plan, choice: DataChoice, mut request: Request) -> Result<()> {
+fn stage_self(
+    plan: Plan,
+    choice: DataChoice,
+    mut request: Request,
+    setup_parent: Option<u32>,
+) -> Result<()> {
     let directory =
         std::env::temp_dir().join(format!("vesta-uninstall-{}", uuid::Uuid::new_v4().simple()));
     let private =
@@ -539,6 +574,7 @@ fn stage_self(plan: Plan, choice: DataChoice, mut request: Request) -> Result<()
     let job = Job {
         token: token.clone(),
         parent: std::process::id(),
+        setup_parent,
         plan,
         choice,
         request,
@@ -620,14 +656,25 @@ pub async fn run_job(path: PathBuf, token: String) -> ExitCode {
         if token.len() != 32
             || token != job.token
             || job.parent == std::process::id()
+            || job.setup_parent == Some(std::process::id())
             || job.request.plan
         {
             return Err("uninstall_helper_invalid");
         }
-        #[cfg(windows)]
-        wait_parent(job.parent)?;
-        let base = std::env::current_dir().map_err(|_| "uninstall_helper_invalid")?;
-        let result = execute(job.plan, job.choice, &job.request, &base).await;
+        let result = async {
+            #[cfg(windows)]
+            {
+                wait_parent(job.parent)?;
+                // Installed setup also holds an executable inside the removal
+                // tree. It exits after the CLI reports the handoff (status 75).
+                if let Some(pid) = job.setup_parent {
+                    wait_parent(pid)?;
+                }
+            }
+            let base = std::env::current_dir().map_err(|_| "uninstall_helper_invalid")?;
+            execute(job.plan, job.choice, &job.request, &base).await
+        }
+        .await;
         let receipt =
             serde_json::json!({"complete":result.is_ok(),"error":result.as_ref().err().copied()});
         local_files::write_new(
@@ -646,7 +693,30 @@ pub async fn run_job(path: PathBuf, token: String) -> ExitCode {
     }
 }
 
+fn operation_guard(path: &Path) -> Result<std::fs::File> {
+    // Outside every removal tree: retain exclusion through handle release and
+    // final unlink/rename. Never unlink a stable advisory lock's identity.
+    let key = format!(
+        "{:x}",
+        Sha256::digest(vesta_setup::paths::comparable(path).as_bytes())
+    );
+    let root = std::env::temp_dir().join(format!("vesta-uninstall-lock-{key}"));
+    StateDirectory::new(&root, None)
+        .and_then(|d| d.prepare())
+        .map_err(|_| "uninstall_operation_lock_unavailable")?;
+    local_files::lock_for_uninstall(&root.join("operation.lock"))
+}
+
 async fn execute(reviewed: Plan, choice: DataChoice, request: &Request, base: &Path) -> Result<()> {
+    let _registry_operation = operation_guard(&reviewed.registry)?;
+    let _installation_operation = reviewed
+        .installation
+        .as_ref()
+        .map(|root| operation_guard(root))
+        .transpose()?;
+    if reviewed.installation.is_none() {
+        check_start(&reviewed.registry.join("registry.lock"))?;
+    }
     if let Some(root) = &reviewed.installation {
         if choice == DataChoice::Keep && reviewed.preservation.as_ref().unwrap().exists() {
             return Err("uninstall_preservation_destination_exists");
@@ -712,6 +782,10 @@ async fn execute(reviewed: Plan, choice: DataChoice, request: &Request, base: &P
         } else if local_files::read(&registry_marker, 64)? != receipt.installation_id.as_bytes() {
             return Err("uninstall_registry_marker_changed");
         }
+        #[cfg(unix)]
+        fs::File::open(&reviewed.registry)
+            .and_then(|d| d.sync_all())
+            .map_err(|_| "uninstall_marker_sync_failed")?;
     }
     for target in &reviewed.targets {
         stop_config(&target.directory.join("host.toml")).await?;
@@ -788,11 +862,8 @@ async fn execute(reviewed: Plan, choice: DataChoice, request: &Request, base: &P
             fs::remove_file(&registry_marker)
                 .map_err(|_| "uninstall_registry_marker_cleanup_failed")?;
         }
-        let registry_location = reviewed
-            .registry
-            .strip_prefix(root)
-            .map(|relative| preservation.join(relative))
-            .unwrap_or_else(|_| reviewed.registry.clone());
+        let registry_location = relocated(&reviewed.registry, root, preservation)
+            .unwrap_or_else(|| reviewed.registry.clone());
         println!(
             "Vesta uninstalled. Server data/state preserved at {}. Registry: {}",
             preservation.display(),
@@ -1038,6 +1109,24 @@ mod tests {
         );
     }
     #[test]
+    fn maintenance_marker_blocks_normal_deletion_and_offline_mutation_locks() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("registry");
+        let (instance, _) = registry(&root);
+        fs::write(root.join("uninstall-pending"), b"owned uninstall").unwrap();
+        assert_eq!(
+            servers::delete(&root, "owned", "owned"),
+            Err("uninstall_pending_start_refused")
+        );
+        assert!(local_files::lock(&servers::managed_lease(&instance).unwrap()).is_err());
+        assert_eq!(
+            check_start(&instance.join("host.toml")),
+            Err("uninstall_pending_start_refused")
+        );
+        assert!(instance.join("game/world/keep").is_file());
+        assert!(root.join("names/owned.json").is_file());
+    }
+    #[test]
     fn no_force_or_yes_can_bypass_interactive_verification() {
         for args in [
             vec!["uninstall", "a", "--yes"],
@@ -1047,5 +1136,59 @@ mod tests {
         ] {
             assert!(parse(&args.into_iter().map(OsString::from).collect::<Vec<_>>()).is_err());
         }
+    }
+    #[test]
+    fn working_directory_leaves_single_server_and_whole_registry_trees() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut reviewed = sample();
+        reviewed.registry = temp.path().join("registry");
+        reviewed.targets[0].directory = reviewed.registry.join("instances/server");
+        let cwd = reviewed.targets[0].directory.join("game/world");
+        assert_eq!(
+            outside_removal_cwd(&reviewed, &cwd).unwrap(),
+            reviewed.registry.join("instances")
+        );
+        reviewed.installation = Some(temp.path().join("host"));
+        assert_eq!(outside_removal_cwd(&reviewed, &cwd).unwrap(), temp.path());
+        let host_cwd = reviewed.installation.as_ref().unwrap().join("bin");
+        assert_eq!(
+            outside_removal_cwd(&reviewed, &host_cwd).unwrap(),
+            temp.path()
+        );
+        reviewed.registry = reviewed.installation.as_ref().unwrap().join("servers");
+        assert_eq!(
+            outside_removal_cwd(&reviewed, &reviewed.registry.join("instances")).unwrap(),
+            temp.path()
+        );
+        assert_eq!(
+            outside_removal_cwd(&reviewed, temp.path()).unwrap(),
+            temp.path()
+        );
+    }
+    #[cfg(windows)]
+    #[test]
+    fn moved_registry_path_uses_windows_case_and_verbatim_identity() {
+        let destination = Path::new(r"C:\preserved");
+        for registry in [r"c:\HOST\Servers", r"\\?\C:\Host\Servers"] {
+            assert_eq!(
+                relocated(Path::new(registry), Path::new(r"C:\Host"), destination),
+                Some(destination.join("Servers"))
+            );
+        }
+    }
+    #[tokio::test]
+    async fn another_uninstaller_cannot_enter_after_internal_handles_are_released() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("registry");
+        let (instance, _) = registry(&root);
+        let request = server_request(&root);
+        let reviewed = plan(&request, temp.path()).unwrap();
+        let _guard = operation_guard(&root).unwrap();
+        assert!(
+            execute(reviewed, DataChoice::Remove, &request, temp.path())
+                .await
+                .is_err()
+        );
+        assert!(instance.join("game/world/keep").is_file());
     }
 }

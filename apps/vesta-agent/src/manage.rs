@@ -181,7 +181,7 @@ impl Scope {
         }
         if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
             println!(
-                "{USAGE}\n\nTerminal replies are formatted. Append --json for structured output."
+                "{USAGE}\n\n  uninstall  Remove this server with name and final confirmation\n\nTerminal replies are formatted. Append --json for structured output."
             );
             return ExitCode::SUCCESS;
         }

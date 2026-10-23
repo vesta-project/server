@@ -1,7 +1,7 @@
 use std::{path::PathBuf, process::ExitCode};
 use vesta_setup::{engine, host, release::Source, ui, visual_states, wizard};
 
-const HELP: &str = "Vesta host setup\n\n  vesta-setup --bundle-url <https-directory> --manifest-sha256 <hex> --release-key <hex>\n  vesta-setup --bundle-dir <directory> --manifest-sha256 <hex> --release-key <hex>\n              [--answers <json-file> --yes] [--no-color] [--ascii]\n  vesta-setup preview [--state <name> | --export <new-directory>] [--no-color] [--ascii]\n  vesta-setup <host|status|stop|activate> --root <installation-directory>\n\nInteractive Vesta host setup. Default HTTPS port: 8443.\n";
+const HELP: &str = "Vesta host setup\n\n  vesta-setup --bundle-url <https-directory> --manifest-sha256 <hex> --release-key <hex>\n  vesta-setup --bundle-dir <directory> --manifest-sha256 <hex> --release-key <hex>\n              [--asset-prefix <target->] [--answers <json-file> --yes] [--no-color] [--ascii]\n  vesta-setup preview [--state <name> | --export <new-directory>] [--no-color] [--ascii]\n  vesta-setup <host|status|stop|activate> --root <installation-directory>\n  vesta-setup uninstall --root <installation-directory> [--servers-root <registry>] [--plan]\n  vesta-setup uninstall --server <name|id> --servers-root <registry> [--plan]\n              [--bundle-url <https-directory> --manifest-sha256 <hex> --release-key <hex>\n               --asset-prefix <target->]\n\nInteractive Vesta host setup. Default HTTPS port: 8443.\nUninstall requires interactive confirmation; --plan only previews selected paths.\n";
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -231,16 +231,33 @@ fn uninstall(
         }
     };
     engine::guard(&executable)?;
+    let removal_roots: Vec<_> = ["--root", "--servers-root"]
+        .iter()
+        .filter_map(|key| values.get(*key).map(|v| absolute(v)))
+        .collect();
+    let mut destination = original_base.as_path();
+    while removal_roots.iter().any(|root| {
+        let current = vesta_setup::paths::comparable(destination);
+        let root_key = vesta_setup::paths::comparable(root);
+        current == root_key || current.starts_with(&(root_key + "/"))
+    }) {
+        destination = destination.parent().ok_or("setup_uninstall_root_invalid")?;
+    }
+    if destination != original_base {
+        std::env::set_current_dir(destination).map_err(|_| "setup_directory_unavailable")?;
+    }
+    let mut command = Command::new(&executable);
+    command.args(args);
+    #[cfg(windows)]
     if let Some(root) = values.get("--root").map(|v| absolute(v)) {
-        let current = vesta_setup::paths::comparable(&original_base);
+        let own_executable = std::env::current_exe().map_err(|_| "setup_executable_unavailable")?;
+        let own_key = vesta_setup::paths::comparable(&own_executable);
         let root_key = vesta_setup::paths::comparable(&root);
-        if current == root_key || current.starts_with(&(root_key + "/")) {
-            std::env::set_current_dir(root.parent().ok_or("setup_uninstall_root_invalid")?)
-                .map_err(|_| "setup_directory_unavailable")?;
+        if own_key == root_key || own_key.starts_with(&(root_key + "/")) {
+            command.env("VESTA_UNINSTALL_SETUP_PID", std::process::id().to_string());
         }
     }
-    let status = Command::new(&executable)
-        .args(args)
+    let status = command
         .status()
         .map_err(|_| "setup_uninstall_cli_unavailable")?;
     if status.code() == Some(75) {

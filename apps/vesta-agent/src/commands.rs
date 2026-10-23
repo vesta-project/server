@@ -42,7 +42,7 @@ pub async fn run_with_format(command: Command, base: &Path, format: Format) -> E
         }
         Command::ManageHelp => {
             println!(
-                "{}\n\nTerminal replies are formatted. Append --json for structured output.",
+                "{}\n\n  uninstall  Remove this server with name and final confirmation\n\nTerminal replies are formatted. Append --json for structured output.",
                 crate::manage::USAGE
             );
             return ExitCode::SUCCESS;

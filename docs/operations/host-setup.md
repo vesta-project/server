@@ -4,7 +4,7 @@
 
 The setup CLI targets Windows x86-64, Linux x86-64, and Linux ARM64. Automatic startup is available on Windows when PowerShell and Task Scheduler are available, and on Linux when the current user's systemd session is available. macOS and other targets are unsupported. Windows is the only OS with host-side test coverage at present; no Linux installation or login-session test is recorded. There is no live Minecraft launch in this setup path.
 
-The focused verification includes 16 Rust integration tests, three release-packager tests, five external-probe tests, and 40 captured production-renderer states. A real pending TLS host, resume/recovery, manual stop/restart, signature and artifact rejection, strict headless input, Windows junction rejection, port rechecks, platform path handling, external-result validation, and terminal frame bounds are covered. Automatic startup registration was not installed on the development machine. The automation terminal did not expose interactive stdin to Rust, so end-to-end keyboard interaction remains a manual check in Windows Terminal and a Linux terminal.
+Focused verification covers a real pending TLS host, resume/recovery, manual stop/restart, signature and artifact rejection, strict headless input, Windows junction rejection, port rechecks, platform path handling, external-result validation, terminal frame bounds, and 40 captured production-renderer states. Windows interactive uninstall paths have also been exercised through a PTY. Automatic startup registration was not installed on the development machine. Real Linux terminal and login-session behavior still require platform validation.
 
 ## Install interactively
 
@@ -96,6 +96,10 @@ The intended local activation contract is: the app reads the handoff descriptor,
 Both startup choices start the pending host once as setup finishes so the installer can verify it. `manual` means setup does not register automatic startup; it does not mean the host remains stopped after installation. The manually started host lasts for its current process/session and can be stopped with the command above.
 
 `automatic` registers a current-user logon start: a limited, interactive Windows Scheduled Task or a current-user systemd service. It starts at user sign-in/session startup, not at machine boot, and does not create a privileged machine service. This behavior depends on the user's platform session facilities being available.
+
+## Uninstall
+
+Use `vesta uninstall --root <host-root>` or `vesta-setup uninstall --root <host-root>`. Both require interactive confirmation and offer to preserve managed server data by default. Verified Bash and PowerShell bootstrap helpers can also perform uninstall. See [uninstall commands and safety](uninstall.md) for individual-server removal, path scope, Windows completion receipts and recovery.
 
 ## Reproduce terminal preview screenshots
 
