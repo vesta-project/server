@@ -67,14 +67,25 @@ remain part of this follow-up.
   timed out after 15000ms.` Logic/type/native checks passed; no visual acceptance
   claim is made from that failed browser session.
 
-## Current development agent blocker
+## Development agent recovery
 
-The latest startup stderr is `local_shutdown_unproven_requires_supervisor_recovery`.
-`operator-session-pending` dates from the previous evening. No agent, supervisor or
-Java process was present when checked. The marker is preserved; the running dev
-installation has not been silently repaired or its identity/credentials rotated.
-An explicit approval request to archive that evidence and start the rebuilt agent
-is pending. No Minecraft start or stop is implied by entering the management shell.
+Startup had failed with `local_shutdown_unproven_requires_supervisor_recovery`.
+The user explicitly approved archiving the previous evening's pending marker and
+restarting the rebuilt development agent. Immediately before recovery, no agent,
+supervisor or Java process was running and port 8443 was free. The marker's bytes
+matched the expected shutdown-not-proven evidence. It was moved intact to
+`operator-sessions/e80a3694-b915-4690-941e-950ddd9de04d` in the existing dev instance
+`srv_ef79ab69c41c4194996ba927e055da8c`.
+
+At 2026-10-23 11:56 local time, rebuilt agent/CLI/supervisor binaries were staged
+under the dedicated temporary dev root's `bin`; the replaced binary was preserved
+under `bin/history/20261023-115645`. Agent PID 4388 owns `127.0.0.1:8443`.
+`vesta manage dev-server status --install-root <dev-root>/servers` succeeds with
+agent online and Minecraft stopped. No Java process is running. New logs are
+`agent.recovered-20261023-115645.stdout.log` and the initially empty corresponding
+stderr log. Existing configuration, world, TLS material and identity were retained.
+This verifies local listener and management readiness; launcher reconnection still
+needs observation in the user's running launcher.
 
 Core commits: `c3e4e98` (local observations), `4b33300` (scoped CLI), `7b8c5a3`
 (signed short-command packaging). Later small CLI wording fixes and launcher
@@ -82,5 +93,5 @@ changes are recorded in their own follow-up commits.
 
 Launcher commits: `796ed64c` (explicit refresh and demand recovery), `3e894685`
 (startup prefetch and dev-command consistency). No unrelated repositories or OS
-settings were changed. The permission request is for the concrete, built agent;
+settings were changed. Recovery applied only the concrete, built development agent;
 no release publishing or public network exposure is part of this task.
