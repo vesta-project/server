@@ -211,10 +211,15 @@ impl super::RuntimeHandle {
 
 fn with_console_access<T>(
     operations: &Operations,
-    subject: &Subject,
+    subject: Option<&Subject>,
     capability: Capability,
     work: impl FnOnce() -> PlayerQueryResult<T>,
 ) -> PlayerQueryResult<T> {
+    // None is issued only by LocalRuntime through its same-account OS adapter.
+    // Network handles always supply a real subject and retain every policy gate.
+    let Some(subject) = subject else {
+        return work();
+    };
     operations
         .db
         .read_with(|snapshot| {
@@ -261,7 +266,7 @@ fn ensure_view(view: &LiveGameView, generation: GenerationId) -> PlayerQueryResu
 
 struct Request {
     capability: Capability,
-    subject: Subject,
+    subject: Option<Subject>,
     generation: GenerationId,
     deadline: Instant,
     cancelled: Arc<AtomicBool>,
@@ -312,6 +317,22 @@ impl QueryEndpoint {
         timeout: Duration,
         capability: Capability,
     ) -> PlayerQueryResult<PlayerObservation> {
+        self.query_inner(Some(subject), generation, timeout, capability)
+    }
+    pub(super) fn query_local(
+        &self,
+        generation: GenerationId,
+        timeout: Duration,
+    ) -> PlayerQueryResult<PlayerObservation> {
+        self.query_inner(None, generation, timeout, Capability::PlayersView)
+    }
+    fn query_inner(
+        &self,
+        subject: Option<&Subject>,
+        generation: GenerationId,
+        timeout: Duration,
+        capability: Capability,
+    ) -> PlayerQueryResult<PlayerObservation> {
         if timeout.is_zero() || timeout > MAX_PLAYER_QUERY_WAIT {
             return Err(PlayerQueryError::InvalidRequest);
         }
@@ -322,7 +343,7 @@ impl QueryEndpoint {
         let (reply, receiver) = mpsc::sync_channel(1);
         let request = Request {
             capability,
-            subject: subject.clone(),
+            subject: subject.cloned(),
             generation,
             deadline,
             cancelled: cancelled.clone(),
@@ -541,7 +562,7 @@ impl QueryDriver {
                 }
                 let found = with_console_access(
                     &self.operations,
-                    &pending.request.subject,
+                    pending.request.subject.as_ref(),
                     pending.request.capability,
                     || {
                         pending.request.alive(&self.stopping)?;
@@ -603,7 +624,7 @@ impl QueryDriver {
         let mut admitted = None;
         let checked = with_console_access(
             &self.operations,
-            &request.subject,
+            request.subject.as_ref(),
             request.capability,
             || {
                 request.alive(&self.stopping)?;
@@ -614,7 +635,7 @@ impl QueryDriver {
                 admitted = Some(
                     game.process
                         .queue_list_guarded(generation, move || {
-                            with_console_access(&operations, &subject, capability, || {
+                            with_console_access(&operations, subject.as_ref(), capability, || {
                                 if stopping.load(Ordering::Acquire) {
                                     return Err(PlayerQueryError::ShuttingDown);
                                 }

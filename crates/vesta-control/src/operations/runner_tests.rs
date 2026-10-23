@@ -620,6 +620,7 @@ fn returned_stop_ack_with_second_owned_writer_draining_retains_lock_until_actual
             shared: shared.clone(),
             local: LocalRuntime {
                 wake: shared.wake.clone(),
+                shared: shared.clone(),
                 sender: mpsc::sync_channel(1).0,
             },
             driver: Some(handle),
@@ -833,6 +834,7 @@ fn delayed_stop(
         shared: shared.clone(),
         local: LocalRuntime {
             wake: shared.wake.clone(),
+            shared: shared.clone(),
             sender: mpsc::sync_channel(1).0,
         },
         driver: Some(handle),
@@ -895,6 +897,7 @@ fn pending_player_query_timeout_retains_driver_database_and_lifecycle_exclusion(
             shared: shared.clone(),
             local: LocalRuntime {
                 wake: shared.wake.clone(),
+                shared: shared.clone(),
                 sender: mpsc::sync_channel(1).0,
             },
             driver: Some(handle),
@@ -1150,6 +1153,7 @@ fn delayed_stop_ack(
             shared: shared.clone(),
             local: LocalRuntime {
                 wake: shared.wake.clone(),
+                shared: shared.clone(),
                 sender: mpsc::sync_channel(1).0,
             },
             driver: Some(handle),
@@ -1206,6 +1210,7 @@ fn late_dispatch_observation_failure_survives_successful_later_polls_and_real_ex
             shared: shared.clone(),
             local: LocalRuntime {
                 wake: shared.wake.clone(),
+                shared: shared.clone(),
                 sender: mpsc::sync_channel(1).0,
             },
             driver: Some(handle),

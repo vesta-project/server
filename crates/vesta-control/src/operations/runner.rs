@@ -217,8 +217,30 @@ struct LocalRequest {
 pub struct LocalRuntime {
     sender: mpsc::SyncSender<LocalRequest>,
     wake: Arc<WorkWake>,
+    shared: Arc<DriverState>,
 }
 impl LocalRuntime {
+    /// Same trusted local adapter as lifecycle commands; never exposed by RuntimeHandle.
+    pub fn query_players(
+        &self,
+        timeout: Duration,
+    ) -> super::players::PlayerQueryResult<super::players::PlayerObservation> {
+        self.shared.view.revision()?;
+        let generation = self
+            .shared
+            .view
+            .snapshot()?
+            .generation
+            .ok_or(super::players::PlayerQueryError::NotRunning)?;
+        self.shared.players.query_local(generation, timeout)
+    }
+    pub fn game_snapshot(&self) -> OperationsResult<ProcessSnapshot> {
+        self.shared.view.revision()?;
+        self.shared.view.snapshot()
+    }
+    pub fn readiness(&self) -> OperationsResult<super::readiness::ReadinessView> {
+        self.shared.view.readiness()
+    }
     pub fn request(&self, action: LocalAction) -> Result<(), &'static str> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
@@ -509,12 +531,13 @@ impl OperationRuntime {
             .map_err(|_| StateError::new("state_operation_worker_start_failed"))?;
         Ok(Self {
             operations,
-            shared,
+            shared: shared.clone(),
             driver: Some(driver),
             start_block,
             local: LocalRuntime {
                 sender: local_sender,
                 wake: local_wake,
+                shared: shared.clone(),
             },
         })
     }

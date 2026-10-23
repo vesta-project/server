@@ -27,6 +27,34 @@ const QUERY_WAIT: Duration = Duration::from_secs(8);
 const ENABLE: &[u8] = b"vesta-owned-inert-player-query-fixture-v1";
 const LIST_LINE: &str = "There are 2 of a max of 20 players online: OwnedAlpha, OwnedBeta";
 
+#[test]
+fn local_owner_queries_use_the_same_bounded_generation_and_fixed_write_path() {
+    let harness = Harness::new(false);
+    let mut owned = harness.runtime();
+    assert!(matches!(
+        owned.runtime.local_handle().query_players(QUERY_WAIT),
+        Err(PlayerQueryError::NotRunning)
+    ));
+    let generation = running(&harness, &owned.runtime);
+    let result = owned
+        .runtime
+        .local_handle()
+        .query_players(QUERY_WAIT)
+        .unwrap();
+    assert_eq!(result.generation(), generation);
+    assert_eq!(result.list().online(), 2);
+    assert_eq!(result.list().players()[0].name(), "OwnedAlpha");
+    assert_eq!(
+        fs::read_to_string(harness.cwd.join("player-query-commands")).unwrap(),
+        "list\n"
+    );
+    assert!(matches!(
+        owned.runtime.local_handle().query_players(Duration::ZERO),
+        Err(PlayerQueryError::InvalidRequest)
+    ));
+    assert_eq!(shutdown(&mut owned), ShutdownOutcome::Complete);
+}
+
 thread_local! {
     static FAIL_READ_FINALIZATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
