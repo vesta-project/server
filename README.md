@@ -7,6 +7,12 @@ code, and the retained legacy Java wrapper moved to
 
 ## Development
 
+For a session with freshly built server commands on PATH, run `cargo dev` (or
+`cargo run -p vesta-dev --`). Use `vesta-rebuild` inside it and `exit` to return.
+Use `cargo dev --release` when measuring runtime performance. See the
+[development shell guide](docs/operations/dev-session.md) for server selection,
+setup previews, and applying rebuilt binaries.
+
 Use the CI Rust toolchain (1.96.0) and Node 22 or later:
 
 ```powershell

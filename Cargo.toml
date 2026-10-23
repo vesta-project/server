@@ -9,6 +9,7 @@ members = [
     "crates/vesta-supervisor",
     "apps/vesta-agent",
     "apps/vesta-setup",
+    "tools/vesta-dev",
 ]
 resolver = "3"
 

@@ -2319,6 +2319,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "vesta-dev"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "vesta-game-runtime"
 version = "0.1.0"
 dependencies = [

@@ -1,5 +1,9 @@
 # Running the Rust server agent
 
+For development, [`cargo dev`](docs/operations/dev-session.md) builds the CLI,
+agent, supervisor and setup tool and opens a temporary shell with them on PATH.
+`vesta-rebuild` selects a new build in that shell; it does not restart a server.
+
 Build the agent and supervisor from this repository:
 
 ```powershell
@@ -10,6 +14,37 @@ cargo run --locked -p vesta-agent --bin vesta-agent -- --help
 Use CLI help for the implemented setup, configuration, local operator, and serve
 commands. The hosting setup flow and production deployment packaging remain
 incomplete; former Java one-liner installers are not Rust agent installers.
+
+## Process ownership
+
+`vesta` and `vesta-agent` currently compile the same command implementation under
+two executable names. A management invocation is a short-lived local client (or
+the interactive `manage` terminal). An invocation of `agent serve <host.toml>` is
+the long-running agent for that server: launcher HTTPS, authentication, state,
+tasks, console streaming, sleep and other management logic live there. Exiting a
+management terminal does not stop the agent.
+
+Minecraft always runs in its own Java process. In the default `in-process`
+supervision mode, the agent owns the Java process and its stdin/stdout handling;
+the words refer to the supervisor logic being in the agent, not Minecraft being
+inside the agent process. Game commands can still wait for Minecraft's main
+thread even while the agent's network listener is responsive. CPU/RAM contention
+on the host can affect both processes.
+
+With `[process] supervision = "separate"` in `host.toml`, there is one additional
+`vesta-supervisor` process per server. The agent starts or attaches to it. It owns
+Java, drains output, writes console commands, and records process identity. It has
+protected same-account local IPC, not a public network listener. Agent restart
+can reattach to the same game generation; it does not restart Minecraft. The
+supervisor can also enforce the configured opt-in crash restart policy. Rebuilding
+on disk does not upgrade a supervisor that is already running. See the
+[supervisor contract](docs/operations/supervisor.md) for recovery and ownership
+rules. Separate supervision is opt-in, not the current default.
+
+`vesta-setup` is the installer/onboarding tool. Before activation its `host`
+command runs the small pending setup endpoint; after activation it starts the
+installed agent. That pending endpoint is distinct from the normal agent and its
+management API. The setup tool is not a second Minecraft supervisor.
 
 Operational contracts:
 

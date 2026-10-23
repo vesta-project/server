@@ -95,3 +95,30 @@ Launcher commits: `796ed64c` (explicit refresh and demand recovery), `3e894685`
 (startup prefetch and dev-command consistency). No unrelated repositories or OS
 settings were changed. Recovery applied only the concrete, built development agent;
 no release publishing or public network exposure is part of this task.
+
+## Reusable development shell
+
+Added `cargo dev` / `cargo run -p vesta-dev --` and the
+[development shell guide](../operations/dev-session.md). The helper builds all
+four server commands, reads their real executable paths from Cargo's artifact
+messages, and copies a complete set to a unique temporary snapshot. The child
+PowerShell/Bash session gets PATH and the chosen registry for its lifetime.
+`vesta-rebuild` selects another complete snapshot only after successful build and
+copy. Running agents/supervisors keep their previous executable and sibling set;
+no runtime restart, marker recovery, or installer trust bypass is implicit.
+
+Verification: two staging/artifact tests pass, including incomplete-copy retention
+and immutable previous binaries; strict helper Clippy and workspace formatting
+pass. Actual Windows PowerShell 5.1 shell resolves all four executables, lists
+`dev-server`, reads agent-online/Minecraft-stopped status, shows the production
+setup welcome preview, and switches PATH to a new snapshot on rebuild. Injecting
+a missing Cargo executable leaves the selected build unchanged. Parent PATH and
+registry remain unchanged. The existing agent remains PID 4388 on port 8443.
+
+Interrupt testing found Windows broadcasting Ctrl+C to the waiting helper too.
+An isolated console adapter now handles only Ctrl+C/Break in that waiting parent;
+child commands retain ordinary interrupt handling. Retested leaving `vesta manage`
+with Ctrl+C: shell stays alive, rebuild and live status still work, and explicit
+`exit` closes it. Build interruption before shell startup retains default behavior.
+Bash syntax passes via Git Bash; Linux runtime behavior and full signed installer
+installation were not exercised. No test shell is intentionally left running.
