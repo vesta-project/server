@@ -43,10 +43,14 @@ The terminal uses a line editor only when attached to a TTY, with a scoped promp
 and compact banner. `NO_COLOR` or `TERM=dumb` disables the banner's color. It is a
 structured command interface; it never invokes an operating-system shell.
 
-`help` lists the server commands. `exit`, `quit`, `back`, EOF/Ctrl+D or Ctrl+C while
-editing leave the interface. Entering or leaving the interface does not start,
+`help` lists the server commands. `exit`, `quit`, `back`, EOF or Ctrl+C while
+editing leave the interface. Supported line-editor terminals accept Ctrl+D;
+`TERM=dumb` uses ordinary OS input/EOF behavior (Windows: Ctrl+Z then Enter).
+Entering or leaving the interface does not start,
 stop or terminate the agent or Minecraft. An explicit lifecycle command has its
 ordinary effect. There is no automatic replay after losing a command's response.
+Interrupting a client that is waiting for an admitted command does not undo that
+command; inspect its outcome before deciding whether to retry.
 
 There is no persisted command history. Paths with spaces must be quoted; both
 single and double quotes group arguments, and backslashes remain literal so

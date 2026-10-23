@@ -10,7 +10,7 @@ use std::{
     process::ExitCode,
 };
 
-pub const USAGE: &str = "Server management\n\n  vesta manage <server_id|name> [command ...] [--install-root <root>]\n\n  start | stop | restart       Minecraft lifecycle\n  status                      Live agent and Minecraft status\n  player_list                 Fresh bounded player query; unavailable stays unknown\n  config                      Open this server's configuration\n  pair [--role role] [--expires minutes]\n  devices list | revoke <device-id>\n  owner list | link --minecraft-uuid <uuid> [--role role]\n  owner unlink --minecraft-uuid <uuid> [--revoke-devices]\n  access show | set [access flags]\n  superadmin grant|revoke <user-id>\n  backup init | resolve [<job-id> --confirm <job-id>]\n  recovery export --output <file> [--passphrase-file <file>]\n  recovery import --input <file> --confirm <identity-id> [--passphrase-file <file>]\n  resolve-launch --confirm <server_id>\n  reset-restarts\n  delete --confirm <server_id>\n\n  help                        Show these commands\n  exit | quit | back           Return to your terminal\n\nThe prompt stays bound to one server. Exit, Ctrl+C and Ctrl+D leave it running.\nQuote paths containing spaces; backslashes remain literal. No OS shell expansion.\nCommands are not saved to history. Direct commands return their normal exit code.";
+pub const USAGE: &str = "Server management\n\n  vesta manage <server_id|name> [command ...] [--install-root <root>]\n\n  start | stop | restart       Minecraft lifecycle\n  status                      Live agent and Minecraft status\n  player_list                 Fresh bounded player query; unavailable stays unknown\n  config                      Open this server's configuration\n  pair [--role role] [--expires minutes]\n  devices list | revoke <device-id>\n  owner list | link --minecraft-uuid <uuid> [--role role]\n  owner unlink --minecraft-uuid <uuid> [--revoke-devices]\n  access show | set [access flags]\n  superadmin grant|revoke <user-id>\n  backup init | resolve [<job-id> --confirm <job-id>]\n  recovery export --output <file> [--passphrase-file <file>]\n  recovery import --input <file> --confirm <identity-id> [--passphrase-file <file>]\n  resolve-launch --confirm <server_id>\n  reset-restarts\n  delete --confirm <server_id>\n\n  help                        Show these commands\n  exit | quit | back           Return to your terminal\n\nThe prompt stays bound to one server. Exit/EOF does not stop it.\nCtrl+C and Ctrl+D leave a supported line-editor terminal.\nQuote paths containing spaces; backslashes remain literal. No OS shell expansion.\nCommands are not saved to history. Direct commands return their normal exit code.";
 
 pub fn parse_list(args: &[OsString]) -> Result<Command, ()> {
     let mut root = None;
@@ -212,7 +212,7 @@ pub async fn run(target: &str, root: Option<&Path>, args: &[OsString], base: &Pa
             "VESTA"
         };
         println!(
-            "\n{brand}  /  {}\n{}\n\nType help for commands; exit to leave this server running.\n",
+            "\n{brand}  /  {}\n{}\n\nType help for commands; exit to leave management.\n",
             scope.name, scope.id
         );
     }
