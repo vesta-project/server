@@ -30,6 +30,7 @@ pub(super) fn implemented(path: &str) -> bool {
             | "/api/v3/manage/players/ops"
             | "/api/v3/manage/players/whitelist"
             | "/api/v3/manage/players/whitelist/offline"
+            | "/api/v3/manage/players/whitelist/startup"
     )
 }
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
@@ -42,6 +43,64 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         bytes,
         ..
     } = request;
+    if path.ends_with("/whitelist/startup") {
+        if (method == Method::POST && query.is_some())
+            || (method != Method::POST && method != Method::GET)
+        {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        let Some(token) = authorization else {
+            return error(StatusCode::UNAUTHORIZED, "management_session_invalid");
+        };
+        let capability = if method == Method::GET {
+            Capability::PlayersView
+        } else {
+            Capability::PlayersModerate
+        };
+        let subject = match host.management().authorize(token, capability, None) {
+            Ok(s) => s,
+            Err(e) => return management_error(e),
+        };
+        if method == Method::GET {
+            let result = if let Some(query) = query {
+                let Some(selection) = query.strip_prefix("ids=").filter(|s| s.len() <= 1200) else {
+                    return error(StatusCode::BAD_REQUEST, "invalid_request");
+                };
+                host.files().startup_whitelist_receipts_selected(
+                    &subject,
+                    &selection
+                        .split(',')
+                        .take(33)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                host.files().startup_whitelist_receipts(&subject)
+            };
+            return match result {
+                Ok(v) => ok(v),
+                Err(e) => super::files::file_error(e),
+            };
+        }
+        let Some(patch) = decode::<vesta_control::files::StartupWhitelistPatch>(bytes) else {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        };
+        let Some(key) = key(
+            idempotency,
+            host.management().server_id(),
+            subject.device.as_str(),
+            path,
+        ) else {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        };
+        return match host
+            .files()
+            .startup_whitelist_update(host.runtime(), &subject, &key, patch)
+        {
+            Ok(v) => ok(v),
+            Err(e) => super::files::file_error(e),
+        };
+    }
     if path.ends_with("/whitelist/offline") {
         if query.is_some() || (method != Method::GET && method != Method::POST) {
             return error(StatusCode::BAD_REQUEST, "invalid_request");
@@ -217,7 +276,9 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         moderation::ops(directory)
             .and_then(|v| serde_json::to_value(v).map_err(|_| "players_file_malformed"))
     } else {
-        moderation::whitelist(directory)
+        host.files()
+            .projected_whitelist(host.runtime())
+            .map_err(|_| "players_file_malformed")
             .and_then(|v| serde_json::to_value(v).map_err(|_| "players_file_malformed"))
     };
     match items {

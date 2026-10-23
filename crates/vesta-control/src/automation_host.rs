@@ -42,6 +42,12 @@ pub struct HostActions {
 pub(crate) const UNREADABLE_BAN_FILE_GRACE_MS: i64 = 60 * 60 * 1000;
 
 impl HostActions {
+    pub(crate) fn tick_startup_whitelist(
+        &self,
+        runtime: &RuntimeHandle,
+    ) -> crate::files::Result<Vec<String>> {
+        self.files.tick_startup_whitelist(runtime)
+    }
     pub fn new(
         db: StateDatabase,
         runtime: Arc<std::sync::OnceLock<RuntimeHandle>>,

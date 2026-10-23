@@ -63,6 +63,10 @@ fn inert_game_fixture() {
             Ok(line) => {
                 writeln!(commands, "{line}").unwrap();
                 commands.flush().unwrap();
+                if line=="vesta-fixture-ready" && std::path::Path::new("whitelist-fixture").is_file() {
+                    println!("[12:00:01] [Server thread/INFO]: Done (1.234s)! For help, type \"help\"");
+                    std::io::stdout().flush().unwrap();
+                }
                 if sleep_address.is_some() {
                     if line == "list" && !std::path::Path::new("sleep-no-list").is_file() {
                         println!(
@@ -1369,6 +1373,8 @@ fn explicit_restart_timeout_never_starts_a_second_generation() {
 mod metrics_tests;
 #[path = "moderation_tests.rs"]
 mod moderation_tests;
+#[path = "startup_whitelist_tests.rs"]
+mod startup_whitelist_tests;
 #[path = "motd_tests.rs"]
 mod motd_tests;
 #[path = "sleep_tests.rs"]

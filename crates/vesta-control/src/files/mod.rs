@@ -12,7 +12,9 @@
 //! or deletion; it does not copy custom ACLs or other attributes. Stages start private on Unix.
 mod local_document;
 mod offline_whitelist;
+mod startup_whitelist;
 pub use offline_whitelist::OfflineWhitelistPatch;
+pub use startup_whitelist::StartupWhitelistPatch;
 mod mutation;
 pub(crate) use mutation::mutation_admission;
 mod native;
@@ -229,6 +231,7 @@ impl fmt::Debug for FileRead {
 
 #[derive(Clone)]
 pub struct FileBrowser {
+    startup_whitelist: std::sync::Arc<startup_whitelist::StartupState>,
     db: StateDatabase,
     root: root::Root,
     audit: vesta_state::audit::AuditLog,
@@ -254,6 +257,7 @@ impl FileBrowser {
         protected.push(db.directory().path());
         let root = root::Root::open(root, &protected)?;
         Ok(Self {
+            startup_whitelist: std::sync::Arc::new(startup_whitelist::StartupState::open(&db)?),
             audit: vesta_state::audit::AuditLog::new(db.clone())?,
             db,
             root,

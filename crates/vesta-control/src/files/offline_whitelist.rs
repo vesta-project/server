@@ -243,7 +243,7 @@ fn edit(
     }
     Ok(())
 }
-fn resolve(player: &str, online: bool) -> Result<(String, String)> {
+pub(super) fn resolve(player: &str, online: bool) -> Result<(String, String)> {
     if !online {
         use md5::{Digest, Md5};
         let mut bytes: [u8; 16] = Md5::digest(format!("OfflinePlayer:{player}").as_bytes()).into();

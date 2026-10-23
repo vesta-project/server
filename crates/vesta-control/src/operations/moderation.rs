@@ -19,6 +19,35 @@ pub struct ModerationHistory {
     pub expiry_state: String,
 }
 impl Operations {
+    pub(crate) fn whitelist_receipt(
+        &self,
+        subject: &Subject,
+        id: &OperationId,
+    ) -> OperationsResult<Option<OperationSummary>> {
+        self.db
+            .read_with(|snapshot| {
+                let repo = Repository::new(
+                    snapshot.connection(),
+                    self.db.server_id(),
+                    self.db.clock().millis(),
+                );
+                if let identity::Decision::Deny(reason) = self
+                    .policy(&repo, subject)?
+                    .check(Capability::PlayersModerate, None)
+                {
+                    return Err(OperationError::forbidden(reason));
+                }
+                repo.load(id)?
+                    .map(|op| {
+                        if op.subject != *subject || op.operation_type != "players.moderate" {
+                            return Err(invalid());
+                        }
+                        Ok(op.summary)
+                    })
+                    .transpose()
+            })
+            .map_err(OperationError::from)
+    }
     pub fn moderation_history(
         &self,
         subject: &Subject,

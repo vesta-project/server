@@ -409,7 +409,11 @@ impl RecoveryExport {
             for row in &table.rows {
                 // Configuration is portable; queued lifecycle intent and native
                 // observation state must never be resurrected by an import.
-                if name == "settings" && row.get(1).and_then(Value::as_str) == Some("sleep-runtime")
+                if name == "settings"
+                    && matches!(
+                        row.get(1).and_then(Value::as_str),
+                        Some("sleep-runtime" | "whitelist-runtime")
+                    )
                 {
                     return Err(invalid());
                 }
@@ -486,7 +490,7 @@ fn write_snapshot(
                 columns.join(",")
             };
             let filter = if table == "settings" {
-                " WHERE key <> 'sleep-runtime'"
+                " WHERE key NOT IN ('sleep-runtime','whitelist-runtime')"
             } else {
                 ""
             };

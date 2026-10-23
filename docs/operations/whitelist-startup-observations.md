@@ -1,5 +1,7 @@
 # Whitelist startup observations — vanilla 26.3
 
+Implementation follow-up: [queued desired membership](queued-whitelist.md) now handles startup edits without writing Minecraft's file. The observations below remain the evidence from the earlier isolated testing pass.
+
 Tested on 2026-10-23 with the locally installed vanilla 26.3 server (protocol 777), Java 25, a fresh temporary world and only a loopback listener. Existing explicitly accepted EULA text was copied into the fixture. No development instance files, world, agent or running game were changed. Heap was capped at 512 MiB and the JVM at two active processors.
 
 Reproducer: `scripts/test-whitelist-startup.ps1`, supplying the unpacked vanilla server JAR, its existing libraries directory and an already accepted EULA file. It creates a new temporary directory, records console/error logs and writes `result.json`. It rejects an unobserved startup injection and always stops its own child. No external player-profile lookup or game client is required.

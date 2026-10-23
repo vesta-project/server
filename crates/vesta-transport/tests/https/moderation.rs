@@ -1,6 +1,101 @@
 use super::*;
 
 #[test]
+fn startup_whitelist_api_projects_and_cancels_without_writing_file() {
+    use vesta_control::identity::BuiltinRole;
+    let f = Fixture::inert();
+    let (device, key) = enroll_management(&f, BuiltinRole::Owner);
+    let owner = management_session(&f, &device, &key);
+    let game = f.host().configuration().game().to_path_buf();
+    std::fs::write(game.join("server.properties"), b"online-mode=false\n").unwrap();
+    let g = management_start_inert(&f, &owner);
+    let patch = serde_json::json!({"player":"alex","add":true,"expected_generation":g});
+    let accepted = management_mutation(
+        &f,
+        &owner,
+        "players/whitelist/startup",
+        "startup-http-add-001",
+        &patch,
+    );
+    assert_eq!(accepted.status, 200, "{}", accepted.json());
+    let id = accepted.json()["data"]["intent_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let list = f.request("GET", "/api/v3/manage/players/whitelist", b"", Some(&owner));
+    assert_eq!(list.json()["data"]["items"][0]["name"], "alex");
+    assert!(!game.join("whitelist.json").exists());
+    let remove = serde_json::json!({"player":"alex","add":false,"expected_generation":g});
+    assert_eq!(
+        management_mutation(
+            &f,
+            &owner,
+            "players/whitelist/startup",
+            "startup-http-remove-001",
+            &remove
+        )
+        .status,
+        200
+    );
+    let receipt = f.request(
+        "GET",
+        &format!("/api/v3/manage/players/whitelist/startup?ids={id}"),
+        b"",
+        Some(&owner),
+    );
+    assert_eq!(receipt.status, 200);
+    assert_eq!(receipt.json()["data"]["items"][0]["status"], "cancelled");
+    assert_eq!(
+        management_mutation(
+            &f,
+            &owner,
+            "players/whitelist/startup",
+            "startup-http-add-001",
+            &patch
+        )
+        .json()["data"]["status"],
+        "cancelled"
+    );
+    assert!(
+        f.request("GET", "/api/v3/manage/players/whitelist", b"", Some(&owner))
+            .json()["data"]["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        f.request(
+            "GET",
+            "/api/v3/manage/players/whitelist/startup?ids=bad",
+            b"",
+            Some(&owner)
+        )
+        .status,
+        400
+    );
+    let unknown = "123e4567-e89b-42d3-a456-426614174000";
+    let missing = f.request(
+        "GET",
+        &format!("/api/v3/manage/players/whitelist/startup?ids={unknown}"),
+        b"",
+        Some(&owner),
+    );
+    assert_eq!(missing.json()["data"]["items"][0]["status"], "unknown");
+    let stop = management_mutation(
+        &f,
+        &owner,
+        "lifecycle/stop",
+        "startup-http-stop-001",
+        &serde_json::json!({"expected_generation":g}),
+    );
+    management_wait_operation(
+        &f,
+        &owner,
+        stop.json()["data"]["operation_id"].as_str().unwrap(),
+    );
+}
+
+#[test]
 fn offline_whitelist_edits_are_fenced_recoverable_and_idempotent() {
     use vesta_control::identity::BuiltinRole;
     let f = Fixture::inert();
