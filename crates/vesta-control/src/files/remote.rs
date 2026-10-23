@@ -263,12 +263,32 @@ impl FileBrowser {
         authority: impl FnOnce() -> Result<Vec<(String, String)>>,
         effect: impl FnOnce(&Self) -> Result<Value>,
     ) -> Result<Value> {
+        self.remote_preparation()
+            .execute_remote_bounded(subject, key, input, authority, effect)
+    }
+    pub(super) fn remote_preparation(&self) -> Self {
         let mut files = self.clone();
         files.remote_deadline = Some(
             self.remote_deadline
                 .unwrap_or_else(|| std::time::Instant::now() + REMOTE_MUTATION_TIMEOUT),
         );
-        files.execute_remote_bounded(subject, key, input, authority, effect)
+        files
+    }
+    /// A NULL receipt might belong to a healthy concurrent request. Wait for
+    /// admission before deciding whether recovery is actually required.
+    pub(super) fn remote_replay_before_preparation(
+        &self,
+        subject: &Subject,
+        key: &str,
+        input: &Value,
+    ) -> Result<Option<Value>> {
+        match self.remote_replay(subject, key, input) {
+            Err(FileError::RecoveryRequired(_)) => {
+                let _guard = self.request_admission()?;
+                self.remote_replay(subject, key, input)
+            }
+            result => result,
+        }
     }
     fn execute_remote_bounded(
         &self,
@@ -283,28 +303,10 @@ impl FileBrowser {
         }
         let guard = self.request_admission()?;
         self.purge_remote_outcomes()?;
-        let input = format!("{:x}", Sha256::digest(input.to_string().as_bytes()));
-        let existing: Option<(String,String,Option<String>)> = self.db.read_with(|s| {
-            s.connection().query_row("SELECT input_sha256,authority_json,outcome_json FROM management_file_outcomes WHERE server_id=? AND principal_id=? AND device_id=? AND request_key=?",
-                params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),key], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(FileError::from)
-        }).map_err(FileError::from)?;
-        if let Some((saved, authority, outcome)) = existing {
-            let authority: Vec<(String, String)> =
-                serde_json::from_str(&authority).map_err(|_| FileError::Unavailable)?;
-            self.db
-                .read_with(|s| self.remote_authorize(s.connection(), subject, &authority))
-                .map_err(FileError::from)?;
-            if saved != input {
-                return Err(FileError::IdempotencyConflict);
-            }
-            return outcome
-                .map(|s| serde_json::from_str(&s).map_err(|_| FileError::Unavailable))
-                .unwrap_or_else(|| {
-                    Err(FileError::RecoveryRequired(Box::new(
-                        FileError::Unavailable,
-                    )))
-                });
+        if let Some(outcome) = self.remote_replay(subject, key, &input)? {
+            return Ok(outcome);
         }
+        let input = format!("{:x}", Sha256::digest(input.to_string().as_bytes()));
         let authority = authority()?;
         self.db
             .write_with(|tx| {
@@ -341,14 +343,53 @@ impl FileBrowser {
             Some(guard)
         };
         let result = effect(&files);
-        drop(guard);
         if result.is_err() && !matches!(result, Err(FileError::RecoveryRequired(_))) {
             self.db.write_with(|tx| {
                 tx.connection().execute("DELETE FROM management_file_outcomes WHERE server_id=? AND principal_id=? AND device_id=? AND request_key=? AND outcome_json IS NULL",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),key])?;
                 Ok::<_,FileError>(())
             }).map_err(FileError::from)?;
         }
+        drop(guard);
         result
+    }
+    /// A read-only replay probe before bounded external preparation. Admission
+    /// always repeats this probe before creating a receipt or applying an effect.
+    pub(super) fn remote_replay(
+        &self,
+        subject: &Subject,
+        key: &str,
+        input: &Value,
+    ) -> Result<Option<Value>> {
+        if key.is_empty() || key.len() > 128 || !key.bytes().all(|b| b.is_ascii_graphic()) {
+            return Err(FileError::InvalidPath);
+        }
+        let input = format!("{:x}", Sha256::digest(input.to_string().as_bytes()));
+        let existing: Option<(String,String,Option<String>)> = self.db.read_with(|s| {
+            s.connection().query_row("SELECT input_sha256,authority_json,outcome_json FROM management_file_outcomes WHERE server_id=? AND principal_id=? AND device_id=? AND request_key=?",
+                params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),key], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(FileError::from)
+        }).map_err(FileError::from)?;
+        if let Some((saved, authority, outcome)) = existing {
+            let authority: Vec<(String, String)> =
+                serde_json::from_str(&authority).map_err(|_| FileError::Unavailable)?;
+            self.db
+                .read_with(|s| self.remote_authorize(s.connection(), subject, &authority))
+                .map_err(FileError::from)?;
+            if saved != input {
+                return Err(FileError::IdempotencyConflict);
+            }
+            return outcome
+                .map(|s| {
+                    serde_json::from_str(&s)
+                        .map(Some)
+                        .map_err(|_| FileError::Unavailable)
+                })
+                .unwrap_or_else(|| {
+                    Err(FileError::RecoveryRequired(Box::new(
+                        FileError::Unavailable,
+                    )))
+                });
+        }
+        Ok(None)
     }
     fn purge_remote_outcomes(&self) -> Result<()> {
         let cutoff = self
@@ -357,7 +398,7 @@ impl FileBrowser {
             .millis()
             .saturating_sub(OUTCOME_RETENTION_MS);
         self.db.write_with(|tx| {
-            tx.connection().execute("DELETE FROM management_file_outcomes WHERE rowid IN (SELECT rowid FROM management_file_outcomes WHERE server_id=? AND outcome_json IS NOT NULL AND completed_at<? ORDER BY completed_at,rowid LIMIT ?)",params![self.db.server_id(),cutoff,OUTCOME_PURGE_BATCH])?;
+            tx.connection().execute("DELETE FROM management_file_outcomes WHERE rowid IN (SELECT rowid FROM management_file_outcomes WHERE server_id=? AND outcome_json IS NOT NULL AND completed_at<? AND COALESCE(CASE WHEN json_valid(outcome_json) THEN json_extract(outcome_json,'$.kind')='whitelist_desired' AND json_extract(outcome_json,'$.status')='queued' ELSE 0 END,0)=0 ORDER BY completed_at,rowid LIMIT ?)",params![self.db.server_id(),cutoff,OUTCOME_PURGE_BATCH])?;
             Ok::<_,FileError>(())
         }).map_err(FileError::from)
     }

@@ -225,3 +225,124 @@ fn startup_whitelist_cap_is_bounded_and_inverse_cancellation_frees_capacity() {
     assert_eq!(files.projected_whitelist(&handle).unwrap().len(), 32);
     assert!(!writes(&h).contains("whitelist"));
 }
+
+#[test]
+fn startup_whitelist_inverse_uses_membership_after_concurrent_completion() {
+    let h = Harness::new(false);
+    let files = files(&h);
+    let owned = h.runtime(Duration::from_secs(1));
+    let handle = owned.runtime.network_handle();
+    let g = start(&h, &owned.runtime);
+    let add = desired(&files, &h, &handle, g, "alex", true, "retiring-add");
+    ready(&h, &handle, g);
+    files.tick_startup_whitelist(&handle).unwrap();
+    await_command(&h, "whitelist add alex");
+    let projected = files.projected_whitelist(&handle).unwrap();
+    let concurrent = files.clone();
+    let runtime = handle.clone();
+    let path = h.cwd.join("whitelist.json");
+    FileBrowser::before_startup_whitelist_lock_for_test(move || {
+        fs::write(path, serde_json::to_vec(&projected).unwrap()).unwrap();
+        concurrent.tick_startup_whitelist(&runtime).unwrap();
+    });
+    let remove = desired(&files, &h, &handle, g, "alex", false, "retiring-remove");
+    assert_eq!(receipt(&files, &h, &add), "applied");
+    assert_eq!(receipt(&files, &h, &remove), "queued");
+    files.tick_startup_whitelist(&handle).unwrap();
+    await_command(&h, "whitelist remove alex");
+    fs::write(h.cwd.join("whitelist.json"), b"[]").unwrap();
+    files.tick_startup_whitelist(&handle).unwrap();
+    assert_eq!(receipt(&files, &h, &remove), "applied");
+}
+
+#[test]
+fn startup_whitelist_recovery_required_retires_projection_without_releasing_recovery_lock() {
+    let h = Harness::new(false);
+    let files = files(&h);
+    let owned = h.runtime(Duration::from_secs(1));
+    let handle = owned.runtime.network_handle();
+    let g = start(&h, &owned.runtime);
+    let add = desired(&files, &h, &handle, g, "alex", true, "recovery-add");
+    ready(&h, &handle, g);
+    files.tick_startup_whitelist(&handle).unwrap();
+    await_command(&h, "whitelist add alex");
+    h.db.write(|c| {
+        // Construct the complete uncertain-operation state: genuine recovery
+        // retains its generation lock, unlike an ordinary succeeded operation.
+        c.execute("UPDATE operations SET state='recovery_required',finished_at=NULL,external_effect_started=1 WHERE id=(SELECT json_extract(desired_value,'$.entries[0].operation') FROM settings WHERE key='whitelist-runtime')", [])?;
+        c.execute("INSERT INTO resource_locks(resource,operation_id,acquired_at) SELECT 'game.generation',json_extract(desired_value,'$.entries[0].operation'),? FROM settings WHERE key='whitelist-runtime'", [h.db.clock().millis()])?;
+        Ok(())
+    }).unwrap();
+    assert_eq!(files.tick_startup_whitelist(&handle).unwrap(), vec!["alex"]);
+    assert_eq!(receipt(&files, &h, &add), "failed");
+    assert!(files.projected_whitelist(&handle).unwrap().is_empty());
+    let locks: i64 =
+        h.db.read(|c| {
+            Ok(c.query_row(
+                "SELECT count(*) FROM resource_locks WHERE resource='game.generation'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(
+        locks, 1,
+        "desired-state retirement cannot clear operation recovery"
+    );
+}
+
+#[test]
+fn startup_whitelist_pending_receipts_survive_completed_outcome_retention() {
+    let h = Harness::new(false);
+    let files = files(&h);
+    let owned = h.runtime(Duration::from_secs(1));
+    let handle = owned.runtime.network_handle();
+    let g = start(&h, &owned.runtime);
+    let add = desired(&files, &h, &handle, g, "alex", true, "old-add");
+    h.db.write(|c| {
+        c.execute(
+            "UPDATE management_file_outcomes SET completed_at=? WHERE request_key='old-add'",
+            [h.db.clock().millis() - 8 * 24 * 60 * 60 * 1000],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    // Every new remote mutation runs the bounded completed-outcome purge.
+    desired(&files, &h, &handle, g, "bob", true, "purge-trigger");
+    assert_eq!(receipt(&files, &h, &add), "queued");
+    ready(&h, &handle, g);
+    files.tick_startup_whitelist(&handle).unwrap();
+    await_command(&h, "whitelist add alex");
+    let projected = files.projected_whitelist(&handle).unwrap();
+    fs::write(
+        h.cwd.join("whitelist.json"),
+        serde_json::to_vec(&projected).unwrap(),
+    )
+    .unwrap();
+    files.tick_startup_whitelist(&handle).unwrap();
+    assert_eq!(receipt(&files, &h, &add), "applied");
+}
+
+#[test]
+fn startup_whitelist_offline_mixed_case_uuid_is_not_verified_by_name() {
+    let h = Harness::new(false);
+    let files = files(&h);
+    let owned = h.runtime(Duration::from_secs(1));
+    let handle = owned.runtime.network_handle();
+    let g = start(&h, &owned.runtime);
+    let id = desired(&files, &h, &handle, g, "Alex", true, "case-sensitive-add");
+    ready(&h, &handle, g);
+    files.tick_startup_whitelist(&handle).unwrap();
+    await_command(&h, "whitelist add Alex");
+    // Minecraft/profile caching can persist the lowercase offline identity.
+    fs::write(
+        h.cwd.join("whitelist.json"),
+        br#"[{"name":"Alex","uuid":"bf20048c-a55a-322c-a100-5493e7b87286"}]"#,
+    )
+    .unwrap();
+    files.tick_startup_whitelist(&handle).unwrap();
+    assert_eq!(receipt(&files, &h, &id), "queued");
+    h.db.write(|c|{c.execute("UPDATE settings SET desired_value=json_set(desired_value,'$.entries[0].verification_since',?) WHERE key='whitelist-runtime'",[h.db.clock().millis()-21000])?;Ok(())}).unwrap();
+    assert_eq!(files.tick_startup_whitelist(&handle).unwrap(), vec!["Alex"]);
+    assert_eq!(receipt(&files, &h, &id), "failed");
+}

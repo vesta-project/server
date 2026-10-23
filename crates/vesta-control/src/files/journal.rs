@@ -81,6 +81,13 @@ impl FileBrowser {
             false,
         )?;
         self.check_remote_completion_authority(c, &subject)?;
+        // This is the final proof boundary, after the filesystem effect and
+        // before either the successful receipt or journal retirement commits.
+        if let Some(guard) = &self.whitelist_guard {
+            guard
+                .check()
+                .map_err(|e| FileError::RecoveryRequired(Box::new(e)))?;
+        }
         self.audit.append(c, &record)?;
         if self.whitelist_guard.is_some() {
             self.audit.append(
@@ -403,6 +410,8 @@ fn intent_record(
 thread_local! {
     static CRASH_AT: Cell<Option<&'static str>> = const { Cell::new(None) };
     static CRASHED: Cell<bool> = const { Cell::new(false) };
+    static AFTER_WRITE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    static BEFORE_COMPENSATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 pub(super) fn crash_point(point: &str) -> Result<()> {
     #[cfg(test)]
@@ -427,6 +436,30 @@ pub(super) fn interrupted() -> bool {
     }
 }
 
+#[cfg(test)]
+pub(super) fn after_write_for_test(hook: impl FnOnce() + 'static) {
+    AFTER_WRITE.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+#[cfg(test)]
+pub(super) fn run_after_write_for_test() {
+    AFTER_WRITE.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+#[cfg(test)]
+pub(super) fn before_compensation_for_test(hook: impl FnOnce() + 'static) {
+    BEFORE_COMPENSATION.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+#[cfg(test)]
+pub(super) fn run_before_compensation_for_test() {
+    BEFORE_COMPENSATION.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
 #[cfg(test)]
 pub(super) fn interrupt_at(point: &'static str) {
     CRASH_AT.with(|at| at.set(Some(point)));

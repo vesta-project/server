@@ -177,7 +177,15 @@ fn coalesce(record: &mut Record, change: Change, base: bool) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(test)]
+thread_local! {
+    static BEFORE_LOCK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
 impl FileBrowser {
+    #[cfg(test)]
+    pub(crate) fn before_startup_whitelist_lock_for_test(hook: impl FnOnce() + 'static) {
+        BEFORE_LOCK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
     pub fn startup_whitelist_update(
         &self,
         runtime: &RuntimeHandle,
@@ -191,16 +199,37 @@ impl FileBrowser {
             return Err(FileError::InvalidPath);
         }
         self.check_global_authority(subject, Capability::PlayersModerate)?;
-        self.execute_remote(subject,key,json!(["startup-whitelist",patch]),||Ok(vec![(Capability::PlayersModerate.id().into(),String::new())]),|files| {
+        let files = self.remote_preparation();
+        let input = json!(["startup-whitelist", patch]);
+        if let Some(outcome) = files.remote_replay_before_preparation(subject, key, &input)? {
+            return Ok(outcome);
+        }
+        let mode = online(&files)?;
+        // External profile IO must not occupy the global mutation admission lane.
+        let resolved = if patch.add {
+            Some(super::offline_whitelist::resolve_bounded(
+                &patch.player,
+                mode,
+                files.remote_deadline,
+            )?)
+        } else {
+            None
+        };
+        files.execute_remote(subject,key,input,||Ok(vec![(Capability::PlayersModerate.id().into(),String::new())]),|files| {
             let snapshot=runtime.game_snapshot().map_err(|_|FileError::Unavailable)?;
             if snapshot.phase!=crate::operations::ProcessPhase::Running || snapshot.generation.map(|g|g.to_hex()).as_deref()!=Some(&patch.expected_generation) || matches!(runtime.readiness().map_err(|_|FileError::Unavailable)?.readiness,Readiness::Degraded(_)) {return Err(FileError::Conflict(None))}
-            let mode=online(files)?;
+            if online(files)?!=mode {return Err(FileError::Conflict(None))}
+            // Disk membership and prior desires must be observed together,
+            // after any completing coordinator tick.
+            #[cfg(test)]
+            BEFORE_LOCK.with(|hook| { if let Some(hook)=hook.borrow_mut().take() {hook();} });
+            let _guard=files.startup_whitelist.lock.lock().map_err(|_|FileError::Unavailable)?;
             let actual=moderation::whitelist(files.root.raw_path()).map_err(|_|FileError::Corrupt)?;
             let mut names=std::collections::HashSet::new();let mut uuids=std::collections::HashSet::new();
             if actual.iter().any(|e|!names.insert(e.name.to_ascii_lowercase()) || !uuids.insert(uuid::Uuid::parse_str(&e.uuid).ok())) {return Err(FileError::Corrupt)}
             let existing=actual.iter().find(|e|e.name.eq_ignore_ascii_case(&patch.player));
             let (name,uuid)=if patch.add {
-                let resolved=super::offline_whitelist::resolve(&patch.player,mode)?;
+                let resolved=resolved.ok_or(FileError::Unavailable)?;
                 if existing.is_some_and(|e|uuid::Uuid::parse_str(&e.uuid).ok()!=uuid::Uuid::parse_str(&resolved.1).ok()) {return Err(FileError::Conflict(None))}
                 resolved
             } else {
@@ -209,7 +238,6 @@ impl FileBrowser {
                 let prior=record.entries.iter().rev().find(|e|same_player(e,&patch.player,&patch.expected_generation));
                 match (prior,existing) { (Some(e),_) =>(e.player.clone(),e.uuid.clone()),(_,Some(e))=>(e.name.clone(),e.uuid.clone()),_ =>(patch.player.clone(),uuid::Uuid::nil().to_string()) }
             };
-            let _guard=files.startup_whitelist.lock.lock().map_err(|_|FileError::Unavailable)?;
             let id=uuid::Uuid::new_v4().to_string();
             let result=files.db.write_with(|tx| {
                 files.check_remote_completion_authority(tx.connection(),subject)?;
@@ -466,7 +494,7 @@ impl FileBrowser {
                         reject(e);
                         removed.push(index)
                     }
-                } else if op.state.is_terminal() {
+                } else if op.state.is_terminal() || op.state == OperationState::RecoveryRequired {
                     reject(e);
                     removed.push(index)
                 }

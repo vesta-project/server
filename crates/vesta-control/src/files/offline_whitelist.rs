@@ -141,23 +141,62 @@ impl FileBrowser {
             return Err(FileError::InvalidPath);
         }
         self.check_global_authority(subject, Capability::PlayersModerate)?;
-        // No external lookup during the startup exclusion or database transaction.
-        // It is performed inside durable admission so an exact replay needs no lookup.
-        let files = self.for_whitelist();
-        files.execute_remote(subject, key, json!(["offline-whitelist",patch]), || Ok(vec![
-            (Capability::PlayersModerate.id().into(),String::new()),
-            (Capability::FilesRead.id().into(),"whitelist.json".into()),
-            (if patch.expected_sha256.is_some() {Capability::FilesOverwrite} else {Capability::FilesCreate}.id().into(),"whitelist.json".into()),
-        ]), |files| {
+        let files = self.for_whitelist().remote_preparation();
+        let input = json!(["offline-whitelist", patch]);
+        if let Some(outcome) = files.remote_replay_before_preparation(subject, key, &input)? {
+            return Ok(outcome);
+        }
+        let authority = vec![
+            (Capability::PlayersModerate.id().into(), String::new()),
+            (Capability::FilesRead.id().into(), "whitelist.json".into()),
+            (
+                if patch.expected_sha256.is_some() {
+                    Capability::FilesOverwrite
+                } else {
+                    Capability::FilesCreate
+                }
+                .id()
+                .into(),
+                "whitelist.json".into(),
+            ),
+        ];
+        files
+            .db
+            .read_with(|s| files.remote_authorize(s.connection(), subject, &authority))
+            .map_err(FileError::from)?;
+        let snapshot = runtime
+            .game_snapshot()
+            .map_err(|_| FileError::Unavailable)?;
+        if snapshot.generation.is_some()
+            || snapshot.phase != vesta_game_runtime::process::ProcessPhase::Stopped
+        {
+            return Err(FileError::Conflict(None));
+        }
+        let properties_path = files.root.raw_path().join("server.properties");
+        let properties = read_local_document(
+            &properties_path,
+            crate::minecraft_admission::MAX_SERVER_PROPERTIES_BYTES,
+        )?;
+        let online = crate::minecraft_admission::ServerProperties::parse(&properties)
+            .map_err(|_| FileError::Corrupt)?
+            .online_mode();
+        // Replays avoid lookup; fresh external IO holds neither admission nor a
+        // stopped-state exclusion. Admission rechecks both the receipt and mode.
+        let identity = if patch.add {
+            Some(resolve_bounded(
+                &patch.player,
+                online,
+                files.remote_deadline,
+            )?)
+        } else {
+            None
+        };
+        files.execute_remote(subject, key, input, || Ok(authority), |files| {
             let (bytes, hash) = document(files,subject)?;
             if hash != patch.expected_sha256 { return Err(FileError::Conflict(hash)); }
             let mut entries = parse(&bytes)?;
             let snapshot=runtime.game_snapshot().map_err(|_|FileError::Unavailable)?;
             if snapshot.generation.is_some() || snapshot.phase != vesta_game_runtime::process::ProcessPhase::Stopped {return Err(FileError::Conflict(None));}
-            let properties_path = files.root.raw_path().join("server.properties");
-            let properties = read_local_document(&properties_path, crate::minecraft_admission::MAX_SERVER_PROPERTIES_BYTES)?;
-            let online = crate::minecraft_admission::ServerProperties::parse(&properties).map_err(|_| FileError::Corrupt)?.online_mode();
-            let identity = if patch.add { Some(resolve(&patch.player, online)?) } else { None };
             let mut guard = StoppedGuard::acquire(runtime, self.db.directory())?;
             Arc::get_mut(&mut guard).ok_or(FileError::Unavailable)?.properties=Some((properties_path.clone(),properties.clone()));
             // Mode changes during lookup require a fresh explicit edit.
@@ -169,8 +208,8 @@ impl FileBrowser {
             files.whitelist_guard = Some(guard.clone());
             let precondition = patch.expected_sha256.clone().map_or(WritePrecondition::Absent,WritePrecondition::Matches);
             let change = files.write(subject,&RelativePath::parse("whitelist.json")?,&precondition,&bytes)?;
-            // Never claim a proven offline save if the supervisor hold was lost.
-            guard.check().map_err(|e| FileError::RecoveryRequired(Box::new(e)))?;
+            // finish_intent checks hold continuity after the write, in the same
+            // transaction that records success. Do not fail after that commit.
             Ok(json!({"outcome":"succeeded","sha256":change.sha256,"size":change.size.to_string(),"trash_id":change.trash}))
         })
     }
@@ -232,6 +271,9 @@ fn edit(
             .iter()
             .any(|e| uuid::Uuid::parse_str(e["uuid"].as_str().unwrap_or("")).ok() == Some(id))
         {
+            if entries.len() >= 10_000 {
+                return Err(FileError::TooLarge);
+            }
             entries.push(json!({"name":name,"uuid":uuid}));
         }
     } else {
@@ -243,7 +285,23 @@ fn edit(
     }
     Ok(())
 }
-pub(super) fn resolve(player: &str, online: bool) -> Result<(String, String)> {
+#[cfg(test)]
+fn resolve(player: &str, online: bool) -> Result<(String, String)> {
+    resolve_bounded(player, online, None)
+}
+pub(super) fn resolve_bounded(
+    player: &str,
+    online: bool,
+    deadline: Option<std::time::Instant>,
+) -> Result<(String, String)> {
+    let timeout = deadline.map_or(Duration::from_secs(8), |deadline| {
+        deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .min(Duration::from_secs(8))
+    });
+    if timeout.is_zero() {
+        return Err(FileError::Unavailable);
+    }
     if !online {
         use md5::{Digest, Md5};
         let mut bytes: [u8; 16] = Md5::digest(format!("OfflinePlayer:{player}").as_bytes()).into();
@@ -255,7 +313,7 @@ pub(super) fn resolve(player: &str, online: bool) -> Result<(String, String)> {
         .https_only(true)
         .proxy(None)
         .max_redirects(0)
-        .timeout_global(Some(Duration::from_secs(8)))
+        .timeout_global(Some(timeout))
         .max_response_header_size(16 * 1024)
         .build()
         .into();
@@ -453,6 +511,16 @@ mod tests {
         db.close().unwrap();
     }
     #[test]
+    fn profile_preparation_refuses_an_expired_intent_deadline() {
+        let expired = std::time::Instant::now() - Duration::from_secs(1);
+        for online in [false, true] {
+            assert!(matches!(
+                resolve_bounded("Alex", online, Some(expired)),
+                Err(FileError::Unavailable)
+            ));
+        }
+    }
+    #[test]
     fn offline_identity_matches_java_and_preserves_case() {
         assert_eq!(
             resolve("Notch", false).unwrap().1,
@@ -462,6 +530,43 @@ mod tests {
             resolve("Alex", false).unwrap().1,
             resolve("alex", false).unwrap().1
         );
+    }
+    #[test]
+    fn full_whitelist_refuses_growth_but_allows_replay_and_removal() {
+        let mut entries = (0..10_000)
+            .map(|n| {
+                let (name, uuid) = resolve(&format!("player{n}"), false).unwrap();
+                json!({"name":name,"uuid":uuid})
+            })
+            .collect::<Vec<_>>();
+        let add = OfflineWhitelistPatch {
+            player: "overflow".into(),
+            add: true,
+            expected_sha256: None,
+        };
+        assert!(matches!(
+            edit(
+                &mut entries,
+                &add,
+                Some(resolve("overflow", false).unwrap())
+            ),
+            Err(FileError::TooLarge)
+        ));
+        assert_eq!(entries.len(), 10_000);
+        edit(&mut entries, &add, Some(resolve("player0", false).unwrap())).unwrap();
+        let remove = OfflineWhitelistPatch {
+            player: "PLAYER0".into(),
+            add: false,
+            expected_sha256: None,
+        };
+        edit(&mut entries, &remove, None).unwrap();
+        edit(
+            &mut entries,
+            &add,
+            Some(resolve("overflow", false).unwrap()),
+        )
+        .unwrap();
+        assert!(parse(&serde_json::to_vec(&entries).unwrap()).is_ok());
     }
     #[test]
     fn ambiguous_and_malformed_entries_refuse_without_losing_extensions() {

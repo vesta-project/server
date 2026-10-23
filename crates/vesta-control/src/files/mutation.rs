@@ -383,6 +383,8 @@ impl FileBrowser {
                 effect: Some(sha256.clone()),
             }));
             crash_point("after")?;
+            #[cfg(test)]
+            journal::run_after_write_for_test();
             self.finish_intent(connection, &intent)?;
             complete(connection, self.db.server_id(), trash.as_deref())?;
             if let Some(id) = upload {
@@ -400,15 +402,23 @@ impl FileBrowser {
                 trash: trash.clone(),
             })
         });
+        let result = result.map_err(FileError::from);
         if interrupted() {
-            return result.map_err(FileError::from);
+            return result;
         }
-        let result = self.settle_with_intent(
-            result.map_err(FileError::from),
-            applied.take(),
-            &target,
-            Some(&intent),
-        );
+        if let Some(guard) = &self.whitelist_guard
+            && result.is_err()
+        {
+            // Lost exclusion is not permission to compensate against a possibly
+            // running game. Keep the journal, stage and trash as evidence.
+            if matches!(&result, Err(FileError::RecoveryRequired(_))) {
+                return result;
+            }
+            if let Err(error) = guard.check() {
+                return Err(FileError::RecoveryRequired(Box::new(error)));
+            }
+        }
+        let result = self.settle_with_intent(result, applied.take(), &target, Some(&intent));
         if interrupted() {
             return result;
         }
@@ -1086,13 +1096,26 @@ impl FileBrowser {
                 stage.create(&bytes)?;
                 stage.permissions(&permissions)?;
                 crash_point("compensation")?;
+                #[cfg(test)]
+                journal::run_before_compensation_for_test();
+                if let Some(guard) = &self.whitelist_guard {
+                    guard.check()?;
+                }
                 if applied.effect.is_some() {
                     stage.replace(target)?;
                 } else {
                     stage.link_absent(target)?;
                 }
             } else {
+                #[cfg(test)]
+                journal::run_before_compensation_for_test();
+                if let Some(guard) = &self.whitelist_guard {
+                    guard.check()?;
+                }
                 fs::remove_file(target).map_err(io_error)?;
+            }
+            if let Some(guard) = &self.whitelist_guard {
+                guard.check()?;
             }
             Ok::<(), FileError>(())
         })();

@@ -2472,3 +2472,197 @@ fn ordinary_remote_native_admission_shares_the_request_deadline() {
     })
     .unwrap();
 }
+
+#[test]
+fn offline_whitelist_lost_post_write_proof_never_replays_a_success_receipt() {
+    let f = Fixture::open();
+    let properties = f.game.join("server.properties");
+    fs::write(&properties, b"online-mode=false\n").unwrap();
+    let launch = vesta_game_runtime::process::LaunchSpec::new(
+        std::env::current_exe().unwrap(),
+        vec![],
+        f.game.clone(),
+        vesta_game_runtime::process::GracefulStop::MinecraftCommand,
+    )
+    .unwrap();
+    let mut runtime = crate::operations::OperationRuntime::open(
+        crate::operations::Operations::new(f.db.clone()).unwrap(),
+        launch,
+    )
+    .unwrap();
+    let handle = runtime.network_handle();
+    let patch = crate::files::OfflineWhitelistPatch {
+        player: "Alex".into(),
+        add: true,
+        expected_sha256: None,
+    };
+    journal::after_write_for_test(move || {
+        fs::write(properties, b"online-mode=true\n").unwrap();
+    });
+    assert!(matches!(
+        f.files
+            .patch_offline_whitelist(&handle, &f.owner, "lost-proof", patch.clone()),
+        Err(FileError::RecoveryRequired(_))
+    ));
+    let outcome: Option<String> =
+        f.db.read(|c| {
+            Ok(c.query_row(
+                "SELECT outcome_json FROM management_file_outcomes WHERE request_key='lost-proof'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert!(
+        outcome.is_none(),
+        "uncertain effect must not commit a succeeded receipt"
+    );
+    assert!(
+        f.get("whitelist.json").is_some(),
+        "lost proof must preserve the uncertain effect, not compensate without exclusion"
+    );
+    let pending: i64 =
+        f.db.read(|c| {
+            Ok(c.query_row(
+                "SELECT count(*) FROM file_intents WHERE status='pending'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(pending, 1);
+    assert!(matches!(
+        f.files
+            .patch_offline_whitelist(&handle, &f.owner, "lost-proof", patch),
+        Err(FileError::RecoveryRequired(_))
+    ));
+    runtime.shutdown(std::time::Duration::from_secs(2)).unwrap();
+}
+
+#[test]
+fn preparation_replay_waits_for_an_active_request_before_claiming_recovery() {
+    let f = Fixture::open();
+    let files = f.files.clone();
+    let subject = f.owner.clone();
+    let (started, observed) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let active = std::thread::spawn(move || {
+        files
+            .execute_remote(
+                &subject,
+                "active-preparation",
+                serde_json::json!(["fixture"]),
+                || Ok(vec![]),
+                |files| {
+                    started.send(()).unwrap();
+                    released.recv_timeout(Duration::from_secs(10)).unwrap();
+                    let outcome = serde_json::json!({"outcome":"succeeded"});
+                    files
+                        .db
+                        .write_with(|tx| {
+                            files.remote_complete(tx.connection(), &subject, outcome.clone())
+                        })
+                        .map_err(FileError::from)?;
+                    Ok(outcome)
+                },
+            )
+            .unwrap()
+    });
+    observed.recv_timeout(Duration::from_secs(10)).unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        release.send(()).unwrap();
+    });
+    let result = f
+        .files
+        .remote_preparation()
+        .remote_replay_before_preparation(
+            &f.owner,
+            "active-preparation",
+            &serde_json::json!(["fixture"]),
+        )
+        .unwrap();
+    assert_eq!(result.unwrap()["outcome"], "succeeded");
+    release.join().unwrap();
+    active.join().unwrap();
+}
+
+#[test]
+fn offline_whitelist_compensation_rechecks_exclusion_at_its_effect_boundary() {
+    for replacing in [false, true] {
+        let f = Fixture::open();
+        let properties = f.game.join("server.properties");
+        fs::write(&properties, b"online-mode=false\n").unwrap();
+        if replacing {
+            f.put("whitelist.json", b"[]");
+        }
+        let expected = f.files.offline_whitelist(&f.owner).unwrap()["sha256"]
+            .as_str()
+            .map(str::to_owned);
+        let launch = vesta_game_runtime::process::LaunchSpec::new(
+            std::env::current_exe().unwrap(),
+            vec![],
+            f.game.clone(),
+            vesta_game_runtime::process::GracefulStop::MinecraftCommand,
+        )
+        .unwrap();
+        let mut runtime = crate::operations::OperationRuntime::open(
+            crate::operations::Operations::new(f.db.clone()).unwrap(),
+            launch,
+        )
+        .unwrap();
+        f.db.write(|c| { c.execute_batch("CREATE TRIGGER reject_file_audit BEFORE INSERT ON audit_events WHEN NEW.action='files.write' BEGIN SELECT RAISE(ABORT,'fixture'); END;")?; Ok(()) }).unwrap();
+        journal::before_compensation_for_test(move || {
+            fs::write(properties, b"online-mode=true\n").unwrap();
+        });
+        let patch = crate::files::OfflineWhitelistPatch {
+            player: "Alex".into(),
+            add: true,
+            expected_sha256: expected,
+        };
+        assert!(matches!(
+            f.files.patch_offline_whitelist(
+                &runtime.network_handle(),
+                &f.owner,
+                "compensation-proof",
+                patch
+            ),
+            Err(FileError::RecoveryRequired(_))
+        ));
+        let current: serde_json::Value = serde_json::from_slice(
+            &f.get("whitelist.json")
+                .expect("uncertain file effect retained"),
+        )
+        .unwrap();
+        assert_eq!(
+            current[0]["name"], "Alex",
+            "compensation must not alter the file without exclusion"
+        );
+        let status: String =
+            f.db.read(|c| Ok(c.query_row("SELECT status FROM file_intents", [], |r| r.get(0))?))
+                .unwrap();
+        assert_eq!(status, "recovery-required");
+        runtime.shutdown(Duration::from_secs(2)).unwrap();
+    }
+}
+
+#[test]
+fn external_preparation_and_admission_share_the_original_mutation_deadline() {
+    let f = Fixture::open();
+    let prepared = f.files.remote_preparation();
+    let deadline = prepared.remote_deadline.unwrap();
+    assert_eq!(
+        prepared.remote_preparation().remote_deadline,
+        Some(deadline)
+    );
+    let mut expired = prepared;
+    expired.remote_deadline = Some(std::time::Instant::now() - Duration::from_secs(1));
+    let result = expired.execute_remote(
+        &f.owner,
+        "expired-preparation",
+        serde_json::json!(["fixture"]),
+        || Ok(vec![]),
+        |_| panic!("expired intent must not dispatch"),
+    );
+    assert!(matches!(result, Err(FileError::Unavailable)));
+}
