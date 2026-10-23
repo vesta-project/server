@@ -27,6 +27,9 @@ use vesta_game_runtime::process::{
 use vesta_state::StateError;
 
 const DRIVER_INTERVAL: Duration = Duration::from_millis(5);
+// A quiet running game needs exit/readiness observation, not 200 polls/second.
+// Admitted work increments Wake's version and interrupts this wait immediately.
+const QUIET_RUNNING_INTERVAL: Duration = Duration::from_millis(25);
 // Direct Operations callers that bypass RuntimeHandle still get picked up, but
 // the idle driver does not acquire a SQLite writer transaction every 5 ms.
 const IDLE_QUEUE_PROBE: Duration = Duration::from_secs(1);
@@ -875,15 +878,17 @@ impl Driver {
                     }
                 }
             }
-            let idle = self.active.is_none()
+            let quiet = self.active.is_none()
                 && !self.players.writer_pending()
                 && !self.ticks.writer_pending()
-                && self.game.process.snapshot().generation.is_none()
                 && !self.shared.stopping.load(Ordering::Acquire);
-            if idle {
-                self.shared
-                    .wake
-                    .wait_for_change(wake_version, IDLE_WAKE_INTERVAL);
+            if quiet {
+                let interval = if self.game.process.snapshot().generation.is_none() {
+                    IDLE_WAKE_INTERVAL
+                } else {
+                    QUIET_RUNNING_INTERVAL
+                };
+                self.shared.wake.wait_for_change(wake_version, interval);
             } else {
                 thread::sleep(DRIVER_INTERVAL);
             }

@@ -851,6 +851,10 @@ fn aggregate_body_budget_refuses_before_buffering_and_preserves_empty_reads() {
         .error(503, "transport_busy");
     f.request("GET", "/api/v2/pack/status?installed=0", b"", None)
         .error_if_unpublished();
+    // Reserved auth/control bodies still reach validation while ordinary bodies
+    // occupy their aggregate budget. This invalid challenge issues no credential.
+    let control = f.request("POST", "/api/v3/auth/session/challenge", b"{}", None);
+    assert_eq!(control.status, 400);
     drop(held);
     let started = Instant::now();
     loop {
@@ -2147,6 +2151,51 @@ fn management_lifecycle_admission_is_idempotent_and_inputs_are_not_launch_author
     assert_eq!(outcome.status, 200);
     assert!(outcome.json()["data"]["progress_percent"].as_u64().unwrap() <= 100);
     outcome.hides(&f.temp.path().to_string_lossy());
+    let selected = f.request(
+        "GET",
+        &format!("/api/v3/manage/operations?ids={id},00000000-0000-4000-8000-000000000000"),
+        b"",
+        Some(&token),
+    );
+    assert_eq!(selected.status, 200);
+    assert_eq!(selected.json()["data"]["selected"], true);
+    assert_eq!(
+        selected.json()["data"]["items"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(selected.json()["data"]["items"][0]["operation_id"], id);
+    for query in [
+        format!("ids={id},{id}"),
+        "ids=".into(),
+        format!("ids={id}&limit=2"),
+        format!(
+            "ids={}",
+            std::iter::repeat_n(id.as_str(), 33)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    ] {
+        management_reply_error(
+            &f.request(
+                "GET",
+                &format!("/api/v3/manage/operations?{query}"),
+                b"",
+                Some(&token),
+            ),
+            400,
+            "invalid_request",
+        );
+    }
+    management_reply_error(
+        &f.request(
+            "GET",
+            &format!("/api/v3/manage/operations?ids={id}"),
+            b"",
+            None,
+        ),
+        401,
+        "management_session_invalid",
+    );
 }
 
 #[test]

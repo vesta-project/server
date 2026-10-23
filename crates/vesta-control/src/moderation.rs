@@ -210,6 +210,8 @@ pub fn ops(directory: &std::path::Path) -> Result<Vec<OpEntry>, &'static str> {
     Ok(items)
 }
 pub fn whitelist(directory: &std::path::Path) -> Result<Vec<WhitelistEntry>, &'static str> {
+    // A fresh persisted-file observation, not Minecraft's live in-memory list.
+    // Direct operator edits may require a game-side reload before join checks use them.
     let items: Vec<WhitelistEntry> = load(&directory.join("whitelist.json"))?;
     if items.iter().any(|v| !entry_valid(&v.name, &v.uuid)) {
         return Err("players_file_malformed");
@@ -220,6 +222,28 @@ pub fn whitelist(directory: &std::path::Path) -> Result<Vec<WhitelistEntry>, &'s
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn whitelist_observations_reread_disk_and_do_not_predict_command_effects() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("whitelist.json");
+        assert!(whitelist(root.path()).unwrap().is_empty());
+        std::fs::write(
+            &path,
+            br#"[{"name":"Alex","uuid":"853c80ef-3c37-49fd-aa49-938b674adae6"}]"#,
+        )
+        .unwrap();
+        assert_eq!(whitelist(root.path()).unwrap()[0].name, "Alex");
+        // Merely preparing an approved command must not optimistically change
+        // what Vesta reports from the game's persisted document.
+        ModerationAction::WhitelistRemove {
+            player: "Alex".into(),
+        }
+        .render()
+        .unwrap();
+        assert_eq!(whitelist(root.path()).unwrap().len(), 1);
+        std::fs::write(path, b"[]").unwrap();
+        assert!(whitelist(root.path()).unwrap().is_empty());
+    }
     #[test]
     fn moderation_refuses_injection_and_bounds() {
         for player in ["@a", "a b", "a\nstop", "a;op", "", "abcdefghijklmnopq", "é"] {

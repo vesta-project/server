@@ -48,6 +48,23 @@ pub(super) fn fixed_refusal(path: &str) -> Option<Reply> {
     None
 }
 
+/// Capacity classification only. Authentication, rate limits and route guards
+/// still run normally; unknown paths/methods cannot claim reserved capacity.
+pub(super) fn control_request(method: &Method, path: &str, query: Option<&str>) -> bool {
+    method == Method::POST
+        && query.is_none()
+        && matches!(
+            path,
+            "/api/v3/manage/lifecycle/stop"
+                | "/api/v3/manage/lifecycle/kill"
+                | "/api/v3/manage/lifecycle/restart"
+                | "/api/v3/auth/session/challenge"
+                | "/api/v3/auth/session"
+                | "/api/v3/manage/session/challenge"
+                | "/api/v3/manage/session"
+        )
+}
+
 pub(super) async fn route(
     request: Request<Incoming>,
     state: Arc<Shared>,
@@ -221,7 +238,12 @@ pub(super) async fn route(
     {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
-    let maximum = state.max_body;
+    let control = control_request(&method, &path, query.as_deref());
+    let maximum = if control {
+        state.max_body.min(super::CONTROL_BODY_MAXIMUM)
+    } else {
+        state.max_body
+    };
     if request
         .headers()
         .get("content-length")
@@ -236,7 +258,12 @@ pub(super) async fn route(
     let body_permit = if request.body().is_end_stream() {
         None
     } else {
-        match state.bodies.clone().try_acquire_many_owned(maximum as u32) {
+        let budget = if control {
+            &state.control_bodies
+        } else {
+            &state.bodies
+        };
+        match budget.clone().try_acquire_many_owned(maximum as u32) {
             Ok(permit) => Some(permit),
             Err(_) => {
                 return super::with_retry_after(
@@ -281,7 +308,10 @@ pub(super) async fn route(
         peer: peer.ip(),
     };
     let tls = state.tls.clone();
-    let jobs = if path == "/api/v3/manage/content/install" && method == Method::POST {
+    let jobs = if control_request(&method, &path, query.as_deref()) {
+        state.control_jobs.reap(false).await;
+        &state.control_jobs
+    } else if path == "/api/v3/manage/content/install" && method == Method::POST {
         state.install_jobs.reap(false).await;
         &state.install_jobs
     } else {

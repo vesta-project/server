@@ -75,6 +75,8 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Aggregate erasing request buffers, including bodies owned by blocking jobs
 /// after their HTTP waiter times out. Never scales with the connection cap.
 const REQUEST_BODY_BUDGET: usize = 4 * 1024 * 1024;
+const CONTROL_BODY_BUDGET: usize = 16 * 1024;
+const CONTROL_BODY_MAXIMUM: usize = 8 * 1024;
 /// Bytes per second a streaming artifact body must sustain, measured over each
 /// `request_timeout` window. A stalled or trickling peer loses its connection and
 /// with it every download permit held by its body and buffered chunks.
@@ -609,7 +611,7 @@ impl Transport {
         let address = socket.local_addr().map_err(|_| TransportError::Bind)?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
-            .max_blocking_threads(WORKERS)
+            .max_blocking_threads(1)
             .enable_all()
             .thread_name("vesta-https-worker")
             .build()
@@ -619,6 +621,14 @@ impl Transport {
         let realtime_runtime = tokio::runtime::Builder::new_current_thread()
             .max_blocking_threads(WORKERS)
             .thread_name("vesta-realtime-check")
+            .build()
+            .map_err(|_| TransportError::Runtime)?;
+        // Preserve the old two-worker HTTP budget: one ordinary IO worker and
+        // one reserved for authenticated control/auth dispatch. Slow disk reads
+        // from response bodies use the ordinary runtime and cannot occupy it.
+        let control_runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .thread_name("vesta-control-dispatch")
             .build()
             .map_err(|_| TransportError::Runtime)?;
         let install_runtime = tokio::runtime::Builder::new_current_thread()
@@ -642,12 +652,16 @@ impl Transport {
                     listener,
                     serving_tls,
                     stopped,
-                    realtime_runtime.handle().clone(),
-                    install_runtime.handle().clone(),
+                    BlockingRuntimes {
+                        realtime: realtime_runtime.handle().clone(),
+                        install: install_runtime.handle().clone(),
+                        control: control_runtime.handle().clone(),
+                    },
                 ));
                 drop(refresh);
                 drop(realtime_runtime);
                 drop(install_runtime);
+                drop(control_runtime);
                 drop(runtime);
                 let _ = done.send(());
             })
@@ -714,11 +728,13 @@ struct Shared {
     host: NetworkHost,
     max_body: usize,
     bodies: Arc<Semaphore>,
+    control_bodies: Arc<Semaphore>,
     timeout: Duration,
     limiter: Mutex<PeerRateLimiter>,
     session_limiter:
         Mutex<RateLimiter<vesta_control::identity::management::DeviceSessionReference>>,
     jobs: BlockingJobs,
+    control_jobs: BlockingJobs,
     realtime_jobs: BlockingJobs,
     install_jobs: BlockingJobs,
     downloads: Arc<Downloads<vesta_control::pack_access::RealtimeSession>>,
@@ -733,10 +749,13 @@ struct BlockingJobs {
 }
 impl BlockingJobs {
     fn new(runtime: tokio::runtime::Handle) -> Self {
+        Self::with_workers(runtime, WORKERS)
+    }
+    fn with_workers(runtime: tokio::runtime::Handle, workers: usize) -> Self {
         Self {
             runtime,
-            handles: Mutex::new(Vec::with_capacity(WORKERS)),
-            permits: Arc::new(Semaphore::new(WORKERS)),
+            handles: Mutex::new(Vec::with_capacity(workers)),
+            permits: Arc::new(Semaphore::new(workers)),
             waiters: Arc::new(Semaphore::new(32)),
         }
     }
@@ -806,14 +825,19 @@ impl BlockingJobs {
     }
 }
 
+struct BlockingRuntimes {
+    realtime: tokio::runtime::Handle,
+    install: tokio::runtime::Handle,
+    control: tokio::runtime::Handle,
+}
+
 async fn serve(
     socket: std::net::TcpListener,
     host: NetworkHost,
     config: TlsListener,
     tls: Arc<tls::Material>,
     mut stop: watch::Receiver<bool>,
-    realtime_runtime: tokio::runtime::Handle,
-    install_runtime: tokio::runtime::Handle,
+    blocking: BlockingRuntimes,
 ) {
     let Ok(listener) = TcpListener::from_std(socket) else {
         return;
@@ -822,7 +846,8 @@ async fn serve(
         tls,
         host,
         max_body: config.max_request_bytes() as usize,
-        bodies: Arc::new(Semaphore::new(REQUEST_BODY_BUDGET)),
+        bodies: Arc::new(Semaphore::new(REQUEST_BODY_BUDGET - CONTROL_BODY_BUDGET)),
+        control_bodies: Arc::new(Semaphore::new(CONTROL_BODY_BUDGET)),
         timeout: Duration::from_secs(config.request_timeout_seconds().into()),
         limiter: Mutex::new(PeerRateLimiter::new(
             RatePolicy::new(
@@ -845,9 +870,10 @@ async fn serve(
         downloads: Arc::new(Downloads::new(DOWNLOADS)),
         realtime: realtime::Sockets::new(),
         stop: stop.clone(),
-        jobs: BlockingJobs::new(tokio::runtime::Handle::current()),
-        realtime_jobs: BlockingJobs::new(realtime_runtime),
-        install_jobs: BlockingJobs::new(install_runtime),
+        jobs: BlockingJobs::with_workers(tokio::runtime::Handle::current(), 1),
+        control_jobs: BlockingJobs::with_workers(blocking.control, 1),
+        realtime_jobs: BlockingJobs::new(blocking.realtime),
+        install_jobs: BlockingJobs::new(blocking.install),
     });
     let handshakes = Arc::new(Semaphore::new(HANDSHAKES));
     let mut connection_limiter = PeerRateLimiter::new(
@@ -913,6 +939,7 @@ async fn serve(
             }
         }
         shared.jobs.reap(false).await;
+        shared.control_jobs.reap(false).await;
         shared.install_jobs.reap(false).await;
         shared.realtime.reap(false).await;
         shared.realtime_jobs.reap(false).await;
@@ -923,6 +950,7 @@ async fn serve(
     shared.realtime.reap(true).await;
     shared.realtime_jobs.reap(true).await;
     shared.jobs.reap(true).await;
+    shared.control_jobs.reap(true).await;
     shared.install_jobs.reap(true).await;
 }
 
@@ -939,9 +967,17 @@ async fn handle(
     let reference = if let Some(token) = routes::bearer(request.headers()) {
         let access = state.host.management().clone();
         let token = zeroize::Zeroizing::new(token.to_owned());
-        state.jobs.reap(false).await;
-        match state
-            .jobs
+        let jobs = if routes::control_request(
+            request.method(),
+            request.uri().path(),
+            request.uri().query(),
+        ) {
+            &state.control_jobs
+        } else {
+            &state.jobs
+        };
+        jobs.reap(false).await;
+        match jobs
             .run(move || {
                 if !access.known_session(token.as_str())? {
                     return Ok(None);

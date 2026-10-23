@@ -1,5 +1,80 @@
 use super::*;
+use http::Method;
 use std::time::Instant;
+
+#[test]
+fn reserved_control_worker_survives_slow_cancelled_ordinary_io() {
+    let ordinary_runtime = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let control_runtime = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    ordinary_runtime.block_on(async {
+        let ordinary = Arc::new(BlockingJobs::with_workers(
+            tokio::runtime::Handle::current(),
+            1,
+        ));
+        let control = BlockingJobs::with_workers(control_runtime.handle().clone(), 1);
+        let (started_tx, started_rx) = oneshot::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let pool = ordinary.clone();
+        let waiter = tokio::spawn(async move {
+            pool.run(move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv();
+            })
+            .await
+        });
+        started_rx.await.unwrap();
+        waiter.abort();
+        let _ = waiter.await;
+        assert_eq!(
+            ordinary.permits.available_permits(),
+            0,
+            "cancelled HTTP retains IO ownership"
+        );
+        let result = tokio::time::timeout(Duration::from_secs(1), control.run(|| 42))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, 42, "control is not queued behind disk IO");
+        release_tx.send(()).unwrap();
+        ordinary.reap(true).await;
+        control.reap(true).await;
+        assert_eq!(ordinary.permits.available_permits(), 1);
+    });
+}
+
+#[test]
+fn reserved_control_capacity_has_a_closed_route_allowlist() {
+    for path in [
+        "/api/v3/manage/lifecycle/stop",
+        "/api/v3/manage/lifecycle/kill",
+        "/api/v3/auth/session",
+        "/api/v3/manage/session/challenge",
+    ] {
+        assert!(routes::control_request(&Method::POST, path, None));
+        assert!(!routes::control_request(&Method::GET, path, None));
+        assert!(!routes::control_request(
+            &Method::POST,
+            path,
+            Some("priority=urgent")
+        ));
+    }
+    for path in [
+        "/api/v3/manage/lifecycle/start",
+        "/api/v3/manage/players/whitelist",
+        "/api/v3/auth/session/extra",
+        "/api/v3/manage/console/command",
+    ] {
+        assert!(!routes::control_request(&Method::POST, path, None));
+    }
+}
 
 #[test]
 fn bounded_blocking_work_is_retained_after_request_cancellation_and_joined() {

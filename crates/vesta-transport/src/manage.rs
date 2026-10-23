@@ -612,6 +612,31 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     }
     match action {
         "operations" => {
+            if let Some(selection) = query.and_then(|query| query.strip_prefix("ids=")) {
+                if selection.len() > 8192 {
+                    return error(StatusCode::BAD_REQUEST, "invalid_request");
+                }
+                let ids = selection
+                    .split(',')
+                    .take(33)
+                    .map(OperationId::parse)
+                    .collect::<Result<Vec<_>, _>>();
+                let ids = match ids {
+                    Ok(ids) if !ids.is_empty() && ids.len() <= 32 => ids,
+                    _ => return error(StatusCode::BAD_REQUEST, "invalid_request"),
+                };
+                return match operations.activity_get_many(&subject, &ids) {
+                    Ok(items) => match items
+                        .iter()
+                        .map(|item| activity(host, item))
+                        .collect::<Result<Vec<_>, _>>()
+                    {
+                        Ok(items) => ok(json!({"items":items,"selected":true})),
+                        Err(error) => management_error(error),
+                    },
+                    Err(error) => operation_error(error),
+                };
+            }
             let mut kind = None;
             let mut actor_me = false;
             let mut paging = Vec::new();

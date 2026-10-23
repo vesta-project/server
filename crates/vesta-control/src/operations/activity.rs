@@ -117,6 +117,42 @@ fn kind(raw: &str) -> &'static str {
 }
 
 impl Operations {
+    /// Bounded exact-ID observation in one current-authority snapshot. Missing
+    /// records stay missing; no operation is created, retried or inferred done.
+    pub fn activity_get_many(
+        &self,
+        subject: &Subject,
+        ids: &[OperationId],
+    ) -> OperationsResult<Vec<(OperationSummary, OperationActivity)>> {
+        if ids.is_empty()
+            || ids.len() > 32
+            || ids
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != ids.len()
+        {
+            return Err(invalid());
+        }
+        self.db
+            .read_with(|snapshot| {
+                let repo = Repository::new(
+                    snapshot.connection(),
+                    self.db.server_id(),
+                    self.db.clock().millis(),
+                );
+                let policy = self.activity_policy(&repo, subject)?;
+                let mut items = Vec::with_capacity(ids.len());
+                for id in ids {
+                    if let Some(operation) = repo.load(id)? {
+                        items.push(Self::activity_in(&repo, subject, &policy, operation)?);
+                    }
+                }
+                Ok(items)
+            })
+            .map_err(OperationError::from)
+    }
     pub fn activity_get(
         &self,
         subject: &Subject,
