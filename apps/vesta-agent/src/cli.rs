@@ -1,4 +1,4 @@
-//! Strict, non-interactive OS-local command grammar. No shell/remote options.
+//! Strict OS-local command grammar. Scoped management never executes an OS shell.
 use std::{
     ffi::OsString,
     net::{IpAddr, Ipv4Addr},
@@ -6,19 +6,21 @@ use std::{
 };
 use vesta_server_install::Software;
 
-pub const USAGE: &str = "Usage: vesta-agent version | update | check-config <path> | status <path> | serve <path> [--local-only]\n       vesta-agent create <name> --install-root <root> --minecraft-version <version> --java <path> [--loader <vanilla|paper|folia|purpur|fabric|quilt>] [--loader-version <version>] [--bind <loopback-ip>] [--port <port>] [--approve-install] [--ack-warnings] [--ack-legacy-checksum]\n       vesta-agent delete <name> --confirm <name> [--install-root <root>]\n       vesta-agent <config|start|stop|restart> <name> [--install-root <root>]
-       vesta-agent access show|set <name> [--anonymous-role role] [--new-user-role role] [--whitelist-role role] [--whitelist-sync on|off] [--password-role role] [--install-root path]\n  vesta-agent pair <name> [--install-root <root>] [--role owner|admin|administrator|maintainer|moderator|viewer|pack-user] [--expires <1..60 minutes>]
-       vesta-agent devices list <name> [--install-root <root>]
-       vesta-agent devices revoke <device-id> <name> [--install-root <root>]\n       vesta-agent owner link <name> --minecraft-uuid <uuid> [--role <builtin>] [--install-root <root>]\n       vesta-agent owner unlink <name> --minecraft-uuid <uuid> [--revoke-devices] [--install-root <root>]\n       vesta-agent owner list <name> [--install-root <root>]
-       vesta-agent superadmin grant|revoke <user-id> <name> [--install-root <root>]
-       vesta-agent resolve-launch <name> --confirm <name> [--install-root <root>]
-       vesta-agent reset-restarts <name> [--install-root <root>]
-       vesta-agent backup-init <name> [--install-root <root>]
-       vesta-agent recovery-export <name> --output <file> [--passphrase-file <file>] [--install-root <root>]\n       vesta-agent recovery-import <name> --input <file> [--passphrase-file <file>] --confirm <server-id> [--install-root <root>]
-       vesta-agent backup-resolve <name> [<job-id> --confirm <job-id>] [--install-root <root>]";
+pub const USAGE: &str = "Vesta agent\n\n  vesta list [--json] [--install-root <root>]\n  vesta manage <server_id|name> [command ...] [--install-root <root>]\n  vesta manage --help\n  vesta create <name> --install-root <root> --minecraft-version <version> --java <path> [install flags]\n  vesta agent serve <host.toml> [--local-only]\n  vesta agent check-config|status <host.toml>\n  vesta version | update\n\nUse manage without a command to enter the server terminal.\nThe vesta-agent executable supports the same commands.";
 #[derive(Debug)]
 pub enum Command {
     Help,
+    CreateHelp,
+    ManageHelp,
+    List {
+        root: Option<PathBuf>,
+        json: bool,
+    },
+    Manage {
+        target: String,
+        root: Option<PathBuf>,
+        args: Vec<OsString>,
+    },
     Version,
     Update,
     Check(PathBuf),
@@ -144,7 +146,26 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
     let args: Vec<_> = args.into_iter().collect();
     let command = args.first().and_then(|s| s.to_str()).ok_or(())?;
     match command {
-        "--help" | "-h" if args.len() == 1 => return Ok(Command::Help),
+        "create"
+            if args.len() == 2 && matches!(args[1].to_str(), Some("--help" | "-h" | "help")) =>
+        {
+            return Ok(Command::CreateHelp);
+        }
+        "--help" | "-h" | "help" if args.len() == 1 => return Ok(Command::Help),
+        "list" | "servers" => return crate::manage::parse_list(&args),
+        "manage" => return crate::manage::parse(&args),
+        "agent" => {
+            if args.len() == 2 && matches!(args[1].to_str(), Some("help" | "--help" | "-h")) {
+                return Ok(Command::Help);
+            }
+            if !matches!(
+                args.get(1).and_then(|s| s.to_str()),
+                Some("serve" | "status" | "check-config" | "version" | "update")
+            ) {
+                return Err(());
+            }
+            return parse(args.into_iter().skip(1));
+        }
         "version" if args.len() == 1 => return Ok(Command::Version),
         "update" if args.len() == 1 => return Ok(Command::Update),
         "status" | "check-config" | "serve" => {

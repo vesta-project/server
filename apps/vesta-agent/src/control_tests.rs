@@ -27,11 +27,14 @@ fn inert_fixture() {
         if fs::read("fixture-release").ok().as_deref() == Some(b"release") {
             std::process::exit(0);
         }
-        if receiver
-            .recv_timeout(Duration::from_millis(5))
-            .is_ok_and(|s| s == "stop")
-        {
-            std::process::exit(0);
+        match receiver.recv_timeout(Duration::from_millis(5)) {
+            Ok(line) if line == "stop" => std::process::exit(0),
+            Ok(line) if line == "list" => {
+                use std::io::Write;
+                println!("There are 1 of a max of 20 players online: OwnedAlpha");
+                std::io::stdout().flush().unwrap();
+            }
+            _ => {}
         }
     }
 }
@@ -91,6 +94,22 @@ fn protected_channel_start_stop_restart_pending_eula_and_absent_agent() {
         )
         .await
         .unwrap();
+        let status = control::request_data(db.directory().path(), "owned".into(), Op::Status)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status["agent"], "online");
+        assert_eq!(status["state"], "stopped");
+        let players = control::request_data(db.directory().path(), "owned".into(), Op::PlayersList)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(players["available"], false);
+        assert!(players["players"].is_null());
+        assert_eq!(
+            control::request_data(db.directory().path(), "other".into(), Op::PlayersList).await,
+            Err("local_control_request_refused")
+        );
         assert_eq!(
             control::request(db.directory().path(), "owned".into(), Op::Start).await,
             Err("local_eula_pending_owner_must_accept_themselves")
@@ -239,6 +258,13 @@ fn protected_channel_start_stop_restart_pending_eula_and_absent_agent() {
             .await
             .unwrap();
         let first = owned.runtime.game_snapshot().unwrap().generation;
+        let listed = control::request_data(db.directory().path(), "owned".into(), Op::PlayersList)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(listed["available"], true);
+        assert_eq!(listed["players"], serde_json::json!(["OwnedAlpha"]));
+        assert_eq!(listed["online"], 1);
         assert!(first.is_some());
         assert!(
             control::request(db.directory().path(), "other".into(), Op::Stop)

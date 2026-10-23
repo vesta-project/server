@@ -28,6 +28,73 @@ pub struct Server {
     pub directory: PathBuf,
     pub config: PathBuf,
 }
+pub fn valid_instance_id(id: &str) -> bool {
+    id.len() == 36
+        && id.starts_with("srv_")
+        && id[4..]
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
+#[derive(Serialize)]
+pub struct ListedServer {
+    pub id: String,
+    pub name: String,
+}
+
+/// Enumerate the registry only: no state migrations, sockets, game or directory creation.
+pub fn list(root: &Path) -> Result<Vec<ListedServer>> {
+    local_files::guard(root)?;
+    let names = root.join("names");
+    local_files::guard(&names)?;
+    let entries = match fs::read_dir(&names) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("local_registry_unavailable"),
+    };
+    let mut listed = Vec::new();
+    for (index, entry) in entries.enumerate() {
+        if index >= 4096 {
+            return Err("local_registry_limit_reached");
+        }
+        let entry = entry.map_err(|_| "local_registry_unavailable")?;
+        let filename = entry.file_name();
+        let name = filename
+            .to_str()
+            .and_then(|s| s.strip_suffix(".json"))
+            .filter(|s| crate::cli::valid_name(s))
+            .ok_or("local_registry_invalid")?;
+        let (_, id, _) = select(root, name)?;
+        listed.push(ListedServer {
+            id,
+            name: name.into(),
+        });
+    }
+    listed.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(listed)
+}
+
+/// IDs are stable local installation IDs; names remain convenient aliases.
+pub fn select(root: &Path, target: &str) -> Result<(String, String, Server)> {
+    local_files::guard(root)?;
+    let name = if valid_instance_id(target) {
+        let bytes = local_files::read(&root.join("instances").join(target).join("local-name"), 48)?;
+        String::from_utf8(bytes).map_err(|_| "local_record_invalid")?
+    } else {
+        target.to_owned()
+    };
+    let server = resolve(root, &name)?;
+    let id = server
+        .directory
+        .file_name()
+        .and_then(|v| v.to_str())
+        .ok_or("local_record_invalid")?
+        .to_owned();
+    if valid_instance_id(target) && target != id {
+        return Err("local_server_identity_changed");
+    }
+    Ok((name, id, server))
+}
 pub fn root(selected: Option<&Path>, base: &Path) -> Result<PathBuf> {
     let fallback = std::env::var_os("VESTA_SERVER_ROOT")
         .map(PathBuf::from)

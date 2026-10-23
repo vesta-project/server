@@ -10,6 +10,8 @@ const IO_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase", deny_unknown_fields)]
 pub enum Op {
+    Status,
+    PlayersList,
     Start,
     Stop,
     Restart,
@@ -138,6 +140,39 @@ async fn serve_stream<S: AsyncRead + AsyncWrite + Unpin>(
     let code = match request {
         Err(_) => Code::InvalidRequest,
         Ok(request) if request.name != name => Code::NameMismatch,
+        Ok(request) if matches!(request.op, Op::Status | Op::PlayersList) => {
+            let runtime = runtime.clone();
+            match tokio::task::spawn_blocking(move || {
+                if matches!(request.op, Op::Status) {
+                    let snapshot = runtime.game_snapshot().map_err(|_| "local_observation_unavailable")?;
+                    let readiness = runtime.readiness().ok();
+                    Ok(serde_json::json!({
+                        "agent": "online",
+                        "state": format!("{:?}", snapshot.phase).to_lowercase(),
+                        "generation": snapshot.generation.map(|g| g.to_hex()),
+                        "readiness": readiness.as_ref().map(|r| format!("{:?}", r.readiness).to_lowercase()),
+                        "playerCount": readiness.as_ref().and_then(|r| r.players.map(|p| p.0)),
+                    }))
+                } else {
+                    // Uses the existing serialized, generation-bound fixed-list query;
+                    // a timeout is unavailable evidence, never an invented empty list.
+                    Ok::<_, &'static str>(match runtime.query_players(std::time::Duration::from_secs(2)) {
+                        Ok(observation) => serde_json::json!({
+                            "available": true,
+                            "generation": observation.generation().to_hex(),
+                            "observedAtMs": observation.observed_at_ms(),
+                            "online": observation.list().online(),
+                            "max": observation.list().max(),
+                            "players": observation.list().players().iter().map(|p| p.name()).collect::<Vec<_>>(),
+                        }),
+                        Err(error) => serde_json::json!({"available": false, "reason": error.code(), "players": null}),
+                    })
+                }
+            }).await {
+                Ok(Ok(value)) => { data = Some(value); Code::Complete }
+                _ => Code::RuntimeRefused,
+            }
+        }
         Ok(request)
             if matches!(
                 request.op,

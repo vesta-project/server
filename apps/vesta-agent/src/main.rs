@@ -1,4 +1,4 @@
-//! Trusted OS-local CLI entrypoint. No remote administrative authority.
+// Trusted OS-local CLI entrypoint. Shared by the vesta and vesta-agent binaries.
 use std::process::ExitCode;
 mod cli;
 mod commands;
@@ -7,6 +7,7 @@ mod control;
 mod control_tests;
 mod editor;
 mod local_files;
+mod manage;
 mod recovery;
 #[cfg(windows)]
 use vesta_supervisor::pipe_security;

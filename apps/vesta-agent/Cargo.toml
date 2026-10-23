@@ -23,6 +23,7 @@ sha2.workspace = true
 fs2.workspace = true
 vesta-server-install = { path = "../../crates/vesta-server-install" }
 vesta-supervisor.workspace = true
+rustyline = { version = "18.0.1", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Pipes"] }
@@ -40,6 +41,12 @@ workspace = true
 [[bin]]
 name = "vesta-agent"
 path = "src/main.rs"
+
+[[bin]]
+name = "vesta"
+path = "src/vesta_bin.rs"
+test = false
+bench = false
 
 # Per-server process supervisor started detached by `serve` in separate-supervision mode.
 [[bin]]

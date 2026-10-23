@@ -11,6 +11,20 @@ pub async fn run(command: Command, base: &Path) -> ExitCode {
             println!("{}", crate::cli::USAGE);
             return ExitCode::SUCCESS;
         }
+        Command::ManageHelp => {
+            println!("{}", crate::manage::USAGE);
+            return ExitCode::SUCCESS;
+        }
+        Command::CreateHelp => {
+            println!(
+                "vesta create <name> --install-root <root> --minecraft-version <version> --java <path>\n  [--loader vanilla|paper|folia|purpur|fabric|quilt] [--loader-version <version>]\n  [--bind <loopback-ip>] [--port <port>] [--approve-install]\n  [--ack-warnings] [--ack-legacy-checksum]"
+            );
+            return ExitCode::SUCCESS;
+        }
+        Command::List { root, json } => crate::manage::list(root.as_deref(), base, json),
+        Command::Manage { target, root, args } => {
+            return crate::manage::run(&target, root.as_deref(), &args, base).await;
+        }
         Command::Version => {
             println!(
                 "vesta-agent {}; updates_are_not_signed_yet",
