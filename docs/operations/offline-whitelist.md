@@ -1,5 +1,7 @@
 # Offline whitelist management
 
+Follow-up live fixture testing found an important startup overwrite race and an offline-mode command-profile casing difference. See [vanilla 26.3 observations](whitelist-startup-observations.md). Starting-state edits remain unimplemented; mixed-case client admission has not been certified by the stopped-editor tests.
+
 Implemented 2026-10-23. Minecraft must be stopped; the Vesta agent must remain reachable. Running-server whitelist actions continue to use typed Minecraft commands.
 
 `GET /api/v3/manage/players/whitelist/offline` returns `{items, sha256}`. A null hash means the file is absent. It requires `players.view` and scoped file-read authority for `whitelist.json`.
