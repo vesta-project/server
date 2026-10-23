@@ -10,8 +10,8 @@ import test from 'node:test';
 const script = fileURLToPath(new URL('./package-release.mjs', import.meta.url));
 const target = process.platform === 'win32' ? 'windows-x86_64' : process.platform === 'linux' && process.arch === 'x64' ? 'linux-x86_64' : process.platform === 'linux' && process.arch === 'arm64' ? 'linux-aarch64' : null;
 const names = target?.startsWith('windows-')
-  ? ['vesta-setup.exe', 'vesta-agent.exe', 'vesta-supervisor.exe']
-  : ['vesta-setup', 'vesta-agent', 'vesta-supervisor'];
+  ? ['vesta-setup.exe', 'vesta-agent.exe', 'vesta-supervisor.exe', 'vesta.exe']
+  : ['vesta-setup', 'vesta-agent', 'vesta-supervisor', 'vesta'];
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'vesta-package-test-'));

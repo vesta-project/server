@@ -135,6 +135,32 @@ fn modified_verified_release_is_rejected_before_creating_any_files() {
     assert!(engine::prepare(&answers(root.clone()), &release, &mut |_, _, _, _| {}).is_err());
     assert!(!root.exists());
 }
+
+#[test]
+fn signed_short_cli_is_installed_and_unknown_extra_artifacts_are_refused() {
+    let mut bundle = Bundle::new(false);
+    let name = if cfg!(windows) { "vesta.exe" } else { "vesta" };
+    let bytes = b"owned signed short CLI fixture";
+    fs::write(bundle.temp.path().join(name), bytes).unwrap();
+    bundle.manifest.files.push(Artifact {
+        name: name.into(),
+        sha256: hex::encode(Sha256::digest(bytes)),
+        size: bytes.len() as u64,
+    });
+    bundle.sign();
+    let release = release::load(bundle.source()).unwrap();
+    let installed = tempfile::tempdir().unwrap();
+    release
+        .install(installed.path(), &mut |_, _, _| {})
+        .unwrap();
+    assert_eq!(
+        fs::read(installed.path().join("bin").join(name)).unwrap(),
+        bytes
+    );
+    bundle.manifest.files[3].name = "unknown-extra".into();
+    bundle.sign();
+    assert!(release::load(bundle.source()).is_err());
+}
 #[test]
 fn installation_checks_actual_bytes_and_never_overwrites_collisions() {
     let bundle = Bundle::new(false);

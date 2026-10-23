@@ -243,10 +243,17 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), String> {
         return Err("release target does not match this platform".into());
     }
     #[cfg(target_os = "windows")]
-    let expected = ["vesta-setup.exe", "vesta-agent.exe", "vesta-supervisor.exe"];
+    let expected = [
+        "vesta-setup.exe",
+        "vesta-agent.exe",
+        "vesta-supervisor.exe",
+        "vesta.exe",
+    ];
     #[cfg(not(target_os = "windows"))]
-    let expected = ["vesta-setup", "vesta-agent", "vesta-supervisor"];
-    if manifest.files.len() != expected.len()
+    let expected = ["vesta-setup", "vesta-agent", "vesta-supervisor", "vesta"];
+    // Existing signed three-component bundles remain valid; new bundles may
+    // add only the exact short CLI executable, covered by the same signature.
+    if !matches!(manifest.files.len(), 3 | 4)
         || manifest
             .files
             .iter()

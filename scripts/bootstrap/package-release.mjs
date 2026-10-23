@@ -5,9 +5,9 @@ import path from 'node:path';
 import process from 'node:process';
 
 const expected = {
-  'windows-x86_64': ['vesta-setup.exe', 'vesta-agent.exe', 'vesta-supervisor.exe'],
-  'linux-x86_64': ['vesta-setup', 'vesta-agent', 'vesta-supervisor'],
-  'linux-aarch64': ['vesta-setup', 'vesta-agent', 'vesta-supervisor'],
+  'windows-x86_64': ['vesta-setup.exe', 'vesta-agent.exe', 'vesta-supervisor.exe', 'vesta.exe'],
+  'linux-x86_64': ['vesta-setup', 'vesta-agent', 'vesta-supervisor', 'vesta'],
+  'linux-aarch64': ['vesta-setup', 'vesta-agent', 'vesta-supervisor', 'vesta'],
 };
 function usage() { throw new Error('Usage: node package-release.mjs --binaries DIR --output NEW_DIR --target windows-x86_64|linux-x86_64|linux-aarch64 --base-url HTTPS_URL --signing-key PKCS8_PEM --version VERSION'); }
 const options = {};

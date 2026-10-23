@@ -6,7 +6,7 @@ Do not run an installer fetched from an untrusted mutable URL without independen
 
 ## Build and package a release
 
-Build the three standalone binaries from the source tree for one supported target. Packaging requires Node.js only and does not build Rust code. The binaries directory must contain exactly the named artifacts needed for the selected target: `vesta-setup`, `vesta-agent`, and `vesta-supervisor` on Linux; the same names with `.exe` on Windows. The packager accepts no arbitrary file paths and rejects symlinked binary inputs, mismatched host operating systems, and an existing output directory.
+Build the standalone binaries from the source tree for one supported target. Packaging requires Node.js only and does not build Rust code. New bundles require `vesta-setup`, `vesta-agent`, `vesta-supervisor`, and the short `vesta` CLI on Linux; the same names with `.exe` on Windows. Each artifact is covered by the signed manifest. The installer still accepts older signed three-component bundles. The packager accepts no arbitrary file paths and rejects symlinked binary inputs, mismatched host operating systems, and an existing output directory. See [server-scoped management](scoped-cli.md).
 
 Create an Ed25519 PKCS#8 PEM private key in a protected signing environment. Keep the private key out of the binary directory, output directory, source control, logs, and release host. For example, use an approved key-management process to supply the key file, then run:
 
