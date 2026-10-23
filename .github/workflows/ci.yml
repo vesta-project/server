@@ -2,19 +2,28 @@ name: CI
 
 on:
   push:
-    branches: [main, server-connections-mvp]
+    branches: ['**']
   pull_request:
-    branches: [main, server-connections-mvp]
+    branches: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
 
@@ -27,6 +36,7 @@ jobs:
           node scripts/build-roadmap-html.mjs --check
 
   rust:
+    timeout-minutes: 45
     name: Rust (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -38,7 +48,7 @@ jobs:
         shell: bash
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Select verified development toolchain
         run: rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
@@ -54,7 +64,7 @@ jobs:
       - name: Run Rust tests
         env:
           CARGO_INCREMENTAL: "0"
-        run: rustup run 1.96.0 cargo test --workspace --locked
+        run: rustup run 1.96.0 cargo test --workspace --locked -- --test-threads=1
 
       - name: Run strict all-target Clippy
         env:

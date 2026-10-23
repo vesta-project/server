@@ -1,14 +1,29 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$SetupUrl,
-    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-fA-F]{64}$')][string]$SetupSha256,
-    [Parameter(Mandatory = $true)][string]$BundleUrl,
-    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-fA-F]{64}$')][string]$ManifestSha256,
-    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-fA-F]{64}$')][string]$ReleaseKey,
+    [string]$SetupUrl,
+    [ValidatePattern('^[0-9a-fA-F]{64}$')][string]$SetupSha256,
+    [string]$BundleUrl,
+    [ValidatePattern('^[0-9a-fA-F]{64}$')][string]$ManifestSha256,
+    [ValidatePattern('^[0-9a-fA-F]{64}$')][string]$ReleaseKey,
+    [ValidatePattern('^(windows-x86_64|linux-x86_64|linux-aarch64)-$')][string]$AssetPrefix,
     [string]$Answers,
-    [switch]$Yes
+    [switch]$Yes,
+    [switch]$Uninstall,
+    [string]$Root,
+    [string]$ServersRoot,
+    [string]$Server,
+    [switch]$Plan
 )
 $ErrorActionPreference = 'Stop'
+
+if (-not $SetupUrl -or -not $SetupSha256 -or -not $BundleUrl -or -not $ManifestSha256 -or -not $ReleaseKey) { throw 'SetupUrl, SetupSha256, BundleUrl, ManifestSha256, and ReleaseKey are required.' }
+if ($Uninstall) {
+    if ($Server -and $Root) { throw '--server uses --servers-root, not --root.' }
+    if ($Yes) { throw '--yes is not supported for uninstall.' }
+    if ($Answers) { throw '--answers is not supported for uninstall.' }
+    if ($Server) { if (-not $ServersRoot) { throw '--server requires --servers-root.' } }
+    elseif (-not $Root) { throw 'Full Vesta uninstall requires --root.' }
+} elseif ($Root -or $ServersRoot -or $Server -or $Plan) { throw 'Uninstall options require --uninstall.' }
 
 function Assert-HttpsUrl([string]$Value, [string]$Label) {
     $uri = $null
@@ -44,7 +59,7 @@ try {
                 if ([int]$response.StatusCode -in @(301, 302, 303, 307, 308)) {
                     if ($redirect -eq 5 -or -not $response.Headers.Location) { throw 'Invalid or excessive redirect.' }
                     $next = [Uri]::new($uri, $response.Headers.Location)
-                    if ($next.Scheme -ne 'https' -or $next.UserInfo -or $next.Query -or $next.Fragment) { throw 'Redirect target must use HTTPS.' }
+                    if ($next.Scheme -ne 'https' -or $next.UserInfo -or $next.Fragment) { throw 'Redirect target must use HTTPS without credentials or fragments.' }
                     $uri = $next
                     $response.Dispose()
                     $request.Dispose()
@@ -72,8 +87,17 @@ try {
     $actual = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actual -ne $SetupSha256.ToLowerInvariant()) { throw 'Setup SHA-256 mismatch.' }
     $argv = @('--bundle-url', $BundleUrl, '--manifest-sha256', $ManifestSha256.ToLowerInvariant(), '--release-key', $ReleaseKey.ToLowerInvariant())
-    if ($Answers) { $argv += @('--answers', $Answers) }
-    if ($Yes) { $argv += '--yes' }
+    if ($AssetPrefix) { $argv += @('--asset-prefix', $AssetPrefix) }
+    if ($Uninstall) {
+        $argv = @('uninstall') + $argv
+        if ($Root) { $argv += @('--root', $Root) }
+        if ($ServersRoot) { $argv += @('--servers-root', $ServersRoot) }
+        if ($Server) { $argv += @('--server', $Server) }
+        if ($Plan) { $argv += '--plan' }
+    } else {
+        if ($Answers) { $argv += @('--answers', $Answers) }
+        if ($Yes) { $argv += '--yes' }
+    }
     & $setup @argv
     if ($LASTEXITCODE -ne 0) { throw 'Setup failed.' }
 } finally {

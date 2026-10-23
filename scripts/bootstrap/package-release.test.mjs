@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, verify } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +13,21 @@ const names = target?.startsWith('windows-')
   ? ['vesta-setup.exe', 'vesta-agent.exe', 'vesta-supervisor.exe', 'vesta.exe']
   : ['vesta-setup', 'vesta-agent', 'vesta-supervisor', 'vesta'];
 
+function executableFixture(target, index) {
+  const bytes = Buffer.alloc(512, index + 1);
+  if (target === 'windows-x86_64') {
+    bytes.write('MZ', 0, 'ascii');
+    bytes.writeUInt32LE(64, 0x3c);
+    bytes.write('PE\0\0', 64, 'binary');
+    bytes.writeUInt16LE(0x8664, 68);
+    bytes.writeUInt16LE(0x20b, 88);
+  } else {
+    bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1], 0);
+    bytes.writeUInt16LE(target === 'linux-aarch64' ? 183 : 62, 18);
+  }
+  return bytes;
+}
+
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'vesta-package-test-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -20,7 +35,7 @@ async function fixture(t) {
   const output = path.join(root, 'release');
   await mkdir(binaries);
   for (const [index, name] of names.entries()) {
-    await writeFile(path.join(binaries, name), Buffer.from(`fixture binary ${index}\n`));
+    await writeFile(path.join(binaries, name), executableFixture(target, index));
   }
   const { privateKey } = generateKeyPairSync('ed25519');
   const signingKey = path.join(root, 'signing-key.pem');
@@ -34,7 +49,8 @@ function packageArgs(f, output = f.output) {
     '--binaries', f.binaries,
     '--output', output,
     '--target', target,
-    '--base-url', 'https://downloads.example.invalid/vesta/1.2.3/test-target/',
+    '--base-url', 'https://github.com/vesta-project/server/releases/download/1.2.3',
+    '--asset-prefix', `${target}-`,
     '--signing-key', f.signingKey,
     '--version', '1.2.3',
   ];
@@ -61,6 +77,7 @@ test('packager emits a pinned manifest, a valid detached signature, and isolated
     assert.equal(artifact.size, bytes.length);
     assert.match(artifact.sha256, /^[0-9a-f]{64}$/);
     assert.equal(createHash('sha256').update(bytes).digest('hex'), artifact.sha256);
+    if (target.startsWith('linux-')) assert.equal((await stat(path.join(f.output, artifact.name))).mode & 0o777, 0o755);
   }
 
   const signature = Buffer.from((await readFile(path.join(f.output, 'manifest.sig'), 'utf8')).trim(), 'base64');
@@ -77,12 +94,15 @@ test('packager emits a pinned manifest, a valid detached signature, and isolated
   assert.equal(release.setupSha256, manifest.files[0].sha256);
   assert.equal(release.manifestSha256, createHash('sha256').update(manifestBytes).digest('hex'));
   assert.equal(release.releaseKey, publicRaw.toString('hex'));
+  assert.equal(release.assetPrefix, `${target}-`);
+  assert.equal(release.setupUrl, `https://github.com/vesta-project/server/releases/download/1.2.3/${target}-${names[0]}`);
   const commands = await readFile(path.join(f.output, 'commands.txt'), 'utf8');
   assert.match(commands, /vesta-setup-bootstrap/);
   assert.match(commands, /67108865/);
   assert.match(commands, new RegExp(release.setupSha256));
   assert.match(commands, new RegExp(release.manifestSha256));
   assert.match(commands, new RegExp(release.releaseKey));
+  assert.match(commands, new RegExp(`--asset-prefix ['"]?${target}-`));
   assert.doesNotMatch(result.stdout + result.stderr, /BEGIN PRIVATE KEY/);
 
   if (process.platform === 'win32') {
