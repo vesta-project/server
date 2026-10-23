@@ -1,18 +1,26 @@
 //! Command dispatch with fixed redacted failures. Never prints config contents.
 use crate::{
     cli::{Command, NamedOp},
-    control, editor, local_files, serve, servers, status,
+    control, editor, local_files,
+    output::Format,
+    serve, servers, status,
 };
 use std::{path::Path, process::ExitCode};
 use vesta_control::config::HostConfiguration;
 pub async fn run(command: Command, base: &Path) -> ExitCode {
+    run_with_format(command, base, Format::Json).await
+}
+pub async fn run_with_format(command: Command, base: &Path, format: Format) -> ExitCode {
     let result = match command {
         Command::Help => {
             println!("{}", crate::cli::USAGE);
             return ExitCode::SUCCESS;
         }
         Command::ManageHelp => {
-            println!("{}", crate::manage::USAGE);
+            println!(
+                "{}\n\nTerminal replies are formatted. Append --json for structured output.",
+                crate::manage::USAGE
+            );
             return ExitCode::SUCCESS;
         }
         Command::CreateHelp => {
@@ -136,8 +144,10 @@ pub async fn run(command: Command, base: &Path) -> ExitCode {
         Command::ResetRestarts { name, root } => servers::root(root.as_deref(), base)
             .and_then(|root| crate::supervision::reset_restarts(&root, &name))
             .map(|()| println!("crash_restarts_reset; no_process_touched")),
-        Command::Management { name, root, op } => management(name, root.as_deref(), op, base).await,
-        Command::Named { op, name, root } => named(op, name, root.as_deref(), base).await,
+        Command::Management { name, root, op } => {
+            management(name, root.as_deref(), op, base, format).await
+        }
+        Command::Named { op, name, root } => named(op, name, root.as_deref(), base, format).await,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -152,6 +162,7 @@ async fn named(
     name: String,
     selected_root: Option<&Path>,
     base: &Path,
+    format: Format,
 ) -> local_files::Result<()> {
     let root = servers::root(selected_root, base)?;
     let server = servers::resolve(&root, &name)?;
@@ -167,8 +178,20 @@ async fn named(
         NamedOp::Restart => control::Op::Restart,
         NamedOp::Config => unreachable!(),
     };
-    control::request(configuration.state(), name, op).await?;
-    println!("local_game_operation_complete; readiness_not_observed");
+    control::request(configuration.state(), name, op.clone()).await?;
+    if format == Format::Human {
+        println!(
+            "{} completed. Run status to check Minecraft readiness.",
+            match op {
+                control::Op::Start => "Start",
+                control::Op::Stop => "Stop",
+                control::Op::Restart => "Restart",
+                _ => unreachable!(),
+            }
+        );
+    } else {
+        println!("local_game_operation_complete; readiness_not_observed");
+    }
     Ok(())
 }
 
@@ -177,18 +200,16 @@ async fn management(
     selected_root: Option<&Path>,
     op: control::Op,
     base: &Path,
+    format: Format,
 ) -> local_files::Result<()> {
     let root = servers::root(selected_root, base)?;
     let server = servers::resolve(&root, &name)?;
     let configuration = HostConfiguration::load_file(&server.config, base)
         .map_err(|_| "local_config_unavailable")?;
-    let data = control::request_data(configuration.state(), name, op)
+    let data = control::request_data(configuration.state(), name, op.clone())
         .await?
         .ok_or("local_control_invalid_response")?;
     // The one explicit secret presentation. No request/response Debug logging.
-    println!(
-        "{}",
-        serde_json::to_string(&data).map_err(|_| "local_control_invalid_response")?
-    );
+    println!("{}", crate::output::management(format, &op, &data)?);
     Ok(())
 }

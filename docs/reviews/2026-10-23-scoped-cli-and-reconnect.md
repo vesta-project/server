@@ -122,3 +122,21 @@ with Ctrl+C: shell stays alive, rebuild and live status still work, and explicit
 `exit` closes it. Build interruption before shell startup retains default behavior.
 Bash syntax passes via Git Bash; Linux runtime behavior and full signed installer
 installation were not exercised. No test shell is intentionally left running.
+
+## Management response presentation
+
+Scoped commands now use labeled human-readable status, player, account/device,
+access and pairing sections when stdout is a terminal. `--json` selects the
+original data response for one command; piped output and legacy entrypoints retain
+their existing machine behavior. Native command authority, effects and wire DTOs
+are unchanged. Unknown observations stay unknown and stored strings have terminal
+control characters escaped. Lifecycle terminal acknowledgments no longer expose
+the internal fixed-code wording or imply observed Minecraft readiness.
+
+Validation: 33 agent unit tests and six local/scoped CLI integration tests pass;
+strict all-target agent Clippy and workspace formatting pass. Actual Windows
+management terminal shows formatted `status` and stopped `player_list`, then raw
+structured `status --json`, and exits normally. No live server mutation was needed
+for this check. Rebuild the CLI and re-enter management to use the presentation;
+the running agent does not require a restart. Modpack readiness is recorded
+separately in [the focused review](2026-10-23-modpack-readiness.md).

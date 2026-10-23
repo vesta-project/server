@@ -47,6 +47,15 @@ The terminal uses a line editor only when attached to a TTY, with a scoped promp
 and compact banner. `NO_COLOR` or `TERM=dumb` disables the banner's color. It is a
 structured command interface; it never invokes an operating-system shell.
 
+Data commands show readable sections and labeled fields when stdout is a terminal.
+Status keeps unknown player counts explicit; a failed player query is never shown
+as an empty server. Device/account lists, access settings and pairing results also
+use this presentation. Stored names cannot inject terminal control sequences.
+Append `--json` to a data command, for example `status --json` or
+`player_list --json`, to request its original JSON response. This override applies
+only to that command. Redirected/piped output retains the existing machine format;
+legacy top-level commands keep their previous output.
+
 `help` lists the server commands. `exit`, `quit`, `back`, EOF or Ctrl+C while
 editing leave the interface. Supported line-editor terminals accept Ctrl+D;
 `TERM=dumb` uses ordinary OS input/EOF behavior (Windows: Ctrl+Z then Enter).
@@ -68,6 +77,7 @@ retained as a nonzero process exit status even if the script later says `exit`.
 ```sh
 vesta manage my-server status
 vesta manage my-server player_list
+vesta manage my-server status --json
 vesta manage my-server start
 vesta manage my-server devices list
 vesta manage my-server backup init

@@ -1,7 +1,9 @@
 //! A scoped local client, not a second process owner or an operating-system shell.
 use crate::{
     cli::{self, Command},
-    local_files, servers,
+    local_files,
+    output::Format,
+    servers,
 };
 use std::{
     ffi::OsString,
@@ -165,26 +167,53 @@ impl Scope {
         ]);
         cli::parse(args)
     }
-    async fn execute(&self, args: &[OsString], base: &Path) -> ExitCode {
+    async fn execute(&self, args: &[OsString], base: &Path, default_format: Format) -> ExitCode {
+        let (args, format) = match presentation(args, default_format) {
+            Ok(value) => value,
+            Err(()) => {
+                eprintln!("Use --json at most once per command.");
+                return ExitCode::from(2);
+            }
+        };
         if args.len() == 1 && matches!(args[0].to_str(), Some("exit" | "quit" | "back")) {
             return ExitCode::SUCCESS;
         }
         if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
-            println!("{USAGE}");
+            println!(
+                "{USAGE}\n\nTerminal replies are formatted. Append --json for structured output."
+            );
             return ExitCode::SUCCESS;
         }
         if let Err(code) = self.verify() {
             eprintln!("local_command_failed: {code}");
             return ExitCode::FAILURE;
         }
-        match self.command(args) {
-            Ok(command) => Box::pin(crate::commands::run(command, base)).await,
+        match self.command(&args) {
+            Ok(command) => Box::pin(crate::commands::run_with_format(command, base, format)).await,
             Err(()) => {
                 eprintln!("Invalid server command. Use help for this server's commands.");
                 ExitCode::from(2)
             }
         }
     }
+}
+
+fn presentation(args: &[OsString], default_format: Format) -> Result<(Vec<OsString>, Format), ()> {
+    let count = args.iter().filter(|arg| *arg == "--json").count();
+    if count > 1 {
+        return Err(());
+    }
+    Ok((
+        args.iter()
+            .filter(|arg| *arg != "--json")
+            .cloned()
+            .collect(),
+        if count == 1 {
+            Format::Json
+        } else {
+            default_format
+        },
+    ))
 }
 
 pub async fn run(target: &str, root: Option<&Path>, args: &[OsString], base: &Path) -> ExitCode {
@@ -199,8 +228,13 @@ pub async fn run(target: &str, root: Option<&Path>, args: &[OsString], base: &Pa
             return ExitCode::FAILURE;
         }
     };
+    let format = if io::stdout().is_terminal() {
+        Format::Human
+    } else {
+        Format::Json
+    };
     if !args.is_empty() {
-        return scope.execute(args, base).await;
+        return scope.execute(args, base, format).await;
     }
     let terminal = io::stdin().is_terminal() && io::stdout().is_terminal();
     if terminal {
@@ -271,7 +305,7 @@ pub async fn run(target: &str, root: Option<&Path>, args: &[OsString], base: &Pa
         if args.len() == 1 && matches!(args[0].to_str(), Some("exit" | "quit" | "back")) {
             break;
         }
-        let code = scope.execute(&args, base).await;
+        let code = scope.execute(&args, base, format).await;
         if code != ExitCode::SUCCESS {
             result = code;
         }
@@ -324,6 +358,27 @@ fn words(line: &str) -> Result<Vec<OsString>, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn json_override_is_per_command_and_does_not_change_scope_or_arguments() {
+        let (command, format) = presentation(&args(&["status", "--json"]), Format::Human).unwrap();
+        assert_eq!(command, args(&["status"]));
+        assert!(format == Format::Json);
+        assert!(presentation(&args(&["status"]), Format::Human).unwrap().1 == Format::Human);
+        assert!(presentation(&args(&["status"]), Format::Json).unwrap().1 == Format::Json);
+        assert!(presentation(&args(&["start", "--json", "--json"]), Format::Human).is_err());
+        assert!(
+            scope()
+                .command(
+                    &presentation(
+                        &args(&["start", "--install-root", "other", "--json"]),
+                        Format::Human
+                    )
+                    .unwrap()
+                    .0
+                )
+                .is_err()
+        );
+    }
     fn args(text: &[&str]) -> Vec<OsString> {
         text.iter().map(OsString::from).collect()
     }
