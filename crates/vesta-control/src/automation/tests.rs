@@ -1254,3 +1254,38 @@ fn persisted_delay_obeys_its_timeout_before_wake_and_uses_failure_branch() {
     assert_eq!(history[0].state, "timed_out");
     assert_eq!(history[0].error_code.as_deref(), Some("timed_out"));
 }
+
+#[test]
+fn newest_run_pages_use_time_and_id_ties_without_skipping() {
+    let f = Fixture::new();
+    let w = f.create(definition(Trigger::Manual, vec![step("notify", notice())]));
+    let first = f.manual(&w);
+    f.pulse(1);
+    f.pulse(2);
+    let second = f.manual(&w);
+    f.clock.0.store(NOW + 3, Ordering::SeqCst);
+    f.db.write(|c| {
+        c.execute(
+            "UPDATE workflow_runs SET started_at=? WHERE id=?",
+            params![NOW + 3, second],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let page = f
+        .automation
+        .list_runs_newest(&f.owner, Some(&w.id), None, 1)
+        .unwrap();
+    assert_eq!(page[0].id, second);
+    let page = f
+        .automation
+        .list_runs_newest(&f.owner, Some(&w.id), Some(&second), 1)
+        .unwrap();
+    assert_eq!(page[0].id, first);
+    assert!(
+        f.automation
+            .list_runs_newest(&f.owner, None, Some(&first), 10)
+            .unwrap()
+            .is_empty()
+    );
+}

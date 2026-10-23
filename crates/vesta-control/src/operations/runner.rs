@@ -353,8 +353,14 @@ impl RuntimeHandle {
     pub(super) fn player_queries(&self) -> &QueryEndpoint {
         &self.shared.players
     }
+    pub fn player_roster_revision(&self, generation: Option<GenerationId>) -> Option<u64> {
+        self.shared.players.roster_revision(generation?)
+    }
     pub fn last_player_count(&self, generation: Option<GenerationId>) -> Option<(u32, i64)> {
         let generation = generation?;
+        if let Some(count) = self.shared.players.roster_count(generation).ok()? {
+            return Some(count);
+        }
         self.shared
             .player_count
             .lock()

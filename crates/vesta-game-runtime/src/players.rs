@@ -188,6 +188,13 @@ fn after_log_prefix(line: &str) -> &str {
     };
     // `index + 3` is always a char boundary: it follows three ASCII bytes.
     let candidate = line[index + 3..].trim();
+    // Modern vanilla routes console command feedback through System chat.
+    // Only the anchored server INFO envelope may carry this wrapper.
+    let candidate = if crate::readiness::server_info_message(line).is_some() {
+        candidate.strip_prefix("System chat: ").unwrap_or(candidate)
+    } else {
+        candidate
+    };
     if strip_prefix_ascii(candidate, "There are").is_some() {
         candidate
     } else {

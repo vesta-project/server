@@ -374,11 +374,11 @@ impl ManagementAccess {
         if decode::<32>(token).is_err() {
             return Ok(false);
         }
-        // Authentication can be doing a live DB check without the store lock;
-        // keep this transport preflight nonblocking even during session updates.
+        // Called in the transport blocking pool. Session updates hold this lock
+        // only for in-memory work; ordinary overlap must not become a 503.
         let stores = self
             .stores
-            .try_lock()
+            .lock()
             .map_err(|_| ManagementError::Unavailable)?;
         Ok(stores
             .sessions

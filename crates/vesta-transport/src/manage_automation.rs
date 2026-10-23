@@ -404,6 +404,7 @@ fn profile(value: &str) -> bool {
 }
 fn workflow(value: &Workflow, detailed: bool) -> Value {
     let mut result = json!({"id":value.id,"name":value.name,"enabled":value.enabled,"execution_principal_id":value.execution_principal.as_str(),"created_at_ms":value.created_at,"updated_at_ms":value.updated_at,"revision":value.revision});
+    result["trigger"] = json!(value.definition.trigger);
     if detailed {
         result["definition"] = json!(value.definition);
     }
@@ -815,14 +816,36 @@ fn get(
             .get_workflow(subject, id)
             .map(|v| json!({"workflow":workflow(&v,true)})),
         Route::WorkflowRuns(_) | Route::Runs => {
-            let Some((after, limit)) = id_page(query) else {
+            let Some(parts) = query_parts(query) else {
+                return invalid();
+            };
+            let newest = parts
+                .iter()
+                .any(|(key, value)| *key == "order" && *value == "newest");
+            let paging = parts
+                .iter()
+                .filter(|(key, _)| *key != "order")
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("&");
+            if parts
+                .iter()
+                .any(|(key, value)| *key == "order" && *value != "newest")
+            {
+                return invalid();
+            }
+            let Some((after, limit)) = id_page(if paging.is_empty() {
+                None
+            } else {
+                Some(&paging)
+            }) else {
                 return invalid();
             };
             let workflow_id = match route {
                 Route::WorkflowRuns(id) => Some(id),
                 _ => None,
             };
-            automation.list_runs(subject,workflow_id,after,limit).map(|v|json!({"runs":v.iter().map(|v|run(v,false)).collect::<Vec<_>>(),"next_after":if v.len()==limit {v.last().map(|v|v.id.as_str())} else {None}}))
+            (if newest { automation.list_runs_newest(subject,workflow_id,after,limit) } else { automation.list_runs(subject,workflow_id,after,limit) }).map(|v|json!({"runs":v.iter().map(|v|run(v,false)).collect::<Vec<_>>(),"next_after":if v.len()==limit {v.last().map(|v|v.id.as_str())} else {None}}))
         }
         Route::Run(id) if query.is_none() => automation
             .get_run(subject, id)

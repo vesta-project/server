@@ -752,3 +752,13 @@ fn error_rendering_is_fixed_and_carries_no_input() {
         assert!(error.code().starts_with("players_"), "{}", error.code());
     }
 }
+
+#[test]
+fn modern_vanilla_system_chat_command_feedback_is_a_list() {
+    let list = parse_player_list_line(
+        "[12:00:01] [Server thread/INFO]: System chat: There are 0 of a max of 20 players online: ",
+    )
+    .unwrap();
+    assert_eq!(list.online(), 0);
+    assert!(parse_player_list_line("[12:00:01] [Server thread/INFO]: <Alex> System chat: There are 0 of a max of 20 players online: ").is_err());
+}

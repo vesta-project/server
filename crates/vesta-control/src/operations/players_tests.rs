@@ -743,3 +743,60 @@ fn the_query_surface_accepts_no_command_or_authority_input() {
     // And the error surface carries no text-bearing variant either.
     assert_eq!(PlayerQueryError::TimedOut.code(), "players_query_timeout");
 }
+
+#[test]
+fn management_roster_seeds_once_tracks_activity_and_rechecks_authority() {
+    let harness = Harness::new(false);
+    let mut owned = harness.runtime();
+    let generation = running(&harness, &owned.runtime);
+    let read = || {
+        owned
+            .runtime
+            .management_roster(&harness.subject, generation, QUERY_WAIT)
+    };
+    assert_eq!(read().unwrap().players.len(), 2);
+    for _ in 0..3 {
+        assert_eq!(read().unwrap().players.len(), 2);
+    }
+    assert_eq!(harness.commands().as_deref(), Some("list\n"));
+    // Inject into the same owned capture used by the process reader.
+    owned
+        .runtime
+        .network_handle()
+        .player_queries()
+        .console
+        .ingest(
+            vesta_game_runtime::console::ConsoleStream::Stdout,
+            "[12:00:01] [Server thread/INFO]: OwnedGamma joined the game",
+            false,
+        )
+        .unwrap();
+    owned
+        .runtime
+        .network_handle()
+        .player_queries()
+        .console
+        .ingest(
+            vesta_game_runtime::console::ConsoleStream::Stdout,
+            "[12:00:01] [Server thread/INFO]: OwnedAlpha left the game",
+            false,
+        )
+        .unwrap();
+    let names = read().unwrap().players;
+    assert!(names.contains("OwnedGamma"));
+    assert!(!names.contains("OwnedAlpha"));
+    assert_eq!(names.len(), 2);
+    assert_eq!(
+        owned
+            .runtime
+            .network_handle()
+            .last_player_count(Some(generation))
+            .unwrap()
+            .0,
+        2
+    );
+    assert_eq!(harness.commands().as_deref(), Some("list\n"));
+    harness.deny(Capability::PlayersView);
+    assert!(read().is_err());
+    assert_eq!(shutdown(&mut owned), ShutdownOutcome::Complete);
+}

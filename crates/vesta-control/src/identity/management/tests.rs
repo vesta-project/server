@@ -1216,10 +1216,13 @@ fn rate_preflight_is_nonblocking_and_never_treats_unknown_or_expired_tokens_as_k
         let worker = std::thread::spawn(move || {
             let _ = send.send(access.known_session(&credential));
         });
-        let observed = receive.recv_timeout(std::time::Duration::from_secs(2));
+        assert!(receive.try_recv().is_err());
         drop(held);
+        assert!(matches!(
+            receive.recv_timeout(std::time::Duration::from_secs(2)),
+            Ok(Ok(true))
+        ));
         worker.join().unwrap();
-        assert!(matches!(observed, Ok(Err(ManagementError::Unavailable))));
     }
     f.clock.0.fetch_add(SESSION_TTL_MS, Ordering::SeqCst);
     assert!(!f.service.known_session(token.secret.expose()).unwrap());

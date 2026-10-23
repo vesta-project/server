@@ -987,6 +987,15 @@ impl NetworkHost {
             .map_err(|_| HostError::Admission(AdmissionDataError::Unavailable))? = admission;
         Ok(())
     }
+    /// Port from the trusted game properties; absent if unreadable/malformed.
+    pub fn game_port(&self) -> Option<u16> {
+        let bytes =
+            files::read_local_document(&self.config.game().join(PROPERTIES_FILE), 64 * 1024)
+                .ok()?;
+        let text = String::from_utf8(bytes).ok()?;
+        crate::operations::readiness::probe_from_properties(&text).map(|address| address.port())
+    }
+
     pub fn configuration(&self) -> &HostConfiguration {
         &self.config
     }

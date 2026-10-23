@@ -175,7 +175,120 @@ impl fmt::Debug for PlayerObservation {
     }
 }
 
+/// A generation-scoped management roster reconciled from complete console activity.
+#[derive(Clone)]
+pub struct PlayerRoster {
+    pub generation: GenerationId,
+    pub players: std::collections::BTreeSet<String>,
+    pub observed_at_ms: i64,
+    cursor: u64,
+    activity_cursor: u64,
+}
+impl PlayerRoster {
+    pub fn response_cursor(&self) -> u64 {
+        self.cursor
+    }
+}
+impl QueryEndpoint {
+    fn advance_roster(&self, roster: &mut PlayerRoster) -> PlayerQueryResult<()> {
+        ensure_view(&self.view, roster.generation)?;
+        for _ in 0..20 {
+            let page = self.console.snapshot(roster.cursor, MAX_PAGE_LINES)?;
+            if page.gap {
+                return Err(PlayerQueryError::ConsoleGap);
+            }
+            for line in &page.lines {
+                if line.truncated || line.cursor != roster.cursor.saturating_add(1) {
+                    return Err(PlayerQueryError::ConsoleIncomplete);
+                }
+                if let Some((name, kind)) = crate::metrics::activity_line(&line.text) {
+                    roster.activity_cursor = line.cursor;
+                    if kind == "join" {
+                        roster.players.insert(name.to_owned());
+                    } else {
+                        roster.players.remove(name);
+                    }
+                }
+                roster.cursor = line.cursor;
+            }
+            if page.next_cursor == page.latest_cursor {
+                roster.observed_at_ms = self.operations.db.clock().millis();
+                return ensure_view(&self.view, roster.generation);
+            }
+        }
+        Err(PlayerQueryError::ScanLimit)
+    }
+    pub(super) fn roster_revision(&self, generation: GenerationId) -> Option<u64> {
+        let mut cached = self.roster.try_lock().ok()?;
+        let roster = cached.as_mut().filter(|r| r.generation == generation)?;
+        self.advance_roster(roster).ok()?;
+        Some(roster.activity_cursor)
+    }
+    pub(super) fn roster_count(
+        &self,
+        generation: GenerationId,
+    ) -> PlayerQueryResult<Option<(u32, i64)>> {
+        let mut cached = self.roster.try_lock().map_err(|_| PlayerQueryError::Busy)?;
+        let Some(roster) = cached.as_mut().filter(|r| r.generation == generation) else {
+            return Ok(None);
+        };
+        self.advance_roster(roster)?;
+        Ok(Some((roster.players.len() as u32, roster.observed_at_ms)))
+    }
+}
+
 impl super::RuntimeHandle {
+    /// Seed once, then consume join/leave output. A gap requires one fresh seed;
+    /// metrics consent and HTTP read frequency never cause repeated list writes.
+    pub fn management_roster(
+        &self,
+        subject: &Subject,
+        generation: GenerationId,
+        timeout: Duration,
+    ) -> PlayerQueryResult<PlayerRoster> {
+        let endpoint = self.player_queries();
+        with_console_access(
+            &endpoint.operations,
+            Some(subject),
+            Capability::PlayersView,
+            || Ok(()),
+        )?;
+        let mut cached = endpoint
+            .roster
+            .try_lock()
+            .map_err(|_| PlayerQueryError::Busy)?;
+        if cached.as_ref().is_none_or(|r| r.generation != generation)
+            || cached
+                .as_mut()
+                .is_some_and(|r| endpoint.advance_roster(r).is_err())
+        {
+            *cached = None;
+            let observation = self.query_management_players(subject, generation, timeout)?;
+            if observation.list().players().len() != observation.list().online() as usize {
+                return Err(PlayerQueryError::ConsoleIncomplete);
+            }
+            *cached = Some(PlayerRoster {
+                generation,
+                players: observation
+                    .list()
+                    .players()
+                    .iter()
+                    .map(|p| p.name().to_owned())
+                    .collect(),
+                observed_at_ms: observation.observed_at_ms(),
+                cursor: observation.response_cursor(),
+                activity_cursor: observation.response_cursor(),
+            });
+        }
+        let roster = cached.as_mut().ok_or(PlayerQueryError::Unavailable)?;
+        endpoint.advance_roster(roster)?;
+        with_console_access(
+            &endpoint.operations,
+            Some(subject),
+            Capability::PlayersView,
+            || Ok(roster.clone()),
+        )
+    }
     pub fn query_management_players(
         &self,
         subject: &Subject,
@@ -296,6 +409,8 @@ struct Mailbox {
 }
 
 pub(super) struct QueryEndpoint {
+    console: ConsoleCapture,
+    roster: Mutex<Option<PlayerRoster>>,
     operations: Operations,
     mailbox: Arc<Mutex<Mailbox>>,
     stopping: Arc<AtomicBool>,
@@ -430,6 +545,8 @@ impl QueryDriver {
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         (
             QueryEndpoint {
+                console: console.clone(),
+                roster: Mutex::new(None),
                 operations: operations.clone(),
                 mailbox: mailbox.clone(),
                 stopping: stopping.clone(),
@@ -726,6 +843,15 @@ fn scan(
 mod tests;
 
 impl OperationRuntime {
+    pub fn management_roster(
+        &self,
+        subject: &Subject,
+        generation: GenerationId,
+        timeout: Duration,
+    ) -> PlayerQueryResult<PlayerRoster> {
+        self.network_handle()
+            .management_roster(subject, generation, timeout)
+    }
     pub fn query_players(
         &self,
         subject: &Subject,

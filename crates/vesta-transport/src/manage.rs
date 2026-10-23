@@ -744,9 +744,9 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             let Some(generation) = snapshot.generation else {
                 return ok(json!({"known":false,"player_count":null,"items":null}));
             };
-            match runtime.query_management_players(&subject, generation, Duration::from_secs(1)) {
+            match runtime.management_roster(&subject, generation, Duration::from_secs(1)) {
                 Ok(v) => ok(
-                    json!({"known":true,"generation":v.generation().to_hex(),"player_count":v.list().online(),"items":v.list().players().iter().filter(|p| p.name().len() <= 16 && p.name().bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')).map(|p| json!({"name":p.name()})).collect::<Vec<_>>()}),
+                    json!({"known":true,"generation":v.generation.to_hex(),"player_count":v.players.len(),"items":v.players.iter().filter(|p| p.len() <= 16 && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')).map(|p| json!({"name":p})).collect::<Vec<_>>()}),
                 ),
                 Err(_) => ok(json!({"known":false,"player_count":null,"items":null})),
             }

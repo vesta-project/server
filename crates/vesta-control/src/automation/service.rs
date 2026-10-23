@@ -471,6 +471,24 @@ impl Automation {
             Ok(q.query_map(params![workflow_id,workflow_id,after.unwrap_or(""),limit as i64],run_row)?.collect::<std::result::Result<_,_>>()?)
         })
     }
+    /// Descending (started_at, id) keyset page. `before` is the last returned run ID.
+    pub fn list_runs_newest(
+        &self,
+        subject: &Subject,
+        workflow_id: Option<&str>,
+        before: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Run>> {
+        page(limit)?;
+        if workflow_id.is_some_and(|id| !valid_id(id)) || before.is_some_and(|id| !valid_id(id)) {
+            return Err(invalid());
+        }
+        self.read(|c| {
+            self.authorize(c, subject, Capability::AutomationView)?;
+            let mut q = c.prepare(&format!("SELECT {RUN_COLUMNS} FROM workflow_runs WHERE (? IS NULL OR workflow_id=?) AND (? IS NULL OR (started_at,id)<(SELECT started_at,id FROM workflow_runs WHERE id=? AND (? IS NULL OR workflow_id=?))) ORDER BY started_at DESC,id DESC LIMIT ?"))?;
+            Ok(q.query_map(params![workflow_id,workflow_id,before,before,workflow_id,workflow_id,limit as i64],run_row)?.collect::<std::result::Result<_,_>>()?)
+        })
+    }
     /// Step pages use a flattened index (`index * 6 + attempt`) as their cursor.
     pub fn list_steps(
         &self,

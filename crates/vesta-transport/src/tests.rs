@@ -764,3 +764,54 @@ fn saturated_install_workers_leave_ordinary_http_workers_available() {
         http.reap(true).await;
     });
 }
+
+#[test]
+fn ordinary_http_burst_waits_for_a_worker_instead_of_refusing_overlap() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(WORKERS)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let jobs = Arc::new(BlockingJobs::new(tokio::runtime::Handle::current()));
+        let (started, receive) = mpsc::channel();
+        let mut release = Vec::new();
+        let mut running = Vec::new();
+        for _ in 0..WORKERS {
+            let pool = jobs.clone();
+            let started = started.clone();
+            let (send, wait) = mpsc::channel::<()>();
+            release.push(send);
+            running.push(tokio::spawn(async move {
+                pool.run(move || {
+                    started.send(()).unwrap();
+                    wait.recv().unwrap();
+                })
+                .await
+                .unwrap();
+            }));
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut count = 0;
+        while count < WORKERS {
+            while receive.try_recv().is_ok() {
+                count += 1;
+            }
+            assert!(Instant::now() < deadline);
+            tokio::task::yield_now().await;
+        }
+        let pool = jobs.clone();
+        let waiting = tokio::spawn(async move { pool.run(|| 42).await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!waiting.is_finished());
+        release.pop().unwrap().send(()).unwrap();
+        assert_eq!(waiting.await.unwrap(), Ok(42));
+        for send in release {
+            send.send(()).unwrap();
+        }
+        for job in running {
+            job.await.unwrap();
+        }
+        jobs.reap(true).await;
+    });
+}

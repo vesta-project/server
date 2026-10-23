@@ -103,6 +103,7 @@ fn workflow_tls_owner_crud_manual_run_and_idempotent_replay() {
     );
     assert_eq!(list.status, 200);
     let summary = &list.json()["data"]["workflows"][0];
+    assert_eq!(summary["trigger"]["kind"], "manual");
     assert_eq!(summary["id"], id);
     assert!(
         summary.get("definition").is_none(),

@@ -47,7 +47,7 @@ pub(crate) fn projection(host: &NetworkHost) -> Result<Value, Box<Reply>> {
         Err(code) => return Err(Box::new(error(StatusCode::SERVICE_UNAVAILABLE, code))),
     };
     Ok(
-        json!({"state":phase,"lifecycle":lifecycle,"generation":snapshot.generation.map(GenerationId::to_hex),"player_count":count.map(|v| v.0),"player_count_known":count.is_some(),"player_count_observed_at_ms":count.map(|v| v.1),"uptime_seconds":uptime.map(|v| v.to_string()),"supervision":if supervision.is_some() {"separate"} else {"in_process"},"supervisor":supervisor,"readiness":ready_state,"readiness_reason":ready_reason,"readiness_evidence":if readiness.probed {"log_and_probe"} else {"log_only"}}),
+        json!({"state":phase,"lifecycle":lifecycle,"generation":snapshot.generation.map(GenerationId::to_hex),"player_count":count.map(|v| v.0),"player_count_known":count.is_some(),"player_roster_revision":runtime.player_roster_revision(snapshot.generation).map(|v| v.to_string()),"player_count_observed_at_ms":count.map(|v| v.1),"uptime_seconds":uptime.map(|v| v.to_string()),"supervision":if supervision.is_some() {"separate"} else {"in_process"},"supervisor":supervisor,"readiness":ready_state,"readiness_reason":ready_reason,"readiness_evidence":if readiness.probed {"log_and_probe"} else {"log_only"}}),
     )
 }
 pub(crate) fn tag(data: &Value) -> String {

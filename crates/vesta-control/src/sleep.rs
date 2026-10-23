@@ -553,7 +553,7 @@ impl Coordinator {
         self.zero_since = None;
         self.warned_at = None;
         self.cursor = None;
-        self.sampled = None;
+        // Keep pacing across failed observations; reset must not retry list every tick.
     }
     fn tick(&mut self, service: &Sleep, runtime: &RuntimeHandle) -> Result<(), &'static str> {
         self.tick_at(service, runtime, Instant::now())
@@ -715,8 +715,8 @@ impl Coordinator {
             return Ok(());
         }
         self.sampled = Some(now);
-        // Two independent observations: a current status ping and a serialized
-        // post-write list reconciliation. Console gaps/new lines invalidate it.
+        // Two independent observations: a current status ping and a roster
+        // seeded by list, then reconciled against every console activity line.
         let ping = vesta_game_runtime::readiness::status_probe(
             service.probe.ok_or("sleep_port_unknown")?,
             Duration::from_millis(750),
@@ -726,7 +726,7 @@ impl Coordinator {
             return Ok(());
         }
         let observation =
-            match runtime.query_management_players(&subject, generation, Duration::from_secs(2)) {
+            match runtime.management_roster(&subject, generation, Duration::from_secs(2)) {
                 Ok(o) => o,
                 Err(_) => {
                     self.reset();
@@ -736,7 +736,7 @@ impl Coordinator {
         let tail = runtime
             .console_snapshot(observation.response_cursor(), 1)
             .map_err(|_| "sleep_evidence_unavailable")?;
-        if observation.list().online() != 0
+        if !observation.players.is_empty()
             || tail.latest_cursor != observation.response_cursor()
             || runtime
                 .game_snapshot()

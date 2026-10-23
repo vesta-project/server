@@ -333,6 +333,27 @@ grants authority or selects an agent/native executable.
 
 ### Conditional status and push updates
 
+The authenticated server info projection additionally reports `backups_configured`
+from the active backup service, `join_address` from trusted `[pack.join]` (IPv6
+bracketed), and `game_port` from readable, valid game properties. Null join
+information never means the HTTPS agent port is a Minecraft port. Clients may
+show an explicitly inferred endpoint-host/game-port fallback when no configured
+join address exists. Backup setup remains a trusted local operation; remote
+backup capabilities alone do not mean a repository has been configured.
+
+`GET /players` seeds one generation-scoped roster with the bounded `list` driver,
+then reconciles complete captured join/leave events on subsequent reads and status
+observations. A generation change or capture gap requires a new seed. Truncated,
+incomplete or hidden-name lists stay unknown. Metrics collection consent is not
+required for this current management view. Status adds nullable decimal-string
+`player_roster_revision`, changing on roster activity (including count-neutral
+join/leave pairs). Clients can read names once on attachment and again when that
+revision changes; ordinary reads do not send more console commands. Modern vanilla
+`System chat: There are ...` feedback is recognized only inside the anchored server
+INFO log envelope. Sleep uses the same current roster plus an independent live
+status ping and its existing exact-console-cursor stop guard; failed observations
+retain retry pacing.
+
 `GET /api/v3/manage/server/status` returns a strong `ETag` of the status data.
 `If-None-Match` accepts one strong quoted validator, as `/metrics/current` does;
 weak validators, wildcard, lists, duplicate fields and malformed values return
@@ -379,7 +400,7 @@ is null; persistent monotonic stopped-control generations are not introduced.
 
 | Method / path | Exact request | Exact `data` / status | Capability |
 | --- | --- | --- | --- |
-| GET `/server` | no body/query | 200 `{server_id,name,agent_version,minecraft_version,pack_version,configured_mode:"same_account"}`; other fields strings | `status.view` |
+| GET `/server` | no body/query | 200 `{server_id,name,agent_version,minecraft_version,pack_version,configured_mode:"same_account",backups_configured:boolean,join_address:string-or-null,game_port:integer-or-null}`; other fields strings | `status.view` |
 | GET `/server/status` | no body/query | 200 `{state:"stopped\|running\|stopping\|draining",generation:hex-or-null,player_count:integer-or-null,player_count_known:boolean,player_count_observed_at_ms:integer-or-null,uptime_seconds:decimal-string-or-null,readiness:"stopped\|starting\|ready\|degraded",readiness_reason:"startup_timeout\|probe_failed\|fatal_output\|console_gap"-or-null,readiness_evidence:"log_and_probe\|log_only",supervision:"in_process\|separate",supervisor:null-or-{orphan_running,launch_unresolved,observation_failed,crash_restart_enabled,crash_loop,restart_state_unsaved:boolean,recent_crashes:integer,restart_pending_ms:decimal-string-or-null}}`. Readiness and crash-restart semantics: operations/supervisor.md | `status.view` |
 | POST `/lifecycle/start` | `{}` + `Idempotency-Key` | 202 `Operation` | `lifecycle.start` |
 | POST `/lifecycle/stop` | `{"expected_generation":"<hex>"}` + key | 202 `Operation` | `lifecycle.stop` |
@@ -517,14 +538,14 @@ Console/audit start at a bounded retained tail. Audit exposes only cursor,
 timestamp and allowlisted action/outcome labels, with `other` for unrecognized
 labels; raw actors, source, targets, metadata, hashes and payloads are withheld.
 
-Players uses the existing bounded live `list` driver with `players.view` checks at
-admission, write and response. Stopped/unavailable/timed-out queries are unknown,
+Players seeds through the bounded live `list` driver with `players.view` checks at
+admission, write and response, then maintains the generation-scoped roster from
+complete captured activity. Stopped/unavailable/timed-out queries are unknown,
 never fabricated zero. Names outside the Minecraft ASCII-name projection are
-withheld. Successful authorized observations cache the actual count and original
-console observation time for the matching incarnation. Status returns this last
-known count/time, which may be stale; no count is carried into a new/stopped
-incarnation. Status itself does not issue a player query. Uptime measures
-in-process monotonic incarnation observation, not readiness.
+withheld. Status reconciles current retained activity and reports count/time and
+`player_roster_revision`; a gap makes the observation unknown until reseeded. No
+roster carries into a new/stopped incarnation. Status itself never issues a player
+query. Uptime measures in-process monotonic incarnation observation, not readiness.
 
 Remaining gaps: detailed operation result/error projection, retained expiring
 pagination snapshots, persistent stopped-control generations and paginated player
@@ -1061,8 +1082,16 @@ returns HTTP 412 `precondition_failed`. Other state conflicts return HTTP 409
 
 Exact observation shapes (the two detail shapes add only `definition`):
 
+Run listings (`automation/runs` and `automation/workflows/{id}/runs`) accept
+optional `order=newest`. Default ordering remains ascending ID for compatibility.
+Newest mode sorts by `(started_at DESC,id DESC)`; `after` is the last returned run
+ID and advances toward older rows using that time/ID pair. The same query mode
+must be used for every page. `next_after` remains nullable and opaque. Workflow
+summaries include `trigger`, so listing cards does not require reading every full
+definition. Fetch full definitions only when editing or duplicating.
+
 ```text
-WorkflowSummary = {id:string,name:string,enabled:boolean,
+WorkflowSummary = {trigger:Trigger,id:string,name:string,enabled:boolean,
   execution_principal_id:string,created_at_ms:integer,updated_at_ms:integer,
   revision:integer}
 WorkflowDetail = WorkflowSummary + {definition:Definition}
@@ -1737,3 +1766,15 @@ Unified `/activity` was deliberately deferred. Operations, backup jobs, file
 intents and pack publications have different retention, actor visibility and
 cursor stores; merging them safely is more than an additive quick projection.
 Existing operations/activity, backup-job and audit endpoints remain available.
+
+### Launcher observation capacity (2026-10-23)
+
+The HTTPS control worker pool remains bounded to two actual jobs. Up to 32 callers
+may wait for admission for at most 500 ms; cancelled HTTP waiters cannot release a
+worker executing native/database work. Session preflight runs in that blocking
+pool and waits for in-memory session-store contention, rather than returning
+503 for normal overlapping requests. Realtime observation uses its own blocking
+pool and the existing two-socket session budget; neither occupies game stdin.
+Management error envelopes preserve HTTP keep-alive. Malformed/protocol-level
+refusals may still close the connection because the request body is not safely
+reusable. No rate limits were raised.

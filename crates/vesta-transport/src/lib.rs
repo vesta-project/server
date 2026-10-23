@@ -726,6 +726,8 @@ struct Shared {
     stop: watch::Receiver<bool>,
 }
 struct BlockingJobs {
+    permits: Arc<Semaphore>,
+    waiters: Arc<Semaphore>,
     runtime: tokio::runtime::Handle,
     handles: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -734,6 +736,8 @@ impl BlockingJobs {
         Self {
             runtime,
             handles: Mutex::new(Vec::with_capacity(WORKERS)),
+            permits: Arc::new(Semaphore::new(WORKERS)),
+            waiters: Arc::new(Semaphore::new(32)),
         }
     }
     /// Two synchronous operations maximum, including abandoned HTTP requests.
@@ -758,15 +762,23 @@ impl BlockingJobs {
         &self,
         action: impl FnOnce() -> T + Send + 'static,
     ) -> Result<T, ()> {
+        let waiting = self.waiters.clone().try_acquire_owned().map_err(|_| ())?;
+        let permit = tokio::time::timeout(
+            Duration::from_millis(500),
+            self.permits.clone().acquire_owned(),
+        )
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())?;
+        drop(waiting);
         let (tx, rx) = oneshot::channel();
         {
             let Ok(mut jobs) = self.handles.lock() else {
                 return Err(());
             };
-            if jobs.len() >= WORKERS {
-                return Err(());
-            }
+            jobs.retain(|job| !job.is_finished());
             jobs.push(self.runtime.spawn_blocking(move || {
+                let _permit = permit;
                 let _ = tx.send(action());
             }));
         }
@@ -924,24 +936,21 @@ async fn handle(
             && request.method() == http::Method::GET;
     // Unknown/expired tokens stop at an in-memory hash lookup. Only a known token
     // incurs a bounded blocking live-identity check; route authorization still runs.
-    let (known_token, lookup_unavailable) = match routes::bearer(request.headers()) {
-        Some(token) => match state.host.management().known_session(token) {
-            Ok(true) => (Some(token), false),
-            Ok(false) => (None, false),
-            Err(_) => (None, true),
-        },
-        None => (None, false),
-    };
-    let reference = if let Some(token) = known_token {
+    let reference = if let Some(token) = routes::bearer(request.headers()) {
         let access = state.host.management().clone();
         let token = zeroize::Zeroizing::new(token.to_owned());
         state.jobs.reap(false).await;
         match state
             .jobs
-            .run(move || access.pack_reference(Some(token.as_str())))
+            .run(move || {
+                if !access.known_session(token.as_str())? {
+                    return Ok(None);
+                }
+                access.pack_reference(Some(token.as_str())).map(Some)
+            })
             .await
         {
-            Ok(Ok(reference)) => Some(reference),
+            Ok(Ok(reference)) => reference,
             Ok(Err(vesta_control::identity::management::ManagementError::SessionInvalid)) => None,
             _ => {
                 return Ok(if operational {
@@ -988,15 +997,6 @@ async fn handle(
     };
     if let Some(reply) = denial {
         return Ok(reply);
-    }
-    // An unvalidated bearer never escapes anonymous accounting, even when
-    // store contention prevents the cheap lookup. Refuse without dispatching IO.
-    if lookup_unavailable {
-        return Ok(if operational {
-            manage::error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable")
-        } else {
-            error(StatusCode::SERVICE_UNAVAILABLE, "peer_capacity_unavailable")
-        });
     }
     let timeout = state.timeout;
     let result = tokio::time::timeout(timeout, routes::route(request, state, peer)).await;
