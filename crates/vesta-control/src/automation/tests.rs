@@ -12,6 +12,7 @@ use tempfile::TempDir;
 use vesta_state::{Clock, StateDatabase, StateDirectory};
 
 const NOW: i64 = 1_791_115_200_000;
+mod idle;
 struct TestClock(AtomicI64);
 impl Clock for TestClock {
     fn millis(&self) -> i64 {

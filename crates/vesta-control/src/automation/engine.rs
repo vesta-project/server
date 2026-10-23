@@ -13,6 +13,12 @@ impl Automation {
         if now < 0 {
             return Err(invalid());
         }
+        // A read-only pulse must not queue behind lifecycle/authentication writes
+        // when there is no work to change. Read fresh state, without a cache or
+        // skipped retention: a concurrent admission is picked up next pulse.
+        if !self.read(|c| self.tick_needed(c, now))? {
+            return Ok(());
+        }
         let runs = self.write(|c| {
             self.retain(c, now)?;
             self.schedule(c, now)?;
@@ -26,6 +32,18 @@ impl Automation {
             self.advance(&run, now)?;
         }
         Ok(())
+    }
+    pub(super) fn tick_needed(&self, c: &Connection, now: i64) -> Result<bool> {
+        Ok(c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workflows WHERE enabled=1)
+             OR EXISTS(SELECT 1 FROM workflow_runs WHERE state IN ('running','queued'))
+             OR EXISTS(SELECT 1 FROM workflow_runs WHERE state IN ('succeeded','failed') AND finished_at<?1)
+             OR EXISTS(SELECT 1 FROM workflow_runs WHERE state IN ('succeeded','failed') LIMIT 1 OFFSET 1024)
+             OR EXISTS(SELECT 1 FROM notifications WHERE created_at<?1)
+             OR EXISTS(SELECT 1 FROM notifications LIMIT 1 OFFSET ?2)",
+            params![now.saturating_sub(inbox::HISTORY_MS), inbox::MAX_NOTIFICATIONS],
+            |r| r.get(0),
+        )?)
     }
     fn schedule(&self, c: &Connection, now: i64) -> Result<()> {
         let mut q = c.prepare(&format!(
