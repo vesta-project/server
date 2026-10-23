@@ -32,6 +32,9 @@ pub(super) struct LiveGameView {
     supervisor_record_source: Option<(String, String)>,
 }
 impl LiveGameView {
+    pub(super) fn is_supervised(&self) -> bool {
+        self.supervisor_record_source.is_some()
+    }
     fn new(snapshot: ProcessSnapshot) -> Self {
         Self {
             snapshot: RwLock::new(snapshot),

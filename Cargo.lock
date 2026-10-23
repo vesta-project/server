@@ -2296,6 +2296,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "libc",
+ "md-5",
  "ring",
  "rusqlite",
  "serde",

@@ -29,6 +29,7 @@ pub(super) fn implemented(path: &str) -> bool {
             | "/api/v3/manage/players/bans"
             | "/api/v3/manage/players/ops"
             | "/api/v3/manage/players/whitelist"
+            | "/api/v3/manage/players/whitelist/offline"
     )
 }
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
@@ -41,6 +42,47 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         bytes,
         ..
     } = request;
+    if path.ends_with("/whitelist/offline") {
+        if query.is_some() || (method != Method::GET && method != Method::POST) {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        let Some(token) = authorization else {
+            return error(StatusCode::UNAUTHORIZED, "management_session_invalid");
+        };
+        let cap = if method == Method::POST {
+            Capability::PlayersModerate
+        } else {
+            Capability::PlayersView
+        };
+        let subject = match host.management().authorize(token, cap, None) {
+            Ok(s) => s,
+            Err(e) => return management_error(e),
+        };
+        let result = if method == Method::GET {
+            host.files().offline_whitelist(&subject)
+        } else {
+            let Some(patch) = decode::<vesta_control::files::OfflineWhitelistPatch>(bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            let Some(key) = key(
+                idempotency,
+                host.management().server_id(),
+                subject.device.as_str(),
+                path,
+            ) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            host.files()
+                .patch_offline_whitelist(host.runtime(), &subject, &key, patch)
+        };
+        return match result {
+            Ok(value) => ok(value),
+            Err(vesta_control::files::FileError::Corrupt) => {
+                error(StatusCode::SERVICE_UNAVAILABLE, "players_file_malformed")
+            }
+            Err(e) => super::files::file_error(e),
+        };
+    }
     let mutation = path.ends_with("/moderate");
     if (mutation && method != Method::POST) || (!mutation && method != Method::GET) {
         return error(StatusCode::BAD_REQUEST, "invalid_request");

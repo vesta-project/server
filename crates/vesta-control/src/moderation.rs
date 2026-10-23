@@ -187,7 +187,7 @@ fn load<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<Vec<T>
 }
 /// Server-written entries are displayed, never rendered into commands, so names are
 /// only bounded (offline-mode servers may store names outside the Java Edition set).
-fn entry_valid(name: &str, uuid: &str) -> bool {
+pub(crate) fn entry_valid(name: &str, uuid: &str) -> bool {
     (1..=64).contains(&name.chars().count())
         && !name.chars().any(char::is_control)
         && crate::identity::minecraft::MinecraftUuid::parse(uuid).is_ok()

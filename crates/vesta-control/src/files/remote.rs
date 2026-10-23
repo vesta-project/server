@@ -461,6 +461,9 @@ impl FileBrowser {
         files
     }
     pub(super) fn before_remote_write(&self, c: &Connection, subject: &Subject) -> Result<()> {
+        if let Some(guard) = &self.whitelist_guard {
+            guard.check()?;
+        }
         if self
             .remote_deadline
             .is_some_and(|d| std::time::Instant::now() >= d)

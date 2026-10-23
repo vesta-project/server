@@ -661,13 +661,13 @@ impl Outcome {
 }
 
 /// Lease renewal across the whole consistency interval, from a bounded helper thread.
-struct Renewer {
+pub(crate) struct Renewer {
     done: Arc<AtomicBool>,
     lost: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 impl Renewer {
-    fn start(
+    pub(crate) fn start(
         state: StateDirectory,
         renew: impl Fn(&vesta_supervisor::SupervisorClient) -> vesta_supervisor::Result<()>
         + Send
@@ -702,11 +702,14 @@ impl Renewer {
         }
     }
     /// Stop renewing; returns whether continuity was kept throughout.
-    fn finish(mut self) -> bool {
+    pub(crate) fn finish(mut self) -> bool {
         self.done.store(true, Ordering::Release);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+        !self.lost.load(Ordering::Acquire)
+    }
+    pub(crate) fn intact(&self) -> bool {
         !self.lost.load(Ordering::Acquire)
     }
 }

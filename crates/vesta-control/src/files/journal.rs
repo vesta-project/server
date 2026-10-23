@@ -82,6 +82,23 @@ impl FileBrowser {
         )?;
         self.check_remote_completion_authority(c, &subject)?;
         self.audit.append(c, &record)?;
+        if self.whitelist_guard.is_some() {
+            self.audit.append(
+                c,
+                &AuditRecord::new(
+                    AuditActor::new(
+                        subject.principal.as_str().into(),
+                        subject.device.as_str().into(),
+                        "players".into(),
+                    )?,
+                    "players.whitelist.offline".into(),
+                    "whitelist".into(),
+                    "success".into(),
+                    None,
+                    [],
+                )?,
+            )?;
+        }
         let mut outcome = match kind.as_str() {
             "mkdir" => serde_json::json!({"outcome":"succeeded"}),
             "delete" => serde_json::json!({"outcome":"succeeded","trash_id":intent.trash}),

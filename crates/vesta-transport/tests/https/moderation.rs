@@ -1,6 +1,134 @@
 use super::*;
 
 #[test]
+fn offline_whitelist_edits_are_fenced_recoverable_and_idempotent() {
+    use vesta_control::identity::BuiltinRole;
+    let f = Fixture::inert();
+    let (device, key) = enroll_management(&f, BuiltinRole::Owner);
+    let owner = management_session(&f, &device, &key);
+    let game = f.host().configuration().game().to_path_buf();
+    std::fs::write(game.join("server.properties"), b"online-mode=false\n").unwrap();
+    let route = "/api/v3/manage/players/whitelist/offline";
+    assert_eq!(f.request("GET", route, b"", None).status, 401);
+    let (viewer_device, viewer_key) = enroll_management(&f, BuiltinRole::Viewer);
+    let viewer = management_session(&f, &viewer_device, &viewer_key);
+    assert_eq!(
+        management_mutation(
+            &f,
+            &viewer,
+            "players/whitelist/offline",
+            "offline-forbidden-0001",
+            &serde_json::json!({"player":"Notch","add":false,"expected_sha256":null})
+        )
+        .status,
+        403
+    );
+    let before = f.request("GET", route, b"", Some(&owner));
+    assert_eq!(before.status, 200);
+    let patch = serde_json::json!({"player":"Notch","add":true,"expected_sha256":before.json()["data"]["sha256"]});
+    let saved = management_mutation(
+        &f,
+        &owner,
+        "players/whitelist/offline",
+        "offline-whitelist-0001",
+        &patch,
+    );
+    assert_eq!(saved.status, 200, "{}", saved.json());
+    let bytes = std::fs::read(game.join("whitelist.json")).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()[0]["uuid"],
+        "b50ad385-829d-3141-a216-7e7d7539ba7f"
+    );
+    let replay = management_mutation(
+        &f,
+        &owner,
+        "players/whitelist/offline",
+        "offline-whitelist-0001",
+        &patch,
+    );
+    assert_eq!(replay.status, 200);
+    assert_eq!(replay.json()["data"], saved.json()["data"]);
+    assert_eq!(std::fs::read(game.join("whitelist.json")).unwrap(), bytes);
+    let stale = management_mutation(
+        &f,
+        &owner,
+        "players/whitelist/offline",
+        "offline-whitelist-stale",
+        &patch,
+    );
+    assert_eq!(stale.status, 412);
+    let now = f.request("GET", route, b"", Some(&owner));
+    let remove = serde_json::json!({"player":"Notch","add":false,"expected_sha256":now.json()["data"]["sha256"]});
+    let generation = management_start_inert(&f, &owner);
+    // A lost receipt can be recovered after startup without reapplying the edit.
+    assert_eq!(
+        management_mutation(
+            &f,
+            &owner,
+            "players/whitelist/offline",
+            "offline-whitelist-0001",
+            &patch
+        )
+        .status,
+        200
+    );
+    assert_eq!(
+        management_mutation(
+            &f,
+            &owner,
+            "players/whitelist/offline",
+            "offline-whitelist-0001",
+            &remove
+        )
+        .status,
+        409
+    );
+    assert_eq!(
+        management_mutation(
+            &f,
+            &owner,
+            "players/whitelist/offline",
+            "offline-whitelist-running",
+            &remove
+        )
+        .status,
+        412
+    );
+    assert_eq!(std::fs::read(game.join("whitelist.json")).unwrap(), bytes);
+    let stop = management_mutation(
+        &f,
+        &owner,
+        "lifecycle/stop",
+        "offline-whitelist-stop",
+        &serde_json::json!({"expected_generation":generation}),
+    );
+    management_wait_operation(
+        &f,
+        &owner,
+        stop.json()["data"]["operation_id"].as_str().unwrap(),
+    );
+    let removed = management_mutation(
+        &f,
+        &owner,
+        "players/whitelist/offline",
+        "offline-whitelist-remove",
+        &remove,
+    );
+    assert_eq!(removed.status, 200, "{}", removed.json());
+    assert!(
+        vesta_control::moderation::whitelist(&game)
+            .unwrap()
+            .is_empty()
+    );
+    std::fs::write(game.join("whitelist.json"), b"private malformed content").unwrap();
+    assert_ne!(f.request("GET", route, b"", Some(&owner)).status, 200);
+    assert_eq!(
+        std::fs::read(game.join("whitelist.json")).unwrap(),
+        b"private malformed content"
+    );
+}
+
+#[test]
 fn management_typed_moderation_routes_preserve_authority_and_bounded_projections() {
     use vesta_control::identity::BuiltinRole;
     let f = Fixture::inert();

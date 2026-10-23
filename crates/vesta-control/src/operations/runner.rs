@@ -276,8 +276,15 @@ impl fmt::Debug for OperationRuntime {
 pub struct RuntimeHandle {
     operations: Operations,
     shared: Arc<DriverState>,
+    start_block: super::game::StartGate,
 }
 impl RuntimeHandle {
+    pub(crate) fn is_supervised(&self) -> bool {
+        self.shared.view.is_supervised()
+    }
+    pub(crate) fn block_starts(&self) -> super::game::StartBlock {
+        self.start_block.block()
+    }
     /// Trusted host adapter only. Actual socket changes run in the sole game owner.
     pub(crate) fn configure_offline(
         &self,
@@ -443,6 +450,7 @@ impl OperationRuntime {
         RuntimeHandle {
             operations: self.operations.clone(),
             shared: self.shared.clone(),
+            start_block: self.start_block.clone(),
         }
     }
     pub fn open(operations: Operations, launch: LaunchSpec) -> OperationsResult<Self> {

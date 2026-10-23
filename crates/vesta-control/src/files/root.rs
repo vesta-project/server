@@ -12,6 +12,7 @@ pub(super) struct Root {
     protected: Vec<PathBuf>,
     pub(super) remote_documents: bool,
     properties_exception: bool,
+    whitelist_exception: bool,
 }
 pub(super) struct CheckedPath {
     pub(super) path: PathBuf,
@@ -19,6 +20,9 @@ pub(super) struct CheckedPath {
     pub(super) metadata: Metadata,
 }
 impl Root {
+    pub(super) fn raw_path(&self) -> &Path {
+        &self.raw
+    }
     pub(super) fn open(root: &Path, protected_paths: &[&Path]) -> Result<Self> {
         absolute(root)?;
         plain_ancestors(root)?;
@@ -47,6 +51,7 @@ impl Root {
             protected,
             remote_documents: false,
             properties_exception: false,
+            whitelist_exception: false,
         };
         result.resource(&result.canonical)?;
         Ok(result)
@@ -54,6 +59,13 @@ impl Root {
     pub(super) fn remote(mut self, properties_exception: bool) -> Self {
         self.remote_documents = true;
         self.properties_exception = properties_exception;
+        self.whitelist_exception = false;
+        self
+    }
+    pub(super) fn whitelist(mut self) -> Self {
+        self.remote_documents = true;
+        self.properties_exception = false;
+        self.whitelist_exception = true;
         self
     }
     pub(super) fn resolve(&self, relative: Option<&RelativePath>) -> Result<CheckedPath> {
@@ -121,7 +133,9 @@ impl Root {
             parts.push(text);
         }
         let text = parts.join("/");
-        if self.remote_documents {
+        if self.remote_documents
+            && !(self.whitelist_exception && text.eq_ignore_ascii_case("whitelist.json"))
+        {
             remote_document(&text, self.properties_exception)?;
         }
         if text.is_empty() {
@@ -288,6 +302,28 @@ pub(super) fn remote_document(text: &str, properties_exception: bool) -> Result<
 #[cfg(test)]
 mod remote_document_tests {
     use super::*;
+    #[test]
+    fn whitelist_exception_is_exact_and_does_not_escape_to_remote_browser() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Root::open(temp.path(), &[]).unwrap().whitelist();
+        let base = root.canonical.clone();
+        assert!(root.resource(&base.join("whitelist.json")).is_ok());
+        for name in [
+            "ops.json",
+            "server.properties",
+            "config/whitelist.json",
+            "whitelist.json/child",
+        ] {
+            assert!(matches!(
+                root.resource(&base.join(name)),
+                Err(FileError::ProtectedPath)
+            ));
+        }
+        assert!(matches!(
+            root.remote(false).resource(&base.join("whitelist.json")),
+            Err(FileError::ProtectedPath)
+        ));
+    }
     #[test]
     fn canonical_documents_are_excluded_and_exception_is_root_properties_only() {
         for name in [

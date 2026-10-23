@@ -1,6 +1,8 @@
 # Offline management and startup status: proposed next increment
 
-2026-10-23. Design follow-up; not implemented. Existing requirements still define temporary port ownership and explicitly exclude an always-on proxy from the baseline.
+2026-10-23. Design follow-up. Existing requirements still define temporary port ownership and explicitly exclude an always-on proxy from the baseline.
+
+Update: offline whitelist editing is implemented; see [the API and safety contract](offline-whitelist.md). The startup proxy/MOTD options below remain proposals.
 
 ## Offline whitelist management
 

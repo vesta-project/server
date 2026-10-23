@@ -11,6 +11,8 @@
 //! timestamps). Windows preserves the read-only attribute and refuses read-only replacement
 //! or deletion; it does not copy custom ACLs or other attributes. Stages start private on Unix.
 mod local_document;
+mod offline_whitelist;
+pub use offline_whitelist::OfflineWhitelistPatch;
 mod mutation;
 pub(crate) use mutation::mutation_admission;
 mod native;
@@ -235,6 +237,7 @@ pub struct FileBrowser {
     remote_key: Option<String>,
     properties_write: bool,
     content_write: bool,
+    whitelist_guard: Option<std::sync::Arc<offline_whitelist::StoppedGuard>>,
     remote_deadline: Option<std::time::Instant>,
     properties_approval: Option<crate::operations::PropertiesApproval>,
 }
@@ -259,6 +262,7 @@ impl FileBrowser {
             remote_key: None,
             properties_write: false,
             content_write: false,
+            whitelist_guard: None,
             remote_deadline: None,
             properties_approval: None,
         })
