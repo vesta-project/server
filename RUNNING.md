@@ -11,9 +11,11 @@ cargo build --locked -p vesta-agent
 cargo run --locked -p vesta-agent --bin vesta-agent -- --help
 ```
 
-Use CLI help for the implemented setup, configuration, local operator, and serve
-commands. The hosting setup flow and production deployment packaging remain
-incomplete; former Java one-liner installers are not Rust agent installers.
+Use CLI help for setup, configuration, local operator and serve commands. The
+[guided installer](docs/operations/host-setup.md) prepares a host for launcher
+onboarding. [Signed release bundles](docs/operations/bootstrap-release.md) install
+the four native tools; [update commands](docs/operations/signed-updates.md) verify
+and stage later releases without activating them.
 
 ## Process ownership
 
@@ -53,5 +55,6 @@ Operational contracts:
 - [Management API](docs/operations/management-api-contract.md)
 - [Sleep and MOTD](docs/operations/sleep-and-motd.md)
 
-The Java wrapper and its running instructions moved to
-[vesta-project/server-java](https://github.com/vesta-project/server-java).
+Optional Minecraft connectors and archived Java wrapper sources belong to
+[vesta-project/server-java](https://github.com/vesta-project/server-java). They
+are independent of the native agent build.

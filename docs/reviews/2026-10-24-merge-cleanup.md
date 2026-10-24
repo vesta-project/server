@@ -23,3 +23,20 @@ Node checks, requirements ledger and generated roadmap. Use the existing isolate
 Ubuntu WSL tool/cache with the CI-pinned compiler for Linux evidence. Record any
 remaining limitations without promoting requirement completion. Commit cleanup;
 do not merge, push, rewrite main, publish or modify the other main worktree.
+
+## Local preservation
+
+The old `.gradle`, `build`, `buildSrc`, `core`, `wrapper`, `versions`, `gradle`
+and `demo-server` directories were moved to
+`V:\repository-cleanup-archive\server-20261024`. No tracked file was inside those
+directories. Before/after file counts and total lengths matched; `manifest.json`
+records the source/destination inventory and recovery commit. The archive parent
+is restricted to the current Windows account. Demo worlds and all root-level
+review logs were preserved. This is a same-volume move, not a disk-space recovery
+claim. Rust `target`, editor settings and active development instances were not
+removed. No running Java process referenced the checkout when the move began.
+
+The fetched server `origin/main` is an ancestor of this branch, so the merge has
+no divergent main commits to reconcile. This does not itself establish passing
+CI; complete gate results follow below. The separate launcher rewrite was not
+prepared for merge by this task.

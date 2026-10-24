@@ -1,43 +1,43 @@
-# Testing the Rust server agent
+# Testing and merge checks
 
-With Rust 1.96.0 and Node 22 or later, run from this repository:
+Run from this repository with rustup and Node 22 or later. The checked-in
+rust-toolchain.toml selects Rust 1.96.0, matching CI.
 
-```powershell
+~~~text
 cargo fmt --all -- --check
 cargo check --workspace --all-targets --locked
-cargo test --workspace --locked
+cargo test --workspace --locked -- --test-threads=1
 cargo clippy --workspace --all-targets --locked -- -D warnings
 node --test scripts/*.test.mjs
 node --test scripts/bootstrap/*.test.mjs
 node --test scripts/reachability-probe/*.test.mjs
 node scripts/requirements-ledger.mjs --check
 node scripts/build-roadmap-html.mjs --check
-```
+~~~
 
-Rust compilation and ordinary tests need no JDK, Gradle, or Java repository.
-Protocol fixtures remain checked in here. CI runs Rust checks on Windows and
-Linux. Fixture/process tests do not certify live Minecraft clients, all loaders,
-deployment security, or unfinished product requirements.
+CI runs the Rust gates on Windows and Ubuntu. Serial execution matches CI and
+avoids contention between timing-sensitive owned-process fixtures. Set
+CARGO_INCREMENTAL=0 to match CI and limit persistent build-cache growth. Node's
+Bash checks run on Linux and are explicitly skipped on Windows.
 
-## Java migration evidence
+Ordinary builds/tests need no JDK, Gradle, Minecraft installation, private Java
+repository, production signing key or GitHub release credential. Process tests
+use owned inert fixtures. Signing tests create temporary test keys. They never
+update an existing development server or accept the Minecraft EULA.
 
-Clone `https://github.com/vesta-project/server-java` beside this checkout as
-`server-java` and check out `javaSource.revision` from
-`docs/RUST_WRAPPER_PARITY.json`. Then run:
+## Live platform verification
 
-```powershell
-node scripts/rust-wrapper-parity.mjs
-```
+Fixtures do not establish live Minecraft/loader compatibility, independent Linux
+boot/service behaviour, deployment isolation, external network reachability or
+low-end host performance. See [verification reports](docs/reviews/) for each run's
+environment and limits. Keep integration tests in a dedicated installation
+outside source directories; preserve worlds and credentials.
 
-For another location, set `VESTA_JAVA_REPO`. This explicit comparison requires
-the pinned checkout and verifies real Java files and hashes. It validates
-inventory structure; it does not execute Java tests or certify migration completion.
-Standalone Node tests exercise the checker with synthetic fixtures.
+## Historical migration evidence
 
-The manual `Pinned Java migration comparison` workflow requires the
-`SERVER_JAVA_READ_TOKEN` repository secret with read access to the private Java
-repository. It fails explicitly if the credential is absent. Ordinary Rust CI
-does not claim this external evidence check ran.
-
-Java core/wrapper tests and connector builds now belong to the Java repository.
-See [the split contract](docs/operations/repository-split.md).
+The Java migration inventory, network-surface map and accounting scripts preserve
+the old comparison baseline. The optional comparison command is documented in the
+[repository boundary](docs/operations/repository-split.md). It requires an exact
+external Java checkout; it is not a merge prerequisite or active CI workflow.
+These historical records do not certify every product requirement or old Java
+behaviour as implemented.

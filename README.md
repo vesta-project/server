@@ -1,46 +1,51 @@
-# Vesta server agent
+# Vesta server
 
-This repository contains the Rust agent, supervisor, management API, and the
-current server product requirements. Minecraft Java mods/plugins, shared Java
-code, and the retained legacy Java wrapper moved to
-[vesta-project/server-java](https://github.com/vesta-project/server-java).
+Rust server management for Minecraft: the Vesta agent, per-server supervisor,
+local CLI, guided installer, and launcher management API. Supported release
+builds target Windows x86_64 and Linux x86_64/ARM64.
+
+Minecraft runs as a separate Java process. Building Vesta requires no JDK,
+Gradle or Java repository. Optional Minecraft connectors live in
+[server-java](https://github.com/vesta-project/server-java); the legacy Java
+wrapper is not part of this build or execution path.
+
+## Get started
+
+- [Install and onboard a host](docs/operations/host-setup.md)
+- [Build and run locally](RUNNING.md)
+- [Use the server-scoped CLI](docs/operations/scoped-cli.md)
+- [Package signed releases](docs/operations/bootstrap-release.md)
+- [Verify and stage signed updates](docs/operations/signed-updates.md)
+
+This is unreleased software. Signed installation and update staging are available;
+Vesta executable activation and health-check rollback are not yet implemented.
+Same-account portable operation is not a security sandbox for untrusted plugins.
+See the [requirements](docs/SERVER_SOFTWARE_REQUIREMENTS.md),
+[implementation plan](docs/SERVER_SOFTWARE_IMPLEMENTATION_PLAN.md), and
+[roadmap](docs/SERVER_SOFTWARE_ROADMAP.html) for scope and verification limits.
 
 ## Development
 
-For a session with freshly built server commands on PATH, run `cargo dev` (or
-`cargo run -p vesta-dev --`). Use `vesta-rebuild` inside it and `exit` to return.
-Use `cargo dev --release` when measuring runtime performance. See the
-[development shell guide](docs/operations/dev-session.md) for server selection,
-setup previews, and applying rebuilt binaries.
+Install Rust through rustup and Node 22 or later. The rust-toolchain.toml file selects
+Rust 1.96.0, matching CI, including rustfmt and Clippy.
 
-Use the CI Rust toolchain (1.96.0) and Node 22 or later:
+Run cargo dev to build the tools and open a temporary shell with them on PATH.
+Use vesta-rebuild inside that shell, and exit to return. Use cargo dev --release
+when measuring performance. See the [development guide](docs/operations/dev-session.md)
+and [test/merge checks](TESTING.md).
 
-```powershell
-cargo fmt --all -- --check
-cargo check --workspace --all-targets --locked
-cargo test --workspace --locked
-node --test scripts/*.test.mjs
-node --test scripts/bootstrap/*.test.mjs
-node --test scripts/reachability-probe/*.test.mjs
-node scripts/requirements-ledger.mjs --check
-node scripts/build-roadmap-html.mjs --check
-```
+## Repository layout
 
-See [TESTING.md](TESTING.md) for the pinned Java migration comparison and
-[RUNNING.md](RUNNING.md) for the agent entry point.
+| Path | Contents |
+| --- | --- |
+| apps/vesta-agent | Agent executable and server-scoped CLI |
+| apps/vesta-setup | Guided installation and local update staging |
+| crates/ | State, protocol, control, transport, game runtime, installer, supervisor and update libraries |
+| tools/vesta-dev | Temporary development shell |
+| protocol/ | Canonical compatibility schemas and fixtures |
+| scripts/ | Release/bootstrap, development and validation tools |
+| docs/ | [Documentation index](docs/README.md), requirements and verification evidence |
 
-The [guided host setup](docs/operations/host-setup.md) prepares a private local
-host for app onboarding. See [signed release packaging](docs/operations/bootstrap-release.md)
-and the [terminal screenshot gallery](docs/screenshots/setup/gallery.html).
-
-The [requirements](docs/SERVER_SOFTWARE_REQUIREMENTS.md),
-[implementation plan](docs/SERVER_SOFTWARE_IMPLEMENTATION_PLAN.md), and
-[roadmap](docs/SERVER_SOFTWARE_ROADMAP.html) remain authoritative here. The
-current implementation has outstanding UI, live-server, deployment, and Linux
-verification gaps; the Java extraction does not promote any requirement status.
-
-## Shared contracts
-
-`protocol/` is the canonical source for compatibility schemas and fixtures.
-The Java repository keeps an explicitly pinned snapshot so both builds work
-independently. See [the repository split contract](docs/operations/repository-split.md).
+Historical Java migration inventories and comparison scripts remain as audit
+evidence, not runtime/build dependencies. See the
+[repository boundary](docs/operations/repository-split.md).

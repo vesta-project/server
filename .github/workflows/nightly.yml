@@ -11,13 +11,10 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'apps/**'
-      - 'build.rs'
       - 'crates/**'
       - 'protocol/**'
       - 'rust-toolchain*'
       - 'scripts/bootstrap/**'
-      - 'versions/**'
-      - 'wrapper/**'
   workflow_dispatch:
 
 permissions:

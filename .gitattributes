@@ -1,3 +1,4 @@
 protocol/** -text
-scripts/bootstrap/*.sh text eol=lf
-scripts/dev-test-server.sh text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

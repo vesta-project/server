@@ -1,24 +1,19 @@
-build/
-versions/**/gradle.properties
-versions/**/.eclipse/
-versions/**/build/
-.gradle/
-*.class
-*.jar
-*.war
-bin/
-out/
+# Rust and Node build outputs
+/target/
+node_modules/
+
+# Local runtime installations and diagnostics
+/run/
+/run-server/
+/demo-server/
 *.log
+
+# Editor-local settings
 .idea/
+.vscode/
 *.iml
 *.ipr
 *.iws
-.vscode/
 .settings/
 .project
 .classpath
-target/
-node_modules/
-run/
-run-server/
-demo-server/*
