@@ -474,21 +474,50 @@ pub async fn request_data(state: &Path, name: String, op: Op) -> Result<Option<s
         .map_err(|_| "local_control_outcome_unknown_do_not_retry")?;
         let response: Response =
             serde_json::from_slice(&bytes).map_err(|_| "local_control_invalid_response")?;
-        if response.version != 1 {
-            return Err("local_control_invalid_response");
-        }
-        match response.code {
-            Code::Complete => Ok(response.data),
-            Code::EulaPending => Err("local_eula_pending_owner_must_accept_themselves"),
-            Code::StopTimedOutNoForceKill => Err("local_stop_timed_out_no_force_kill"),
-            Code::OutcomeUncertain => Err("local_control_outcome_unknown_do_not_retry"),
-            _ => Err("local_control_request_refused"),
-        }
+        response_data(response)
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (endpoint, name, op);
         Err("local_platform_unsupported")
+    }
+}
+fn response_data(response: Response) -> Result<Option<serde_json::Value>> {
+    if response.version != 1 {
+        return Err("local_control_invalid_response");
+    }
+    match response.code {
+        Code::Complete => Ok(response.data),
+        Code::InvalidRequest => Err("local_control_unsupported_request"),
+        Code::EulaPending => Err("local_eula_pending_owner_must_accept_themselves"),
+        Code::StopTimedOutNoForceKill => Err("local_stop_timed_out_no_force_kill"),
+        Code::OutcomeUncertain => Err("local_control_outcome_unknown_do_not_retry"),
+        _ => Err("local_control_request_refused"),
+    }
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+    #[test]
+    fn unsupported_old_protocol_is_distinct_from_refusal_or_uncertain_delivery() {
+        for (code, expected) in [
+            (Code::InvalidRequest, "local_control_unsupported_request"),
+            (Code::RuntimeRefused, "local_control_request_refused"),
+            (
+                Code::OutcomeUncertain,
+                "local_control_outcome_unknown_do_not_retry",
+            ),
+        ] {
+            assert_eq!(
+                response_data(Response {
+                    version: 1,
+                    code,
+                    data: None
+                }),
+                Err(expected)
+            );
+        }
     }
 }
 /// This is reached only after native pipe/socket admission and server-name binding.

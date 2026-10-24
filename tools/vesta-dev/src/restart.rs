@@ -227,6 +227,10 @@ fn spawn(agent: &Agent, source: &Path, local_only: bool, logs: &Path) -> Result<
     if local_only {
         command.arg("--local-only");
     }
+    spawn_independent(&mut command)
+}
+
+fn spawn_independent(command: &mut Command) -> Result<Child> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -252,6 +256,34 @@ fn spawn(agent: &Agent, source: &Path, local_only: bool, logs: &Path) -> Result<
     command
         .spawn()
         .map_err(|_| "cannot launch rebuilt agent".into())
+}
+
+fn check_independent_launch(agent: &Agent) -> Result<()> {
+    // Check the exact replacement binary and process containment before stopping
+    // a working host. `version` opens no host, listener or game runtime.
+    let mut command = agent.command();
+    command
+        .arg("version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = spawn_independent(&mut command)?;
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|_| "cannot observe launch preflight")?
+        {
+            return if status.success() {
+                Ok(())
+            } else {
+                Err("replacement launch preflight failed; nothing was stopped".into())
+            };
+        }
+        if Instant::now() >= until {
+            return Err("replacement launch preflight timed out; nothing was stopped".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 pub fn run(
@@ -291,10 +323,31 @@ pub fn run(
         id,
         base: source.parent().unwrap().to_owned(),
     };
-    let status = agent.manage("status")?;
-    let running = was_running(&status)?;
-    let local_only = listener_mode(&status, selected_mode)?;
-    if let Some(base) = status["launchBase"].as_str() {
+    let observed = agent.manage("status");
+    let offline = observed.is_err();
+    let status = match observed {
+        Ok(status) => Some(status),
+        Err(error) => {
+            // A missing endpoint alone proves nothing. Agent-only recovery
+            // requires an explicit listener choice and every ownership fence.
+            let config = HostConfiguration::load_file(&source, &agent.base)
+                .map_err(|_| "invalid host configuration")?;
+            config
+                .validate_host_paths()
+                .map_err(|_| "invalid server paths")?;
+            if selected_mode.is_none() || !quiescent(&source, &config)? {
+                return Err(error);
+            }
+            None
+        }
+    };
+    let running = status
+        .as_ref()
+        .map(was_running)
+        .transpose()?
+        .unwrap_or(false);
+    let local_only = listener_mode(status.as_ref().unwrap_or(&Value::Null), selected_mode)?;
+    if let Some(base) = status.as_ref().and_then(|s| s["launchBase"].as_str()) {
         agent.base = base.into();
     }
     guarded(&agent.base)?;
@@ -314,6 +367,7 @@ pub fn run(
     if !checked.status.success() {
         return Err("rebuilt agent refused configuration; nothing was stopped".into());
     }
+    check_independent_launch(&agent)?;
     let logs = session
         .join("restarts")
         .join(uuid::Uuid::new_v4().to_string());
@@ -327,16 +381,23 @@ pub fn run(
         },
         logs.join("agent.log").display()
     );
-    let stopped = agent
-        .command()
-        .args(["agent", "shutdown"])
-        .arg(&source)
-        .status()
-        .map_err(|_| "cannot request graceful shutdown")?;
-    if !stopped.success() {
-        return Err(
-            "shutdown refused or uncertain; no restart or automatic retry attempted".into(),
-        );
+    if !offline {
+        let stopped = agent
+            .command()
+            .args(["agent", "shutdown"])
+            .arg(&source)
+            .output()
+            .map_err(|_| "cannot request graceful shutdown")?;
+        if !stopped.status.success() {
+            if String::from_utf8_lossy(&stopped.stderr)
+                .contains("local_control_unsupported_request")
+            {
+                return Err("this older agent does not support shutdown requests. Stop its terminal once with Ctrl+C, then repeat --restart with --configured-listener or --local-only. Nothing was force-killed".into());
+            }
+            return Err(
+                "shutdown refused or uncertain; no restart or automatic retry attempted".into(),
+            );
+        }
     }
     let until = Instant::now() + WAIT;
     while !quiescent(&source, &config)? {

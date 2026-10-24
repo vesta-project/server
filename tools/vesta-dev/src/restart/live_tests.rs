@@ -110,6 +110,27 @@ fn real_restart_preserves_running_and_stopped_games() {
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
+            // One-time legacy migration: after a manual graceful stop, an
+            // explicit listener choice can bring back only the agent.
+            assert!(run(&bin, temp.path(), &root, ID, None).is_err());
+            run(&bin, temp.path(), &root, ID, Some(true))?;
+            assert!(!was_running(&agent.manage("status")?)?);
+            let stopped = agent
+                .command()
+                .args(["agent", "shutdown"])
+                .arg(&source)
+                .status()
+                .map_err(|e| e.to_string())?;
+            if !stopped.success() {
+                return Err("fixture shutdown refused".into());
+            }
+            let until = Instant::now() + WAIT;
+            while !quiescent(&source, &config)? {
+                if Instant::now() >= until {
+                    return Err("recovered fixture cleanup timed out".into());
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
             Ok(())
         })();
         if let Err(error) = exercise {

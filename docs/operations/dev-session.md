@@ -63,8 +63,9 @@ force-killed. It checks that the host and launch documents did not change, then
 starts the staged agent with its matching staged supervisor and the same data.
 Minecraft is started only if it was running in the pre-restart observation;
 otherwise it stays stopped. Avoid simultaneous lifecycle/configuration changes
-while the restart is underway. An offline agent or a stopping/draining game is
-refused rather than guessed about. The command verifies the replacement agent's
+while the restart is underway. A stopping/draining game is refused. An offline
+agent requires an explicit listener choice and proven quiescent ownership; only
+the agent is brought online and Minecraft stays stopped. The command verifies the replacement agent's
 PID over the protected local endpoint before restoring the game. Reporting
 "started" confirms a native generation, not Minecraft readiness.
 
@@ -86,6 +87,12 @@ automatically retried or force-killed. If activation fails after shutdown, the
 server can remain stopped or the replacement agent can remain running: inspect
 the printed log/status before taking another action. The newly built commands
 remain selected in the dev shell so recovery uses the new build.
+
+Agents built before the local shutdown command was added cannot accept it.
+Stop that older agent once using Ctrl+C in its terminal, then repeat the rebuild
+with an explicit listener choice. Do not force-kill it or remove recovery markers.
+The helper distinguishes an unsupported local request from a runtime refusal or
+uncertain delivery, and checks independent process launch before stopping a host.
 
 This is development tooling, not installation or signed release activation.
 Already-open dev shells need to be replaced with a fresh `cargo dev` session
