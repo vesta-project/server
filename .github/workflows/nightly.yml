@@ -211,7 +211,8 @@ jobs:
             --base-url "$BUNDLE_BASE_URL" \
             --asset-prefix "${RELEASE_TARGET}-" \
             --signing-key "$RELEASE_SIGNING_KEY_PATH" \
-            --version "$RELEASE_VERSION"
+            --version "$RELEASE_VERSION" \
+            --channel nightly --sequence "${{ github.run_number }}"
           node -e "const r=require(process.env.RUNNER_TEMP + '/package/' + process.env.RELEASE_TARGET + '/release/release.json'); if(r.releaseKey.toLowerCase()!==process.env.RELEASE_PUBLIC_KEY.toLowerCase()) throw new Error('Generated public key does not match VESTA_RELEASE_PUBLIC_KEY')"
           tar -czf "$RUNNER_TEMP/package/$RELEASE_TARGET/vesta-$RELEASE_TARGET-$RELEASE_VERSION.tar.gz" -C "$RUNNER_TEMP/package/$RELEASE_TARGET/release" .
       - name: Upload signed package for the isolated publisher
@@ -295,7 +296,7 @@ jobs:
           for target in windows-x86_64 linux-x86_64 linux-aarch64; do
             prefix="$target-"
             package="$RUNNER_TEMP/site/nightly/$RELEASE_VERSION/$target"
-            for name in manifest.json manifest.sig manifest.pub commands.txt release.json vesta-setup vesta-setup.exe vesta-agent vesta-agent.exe vesta-supervisor vesta-supervisor.exe vesta vesta.exe; do
+            for name in manifest.json manifest.sig manifest.pub update.json update.sig commands.txt release.json vesta-setup vesta-setup.exe vesta-agent vesta-agent.exe vesta-supervisor vesta-supervisor.exe vesta vesta.exe; do
               if [ -f "$package/$name" ]; then cp "$package/$name" "$RUNNER_TEMP/release-assets/$prefix$name"; fi
             done
           done

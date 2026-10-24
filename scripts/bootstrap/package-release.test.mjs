@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash, generateKeyPairSync, verify } from 'node:crypto';
+import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -59,6 +59,20 @@ function packageArgs(f, output = f.output) {
 function run(args) {
   return spawnSync(process.execPath, args, { encoding: 'utf8' });
 }
+
+test('update descriptors bind the signed manifest, channel, sequence and expiry', {skip:!target}, async t=>{
+  const f=await fixture(t);const result=run([...packageArgs(f),'--sequence','42','--channel','nightly']);
+  assert.equal(result.status,0,result.stderr);
+  const bytes=await readFile(path.join(f.output,'update.json'));const m=JSON.parse(bytes);
+  const signature=Buffer.from((await readFile(path.join(f.output,'update.sig'),'utf8')).trim(),'base64');
+  const key=createPublicKey(await readFile(f.signingKey));
+  assert.equal(verify(null,bytes,key,signature),true);
+  assert.equal(verify(null,Buffer.concat([bytes,Buffer.from(' ')]),key,signature),false);
+  assert.equal(m.sequence,42);assert.equal(m.channel,'nightly');assert.equal(m.target,target);assert.equal(m.purpose,'vesta-update-release-v1');
+  assert.equal(m.manifest_sha256,createHash('sha256').update(await readFile(path.join(f.output,'manifest.json'))).digest('hex'));
+  assert.equal(m.expires_at_ms-m.issued_at_ms,7*86400000);
+  const invalid=run([...packageArgs(f,path.join(f.root,'invalid')),'--sequence','0','--channel','nightly']);assert.notEqual(invalid.status,0);
+});
 
 test('packager emits a pinned manifest, a valid detached signature, and isolated one-paste commands', { skip: !target }, async t => {
   const f = await fixture(t);

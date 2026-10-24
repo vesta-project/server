@@ -22,6 +22,7 @@ ureq.workspace = true
 url.workspace = true
 uuid.workspace = true
 vesta-state.workspace = true
+vesta-update = { path = "../../crates/vesta-update" }
 
 [dev-dependencies]
 tempfile.workspace = true

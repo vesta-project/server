@@ -1,5 +1,9 @@
 # Nightly signed releases
 
+Nightlies now include signed sequence/expiry update descriptors. See
+[signed update foundations](signed-updates.md) for key generation, trust bootstrap,
+check/stage commands and the remaining activation boundary.
+
 `.github/workflows/ci.yml` runs checks for pushes, pull requests, and manual validation. `.github/workflows/nightly.yml` runs a native build and signed publish when supported source changes are pushed to `main` or `feat/launcher-compat`, on a daily UTC schedule, or by manual dispatch from either approved branch. GitHub only starts scheduled workflows from the repository's default branch. The scheduled run begins after this workflow reaches that branch; pushes to the current integration branch can publish nightlies before then.
 
 The nightly pipeline runs Node checks and the Rust formatting, check, test, and Clippy suite first. It then builds all four executables on native Windows x86_64, Linux x86_64, and Linux ARM64 runners. The build jobs verify the PE/ELF file format and target architecture before uploading unsigned binaries. Separate native packaging jobs download those products, require the configured production signing key, and sign each release manifest. A final publisher rechecks every executable hash and Ed25519 signature against the pinned public key before publishing.

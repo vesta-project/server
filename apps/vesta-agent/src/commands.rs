@@ -59,7 +59,7 @@ pub async fn run_with_format(command: Command, base: &Path, format: Format) -> E
         }
         Command::Version => {
             println!(
-                "vesta-agent {}; updates_are_not_signed_yet",
+                "vesta-agent {}; signed_release_packages_supported; self_update_activation_unavailable",
                 env!("CARGO_PKG_VERSION")
             );
             return ExitCode::SUCCESS;
@@ -69,7 +69,10 @@ pub async fn run_with_format(command: Command, base: &Path, format: Format) -> E
                 "current_version={}; available_version=unknown; signed_update_catalogue_not_implemented",
                 env!("CARGO_PKG_VERSION")
             );
-            eprintln!("update_refused: signed_updates_not_implemented_F41; no_binary_replacement");
+            eprintln!(
+                "update_refused: self_update_activation_not_implemented; no_binary_replacement"
+            );
+            eprintln!("Signed update trust/check/stage foundations: vesta-setup update --help");
             return ExitCode::FAILURE;
         }
         Command::Check(source) => {

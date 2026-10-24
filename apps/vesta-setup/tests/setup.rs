@@ -22,6 +22,126 @@ struct Bundle {
 }
 
 #[test]
+fn update_cli_bootstraps_exact_installed_release_and_stages_without_activation() {
+    let mut bundle = Bundle::new(false);
+    let cli = if cfg!(windows) { "vesta.exe" } else { "vesta" };
+    let bytes = b"inert CLI";
+    fs::write(bundle.temp.path().join(cli), bytes).unwrap();
+    bundle.manifest.files.push(Artifact {
+        name: cli.into(),
+        sha256: hex::encode(Sha256::digest(bytes)),
+        size: bytes.len() as u64,
+    });
+    bundle.sign();
+    let source = bundle.source();
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    let m = vesta_update::Metadata {
+        schema: 1,
+        purpose: "vesta-update-release-v1".into(),
+        channel: "stable".into(),
+        sequence: 10,
+        version: bundle.manifest.version.clone(),
+        target: platform::target().unwrap().into(),
+        manifest_sha256: source.manifest_sha256.clone(),
+        issued_at_ms: now - 1000,
+        expires_at_ms: now + 86400000,
+    };
+    let bytes = serde_json::to_vec(&m).unwrap();
+    fs::write(bundle.temp.path().join("update.json"), &bytes).unwrap();
+    fs::write(
+        bundle.temp.path().join("update.sig"),
+        base64::engine::general_purpose::STANDARD.encode(bundle.key.sign(&bytes).as_ref()),
+    )
+    .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("installation");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(root.join("bin")).unwrap();
+    fs::write(root.join("bin/active-fixture"), b"unchanged").unwrap();
+    let receipt = Receipt {
+        schema: 1,
+        installation_id: "1".repeat(32),
+        answers: answers(root.clone()),
+        release_version: bundle.manifest.version.clone(),
+        release_manifest_sha256: source.manifest_sha256.clone(),
+        phase: "installed".into(),
+        tls_sha256: "2".repeat(64),
+        startup_registered: false,
+        external_status: vesta_setup::network::ExternalStatus::NotChecked,
+    };
+    engine::write_private(&root, "setup.json", &serde_json::to_vec(&receipt).unwrap()).unwrap();
+    let run = |action: &str, extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_vesta-setup"))
+            .args(["update", action, "--root"])
+            .arg(&root)
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let init = run(
+        "init",
+        &[
+            "--bundle-dir",
+            bundle.temp.path().to_str().unwrap(),
+            "--release-key",
+            &source.release_key,
+            "--channel",
+            "stable",
+        ],
+    );
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let status = run("status", &[]);
+    assert!(status.status.success());
+    let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["activation_supported"], false);
+    assert_eq!(status["trust"]["sequence"], 10);
+    let stage = run(
+        "stage",
+        &["--bundle-dir", bundle.temp.path().to_str().unwrap()],
+    );
+    assert!(
+        stage.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stage.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&stage.stdout).unwrap()["phase"],
+        "staged"
+    );
+    assert_eq!(
+        fs::read(root.join("bin/active-fixture")).unwrap(),
+        b"unchanged"
+    );
+    assert!(
+        !run("stage", &["--release-key", &source.release_key])
+            .status
+            .success()
+    );
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join("private/setup.lock"))
+        .unwrap();
+    fs2::FileExt::try_lock_exclusive(&lock).unwrap();
+    let blocked = run(
+        "stage",
+        &["--bundle-dir", bundle.temp.path().to_str().unwrap()],
+    );
+    assert!(!blocked.status.success());
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("setup_already_running"));
+}
+
+#[test]
 fn uninstall_rejects_confirmation_bypasses_and_ambiguous_selection_without_side_effects() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("host").to_string_lossy().into_owned();
@@ -380,6 +500,31 @@ impl Drop for RunningHost {
 #[test]
 fn real_pending_host_verifies_tls_resumes_identity_and_rejects_wrong_identity() {
     let mut bundle = Bundle::new(true);
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    let metadata = vesta_update::Metadata {
+        schema: 1,
+        purpose: "vesta-update-release-v1".into(),
+        channel: "stable".into(),
+        sequence: 7,
+        version: bundle.manifest.version.clone(),
+        target: platform::target().unwrap().into(),
+        manifest_sha256: bundle.source().manifest_sha256,
+        issued_at_ms: now - 1000,
+        expires_at_ms: now + 86400000,
+    };
+    let bytes = serde_json::to_vec(&metadata).unwrap();
+    fs::write(bundle.temp.path().join("update.json"), &bytes).unwrap();
+    fs::write(
+        bundle.temp.path().join("update.sig"),
+        base64::engine::general_purpose::STANDARD.encode(bundle.key.sign(&bytes).as_ref()),
+    )
+    .unwrap();
     let release = release::load(bundle.source()).unwrap();
     let temp = tempfile::tempdir().unwrap();
     let mut a = answers(temp.path().join("host"));
@@ -393,6 +538,12 @@ fn real_pending_host_verifies_tls_resumes_identity_and_rejects_wrong_identity() 
     let receipt = engine::prepare(&a, &release, &mut |_, _, _, _| {}).unwrap();
     assert!(host::ready(&receipt));
     assert_eq!(receipt.phase, "ready");
+    let updates = vesta_update::UpdateStore::open(&a.root.join("private/update-state")).unwrap();
+    assert_eq!(updates.trust().unwrap().sequence, 7);
+    assert_eq!(
+        updates.trust().unwrap().release_key,
+        bundle.source().release_key
+    );
     assert_eq!(
         receipt.external_status,
         vesta_setup::network::ExternalStatus::Unavailable

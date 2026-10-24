@@ -210,6 +210,29 @@ pub fn read_receipt(root: &Path) -> Result<Receipt> {
     }
     Ok(r)
 }
+/// Share the install/uninstall fence before creating any updater state.
+pub(crate) fn lock_existing_installation(root: &Path) -> Result<File> {
+    read_receipt(root)?;
+    let path = root.join("private/setup.lock");
+    guard(&path)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|_| "setup_lock_failed")?;
+    StateDirectory::new(root.join("private"), None)
+        .and_then(|dir| dir.tighten_file(&path))
+        .map_err(|_| "setup_private_permissions_failed")?;
+    file.try_lock_exclusive()
+        .map_err(|_| "setup_already_running")?;
+    read_receipt(root)?;
+    if root.join("private/uninstall-pending").exists() {
+        return Err("update_uninstall_pending".into());
+    }
+    Ok(file)
+}
 fn private_directory(root: &Path) -> Result<StateDirectory> {
     let dir = StateDirectory::new(root.join("private"), None)
         .map_err(|_| "setup_private_directory_refused")?;
@@ -410,6 +433,25 @@ pub fn prepare(
     release.install(&answers.root, &mut |name, done, total| {
         progress("installing", name, done, total)
     })?;
+    if release.update_metadata_present()? {
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| "update_clock_invalid")?
+                .as_millis(),
+        )
+        .map_err(|_| "update_clock_invalid")?;
+        let source = release.update_source();
+        // The already-pinned release key authenticates the initial channel too.
+        let metadata = release.verified_update_metadata(now)?;
+        vesta_update::UpdateStore::open(&answers.root.join("private/update-state"))?.initialize(
+            release.release_key(),
+            &metadata.channel,
+            release.manifest_hash(),
+            &source,
+            now,
+        )?;
+    }
     receipt.phase = "installed".into();
     journal(&answers.root, &receipt)?;
     let descriptor = handoff(&receipt);

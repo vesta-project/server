@@ -55,8 +55,21 @@ async function fixture(t, target) {
   };
   await writeFile(path.join(packageDir, 'commands.txt'), releaseCommands(metadata));
   await writeFile(path.join(packageDir, 'release.json'), JSON.stringify(metadata) + '\n');
-  return { root, packageDir, siteRoot: path.join(root, 'site'), target, publicKeyHex };
+  return { root, packageDir, siteRoot: path.join(root, 'site'), target, publicKeyHex, privateKey, manifestHash };
 }
+
+test('publisher verifies and retains signed update descriptors and rejects tampering',async t=>{
+  const f=await fixture(t,'linux-x86_64');
+  const now=Date.now();const m={schema:1,purpose:'vesta-update-release-v1',channel:'nightly',sequence:2,version:tag,target:f.target,manifest_sha256:f.manifestHash,issued_at_ms:now,expires_at_ms:now+86400000};
+  const bytes=Buffer.from(JSON.stringify(m));
+  await writeFile(path.join(f.packageDir,'update.json'),bytes);
+  await writeFile(path.join(f.packageDir,'update.sig'),sign(null,bytes,f.privateKey).toString('base64')+'\n');
+  const options={packageDir:f.packageDir,target:f.target,version:tag,publicKeyHex:f.publicKeyHex,siteRoot:f.siteRoot};
+  const destination=await stageNightlyRelease(options);
+  assert.deepEqual(await readFile(path.join(destination,'update.json')),bytes);
+  await writeFile(path.join(f.packageDir,'update.json'),Buffer.concat([bytes,Buffer.from(' ')]));
+  await assert.rejects(stageNightlyRelease({...options,siteRoot:path.join(f.root,'other-site')}),/Update metadata signature/);
+});
 
 test('verifies the target pins and stages a signed directory under the immutable nightly path', async t => {
   for (const target of Object.keys(targetFiles)) {

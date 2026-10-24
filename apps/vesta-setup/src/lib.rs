@@ -6,5 +6,6 @@ pub mod paths;
 pub mod platform;
 pub mod release;
 pub mod ui;
+pub mod updates;
 pub mod visual_states;
 pub mod wizard;

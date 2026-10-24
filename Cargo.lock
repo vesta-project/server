@@ -3404,6 +3404,7 @@ dependencies = [
  "url",
  "uuid",
  "vesta-state",
+ "vesta-update",
 ]
 
 [[package]]
@@ -3471,6 +3472,25 @@ dependencies = [
  "vesta-server-install",
  "vesta-state",
  "zeroize",
+]
+
+[[package]]
+name = "vesta-update"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "fs2",
+ "hex",
+ "ring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "ureq",
+ "url",
+ "uuid",
+ "vesta-state",
 ]
 
 [[package]]

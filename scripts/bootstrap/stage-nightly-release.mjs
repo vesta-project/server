@@ -30,8 +30,9 @@ export async function stageNightlyRelease({ packageDir, target, version, publicK
   if (!/^[0-9a-f]{64}$/i.test(publicKeyHex)) throw new Error('Expected public key pin must be 64 hex characters.');
 
   const input = await realpath(packageDir);
-  const expectedNames = [...targetFiles[target], ...artifactNames].sort();
   const presentNames = (await readdir(input)).sort();
+  const hasUpdates=presentNames.includes('update.json')||presentNames.includes('update.sig');
+  const expectedNames = [...targetFiles[target], ...artifactNames,...(hasUpdates?['update.json','update.sig']:[])].sort();
   if (JSON.stringify(presentNames) !== JSON.stringify(expectedNames)) throw new Error('Signed package file set is incomplete or contains unexpected files.');
   for (const name of expectedNames) {
     const info = await lstat(path.join(input, name));
@@ -64,6 +65,13 @@ export async function stageNightlyRelease({ packageDir, target, version, publicK
 
   const release = JSON.parse(await readFile(path.join(input, 'release.json'), 'utf8'));
   const manifestHash = sha256(manifestBytes);
+  if(hasUpdates) {
+    const bytes=await readFile(path.join(input,'update.json'));
+    const signature=Buffer.from((await readFile(path.join(input,'update.sig'),'utf8')).trim(),'base64');
+    if(bytes.length>16384||signature.length!==64||!verify(null,bytes,publicKey,signature)) throw new Error('Update metadata signature verification failed.');
+    const update=JSON.parse(bytes);const now=Date.now();
+    if(update.schema!==1||update.purpose!=='vesta-update-release-v1'||update.channel!=='nightly'||!Number.isSafeInteger(update.sequence)||update.sequence<1||update.target!==target||update.version!==version||update.manifest_sha256!==manifestHash||!Number.isSafeInteger(update.issued_at_ms)||!Number.isSafeInteger(update.expires_at_ms)||update.issued_at_ms>now+300000||update.expires_at_ms<=now||update.expires_at_ms<=update.issued_at_ms||update.expires_at_ms-update.issued_at_ms>30*86400000) throw new Error('Update metadata does not match this release or is expired.');
+  }
   if (release.schema !== 1 || release.version !== version || release.target !== target ||
       release.setupSha256 !== manifest.files[0].sha256 || release.manifestSha256 !== manifestHash ||
       release.releaseKey !== publicRaw.toString('hex')) throw new Error('Release metadata does not match the signed manifest and public key pin.');

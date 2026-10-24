@@ -26,3 +26,33 @@ packaging when an explicit release sequence/channel is supplied. Test tampering,
 wrong key/channel/target, expiry, rollback, concurrent staging, interrupted staging
 and preservation of active binaries. Production keys are not created or configured
 in GitHub automatically.
+
+## Implemented and verified
+
+The shared verifier now lives in `crates/vesta-update`; setup reexports the old
+release API. New metadata-bearing installations automatically persist the verified
+release pin, channel and initial signed sequence. Explicit setup update commands
+support local trust bootstrap, status, metadata checks and side-by-side staging.
+CLI staging shares the installation/uninstall fence as well as a cross-process
+update lock. The root lock was added during the second review to close a possible
+uninstall/staging race. An extended Windows path-prefix validation failure found
+by real staging tests was also fixed in the shared release reader.
+
+Release packaging optionally emits signed update descriptors; nightly CI requests
+them and the publisher verifies/retains them. Production key generation is an
+explicit release-side command with fresh owner-only output, public-pin export,
+and overwrite refusal. Production keys/secrets were not generated/configured.
+
+Validation on Windows: setup + update crate tests: 26 passed; focused agent CLI:
+1 passed; bootstrap Node tests: 19 passed, 2 Bash-only tests skipped. Scoped
+all-target Clippy passes with the existing collapsible-if style exception.
+Formatting and whitespace checks pass. Tests include signed metadata tampering,
+context/expiry/clock/sequence failures, initial release binding, unchanged active
+binaries, interrupted/resumed/reverified staging, lock contention, automatic setup
+trust provisioning, CLI operation and private-key file/output handling.
+
+Activation, coordinated handoff, health-check rollback, signed catalogue discovery,
+key rotation/revocation, multi-role/threshold signing and remote management API
+admission remain deliberately outside this foundation. No VM, production release,
+running server, existing installation or GitHub settings were changed.
+Operator guide: `docs/operations/signed-updates.md`.

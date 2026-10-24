@@ -6,18 +6,21 @@ import process from 'node:process';
 import { releaseCommands } from './release-commands.mjs';
 import { targetFiles, verifyBinaries } from './verify-binaries.mjs';
 
-function usage() { throw new Error('Usage: node package-release.mjs --binaries DIR --output NEW_DIR --target windows-x86_64|linux-x86_64|linux-aarch64 --base-url HTTPS_URL --signing-key PKCS8_PEM --version VERSION [--asset-prefix TARGET_PREFIX]'); }
+function usage() { throw new Error('Usage: node package-release.mjs --binaries DIR --output NEW_DIR --target windows-x86_64|linux-x86_64|linux-aarch64 --base-url HTTPS_URL --signing-key PKCS8_PEM --version VERSION [--asset-prefix TARGET_PREFIX] [--channel stable|nightly --sequence INTEGER]'); }
 const options = {};
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i += 2) {
   const key = args[i];
   if (!key?.startsWith('--') || i + 1 >= args.length) usage();
   const name = key.slice(2);
-  if (!['binaries', 'output', 'target', 'base-url', 'signing-key', 'version', 'asset-prefix'].includes(name) || options[name]) usage();
+  if (!['binaries', 'output', 'target', 'base-url', 'signing-key', 'version', 'asset-prefix', 'sequence', 'channel'].includes(name) || options[name]) usage();
   options[name] = args[i + 1];
 }
 if (['binaries', 'output', 'target', 'base-url', 'signing-key', 'version'].some(name => !options[name])) usage();
 if (!targetFiles[options.target]) throw new Error('Unsupported target.');
+const hasUpdates=options.sequence!==undefined||options.channel!==undefined;
+const sequence=Number(options.sequence);
+if(hasUpdates&&(!Number.isSafeInteger(sequence)||sequence<1||!/^\d+$/.test(options.sequence??'')||!['stable','nightly'].includes(options.channel))) throw new Error('Update metadata needs a positive safe-integer --sequence and --channel stable|nightly.');
 if (options['asset-prefix'] && options['asset-prefix'] !== `${options.target}-`) throw new Error('--asset-prefix must exactly match the supported target prefix.');
 const base = new URL(options['base-url']);
 if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash) throw new Error('base-url must be a clean HTTPS release directory URL.');
@@ -65,6 +68,13 @@ try {
   const setupName = names[0];
   const setupHash = files[0].sha256;
   const manifestHash = (await import('node:crypto')).createHash('sha256').update(manifestBytes).digest('hex');
+  if(hasUpdates) {
+    const issued=Date.now();
+    const metadata={schema:1,purpose:'vesta-update-release-v1',channel:options.channel,sequence,version:options.version,target:options.target,manifest_sha256:manifestHash,issued_at_ms:issued,expires_at_ms:issued+7*24*60*60*1000};
+    const bytes=Buffer.from(JSON.stringify(metadata,null,2)+'\n');
+    await writeFile(path.join(resolvedOutput,'update.json'),bytes,{flag:'wx'});
+    await writeFile(path.join(resolvedOutput,'update.sig'),sign(null,bytes,privateKey).toString('base64')+'\n',{flag:'wx'});
+  }
   const assetPrefix = options['asset-prefix'] ?? '';
   const setupUrl = new URL(`${assetPrefix}${setupName}`, base).href;
   const bundleUrl = base.href.replace(/\/$/, '');

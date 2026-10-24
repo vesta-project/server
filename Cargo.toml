@@ -7,6 +7,7 @@ members = [
     "crates/vesta-game-runtime",
     "crates/vesta-server-install",
     "crates/vesta-supervisor",
+    "crates/vesta-update",
     "apps/vesta-agent",
     "apps/vesta-setup",
     "tools/vesta-dev",

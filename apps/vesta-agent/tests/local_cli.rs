@@ -12,7 +12,7 @@ fn versions_are_descriptive_and_update_refuses_any_binary_replacement() {
     assert!(version.status.success());
     let text = String::from_utf8(version.stdout).unwrap();
     assert!(text.contains(env!("CARGO_PKG_VERSION")));
-    assert!(text.contains("updates_are_not_signed_yet"));
+    assert!(text.contains("signed_release_packages_supported"));
     let update = Command::new(env!("CARGO_BIN_EXE_vesta-agent"))
         .current_dir(temp.path())
         .arg("update")
@@ -27,7 +27,7 @@ fn versions_are_descriptive_and_update_refuses_any_binary_replacement() {
     assert!(
         String::from_utf8(update.stderr)
             .unwrap()
-            .contains("signed_updates_not_implemented_F41")
+            .contains("self_update_activation_not_implemented")
     );
     assert_eq!(
         fs::read(temp.path().join("retained")).unwrap(),
