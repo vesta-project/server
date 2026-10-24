@@ -23,8 +23,17 @@ pub struct NewWorld {
     pub confirm_world: String,
 }
 
-/// Modern Java and legacy pre-worldgen-schema saves. Never converts an i64 to f64.
-pub(crate) fn seed(bytes: &[u8]) -> Result<String> {
+/// Embedded seeds before 26.1; None means a valid level needs its split worldgen file.
+pub(crate) fn seed(bytes: &[u8]) -> Result<Option<String>> {
+    parse_seed(bytes, false)
+}
+
+/// Java 26.1+ stores the seed in data/minecraft/world_gen_settings.dat.
+pub(crate) fn world_generation_seed(bytes: &[u8]) -> Result<String> {
+    parse_seed(bytes, true)?.ok_or(FileError::Corrupt)
+}
+
+fn parse_seed(bytes: &[u8], split: bool) -> Result<Option<String>> {
     if bytes.len() > MAX_LEVEL_BYTES {
         return Err(FileError::TooLarge);
     }
@@ -42,6 +51,9 @@ pub(crate) fn seed(bytes: &[u8]) -> Result<String> {
         work: 200_000,
         modern: None,
         legacy: None,
+        split,
+        level_data: false,
+        embedded_worldgen: false,
     };
     if nbt.byte()? != 10 {
         return Err(FileError::Corrupt);
@@ -51,10 +63,13 @@ pub(crate) fn seed(bytes: &[u8]) -> Result<String> {
     if nbt.offset != expanded.len() {
         return Err(FileError::Corrupt);
     }
-    nbt.modern
-        .or(nbt.legacy)
-        .map(|seed| seed.to_string())
-        .ok_or(FileError::Corrupt)
+    if !split && !nbt.level_data {
+        return Err(FileError::Corrupt);
+    }
+    if !split && nbt.embedded_worldgen && nbt.modern.is_none() && nbt.legacy.is_none() {
+        return Err(FileError::Corrupt);
+    }
+    Ok(nbt.modern.or(nbt.legacy).map(|seed| seed.to_string()))
 }
 
 struct Nbt<'a> {
@@ -63,6 +78,9 @@ struct Nbt<'a> {
     work: usize,
     modern: Option<i64>,
     legacy: Option<i64>,
+    split: bool,
+    level_data: bool,
+    embedded_worldgen: bool,
 }
 impl<'a> Nbt<'a> {
     fn take(&mut self, count: usize) -> Result<&'a [u8]> {
@@ -88,6 +106,18 @@ impl<'a> Nbt<'a> {
             return Err(FileError::TooLarge);
         }
         self.work -= 1;
+        let seed_path = if self.split {
+            path.len() == 2 && path[0] == b"data" && path[1] == b"seed"
+        } else {
+            (path.len() == 2 && path[0] == b"Data" && path[1] == b"RandomSeed")
+                || (path.len() == 3
+                    && path[0] == b"Data"
+                    && path[1] == b"WorldGenSettings"
+                    && path[2] == b"seed")
+        };
+        if seed_path && tag != 4 {
+            return Err(FileError::Corrupt);
+        }
         match tag {
             1 => {
                 self.take(1)?;
@@ -102,9 +132,11 @@ impl<'a> Nbt<'a> {
                 let value =
                     i64::from_be_bytes(self.take(8)?.try_into().map_err(|_| FileError::Corrupt)?);
                 let names: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-                let slot = if names == [b"Data".as_slice(), b"WorldGenSettings", b"seed"] {
+                let slot = if (self.split && names == [b"data".as_slice(), b"seed"])
+                    || (!self.split && names == [b"Data".as_slice(), b"WorldGenSettings", b"seed"])
+                {
                     Some(&mut self.modern)
-                } else if names == [b"Data".as_slice(), b"RandomSeed"] {
+                } else if !self.split && names == [b"Data".as_slice(), b"RandomSeed"] {
                     Some(&mut self.legacy)
                 } else {
                     None
@@ -143,15 +175,30 @@ impl<'a> Nbt<'a> {
                 }
                 path.pop();
             }
-            10 => loop {
-                let child = self.byte()?;
-                if child == 0 {
-                    break;
+            10 => {
+                if !self.split
+                    && path.len() == 2
+                    && path[0] == b"Data"
+                    && path[1] == b"WorldGenSettings"
+                {
+                    self.embedded_worldgen = true;
                 }
-                path.push(self.text()?.to_vec());
-                self.value(child, path, depth + 1)?;
-                path.pop();
-            },
+                if !self.split && path.len() == 1 && path[0] == b"Data" {
+                    if self.level_data {
+                        return Err(FileError::Corrupt);
+                    }
+                    self.level_data = true;
+                }
+                loop {
+                    let child = self.byte()?;
+                    if child == 0 {
+                        break;
+                    }
+                    path.push(self.text()?.to_vec());
+                    self.value(child, path, depth + 1)?;
+                    path.pop();
+                }
+            }
             _ => return Err(FileError::Corrupt),
         }
         Ok(())
@@ -185,9 +232,34 @@ pub(crate) mod tests {
     fn modern_and_legacy_seeds_keep_full_signed_precision() {
         for modern in [true, false] {
             for value in [i64::MIN, i64::MAX, 0, -4172144997902289642] {
-                assert_eq!(seed(&level(value, modern)).unwrap(), value.to_string());
+                assert_eq!(
+                    seed(&level(value, modern)).unwrap(),
+                    Some(value.to_string())
+                );
             }
         }
+    }
+    pub(crate) fn split_level() -> Vec<u8> {
+        // The world seed is absent from the new level.dat, but Data is still required.
+        gzip(&[10, 0, 0, 10, 0, 4, b'D', b'a', b't', b'a', 0, 0])
+    }
+    pub(crate) fn split_worldgen(value: i64) -> Vec<u8> {
+        let mut nbt = vec![10, 0, 0, 10, 0, 4, b'd', b'a', b't', b'a', 4, 0, 4];
+        nbt.extend(b"seed");
+        nbt.extend(value.to_be_bytes());
+        nbt.extend([0, 0]);
+        gzip(&nbt)
+    }
+    #[test]
+    fn split_worldgen_seeds_preserve_precision_and_do_not_leak_into_level_parser() {
+        assert_eq!(seed(&split_level()).unwrap(), None);
+        for value in [i64::MIN, i64::MAX, 0, -4172144997902289642] {
+            let split = split_worldgen(value);
+            assert_eq!(world_generation_seed(&split).unwrap(), value.to_string());
+            assert!(seed(&split).is_err());
+            assert!(world_generation_seed(&level(value, true)).is_err());
+        }
+        assert!(world_generation_seed(&split_level()).is_err());
     }
     #[test]
     fn malformed_and_oversized_world_metadata_refuses() {

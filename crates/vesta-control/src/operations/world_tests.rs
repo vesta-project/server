@@ -21,6 +21,36 @@ fn request(files: &FileBrowser, h: &Harness) -> NewWorld {
     }
 }
 #[test]
+fn split_worldgen_seed_is_read_and_fenced_in_world_revision() {
+    let h = Harness::new(false);
+    let files = files(&h);
+    fs::write(
+        h.cwd.join("world/level.dat"),
+        crate::world::tests::split_level(),
+    )
+    .unwrap();
+    let data = h.cwd.join("world/data/minecraft");
+    fs::create_dir_all(&data).unwrap();
+    let path = data.join("world_gen_settings.dat");
+    fs::write(&path, crate::world::tests::split_worldgen(i64::MAX)).unwrap();
+    let first = files.world(&h.subject).unwrap();
+    assert_eq!(first.seed.as_deref(), Some("9223372036854775807"));
+    fs::write(&path, crate::world::tests::split_worldgen(i64::MIN)).unwrap();
+    let next = files.world(&h.subject).unwrap();
+    assert_eq!(next.seed.as_deref(), Some("-9223372036854775808"));
+    assert_ne!(first.revision, next.revision);
+    fs::write(&path, b"invalid metadata").unwrap();
+    assert!(matches!(
+        files.world(&h.subject),
+        Err(crate::files::FileError::Corrupt)
+    ));
+    fs::remove_file(&path).unwrap();
+    assert!(matches!(
+        files.world(&h.subject),
+        Err(crate::files::FileError::Corrupt)
+    ));
+}
+#[test]
 fn world_can_be_selected_before_first_minecraft_start() {
     let h = Harness::new(false);
     let files = FileBrowser::open(h.db.clone(), &h.cwd, &[]).unwrap();

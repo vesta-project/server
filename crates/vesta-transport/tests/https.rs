@@ -31,6 +31,39 @@ const PASSWORD: &str = "transport test password only";
 type TlsStream = StreamOwned<ClientConnection, TcpStream>;
 
 #[test]
+fn world_read_supports_split_worldgen_and_reports_metadata_errors() {
+    let f = Fixture::new("minecraft", 8, 65536, 5);
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    let world = f.temp.path().join("game/world");
+    std::fs::create_dir_all(world.join("data/minecraft")).unwrap();
+    let gzip = |bytes: &[u8]| {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(bytes).unwrap();
+        encoder.finish().unwrap()
+    };
+    std::fs::write(
+        world.join("level.dat"),
+        gzip(&[10, 0, 0, 10, 0, 4, b'D', b'a', b't', b'a', 0, 0]),
+    )
+    .unwrap();
+    let mut settings = vec![
+        10, 0, 0, 10, 0, 4, b'd', b'a', b't', b'a', 4, 0, 4, b's', b'e', b'e', b'd',
+    ];
+    settings.extend(i64::MAX.to_be_bytes());
+    settings.extend([0, 0]);
+    let source = world.join("data/minecraft/world_gen_settings.dat");
+    std::fs::write(&source, gzip(&settings)).unwrap();
+    let response = f.request("GET", "/api/v3/manage/world", b"", Some(&token));
+    assert_eq!(response.status, 200);
+    assert_eq!(response.json()["data"]["seed"], "9223372036854775807");
+    std::fs::write(source, b"invalid gzip").unwrap();
+    let failure = f.request("GET", "/api/v3/manage/world", b"", Some(&token));
+    assert_eq!(failure.status, 422);
+    assert_eq!(failure.json()["error"]["code"], "world_metadata_invalid");
+}
+
+#[test]
 fn hosting_routes_use_authenticated_owner_and_durable_sftp_key_receipts() {
     use vesta_control::identity::BuiltinRole;
     let f = Fixture::new("minecraft", 8, 65536, 5);

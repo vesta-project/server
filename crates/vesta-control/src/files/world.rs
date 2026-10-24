@@ -56,7 +56,26 @@ impl FileBrowser {
         revision.update([u8::from(exists)]);
         let seed = if let Some(metadata) = metadata {
             revision.update(metadata.bytes());
-            Some(crate::world::seed(metadata.bytes())?)
+            match crate::world::seed(metadata.bytes())? {
+                Some(seed) => Some(seed),
+                None => {
+                    let path = RelativePath::parse(&format!(
+                        "{name}/data/minecraft/world_gen_settings.dat"
+                    ))?;
+                    let worldgen = self
+                        .for_remote()
+                        .read(subject, &path, crate::world::MAX_LEVEL_BYTES)
+                        .map_err(|error| match error {
+                            FileError::NotFound => FileError::Corrupt,
+                            other => other,
+                        })?;
+                    // A changed split seed must invalidate the same world confirmation
+                    // revision as a changed embedded seed. Retain ordinary path authority.
+                    revision.update(b"\0world-gen-settings\0");
+                    revision.update(worldgen.bytes());
+                    Some(crate::world::world_generation_seed(worldgen.bytes())?)
+                }
+            }
         } else {
             None
         };
