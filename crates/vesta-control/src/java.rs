@@ -421,7 +421,8 @@ fn extract(bytes: &[u8], stage: &Path, zip: bool) -> Result<()> {
             }
         }
     } else {
-        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(bytes));
+        let mut archive =
+            tar::Archive::new(flate2::read::GzDecoder::new(bytes).take(1024 * 1024 * 1024 + 1));
         for (i, entry) in archive.entries().map_err(|_| bad())?.enumerate() {
             if i >= 20000 {
                 return Err(bad());
