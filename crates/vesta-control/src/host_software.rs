@@ -181,7 +181,13 @@ pub(crate) fn open(
         .and_then(|name| name.to_str())
         .unwrap_or_default();
     if !java_name.eq_ignore_ascii_case("java") && !java_name.eq_ignore_ascii_case("java.exe") {
-        return Ok(None);
+        // An allowlisted, probed custom Java can have a different filename.
+        // Only an exact protected current software-state document permits
+        // that selected executable across agent restarts and software switches.
+        let selected = known_managed_launch(db, &original);
+        if !selected {
+            return Ok(None);
+        }
     }
     let tree: toml::Value = toml::from_str(&original).map_err(unavailable)?;
     let jvm_args = tree
@@ -309,4 +315,44 @@ pub(crate) fn recovery_binding(
     }).map_err(|_|HostError::Supervisor("software_recovery_binding_unavailable"));
     db.close().map_err(HostError::State)?;
     result
+}
+
+fn known_managed_launch(db: &StateDatabase, document: &str) -> bool {
+    db.read(|c|c.query_row("SELECT current_launch FROM software_state WHERE singleton=1 AND length(CAST(current_launch AS BLOB))<=1048576",[],|r|r.get::<_,String>(0)).map_err(Into::into))
+        .ok().and_then(|raw|serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .is_some_and(|value|value.get("document").and_then(serde_json::Value::as_str)==Some(document))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn renamed_java_requires_the_exact_protected_current_definition() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = StateDatabase::open(
+            vesta_state::StateDirectory::new(temp.path().join("state"), None).unwrap(),
+            Arc::new(vesta_state::SystemClock),
+        )
+        .unwrap();
+        assert!(!known_managed_launch(&db, "selected"));
+        db.write(|c| {
+            c.execute_batch("CREATE TABLE software_state(singleton INTEGER,current_launch TEXT)")?;
+            c.execute(
+                "INSERT INTO software_state VALUES(1,?)",
+                [serde_json::json!({"document":"selected"}).to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(known_managed_launch(&db, "selected"));
+        assert!(!known_managed_launch(&db, "external edit"));
+        db.write(|c| {
+            c.execute(
+                "UPDATE software_state SET current_launch='invalid json'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(!known_managed_launch(&db, "selected"));
+    }
 }
