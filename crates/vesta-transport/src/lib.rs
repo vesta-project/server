@@ -616,6 +616,7 @@ impl Transport {
             .thread_name("vesta-https-worker")
             .build()
             .map_err(|_| TransportError::Runtime)?;
+        host.sftp().set_owner_runtime(runtime.handle().clone());
         // Realtime policy/release reads must never occupy HTTP blocking workers.
         // This owned runtime supplies only a separate two-thread blocking pool.
         let realtime_runtime = tokio::runtime::Builder::new_current_thread()

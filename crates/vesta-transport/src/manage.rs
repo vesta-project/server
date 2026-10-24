@@ -21,6 +21,8 @@ use vesta_control::{
 mod automation;
 #[path = "manage_files.rs"]
 pub(super) mod files;
+#[path = "manage_hosting.rs"]
+pub(super) mod hosting;
 #[path = "manage_metrics.rs"]
 mod metrics;
 #[path = "manage_moderation.rs"]
@@ -46,7 +48,8 @@ pub(super) fn automation_endpoint(path: &str) -> bool {
     automation::implemented(path)
 }
 pub(super) fn implemented(path: &str) -> bool {
-    automation::implemented(path)
+    hosting::implemented(path)
+        || automation::implemented(path)
         || presentation::implemented(path)
         || moderation::implemented(path)
         || metrics::implemented(path)
@@ -344,6 +347,9 @@ pub(super) struct Request<'a> {
     pub if_range: Option<&'a str>,
 }
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
+    if hosting::implemented(request.path) {
+        return hosting::dispatch(host, request);
+    }
     if request.path == "/api/v3/manage/server/status" {
         return status::dispatch(host, request);
     }

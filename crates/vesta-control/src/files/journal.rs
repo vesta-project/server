@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Intent {
+    #[serde(default)]
+    pub(super) directory: bool,
     pub(super) to: Option<String>,
     pub(super) previous: Option<String>,
     pub(super) effect: Option<String>,
@@ -42,13 +44,16 @@ impl FileBrowser {
                 "write" if intent.previous.is_some() => Capability::FilesOverwrite,
                 _ => Capability::FilesCreate,
             };
-            if kind == "mkdir" {
+            if kind == "mkdir" || intent.directory {
                 self.authorize_destination(c, subject, path, capability)?;
             } else {
                 self.authorize(c, subject, path, capability)?;
             }
             let target = self.parent(path)?.join(leaf(path));
-            require_hash(&target, intent.previous.as_deref())?;
+            if intent.directory {
+                let checked = self.root.resolve(Some(path))?;
+                if !checked.metadata.is_dir() { return Err(FileError::NotDirectory); }
+            } else { require_hash(&target, intent.previous.as_deref())?; }
             if let Some(to) = &intent.to {
                 let to = RelativePath::parse(to)?;
                 self.authorize_destination(c, subject, &to, capability)?;
@@ -83,13 +88,13 @@ impl FileBrowser {
         self.check_remote_completion_authority(c, &subject)?;
         // This is the final proof boundary, after the filesystem effect and
         // before either the successful receipt or journal retirement commits.
-        if let Some(guard) = &self.whitelist_guard {
+        if let Some(guard) = &self.stopped_guard {
             guard
                 .check()
                 .map_err(|e| FileError::RecoveryRequired(Box::new(e)))?;
         }
         self.audit.append(c, &record)?;
-        if self.whitelist_guard.is_some() {
+        if self.stopped_guard.is_some() && text == "whitelist.json" {
             self.audit.append(
                 c,
                 &AuditRecord::new(
@@ -148,7 +153,7 @@ impl FileBrowser {
                 )?,
             )?;
         }
-        self.remote_complete(c, &subject, outcome)?;
+        self.remote_complete(c, &subject, self.remote_outcome.clone().unwrap_or(outcome))?;
 
         let count = c.execute("UPDATE file_intents SET status='complete' WHERE server_id=? AND id=? AND status='pending'", params![self.db.server_id(), id])?;
         if count != 1 {
@@ -234,7 +239,7 @@ impl FileBrowser {
                 let path = RelativePath::parse(text)?;
                 let subject = Subject { principal: crate::identity::PrincipalId::parse(principal)?, device: crate::identity::DeviceId::parse(device)? };
                 let target = self.parent(&path).map(|p| p.join(leaf(&path)));
-                let valid_target = self.checked_existing_path(&path, kind == "mkdir").is_ok();
+                let valid_target = self.checked_existing_path(&path, kind == "mkdir" || intent.directory).is_ok();
                 let copy_valid = if let Some(trash) = &intent.trash {
                     if let Some(entry) = load_entry(c, self.db.server_id(), trash)? { read_trash(&self.trash_dir()?, &trash_name(trash)?, &entry).is_ok() } else { false }
                 } else { true };
@@ -246,7 +251,11 @@ impl FileBrowser {
                     valid_name && target.as_ref().ok().and_then(|p| p.parent()).is_some_and(|parent| require_hash(&parent.join(name), intent.effect.as_deref()).is_ok())
                 });
                 let (observed, unchanged) = if let Ok(target) = &target {
-                    if kind == "rename" {
+                    if intent.directory {
+                        // Directory contents/inodes are not a durable ownership
+                        // proof. Never replay or infer success after process loss.
+                        (false, false)
+                    } else if kind == "rename" {
                         let destination = intent.to.as_deref().map(RelativePath::parse).transpose()?.ok_or(FileError::Unavailable)?;
                         let to = self.parent(&destination).map(|p| p.join(leaf(&destination)));
                         (valid_target && self.checked_existing_resource(&destination).is_ok() && require_absent(target).is_ok() && to.as_ref().is_ok_and(|to| require_hash(to, intent.effect.as_deref()).is_ok()),

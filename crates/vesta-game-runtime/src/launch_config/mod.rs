@@ -143,11 +143,16 @@ impl LaunchConfiguration {
                 executable,
                 args,
                 stop,
+                required_files,
+                jvm_args,
             } => (
                 LaunchKind::Native,
                 Some(executable),
-                Vec::new(),
-                Vec::new(),
+                jvm_args,
+                required_files
+                    .iter()
+                    .map(|file| resolve(&cwd, file))
+                    .collect::<Result<Vec<_>>>()?,
                 stop,
                 args,
             ),
@@ -241,9 +246,13 @@ enum Definition {
     },
     Native {
         executable: String,
+        #[serde(default, rename = "jvm-args")]
+        jvm_args: Vec<String>,
         #[serde(default)]
         args: Vec<String>,
         stop: Stop,
+        #[serde(default, rename = "required-files")]
+        required_files: Vec<String>,
     },
 }
 #[derive(Default, Deserialize)]

@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 vesta-control = { path = "../vesta-control" }
+vesta-server-install = { path = "../vesta-server-install" }
 vesta-protocol.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true

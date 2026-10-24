@@ -1,4 +1,95 @@
 use super::*;
+
+#[tokio::test]
+async fn managed_switch_recipes_preserve_existing_game_for_all_jar_providers() {
+    for software in [
+        Software::Vanilla,
+        Software::Paper,
+        Software::Folia,
+        Software::Purpur,
+    ] {
+        let f = Fixture::new(software).await;
+        let (p, _) = installed(&f).await;
+        let game = tempfile::tempdir().unwrap();
+        std::fs::write(game.path().join("server.properties"), b"motd=preserved\n").unwrap();
+        std::fs::create_dir(game.path().join("world")).unwrap();
+        std::fs::write(game.path().join("world/level.dat"), b"world preserved").unwrap();
+        let launch = f.installer.managed_launch(&p, game.path()).await.unwrap();
+        assert_eq!(
+            launch.working_directory,
+            dunce::canonicalize(game.path()).unwrap()
+        );
+        assert_eq!(
+            launch.args,
+            [
+                "-jar".into(),
+                p.destination()
+                    .join(software.jar_path())
+                    .to_string_lossy()
+                    .into_owned(),
+                "nogui".into()
+            ]
+        );
+        assert_eq!(launch.required_files.len(), 1);
+        assert_eq!(launch.artifacts.len(), 1);
+        crate::verify_managed_artifacts(&launch.artifacts)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(game.path().join("world/level.dat")).unwrap(),
+            b"world preserved"
+        );
+        assert_eq!(
+            std::fs::read(game.path().join("server.properties")).unwrap(),
+            b"motd=preserved\n"
+        );
+        assert!(matches!(
+            f.installer
+                .managed_launch(&p, &p.destination().join("game"))
+                .await,
+            Err(InstallError::PathRefused)
+        ));
+        std::fs::write(&launch.required_files[0], b"tampered").unwrap();
+        assert!(matches!(
+            crate::verify_managed_artifacts(&launch.artifacts).await,
+            Err(InstallError::ArtifactChanged)
+        ));
+        assert!(f.installer.managed_launch(&p, game.path()).await.is_err());
+    }
+}
+
+#[tokio::test]
+async fn managed_rollback_evidence_refuses_invalid_paths_sizes_and_digest_before_reading() {
+    use crate::ManagedArtifact;
+    let file = tempfile::NamedTempFile::new().unwrap();
+    for evidence in [
+        ManagedArtifact {
+            path: PathBuf::from("relative.jar"),
+            size: 1,
+            sha256: "f".repeat(64),
+        },
+        ManagedArtifact {
+            path: file.path().into(),
+            size: 0,
+            sha256: "f".repeat(64),
+        },
+        ManagedArtifact {
+            path: file.path().into(),
+            size: 1,
+            sha256: "bad".into(),
+        },
+        ManagedArtifact {
+            path: file.path().into(),
+            size: 1024 * 1024 * 1024 + 1,
+            sha256: "f".repeat(64),
+        },
+    ] {
+        assert!(matches!(
+            crate::verify_managed_artifacts(&[evidence]).await,
+            Err(InstallError::ReceiptInvalid)
+        ));
+    }
+}
 async fn installed(f: &Fixture) -> (InstallPlan, Receipt) {
     let p = f.plan().await;
     f.artifact().await;

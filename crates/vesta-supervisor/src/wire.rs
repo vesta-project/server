@@ -69,6 +69,14 @@ pub enum Op {
     /// Clear an unresolved launch intent left by a crash between intent and record.
     /// Explicit operator action; refused while any game or orphan is live.
     ResolveLaunch,
+    /// Reload a hash-bound private launch artifact while holding stopped maintenance.
+    /// No executable/argv/path is accepted on this protected local channel.
+    ReloadLaunch {
+        expected_identity: String,
+        identity: String,
+        document_sha256: String,
+        hold_token: String,
+    },
     /// Suspend autosave for an online backup: durable lease, `save-off`, then
     /// `save-all flush`, each acknowledged by the server. `autosave_baseline` is
     /// retained for caller compatibility, but never replaces an acknowledgement:
@@ -277,6 +285,18 @@ pub fn decode_request(bytes: &[u8]) -> Result<Request> {
         return Err("supervisor_invalid_request");
     }
     match &request.op {
+        Op::ReloadLaunch {
+            expected_identity,
+            identity,
+            document_sha256,
+            hold_token,
+        } if !crate::reconfigure::valid_hash(expected_identity)
+            || !crate::reconfigure::valid_hash(identity)
+            || !crate::reconfigure::valid_hash(document_sha256)
+            || hold_token.len() > 128 =>
+        {
+            Err("supervisor_invalid_request")
+        }
         Op::Stop { wait_ms, .. } | Op::Kill { wait_ms, .. } if *wait_ms > MAX_WAIT_MS => {
             Err("supervisor_invalid_request")
         }

@@ -1239,6 +1239,51 @@ fn stopped_hold_fences_start_and_stale_tokens() {
 }
 
 #[test]
+fn stopped_launch_replacement_requires_hold_and_updates_real_process_owner() {
+    let fixture = Fixture::new();
+    let running = Running::start(&fixture);
+    let raw = SupervisorClient::new(&fixture.state).unwrap();
+    let mut remote = RemoteProcess::attach(client(&fixture), IDENTITY.into()).unwrap();
+    let executable = fixture.game.join(if cfg!(windows) {
+        "owned-supervised-fixture.exe"
+    } else {
+        "owned-supervised-fixture"
+    });
+    let document = format!(
+        "[minecraft]\nworking-directory = {}\n[launch]\nkind = \"native\"\nexecutable = {}\nargs = [\"--exact\", \"inert_supervised_game\", \"--nocapture\"]\nstop = \"console-stop\"\n",
+        serde_json::to_string(&fixture.game.to_string_lossy().replace('\\', "/")).unwrap(),
+        serde_json::to_string(&executable.to_string_lossy().replace('\\', "/")).unwrap()
+    );
+    let hash =
+        vesta_supervisor::reconfigure::stage_launch(&fixture.state, document.as_bytes()).unwrap();
+    let identity = "2".repeat(64);
+    assert!(
+        remote
+            .replace_stopped_launch(identity.clone(), hash.clone(), "wrong".into())
+            .is_err()
+    );
+    let hold = vesta_supervisor::save::hold(&raw, Duration::from_secs(60)).unwrap();
+    remote
+        .replace_stopped_launch(identity.clone(), hash.clone(), hold.clone())
+        .unwrap();
+    assert_eq!(
+        vesta_supervisor::probe(&raw)
+            .unwrap()
+            .unwrap()
+            .launch_identity,
+        identity
+    );
+    vesta_supervisor::save::release_hold(&raw, &hold).unwrap();
+    remote.start_guarded(|_| Ok::<(), ()>(())).unwrap();
+    assert!(
+        remote
+            .replace_stopped_launch(IDENTITY.into(), hash, hold)
+            .is_err()
+    );
+    finish(&fixture, running, remote);
+}
+
+#[test]
 fn hold_keeps_crash_restart_pending_until_expiry() {
     let fixture = Fixture::new();
     let policy = vesta_supervisor::RestartPolicy::new(

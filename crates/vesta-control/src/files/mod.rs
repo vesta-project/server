@@ -10,10 +10,11 @@
 //! Unix replacement/restore preserves permission mode bits (not ownership, ACLs, xattrs or
 //! timestamps). Windows preserves the read-only attribute and refuses read-only replacement
 //! or deletion; it does not copy custom ACLs or other attributes. Stages start private on Unix.
+mod ignore;
 mod local_document;
 mod offline_whitelist;
 mod startup_whitelist;
-pub use offline_whitelist::OfflineWhitelistPatch;
+pub use offline_whitelist::{OfflineWhitelistPatch, StoppedGuard};
 pub use startup_whitelist::StartupWhitelistPatch;
 mod mutation;
 pub(crate) use mutation::mutation_admission;
@@ -22,8 +23,11 @@ mod pack_root;
 mod path;
 mod remote;
 mod root;
+mod sftp;
 mod stream;
+pub(crate) use sftp::SftpWrite;
 mod upload;
+mod world;
 pub use remote::RemoteFileMutation;
 pub use stream::{
     FILE_CHUNK_BYTES, FileStream, LinePage, MAX_RANGE_BYTES, MAX_TEXT_LINES, encoding_hint,
@@ -238,9 +242,11 @@ pub struct FileBrowser {
     trash_policy: TrashPolicy,
     upload_policy: UploadPolicy,
     remote_key: Option<String>,
+    remote_outcome: Option<serde_json::Value>,
+    world_write: bool,
     properties_write: bool,
     content_write: bool,
-    whitelist_guard: Option<std::sync::Arc<offline_whitelist::StoppedGuard>>,
+    stopped_guard: Option<std::sync::Arc<offline_whitelist::StoppedGuard>>,
     remote_deadline: Option<std::time::Instant>,
     properties_approval: Option<crate::operations::PropertiesApproval>,
 }
@@ -264,9 +270,11 @@ impl FileBrowser {
             trash_policy: TrashPolicy::default(),
             upload_policy: UploadPolicy::default(),
             remote_key: None,
+            remote_outcome: None,
+            world_write: false,
             properties_write: false,
             content_write: false,
-            whitelist_guard: None,
+            stopped_guard: None,
             remote_deadline: None,
             properties_approval: None,
         })

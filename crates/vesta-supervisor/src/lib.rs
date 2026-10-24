@@ -16,6 +16,7 @@ pub mod client;
 pub mod native;
 #[cfg(windows)]
 pub mod pipe_security;
+pub mod reconfigure;
 pub mod record;
 pub mod remote;
 pub mod restart;

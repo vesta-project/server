@@ -6,6 +6,42 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// SFTP writes hold a native regular-file handle only for one bounded chunk.
+pub(super) fn open_writable_regular(path: &Path) -> Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        options
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
+    }
+    let file = options.open(path).map_err(io_error)?;
+    #[cfg(windows)]
+    windows::check(&file)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file.metadata().map_err(io_error)?;
+        if !metadata.is_file() {
+            return Err(FileError::NotRegular);
+        }
+        if metadata.nlink() != 1 {
+            return Err(FileError::LinkedPath);
+        }
+    }
+    Ok(file)
+}
+
 #[cfg(windows)]
 pub(super) fn open_regular(path: &Path) -> Result<File> {
     use std::os::windows::fs::OpenOptionsExt;

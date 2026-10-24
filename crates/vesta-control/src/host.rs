@@ -118,6 +118,8 @@ pub struct Host {
     // Stop the coordinator before the runtime's observation-only destructor can
     // wait for a locally owned child.
     sleep_driver: Option<crate::sleep::Driver>,
+    software: Option<crate::software::SoftwareService>,
+    sftp: Arc<crate::sftp::SftpService>,
     runtime: OperationRuntime,
     backups: Option<Arc<Backups>>,
     automation: Arc<Automation>,
@@ -304,7 +306,19 @@ impl Host {
             }
             (Supervision::Separate, Some(remote)) => {
                 let (state, identity) = remote.binding();
-                if state != checked.state.path().to_string_lossy() || identity != checked.identity {
+                let snapshot = remote.snapshot();
+                let health = remote.health();
+                let recovery = identity != checked.identity
+                    && snapshot.generation.is_none()
+                    && snapshot.phase == vesta_game_runtime::process::ProcessPhase::Stopped
+                    && !health.orphan_running
+                    && !health.launch_unresolved
+                    && !health.observation_failed
+                    && health.restart_pending_ms.is_none()
+                    && software_recovery_binding(&config, identity)?;
+                if state != checked.state.path().to_string_lossy()
+                    || identity != checked.identity && !recovery
+                {
                     return Err(HostError::Supervisor("host_supervisor_binding_mismatch"));
                 }
                 // The running supervisor adopts this configuration's restart policy, so
@@ -469,6 +483,11 @@ impl Host {
             backups: self.backups.clone(),
             automation: self.automation.clone(),
             sleep: self.sleep.clone(),
+            software: self
+                .software
+                .as_ref()
+                .map(crate::software::SoftwareService::handle),
+            sftp: self.sftp.clone(),
         }
     }
     /// Present only when `[backups]` is configured.
@@ -496,6 +515,7 @@ impl Host {
                 }
             }
         }
+        drop(self.software.take());
         match self
             .runtime
             .shutdown(timeout)
@@ -577,6 +597,8 @@ fn compose(
         .map_err(HostError::Pack)?;
     let releases = Arc::new(PackReleases::open(db).map_err(HostError::Release)?);
     let graceful_stop = launch.graceful_stop();
+    let sftp = crate::sftp::SftpService::open(db.clone(), files.clone(), management.clone())
+        .map_err(|_| HostError::Supervisor("sftp_state_unavailable"))?;
     let spec = launch.into_launch_spec(None).map_err(HostError::Launch)?;
     let tick_detection = crate::metrics::ticks::detect(&spec, config.game());
     let operations = Operations::new(db.clone()).map_err(HostError::Operation)?;
@@ -595,6 +617,7 @@ fn compose(
     // The services reach the runtime through a cell filled right after it opens.
     let cell: Arc<std::sync::OnceLock<crate::operations::RuntimeHandle>> = Arc::default();
     let gate = crate::operations::StartGate::default();
+    let startup_gate = gate.block();
     let bind_address = files::read_local_document(&config.game().join(PROPERTIES_FILE), 64 * 1024)
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())
@@ -694,7 +717,15 @@ fn compose(
     }
     .map_err(HostError::Operation)?;
     let _ = cell.set(runtime.network_handle());
+    let software = crate::host_software::open(
+        &config,
+        db,
+        runtime.network_handle(),
+        runtime.local_handle(),
+    )
+    .map_err(|_| HostError::Supervisor("software_state_unavailable"))?;
     driver.attach(runtime.local_handle());
+    drop(startup_gate);
     Ok(Host {
         config,
         db: db.clone(),
@@ -710,6 +741,8 @@ fn compose(
         preparations: Arc::new(preparations),
         releases,
         graceful_stop,
+        software,
+        sftp,
         runtime,
         backups,
         automation,
@@ -806,6 +839,13 @@ pub fn supervised_launch(config: &HostConfiguration) -> Result<SupervisedLaunch,
         identity: checked.identity,
     })
 }
+/// Observation-only admission for a journaled, stopped ambiguous software switch.
+pub fn software_recovery_binding(
+    config: &HostConfiguration,
+    identity: &str,
+) -> Result<bool, HostError> {
+    crate::host_software::recovery_binding(config, identity)
+}
 
 #[derive(Clone)]
 struct AdmissionData {
@@ -872,6 +912,8 @@ fn discover_components(
 /// Cloneable management/pack facade; never exposes OS-local owner authority.
 #[derive(Clone)]
 pub struct NetworkHost {
+    software: Option<crate::software::SoftwareHandle>,
+    sftp: Arc<crate::sftp::SftpService>,
     management: ManagementAccess,
     config: HostConfiguration,
     db: StateDatabase,
@@ -906,6 +948,12 @@ impl Drop for AdmissionRefresh {
     }
 }
 impl NetworkHost {
+    pub fn software(&self) -> Option<&crate::software::SoftwareHandle> {
+        self.software.as_ref()
+    }
+    pub fn sftp(&self) -> &Arc<crate::sftp::SftpService> {
+        &self.sftp
+    }
     pub fn sleep(&self) -> &crate::sleep::Sleep {
         &self.sleep
     }

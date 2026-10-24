@@ -210,11 +210,13 @@ pub(super) async fn route(
     if request.headers().contains_key("cookie") {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
-    if ((super::manage::permission_endpoint(&path)
-        && (method == Method::POST
-            || (method == Method::PUT && path != "/api/v3/manage/server/icon")
-            || method == Method::PATCH
-            || (method == Method::DELETE && path.starts_with("/api/v3/manage/roles/"))))
+    if ((super::manage::hosting::implemented(&path)
+        && matches!(method, Method::POST | Method::PATCH))
+        || (super::manage::permission_endpoint(&path)
+            && (method == Method::POST
+                || (method == Method::PUT && path != "/api/v3/manage/server/icon")
+                || method == Method::PATCH
+                || (method == Method::DELETE && path.starts_with("/api/v3/manage/roles/"))))
         || ((super::manage::automation_endpoint(&path)
             || super::manage::presentation::implemented(&path))
             && matches!(method, Method::POST | Method::PUT | Method::DELETE)))
@@ -311,7 +313,9 @@ pub(super) async fn route(
     let jobs = if control_request(&method, &path, query.as_deref()) {
         state.control_jobs.reap(false).await;
         &state.control_jobs
-    } else if path == "/api/v3/manage/content/install" && method == Method::POST {
+    } else if (path == "/api/v3/manage/content/install" && method == Method::POST)
+        || super::manage::hosting::implemented(&path)
+    {
         state.install_jobs.reap(false).await;
         &state.install_jobs
     } else {

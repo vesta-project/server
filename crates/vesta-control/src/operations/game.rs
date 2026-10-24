@@ -29,11 +29,14 @@ pub(super) struct LiveGameView {
     supervision: RwLock<Option<vesta_supervisor::wire::Health>>,
     readiness: RwLock<ReadinessView>,
     native_identity: RwLock<Option<(GenerationId, u32, u64)>>,
-    supervisor_record_source: Option<(String, String)>,
+    supervisor_record_source: RwLock<Option<(String, String)>>,
 }
 impl LiveGameView {
     pub(super) fn is_supervised(&self) -> bool {
-        self.supervisor_record_source.is_some()
+        self.supervisor_record_source
+            .read()
+            .map(|source| source.is_some())
+            .unwrap_or(true)
     }
     fn new(snapshot: ProcessSnapshot) -> Self {
         Self {
@@ -42,7 +45,7 @@ impl LiveGameView {
             started: RwLock::new(None),
             supervision: RwLock::new(None),
             native_identity: RwLock::new(None),
-            supervisor_record_source: None,
+            supervisor_record_source: RwLock::new(None),
             readiness: RwLock::new(ReadinessView {
                 readiness: Readiness::Stopped,
                 probed: false,
@@ -53,7 +56,7 @@ impl LiveGameView {
     }
     pub(super) fn native_identity(&self) -> Option<(GenerationId, u32, u64)> {
         let generation = self.snapshot().ok()?.generation?;
-        if let Some((state, identity)) = &self.supervisor_record_source {
+        if let Some((state, identity)) = self.supervisor_record_source.read().ok()?.as_ref() {
             let state = vesta_state::StateDirectory::new(state, None).ok()?;
             let record = vesta_supervisor::record::read(&state.supervisor().ok()?).ok()??;
             return (record.generation == generation.to_hex()
@@ -185,6 +188,41 @@ pub(super) struct GameLifecycle {
     offline_uncertain: bool,
 }
 impl GameLifecycle {
+    pub(super) fn replace_stopped_launch(
+        &mut self,
+        launch: LaunchSpec,
+        identity: String,
+        staged: String,
+        token: Option<String>,
+    ) -> Result<(), &'static str> {
+        let snapshot = self.process.snapshot();
+        if !self.start_block.blocked()
+            || snapshot.generation.is_some()
+            || snapshot.phase != ProcessPhase::Stopped
+        {
+            return Err("launch_replacement_not_stopped");
+        }
+        match &mut self.process {
+            ProcessBackend::Local(_) => self.launch = Some(launch),
+            ProcessBackend::Supervised(remote) => {
+                remote.replace_stopped_launch(
+                    identity,
+                    staged,
+                    token.ok_or("launch_replacement_no_hold")?,
+                )?;
+                let (state, identity) = remote.binding();
+                *self
+                    .view
+                    .supervisor_record_source
+                    .write()
+                    .map_err(|_| "launch_replacement_unavailable")? =
+                    Some((state.to_owned(), identity.to_owned()));
+            }
+        }
+        self.publish()
+            .map_err(|_| "launch_replacement_unavailable")?;
+        Ok(())
+    }
     pub(super) fn new(launch: LaunchSpec) -> Self {
         let console = ConsoleCapture::new();
         let process = GameProcess::new(console.clone());
@@ -207,7 +245,7 @@ impl GameLifecycle {
         let console = remote.console();
         let mut view = LiveGameView::new(remote.snapshot());
         let (state, identity) = remote.metrics_record_source();
-        view.supervisor_record_source = Some((state.to_owned(), identity.to_owned()));
+        view.supervisor_record_source = RwLock::new(Some((state.to_owned(), identity.to_owned())));
         let view = Arc::new(view);
         Self {
             readiness: ReadinessWatch::new(ReadinessConfig::default(), console.clone()),
@@ -542,10 +580,10 @@ mod metrics_tests {
         snapshot.generation = Some(generation);
         snapshot.phase = ProcessPhase::Running;
         let mut view = LiveGameView::new(snapshot);
-        view.supervisor_record_source = Some((
+        view.supervisor_record_source = RwLock::new(Some((
             root.path().join("state").to_str().unwrap().to_owned(),
             record.launch_identity.clone(),
-        ));
+        )));
         vesta_supervisor::record::write(&directory, &record).unwrap();
         assert_eq!(view.native_identity(), Some((generation, pid, start)));
         for changed in 0..3 {

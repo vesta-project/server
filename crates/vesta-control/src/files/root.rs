@@ -133,6 +133,9 @@ impl Root {
             parts.push(text);
         }
         let text = parts.join("/");
+        if !text.is_empty() && super::ignore::hidden(&self.canonical, &text)? {
+            return Err(FileError::ProtectedPath);
+        }
         if self.remote_documents
             && !(self.whitelist_exception && text.eq_ignore_ascii_case("whitelist.json"))
         {

@@ -47,6 +47,8 @@ const STAGE_PREFIX: &str = ".vesta-stage-";
 #[path = "journal.rs"]
 mod journal;
 use journal::{Intent, crash_point, interrupted};
+#[path = "directory.rs"]
+mod directory;
 
 /// Trash ceiling: the lower of an absolute byte limit and a share of the state volume.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -406,7 +408,7 @@ impl FileBrowser {
         if interrupted() {
             return result;
         }
-        if let Some(guard) = &self.whitelist_guard
+        if let Some(guard) = &self.stopped_guard
             && result.is_err()
         {
             // Lost exclusion is not permission to compensate against a possibly
@@ -1098,7 +1100,7 @@ impl FileBrowser {
                 crash_point("compensation")?;
                 #[cfg(test)]
                 journal::run_before_compensation_for_test();
-                if let Some(guard) = &self.whitelist_guard {
+                if let Some(guard) = &self.stopped_guard {
                     guard.check()?;
                 }
                 if applied.effect.is_some() {
@@ -1109,12 +1111,12 @@ impl FileBrowser {
             } else {
                 #[cfg(test)]
                 journal::run_before_compensation_for_test();
-                if let Some(guard) = &self.whitelist_guard {
+                if let Some(guard) = &self.stopped_guard {
                     guard.check()?;
                 }
                 fs::remove_file(target).map_err(io_error)?;
             }
-            if let Some(guard) = &self.whitelist_guard {
+            if let Some(guard) = &self.stopped_guard {
                 guard.check()?;
             }
             Ok::<(), FileError>(())

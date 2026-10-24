@@ -211,7 +211,14 @@ pub enum LocalAction {
 
 struct LocalRequest {
     action: LocalAction,
+    replacement: Option<LaunchReplacement>,
     reply: mpsc::SyncSender<Result<(), &'static str>>,
+}
+struct LaunchReplacement {
+    launch: LaunchSpec,
+    identity: String,
+    staged: String,
+    hold_token: Option<String>,
 }
 
 /// A bounded mailbox into the existing sole process owner. Host code must expose
@@ -223,6 +230,30 @@ pub struct LocalRuntime {
     shared: Arc<DriverState>,
 }
 impl LocalRuntime {
+    /// Closed trusted host hook, unavailable to remote operation input.
+    pub(crate) fn replace_stopped_launch(
+        &self,
+        launch: LaunchSpec,
+        identity: String,
+        staged: String,
+        hold_token: Option<String>,
+    ) -> Result<(), &'static str> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .try_send(LocalRequest {
+                action: LocalAction::Stop,
+                replacement: Some(LaunchReplacement {
+                    launch,
+                    identity,
+                    staged,
+                    hold_token,
+                }),
+                reply,
+            })
+            .map_err(|_| "local_runtime_busy")?;
+        self.wake.notify();
+        receiver.recv().map_err(|_| "local_runtime_unavailable")?
+    }
     /// Same trusted local adapter as lifecycle commands; never exposed by RuntimeHandle.
     pub fn query_players(
         &self,
@@ -247,7 +278,11 @@ impl LocalRuntime {
     pub fn request(&self, action: LocalAction) -> Result<(), &'static str> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
-            .try_send(LocalRequest { action, reply })
+            .try_send(LocalRequest {
+                action,
+                replacement: None,
+                reply,
+            })
             .map_err(|error| match error {
                 mpsc::TrySendError::Full(_) => "local_runtime_busy",
                 mpsc::TrySendError::Disconnected(_) => "local_runtime_unavailable",
@@ -784,7 +819,15 @@ impl Driver {
                 {
                     Err("local_runtime_busy")
                 } else {
-                    self.execute_local(request.action)
+                    match request.replacement {
+                        Some(replacement) => self.game.replace_stopped_launch(
+                            replacement.launch,
+                            replacement.identity,
+                            replacement.staged,
+                            replacement.hold_token,
+                        ),
+                        None => self.execute_local(request.action),
+                    }
                 };
                 let _ = request.reply.send(result);
                 // Do not dispatch another effect in the same observation cycle.

@@ -30,6 +30,81 @@ const CA: &[u8] = include_bytes!("fixtures/test-only-ca.pem");
 const PASSWORD: &str = "transport test password only";
 type TlsStream = StreamOwned<ClientConnection, TcpStream>;
 
+#[test]
+fn hosting_routes_use_authenticated_owner_and_durable_sftp_key_receipts() {
+    use vesta_control::identity::BuiltinRole;
+    let f = Fixture::new("minecraft", 8, 65536, 5);
+    let (device, key) = enroll_management(&f, BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    for path in ["world", "software", "sftp", "sftp/keys"] {
+        assert_eq!(
+            f.request("GET", &format!("/api/v3/manage/{path}"), b"", None)
+                .status,
+            401
+        );
+        assert_eq!(
+            f.request("GET", &format!("/api/v3/manage/{path}"), b"", Some(&token))
+                .status,
+            200,
+            "{path}"
+        );
+    }
+    let world = f
+        .request("GET", "/api/v3/manage/world", b"", Some(&token))
+        .json()["data"]
+        .clone();
+    let selected = management_mutation(
+        &f,
+        &token,
+        "world/new",
+        "fresh-world",
+        &serde_json::json!({"seed":"9223372036854775807","expected_revision":world["revision"],"confirm_world":world["name"]}),
+    );
+    assert_eq!(
+        selected.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&selected.body)
+    );
+    assert_eq!(
+        selected.json()["data"]["world"]["configured_seed"],
+        "9223372036854775807"
+    );
+    let username = f
+        .request("GET", "/api/v3/manage/sftp", b"", Some(&token))
+        .json()["data"]["username"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let public = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILhlRUSwIvld+IXbN8AYC0cCu1dF19GZUfMCvT2BvBjm";
+    let input = serde_json::json!({"principal_id":username,"label":"SSH fixture","public_key":public,"expires_at_ms":null});
+    let first = management_mutation(&f, &token, "sftp/keys", "one-key", &input);
+    assert_eq!(
+        first.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&first.body)
+    );
+    let replay = management_mutation(&f, &token, "sftp/keys", "one-key", &input);
+    assert_eq!(replay.status, 200);
+    assert_eq!(first.json()["data"], replay.json()["data"]);
+    assert_eq!(
+        f.request("GET", "/api/v3/manage/sftp/keys", b"", Some(&token))
+            .json()["data"]["keys"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let (device, key) = enroll_management(&f, BuiltinRole::Viewer);
+    let viewer = management_session(&f, &device, &key);
+    assert_eq!(
+        f.request("GET", "/api/v3/manage/sftp", b"", Some(&viewer))
+            .status,
+        403
+    );
+}
+
 #[derive(Default)]
 struct FixtureClock(std::sync::atomic::AtomicI64);
 impl vesta_state::Clock for FixtureClock {

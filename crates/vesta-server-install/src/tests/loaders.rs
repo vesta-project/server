@@ -6,6 +6,57 @@ use super::super::{
 use super::*;
 use std::collections::HashMap;
 
+#[tokio::test]
+async fn managed_fabric_and_quilt_use_absolute_classpaths_for_preserved_game_directory() {
+    for software in [Software::Fabric, Software::Quilt] {
+        let libs = if software == Software::Fabric {
+            fabric_libs()
+        } else {
+            quilt_libs()
+        };
+        let f = loader_fixture(software, &libs).await;
+        let p = plan_with(&f, software, &selection()).await.unwrap();
+        install(&f, &p).await.unwrap();
+        let game = tempfile::tempdir().unwrap();
+        std::fs::write(game.path().join("server.properties"), b"motd=existing\n").unwrap();
+        let launch = f.installer.managed_launch(&p, game.path()).await.unwrap();
+        assert_eq!(
+            launch.working_directory,
+            dunce::canonicalize(game.path()).unwrap()
+        );
+        assert_eq!(launch.args.len(), 5);
+        assert!(launch.args[0].ends_with(
+            &p.destination()
+                .join("software/vanilla.jar")
+                .to_string_lossy()
+                .to_string()
+        ));
+        assert_eq!(launch.args[1], "-cp");
+        assert_eq!(launch.args[3], bundle::server_main(software).unwrap());
+        assert_eq!(launch.args[4], "nogui");
+        let cp: Vec<_> = launch.args[2]
+            .split(if cfg!(windows) { ';' } else { ':' })
+            .collect();
+        assert_eq!(cp.len(), libs.len());
+        assert!(cp.iter().all(|s| std::path::Path::new(s).is_absolute()));
+        assert_eq!(launch.required_files.len(), libs.len() + 1);
+        assert_eq!(launch.artifacts.len(), libs.len() + 1);
+        crate::verify_managed_artifacts(&launch.artifacts)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(game.path().join("server.properties")).unwrap(),
+            b"motd=existing\n"
+        );
+        // The original fresh-install receipt/relative argfile remains verifiable.
+        f.installer.verify(&p).await.unwrap();
+        std::fs::write(&launch.required_files[1], b"tampered loader").unwrap();
+        assert!(crate::verify_managed_artifacts(&launch.artifacts)
+            .await
+            .is_err());
+    }
+}
+
 type InstallPlanMutation = Box<dyn Fn(&mut InstallPlan)>;
 
 const GAME: &str = "1.21.4";

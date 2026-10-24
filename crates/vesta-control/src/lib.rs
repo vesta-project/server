@@ -13,6 +13,7 @@ pub mod config;
 pub mod content;
 pub mod files;
 pub mod host;
+mod host_software;
 pub mod identity;
 pub mod metrics;
 pub mod minecraft_admission;
@@ -22,8 +23,11 @@ pub mod operations;
 pub mod pack_access;
 pub mod packs;
 pub mod recovery_export;
+pub mod sftp;
 pub mod sleep;
+pub mod software;
 pub mod whitelist;
+pub mod world;
 
 mod error;
 

@@ -502,7 +502,8 @@ impl FileBrowser {
         files
     }
     pub(super) fn before_remote_write(&self, c: &Connection, subject: &Subject) -> Result<()> {
-        if let Some(guard) = &self.whitelist_guard {
+        self.check_world_owner(c, subject)?;
+        if let Some(guard) = &self.stopped_guard {
             guard.check()?;
         }
         if self
@@ -563,10 +564,27 @@ impl FileBrowser {
         subject: &Subject,
         outcome: Value,
     ) -> Result<()> {
+        self.check_world_owner(c, subject)?;
         if let Some(key) = &self.remote_key {
             let changed = c.execute("UPDATE management_file_outcomes SET outcome_json=?,completed_at=? WHERE server_id=? AND principal_id=? AND device_id=? AND request_key=? AND outcome_json IS NULL",params![outcome.to_string(),self.db.clock().millis(),self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),key])?;
             if changed != 1 {
                 return Err(FileError::Unavailable);
+            }
+        }
+        Ok(())
+    }
+    fn check_world_owner(&self, c: &Connection, subject: &Subject) -> Result<()> {
+        if self.world_write {
+            let policy = identity::policy_in(
+                c,
+                self.db.server_id(),
+                self.db.clock().millis(),
+                Some(subject),
+            )?;
+            if !policy.holds_builtin(identity::BuiltinRole::Owner) {
+                return Err(
+                    crate::ControlError::forbidden(identity::DenyReason::OwnerReserved).into(),
+                );
             }
         }
         Ok(())

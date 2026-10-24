@@ -15,6 +15,8 @@ use vesta_state::{Clock, StateDatabase, StateDirectory};
 
 const WAIT: Duration = Duration::from_secs(15);
 const ENABLE: &[u8] = b"vesta-owned-inert-operation-fixture-v1";
+#[path = "world_tests.rs"]
+mod world_tests;
 
 #[test]
 fn inert_game_fixture() {

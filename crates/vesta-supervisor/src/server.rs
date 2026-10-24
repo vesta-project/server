@@ -552,6 +552,57 @@ fn execute(core: &Shared, op: Op) -> Reply {
             })))
         }
         Op::Sync { after } => sync(core, after),
+        Op::ReloadLaunch {
+            expected_identity,
+            identity,
+            document_sha256,
+            hold_token,
+        } => {
+            let mut core = lock(core);
+            core.observe_state();
+            if core.launch_identity != expected_identity
+                || !core
+                    .hold
+                    .as_ref()
+                    .is_some_and(|(token, _)| token == &hold_token)
+                || core.process.snapshot().phase
+                    != vesta_game_runtime::process::ProcessPhase::Stopped
+                || core.process.snapshot().generation.is_some()
+                || core.orphan.is_some()
+                || core.unresolved
+                || core.stopping
+                || core.recorded.is_some()
+                || core.intent_for.is_some()
+                || core.observation_failed
+                || core.health().restart_pending_ms.is_some()
+            {
+                Err(refused("supervisor_launch_replacement_refused"))
+            } else {
+                let replacement = (|| -> Result<_> {
+                    let document = crate::reconfigure::read(&core.directory, &document_sha256)?;
+                    let configuration =
+                        vesta_game_runtime::launch_config::LaunchConfiguration::parse_toml(
+                            &document,
+                            std::path::Path::new(&core.state),
+                        )
+                        .map_err(|_| "supervisor_launch_invalid")?;
+                    if configuration.working_directory() != core.launch.working_directory() {
+                        return Err("supervisor_launch_invalid");
+                    }
+                    configuration
+                        .into_launch_spec(None)
+                        .map_err(|_| "supervisor_launch_invalid")
+                })();
+                match replacement {
+                    Ok(launch) => {
+                        core.launch = launch;
+                        core.launch_identity = identity;
+                        Ok(Reply::Configured)
+                    }
+                    Err(code) => Err(refused(code)),
+                }
+            }
+        }
         Op::Start { launch_identity } => start(core, &launch_identity),
         Op::QueueStop { generation: text } => generation(&text).and_then(|id| {
             let receipt = {

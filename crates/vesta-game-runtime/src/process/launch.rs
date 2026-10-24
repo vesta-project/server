@@ -9,7 +9,7 @@ pub const MAX_ARGS: usize = 256;
 pub const MAX_ARG_BYTES: usize = 8_192;
 pub const MAX_ARGV_BYTES: usize = 32_768;
 pub const MAX_PATH_BYTES: usize = 4_096;
-pub(crate) const MAX_REQUIRED_FILES: usize = 16;
+pub(crate) const MAX_REQUIRED_FILES: usize = 256;
 // Windows includes the executable, quoting, separators and terminating NUL.
 const MAX_NATIVE_UNITS: usize = 32_767;
 

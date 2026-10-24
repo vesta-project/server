@@ -152,6 +152,28 @@ impl Document {
         Ok(bytes)
     }
 }
+/// Bounded world selection using the same Java-properties parser as editing.
+pub(crate) fn world_values(bytes: &[u8]) -> Result<(String, String), FileError> {
+    let document = Document::parse(bytes)?;
+    Ok((
+        document
+            .values
+            .get("level-name")
+            .cloned()
+            .unwrap_or_else(|| "world".into()),
+        document
+            .values
+            .get("level-seed")
+            .cloned()
+            .unwrap_or_default(),
+    ))
+}
+pub(crate) fn select_new_world(bytes: &[u8], name: &str, seed: &str) -> Result<Vec<u8>, FileError> {
+    Document::parse(bytes)?.edited(&BTreeMap::from([
+        ("level-name".into(), name.into()),
+        ("level-seed".into(), seed.into()),
+    ]))
+}
 fn escape(value: &str) -> String {
     value
         .chars()

@@ -21,7 +21,7 @@ pub struct OfflineWhitelistPatch {
     pub expected_sha256: Option<String>,
 }
 
-pub(super) struct StoppedGuard {
+pub struct StoppedGuard {
     _block: crate::operations::StartBlock,
     runtime: RuntimeHandle,
     supervisor: Option<(vesta_supervisor::SupervisorClient, String)>,
@@ -29,7 +29,13 @@ pub(super) struct StoppedGuard {
     properties: Option<(std::path::PathBuf, Vec<u8>)>,
 }
 impl StoppedGuard {
-    fn acquire(runtime: &RuntimeHandle, state: &vesta_state::StateDirectory) -> Result<Arc<Self>> {
+    pub(crate) fn supervisor_token(&self) -> Option<String> {
+        self.supervisor.as_ref().map(|(_, token)| token.clone())
+    }
+    pub fn acquire(
+        runtime: &RuntimeHandle,
+        state: &vesta_state::StateDirectory,
+    ) -> Result<Arc<Self>> {
         let block = runtime.block_starts();
         let supervised = runtime.is_supervised();
         let (supervisor, renewer) = if supervised {
@@ -55,7 +61,7 @@ impl StoppedGuard {
         guard.check()?;
         Ok(guard)
     }
-    pub(super) fn check(&self) -> Result<()> {
+    pub fn check(&self) -> Result<()> {
         if let Some((path, expected)) = &self.properties
             && read_local_document(
                 path,
@@ -205,7 +211,7 @@ impl FileBrowser {
             let bytes = serde_json::to_vec_pretty(&entries).map_err(|_| FileError::Corrupt)?;
             if bytes.len()>LIMIT { return Err(FileError::TooLarge); }
             let mut files = files.clone();
-            files.whitelist_guard = Some(guard.clone());
+            files.stopped_guard = Some(guard.clone());
             let precondition = patch.expected_sha256.clone().map_or(WritePrecondition::Absent,WritePrecondition::Matches);
             let change = files.write(subject,&RelativePath::parse("whitelist.json")?,&precondition,&bytes)?;
             // finish_intent checks hold continuity after the write, in the same

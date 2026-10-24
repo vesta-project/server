@@ -128,12 +128,17 @@ pub async fn run(source: &Path, base: &Path, local_only: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let sftp = host.network_handle().sftp().clone();
+    if !local_only && sftp.start().await.is_err() {
+        eprintln!("sftp_start_failed");
+    }
     let mut transport = if let Some(listener) = listener {
         let network = host.network_handle();
         match tokio::task::spawn_blocking(move || Transport::start(network, &listener)).await {
             Ok(Ok(t)) => Some(t),
             _ => {
                 eprintln!("transport_start_failed");
+                sftp.shutdown().await;
                 shutdown_host(host, sessions);
                 return ExitCode::FAILURE;
             }
@@ -160,6 +165,7 @@ pub async fn run(source: &Path, base: &Path, local_only: bool) -> ExitCode {
         Ok(c) => c,
         Err(e) => {
             eprintln!("{e}");
+            sftp.shutdown().await;
             shutdown_transport(transport.take());
             shutdown_host(host, sessions);
             return ExitCode::FAILURE;
@@ -187,6 +193,7 @@ pub async fn run(source: &Path, base: &Path, local_only: bool) -> ExitCode {
     if control_failed {
         eprintln!("local_control_shutdown_failed");
     }
+    sftp.shutdown().await;
     shutdown_transport(transport);
     let result = shutdown_host(host, sessions);
     supervised_state.finish();

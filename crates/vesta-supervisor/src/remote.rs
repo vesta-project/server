@@ -131,6 +131,44 @@ fn valid_command(line: &str) -> bool {
 }
 
 impl RemoteProcess {
+    pub fn replace_stopped_launch(
+        &mut self,
+        identity: String,
+        document_sha256: String,
+        hold_token: String,
+    ) -> Result<()> {
+        if self.snapshot.phase != ProcessPhase::Stopped
+            || self.snapshot.generation.is_some()
+            || self.writer.is_some()
+        {
+            return Err("supervisor_launch_replacement_refused");
+        }
+        // Refresh identity for an explicit recovery after an ambiguous prior reply.
+        let hello = match self.client.call(Op::Hello, SYNC_WAIT)? {
+            Reply::Hello(value) => value,
+            _ => return Err("supervisor_invalid_response"),
+        };
+        if hello.state != self.state {
+            return Err("supervisor_launch_mismatch");
+        }
+        match self.client.call(
+            Op::ReloadLaunch {
+                expected_identity: hello.launch_identity,
+                identity: identity.clone(),
+                document_sha256,
+                hold_token,
+            },
+            START_WAIT,
+        )? {
+            Reply::Configured => {
+                self.launch_identity = identity;
+                self.synced = None;
+                Ok(())
+            }
+            Reply::Refused { .. } => Err("supervisor_launch_replacement_refused"),
+            _ => Err("supervisor_invalid_response"),
+        }
+    }
     pub fn configure_offline(
         &self,
         configuration: Option<vesta_game_runtime::offline::Configuration>,

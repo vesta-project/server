@@ -8,6 +8,7 @@ mod config;
 #[allow(dead_code)]
 mod execution_workspace;
 mod install;
+mod managed;
 mod model;
 mod paths;
 pub mod progress;
@@ -18,6 +19,7 @@ mod transfer;
 pub use bundle::{ArtifactRecord, BundleReceipt};
 pub use config::TransportConfig;
 pub use install::{InstallOutcome, InstallRoots, Receipt};
+pub use managed::{verify_managed_artifacts, ManagedArtifact, ManagedLaunch};
 pub use model::{
     Acknowledgments, Approval, ArtifactReview, DigestAlgorithm, GeneratedFile, InstallError,
     InstallPlan, JavaRequirement, LaunchRecipe, Limits, PublishedDigest, Result, Software,

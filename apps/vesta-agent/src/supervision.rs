@@ -36,7 +36,21 @@ pub fn attach(config: &HostConfiguration, source: &Path, base: &Path) -> Result<
             vesta_supervisor::Containment::RequireIndependent,
         )?;
     }
-    let remote = RemoteProcess::attach(client, launch.identity)?;
+    let mut identity = launch.identity;
+    if let Some(hello) = vesta_supervisor::probe(&client)?
+        && hello.launch_identity != identity
+        && hello.snapshot.generation.is_none()
+        && hello.snapshot.phase == wire::WirePhase::Stopped
+        && !hello.health.orphan_running
+        && !hello.health.launch_unresolved
+        && !hello.health.observation_failed
+        && hello.health.restart_pending_ms.is_none()
+        && vesta_control::host::software_recovery_binding(config, &hello.launch_identity)
+            .map_err(|e| e.code())?
+    {
+        identity = hello.launch_identity;
+    }
+    let remote = RemoteProcess::attach(client, identity)?;
     if remote.orphan_running() {
         // A game outlived an earlier supervisor: observable through its own logs only.
         eprintln!("supervisor_orphaned_game_running; degraded_no_stdin; start_refused");
