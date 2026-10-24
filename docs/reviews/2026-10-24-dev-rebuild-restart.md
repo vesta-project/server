@@ -37,4 +37,22 @@ Validation with Rust 1.96.0:
 
 Evidence: `V:\tmp\dev-restart-*.log` and
 `~/.local/share/vesta-linux-test-20261024/logs/dev-restart-*.log`.
-The existing demo agent and user Minecraft data were not restarted or changed.
+Initial feature validation left the existing demo untouched.
+
+## Legacy demo migration follow-up
+
+The still-running 23 October agent (PID 4388) predated the shutdown RPC added in
+`6cec785`. A new helper therefore reached it successfully but received an invalid
+request response; rebuilding again could not add a handler to the old process.
+The client now distinguishes unsupported requests from refusal/unknown delivery.
+The helper also checks independent launch capability before stopping a host, and
+can bring up only the agent after an explicit listener choice and positive
+quiescence/recovery checks. The WSL live test now covers this offline recovery.
+
+For this one-time migration, live status proved Minecraft stopped. A temporary
+Windows helper pinned the exact process image, checked that its console contained
+only that agent and the interrupt helper, then delivered ordinary Ctrl+C. The
+agent exited with code 0. No force-kill or recovery-marker removal was performed.
+The rebuilt staged agent came online as PID 7692 on port 8443, preserving game
+data and the stopped state. The authenticated API requires a session as expected;
+the TLS probe used the existing local CA rather than disabling verification.
