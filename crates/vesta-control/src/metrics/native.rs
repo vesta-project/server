@@ -187,21 +187,21 @@ pub(super) fn bounded(path: &str, limit: u64) -> Option<String> {
 #[cfg(unix)]
 pub(super) fn host() -> Host {
     let mut host = Host::default();
-    if let Some(stat) = bounded("/proc/stat", 65536) {
-        if let Some(line) = stat.lines().find(|line| line.starts_with("cpu ")) {
-            let ticks: Option<Vec<u64>> = line
-                .split_whitespace()
-                .skip(1)
-                .take(8)
-                .map(|v| v.parse().ok())
-                .collect();
-            if let Some(ticks) = ticks.filter(|v| v.len() >= 4) {
-                let total = ticks.iter().try_fold(0u64, |sum, v| sum.checked_add(*v));
-                let idle = ticks[3].checked_add(ticks.get(4).copied().unwrap_or(0));
-                host.cpu = total
-                    .zip(idle)
-                    .and_then(|(t, i)| Some((t.checked_sub(i)?, t)));
-            }
+    if let Some(stat) = bounded("/proc/stat", 65536)
+        && let Some(line) = stat.lines().find(|line| line.starts_with("cpu "))
+    {
+        let ticks: Option<Vec<u64>> = line
+            .split_whitespace()
+            .skip(1)
+            .take(8)
+            .map(|v| v.parse().ok())
+            .collect();
+        if let Some(ticks) = ticks.filter(|v| v.len() >= 4) {
+            let total = ticks.iter().try_fold(0u64, |sum, v| sum.checked_add(*v));
+            let idle = ticks[3].checked_add(ticks.get(4).copied().unwrap_or(0));
+            host.cpu = total
+                .zip(idle)
+                .and_then(|(t, i)| Some((t.checked_sub(i)?, t)));
         }
     }
     if let Some(memory) = bounded("/proc/meminfo", 65536) {
