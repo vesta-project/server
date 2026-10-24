@@ -47,7 +47,7 @@ struct PendingRollback {
     revision: u64,
 }
 enum WorkKind {
-    Apply(InstallPlan, Option<Approval>),
+    Apply(Box<InstallPlan>, Option<Approval>),
     Rollback,
 }
 struct Work {
@@ -390,7 +390,7 @@ impl SoftwareHandle {
         queue.work.push_back(Work {
             id: job.id.clone(),
             actor: subject.clone(),
-            kind: WorkKind::Apply(candidate.plan, Some(approval)),
+            kind: WorkKind::Apply(Box::new(candidate.plan), Some(approval)),
         });
         self.inner.wake.notify_one();
         Ok(job)

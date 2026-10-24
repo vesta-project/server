@@ -16,12 +16,12 @@ struct ConnectionPermit {
 }
 impl Drop for ConnectionPermit {
     fn drop(&mut self) {
-        if let Ok(mut b) = self.service.budgets.lock() {
-            if let Some(n) = b.sessions.get_mut(&self.ip) {
-                *n = n.saturating_sub(1);
-                if *n == 0 {
-                    b.sessions.remove(&self.ip);
-                }
+        if let Ok(mut b) = self.service.budgets.lock()
+            && let Some(n) = b.sessions.get_mut(&self.ip)
+        {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                b.sessions.remove(&self.ip);
             }
         }
     }
@@ -223,17 +223,18 @@ impl russh::server::Handler for Ssh {
         name: &str,
         session: &mut Session,
     ) -> std::result::Result<(), Self::Error> {
-        if name == "sftp" && self.protocol.is_none() {
-            if let (Some(channel), Some(subject)) = (self.channel.take(), self.subject.clone()) {
-                session.channel_success(id)?;
-                let service = self.service.clone();
-                let config = self.config.clone();
-                let stop = self.stop.clone();
-                self.protocol = Some(tokio::spawn(async move {
-                    protocol::run(service, subject, config, channel.into_stream(), stop).await;
-                }));
-                return Ok(());
-            }
+        if name == "sftp"
+            && self.protocol.is_none()
+            && let (Some(channel), Some(subject)) = (self.channel.take(), self.subject.clone())
+        {
+            session.channel_success(id)?;
+            let service = self.service.clone();
+            let config = self.config.clone();
+            let stop = self.stop.clone();
+            self.protocol = Some(tokio::spawn(async move {
+                protocol::run(service, subject, config, channel.into_stream(), stop).await;
+            }));
+            return Ok(());
         }
         session.channel_failure(id)?;
         Ok(())

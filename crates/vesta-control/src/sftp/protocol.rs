@@ -16,12 +16,12 @@ struct Transfer {
 }
 impl Drop for Transfer {
     fn drop(&mut self) {
-        if let Ok(mut b) = self.service.budgets.lock() {
-            if let Some(n) = b.transfers.get_mut(&self.principal) {
-                *n = n.saturating_sub(1);
-                if *n == 0 {
-                    b.transfers.remove(&self.principal);
-                }
+        if let Ok(mut b) = self.service.budgets.lock()
+            && let Some(n) = b.transfers.get_mut(&self.principal)
+        {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                b.transfers.remove(&self.principal);
             }
         }
     }

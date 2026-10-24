@@ -104,11 +104,11 @@ pub struct SftpService {
 }
 impl Drop for SftpService {
     fn drop(&mut self) {
-        if let Ok(running) = self.running.get_mut() {
-            if let Some(running) = running.take() {
-                let _ = running.stop.send(true);
-                running.task.abort();
-            }
+        if let Ok(running) = self.running.get_mut()
+            && let Some(running) = running.take()
+        {
+            let _ = running.stop.send(true);
+            running.task.abort();
         }
     }
 }

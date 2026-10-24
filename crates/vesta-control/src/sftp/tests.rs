@@ -328,7 +328,16 @@ async fn real_ssh_sftp_live_upload_trash_rename_read_and_revoke() {
             .is_err()
     );
     f.service.shutdown().await;
-    assert!(tokio::net::TcpStream::connect(address).await.is_err());
+    assert_eq!(f.service.status(&f.token).unwrap()["running"], false);
+    // Windows can complete an already queued TCP handshake briefly after close.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::net::TcpStream::connect(address).await.is_ok() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "SFTP listener must close"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     assert!(f.service.audit.verify_chain().unwrap().valid);
 }
 

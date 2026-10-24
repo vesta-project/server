@@ -57,7 +57,7 @@ fn hosting_routes_use_authenticated_owner_and_durable_sftp_key_receipts() {
         &f,
         &token,
         "world/new",
-        "fresh-world",
+        "fresh-world-0000001",
         &serde_json::json!({"seed":"9223372036854775807","expected_revision":world["revision"],"confirm_world":world["name"]}),
     );
     assert_eq!(
@@ -78,14 +78,14 @@ fn hosting_routes_use_authenticated_owner_and_durable_sftp_key_receipts() {
         .to_owned();
     let public = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILhlRUSwIvld+IXbN8AYC0cCu1dF19GZUfMCvT2BvBjm";
     let input = serde_json::json!({"principal_id":username,"label":"SSH fixture","public_key":public,"expires_at_ms":null});
-    let first = management_mutation(&f, &token, "sftp/keys", "one-key", &input);
+    let first = management_mutation(&f, &token, "sftp/keys", "sftp-one-key-000001", &input);
     assert_eq!(
         first.status,
         200,
         "{}",
         String::from_utf8_lossy(&first.body)
     );
-    let replay = management_mutation(&f, &token, "sftp/keys", "one-key", &input);
+    let replay = management_mutation(&f, &token, "sftp/keys", "sftp-one-key-000001", &input);
     assert_eq!(replay.status, 200);
     assert_eq!(first.json()["data"], replay.json()["data"]);
     assert_eq!(

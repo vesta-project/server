@@ -561,10 +561,10 @@ fn execute(core: &Shared, op: Op) -> Reply {
             let mut core = lock(core);
             core.observe_state();
             if core.launch_identity != expected_identity
-                || !core
+                || core
                     .hold
                     .as_ref()
-                    .is_some_and(|(token, _)| token == &hold_token)
+                    .is_none_or(|(token, _)| token != &hold_token)
                 || core.process.snapshot().phase
                     != vesta_game_runtime::process::ProcessPhase::Stopped
                 || core.process.snapshot().generation.is_some()
@@ -736,11 +736,11 @@ fn execute(core: &Shared, op: Op) -> Reply {
                 let same =
                     core.offline.as_ref().map(|r| r.configuration()) == configuration.as_ref();
                 if !same {
-                    if let Some(mut responder) = core.offline.take() {
-                        if responder.close().is_err() {
-                            core.observation_failed = true;
-                            return refused("offline_release_uncertain");
-                        }
+                    if let Some(mut responder) = core.offline.take()
+                        && responder.close().is_err()
+                    {
+                        core.observation_failed = true;
+                        return refused("offline_release_uncertain");
                     }
                     if let Some(config) = configuration {
                         if let Err(code) = config.validate() {

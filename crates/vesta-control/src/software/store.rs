@@ -122,6 +122,8 @@ pub(super) fn existing(
         .transpose()
 }
 
+// Keep the durable actor, request binding and revision explicit at admission.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn admit(
     c: &Connection,
     db: &StateDatabase,

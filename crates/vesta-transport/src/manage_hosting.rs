@@ -165,10 +165,10 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             }
             _ => return error(StatusCode::BAD_REQUEST, "invalid_request"),
         };
-        if let Some(key) = mutation_key {
-            if let Err(e) = service.finish_mutation(&key, &result) {
-                return sftp_result(Err(e));
-            }
+        if let Some(key) = mutation_key
+            && let Err(e) = service.finish_mutation(&key, &result)
+        {
+            return sftp_result(Err(e));
         }
         return sftp_result(result);
     }
