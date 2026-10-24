@@ -450,8 +450,6 @@ fn file_queries_refuse_paths_aliases_and_stale_cursors() {
         "config/CON",
         "config/a.txt.",
         "config//a.txt",
-        "server.properties",
-        "whitelist.json",
     ] {
         management_reply_error(
             &f.request(
@@ -1034,4 +1032,26 @@ fn properties_receipts_burn_refusals_and_roll_back_with_failed_audit() {
         "confirmation_invalid",
     );
     assert_eq!(std::fs::read(&native).unwrap(), initial);
+}
+
+#[test]
+fn owner_and_admin_raw_documents_require_confirmation_and_preserve_private_hiding() {
+    for role in [vesta_control::identity::BuiltinRole::Owner,vesta_control::identity::BuiltinRole::Administrator] {
+        let f=Fixture::new("minecraft",8,1_048_576,5);
+        std::fs::write(f.temp.path().join("game/ops.json"),b"[]").unwrap();
+        let (device,key)=enroll_management(&f,role);let token=management_session(&f,&device,&key);
+        let path="/api/v3/manage/files/content?path=ops.json";
+        assert_eq!(send(&f,"GET",path,b"",Some(&token),None,None).status,200);
+        let expected=digest(b"[]");let intent="raw-protected-confirm-0001";
+        let pending=send(&f,"PUT",path,b"[{}]",Some(&token),Some(intent),Some(("If-Match",&expected)));
+        assert_eq!(pending.status,200);let pending=pending.json();
+        assert_eq!(pending["data"]["state"],"awaiting_confirmation");
+        assert_eq!(std::fs::read(f.temp.path().join("game/ops.json")).unwrap(),b"[]");
+        let receipt=pending["data"]["confirmation_token"].as_str().unwrap();
+        let confirmed=format!("{path}&confirmation_token={receipt}");
+        let outcome=send(&f,"PUT",&confirmed,b"[{}]",Some(&token),Some(intent),Some(("If-Match",&expected)));
+        assert_eq!(outcome.status,200);assert_eq!(outcome.json()["data"]["state"],"applied");
+        assert_eq!(send(&f,"PUT",&confirmed,b"[{}]",Some(&token),Some(intent),Some(("If-Match",&expected))).json()["data"],outcome.json()["data"]);
+        management_reply_error(&send(&f,"GET","/api/v3/manage/files/content?path=.vesta/private",b"",Some(&token),None,None),400,"invalid_request");
+    }
 }
