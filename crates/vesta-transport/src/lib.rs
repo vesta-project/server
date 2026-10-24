@@ -78,7 +78,8 @@ const REQUEST_BODY_BUDGET: usize = 4 * 1024 * 1024;
 const CONTROL_BODY_BUDGET: usize = 16 * 1024;
 const CONTROL_BODY_MAXIMUM: usize = 8 * 1024;
 /// Bytes per second a streaming artifact body must sustain, measured over each
-/// `request_timeout` window. A stalled or trickling peer loses its connection and
+/// `request_timeout` window, with at most one chunk of burst credit. A stalled or
+/// trickling peer loses its connection and
 /// with it every download permit held by its body and buffered chunks.
 const MIN_DOWNLOAD_RATE: u64 = 8 * 1024;
 /// After the final chunk is handed to Hyper, up to two chunks may still be queued
@@ -190,7 +191,12 @@ impl ConnectionDeadline {
         if let Ok(mut phase) = self.phase.lock()
             && let Phase::Streaming { bytes, .. } = &mut *phase
         {
-            *bytes = bytes.saturating_add(count as u64);
+            // Socket backpressure can pause chunk hand-off while the peer still
+            // consumes buffered bytes. Carry bounded burst credit across windows;
+            // never bank a whole fast download as unlimited future idle time.
+            *bytes = bytes
+                .saturating_add(count as u64)
+                .min(self.floor().max(BODY_CHUNK as u64));
         }
     }
     fn finish(&self) {
@@ -225,7 +231,7 @@ impl ConnectionDeadline {
                     return None;
                 }
                 *window = now;
-                *bytes = 0;
+                *bytes -= floor;
                 Some(now + self.limit)
             }
         }

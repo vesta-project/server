@@ -595,6 +595,20 @@ fn connection_deadline_bounds_heads_but_streams_by_throughput_floor() {
 }
 
 #[test]
+fn download_burst_credit_covers_backpressure_but_cannot_hide_a_stall() {
+    let limit = Duration::from_secs(1);
+    let deadline = ConnectionDeadline::new(limit);
+    deadline.stream();
+    let start = Instant::now();
+    deadline.progress(16 * 1024 * 1024);
+    // A large burst earns only one chunk, rather than minutes of idle time.
+    for window in 1..=8 {
+        assert!(deadline.check(start + limit * window).is_some());
+    }
+    assert!(deadline.check(start + limit * 9).is_none());
+}
+
+#[test]
 fn ordinary_response_stays_timed_until_flush_and_partial_heads_do_not_rearm() {
     let deadline = ConnectionDeadline::new(Duration::from_secs(2));
     deadline.request();

@@ -661,8 +661,11 @@ If-Range headers and If-Range without Range refuse with 400. There is no
 unbounded full-download fallback. Each disk range holds one of two global range
 slots through its last outstanding chunk; one 64-KiB blocking read at a time,
 no read-ahead queue or file-sized allocation. It reuses artifact streaming's
-8-KiB/s throughput floor over each configured request-timeout window, bounded
-socket buffers and drain deadline. Metadata changes during the range abort the
+8-KiB/s throughput floor over each configured request-timeout window, with at
+most one 64-KiB chunk of burst credit carried between windows so socket
+backpressure does not falsely classify an active reader as stalled. Credit is
+bounded even after a large burst; socket buffers and the drain deadline remain
+bounded. Metadata changes during the range abort the
 body before completing the advertised length; clients retry/reconcile, not assume
 a pinned immutable snapshot.
 

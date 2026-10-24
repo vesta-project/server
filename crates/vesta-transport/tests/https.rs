@@ -1197,7 +1197,9 @@ fn steady_download_outlives_request_timeout_and_completes() {
     let mut body = Vec::with_capacity(length);
     let mut chunk = vec![0; 64 * 1024];
     while body.len() < length {
-        let count = reader.read(&mut chunk).unwrap();
+        let count = reader.read(&mut chunk).unwrap_or_else(|error| {
+            panic!("download failed at {} of {length}: {error}", body.len())
+        });
         assert_ne!(count, 0, "download cut at {} of {length}", body.len());
         body.extend_from_slice(&chunk[..count]);
         // About 1 MiB/s: far above the floor, far below loopback speed.
@@ -1222,8 +1224,9 @@ fn stalled_download_is_dropped_and_releases_its_session_slot() {
     assert_eq!((status, length), (200, payload.len()));
     f.request("GET", "/api/v2/pack/artifact", b"", Some(&session))
         .error(503, "download_busy");
-    // Without reading, the throughput floor must drop the connection and permits.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // Without reading, bounded burst credit must expire and release permits.
+    // Allow the one-chunk credit plus loopback buffering and fixture scheduling.
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let (mut reader, status, _) = artifact_head(&f, &session);
         if status == 200 {
