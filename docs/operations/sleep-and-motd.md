@@ -199,3 +199,12 @@ UI follow-up: show Sleep as primary when `sleepAvailable`, Wake while sleeping,
 Stop in the menu (including while sleeping), and expose the startup policy in
 settings. Header changes in this phase only supply labels required by the expanded
 contract; no page layout is built.
+
+
+Startup policy can also be set remotely as nullable `on_agent_start` in the
+existing sleep/policy document (native/TS `SleepPolicy.onAgentStart`). Null inherits
+host.toml; an explicit value is persisted with the policy. Start/sleep authority
+is rechecked against the policy actor on agent startup; refusal leaves it stopped
+and raises a notification. `sleep` requires offline_status. The trusted local
+environment override `VESTA_AGENT_STAY_STOPPED=1` forces stay-stopped at startup;
+the dev shell sets it for staged agents so a restart never boots Minecraft.

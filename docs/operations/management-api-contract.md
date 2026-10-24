@@ -1847,3 +1847,12 @@ uploads disabled for these files. Do not treat protected Minecraft files as hidd
 
 See [java-runtimes.md](java-runtimes.md) for GET `/java`, POST `/java/select`,
 POST `/java/download`, job and software compatibility contracts (D5).
+
+
+Startup policy can also be set remotely as nullable `on_agent_start` in the
+existing sleep/policy document (native/TS `SleepPolicy.onAgentStart`). Null inherits
+host.toml; an explicit value is persisted with the policy. Start/sleep authority
+is rechecked against the policy actor on agent startup; refusal leaves it stopped
+and raises a notification. `sleep` requires offline_status. The trusted local
+environment override `VESTA_AGENT_STAY_STOPPED=1` forces stay-stopped at startup;
+the dev shell sets it for staged agents so a restart never boots Minecraft.

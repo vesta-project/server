@@ -29,6 +29,8 @@ const RUNTIME_KEY: &str = "sleep-runtime";
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
+    #[serde(default)]
+    pub on_agent_start: Option<crate::config::OnAgentStart>,
     pub enabled: bool,
     pub offline_status: bool,
     pub wake_on_join: bool,
@@ -39,6 +41,7 @@ pub struct Policy {
 impl Default for Policy {
     fn default() -> Self {
         Self {
+            on_agent_start: None,
             enabled: false,
             offline_status: false,
             wake_on_join: false,
@@ -54,6 +57,8 @@ impl Policy {
             && (5..=300).contains(&self.warning_seconds)
             && (10..=3600).contains(&self.start_cooldown_seconds)
             && (!self.wake_on_join || self.offline_status)
+            && (self.on_agent_start != Some(crate::config::OnAgentStart::Sleep)
+                || self.offline_status)
     }
 }
 #[derive(Clone, Serialize)]
@@ -192,7 +197,9 @@ impl Sleep {
                         Capability::PlayersView,
                     ]);
                 }
-                if policy.wake_on_join {
+                if policy.wake_on_join
+                    || policy.on_agent_start == Some(crate::config::OnAgentStart::Start)
+                {
                     required.push(Capability::LifecycleStart);
                 }
                 authorize(c, &self.db, subject, &required)?;
@@ -252,10 +259,49 @@ impl Sleep {
                 .and_then(|(_, p)| p)
                 .is_some_and(|p| p.policy.offline_status)
     }
+    pub fn on_agent_start(
+        &self,
+        fallback: crate::config::OnAgentStart,
+    ) -> Result<crate::config::OnAgentStart, &'static str> {
+        if std::env::var_os("VESTA_AGENT_STAY_STOPPED").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            return Ok(crate::config::OnAgentStart::StayStopped);
+        }
+        self.db
+            .read(|c| load_policy(c, &self.db))
+            .map(|(_, p)| p.and_then(|p| p.policy.on_agent_start).unwrap_or(fallback))
+            .map_err(|_| "sleep_state_unavailable")
+    }
     pub(crate) fn initialize(
         &self,
         policy: crate::config::OnAgentStart,
     ) -> Result<(), &'static str> {
+        self.db
+            .read(|c| {
+                if let (_, Some(stored)) = load_policy(c, &self.db)?
+                    && stored.policy.on_agent_start.is_some()
+                    && policy != crate::config::OnAgentStart::StayStopped
+                {
+                    authorize(
+                        c,
+                        &self.db,
+                        &stored
+                            .subject()
+                            .map_err(|_| StateError::new("state_sleep_policy_invalid"))?,
+                        &[
+                            Capability::ConfigEdit,
+                            if policy == crate::config::OnAgentStart::Start {
+                                Capability::LifecycleStart
+                            } else {
+                                Capability::LifecycleStop
+                            },
+                        ],
+                    )?;
+                }
+                Ok(())
+            })
+            .map_err(|_| "sleep_forbidden")?;
         let sleeping = policy == crate::config::OnAgentStart::Sleep;
         if sleeping && !self.available() {
             return Err("sleep_listener_not_configured");

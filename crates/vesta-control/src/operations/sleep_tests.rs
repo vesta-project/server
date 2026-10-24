@@ -540,3 +540,13 @@ fn stopped_never_opens_responder_and_explicit_sleep_stop_persists() {
     coordinator.tick_at(&s, &runtime, Instant::now()).unwrap();
     assert_eq!(s.public_state(&runtime).unwrap(), State::Offline);
 }
+
+#[test]
+fn startup_policy_is_persisted_and_revocation_cannot_boot_the_game() {
+    let h=Harness::new(false);let s=service(&h,address(),StartGate::default());
+    s.configure(&h.subject,0,Policy {on_agent_start:Some(crate::config::OnAgentStart::Start),..Policy::default()}).unwrap();
+    assert_eq!(s.on_agent_start(crate::config::OnAgentStart::StayStopped).unwrap(),crate::config::OnAgentStart::Start);
+    h.db.write(|c| {c.execute("INSERT INTO principal_overrides(id,principal_id,capability,scope,effect,granted_by,created_at) VALUES(?,?,'lifecycle.start','*','deny','fixture',?)",params![uuid::Uuid::new_v4().to_string(),h.subject.principal.as_str(),h.db.clock().millis()])?;Ok(())}).unwrap();
+    assert!(s.initialize(crate::config::OnAgentStart::Start).is_err());
+    s.initialize(crate::config::OnAgentStart::StayStopped).unwrap();
+}

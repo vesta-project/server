@@ -28,7 +28,7 @@ pub use metrics::MetricsSettings;
 use crate::files::{self, FileError, RelativePath};
 use crate::packs::SelectedDirectories;
 use serde::de::{self, MapAccess, SeqAccess, Visitor, value::MapAccessDeserializer};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     error::Error,
     fmt, fs,
@@ -1511,7 +1511,7 @@ fn default_session_requests() -> u32 {
     300
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OnAgentStart {
     #[default]

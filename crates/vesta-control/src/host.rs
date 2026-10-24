@@ -164,10 +164,14 @@ impl AutomationDriver {
                 };
                 let _ = automation.publish(AutomationEvent::AgentStarted);
                 let mut generation = runtime.game_snapshot().ok().and_then(|s| s.generation);
-                if generation.is_none() && let Err(code) = startup.1.initialize(startup.0) {
+                let startup_policy = startup.1.on_agent_start(startup.0).unwrap_or(crate::config::OnAgentStart::StayStopped);
+                let mut startup_allowed = true;
+                if generation.is_none() && let Err(code) = startup.1.initialize(startup_policy) {
+                    startup_allowed = false;
+                    let _ = startup.1.initialize(crate::config::OnAgentStart::StayStopped);
                     let _ = automation.notify(Severity::Warning, "Agent startup policy refused", code, "agent");
                 }
-                if startup.0 == crate::config::OnAgentStart::Start && generation.is_none() {
+                if startup_allowed && startup_policy == crate::config::OnAgentStart::Start && generation.is_none() {
                     // The runtime's own start path refuses duplicates, orphans,
                     // unresolved launches and maintenance blocks; its outcome is audited.
                     if let Err(code) = local.request(crate::operations::LocalAction::Start) {

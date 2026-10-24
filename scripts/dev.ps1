@@ -19,7 +19,14 @@ function Run-Agent([string[]]$Arguments) {
 }
 if ($Action -eq 'status') { Run-Agent @('manage','dev-server','status','--install-root',$registry); return }
 if ($Action -eq 'stop') {
+    $ownedProcess = $null
+    $pidFile = Join-Path $Root 'agent.pid'
+    if (Test-Path -LiteralPath $pidFile) {
+        $candidate = Get-Process -Id ([int][IO.File]::ReadAllText($pidFile)) -ErrorAction SilentlyContinue
+        if ($candidate -and $candidate.Path -eq $agent) { $ownedProcess = $candidate }
+    }
     Run-Agent @('shutdown',$config)
+    if ($ownedProcess -and !$ownedProcess.WaitForExit(15000)) { throw 'Graceful shutdown is still in progress; check status/logs before restarting.' }
     return
 }
 # Only this marked, local scratch server is eligible. Hold the same external
@@ -63,7 +70,12 @@ try {
     if ($document -match '(?m)^\s*(start-on-agent-start\s*=\s*true|on-agent-start\s*=\s*["''](?:start|sleep)["''])') {
         throw 'Set [process] on-agent-start = "stay_stopped" before a dev restart.'
     }
+    $previousStartupOverride = $env:VESTA_AGENT_STAY_STOPPED
+    try {
+        $env:VESTA_AGENT_STAY_STOPPED = '1'
     $process = Start-Process -FilePath $agent -ArgumentList @('serve',('"' + $config + '"')) -WindowStyle Hidden -RedirectStandardOutput (Join-Path $Root 'agent.stdout.log') -RedirectStandardError (Join-Path $Root 'agent.stderr.log') -PassThru
+    } finally { $env:VESTA_AGENT_STAY_STOPPED = $previousStartupOverride }
+
     [IO.File]::WriteAllText((Join-Path $Root 'agent.pid'),$process.Id.ToString())
     for ($attempt=0; $attempt -lt 60; $attempt++) {
         $process.Refresh()
