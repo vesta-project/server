@@ -1,5 +1,33 @@
 # Disposable launcher test server
 
+## Daily Windows development commands
+
+From `V:\server-connections-mvp` after the initial installation:
+
+```powershell
+.\scripts\dev.ps1 start   # rebuild/stage agent, recover if provably safe, leave Minecraft STOPPED
+.\scripts\dev.ps1 status  # local agent/game status
+.\scripts\dev.ps1 stop    # stop Minecraft, then gracefully shut down the agent
+```
+
+These are the existing dev-shell equivalents of the deferred D6 `vesta dev`
+wrapper. Use `dev.ps1 recover` for recovery without starting the agent. Recovery
+is restricted to a marked scratch registry, takes registry/instance locks, refuses
+linked paths and unknown marker contents, and requires successful OS process
+enumeration showing **no JVM, agent or supervisor anywhere on the host**. It
+archives the exact pending marker in `operator-sessions/dev-recovered-*`;
+it never deletes game data or infers stop from released locks alone. Stop other
+JVMs cleanly before retrying if it refuses. Production orphan recovery remains
+supervisor/operator work; this command is only for the disposable dev instance.
+`start` refuses a configured automatic start/sleep policy. Set `[process]`
+`on-agent-start = "stay_stopped"` (or omit the process table) for this workflow.
+Do not use `Stop-Process` for routine agent shutdown: the local `shutdown`
+command waits for runtime/I/O completion and archives the session marker.
+
+On 2026-10-25 the real `%TEMP%\vesta-dev-server` marker was archived under these
+checks, the debug agent rebuilt and staged, and the agent restarted with Minecraft
+stopped. Identity, invitations, TLS material and game data were retained.
+
 From the repository root, Windows PowerShell **5.1**:
 
 ```powershell
