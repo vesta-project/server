@@ -4,7 +4,7 @@
 exists and revision, and adds:
 
 - size_bytes (decimal bytes), size_complete, size_observed_at_ms: a 30 s cache per
-  server/world/caller, bounded to 20,000 entries and 250 ms per scan. An incomplete
+  server/world/caller, bounded to 20,000 entries with a 250 ms budget checked between directory reads. An incomplete
   scan is explicitly partial; never present it as the total. Read failures also
   mark the size incomplete. Private/ignored/linked paths are excluded.
 - last_modified_at_ms: latest observed file/folder modification within that scan;
