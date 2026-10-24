@@ -203,9 +203,13 @@ async fn abort_with_workspace_reaps_before_releasing_slots_and_reservation() {
     let workspace = f.workspace(&budget).await;
     let directory = workspace.directory().to_path_buf();
     let pool = Pool::new();
-    let mut invocation = job(workspace, "hang", pool.clone());
+    let invocation = job(workspace, "hang", pool.clone());
     #[cfg(windows)]
-    let witness = super::execution::NativeWitness::attach(&mut invocation);
+    let (invocation, witness) = {
+        let mut invocation = invocation;
+        let witness = super::execution::NativeWitness::attach(&mut invocation);
+        (invocation, witness)
+    };
     let task =
         tokio::spawn(
             async move { execution::run(invocation, budget, &SilentProgressReporter).await },

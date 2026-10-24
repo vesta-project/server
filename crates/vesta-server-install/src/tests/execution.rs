@@ -446,9 +446,13 @@ async fn pause_while_queued_releases_admission_for_unpaused_requests() {
 async fn running_child_deadline_reaps_owned_child_and_releases_admission() {
     let dir = tempfile::tempdir().unwrap();
     let pool = Pool::new();
-    let mut invocation = invocation(dir.path(), "hang", pool.clone());
+    let invocation = invocation(dir.path(), "hang", pool.clone());
     #[cfg(windows)]
-    let witness = NativeWitness::attach(&mut invocation);
+    let (invocation, witness) = {
+        let mut invocation = invocation;
+        let witness = NativeWitness::attach(&mut invocation);
+        (invocation, witness)
+    };
     // The budget must outlast fixture process start-up under full-suite load; the child is
     // observed running before the deadline, which then (not cancellation) ends it.
     let budget = Budget::new(Duration::from_secs(4), 16384).unwrap();
@@ -564,9 +568,13 @@ async fn running_cancellation_confirms_exit_and_releases_admission() {
     let dir = tempfile::tempdir().unwrap();
     let pool = Pool::new();
     let reporter = Arc::new(Reporter::default());
-    let mut invocation = invocation(dir.path(), "hang", pool.clone());
+    let invocation = invocation(dir.path(), "hang", pool.clone());
     #[cfg(windows)]
-    let witness = NativeWitness::attach(&mut invocation);
+    let (invocation, witness) = {
+        let mut invocation = invocation;
+        let witness = NativeWitness::attach(&mut invocation);
+        (invocation, witness)
+    };
     let cloned = reporter.clone();
     let task = tokio::spawn(async move {
         execution::run(
@@ -590,9 +598,13 @@ async fn running_cancellation_confirms_exit_and_releases_admission() {
 async fn abort_hands_the_owned_child_to_a_reaper_before_releasing_admission() {
     let dir = tempfile::tempdir().unwrap();
     let pool = Pool::new();
-    let mut invocation = invocation(dir.path(), "hang", pool.clone());
+    let invocation = invocation(dir.path(), "hang", pool.clone());
     #[cfg(windows)]
-    let witness = NativeWitness::attach(&mut invocation);
+    let (invocation, witness) = {
+        let mut invocation = invocation;
+        let witness = NativeWitness::attach(&mut invocation);
+        (invocation, witness)
+    };
     let task = tokio::spawn(async move {
         execution::run(
             invocation,
