@@ -229,7 +229,9 @@ fn candidates(config: &HostConfiguration, selected: &Path) -> Vec<PathBuf> {
             set.insert(path.join("bin").join(java_leaf()));
             set.insert(path.join("Contents/Home/bin").join(java_leaf()));
             // Managed archives keep the upstream top-level folder.
-            if root == managed_root(config) && let Ok(entries) = fs::read_dir(path) {
+            if root == managed_root(config)
+                && let Ok(entries) = fs::read_dir(path)
+            {
                 for e in entries.flatten().take(8) {
                     set.insert(e.path().join("bin").join(java_leaf()));
                     set.insert(e.path().join("Contents/Home/bin").join(java_leaf()));
@@ -386,6 +388,7 @@ fn extract(bytes: &[u8], stage: &Path, zip: bool) -> Result<()> {
     let bad = || SoftwareError::InvalidRequest;
     let mut total = 0u64;
     let mut seen = BTreeSet::new();
+    let mut links = Vec::new();
     if zip {
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|_| bad())?;
         if archive.len() > 20000 {
@@ -429,6 +432,18 @@ fn extract(bytes: &[u8], stage: &Path, zip: bool) -> Result<()> {
                 return Err(bad());
             }
             let ty = entry.header().entry_type();
+            if ty.is_symlink() || ty.is_hard_link() {
+                let target = entry
+                    .link_name()
+                    .map_err(|_| bad())?
+                    .ok_or_else(bad)?
+                    .into_owned();
+                if !contained_link(&path, &target, ty.is_hard_link()) {
+                    return Err(bad());
+                }
+                links.push((path, target, ty.is_hard_link()));
+                continue;
+            }
             if !ty.is_file() && !ty.is_dir() {
                 return Err(bad());
             }
@@ -448,7 +463,48 @@ fn extract(bytes: &[u8], stage: &Path, zip: bool) -> Result<()> {
             }
         }
     }
+    for (path, target, hard) in &links {
+        let out = stage.join(path);
+        let parent = out.parent().ok_or_else(bad)?;
+        fs::create_dir_all(parent).map_err(|_| bad())?;
+        plain_tree(parent)?;
+        if *hard {
+            let source = stage.join(target);
+            plain_tree(&source)?;
+            fs::hard_link(source, out).map_err(|_| bad())?;
+        } else {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(target, out).map_err(|_| bad())?;
+            #[cfg(not(unix))]
+            return Err(bad());
+        }
+    }
+    let canonical_stage = fs::canonicalize(stage).map_err(|_| bad())?;
+    for (path, _, _) in links {
+        if !fs::canonicalize(stage.join(path))
+            .map_err(|_| bad())?
+            .starts_with(&canonical_stage)
+        {
+            return Err(bad());
+        }
+    }
     Ok(())
+}
+fn contained_link(path: &Path, target: &Path, hard: bool) -> bool {
+    let mut depth = if hard {
+        0
+    } else {
+        path.parent().map_or(0, |p| p.components().count())
+    };
+    for part in target.components() {
+        match part {
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            Component::ParentDir if depth > 0 => depth -= 1,
+            _ => return false,
+        }
+    }
+    depth > 0
 }
 /// Stages without touching game files. Exact major version is published once.
 pub async fn download(config: &HostConfiguration, major: u32) -> Result<JavaRuntime> {
@@ -460,6 +516,7 @@ pub async fn download(config: &HostConfiguration, major: u32) -> Result<JavaRunt
     fs::create_dir_all(&root).map_err(|_| SoftwareError::RuntimeUnavailable)?;
     let final_dir = root.join(format!("temurin-{major}"));
     if final_dir.exists() {
+        plain_tree(&final_dir)?;
         return find_runtime(&final_dir, major).await;
     }
     let stage = root.join(format!(".download-{}", uuid::Uuid::new_v4()));
@@ -476,7 +533,13 @@ pub async fn download(config: &HostConfiguration, major: u32) -> Result<JavaRunt
         extract(&archive,&staged,os=="windows")?;
         fs::write(staged.join("vesta-runtime-source.json"),metadata).map_err(|_|SoftwareError::RuntimeUnavailable)?;Ok(())
     }).await.map_err(|_|SoftwareError::RuntimeUnavailable)?;
-    transfer?;
+    if let Err(error) = transfer {
+        // This exact, freshly-created UUID stage belongs to this download only.
+        if stage.parent() == Some(root.as_path()) && plain_tree(&root).is_ok() {
+            let _ = fs::remove_dir_all(&stage);
+        }
+        return Err(error);
+    }
     let runtime = find_runtime(&stage, major).await?;
     if !matches!(
         runtime.arch.as_str(),
@@ -519,6 +582,16 @@ mod tests {
         assert_eq!(major("1.8.0_402"), Some(8));
         assert_eq!(major("25.0.1+8"), Some(25));
         assert!(!safe_relative(Path::new("../evil")));
+        assert!(contained_link(
+            Path::new("jdk/legal/module/license"),
+            Path::new("../java.base/license"),
+            false
+        ));
+        assert!(!contained_link(
+            Path::new("jdk/link"),
+            Path::new("../../outside"),
+            false
+        ));
         assert!(trusted_url("http://github.com/a").is_err());
         assert!(trusted_url("https://evil.example/a").is_err());
     }

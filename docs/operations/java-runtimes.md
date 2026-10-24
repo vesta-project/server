@@ -34,7 +34,9 @@ privately under state/managed-java, probes the requested major, then publishes a
 single immutable temurin-MAJOR directory. Downloads never select or start Java.
 Existing installs are reused after probing. HTTPS and each redirect are restricted
 to Adoptium/GitHub release hosts; archives are bounded (256 MiB compressed, 1 GiB
-expanded, 20,000 entries), reject traversal and unsupported special/link entries.
+expanded, 20,000 entries), reject traversal and special entries. TAR links are deferred until files are
+extracted, validated for relative containment, then checked canonically inside
+the stage before any probe; ZIP links are refused.
 Unsupported archive layouts fail closed. Metadata/checksum provenance is retained.
 API reference: https://github.com/adoptium/api.adoptium.net/blob/main/docs/cookbook.adoc
 
