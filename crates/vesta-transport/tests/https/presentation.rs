@@ -84,6 +84,10 @@ fn sleep_policy_defaults_off_uses_optimistic_revision_and_needs_configuration_pe
     assert_eq!(initial.status, 200);
     assert_eq!(initial.json()["data"]["revision"], 0);
     assert_eq!(initial.json()["data"]["policy"]["enabled"], false);
+    assert_eq!(
+        initial.json()["data"]["sleep_blocker"],
+        serde_json::json!({"reason":"disabled"})
+    );
     let document =
         serde_json::json!({"expected_revision":0,"policy":vesta_control::sleep::Policy::default()});
     let bytes = serde_json::to_vec(&document).unwrap();

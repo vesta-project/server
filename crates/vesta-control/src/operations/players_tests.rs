@@ -114,7 +114,12 @@ fn inert_player_query_fixture() {
                 if line == "list" && !std::path::Path::new("silent-list").exists() {
                     // An answer on stdout only: the query path reads console capture,
                     // never the command file. Keep the wording exactly as a server emits.
-                    println!("[12:00:01] [Server thread/INFO]: {LIST_LINE}");
+                    let wrapper = if std::path::Path::new("system-chat").exists() {
+                        "System chat: "
+                    } else {
+                        ""
+                    };
+                    println!("[12:00:01] [Server thread/INFO]: {wrapper}{LIST_LINE}");
                     std::io::stdout().flush().unwrap();
                 }
                 if line == "stop" {
@@ -747,6 +752,7 @@ fn the_query_surface_accepts_no_command_or_authority_input() {
 #[test]
 fn management_roster_seeds_once_tracks_activity_and_rechecks_authority() {
     let harness = Harness::new(false);
+    fs::write(harness.cwd.join("system-chat"), b"modern vanilla").unwrap();
     let mut owned = harness.runtime();
     let generation = running(&harness, &owned.runtime);
     let read = || {
@@ -767,7 +773,7 @@ fn management_roster_seeds_once_tracks_activity_and_rechecks_authority() {
         .console
         .ingest(
             vesta_game_runtime::console::ConsoleStream::Stdout,
-            "[12:00:01] [Server thread/INFO]: OwnedGamma joined the game",
+            "[12:00:01] [Server thread/INFO]: System chat: OwnedGamma joined the game",
             false,
         )
         .unwrap();
@@ -778,7 +784,7 @@ fn management_roster_seeds_once_tracks_activity_and_rechecks_authority() {
         .console
         .ingest(
             vesta_game_runtime::console::ConsoleStream::Stdout,
-            "[12:00:01] [Server thread/INFO]: OwnedAlpha left the game",
+            "[12:00:01] [Server thread/INFO]: System chat: OwnedAlpha left the game",
             false,
         )
         .unwrap();
@@ -798,5 +804,57 @@ fn management_roster_seeds_once_tracks_activity_and_rechecks_authority() {
     assert_eq!(harness.commands().as_deref(), Some("list\n"));
     harness.deny(Capability::PlayersView);
     assert!(read().is_err());
+    assert_eq!(shutdown(&mut owned), ShutdownOutcome::Complete);
+}
+
+#[test]
+fn failed_roster_seed_never_reissues_list_and_a_late_response_recovers() {
+    let harness = Harness::new(true);
+    let mut owned = harness.runtime();
+    let generation = running(&harness, &owned.runtime);
+    let read = || {
+        owned
+            .runtime
+            .management_roster(&harness.subject, generation, Duration::from_millis(250))
+    };
+    assert!(read().is_err());
+    for _ in 0..20 {
+        assert!(read().is_err());
+    }
+    assert_eq!(harness.commands().as_deref(), Some("list\n"));
+    let handle = owned.runtime.network_handle();
+    let console = &handle.player_queries().console;
+    console
+        .ingest(
+            vesta_game_runtime::console::ConsoleStream::Stdout,
+            "[12:00:01] [Server thread/INFO]: System chat: There are 0 of a max of 20 players online:",
+            false,
+        )
+        .unwrap();
+    assert_eq!(handle.last_player_count(Some(generation)).unwrap().0, 0);
+    assert!(handle.player_roster_revision(Some(generation)).is_some());
+    assert_eq!(read().unwrap().players.len(), 0);
+    for (event, count) in [("joined", 1), ("left", 0)] {
+        console
+            .ingest(
+                vesta_game_runtime::console::ConsoleStream::Stdout,
+                &format!("[12:00:02] [Server thread/INFO]: System chat: Alex {event} the game"),
+                false,
+            )
+            .unwrap();
+        assert_eq!(read().unwrap().players.len(), count);
+        assert_eq!(
+            handle.last_player_count(Some(generation)).unwrap().0 as usize,
+            count
+        );
+    }
+    assert_eq!(harness.commands().as_deref(), Some("list\n"));
+    // Losing retained console output permits exactly one new seed attempt.
+    console.mark_gap().unwrap();
+    assert!(read().is_err());
+    for _ in 0..20 {
+        assert!(read().is_err());
+    }
+    assert_eq!(harness.commands().as_deref(), Some("list\nlist\n"));
     assert_eq!(shutdown(&mut owned), ShutdownOutcome::Complete);
 }

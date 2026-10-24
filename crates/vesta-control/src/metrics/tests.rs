@@ -71,6 +71,14 @@ fn event(at: i64, name: &str) -> Activity {
 #[test]
 fn metrics_activity_is_anchored_and_rejects_chat_impersonation() {
     assert_eq!(
+        activity_line("[12:34:56] [Server thread/INFO]: System chat: Alex joined the game"),
+        Some(("Alex", "join"))
+    );
+    assert_eq!(
+        activity_line("[12:34:56] [Server thread/INFO]: System chat: Alex left the game"),
+        Some(("Alex", "leave"))
+    );
+    assert_eq!(
         activity_line("[12:34:56] [Server thread/INFO]: Alex joined the game"),
         Some(("Alex", "join"))
     );
@@ -97,6 +105,8 @@ fn metrics_activity_is_anchored_and_rejects_chat_impersonation() {
         "[12:34:56] [Server thread/INFO]: Alex joined the game extra",
         "[12:34:56] [Server thread/INFO]: @a joined the game",
         "[12:34:56 INFO]: <Bob> Alex joined the game",
+        "[12:34:56] [Server thread/INFO]: System chat: <Bob> Alex joined the game",
+        "[12:34:56] [Async thread/INFO]: System chat: Alex joined the game",
     ] {
         assert!(activity_line(line).is_none());
     }

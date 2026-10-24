@@ -2,7 +2,7 @@ use super::*;
 use crate::operations::{OperationState, StartGate};
 use crate::{
     motd::State,
-    sleep::{Coordinator, Policy, Sleep},
+    sleep::{Coordinator, Policy, Sleep, SleepBlocker},
 };
 fn address() -> std::net::SocketAddr {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -43,6 +43,10 @@ fn sleep_policy_is_off_revisioned_audited_and_revocable_without_panics() {
     let s = service(&h, a, StartGate::default());
     assert_eq!(s.policy(&h.subject).unwrap().revision, 0);
     assert!(!s.policy(&h.subject).unwrap().policy.enabled);
+    assert_eq!(
+        s.policy(&h.subject).unwrap().sleep_blocker,
+        SleepBlocker::Disabled
+    );
     let policy = Policy {
         enabled: true,
         offline_status: true,
@@ -131,6 +135,12 @@ fn sleep_reconciles_zero_waits_for_warning_then_gracefully_stops_and_marks_sleep
     let mut c = Coordinator::default();
     let base = Instant::now();
     c.tick_at(&s, &runtime, base).unwrap();
+    assert_eq!(
+        s.policy(&h.subject).unwrap().sleep_blocker,
+        SleepBlocker::CountingDown {
+            remaining_seconds: 60
+        }
+    );
     c.tick_at(&s, &runtime, base + Duration::from_secs(61))
         .unwrap();
     wait_for(|| {
@@ -144,6 +154,12 @@ fn sleep_reconciles_zero_waits_for_warning_then_gracefully_stops_and_marks_sleep
     });
     c.tick_at(&s, &runtime, base + Duration::from_secs(62))
         .unwrap();
+    assert_eq!(
+        s.sleep_blocker().unwrap(),
+        SleepBlocker::WarningSent {
+            remaining_seconds: 5
+        }
+    );
     assert!(
         runtime.game_snapshot().unwrap().generation.is_some(),
         "warning acknowledgement starts countdown; elapsed idle is insufficient"
@@ -178,7 +194,9 @@ fn sleep_unknown_player_reconciliation_never_stops_even_after_idle_horizon() {
     let runtime = owned.runtime.network_handle();
     fs::write(h.cwd.join("sleep-no-list"), b"missing response").unwrap();
     start(&h, &owned.runtime);
-    wait_for(|| runtime.readiness().unwrap().probed);
+    wait_for(|| {
+        runtime.readiness().unwrap().readiness == crate::operations::readiness::Readiness::Ready
+    });
     s.configure(
         &h.subject,
         0,
@@ -195,6 +213,15 @@ fn sleep_unknown_player_reconciliation_never_stops_even_after_idle_horizon() {
     c.tick_at(&s, &runtime, base).unwrap();
     c.tick_at(&s, &runtime, base + Duration::from_secs(100))
         .unwrap();
+    assert_eq!(s.sleep_blocker().unwrap(), SleepBlocker::PlayerCountUnknown);
+    assert_eq!(
+        fs::read_to_string(h.cwd.join("operation-commands"))
+            .unwrap()
+            .lines()
+            .filter(|line| *line == "list")
+            .count(),
+        1
+    );
     assert!(runtime.game_snapshot().unwrap().generation.is_some());
     assert!(
         !fs::read_to_string(h.cwd.join("operation-commands"))
@@ -272,7 +299,9 @@ fn sleep_join_and_incompatible_hold_reset_idle_and_cancel_countdown() {
     let owned = owned(&h, a, gate.clone());
     let runtime = owned.runtime.network_handle();
     start(&h, &owned.runtime);
-    wait_for(|| runtime.readiness().unwrap().probed);
+    wait_for(|| {
+        runtime.readiness().unwrap().readiness == crate::operations::readiness::Readiness::Ready
+    });
     s.configure(
         &h.subject,
         0,
@@ -290,6 +319,7 @@ fn sleep_join_and_incompatible_hold_reset_idle_and_cancel_countdown() {
     let hold = gate.block();
     c.tick_at(&s, &runtime, base + Duration::from_secs(100))
         .unwrap();
+    assert_eq!(s.sleep_blocker().unwrap(), SleepBlocker::Hold);
     drop(hold);
     assert!(
         !fs::read_to_string(h.cwd.join("operation-commands"))
@@ -305,12 +335,21 @@ fn sleep_join_and_incompatible_hold_reset_idle_and_cancel_countdown() {
             .unwrap()
             .contains("say Server will sleep")
     });
-    fs::write(h.cwd.join("sleep-join-after-list"), b"join").unwrap();
+    runtime
+        .shared
+        .console
+        .ingest(
+            vesta_game_runtime::console::ConsoleStream::Stdout,
+            "[12:00:03] [Server thread/INFO]: System chat: Alex joined the game",
+            false,
+        )
+        .unwrap();
     c.tick_at(&s, &runtime, base + Duration::from_secs(174))
         .unwrap();
     std::thread::sleep(Duration::from_millis(30));
     c.tick_at(&s, &runtime, base + Duration::from_secs(200))
         .unwrap();
+    assert_eq!(s.sleep_blocker().unwrap(), SleepBlocker::PlayersOnline);
     assert!(runtime.game_snapshot().unwrap().generation.is_some());
     assert!(
         !fs::read_to_string(h.cwd.join("operation-commands"))

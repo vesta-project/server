@@ -204,6 +204,7 @@ pub(crate) fn activity_line(line: &str) -> Option<(&str, &'static str)> {
     // The same anchored INFO envelopes as readiness: vanilla server-thread lines and
     // the Paper-family console form. Chat, other threads and substrings never match.
     let message = vesta_game_runtime::readiness::server_info_message(line)?;
+    let message = message.strip_prefix("System chat: ").unwrap_or(message);
     let (name, kind) = if let Some(name) = message.strip_suffix(" joined the game") {
         (name, "join")
     } else {

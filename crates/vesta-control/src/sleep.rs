@@ -62,6 +62,31 @@ pub struct PolicyView {
     pub policy: Policy,
     #[serde(rename = "game_port_known")]
     pub port_available: bool,
+    pub sleep_blocker: SleepBlocker,
+}
+/// Operational explanation only; never changes the canonical process/lifecycle state.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(tag = "reason", rename_all = "snake_case")]
+pub enum SleepBlocker {
+    Disabled,
+    #[default]
+    NotReady,
+    PlayersOnline,
+    PlayerCountUnknown,
+    OperationInProgress,
+    Hold,
+    AuthorityUnavailable,
+    CountingDown {
+        remaining_seconds: u32,
+    },
+    WarningSent {
+        remaining_seconds: u32,
+    },
+}
+#[derive(Clone)]
+struct Diagnostic {
+    revision: i64,
+    blocker: SleepBlocker,
 }
 #[derive(Serialize, Deserialize)]
 struct StoredPolicy {
@@ -96,6 +121,7 @@ pub struct Sleep {
     pack_version: String,
     loader_version: String,
     observed: Arc<Mutex<Option<ObservedState>>>,
+    diagnostic: Arc<Mutex<Option<Diagnostic>>>,
 }
 struct ObservedState {
     state: State,
@@ -120,6 +146,7 @@ impl Sleep {
             pack_version: "unknown".into(),
             loader_version: "unknown".into(),
             observed: Arc::default(),
+            diagnostic: Arc::default(),
         }
     }
     pub(crate) fn with_metadata(mut self, minecraft: &str, pack: &str, loader: &str) -> Self {
@@ -133,9 +160,11 @@ impl Sleep {
             .read(|c| {
                 authorize(c, &self.db, subject, &[Capability::ConfigView])?;
                 let (revision, stored) = load_policy(c, &self.db)?;
+                let policy = stored.map(|s| s.policy).unwrap_or_default();
                 Ok(PolicyView {
                     revision,
-                    policy: stored.map(|s| s.policy).unwrap_or_default(),
+                    sleep_blocker: self.diagnostic_for(revision, &policy),
+                    policy,
                     port_available: self.address.is_some(),
                 })
             })
@@ -195,6 +224,7 @@ impl Sleep {
                 )?;
                 Ok(PolicyView {
                     revision: revision + 1,
+                    sleep_blocker: self.diagnostic_for(revision + 1, &policy),
                     policy,
                     port_available: self.address.is_some(),
                 })
@@ -209,6 +239,28 @@ impl Sleep {
             .and_then(|snapshot| snapshot.generation);
         let _ = self.observed_elapsed_at(state, generation, Instant::now())?;
         Ok(state)
+    }
+    fn diagnostic_for(&self, revision: i64, policy: &Policy) -> SleepBlocker {
+        if !policy.enabled {
+            return SleepBlocker::Disabled;
+        }
+        self.diagnostic
+            .lock()
+            .ok()
+            .and_then(|d| {
+                d.as_ref()
+                    .filter(|d| d.revision == revision)
+                    .map(|d| d.blocker.clone())
+            })
+            .unwrap_or_default()
+    }
+    pub fn sleep_blocker(&self) -> Result<SleepBlocker, &'static str> {
+        self.db
+            .read(|c| {
+                let (revision, stored) = load_policy(c, &self.db)?;
+                Ok(self.diagnostic_for(revision, &stored.map(|s| s.policy).unwrap_or_default()))
+            })
+            .map_err(map_state_error)
     }
     /// Time since this running Vesta agent observed the state/generation pair.
     /// Prior offline duration is unknown and deliberately is not reconstructed.
@@ -538,6 +590,7 @@ pub(crate) struct Coordinator {
     sampled: Option<Instant>,
     warning_id: Option<String>,
     warning_text: Option<String>,
+    blocker: SleepBlocker,
 }
 impl Coordinator {
     pub(crate) fn poll_interval(&self) -> Duration {
@@ -564,6 +617,24 @@ impl Coordinator {
         runtime: &RuntimeHandle,
         now: Instant,
     ) -> Result<(), &'static str> {
+        let result = self.evaluate_at(service, runtime, now);
+        if result.is_err() {
+            self.blocker = SleepBlocker::PlayerCountUnknown;
+        }
+        if let Ok(mut diagnostic) = service.diagnostic.lock() {
+            *diagnostic = Some(Diagnostic {
+                revision: self.revision,
+                blocker: self.blocker.clone(),
+            });
+        }
+        result
+    }
+    fn evaluate_at(
+        &mut self,
+        service: &Sleep,
+        runtime: &RuntimeHandle,
+        now: Instant,
+    ) -> Result<(), &'static str> {
         // No active sleep/offline feature: one bounded policy observation per
         // second rather than four. Active wake/countdown cadence is unchanged.
         self.fast_poll = false;
@@ -572,6 +643,7 @@ impl Coordinator {
             .read(|c| load_policy(c, &service.db))
             .map_err(|_| "sleep_policy_unavailable")?;
         let Some(stored) = stored else {
+            self.blocker = SleepBlocker::Disabled;
             runtime.configure_offline(None)?;
             self.reset();
             return Ok(());
@@ -649,13 +721,63 @@ impl Coordinator {
         }
         if !stored.policy.enabled || !healthy || blocked || snapshot.phase != ProcessPhase::Running
         {
+            self.blocker = if !stored.policy.enabled {
+                SleepBlocker::Disabled
+            } else if service.gate.blocked() {
+                SleepBlocker::Hold
+            } else if blocked {
+                SleepBlocker::OperationInProgress
+            } else {
+                SleepBlocker::NotReady
+            };
             self.reset();
             return Ok(());
         }
         let Some(generation) = snapshot.generation else {
+            self.blocker = SleepBlocker::NotReady;
             self.reset();
             return Ok(());
         };
+        if runtime
+            .readiness()
+            .map_err(|_| "sleep_state_unavailable")?
+            .readiness
+            != crate::operations::readiness::Readiness::Ready
+        {
+            self.blocker = SleepBlocker::NotReady;
+            self.reset();
+            return Ok(());
+        }
+        if service
+            .db
+            .read(|c| {
+                authorize(
+                    c,
+                    &service.db,
+                    &subject,
+                    &[
+                        Capability::LifecycleStop,
+                        Capability::ConsoleRead,
+                        Capability::ConsoleWrite,
+                        Capability::PlayersView,
+                    ],
+                )
+            })
+            .is_err()
+        {
+            self.blocker = SleepBlocker::AuthorityUnavailable;
+            self.reset();
+            return Ok(());
+        }
+        if runtime.player_roster_revision(Some(generation)).is_some()
+            && runtime
+                .last_player_count(Some(generation))
+                .is_some_and(|(count, _)| count > 0)
+        {
+            self.blocker = SleepBlocker::PlayersOnline;
+            self.reset();
+            return Ok(());
+        }
         if let Some(cursor) = self.cursor {
             let page = runtime
                 .console_snapshot(cursor, vesta_game_runtime::console::MAX_PAGE_LINES)
@@ -680,6 +802,7 @@ impl Coordinator {
             }
             if !complete {
                 self.reset();
+                self.blocker = SleepBlocker::PlayerCountUnknown;
             } else {
                 self.cursor = Some(page.latest_cursor);
             }
@@ -701,13 +824,17 @@ impl Coordinator {
                 Some("succeeded") => {
                     self.warned_at.get_or_insert(now);
                 }
-                Some("queued" | "validating" | "running" | "cancelling") => return Ok(()),
+                Some("queued" | "validating" | "running" | "cancelling") => {
+                    self.blocker = SleepBlocker::OperationInProgress;
+                    return Ok(());
+                }
                 _ => {
                     self.reset();
                     return Ok(());
                 }
             }
         }
+        self.update_countdown(&stored.policy, now);
         if self
             .sampled
             .is_some_and(|at| now.saturating_duration_since(at) < Duration::from_secs(10))
@@ -715,6 +842,7 @@ impl Coordinator {
             return Ok(());
         }
         self.sampled = Some(now);
+        self.blocker = SleepBlocker::PlayerCountUnknown;
         // Two independent observations: a current status ping and a roster
         // seeded by list, then reconciled against every console activity line.
         let ping = vesta_game_runtime::readiness::status_probe(
@@ -722,6 +850,11 @@ impl Coordinator {
             Duration::from_millis(750),
         );
         if !matches!(ping,Ok(summary) if summary.online==0) {
+            self.blocker = if matches!(ping, Ok(summary) if summary.online > 0) {
+                SleepBlocker::PlayersOnline
+            } else {
+                SleepBlocker::PlayerCountUnknown
+            };
             self.reset();
             return Ok(());
         }
@@ -729,6 +862,7 @@ impl Coordinator {
             match runtime.management_roster(&subject, generation, Duration::from_secs(2)) {
                 Ok(o) => o,
                 Err(_) => {
+                    self.blocker = SleepBlocker::PlayerCountUnknown;
                     self.reset();
                     return Ok(());
                 }
@@ -744,11 +878,17 @@ impl Coordinator {
                 .generation
                 != Some(generation)
         {
+            self.blocker = if observation.players.is_empty() {
+                SleepBlocker::PlayerCountUnknown
+            } else {
+                SleepBlocker::PlayersOnline
+            };
             self.reset();
             return Ok(());
         }
         self.cursor = Some(observation.response_cursor());
         let since = *self.zero_since.get_or_insert(now);
+        self.update_countdown(&stored.policy, now);
         if now.saturating_duration_since(since)
             < Duration::from_secs(u64::from(stored.policy.idle_seconds))
         {
@@ -780,6 +920,7 @@ impl Coordinator {
             self.warning_id = Some(summary.id.as_str().into());
             self.warning_text = Some(warning);
             self.warned_at = None;
+            self.blocker = SleepBlocker::OperationInProgress;
             return Ok(());
         }
         if self.warned_at.is_some_and(|at| {
@@ -814,7 +955,25 @@ impl Coordinator {
             )
             .map_err(|_| "sleep_stop_refused")?;
         self.reset();
+        self.blocker = SleepBlocker::OperationInProgress;
         Ok(())
+    }
+    fn update_countdown(&mut self, policy: &Policy, now: Instant) {
+        let remaining = |since, seconds| {
+            Duration::from_secs(u64::from(seconds))
+                .saturating_sub(now.saturating_duration_since(since))
+                .as_secs_f64()
+                .ceil() as u32
+        };
+        if let Some(at) = self.warned_at {
+            self.blocker = SleepBlocker::WarningSent {
+                remaining_seconds: remaining(at, policy.warning_seconds),
+            };
+        } else if let Some(at) = self.zero_since {
+            self.blocker = SleepBlocker::CountingDown {
+                remaining_seconds: remaining(at, policy.idle_seconds),
+            };
+        }
     }
     fn reconcile(
         &self,

@@ -36,9 +36,42 @@ starts after the warning is acknowledged, then adds `warning_seconds`. Bounds:
 Zero requires a fresh status probe and generation-bound `list` reconciliation.
 Missing, truncated or gapped output, joins and unrelated console lines reset the
 evidence; this is deliberately conservative on noisy/unrecognized servers.
+The management roster sends at most one `list` seed per running generation. A
+failed/timed-out seed remains unknown: subsequent reads scan for a late response
+without sending another command. Only an actual loss of captured console output
+permits one reseed. Complete join/leave events then maintain the roster, including
+Minecraft 26.3's anchored server INFO `System chat:` form. Metrics and HTTP read
+frequency do not cause periodic `list` commands. Explicit local `player_list` and
+the low-level console query API remain deliberate fresh queries.
 Incompatible operations, backups, pending file effects and stopped-backup holds
 defer sleep. The final native stop guard rechecks evidence/policy; supervised stop
 also checks the supervisor's own console horizon.
+
+Both the sleep policy response and authenticated management status (including
+native status-stream snapshots) include a read-only `sleep_blocker` diagnostic:
+
+```json
+{"sleep_blocker":{"reason":"counting_down","remaining_seconds":42}}
+```
+
+Reasons are `disabled`, `not_ready`, `players_online`, `player_count_unknown`,
+`operation_in_progress`, `hold`, `authority_unavailable`, `counting_down` and
+`warning_sent`. Only the last two include `remaining_seconds`, rounded up: idle
+time remaining before the warning, or warning time remaining before sleep.
+`not_ready` includes a stopped, starting, degraded or unhealthy game. `hold`
+identifies a held start/maintenance gate; other unfinished operations, backups and
+file effects report `operation_in_progress`. Unknown/failed player or console
+evidence reports `player_count_unknown` and never means zero players. The warning
+operation itself reports `operation_in_progress` until acknowledged. Revoked
+execution authority reports `authority_unavailable`.
+
+This is the coordinator's latest observation (normally updated every 250 ms while
+enabled), not a sleep admission guarantee. A policy revision change invalidates
+the old diagnostic immediately. Status/configuration reads do not issue commands.
+The launcher client/IPC uses `sleepBlocker` and `remainingSeconds`, preserving the
+snake_case reason values. Missing diagnostics from older agents map to null.
+Process `state`, canonical `lifecycle`, Sleep/Stop behavior and UI pages are
+unchanged; this field is available for a future explanatory UI.
 
 `game_port_known` means the configured address parsed, not that bind succeeded.
 Canonical Java-properties decoding rejects duplicate/escaped-key ambiguity. A

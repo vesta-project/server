@@ -188,18 +188,79 @@ impl PlayerRoster {
     pub fn response_cursor(&self) -> u64 {
         self.cursor
     }
+    fn from_observation(observation: PlayerObservation) -> PlayerQueryResult<Self> {
+        if observation.list().players().len() != observation.list().online() as usize {
+            return Err(PlayerQueryError::ConsoleIncomplete);
+        }
+        Ok(Self {
+            generation: observation.generation(),
+            players: observation
+                .list()
+                .players()
+                .iter()
+                .map(|p| p.name().to_owned())
+                .collect(),
+            observed_at_ms: observation.observed_at_ms(),
+            cursor: observation.response_cursor(),
+            activity_cursor: observation.response_cursor(),
+        })
+    }
+}
+#[derive(Default)]
+struct RosterState {
+    roster: Option<PlayerRoster>,
+    // Retain failed attempts too: reads must never become a command retry loop.
+    seed: Option<RosterSeed>,
+}
+struct RosterSeed {
+    generation: GenerationId,
+    after: u64,
+    cursor: u64,
+    lines: usize,
+    bytes: usize,
 }
 impl QueryEndpoint {
+    // Status observation can finish a late seed, so a launcher never needs to
+    // poll the players route just to discover that evidence became available.
+    // This path consumes captured lines only; it cannot issue commands.
+    fn observe_roster(
+        &self,
+        cached: &mut RosterState,
+        generation: GenerationId,
+    ) -> PlayerQueryResult<()> {
+        ensure_view(&self.view, generation)?;
+        if cached.roster.is_none()
+            && let Some(seed) = cached.seed.as_mut().filter(|s| s.generation == generation)
+            && let Some(observation) = scan(
+                &self.console,
+                seed.after,
+                &mut seed.cursor,
+                &mut seed.lines,
+                &mut seed.bytes,
+                generation,
+            )?
+        {
+            cached.roster = Some(PlayerRoster::from_observation(observation)?);
+        }
+        if let Some(roster) = cached
+            .roster
+            .as_mut()
+            .filter(|r| r.generation == generation)
+        {
+            self.advance_roster(roster)?;
+        }
+        Ok(())
+    }
     fn advance_roster(&self, roster: &mut PlayerRoster) -> PlayerQueryResult<()> {
         ensure_view(&self.view, roster.generation)?;
         for _ in 0..20 {
             let page = self.console.snapshot(roster.cursor, MAX_PAGE_LINES)?;
-            if page.gap {
+            if page.gap || (page.lines.is_empty() && page.next_cursor != page.latest_cursor) {
                 return Err(PlayerQueryError::ConsoleGap);
             }
             for line in &page.lines {
                 if line.truncated || line.cursor != roster.cursor.saturating_add(1) {
-                    return Err(PlayerQueryError::ConsoleIncomplete);
+                    return Err(PlayerQueryError::ConsoleGap);
                 }
                 if let Some((name, kind)) = crate::metrics::activity_line(&line.text) {
                     roster.activity_cursor = line.cursor;
@@ -220,8 +281,11 @@ impl QueryEndpoint {
     }
     pub(super) fn roster_revision(&self, generation: GenerationId) -> Option<u64> {
         let mut cached = self.roster.try_lock().ok()?;
-        let roster = cached.as_mut().filter(|r| r.generation == generation)?;
-        self.advance_roster(roster).ok()?;
+        self.observe_roster(&mut cached, generation).ok()?;
+        let roster = cached
+            .roster
+            .as_mut()
+            .filter(|r| r.generation == generation)?;
         Some(roster.activity_cursor)
     }
     pub(super) fn roster_count(
@@ -229,10 +293,14 @@ impl QueryEndpoint {
         generation: GenerationId,
     ) -> PlayerQueryResult<Option<(u32, i64)>> {
         let mut cached = self.roster.try_lock().map_err(|_| PlayerQueryError::Busy)?;
-        let Some(roster) = cached.as_mut().filter(|r| r.generation == generation) else {
+        self.observe_roster(&mut cached, generation)?;
+        let Some(roster) = cached
+            .roster
+            .as_mut()
+            .filter(|r| r.generation == generation)
+        else {
             return Ok(None);
         };
-        self.advance_roster(roster)?;
         Ok(Some((roster.players.len() as u32, roster.observed_at_ms)))
     }
 }
@@ -257,30 +325,65 @@ impl super::RuntimeHandle {
             .roster
             .try_lock()
             .map_err(|_| PlayerQueryError::Busy)?;
-        if cached.as_ref().is_none_or(|r| r.generation != generation)
-            || cached
-                .as_mut()
-                .is_some_and(|r| endpoint.advance_roster(r).is_err())
+        ensure_view(&endpoint.view, generation)?;
+        if cached
+            .seed
+            .as_ref()
+            .is_some_and(|s| s.generation != generation)
         {
-            *cached = None;
-            let observation = self.query_management_players(subject, generation, timeout)?;
-            if observation.list().players().len() != observation.list().online() as usize {
-                return Err(PlayerQueryError::ConsoleIncomplete);
-            }
-            *cached = Some(PlayerRoster {
-                generation,
-                players: observation
-                    .list()
-                    .players()
-                    .iter()
-                    .map(|p| p.name().to_owned())
-                    .collect(),
-                observed_at_ms: observation.observed_at_ms(),
-                cursor: observation.response_cursor(),
-                activity_cursor: observation.response_cursor(),
-            });
+            *cached = RosterState::default();
         }
-        let roster = cached.as_mut().ok_or(PlayerQueryError::Unavailable)?;
+        if let Some(roster) = cached.roster.as_mut() {
+            match endpoint.advance_roster(roster) {
+                Ok(()) => (),
+                Err(PlayerQueryError::ConsoleGap) => *cached = RosterState::default(),
+                Err(error) => return Err(error),
+            }
+        }
+        if cached.roster.is_none() {
+            // A late response may finish a timed-out seed without another write.
+            // Only loss of actual captured output permits a new seed.
+            if let Some(seed) = cached.seed.as_ref() {
+                let page = endpoint.console.snapshot(seed.cursor, 1)?;
+                if page.gap || (page.lines.is_empty() && page.next_cursor != page.latest_cursor) {
+                    *cached = RosterState::default();
+                }
+            }
+            let observation = if let Some(seed) = cached.seed.as_mut() {
+                scan(
+                    &endpoint.console,
+                    seed.after,
+                    &mut seed.cursor,
+                    &mut seed.lines,
+                    &mut seed.bytes,
+                    generation,
+                )?
+                .ok_or(PlayerQueryError::Unavailable)?
+            } else {
+                let cursor = endpoint.console.snapshot(0, 1)?.latest_cursor;
+                cached.seed = Some(RosterSeed {
+                    generation,
+                    after: cursor,
+                    cursor,
+                    lines: 0,
+                    bytes: 0,
+                });
+                match self.query_management_players(subject, generation, timeout) {
+                    Ok(observation) => observation,
+                    // Busy is refused before mailbox/native admission, so no list was sent.
+                    Err(PlayerQueryError::Busy) => {
+                        cached.seed = None;
+                        return Err(PlayerQueryError::Busy);
+                    }
+                    Err(error) => return Err(error),
+                }
+            };
+            cached.roster = Some(PlayerRoster::from_observation(observation)?);
+        }
+        let roster = cached
+            .roster
+            .as_mut()
+            .ok_or(PlayerQueryError::Unavailable)?;
         endpoint.advance_roster(roster)?;
         with_console_access(
             &endpoint.operations,
@@ -410,7 +513,7 @@ struct Mailbox {
 
 pub(super) struct QueryEndpoint {
     console: ConsoleCapture,
-    roster: Mutex<Option<PlayerRoster>>,
+    roster: Mutex<RosterState>,
     operations: Operations,
     mailbox: Arc<Mutex<Mailbox>>,
     stopping: Arc<AtomicBool>,
@@ -546,7 +649,7 @@ impl QueryDriver {
         (
             QueryEndpoint {
                 console: console.clone(),
-                roster: Mutex::new(None),
+                roster: Mutex::new(RosterState::default()),
                 operations: operations.clone(),
                 mailbox: mailbox.clone(),
                 stopping: stopping.clone(),
@@ -801,6 +904,9 @@ fn scan(
         return Err(PlayerQueryError::ConsoleGap);
     }
     for line in page.lines {
+        if line.cursor != cursor.saturating_add(1) {
+            return Err(PlayerQueryError::ConsoleGap);
+        }
         if *lines == MAX_PLAYER_QUERY_LINES
             || line.text.len() > MAX_PLAYER_QUERY_BYTES.saturating_sub(*bytes)
         {
