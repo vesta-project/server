@@ -44,9 +44,27 @@ try {
     }
     $pending = Join-Path $directory 'operator-session-pending'
     if (Test-Path -LiteralPath $pending) {
+        # Only a literal, plain Java executable is recoverable by name absence.
+        # Inert children, shell wrappers and arbitrary native launchers need manual
+        # recovery; their names cannot be inferred from a missing JVM.
+        Run-Agent @('check-config',$config)
+        $launchPath = Join-Path $directory 'launch.toml'
+        $definitions = [regex]::Matches([IO.File]::ReadAllText($config),'(?m)^launch-definition\s*=\s*["'']([^"''\r\n]+)["'']\s*$')
+        if ($definitions.Count -ne 1 -or [IO.Path]::GetFullPath($definitions[0].Groups[1].Value) -ne $launchPath) { throw 'Recovery requires the managed instance launch.toml.' }
+        $launchTables = [regex]::Matches([IO.File]::ReadAllText($launchPath),'(?ms)^\[launch\]\s*(.*?)(?=^\[|\z)')
+        if ($launchTables.Count -ne 1) { throw 'Ambiguous launch definition; recovery refused.' }
+        $programs = [regex]::Matches($launchTables[0].Groups[1].Value,'(?m)^(?:java-command|executable)\s*=\s*["'']([^"''\r\n]+)["'']\s*$')
+        if ($programs.Count -ne 1) { throw 'Recovery requires a literal Java launch.' }
+        $program = $programs[0].Groups[1].Value
+        if (![IO.Path]::IsPathRooted($program) -or [IO.Path]::GetFileName($program) -notmatch '^java(\.exe)?$') { throw 'Non-Java launch: missing JVMs cannot prove this child stopped.' }
+        $programAncestor = [IO.Path]::GetFullPath($program)
+        while ($programAncestor) {
+            if ((Get-Item -LiteralPath $programAncestor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked Java launch requires manual recovery.' }
+            $programAncestor = Split-Path -Parent $programAncestor
+        }
         $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
         if (!$processes.Count) { throw 'Cannot prove process absence.' }
-        $possibleOwners = @($processes | Where-Object { $_.Name -match '^(javaw?|vesta-agent|vesta-supervisor|vesta)(\.exe)?$' })
+        $possibleOwners = @($processes | Where-Object { $_.Name -match '^(javaw?|vesta-agent|vesta-supervisor|vesta-setup|vesta)(\.exe)?$' })
         if ($possibleOwners.Count) { throw 'Recovery refused: Java or a Vesta runtime owner is running. Stop it cleanly first.' }
         if ((Get-Item -LiteralPath $pending -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked marker refused.' }
         if ([IO.File]::ReadAllText($pending) -cne "vesta-owned-agent-session-v1: shutdown-not-proven`n") { throw 'Unknown shutdown marker; manual investigation required.' }

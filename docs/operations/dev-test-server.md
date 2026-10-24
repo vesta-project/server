@@ -14,7 +14,9 @@ These are the existing dev-shell equivalents of the deferred D6 `vesta dev`
 wrapper. Use `dev.ps1 recover` for recovery without starting the agent. Recovery
 is restricted to a marked scratch registry, takes registry/instance locks, refuses
 linked paths and unknown marker contents, and requires successful OS process
-enumeration showing **no JVM, agent or supervisor anywhere on the host**. It
+enumeration showing **no JVM, agent, supervisor or setup host anywhere on the host**. The protected
+launch must name a plain literal Java executable; inert children, wrappers and
+linked/custom executable layouts require manual investigation. It
 archives the exact pending marker in `operator-sessions/dev-recovered-*`;
 it never deletes game data or infers stop from released locks alone. Stop other
 JVMs cleanly before retrying if it refuses. Production orphan recovery remains
