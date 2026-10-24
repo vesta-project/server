@@ -439,7 +439,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     let runtime = host.runtime();
     let operations = runtime.operations_service();
     if mutation {
-        let Some(scoped_key) = key(
+        let Some(mut scoped_key) = key(
             idempotency,
             host.management().server_id(),
             subject.device.as_str(),
@@ -447,6 +447,16 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         ) else {
             return error(StatusCode::BAD_REQUEST, "invalid_request");
         };
+        if matches!(action, "lifecycle/start" | "lifecycle/wake") {
+            scoped_key = format!(
+                "launcher-{}:{scoped_key}",
+                if action.ends_with("/wake") {
+                    "wake"
+                } else {
+                    "start"
+                }
+            );
+        }
         if action.starts_with("pack/") {
             let (expected, minimum) = if action == "pack/publish" {
                 let Some(input) = decode::<Publish>(bytes) else {

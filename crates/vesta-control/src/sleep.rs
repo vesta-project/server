@@ -218,6 +218,9 @@ impl Sleep {
                 let mut record = load_record(c, &self.db)?;
                 record.sleep_key = None;
                 record.wake_key = None;
+                if !policy.offline_status {
+                    record.sleeping = false;
+                }
                 put(c, &self.db, RUNTIME_KEY, &record)?;
                 audit.append(
                     c,
@@ -545,6 +548,28 @@ pub(crate) fn blocked_in(
 ) -> vesta_state::Result<bool> {
     c.query_row("SELECT EXISTS(SELECT 1 FROM operations WHERE server_id=?1 AND (?2 IS NULL OR id<>?2) AND state NOT IN ('succeeded','failed','cancelled')) OR EXISTS(SELECT 1 FROM backup_jobs WHERE state IN ('queued','running','uncertain')) OR EXISTS(SELECT 1 FROM file_intents WHERE server_id=?1 AND status IN ('pending','recovery-required'))",params![server,exclude],|r|r.get(0)).map_err(Into::into)
 }
+pub(crate) fn permit_explicit_start_in(
+    c: &Connection,
+    server: &str,
+    waking: bool,
+) -> vesta_state::Result<()> {
+    let raw: Option<String> = c
+        .query_row(
+            "SELECT desired_value FROM settings WHERE server_id=? AND key=?",
+            params![server, RUNTIME_KEY],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let record: Record = raw
+        .map(|v| serde_json::from_str(&v))
+        .transpose()
+        .map_err(|_| StateError::new("state_sleep_state_invalid"))?
+        .unwrap_or_default();
+    if record.sleeping != waking {
+        return Err(StateError::new("state_explicit_lifecycle_changed"));
+    }
+    Ok(())
+}
 pub(crate) fn permit_operation_in(
     c: &Connection,
     server: &str,
@@ -820,9 +845,13 @@ impl Coordinator {
                 stored.policy.start_cooldown_seconds,
             )?;
         }
-        if !stored.policy.enabled || !healthy || blocked || snapshot.phase != ProcessPhase::Running
+        if !stored.policy.enabled
+            || !stored.policy.offline_status
+            || !healthy
+            || blocked
+            || snapshot.phase != ProcessPhase::Running
         {
-            self.blocker = if !stored.policy.enabled {
+            self.blocker = if !stored.policy.enabled || !stored.policy.offline_status {
                 SleepBlocker::Disabled
             } else if service.gate.blocked() {
                 SleepBlocker::Hold

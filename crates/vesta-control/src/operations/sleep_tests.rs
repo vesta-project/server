@@ -86,6 +86,7 @@ fn disabled_sleep_uses_idle_cadence_but_offline_and_active_sleep_keep_fast_caden
     for policy in [
         Policy {
             enabled: true,
+            offline_status: true,
             ..Policy::default()
         },
         Policy {
@@ -126,6 +127,7 @@ fn sleep_reconciles_zero_waits_for_warning_then_gracefully_stops_and_marks_sleep
         0,
         Policy {
             enabled: true,
+            offline_status: true,
             idle_seconds: 60,
             warning_seconds: 5,
             ..Policy::default()
@@ -202,6 +204,7 @@ fn sleep_unknown_player_reconciliation_never_stops_even_after_idle_horizon() {
         0,
         Policy {
             enabled: true,
+            offline_status: true,
             idle_seconds: 60,
             warning_seconds: 5,
             ..Policy::default()
@@ -308,6 +311,7 @@ fn sleep_join_and_incompatible_hold_reset_idle_and_cancel_countdown() {
         0,
         Policy {
             enabled: true,
+            offline_status: true,
             idle_seconds: 60,
             warning_seconds: 5,
             ..Policy::default()
@@ -543,10 +547,58 @@ fn stopped_never_opens_responder_and_explicit_sleep_stop_persists() {
 
 #[test]
 fn startup_policy_is_persisted_and_revocation_cannot_boot_the_game() {
-    let h=Harness::new(false);let s=service(&h,address(),StartGate::default());
-    s.configure(&h.subject,0,Policy {on_agent_start:Some(crate::config::OnAgentStart::Start),..Policy::default()}).unwrap();
-    assert_eq!(s.on_agent_start(crate::config::OnAgentStart::StayStopped).unwrap(),crate::config::OnAgentStart::Start);
+    let h = Harness::new(false);
+    let s = service(&h, address(), StartGate::default());
+    s.configure(
+        &h.subject,
+        0,
+        Policy {
+            on_agent_start: Some(crate::config::OnAgentStart::Start),
+            ..Policy::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        s.on_agent_start(crate::config::OnAgentStart::StayStopped)
+            .unwrap(),
+        crate::config::OnAgentStart::Start
+    );
     h.db.write(|c| {c.execute("INSERT INTO principal_overrides(id,principal_id,capability,scope,effect,granted_by,created_at) VALUES(?,?,'lifecycle.start','*','deny','fixture',?)",params![uuid::Uuid::new_v4().to_string(),h.subject.principal.as_str(),h.db.clock().millis()])?;Ok(())}).unwrap();
     assert!(s.initialize(crate::config::OnAgentStart::Start).is_err());
-    s.initialize(crate::config::OnAgentStart::StayStopped).unwrap();
+    s.initialize(crate::config::OnAgentStart::StayStopped)
+        .unwrap();
+}
+
+#[test]
+fn explicit_wake_effect_gate_cannot_start_after_a_stop_or_replay_a_new_intent() {
+    let h = Harness::new(false);
+    let s = service(&h, address(), StartGate::default());
+    assert!(
+        h.db.read(|c| crate::sleep::permit_explicit_start_in(c, h.db.server_id(), true))
+            .is_err()
+    );
+    assert!(
+        h.db.read(|c| crate::sleep::permit_explicit_start_in(c, h.db.server_id(), false))
+            .is_ok()
+    );
+    s.configure(
+        &h.subject,
+        0,
+        Policy {
+            offline_status: true,
+            ..Policy::default()
+        },
+    )
+    .unwrap();
+    s.initialize(crate::config::OnAgentStart::Sleep).unwrap();
+    assert!(
+        h.db.read(|c| crate::sleep::permit_explicit_start_in(c, h.db.server_id(), true))
+            .is_ok()
+    );
+    s.initialize(crate::config::OnAgentStart::StayStopped)
+        .unwrap();
+    assert!(
+        h.db.read(|c| crate::sleep::permit_explicit_start_in(c, h.db.server_id(), true))
+            .is_err()
+    );
 }

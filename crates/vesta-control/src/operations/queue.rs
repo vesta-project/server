@@ -565,6 +565,17 @@ impl OwnerCore {
                 .ok_or_else(|| rejected(OperationErrorCode::UnknownType))?;
             check_revision(&command, revision)?;
             self.require_dispatch()?;
+            if matches!(command, GameCommand::Start)
+                && let Some(key) = op.idempotency_key.as_deref()
+                && (key.starts_with("launcher-wake:") || key.starts_with("launcher-start:"))
+            {
+                crate::sleep::permit_explicit_start_in(
+                    repo.connection(),
+                    repo.server,
+                    key.starts_with("launcher-wake:"),
+                )
+                .map_err(sleep_policy_error)?;
+            }
             if matches!(command, GameCommand::Sleep { .. }) {
                 crate::sleep::permit_operation_in(
                     repo.connection(),
@@ -664,7 +675,10 @@ fn rejected(code: OperationErrorCode) -> OperationError {
     OperationError::rejected(code)
 }
 fn sleep_policy_error(error: StateError) -> OperationError {
-    if error.code() == "state_sleep_policy_changed" {
+    if matches!(
+        error.code(),
+        "state_sleep_policy_changed" | "state_explicit_lifecycle_changed"
+    ) {
         rejected(OperationErrorCode::CancellationRequested)
     } else {
         error.into()

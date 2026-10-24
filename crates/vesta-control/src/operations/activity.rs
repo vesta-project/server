@@ -89,11 +89,12 @@ pub struct OperationActivity {
     pub outcome: Option<&'static str>,
 }
 
-const KIND_SQL: &str = "CASE type WHEN 'game.start' THEN 'lifecycle.start' WHEN 'game.stop' THEN 'lifecycle.stop' WHEN 'game.sleep' THEN 'lifecycle.sleep' WHEN 'game.manual_sleep' THEN 'lifecycle.sleep' WHEN 'game.stop_sleeping' THEN 'lifecycle.stop' WHEN 'game.restart' THEN 'lifecycle.restart' WHEN 'game.force_kill' THEN 'lifecycle.kill' WHEN 'game.console' THEN 'console.command' WHEN 'players.moderate' THEN 'players.moderate' ELSE 'other' END";
+const KIND_SQL: &str = "CASE type WHEN 'game.start' THEN CASE WHEN idempotency_key LIKE 'launcher-wake:%' OR idempotency_key LIKE 'sleep-wake:%' THEN 'lifecycle.wake' ELSE 'lifecycle.start' END WHEN 'game.stop' THEN 'lifecycle.stop' WHEN 'game.sleep' THEN 'lifecycle.sleep' WHEN 'game.manual_sleep' THEN 'lifecycle.sleep' WHEN 'game.stop_sleeping' THEN 'lifecycle.stop' WHEN 'game.restart' THEN 'lifecycle.restart' WHEN 'game.force_kill' THEN 'lifecycle.kill' WHEN 'game.console' THEN 'console.command' WHEN 'players.moderate' THEN 'players.moderate' ELSE 'other' END";
 pub fn valid_activity_kind(kind: &str) -> bool {
     matches!(
         kind,
         "lifecycle.start"
+            | "lifecycle.wake"
             | "lifecycle.stop"
             | "lifecycle.sleep"
             | "lifecycle.restart"
@@ -306,7 +307,14 @@ impl Operations {
         let error: Option<String> = repo.connection().query_row("SELECT CASE WHEN length(error_code)<=64 THEN error_code END FROM operations WHERE server_id=? AND id=?",params![repo.server,op.summary.id.as_str()],|r| r.get(0))?;
         let outcome = terminal_outcome(&op, error.as_deref());
         let activity = OperationActivity {
-            kind: kind(&op.operation_type),
+            kind: if op.operation_type == "game.start"
+                && op.idempotency_key.as_deref().is_some_and(|k| {
+                    k.starts_with("launcher-wake:") || k.starts_with("sleep-wake:")
+                }) {
+                "lifecycle.wake"
+            } else {
+                kind(&op.operation_type)
+            },
             actor,
             summary,
             summary_purged: op.input_status == InputStatus::Purged,
@@ -320,7 +328,9 @@ fn terminal_outcome(op: &StoredOperation, error: Option<&str>) -> Option<&'stati
     Some(match op.summary.state {
         OperationState::Succeeded => match op.operation_type.as_str() {
             "game.console" | "players.moderate" => "stdin_written",
-            "game.stop" | "game.sleep" | "game.force_kill" => "process_exited",
+            "game.stop" | "game.sleep" | "game.manual_sleep" | "game.force_kill" => {
+                "process_exited"
+            }
             "game.start" | "game.restart" => "process_started",
             _ => "succeeded",
         },

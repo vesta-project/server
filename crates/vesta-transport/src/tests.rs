@@ -53,6 +53,7 @@ fn reserved_control_worker_survives_slow_cancelled_ordinary_io() {
 #[test]
 fn reserved_control_capacity_has_a_closed_route_allowlist() {
     for path in [
+        "/api/v3/manage/lifecycle/sleep",
         "/api/v3/manage/lifecycle/stop",
         "/api/v3/manage/lifecycle/kill",
         "/api/v3/auth/session",

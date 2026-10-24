@@ -55,7 +55,8 @@ pub(super) fn control_request(method: &Method, path: &str, query: Option<&str>) 
         && query.is_none()
         && matches!(
             path,
-            "/api/v3/manage/lifecycle/stop"
+            "/api/v3/manage/lifecycle/sleep"
+                | "/api/v3/manage/lifecycle/stop"
                 | "/api/v3/manage/lifecycle/kill"
                 | "/api/v3/manage/lifecycle/restart"
                 | "/api/v3/auth/session/challenge"
