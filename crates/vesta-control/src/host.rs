@@ -164,10 +164,8 @@ impl AutomationDriver {
                 };
                 let _ = automation.publish(AutomationEvent::AgentStarted);
                 let mut generation = runtime.game_snapshot().ok().and_then(|s| s.generation);
-                if generation.is_none() {
-                    if let Err(code) = startup.1.initialize(startup.0) {
-                        let _ = automation.notify(Severity::Warning, "Agent startup policy refused", code, "agent");
-                    }
+                if generation.is_none() && let Err(code) = startup.1.initialize(startup.0) {
+                    let _ = automation.notify(Severity::Warning, "Agent startup policy refused", code, "agent");
                 }
                 if startup.0 == crate::config::OnAgentStart::Start && generation.is_none() {
                     // The runtime's own start path refuses duplicates, orphans,

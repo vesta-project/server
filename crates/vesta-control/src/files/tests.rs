@@ -808,3 +808,78 @@ fn downloads_cover_the_size_seen_at_start_and_stop_on_truncation() {
         "truncation stops a download"
     );
 }
+
+#[test]
+fn protected_raw_edits_bind_receipt_payload_actor_and_validator() {
+    let f = Fixture::open();
+    f.write("server.properties", b"online-mode=true\nmax-players=20\n");
+    let files = f.browser.for_remote();
+    let path = RelativePath::parse("server.properties").unwrap();
+    let old = files
+        .read_editable(&f.owner, &path, MAX_READ_BYTES)
+        .unwrap();
+    let bytes = b"online-mode=false\nmax-players=24\n";
+    let pending = files
+        .write_protected(&f.owner, &path, old.sha256(), bytes, None, "raw-test")
+        .unwrap();
+    assert_eq!(
+        fs::read(f.game.join("server.properties")).unwrap(),
+        old.bytes()
+    );
+    let token = pending["confirmation_token"].as_str().unwrap();
+    assert!(
+        files
+            .write_protected(
+                &f.owner,
+                &path,
+                old.sha256(),
+                b"online-mode=true\n",
+                Some(token),
+                "raw-test"
+            )
+            .is_err()
+    );
+    let result = files
+        .write_protected(
+            &f.owner,
+            &path,
+            old.sha256(),
+            bytes,
+            Some(token),
+            "raw-test",
+        )
+        .unwrap();
+    assert_eq!(result["state"], "applied");
+    assert_eq!(
+        files
+            .write_protected(
+                &f.owner,
+                &path,
+                old.sha256(),
+                bytes,
+                Some(token),
+                "raw-test"
+            )
+            .unwrap(),
+        result
+    );
+    assert!(RelativePath::parse(".vesta/private").is_err());
+    let outsider = seed(&f.db, false);
+    assert!(
+        files
+            .read_editable(&outsider, &path, MAX_READ_BYTES)
+            .is_err()
+    );
+    assert!(
+        files
+            .write_protected(
+                &f.owner,
+                &path,
+                result["sha256"].as_str().unwrap(),
+                b"max-players=0\n",
+                None,
+                "bad-properties"
+            )
+            .is_err()
+    );
+}

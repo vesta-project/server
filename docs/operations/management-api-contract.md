@@ -1809,3 +1809,35 @@ UI follow-up: show Sleep as primary when `sleepAvailable`, Wake while sleeping,
 Stop in the menu (including while sleeping), and expose the startup policy in
 settings. Header changes in this phase only supply labels required by the expanded
 contract; no page layout is built.
+
+
+## Confirmed raw Minecraft files (D4)
+
+`GET /api/v3/manage/files/content?path=server.properties` (also whitelist.json,
+ops.json, banned-players.json, banned-ips.json) requires `config.edit` plus scoped
+`files.read`. The built-in owner and administrator have these capabilities.
+They appear in directory listings with `protection: "confirm_edit"`. Private
+Vesta paths, wrappers, VCS directories and the private state root stay hidden;
+canonical/opened-handle and symlink checks are unchanged. Other generic mutations
+(rename/delete/upload) still refuse these protected documents.
+
+Raw PUT uses the same `/files/content?path=...`, exact `If-Match` and Idempotency-Key.
+First submit validates the bytes and returns `{state:"awaiting_confirmation",
+operation_id,confirmation_token,expires_at_ms}` without changing the file. Repeat
+identical bytes, validator and intent with `&confirmation_token=...` within 120 s.
+The one-time receipt binds actor, device, old hash and payload (including path).
+Success is `{state:"applied",sha256,size,trash_id,restart_needed:true}`. Lost-success
+replays return the committed outcome. File replacement, receipt consumption,
+audit and outcome commit together; prior bytes go to recoverable trash. Properties
+use the existing Java-properties parser, duplicate-key and typed validators;
+JSON documents must parse as arrays. Read and edit audits contain paths, not bytes.
+Raw reads intentionally include Minecraft secrets for these authorized roles.
+The synchronous receipt operation retains its legacy `config.server_properties`
+internal name; its payload hash additionally binds the raw path and content.
+
+Launcher: `server_file_write_protected`, `fileWriteProtected(...)` returns the
+existing `PropertiesUpdateResult` union. `native-files.ts` distinguishes `hidden`
+from `confirm_edit`. UI follow-up (owned by the files UI engineer): use the server
+protection flag; allow reading/editing confirm_edit; show a two-step confirmation
+with the Settings ? Players hint for player lists. Keep generic rename/delete and
+uploads disabled for these files. Do not treat protected Minecraft files as hidden.

@@ -1469,6 +1469,7 @@ mod tests;
 
 pub(crate) mod properties;
 pub(crate) use properties::game_bind_address;
+pub(crate) use properties::validate_raw_properties;
 pub use properties::{PropertiesPatch, ServerPropertiesEditor};
 
 fn default_peer_requests() -> u32 {

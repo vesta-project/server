@@ -150,21 +150,6 @@ fn decimal(value: &str) -> Option<u64> {
 }
 fn relative(value: &str) -> Option<RelativePath> {
     let path = RelativePath::parse(value).ok()?;
-    // Admission documents have their own structured/configuration surface. Raw
-    // editing would bypass redaction, schema checks and weakening confirmation.
-    if path.as_str().split('/').any(|p| {
-        [
-            "server.properties",
-            "whitelist.json",
-            "banned-players.json",
-            "banned-ips.json",
-            "ops.json",
-        ]
-        .iter()
-        .any(|name| p.eq_ignore_ascii_case(name))
-    }) {
-        return None;
-    }
     Some(path)
 }
 #[derive(Deserialize)]
@@ -275,7 +260,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             if request.if_range.is_some() {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
             }
-            return match host.files().read(&subject, &path, MAX_READ_BYTES) {
+            return match host.files().read_editable(&subject, &path, MAX_READ_BYTES) {
                 Ok(value) => {
                     // ReplyBody already sends owned bytes in bounded 64-KiB frames.
                     let mut reply = response(
@@ -341,8 +326,8 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                 _ => None,
             };
             let items: Vec<Value> = if action == "files" {
-                match host.files().list(&subject,directory.as_ref()) {
-                    Ok(page) => page.entries.into_iter().map(|e| json!({"name":e.name,"kind":match e.kind { EntryKind::File => "file",EntryKind::Directory => "directory" },"size":e.size.to_string(),"modified_at":e.modified_at.and_then(|t| t.duration_since(UNIX_EPOCH).ok()).and_then(|d| i64::try_from(d.as_millis()).ok())})).collect(),
+                match host.files().list_editable(&subject,directory.as_ref()) {
+                    Ok(page) => page.entries.into_iter().map(|e| json!({"protection":if vesta_control::files::protected_minecraft_file(&e.name) && directory.is_none() { "confirm_edit" } else { "normal" },"name":e.name,"kind":match e.kind { EntryKind::File => "file",EntryKind::Directory => "directory" },"size":e.size.to_string(),"modified_at":e.modified_at.and_then(|t| t.duration_since(UNIX_EPOCH).ok()).and_then(|d| i64::try_from(d.as_millis()).ok())})).collect(),
                     Err(e) => return file_error(e),
                 }
             } else {
@@ -396,7 +381,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     let invalid = || error(StatusCode::BAD_REQUEST, "invalid_request");
     let result = match (request.method.as_str(), action) {
         ("PUT", "files/content") => {
-            let Some(query) = query(request.query, &["path"]) else {
+            let Some(query) = query(request.query, &["path", "confirmation_token"]) else {
                 return invalid();
             };
             let Some(path) = query.get("path").and_then(|s| relative(s)) else {
@@ -405,6 +390,22 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             let Some(precondition) = precondition(&request) else {
                 return invalid();
             };
+            if vesta_control::files::protected_minecraft_file(path.as_str()) {
+                let WritePrecondition::Matches(expected) = precondition else {
+                    return invalid();
+                };
+                return match host.files().write_protected(
+                    &subject,
+                    &path,
+                    &expected,
+                    request.bytes,
+                    query.get("confirmation_token").map(String::as_str),
+                    &key,
+                ) {
+                    Ok(value) => ok(value),
+                    Err(e) => file_error(e),
+                };
+            }
             host.files().mutate_remote(
                 &subject,
                 &key,

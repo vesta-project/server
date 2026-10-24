@@ -459,6 +459,24 @@ impl<'a> ServerPropertiesEditor<'a> {
         })
     }
 }
+/// Raw edits retain unknown keys, but validate syntax and every known typed key.
+pub(crate) fn validate_raw_properties(bytes: &[u8]) -> Result<(), FileError> {
+    let document = Document::parse(bytes)?;
+    for (key, value) in document.values {
+        if let Some(kind) = schema(&key) {
+            let typed = match kind {
+                Kind::Boolean => Value::Bool(value.parse().map_err(|_| FileError::InvalidPath)?),
+                Kind::Integer(_, _) => {
+                    json!(value.parse::<i64>().map_err(|_| FileError::InvalidPath)?)
+                }
+                _ => Value::String(value),
+            };
+            validate(&key, &typed)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
