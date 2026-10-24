@@ -55,6 +55,10 @@ configured port, and a registered dedicated SSH private key. The server never
 accepts Microsoft, pack, or management passwords. Only the `sftp` subsystem is
 available. Shell, exec/SCP, PTY, agent/X11 forwarding and TCP forwarding are refused.
 Remote chown/chmod, symlinks, hardlinks and arbitrary metadata mutation are refused.
+Protocol attributes use virtual owner-only modes (0600 files, 0700 directories),
+so clients can materialize readable, non-executable local downloads. These are
+not host ACL projections or authorization grants; every operation still checks
+the canonical principal's current capabilities and path scope.
 
 All filesystem work uses the host's existing FileBrowser instance. Canonical
 identity, role, scope, protected-path and link checks are repeated on operations;

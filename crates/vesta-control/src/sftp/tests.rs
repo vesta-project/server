@@ -544,5 +544,19 @@ async fn openssh_sftp_batch_smoke_with_pinned_host_key() {
         fs::read(f.temp.path().join("downloaded.txt")).unwrap(),
         b"OpenSSH interoperable upload"
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(f.temp.path().join("downloaded.txt"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_ne!(mode & 0o400, 0, "download must be owner-readable");
+        assert_eq!(
+            mode & 0o111,
+            0,
+            "virtual files do not grant executable bits"
+        );
+    }
     assert!(f.game.join("folder").is_dir());
 }

@@ -138,7 +138,10 @@ fn sleep_reconciles_zero_waits_for_warning_then_gracefully_stops_and_marks_sleep
             .unwrap_or_default()
             .contains("say Server will sleep")
     });
-    std::thread::sleep(Duration::from_millis(50));
+    // Seeing the child consume stdin does not prove the operation committed.
+    wait_for(|| {
+        h.db.read(|c|Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM operations WHERE server_id=? AND type='game.console' AND state='succeeded')",[h.db.server_id()],|r|r.get::<_,bool>(0))?)).unwrap()
+    });
     c.tick_at(&s, &runtime, base + Duration::from_secs(62))
         .unwrap();
     assert!(
@@ -148,8 +151,13 @@ fn sleep_reconciles_zero_waits_for_warning_then_gracefully_stops_and_marks_sleep
     c.tick_at(&s, &runtime, base + Duration::from_secs(73))
         .unwrap();
     wait_for(|| runtime.game_snapshot().unwrap().generation.is_none());
-    c.tick_at(&s, &runtime, base + Duration::from_secs(74))
-        .unwrap();
+    // Native process exit can precede the durable sleep result. Reconciliation
+    // must observe that result before the public state becomes Sleeping.
+    wait_for(|| {
+        c.tick_at(&s, &runtime, base + Duration::from_secs(74))
+            .unwrap();
+        s.public_state(&runtime).unwrap() == State::Sleeping
+    });
     assert_eq!(s.public_state(&runtime).unwrap(), State::Sleeping);
     assert_eq!(
         fs::read_to_string(h.cwd.join("operation-commands"))

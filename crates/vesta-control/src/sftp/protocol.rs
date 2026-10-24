@@ -107,12 +107,14 @@ fn attrs(entry: &FileEntry) -> FileAttributes {
         atime: modified,
         ..Default::default()
     };
-    // Only type bits are exposed. Unix permission ownership is not fabricated.
-    if entry.kind == EntryKind::Directory {
-        a.set_dir(true)
+    // Modes describe the virtual entry, not the host's ACL or UID. Canonical
+    // authorization is still checked on every request. Type-only mode bits make
+    // OpenSSH create local downloads with mode 000 on Unix.
+    a.permissions = Some(if entry.kind == EntryKind::Directory {
+        0o040700
     } else {
-        a.set_regular(true)
-    }
+        0o100600
+    });
     a
 }
 
