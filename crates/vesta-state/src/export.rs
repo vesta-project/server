@@ -427,12 +427,11 @@ impl RecoveryExport {
                     if *column == "server_id" && value.as_str() != Some(&self.server_id) {
                         return Err(invalid());
                     }
-                    if let Value::Number(number) = value {
-                        if (number.is_u64() && number.as_i64().is_none())
-                            || number.as_f64().is_none_or(|n| !n.is_finite())
-                        {
-                            return Err(invalid());
-                        }
+                    if let Value::Number(number) = value
+                        && ((number.is_u64() && number.as_i64().is_none())
+                            || number.as_f64().is_none_or(|n| !n.is_finite()))
+                    {
+                        return Err(invalid());
                     }
                 }
             }

@@ -178,7 +178,8 @@ fn management_receipts_replay_and_recheck_authority() {
             .code(),
         "sftp_outcome_unknown"
     );
-    let result = Ok(json!({"id":"one-device"}));
+    let expected = json!({"id":"one-device"});
+    let result = Ok(expected.clone());
     f.service.finish_mutation("key-once", &result).unwrap();
     assert_eq!(
         f.service
@@ -186,7 +187,7 @@ fn management_receipts_replay_and_recheck_authority() {
             .unwrap()
             .unwrap()
             .unwrap(),
-        result.unwrap()
+        expected
     );
     assert_eq!(
         f.service
@@ -465,9 +466,11 @@ async fn malformed_packet_closes_channel_and_shell_and_tunnel_are_refused() {
 
 #[test]
 fn network_and_configuration_budgets_are_bounded() {
-    let mut c = Config::default();
-    c.allow_cidrs = vec!["192.0.2.0/24".parse().unwrap()];
-    c.deny_cidrs = vec!["192.0.2.5/32".parse().unwrap()];
+    let mut c = Config {
+        allow_cidrs: vec!["192.0.2.0/24".parse().unwrap()],
+        deny_cidrs: vec!["192.0.2.5/32".parse().unwrap()],
+        ..Config::default()
+    };
     assert!(c.permits("192.0.2.6".parse().unwrap()));
     assert!(!c.permits("192.0.2.5".parse().unwrap()));
     assert!(!c.permits("127.0.0.1".parse().unwrap()));

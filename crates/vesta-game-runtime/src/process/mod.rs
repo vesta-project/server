@@ -333,18 +333,18 @@ impl GameProcess {
                 }
             }
             owned.io.reap_finished();
-            if let Some(status) = owned.exit {
-                if owned.io.finished() {
-                    self.last_exit = Some(ExitSummary {
-                        generation: owned.generation,
-                        success: status.success(),
-                        code: status.code(),
-                        output_failed: owned.io.output_failed(),
-                        stdin_failed: owned.io.stdin_failed(),
-                    });
-                    // Actual exit and every join completed. Drop does not signal again.
-                    self.owned.take();
-                }
+            if let Some(status) = owned.exit
+                && owned.io.finished()
+            {
+                self.last_exit = Some(ExitSummary {
+                    generation: owned.generation,
+                    success: status.success(),
+                    code: status.code(),
+                    output_failed: owned.io.output_failed(),
+                    stdin_failed: owned.io.stdin_failed(),
+                });
+                // Actual exit and every join completed. Drop does not signal again.
+                self.owned.take();
             }
         }
         Ok(self.snapshot())

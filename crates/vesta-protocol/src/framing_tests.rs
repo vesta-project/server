@@ -66,11 +66,11 @@ impl Read for Chunked {
             let allowance = (bound - self.cursor).min(into.len());
             into = &mut into[..allowance];
         }
-        if let Some(at) = self.interrupt_at {
-            if self.cursor == at {
-                self.interrupt_at = None;
-                return Err(io::Error::new(ErrorKind::Interrupted, "simulated"));
-            }
+        if let Some(at) = self.interrupt_at
+            && self.cursor == at
+        {
+            self.interrupt_at = None;
+            return Err(io::Error::new(ErrorKind::Interrupted, "simulated"));
         }
         if self.cursor >= self.data.len() || into.is_empty() {
             return Ok(0);
@@ -119,11 +119,11 @@ impl Recorder {
 }
 impl Write for Recorder {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if let Some(at) = self.interrupt_at {
-            if self.out.len() == at {
-                self.interrupt_at = None;
-                return Err(io::Error::new(ErrorKind::Interrupted, "simulated"));
-            }
+        if let Some(at) = self.interrupt_at
+            && self.out.len() == at
+        {
+            self.interrupt_at = None;
+            return Err(io::Error::new(ErrorKind::Interrupted, "simulated"));
         }
         let mut count = buf.len().min(self.chunk);
         if let Some(limit) = self.fail_after {

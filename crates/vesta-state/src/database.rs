@@ -371,11 +371,11 @@ impl StateDatabase {
         let _completion = CloseCompletion {
             shared: &self.inner,
         };
-        if let Some(anchor) = anchor {
-            if let Err((remaining, _)) = anchor.close() {
-                drop(remaining);
-                return Err(StateError::new("state_close_failed"));
-            }
+        if let Some(anchor) = anchor
+            && let Err((remaining, _)) = anchor.close()
+        {
+            drop(remaining);
+            return Err(StateError::new("state_close_failed"));
         }
         Ok(())
     }

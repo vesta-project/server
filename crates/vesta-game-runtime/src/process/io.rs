@@ -274,17 +274,16 @@ impl IoThreads {
 
     pub(super) fn reap_finished(&mut self) {
         for (index, worker) in self.workers.iter_mut().enumerate() {
-            if worker.as_ref().is_some_and(JoinHandle::is_finished) {
-                if let Some(handle) = worker.take() {
-                    if handle.join().is_err() {
-                        let flag = if index == 0 {
-                            &self.failures.stdin
-                        } else {
-                            &self.failures.output
-                        };
-                        flag.store(true, Ordering::Release);
-                    }
-                }
+            if worker.as_ref().is_some_and(JoinHandle::is_finished)
+                && let Some(handle) = worker.take()
+                && handle.join().is_err()
+            {
+                let flag = if index == 0 {
+                    &self.failures.stdin
+                } else {
+                    &self.failures.output
+                };
+                flag.store(true, Ordering::Release);
             }
         }
     }

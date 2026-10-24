@@ -90,7 +90,7 @@ impl Fixture {
         std::fs::create_dir(&base).unwrap();
         let installer = Arc::new(
             ServerInstaller::new(
-                InstallRoots::new(&base, &[game.clone()]).unwrap(),
+                InstallRoots::new(&base, std::slice::from_ref(&game)).unwrap(),
                 TransportConfig::direct(),
             )
             .unwrap(),
