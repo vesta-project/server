@@ -1862,3 +1862,9 @@ the dev shell sets it for staged agents so a restart never boots Minecraft.
 
 See [world-details.md](world-details.md) for extended GET `/world`, generation-bound
 POST `/world/datapacks/toggle`, saved metadata semantics and D1 launcher removals.
+
+
+## Launcher history consumption
+
+See [metrics-history.md](metrics-history.md) for D9 native/TS range requests,
+columnar unknown/gap semantics and fixture coverage.
