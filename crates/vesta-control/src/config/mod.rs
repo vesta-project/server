@@ -556,7 +556,7 @@ pub struct HostConfiguration {
     restart: Option<RestartSettings>,
     backups: Option<BackupSettings>,
     metrics: MetricsSettings,
-    start_on_agent_start: bool,
+    on_agent_start: OnAgentStart,
 }
 impl fmt::Debug for HostConfiguration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -783,10 +783,22 @@ impl HostConfiguration {
                 })
             })
             .transpose()?;
-        let start_on_agent_start = document
+        let on_agent_start = document
             .process
             .as_ref()
-            .is_some_and(|Table(process)| process.start_on_agent_start);
+            .map(|Table(p)| {
+                if p.on_agent_start.is_some() && p.start_on_agent_start.is_some() {
+                    return Err(ConfigError::InvalidDocument);
+                }
+                Ok(p.on_agent_start
+                    .unwrap_or(if p.start_on_agent_start == Some(true) {
+                        OnAgentStart::Start
+                    } else {
+                        OnAgentStart::StayStopped
+                    }))
+            })
+            .transpose()?
+            .unwrap_or_default();
         let (supervision, restart) = match document.process {
             None => (Supervision::default(), None),
             Some(Table(process)) => {
@@ -843,7 +855,7 @@ impl HostConfiguration {
                 .map(|v| v.0)
                 .unwrap_or_default()
                 .validated()?,
-            start_on_agent_start,
+            on_agent_start,
         })
     }
 
@@ -912,8 +924,11 @@ impl HostConfiguration {
         self.restart
     }
     /// Opt-in: start the game when the agent starts, only if nothing is running.
+    pub fn on_agent_start(&self) -> OnAgentStart {
+        self.on_agent_start
+    }
     pub fn start_on_agent_start(&self) -> bool {
-        self.start_on_agent_start
+        self.on_agent_start == OnAgentStart::Start
     }
     pub fn metrics(&self) -> MetricsSettings {
         self.metrics
@@ -1222,8 +1237,8 @@ struct WireBackupProfile {
 struct WireProcess {
     supervision: Supervision,
     restart: Option<Table<WireRestart>>,
-    #[serde(default)]
-    start_on_agent_start: bool,
+    on_agent_start: Option<OnAgentStart>,
+    start_on_agent_start: Option<bool>,
 }
 
 /// Presence of the table enables crash restart; omitted fields take the
@@ -1464,4 +1479,13 @@ fn default_peer_connections() -> u32 {
 }
 fn default_session_requests() -> u32 {
     300
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnAgentStart {
+    #[default]
+    StayStopped,
+    Sleep,
+    Start,
 }

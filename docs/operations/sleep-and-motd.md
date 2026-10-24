@@ -171,3 +171,31 @@ revocation, warning timing, joins/unknown evidence, holds, crash-loop refusal,
 settings rollback, rendering/icons and recovery-intent exclusion. They do not
 certify live Minecraft/loader/client compatibility, Linux socket/IPC behavior,
 the maintenance overlay or new frontend screens.
+
+
+## Phase 1 explicit Sleep / Wake (D3)
+
+`POST /api/v3/manage/lifecycle/sleep` takes `{expected_generation}` and uses
+`lifecycle.stop`; it gracefully stops Minecraft and durably enters Sleeping only
+after proven exit. It requires a configured offline responder (`offline_status`).
+`POST .../wake` takes `{}` and uses `lifecycle.start`, only from Sleeping.
+`POST .../stop` takes `{expected_generation}` while running, or `{}` while already
+stopped/sleeping; success clears sleep intent and turns off the game-port listener.
+Start takes `{}` from Stopped. All use the normal device/path-scoped Idempotency-Key,
+durable operation queue and audit. Manual sleep may disconnect players; the idle
+timer retains its zero-player evidence checks and only moves Running to Sleeping.
+Network joins can wake only Sleeping: Stopped never opens a responder/listener.
+
+`[process] on-agent-start = "stay_stopped" | "sleep" | "start"` defaults to
+`stay_stopped`. Legacy `start-on-agent-start = true/false` maps to start/stay_stopped;
+specifying both is invalid. Sleep startup requires configured offline status. A
+supervised live generation is never restarted or relabelled by the startup policy.
+Status retains process `state` and canonical `lifecycle` (`offline` means Stopped),
+adds `sleep_available` and `on_agent_start`, and retains `sleep_blocker` for idle
+eligibility. The launcher exposes `server_sleep`, `server_wake`, the generic
+`server_lifecycle`, and TS lifecycleControls returns Sleep/Wake plus menu Stop.
+
+UI follow-up: show Sleep as primary when `sleepAvailable`, Wake while sleeping,
+Stop in the menu (including while sleeping), and expose the startup policy in
+settings. Header changes in this phase only supply labels required by the expanded
+contract; no page layout is built.

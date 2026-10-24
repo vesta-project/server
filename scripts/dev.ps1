@@ -19,7 +19,6 @@ function Run-Agent([string[]]$Arguments) {
 }
 if ($Action -eq 'status') { Run-Agent @('manage','dev-server','status','--install-root',$registry); return }
 if ($Action -eq 'stop') {
-    Run-Agent @('stop','dev-server','--install-root',$registry)
     Run-Agent @('shutdown',$config)
     return
 }

@@ -140,7 +140,7 @@ impl AutomationDriver {
         automation: Arc<Automation>,
         runtime: Arc<std::sync::OnceLock<crate::operations::RuntimeHandle>>,
         backup_events: mpsc::Receiver<BackupEvent>,
-        start_on_agent_start: bool,
+        startup: (crate::config::OnAgentStart, crate::sleep::Sleep),
         actions: Arc<HostActions>,
         game_directory: std::path::PathBuf,
         mut metrics: crate::metrics::Sampler,
@@ -164,7 +164,12 @@ impl AutomationDriver {
                 };
                 let _ = automation.publish(AutomationEvent::AgentStarted);
                 let mut generation = runtime.game_snapshot().ok().and_then(|s| s.generation);
-                if start_on_agent_start && generation.is_none() {
+                if generation.is_none() {
+                    if let Err(code) = startup.1.initialize(startup.0) {
+                        let _ = automation.notify(Severity::Warning, "Agent startup policy refused", code, "agent");
+                    }
+                }
+                if startup.0 == crate::config::OnAgentStart::Start && generation.is_none() {
                     // The runtime's own start path refuses duplicates, orphans,
                     // unresolved launches and maintenance blocks; its outcome is audited.
                     if let Err(code) = local.request(crate::operations::LocalAction::Start) {
@@ -696,7 +701,7 @@ fn compose(
         automation.clone(),
         cell.clone(),
         backup_events,
-        config.start_on_agent_start(),
+        (config.on_agent_start(), sleep.clone()),
         actions,
         config.game().to_path_buf(),
         crate::metrics::Sampler::new(

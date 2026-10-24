@@ -89,7 +89,7 @@ pub struct OperationActivity {
     pub outcome: Option<&'static str>,
 }
 
-const KIND_SQL: &str = "CASE type WHEN 'game.start' THEN 'lifecycle.start' WHEN 'game.stop' THEN 'lifecycle.stop' WHEN 'game.sleep' THEN 'lifecycle.sleep' WHEN 'game.restart' THEN 'lifecycle.restart' WHEN 'game.force_kill' THEN 'lifecycle.kill' WHEN 'game.console' THEN 'console.command' WHEN 'players.moderate' THEN 'players.moderate' ELSE 'other' END";
+const KIND_SQL: &str = "CASE type WHEN 'game.start' THEN 'lifecycle.start' WHEN 'game.stop' THEN 'lifecycle.stop' WHEN 'game.sleep' THEN 'lifecycle.sleep' WHEN 'game.manual_sleep' THEN 'lifecycle.sleep' WHEN 'game.stop_sleeping' THEN 'lifecycle.stop' WHEN 'game.restart' THEN 'lifecycle.restart' WHEN 'game.force_kill' THEN 'lifecycle.kill' WHEN 'game.console' THEN 'console.command' WHEN 'players.moderate' THEN 'players.moderate' ELSE 'other' END";
 pub fn valid_activity_kind(kind: &str) -> bool {
     matches!(
         kind,
@@ -107,7 +107,8 @@ fn kind(raw: &str) -> &'static str {
     match raw {
         "game.start" => "lifecycle.start",
         "game.stop" => "lifecycle.stop",
-        "game.sleep" => "lifecycle.sleep",
+        "game.sleep" | "game.manual_sleep" => "lifecycle.sleep",
+        "game.stop_sleeping" => "lifecycle.stop",
         "game.restart" => "lifecycle.restart",
         "game.force_kill" => "lifecycle.kill",
         "game.console" => "console.command",
@@ -258,7 +259,10 @@ impl Operations {
                 }
                 command => {
                     let target_generation = match command {
-                        GameCommand::Start => None,
+                        GameCommand::Start | GameCommand::StopSleeping => None,
+                        GameCommand::ManualSleep {
+                            expected_generation,
+                        } => Some(expected_generation.to_hex()),
                         GameCommand::Stop {
                             expected_generation,
                         }

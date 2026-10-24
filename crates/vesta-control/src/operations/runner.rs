@@ -971,6 +971,18 @@ impl Driver {
         };
         audit("admitted")?;
         let result = self.local_effect(action);
+        if result.is_ok() {
+            let db = &self.owner.operations().db;
+            db.write(|c| {
+                crate::sleep::lifecycle_finished_in(
+                    c,
+                    db.server_id(),
+                    db.clock().millis(),
+                    "game.stop",
+                )
+            })
+            .map_err(|_| "local_outcome_uncertain")?;
+        }
         // Audit failures after an effect are explicitly uncertain, never a retry permit.
         let record = AuditRecord::of(
             AuditActor::system("os-local-cli".into()).map_err(|_| "local_audit_failed")?,
@@ -1118,7 +1130,10 @@ impl Driver {
                 }
                 publication?;
             }
-            GameCommand::Stop {
+            GameCommand::ManualSleep {
+                expected_generation,
+            }
+            | GameCommand::Stop {
                 expected_generation,
             }
             | GameCommand::Restart {
@@ -1189,6 +1204,16 @@ impl Driver {
                             .finish(claim, FinishOutcome::Failed { code: error.code() })?;
                     }
                 }
+            }
+            GameCommand::StopSleeping => {
+                self.owner
+                    .begin_effect(&claim, &self.game.view.revision()?)?;
+                self.owner.finish(
+                    claim,
+                    FinishOutcome::Succeeded {
+                        result_json: Some("{}".into()),
+                    },
+                )?;
             }
             GameCommand::ForceKill {
                 expected_generation,

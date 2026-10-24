@@ -231,6 +231,50 @@ impl Sleep {
             })
             .map_err(map_state_error)
     }
+    pub fn has_lifecycle_intent(
+        &self,
+        runtime: &RuntimeHandle,
+        subject: &Subject,
+        key: &str,
+    ) -> Result<bool, &'static str> {
+        runtime
+            .operations_service()
+            .find_key_trusted(&subject.principal, key)
+            .map(|v| v.is_some())
+            .map_err(|_| "sleep_state_unavailable")
+    }
+    pub fn available(&self) -> bool {
+        self.address.is_some()
+            && self
+                .db
+                .read(|c| load_policy(c, &self.db))
+                .ok()
+                .and_then(|(_, p)| p)
+                .is_some_and(|p| p.policy.offline_status)
+    }
+    pub(crate) fn initialize(
+        &self,
+        policy: crate::config::OnAgentStart,
+    ) -> Result<(), &'static str> {
+        let sleeping = policy == crate::config::OnAgentStart::Sleep;
+        if sleeping && !self.available() {
+            return Err("sleep_listener_not_configured");
+        }
+        self.db
+            .write(|c| {
+                lifecycle_finished_in(
+                    c,
+                    self.db.server_id(),
+                    self.db.clock().millis(),
+                    if sleeping {
+                        "game.manual_sleep"
+                    } else {
+                        "game.stop_sleeping"
+                    },
+                )
+            })
+            .map_err(|_| "sleep_state_unavailable")
+    }
     pub fn public_state(&self, runtime: &RuntimeHandle) -> Result<State, &'static str> {
         let state = self.current_state(runtime)?;
         let generation = runtime
@@ -491,6 +535,9 @@ pub(crate) fn permit_operation_in(
     )?;
     let record: Record =
         serde_json::from_str(&value).map_err(|_| StateError::new("state_sleep_state_invalid"))?;
+    if wake && !record.sleeping {
+        return Err(StateError::new("state_sleep_policy_changed"));
+    }
     let expected = if wake {
         record.wake_key.as_deref()
     } else {
@@ -670,14 +717,21 @@ impl Coordinator {
             .db
             .read(|c| authorize(c, &service.db, &subject, &[Capability::LifecycleStart]))
             .is_ok();
-        let wakes = if stored.policy.offline_status && snapshot.generation.is_none() {
+        let wakes = if stored.policy.offline_status
+            && snapshot.generation.is_none()
+            && matches!(state, State::Sleeping | State::Waking)
+        {
             let document = service.document()?;
             let inputs = service.public_inputs(runtime, state)?;
             let rendered = document
                 .render(state, &inputs)
                 .map_err(|_| "motd_invalid")?;
             let status = serde_json::json!({"version":{"name":rendered.version_name,"protocol":-1},"players":{"online":0,"max":rendered.maximum_players},"description":rendered.description,"favicon":rendered.favicon_data_uri});
-            let can_wake = stored.policy.wake_on_join && healthy && !blocked && wake_authorized;
+            let can_wake = state == State::Sleeping
+                && stored.policy.wake_on_join
+                && healthy
+                && !blocked
+                && wake_authorized;
             let disconnect = if can_wake || matches!(state, State::Waking | State::Starting) {
                 document
                     .disconnect(state, &inputs)
@@ -711,6 +765,7 @@ impl Coordinator {
             && healthy
             && !blocked
             && snapshot.generation.is_none()
+            && matches!(state, State::Sleeping | State::Waking)
         {
             self.wake(
                 service,
@@ -1058,4 +1113,39 @@ impl Coordinator {
         }
         Ok(())
     }
+}
+
+/// Persist only proven lifecycle outcomes, in the operation completion transaction.
+pub(crate) fn lifecycle_finished_in(
+    c: &Connection,
+    server: &str,
+    now: i64,
+    kind: &str,
+) -> vesta_state::Result<()> {
+    let sleeping = match kind {
+        "game.sleep" | "game.manual_sleep" => true,
+        "game.stop" | "game.stop_sleeping" | "game.start" | "game.restart" | "game.force_kill" => {
+            false
+        }
+        _ => return Ok(()),
+    };
+    let raw: Option<String> = c
+        .query_row(
+            "SELECT desired_value FROM settings WHERE server_id=? AND key=?",
+            params![server, RUNTIME_KEY],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let mut record: Record = raw
+        .map(|v| serde_json::from_str(&v))
+        .transpose()
+        .map_err(|_| StateError::new("state_sleep_state_invalid"))?
+        .unwrap_or_default();
+    record.sleeping = sleeping;
+    record.sleep_key = None;
+    record.wake_key = None;
+    let value =
+        serde_json::to_string(&record).map_err(|_| StateError::new("state_sleep_state_invalid"))?;
+    c.execute("INSERT INTO settings(server_id,key,desired_value,desired_revision,apply_mode,effective_value,effective_revision,updated_at) VALUES(?1,?2,?3,1,'immediate',?3,1,?4) ON CONFLICT(server_id,key) DO UPDATE SET desired_value=excluded.desired_value,desired_revision=settings.desired_revision+1,effective_value=excluded.desired_value,effective_revision=settings.desired_revision+1,updated_at=excluded.updated_at",params![server,RUNTIME_KEY,value,now])?;
+    Ok(())
 }

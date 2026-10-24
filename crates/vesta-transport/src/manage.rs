@@ -60,6 +60,8 @@ pub(super) fn implemented(path: &str) -> bool {
             "/api/v3/manage/server"
                 | "/api/v3/manage/server/status"
                 | "/api/v3/manage/lifecycle/start"
+                | "/api/v3/manage/lifecycle/sleep"
+                | "/api/v3/manage/lifecycle/wake"
                 | "/api/v3/manage/lifecycle/stop"
                 | "/api/v3/manage/lifecycle/restart"
                 | "/api/v3/manage/lifecycle/kill"
@@ -401,7 +403,8 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         .expect("management path");
     let capability = match action {
         "server" | "server/status" | "pack" => Capability::StatusView,
-        "lifecycle/start" => Capability::LifecycleStart,
+        "lifecycle/start" | "lifecycle/wake" => Capability::LifecycleStart,
+        "lifecycle/sleep" => Capability::LifecycleStop,
         "lifecycle/stop" => Capability::LifecycleStop,
         "lifecycle/restart" => Capability::LifecycleRestart,
         "lifecycle/kill" => Capability::LifecycleForceKill,
@@ -535,9 +538,44 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                     None,
                 )
             }
-            "lifecycle/start" => {
+            "lifecycle/sleep" => {
+                let Some(input) = decode::<Generation>(bytes) else {
+                    return error(StatusCode::BAD_REQUEST, "invalid_request");
+                };
+                let Ok(expected_generation) = GenerationId::parse_hex(&input.expected_generation)
+                else {
+                    return error(StatusCode::BAD_REQUEST, "invalid_request");
+                };
+                if !host.sleep().available() {
+                    return error(StatusCode::CONFLICT, "sleep_listener_not_configured");
+                }
+                (
+                    GameCommand::ManualSleep {
+                        expected_generation,
+                    },
+                    None,
+                )
+            }
+            "lifecycle/stop" if decode::<Empty>(bytes).is_some() => {
+                (GameCommand::StopSleeping, None)
+            }
+            "lifecycle/start" | "lifecycle/wake" => {
                 if decode::<Empty>(bytes).is_none() {
                     return error(StatusCode::BAD_REQUEST, "invalid_request");
+                }
+                // Replays remain recoverable after the successful state transition.
+                if !host
+                    .sleep()
+                    .has_lifecycle_intent(runtime, &subject, &scoped_key)
+                    .unwrap_or(false)
+                {
+                    let sleeping = matches!(
+                        host.sleep().public_state(runtime),
+                        Ok(vesta_control::motd::State::Sleeping)
+                    );
+                    if (action == "lifecycle/wake") != sleeping {
+                        return error(StatusCode::CONFLICT, "lifecycle_state_conflict");
+                    }
                 }
                 (GameCommand::Start, None)
             }

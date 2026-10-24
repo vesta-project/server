@@ -248,6 +248,7 @@ fn sleep_login_burst_coalesces_to_durable_start_and_hands_port_to_actual_child()
         },
     )
     .unwrap();
+    s.initialize(crate::config::OnAgentStart::Sleep).unwrap();
     let mut c = Coordinator::default();
     let base = Instant::now();
     c.tick_at(&s, &runtime, base).unwrap();
@@ -369,7 +370,7 @@ fn sleep_native_intent_checks_reject_disabled_or_rebound_policy_and_wrong_keys()
         ..Policy::default()
     };
     s.configure(&h.subject, 0, policy).unwrap();
-    h.db.write(|c|{c.execute("UPDATE settings SET desired_value=? WHERE server_id=? AND key='sleep-runtime'",params![serde_json::json!({"sleeping":false,"sleep_key":"sleep-stop:owned","wake_key":"sleep-wake:1","cooldown_until_ms":0,"sequence":1}).to_string(),h.db.server_id()])?;Ok(())}).unwrap();
+    h.db.write(|c|{c.execute("UPDATE settings SET desired_value=? WHERE server_id=? AND key='sleep-runtime'",params![serde_json::json!({"sleeping":true,"sleep_key":"sleep-stop:owned","wake_key":"sleep-wake:1","cooldown_until_ms":0,"sequence":1}).to_string(),h.db.server_id()])?;Ok(())}).unwrap();
     assert!(
         h.db.read(|c| crate::sleep::permit_operation_in(
             c,
@@ -443,6 +444,7 @@ fn sleep_wake_rechecks_revoked_start_authority_after_network_hint_and_keeps_stat
         },
     )
     .unwrap();
+    s.initialize(crate::config::OnAgentStart::Sleep).unwrap();
     let mut c = Coordinator::default();
     c.tick_at(&s, &runtime, Instant::now()).unwrap();
     wait_for(|| std::net::TcpStream::connect(a).is_ok());
@@ -494,4 +496,47 @@ fn sleep_elapsed_placeholder_tracks_observed_state_and_generation_monotonically(
             .unwrap(),
         4
     );
+}
+
+#[test]
+fn stopped_never_opens_responder_and_explicit_sleep_stop_persists() {
+    let h = Harness::new(false);
+    let a = address();
+    let gate = StartGate::default();
+    let s = service(&h, a, gate.clone());
+    let owned = owned(&h, a, gate);
+    let runtime = owned.runtime.network_handle();
+    s.configure(
+        &h.subject,
+        0,
+        Policy {
+            offline_status: true,
+            wake_on_join: true,
+            ..Policy::default()
+        },
+    )
+    .unwrap();
+    let mut coordinator = Coordinator::default();
+    coordinator.tick_at(&s, &runtime, Instant::now()).unwrap();
+    assert_eq!(s.public_state(&runtime).unwrap(), State::Offline);
+    assert!(std::net::TcpStream::connect(a).is_err());
+    s.initialize(crate::config::OnAgentStart::Sleep).unwrap();
+    coordinator.tick_at(&s, &runtime, Instant::now()).unwrap();
+    assert_eq!(s.public_state(&runtime).unwrap(), State::Sleeping);
+    wait_for(|| std::net::TcpStream::connect(a).is_ok());
+    let stop = h.submit(GameCommand::StopSleeping);
+    wait_for(|| {
+        h.operations
+            .get(&h.subject, &stop)
+            .unwrap()
+            .unwrap()
+            .state
+            .is_terminal()
+    });
+    assert_eq!(
+        h.operations.get(&h.subject, &stop).unwrap().unwrap().state,
+        OperationState::Succeeded
+    );
+    coordinator.tick_at(&s, &runtime, Instant::now()).unwrap();
+    assert_eq!(s.public_state(&runtime).unwrap(), State::Offline);
 }

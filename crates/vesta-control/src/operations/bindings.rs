@@ -14,6 +14,10 @@ pub(super) const GAME_LOCK: &str = "game.generation";
 #[derive(Clone, Eq, PartialEq)]
 pub enum GameCommand {
     Start,
+    ManualSleep {
+        expected_generation: GenerationId,
+    },
+    StopSleeping,
     Console {
         expected_generation: GenerationId,
         line: String,
@@ -45,6 +49,8 @@ impl GameCommand {
     pub(super) const fn operation_type(&self) -> &'static str {
         match self {
             Self::Start => "game.start",
+            Self::ManualSleep { .. } => "game.manual_sleep",
+            Self::StopSleeping => "game.stop_sleeping",
             Self::Console { .. } => "game.console",
             Self::Moderate { .. } => "players.moderate",
             Self::Stop { .. } => "game.stop",
@@ -55,7 +61,7 @@ impl GameCommand {
     }
     pub(super) fn canonical_input(&self) -> OperationsResult<String> {
         match self {
-            Self::Start => Ok("{}".to_owned()),
+            Self::Start | Self::StopSleeping => Ok("{}".to_owned()),
             Self::Sleep {
                 expected_generation,
                 expected_cursor,
@@ -88,7 +94,10 @@ impl GameCommand {
                 })
                 .map_err(|_| invalid())
             }
-            Self::Stop {
+            Self::ManualSleep {
+                expected_generation,
+            }
+            | Self::Stop {
                 expected_generation,
             }
             | Self::Restart {
@@ -187,6 +196,17 @@ pub(super) fn derive(kind: &str, raw: &str) -> OperationsResult<Option<PreparedO
                 line: input.line,
             }
         }
+        "game.stop_sleeping" => {
+            let _: StartInput = object_input(raw)?;
+            GameCommand::StopSleeping
+        }
+        "game.manual_sleep" => {
+            let input: GenerationInput = object_input(raw)?;
+            GameCommand::ManualSleep {
+                expected_generation: GenerationId::parse_hex(&input.expected_generation)
+                    .map_err(|_| invalid())?,
+            }
+        }
         "game.start" => {
             let _: StartInput = object_input(raw)?;
             GameCommand::Start
@@ -240,7 +260,11 @@ pub(super) fn derive(kind: &str, raw: &str) -> OperationsResult<Option<PreparedO
             matches!(action, ModerationAction::Op { .. }),
         ),
         GameCommand::Start => (Capability::LifecycleStart, "game".to_owned(), false, false),
-        GameCommand::Stop {
+        GameCommand::StopSleeping => (Capability::LifecycleStop, "game".to_owned(), true, false),
+        GameCommand::ManualSleep {
+            expected_generation,
+        }
+        | GameCommand::Stop {
             expected_generation,
         } => (
             Capability::LifecycleStop,

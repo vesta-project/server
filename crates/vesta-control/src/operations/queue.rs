@@ -459,6 +459,14 @@ impl OwnerSession {
                 }
                 _ => repo.finish_owned(&op, terminal.ok_or_else(corrupt)?, code, result)?,
             };
+            if after.summary.state == OperationState::Succeeded {
+                crate::sleep::lifecycle_finished_in(
+                    repo.connection(),
+                    repo.server,
+                    repo.now,
+                    &op.operation_type,
+                )?;
+            }
             self.core.ops.record_finish(
                 repo,
                 &after,
@@ -621,8 +629,11 @@ pub(super) fn check_revision(
     revision: &SourceRevision,
 ) -> OperationsResult<()> {
     let expected = match command {
-        GameCommand::Start => SourceRevision::for_game(None),
-        GameCommand::Stop {
+        GameCommand::Start | GameCommand::StopSleeping => SourceRevision::for_game(None),
+        GameCommand::ManualSleep {
+            expected_generation,
+        }
+        | GameCommand::Stop {
             expected_generation,
         }
         | GameCommand::Restart {
