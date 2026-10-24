@@ -557,6 +557,7 @@ pub struct HostConfiguration {
     backups: Option<BackupSettings>,
     metrics: MetricsSettings,
     on_agent_start: OnAgentStart,
+    java_allowlist: Vec<PathBuf>,
 }
 impl fmt::Debug for HostConfiguration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -835,6 +836,14 @@ impl HostConfiguration {
                 return Err(ConfigError::PathBudgetExceeded);
             }
         }
+        if let Some(Table(java)) = &document.java
+            && (java.custom_path_roots.len() > 32
+                || java.custom_path_roots.iter().any(|p| {
+                    p.len() > 4096 || !Path::new(p).is_absolute() || p.chars().any(char::is_control)
+                }))
+        {
+            return Err(ConfigError::InvalidPath);
+        }
         Ok(Self {
             base: base.to_owned(),
             source,
@@ -856,6 +865,15 @@ impl HostConfiguration {
                 .unwrap_or_default()
                 .validated()?,
             on_agent_start,
+            java_allowlist: document
+                .java
+                .map(|t| {
+                    t.0.custom_path_roots
+                        .into_iter()
+                        .map(PathBuf::from)
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 
@@ -924,6 +942,9 @@ impl HostConfiguration {
         self.restart
     }
     /// Opt-in: start the game when the agent starts, only if nothing is running.
+    pub fn java_allowlist(&self) -> &[PathBuf] {
+        &self.java_allowlist
+    }
     pub fn on_agent_start(&self) -> OnAgentStart {
         self.on_agent_start
     }
@@ -1178,6 +1199,7 @@ struct Document {
     pack_access: Table<WirePackAccess>,
     listener: Table<WireListener>,
     process: Option<Table<WireProcess>>,
+    java: Option<Table<WireJava>>,
     backups: Option<Table<WireBackups>>,
     metrics: Option<Table<MetricsSettings>>,
 }
@@ -1230,6 +1252,13 @@ struct WireBackupProfile {
     on_mutation: MutationPolicy,
     warn_seconds: Option<u32>,
     max_snapshots: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct WireJava {
+    #[serde(default)]
+    custom_path_roots: Vec<String>,
 }
 
 #[derive(Deserialize)]

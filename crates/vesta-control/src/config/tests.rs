@@ -1464,3 +1464,28 @@ fn listener_rate_defaults_and_bounds() {
         }
     }
 }
+
+#[test]
+fn startup_policy_migrates_legacy_bool_and_custom_java_roots_are_local_absolute_paths() {
+    let base = std::env::temp_dir();
+    for (policy, expected) in [
+        ("stay_stopped", OnAgentStart::StayStopped),
+        ("sleep", OnAgentStart::Sleep),
+        ("start", OnAgentStart::Start),
+    ] {
+        let cfg = parse(
+            &format!("{GOLDEN}\n[process]\nsupervision='in-process'\non-agent-start='{policy}'\n"),
+            &base,
+        )
+        .unwrap();
+        assert_eq!(cfg.on_agent_start(), expected);
+    }
+    assert!(
+        parse(
+            &format!("{GOLDEN}\n[java]\ncustom-path-roots=['../evil']\n"),
+            &base
+        )
+        .is_err()
+    );
+    assert!(parse(&format!("{GOLDEN}\n[process]\nsupervision='in-process'\non-agent-start='start'\nstart-on-agent-start=true\n"),&base).is_err());
+}

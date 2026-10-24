@@ -102,6 +102,22 @@ impl ServerInstaller {
         java: &Path,
         reporter: &dyn ProgressReporter,
     ) -> Result<InstallPlan> {
+        let plan = self
+            .plan_preview(software, selection, java, reporter)
+            .await?;
+        if plan.runtime.major < plan.required_java.major {
+            return Err(InstallError::RuntimeIncompatible);
+        }
+        Ok(plan)
+    }
+    /// Metadata preview for management: an incompatible result cannot be approved.
+    pub async fn plan_preview(
+        &self,
+        software: Software,
+        selection: &Selection,
+        java: &Path,
+        reporter: &dyn ProgressReporter,
+    ) -> Result<InstallPlan> {
         if reporter.is_dry_run() {
             return Err(InstallError::InvalidInput);
         }
@@ -131,9 +147,6 @@ impl ServerInstaller {
         }
         if install::overlap(&runtime.path, &self.roots.base) {
             return Err(InstallError::PathRefused);
-        }
-        if runtime.major < resolved.java.major {
-            return Err(InstallError::RuntimeIncompatible);
         }
         job.ready(reporter).await?;
         Ok(InstallPlan {

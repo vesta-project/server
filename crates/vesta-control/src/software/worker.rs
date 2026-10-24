@@ -65,6 +65,26 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
         )?;
         u64::try_from(expected).map_err(|_| SoftwareError::StateUnavailable)
     })?;
+    if let WorkKind::JavaDownload(config, major) = &work.kind {
+        crate::java::download(config, *major).await?;
+        inner.db.write_with(|tx| -> Result<()> {
+            let c = tx.connection();
+            store::authorize(c, &inner.db, &work.actor)?;
+            c.execute(
+                "UPDATE software_jobs SET state='succeeded',updated_at_ms=? WHERE id=?",
+                params![inner.db.clock().millis(), work.id],
+            )?;
+            store::audit(
+                c,
+                &inner.audit,
+                &work.actor,
+                "java.download",
+                &work.id,
+                "succeeded",
+            )
+        })?;
+        return Ok(());
+    }
     let candidate = match &mut work.kind {
         WorkKind::Apply(plan, approval) => {
             let approval = approval.take().ok_or(SoftwareError::ConfirmationInvalid)?;
@@ -93,6 +113,35 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
                 artifacts: launch.artifacts,
             }
         }
+        WorkKind::JavaDownload(..) => unreachable!(),
+        WorkKind::JavaSelect(path) => {
+            crate::java::probe(path, false).await?;
+            let mut candidate = inner
+                .db
+                .read_with(|tx| -> Result<_> { Ok(store::state(tx.connection())?.current) })?;
+            let mut tree: toml::Value =
+                toml::from_str(&candidate.document).map_err(|_| SoftwareError::StateUnavailable)?;
+            let launch = tree
+                .get_mut("launch")
+                .and_then(toml::Value::as_table_mut)
+                .ok_or(SoftwareError::StateUnavailable)?;
+            let key = if launch.get("kind").and_then(toml::Value::as_str) == Some("native") {
+                "executable"
+            } else {
+                "java-command"
+            };
+            launch.insert(
+                key.into(),
+                toml::Value::String(
+                    path.to_str()
+                        .ok_or(SoftwareError::InvalidRequest)?
+                        .replace('\\', "/"),
+                ),
+            );
+            candidate.document =
+                toml::to_string(&tree).map_err(|_| SoftwareError::StateUnavailable)?;
+            candidate
+        }
         WorkKind::Rollback => inner.db.read_with(|tx| -> Result<_> {
             store::authorize(tx.connection(), &inner.db, &work.actor)?;
             store::state(tx.connection())?
@@ -114,10 +163,10 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
         store::authorize(c,&inner.db,&work.actor)?;
         let s=store::state(c)?;
         if s.revision!=expected {return Err(SoftwareError::RevisionConflict);}
-        if matches!(work.kind,WorkKind::Apply(..)) && s.recovery {return Err(SoftwareError::RecoveryRequired);}
+        if matches!(work.kind,WorkKind::Apply(..) | WorkKind::JavaSelect(..)) && s.recovery {return Err(SoftwareError::RecoveryRequired);}
         // Previous is written BEFORE touching the actual launch. During recovery
         // rollback always targets the known old launch, even after a partial write.
-        if matches!(work.kind,WorkKind::Apply(..)) {
+        if matches!(work.kind,WorkKind::Apply(..) | WorkKind::JavaSelect(..)) {
             c.execute("UPDATE software_state SET previous_launch=current_launch,recovery_required=1 WHERE singleton=1",[])?;
         } else {
             c.execute("UPDATE software_state SET recovery_required=1 WHERE singleton=1",[])?;

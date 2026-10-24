@@ -18,7 +18,8 @@ sha2.workspace = true
 md-5 = "=0.10.6"
 sha1.workspace = true
 url.workspace = true
-zip.workspace = true
+zip = { workspace = true, features = ["deflate-flate2"] }
+tar = "0.4"
 flate2.workspace = true
 hex.workspace = true
 uuid.workspace = true

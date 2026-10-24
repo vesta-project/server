@@ -1841,3 +1841,9 @@ from `confirm_edit`. UI follow-up (owned by the files UI engineer): use the serv
 protection flag; allow reading/editing confirm_edit; show a two-step confirmation
 with the Settings ? Players hint for player lists. Keep generic rename/delete and
 uploads disabled for these files. Do not treat protected Minecraft files as hidden.
+
+
+## Java management
+
+See [java-runtimes.md](java-runtimes.md) for GET `/java`, POST `/java/select`,
+POST `/java/download`, job and software compatibility contracts (D5).

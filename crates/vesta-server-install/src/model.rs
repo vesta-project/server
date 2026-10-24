@@ -331,6 +331,9 @@ impl fmt::Debug for InstallPlan {
     }
 }
 impl InstallPlan {
+    pub fn selected_java_major(&self) -> u32 {
+        self.runtime.major
+    }
     fn primary_pin(&self) -> &ArtifactPin {
         self.artifact.as_ref().unwrap_or_else(|| {
             &self
@@ -461,6 +464,9 @@ pub struct Approval {
 }
 impl Approval {
     pub fn review(plan: &InstallPlan, acknowledgments: Acknowledgments) -> Result<Self> {
+        if plan.runtime.major < plan.required_java.major {
+            return Err(InstallError::RuntimeIncompatible);
+        }
         if super::now()? >= plan.expires {
             return Err(InstallError::Expired);
         }

@@ -16,6 +16,9 @@ pub(crate) fn implemented(path: &str) -> bool {
         path,
         "/api/v3/manage/world"
             | "/api/v3/manage/world/new"
+            | "/api/v3/manage/java"
+            | "/api/v3/manage/java/select"
+            | "/api/v3/manage/java/download"
             | "/api/v3/manage/software"
             | "/api/v3/manage/software/versions"
             | "/api/v3/manage/software/plan"
@@ -190,6 +193,82 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             )
         };
     };
+    if action.starts_with("java") {
+        if let Err(e) = vesta_control::java::authorize(host.database(), &subject) {
+            return software_error(e);
+        }
+        let selected = match service.selected_java_path(&subject) {
+            Ok(p) => p,
+            Err(e) => return software_error(e),
+        };
+        if action == "java" && request.method == Method::GET {
+            let config = host.configuration().clone();
+            return match run_async(host, async move {
+                vesta_control::java::inventory(&config, &selected).await
+            }) {
+                Ok(value) => json_value(value),
+                Err(e) => software_error(e),
+            };
+        }
+        if request.method != Method::POST || request.query.is_some() {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        let Some(key) = request.idempotency else {
+            return error(StatusCode::BAD_REQUEST, "idempotency_key_required");
+        };
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Select {
+            runtime_id: Option<String>,
+            custom_path: Option<String>,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Download {
+            major: u32,
+        }
+        let result = if action == "java/select" {
+            let Some(input) = decode::<Select>(request.bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            let config = host.configuration().clone();
+            match run_async(host, async move {
+                vesta_control::java::select(
+                    &config,
+                    &selected,
+                    input.runtime_id.as_deref(),
+                    input.custom_path.as_deref(),
+                )
+                .await
+            }) {
+                Ok(runtime) => service.java_job(
+                    &subject,
+                    Some(std::path::PathBuf::from(runtime.path)),
+                    None,
+                    key,
+                ),
+                Err(e) => Err(e),
+            }
+        } else if action == "java/download" {
+            let Some(input) =
+                decode::<Download>(request.bytes).filter(|d| (8..=99).contains(&d.major))
+            else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            service.java_job(
+                &subject,
+                None,
+                Some((host.configuration().clone(), input.major)),
+                key,
+            )
+        } else {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        };
+        return match result {
+            Ok(job) => envelope(StatusCode::ACCEPTED, json!({"data":job})),
+            Err(e) => software_error(e),
+        };
+    }
     match (action, request.method) {
         ("software", &Method::GET) => match service.status(&subject) {
             Ok(value) => json_value(value),

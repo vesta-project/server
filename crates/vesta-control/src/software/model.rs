@@ -160,6 +160,9 @@ pub struct PreparedPlan {
     pub version: String,
     pub build: Option<u32>,
     pub java: JavaRequirement,
+    pub java_compatible: bool,
+    pub selected_java_major: u32,
+    pub managed_download_major: Option<u32>,
     pub warnings: Vec<Warning>,
     pub risks: Vec<&'static str>,
 }

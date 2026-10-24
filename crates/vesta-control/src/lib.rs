@@ -15,6 +15,7 @@ pub mod files;
 pub mod host;
 mod host_software;
 pub mod identity;
+pub mod java;
 pub mod metrics;
 pub mod minecraft_admission;
 pub mod moderation;

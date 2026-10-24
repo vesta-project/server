@@ -49,6 +49,8 @@ struct PendingRollback {
 enum WorkKind {
     Apply(Box<InstallPlan>, Option<Approval>),
     Rollback,
+    JavaSelect(PathBuf),
+    JavaDownload(Box<crate::config::HostConfiguration>, u32),
 }
 struct Work {
     id: String,
@@ -167,6 +169,89 @@ impl Drop for SoftwareService {
 }
 
 impl SoftwareHandle {
+    pub fn selected_java_path(&self, subject: &Subject) -> Result<PathBuf> {
+        self.authorize(subject)?;
+        self.inner
+            .db
+            .read_with(|tx| -> Result<_> {
+                let state = store::state(tx.connection())?;
+                let tree: toml::Value = toml::from_str(&state.current.document)
+                    .map_err(|_| SoftwareError::StateUnavailable)?;
+                Ok(tree
+                    .get("launch")
+                    .and_then(|v| v.get("java-command").or_else(|| v.get("executable")))
+                    .and_then(toml::Value::as_str)
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| self.inner.java.clone()))
+            })
+            .map_err(Into::into)
+    }
+    pub fn java_job(
+        &self,
+        subject: &Subject,
+        path: Option<PathBuf>,
+        download: Option<(crate::config::HostConfiguration, u32)>,
+        key: &str,
+    ) -> Result<Job> {
+        self.authorize(subject)?;
+        valid_key(key)?;
+        let request_hash = hash(
+            serde_json::json!(["java", path, download.as_ref().map(|(_, m)| m)])
+                .to_string()
+                .as_bytes(),
+        );
+        let mut queue = self
+            .inner
+            .queue
+            .lock()
+            .map_err(|_| SoftwareError::StateUnavailable)?;
+        if queue.stop {
+            return Err(SoftwareError::RuntimeUnavailable);
+        }
+        let (job, created) = self.inner.db.write_with(|tx| -> Result<_> {
+            let c = tx.connection();
+            store::authorize(c, &self.inner.db, subject)?;
+            if let Some(existing) = store::existing(c, subject, key, &request_hash)? {
+                return Ok((existing, false));
+            }
+            let state = store::state(c)?;
+            if state.recovery {
+                return Err(SoftwareError::RecoveryRequired);
+            }
+            Ok((
+                store::admit(
+                    c,
+                    &self.inner.db,
+                    &self.inner.audit,
+                    subject,
+                    if path.is_some() {
+                        "java_select"
+                    } else {
+                        "java_download"
+                    },
+                    key,
+                    &request_hash,
+                    state.revision,
+                )?,
+                true,
+            ))
+        })?;
+        if created {
+            let kind = match (path, download) {
+                (Some(path), None) => WorkKind::JavaSelect(path),
+                (None, Some((c, m))) => WorkKind::JavaDownload(Box::new(c), m),
+                _ => return Err(SoftwareError::InvalidRequest),
+            };
+            queue.work.push_back(Work {
+                id: job.id.clone(),
+                actor: subject.clone(),
+                kind,
+            });
+            self.inner.wake.notify_one();
+        }
+        Ok(job)
+    }
+
     fn authorize(&self, subject: &Subject) -> Result<()> {
         self.inner
             .db
@@ -235,7 +320,7 @@ impl SoftwareHandle {
         let plan = self
             .inner
             .installer
-            .plan(
+            .plan_preview(
                 request.software,
                 &vesta_server_install::Selection {
                     version: Some(request.version),
@@ -243,7 +328,7 @@ impl SoftwareHandle {
                     loader_version: request.loader_version,
                     experimental: request.experimental,
                 },
-                &self.inner.java,
+                &self.selected_java_path(subject)?,
                 &SilentProgressReporter,
             )
             .await?;
@@ -266,6 +351,10 @@ impl SoftwareHandle {
             version: plan.version().into(),
             build: plan.build(),
             java: plan.java_requirement().clone(),
+            java_compatible: plan.selected_java_major() >= plan.java_requirement().major,
+            selected_java_major: plan.selected_java_major(),
+            managed_download_major: (plan.selected_java_major() < plan.java_requirement().major)
+                .then_some(plan.java_requirement().major),
             warnings: plan.warnings().to_vec(),
             risks: vec![
                 "review_backup_before_switch",
@@ -273,6 +362,9 @@ impl SoftwareHandle {
                 "mods_plugins_and_dimensions_may_be_incompatible",
             ],
         };
+        if !response.java_compatible {
+            return Ok(response);
+        }
         let mut plans = self
             .inner
             .plans
