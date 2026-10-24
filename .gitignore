@@ -1,6 +1,12 @@
 # Rust and Node build outputs
 /target/
 node_modules/
+/out/
+/dist/
+/bin/
+
+# Downloaded Minecraft artifacts
+*.jar
 
 # Local runtime installations and diagnostics
 /run/

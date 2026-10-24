@@ -140,13 +140,33 @@ fn malformed_unknown_cross_kind_and_wrong_type_tables_refuse_without_echo() {
         "kind = 'java-argfile'\nargfiles = [5]",
         "kind = 'java-argfile'\nargfiles = ['a']\njar = 'TOP-SECRET'",
         "kind = 'native'\nexecutable = 'x'",
-        "kind = 'native'\nexecutable = 'x'\nstop = 'unsupported'\njvm-args = []",
+        "kind = 'native'\nexecutable = 'x'\nstop = 'unsupported'\njvm-args = 'TOP-SECRET'",
+        "kind = 'native'\nexecutable = 'x'\nstop = 'unsupported'\nrequired-files = [5]",
         "kind = 'native'\nexecutable = 'x'\nstop = 'unsupported'\njava-command = 'TOP-SECRET'",
         "kind = 'native'\nexecutable = 'x'\nstop = 'unsupported'\nargfiles = []",
         "kind = 'native'\nexecutable = 'x'\nstop = 'unsupported'\n[launch.extra]\nvalue = 'TOP-SECRET'",
     ] {
         refused(launch, dir.path());
     }
+}
+
+#[test]
+fn native_launch_preserves_jvm_prefix_and_required_artifacts() {
+    let dir = tempfile::tempdir().unwrap();
+    let plan = parse(
+        "kind = 'native'\nexecutable = 'bin/java'\nstop = 'unsupported'\njvm-args = ['-Xmx1G', '-Dliteral=two words']\nargs = ['Main', 'nogui']\nrequired-files = ['libraries/server.jar']",
+        dir.path(),
+    )
+    .unwrap();
+    assert_eq!(plan.kind(), LaunchKind::Native);
+    assert_eq!(
+        plan.args,
+        ["-Xmx1G", "-Dliteral=two words", "Main", "nogui"]
+    );
+    assert_eq!(
+        plan.required_files,
+        [dir.path().join("game/libraries/server.jar")]
+    );
 }
 
 #[test]

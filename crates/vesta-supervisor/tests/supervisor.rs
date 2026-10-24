@@ -660,11 +660,14 @@ fn retained_client_handles_cannot_exhaust_the_endpoint() {
     for _ in 0..12 {
         let until = Instant::now() + WAIT;
         let mut pipe = loop {
-            match fs::OpenOptions::new()
+            #[cfg(windows)]
+            let connected = fs::OpenOptions::new()
                 .read(true)
                 .write(true)
-                .open(&endpoint)
-            {
+                .open(&endpoint);
+            #[cfg(target_os = "linux")]
+            let connected = std::os::unix::net::UnixStream::connect(&endpoint);
+            match connected {
                 Ok(pipe) => break pipe,
                 Err(_) => {
                     assert!(Instant::now() < until, "endpoint accepts again");
