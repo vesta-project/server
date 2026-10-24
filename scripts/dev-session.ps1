@@ -13,8 +13,14 @@ function global:vesta-rebuild {
     $buildArgs = @('build','--session',$env:VESTA_DEV_SESSION)
     if ($env:VESTA_DEV_RELEASE -eq '1') { $buildArgs += '--release' }
     $buildArgs += $args
-    & $env:VESTA_DEV_TOOL @buildArgs
-    $buildExit = $LASTEXITCODE
+    $savedPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $env:VESTA_DEV_TOOL @buildArgs
+        $buildExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $savedPreference
+    }
     Update-VestaDevPath
     if ($buildExit -ne 0) { throw 'Rebuild/restart failed; see the error above. No processes were force-killed.' }
     Write-Host 'Commands now use the rebuilt binaries. Only an explicitly selected --restart server is restarted.'

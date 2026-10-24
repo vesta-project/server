@@ -146,9 +146,25 @@ for processes still using them and for debugging. Remove old session directories
 manually after their agents/supervisors have stopped. Server data is stored in
 the separate registry and is not part of this build cache.
 
-Windows PowerShell 5.1 is the Windows shell dependency; Linux uses Bash. Linux
-execution still needs platform verification. Windows checks covered command
+Windows PowerShell 5.1 is the Windows shell dependency; Linux uses Bash.
+Windows checks covered command
 resolution for all four executables, live status against the existing dev agent,
 rebuild switching, failed-build retention, setup preview, unchanged parent PATH,
-and Ctrl+C leaving scoped management while preserving the dev shell. Bash syntax
-was checked on Windows using Git Bash; this is not Linux runtime verification.
+and Ctrl+C leaving scoped management while preserving the dev shell. Restart
+unit/ownership tests, protected local status metadata and PowerShell argument/
+failure handling also pass. Ubuntu 24.04 WSL verifies Bash argument/failure
+handling and the real agent restart flow with an owned inert game, both running
+and stopped, in both supervision modes. The opt-in Windows detached-process test
+was refused by the tool session's job containment (`Access is denied`, OS error
+5); independent lifetime safeguards were retained rather than bypassed.
+
+The opt-in lifecycle test requires a complete staged native build in
+`VESTA_DEV_TEST_BIN` and runs with:
+
+```text
+cargo test -p vesta-dev real_restart_preserves_running_and_stopped_games --locked -- --ignored --nocapture --test-threads=1
+```
+
+It creates its own registry and inert test executable; it does not use a real
+Minecraft installation or the existing demo. Failed fixtures are preserved for
+inspection rather than removing data belonging to a potentially surviving process.
