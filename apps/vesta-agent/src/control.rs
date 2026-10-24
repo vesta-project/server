@@ -167,12 +167,16 @@ async fn serve_stream<S: AsyncRead + AsyncWrite + Unpin>(
         }
         Ok(request) if matches!(request.op, Op::Status | Op::PlayersList) => {
             let runtime = runtime.clone();
+            let local_only = fingerprint.is_none();
             match tokio::task::spawn_blocking(move || {
                 if matches!(request.op, Op::Status) {
                     let snapshot = runtime.game_snapshot().map_err(|_| "local_observation_unavailable")?;
                     let readiness = runtime.readiness().ok();
                     Ok(serde_json::json!({
                         "agent": "online",
+                        "agentPid": std::process::id(),
+                        "localOnly": local_only,
+                        "launchBase": std::env::current_dir().ok(),
                         "state": format!("{:?}", snapshot.phase).to_lowercase(),
                         "generation": snapshot.generation.map(|g| g.to_hex()),
                         "readiness": readiness.as_ref().map(|r| format!("{:?}", r.readiness).to_lowercase()),

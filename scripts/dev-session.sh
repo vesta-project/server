@@ -18,10 +18,13 @@ _vesta_dev_update_path() {
 vesta-rebuild() {
     local args=(build --session "$VESTA_DEV_SESSION")
     [[ $VESTA_DEV_RELEASE != 1 ]] || args+=(--release)
-    "$VESTA_DEV_TOOL" "${args[@]}" || return
+    args+=("$@")
+    local result=0
+    "$VESTA_DEV_TOOL" "${args[@]}" || result=$?
     _vesta_dev_update_path || return
-    printf 'Commands now use the rebuilt binaries. Running agents/supervisors still use their previous build.\n'
+    [[ $result == 0 ]] || return "$result"
+    printf 'Commands now use the rebuilt binaries. Only an explicitly selected --restart server is restarted.\n'
 }
 _vesta_dev_update_path || return
 printf 'Vesta dev session | registry: %s\n' "$VESTA_SERVER_ROOT"
-printf 'vesta list | vesta manage <id> | vesta-setup preview | vesta-rebuild | exit\n'
+printf 'vesta list | vesta manage <id> | vesta-setup preview | vesta-rebuild [--restart <id>] | exit\n'

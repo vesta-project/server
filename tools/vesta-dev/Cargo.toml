@@ -8,6 +8,10 @@ publish.workspace = true
 [dependencies]
 serde_json.workspace = true
 uuid.workspace = true
+vesta-control = { path = "../../crates/vesta-control" }
+vesta-state.workspace = true
+vesta-supervisor.workspace = true
+fs2.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Console"] }

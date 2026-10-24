@@ -99,6 +99,12 @@ fn protected_channel_start_stop_restart_pending_eula_and_absent_agent() {
             .unwrap()
             .unwrap();
         assert_eq!(status["agent"], "online");
+        assert_eq!(status["agentPid"], std::process::id());
+        assert_eq!(status["localOnly"], true);
+        assert_eq!(
+            status["launchBase"],
+            serde_json::to_value(std::env::current_dir().unwrap()).unwrap()
+        );
         assert_eq!(status["state"], "stopped");
         let players = control::request_data(db.directory().path(), "owned".into(), Op::PlayersList)
             .await

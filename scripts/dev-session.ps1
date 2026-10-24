@@ -12,11 +12,13 @@ function global:Update-VestaDevPath {
 function global:vesta-rebuild {
     $buildArgs = @('build','--session',$env:VESTA_DEV_SESSION)
     if ($env:VESTA_DEV_RELEASE -eq '1') { $buildArgs += '--release' }
+    $buildArgs += $args
     & $env:VESTA_DEV_TOOL @buildArgs
-    if ($LASTEXITCODE -ne 0) { throw 'Rebuild failed. The previous commands remain selected.' }
+    $buildExit = $LASTEXITCODE
     Update-VestaDevPath
-    Write-Host 'Commands now use the rebuilt binaries. Running agents/supervisors still use their previous build.'
+    if ($buildExit -ne 0) { throw 'Rebuild/restart failed; see the error above. No processes were force-killed.' }
+    Write-Host 'Commands now use the rebuilt binaries. Only an explicitly selected --restart server is restarted.'
 }
 Update-VestaDevPath
 Write-Host "Vesta dev session | registry: $env:VESTA_SERVER_ROOT"
-Write-Host 'vesta list | vesta manage <id> | vesta-setup preview | vesta-rebuild | exit'
+Write-Host 'vesta list | vesta manage <id> | vesta-setup preview | vesta-rebuild [--restart <id>] | exit'

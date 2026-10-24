@@ -1,4 +1,4 @@
-//! Development-only build staging and shell entrypoint. Never manages processes or server data.
+//! Development-only build staging and optional selected-server graceful restart.
 use std::{
     collections::BTreeMap,
     ffi::OsString,
@@ -11,7 +11,8 @@ use std::{
 const BINARIES: [&str; 4] = ["vesta", "vesta-agent", "vesta-supervisor", "vesta-setup"];
 #[cfg(windows)]
 mod console;
-const HELP: &str = "Vesta development shell\n\n  cargo dev [--release] [--server-root <registry>]\n  cargo dev build [--release]\n  cargo run -p vesta-dev -- [same options]\n\nBuilds and stages all four commands. The default opens a child terminal session\nwith temporary PATH and VESTA_SERVER_ROOT. Use vesta-rebuild there; exit returns\nto the original terminal. Build/rebuild never installs, starts or stops a server.\n";
+mod restart;
+const HELP: &str = "Vesta development shell\n\n  cargo dev [--release] [--server-root <registry>]\n  cargo dev build [--release]\n  cargo run -p vesta-dev -- [same options]\n\nBuilds and stages all four commands. The default opens a child terminal session\nwith temporary PATH and VESTA_SERVER_ROOT. Use vesta-rebuild there; exit returns\nto the original terminal. Default builds never install, start or stop a server.\nUse vesta-rebuild --restart <id|name> to gracefully restart one dev server.\n";
 
 #[derive(Default)]
 struct Options {
@@ -19,6 +20,8 @@ struct Options {
     release: bool,
     session: Option<PathBuf>,
     server_root: Option<PathBuf>,
+    restart: Option<String>,
+    local_only: Option<bool>,
 }
 
 fn options(args: impl IntoIterator<Item = OsString>) -> Result<Options, String> {
@@ -37,6 +40,18 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Options, String> 
             Some("--session") if result.build_only && result.session.is_none() => {
                 result.session = Some(args.next().ok_or("missing build session")?.into());
             }
+            Some("--restart") if result.restart.is_none() => {
+                result.restart = Some(
+                    args.next()
+                        .and_then(|s| s.into_string().ok())
+                        .filter(|s| !s.is_empty() && !s.starts_with('-'))
+                        .ok_or("--restart requires a server ID or name")?,
+                );
+            }
+            Some("--local-only") if result.local_only.is_none() => result.local_only = Some(true),
+            Some("--configured-listener") if result.local_only.is_none() => {
+                result.local_only = Some(false)
+            }
             _ => {
                 return Err(format!(
                     "invalid development option: {}",
@@ -44,6 +59,14 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Options, String> 
                 ));
             }
         }
+    }
+    if result.restart.is_some() && (!result.build_only || result.session.is_none()) {
+        return Err(
+            "--restart is only available through vesta-rebuild inside a development session".into(),
+        );
+    }
+    if result.local_only.is_some() && result.restart.is_none() {
+        return Err("listener overrides require --restart <server>".into());
     }
     Ok(result)
 }
@@ -174,6 +197,15 @@ fn run(options: Options) -> Result<i32, String> {
     };
     let bin = stage(&session, &build(&repo, options.release)?)?;
     println!("Build ready: {}", bin.display());
+    if let Some(target) = options.restart.as_deref() {
+        let root = options
+            .server_root
+            .as_ref()
+            .cloned()
+            .or_else(|| std::env::var_os("VESTA_SERVER_ROOT").map(PathBuf::from))
+            .ok_or("restart requires VESTA_SERVER_ROOT or --server-root")?;
+        restart::run(&bin, &session, &root, target, options.local_only)?;
+    }
     if options.build_only {
         return Ok(0);
     }
@@ -238,6 +270,39 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restart_is_explicit_and_requires_a_development_session() {
+        let parse = |args: &[&str]| options(args.iter().map(OsString::from));
+        for args in [
+            vec!["--restart", "example"],
+            vec!["build", "--restart", "example"],
+            vec!["build", "--session", "session", "--restart"],
+            vec!["build", "--session", "session", "--local-only"],
+            vec![
+                "build",
+                "--session",
+                "session",
+                "--restart",
+                "example",
+                "--restart",
+                "other",
+            ],
+        ] {
+            assert!(parse(&args).is_err(), "{args:?}");
+        }
+        let selected = parse(&[
+            "build",
+            "--session",
+            "session",
+            "--restart",
+            "example",
+            "--configured-listener",
+        ])
+        .unwrap();
+        assert_eq!(selected.restart.as_deref(), Some("example"));
+        assert_eq!(selected.local_only, Some(false));
+    }
 
     #[test]
     fn only_executable_binary_artifacts_are_selected() {

@@ -30,6 +30,8 @@ vesta manage dev-server status
 vesta manage dev-server
 vesta-setup preview
 vesta-rebuild
+# Build first, then gracefully restart just this server's agent/supervisor:
+vesta-rebuild --restart dev-server
 exit
 ```
 
@@ -40,11 +42,54 @@ Cargo supplies the executable paths, so custom `CARGO_TARGET_DIR` and Cargo targ
 directory configuration are supported. This workflow builds for the native host;
 do not set Cargo's build target to an incompatible platform for an interactive run.
 
-Running agents and supervisors continue using their original build. Rebuilding
+Without `--restart`, running agents and supervisors continue using their original build. Rebuilding
 does not restart anything, interrupt Minecraft, or clear recovery markers. Copies
 are deliberately staged outside Cargo's output directory so a Windows process
 does not lock the next build's destination. All four binaries stay together so an
 agent can locate the matching supervisor beside itself.
+
+### Rebuild and restart a selected development server
+
+`vesta-rebuild --restart <server_id|name>` builds and stages the complete tool set
+before requesting any interruption. It uses the selected session registry; it
+does not discover or restart unrelated processes. A failed build leaves running
+processes and the previous command selection alone.
+
+After a successful build it reads live local status, requests the existing
+graceful agent shutdown (which stops Minecraft normally), then waits for the
+managed agent lease, runtime lock and separate supervisor lock to be released.
+It preserves recovery markers and refuses unproven shutdown. No process is ever
+force-killed. It checks that the host and launch documents did not change, then
+starts the staged agent with its matching staged supervisor and the same data.
+Minecraft is started only if it was running in the pre-restart observation;
+otherwise it stays stopped. Avoid simultaneous lifecycle/configuration changes
+while the restart is underway. An offline agent or a stopping/draining game is
+refused rather than guessed about. The command verifies the replacement agent's
+PID over the protected local endpoint before restoring the game. Reporting
+"started" confirms a native generation, not Minecraft readiness.
+
+Current agents report their listener mode so it can be preserved. When updating
+an older agent that lacks this metadata, the command refuses before shutdown and
+asks for a one-time explicit selection:
+
+```powershell
+# Normal configured TLS listener (use this for the existing launcher demo):
+vesta-rebuild --restart dev-server --configured-listener
+# An agent deliberately launched with serve --local-only:
+vesta-rebuild --restart dev-server --local-only
+```
+
+For current agents, a contradictory listener override is refused. Restart logs
+are stored in a private directory under the session's `restarts` folder; the
+command prints the exact path. A failed or uncertain shutdown/start is never
+automatically retried or force-killed. If activation fails after shutdown, the
+server can remain stopped or the replacement agent can remain running: inspect
+the printed log/status before taking another action. The newly built commands
+remain selected in the dev shell so recovery uses the new build.
+
+This is development tooling, not installation or signed release activation.
+Already-open dev shells need to be replaced with a fresh `cargo dev` session
+once to load the updated tool and shell function.
 
 ## Select server data
 
