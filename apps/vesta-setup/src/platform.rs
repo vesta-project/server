@@ -416,7 +416,7 @@ mod linux {
         out
     }
 
-    fn unit_contents(root: &Path, executable: &Path) -> String {
+    pub(super) fn unit_contents(root: &Path, executable: &Path) -> String {
         let root_s = root.to_string_lossy();
         let exe_s = executable.to_string_lossy();
         format!(
@@ -427,7 +427,7 @@ mod linux {
         )
     }
 
-    fn unit_is_owned(existing: &[u8], expected: &str) -> bool {
+    pub(super) fn unit_is_owned(existing: &[u8], expected: &str) -> bool {
         existing == expected.as_bytes()
     }
 
@@ -461,7 +461,7 @@ mod linux {
                 if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > 16 * 1024 {
                     return Err("startup unit name is already in use".into());
                 }
-                let mut existing_file = OpenOptions::new()
+                let existing_file = OpenOptions::new()
                     .read(true)
                     .custom_flags(0x20000)
                     .open(&path)
@@ -494,9 +494,9 @@ mod linux {
             .open(&path)
             .map_err(|e| {
                 if e.kind() == std::io::ErrorKind::AlreadyExists {
-                    "startup unit name is already in use".into()
+                    "startup unit name is already in use".to_owned()
                 } else {
-                    "could not create startup unit".into()
+                    "could not create startup unit".to_owned()
                 }
             })?;
         let write_result = file
@@ -582,7 +582,7 @@ mod linux {
         if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > 16 * 1024 {
             return Err("startup unit name is already in use".into());
         }
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .read(true)
             .custom_flags(0x20000)
             .open(path)

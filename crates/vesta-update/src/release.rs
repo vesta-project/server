@@ -687,7 +687,7 @@ fn set_executable(path: &Path) -> Result<(), String> {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-            .map_err(|_| "artifact permission update failed".into())?;
+            .map_err(|_| "artifact permission update failed".to_owned())?;
     }
     #[cfg(not(unix))]
     {
@@ -701,7 +701,7 @@ fn sync_directory(path: &Path) -> Result<(), String> {
     {
         File::open(path)
             .and_then(|f| f.sync_all())
-            .map_err(|_| "install directory sync failed".into())?;
+            .map_err(|_| "install directory sync failed".to_owned())?;
     }
     #[cfg(not(unix))]
     {
