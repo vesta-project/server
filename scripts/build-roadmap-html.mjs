@@ -16,6 +16,9 @@ const planPath = path.join(root, 'docs', 'SERVER_SOFTWARE_IMPLEMENTATION_PLAN.md
 const BLOCK = /<script id="roadmap-data" type="application\/json">([\s\S]*?)<\/script>/;
 
 export function buildData({ status, requirements, plan }) {
+  // Git checkout line endings must not change the generated JSON bytes.
+  requirements = requirements.replace(/\r\n?/g, '\n');
+  plan = plan.replace(/\r\n?/g, '\n');
   // Escape "<" so no string in the JSON can close the surrounding script element.
   return JSON.stringify({ snapshot: status, requirements, plan }).replace(/</g, '\\u003c');
 }

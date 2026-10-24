@@ -4,6 +4,11 @@ import { buildData, renderPage } from './build-roadmap-html.mjs';
 
 const page = '<html><body><script id="roadmap-data" type="application/json">{}</script></body></html>';
 
+test('Windows and Unix checkouts generate identical embedded Markdown', () => {
+  const status={features:[]};
+  assert.equal(buildData({status,requirements:'one\r\ntwo\r\n',plan:'three\r\nfour'}),buildData({status,requirements:'one\ntwo\n',plan:'three\nfour'}));
+});
+
 test('regeneration is idempotent for the same sources', () => {
   const data = buildData({ status: { features: [] }, requirements: 'r', plan: 'p' });
   const once = renderPage(page, data);
