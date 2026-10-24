@@ -14,6 +14,8 @@ pub struct WorldStatus {
     pub configured_seed: String,
     pub exists: bool,
     pub revision: String,
+    #[serde(flatten)]
+    pub details: WorldDetails,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -34,6 +36,12 @@ pub(crate) fn world_generation_seed(bytes: &[u8]) -> Result<String> {
 }
 
 fn parse_seed(bytes: &[u8], split: bool) -> Result<Option<String>> {
+    parse_level(bytes, split).map(|v| v.0)
+}
+pub(crate) fn details(bytes: &[u8]) -> Result<LevelDetails> {
+    parse_level(bytes, false).map(|v| v.1)
+}
+fn parse_level(bytes: &[u8], split: bool) -> Result<(Option<String>, LevelDetails)> {
     if bytes.len() > MAX_LEVEL_BYTES {
         return Err(FileError::TooLarge);
     }
@@ -54,6 +62,7 @@ fn parse_seed(bytes: &[u8], split: bool) -> Result<Option<String>> {
         split,
         level_data: false,
         embedded_worldgen: false,
+        details: LevelDetails::default(),
     };
     if nbt.byte()? != 10 {
         return Err(FileError::Corrupt);
@@ -69,7 +78,10 @@ fn parse_seed(bytes: &[u8], split: bool) -> Result<Option<String>> {
     if !split && nbt.embedded_worldgen && nbt.modern.is_none() && nbt.legacy.is_none() {
         return Err(FileError::Corrupt);
     }
-    Ok(nbt.modern.or(nbt.legacy).map(|seed| seed.to_string()))
+    Ok((
+        nbt.modern.or(nbt.legacy).map(|seed| seed.to_string()),
+        nbt.details,
+    ))
 }
 
 struct Nbt<'a> {
@@ -81,6 +93,7 @@ struct Nbt<'a> {
     split: bool,
     level_data: bool,
     embedded_worldgen: bool,
+    details: LevelDetails,
 }
 impl<'a> Nbt<'a> {
     fn take(&mut self, count: usize) -> Result<&'a [u8]> {
@@ -132,6 +145,9 @@ impl<'a> Nbt<'a> {
                 let value =
                     i64::from_be_bytes(self.take(8)?.try_into().map_err(|_| FileError::Corrupt)?);
                 let names: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+                if names == [b"Data".as_slice(), b"LastPlayed"] {
+                    self.details.last_played_at_ms = Some(value);
+                }
                 let slot = if (self.split && names == [b"data".as_slice(), b"seed"])
                     || (!self.split && names == [b"Data".as_slice(), b"WorldGenSettings", b"seed"])
                 {
@@ -167,6 +183,33 @@ impl<'a> Nbt<'a> {
                 let count = self.count()?;
                 if count > self.work || (element == 0 && count != 0) {
                     return Err(FileError::TooLarge);
+                }
+                if path.len() == 3
+                    && path[0] == b"Data"
+                    && path[1] == b"DataPacks"
+                    && matches!(path[2].as_slice(), b"Enabled" | b"Disabled")
+                {
+                    if element != 8 || count > 2048 {
+                        return Err(FileError::Corrupt);
+                    }
+                    let mut packs = Vec::new();
+                    for _ in 0..count {
+                        let value = String::from_utf8(self.text()?.to_vec())
+                            .map_err(|_| FileError::Corrupt)?;
+                        if value.len() > 1024 || packs.contains(&value) {
+                            return Err(FileError::Corrupt);
+                        }
+                        packs.push(value);
+                    }
+                    let slot = if path[2] == b"Enabled" {
+                        &mut self.details.enabled
+                    } else {
+                        &mut self.details.disabled
+                    };
+                    if slot.replace(packs).is_some() {
+                        return Err(FileError::Corrupt);
+                    }
+                    return Ok(());
                 }
                 // List contents do not extend a named compound path.
                 path.push(Vec::new());
@@ -205,6 +248,39 @@ impl<'a> Nbt<'a> {
     }
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct WorldDetails {
+    pub size_bytes: Option<String>,
+    pub size_complete: bool,
+    pub size_observed_at_ms: Option<i64>,
+    pub last_modified_at_ms: Option<i64>,
+    pub last_played_at_ms: Option<i64>,
+    pub dimensions: Vec<WorldDimension>,
+    pub datapacks: Vec<Datapack>,
+    pub datapack_state_source: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorldDimension {
+    pub id: String,
+    pub present: bool,
+    pub folders: Vec<String>,
+    pub layout: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Datapack {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub path: Option<String>,
+    pub enabled: Option<bool>,
+}
+#[derive(Default)]
+pub(crate) struct LevelDetails {
+    pub last_played_at_ms: Option<i64>,
+    pub enabled: Option<Vec<String>>,
+    pub disabled: Option<Vec<String>>,
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -222,6 +298,43 @@ pub(crate) mod tests {
         nbt.extend(seed.to_be_bytes());
         nbt.extend(if modern { vec![0, 0, 0] } else { vec![0, 0] });
         gzip(&nbt)
+    }
+    pub(crate) fn level_with_packs() -> Vec<u8> {
+        let mut nbt = vec![10, 0, 0, 10, 0, 4, b'D', b'a', b't', b'a'];
+        for (key, value) in [("RandomSeed", 42i64), ("LastPlayed", 1791115200000i64)] {
+            nbt.push(4);
+            nbt.extend((key.len() as u16).to_be_bytes());
+            nbt.extend(key.as_bytes());
+            nbt.extend(value.to_be_bytes());
+        }
+        nbt.extend([10, 0, 9]);
+        nbt.extend(b"DataPacks");
+        for (key, values) in [
+            ("Enabled", vec!["vanilla", "file/enabled.zip"]),
+            ("Disabled", vec!["file/disabled"]),
+        ] {
+            nbt.push(9);
+            nbt.extend((key.len() as u16).to_be_bytes());
+            nbt.extend(key.as_bytes());
+            nbt.push(8);
+            nbt.extend((values.len() as i32).to_be_bytes());
+            for value in values {
+                nbt.extend((value.len() as u16).to_be_bytes());
+                nbt.extend(value.as_bytes());
+            }
+        }
+        nbt.extend([0, 0, 0]);
+        gzip(&nbt)
+    }
+    #[test]
+    fn saved_datapack_lists_and_last_played_are_bounded_metadata() {
+        let details = details(&level_with_packs()).unwrap();
+        assert_eq!(details.last_played_at_ms, Some(1791115200000));
+        assert_eq!(
+            details.enabled.unwrap(),
+            vec!["vanilla", "file/enabled.zip"]
+        );
+        assert_eq!(details.disabled.unwrap(), vec!["file/disabled"]);
     }
     fn gzip(bytes: &[u8]) -> Vec<u8> {
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());

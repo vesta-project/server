@@ -1856,3 +1856,9 @@ is rechecked against the policy actor on agent startup; refusal leaves it stoppe
 and raises a notification. `sleep` requires offline_status. The trusted local
 environment override `VESTA_AGENT_STAY_STOPPED=1` forces stay-stopped at startup;
 the dev shell sets it for staged agents so a restart never boots Minecraft.
+
+
+## World details
+
+See [world-details.md](world-details.md) for extended GET `/world`, generation-bound
+POST `/world/datapacks/toggle`, saved metadata semantics and D1 launcher removals.

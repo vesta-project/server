@@ -16,6 +16,7 @@ pub(crate) fn implemented(path: &str) -> bool {
         path,
         "/api/v3/manage/world"
             | "/api/v3/manage/world/new"
+            | "/api/v3/manage/world/datapacks/toggle"
             | "/api/v3/manage/java"
             | "/api/v3/manage/java/select"
             | "/api/v3/manage/java/download"
@@ -103,6 +104,81 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         {
             Ok(value) => ok(value),
             Err(e) => world_error(e),
+        };
+    }
+    if action == "world/datapacks/toggle" {
+        if request.method != Method::POST || request.query.is_some() {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        if let Err(e) = host
+            .management()
+            .authorize(token, Capability::ConfigEdit, None)
+        {
+            return management_error(e);
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Toggle {
+            pack_id: String,
+            enabled: bool,
+            expected_generation: String,
+        }
+        let Some(input) = decode::<Toggle>(request.bytes) else {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        };
+        let Ok(generation) =
+            vesta_control::operations::GenerationId::parse_hex(&input.expected_generation)
+        else {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        };
+        if host
+            .runtime()
+            .game_snapshot()
+            .ok()
+            .and_then(|s| s.generation)
+            != Some(generation)
+        {
+            return error(StatusCode::CONFLICT, "datapack_requires_running_game");
+        }
+        let world = match host.files().world(&subject) {
+            Ok(w) => w,
+            Err(e) => return world_error(e),
+        };
+        if !world
+            .details
+            .datapacks
+            .iter()
+            .any(|p| p.id == input.pack_id && p.kind != "missing")
+            || input.pack_id.chars().any(char::is_control)
+        {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        let Some(key) = super::key(
+            request.idempotency,
+            host.management().server_id(),
+            subject.device.as_str(),
+            request.path,
+        ) else {
+            return error(StatusCode::BAD_REQUEST, "idempotency_key_required");
+        };
+        let line = format!(
+            "datapack {} {}",
+            if input.enabled { "enable" } else { "disable" },
+            serde_json::to_string(&input.pack_id).expect("string")
+        );
+        return match host.runtime().submit_game(
+            &subject,
+            vesta_control::operations::GameCommand::Console {
+                expected_generation: generation,
+                line,
+            },
+            &key,
+        ) {
+            Ok(
+                vesta_control::operations::Admission::Created(op)
+                | vesta_control::operations::Admission::Existing(op),
+            ) => ok(super::summary(&op)),
+            Err(e) => super::operation_error(e),
         };
     }
     if action.starts_with("sftp") {

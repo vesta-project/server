@@ -30,6 +30,7 @@ mod stream;
 pub(crate) use sftp::SftpWrite;
 mod upload;
 mod world;
+mod world_details;
 pub use remote::RemoteFileMutation;
 pub use stream::{
     FILE_CHUNK_BYTES, FileStream, LinePage, MAX_RANGE_BYTES, MAX_TEXT_LINES, encoding_hint,
@@ -246,6 +247,11 @@ pub struct FileBrowser {
     remote_key: Option<String>,
     remote_outcome: Option<serde_json::Value>,
     world_write: bool,
+    world_sizes: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, (std::time::Instant, world_details::Size)>,
+        >,
+    >,
     properties_write: bool,
     content_write: bool,
     stopped_guard: Option<std::sync::Arc<offline_whitelist::StoppedGuard>>,
@@ -274,6 +280,7 @@ impl FileBrowser {
             remote_key: None,
             remote_outcome: None,
             world_write: false,
+            world_sizes: Default::default(),
             properties_write: false,
             content_write: false,
             stopped_guard: None,

@@ -54,6 +54,12 @@ impl FileBrowser {
         revision.update([u8::from(hash.is_some())]);
         revision.update(&bytes);
         revision.update([u8::from(exists)]);
+        let level_details = metadata
+            .as_ref()
+            .map(|m| crate::world::details(m.bytes()))
+            .transpose()?
+            .unwrap_or_default();
+        let details = self.world_details(subject, &name, level_details)?;
         let seed = if let Some(metadata) = metadata {
             revision.update(metadata.bytes());
             match crate::world::seed(metadata.bytes())? {
@@ -86,6 +92,7 @@ impl FileBrowser {
                 configured_seed,
                 exists,
                 revision: format!("{:x}", revision.finalize()),
+                details,
             },
             bytes,
             hash,
@@ -169,12 +176,14 @@ impl FileBrowser {
                 revision.update([1]);
                 revision.update(&edited);
                 revision.update([0]);
+                let details = self.world_details(subject, &name, Default::default())?;
                 let status = WorldStatus {
                     name,
                     seed: None,
                     configured_seed: patch.seed.clone(),
                     exists: false,
                     revision: format!("{:x}", revision.finalize()),
+                    details,
                 };
                 let mut preserved = Vec::new();
                 for directory in [

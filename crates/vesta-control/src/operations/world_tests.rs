@@ -186,3 +186,73 @@ fn world_selection_refuses_wrong_name_running_game_and_revoked_authority() {
     );
     assert_eq!(fs::read(h.cwd.join("server.properties")).unwrap(), before);
 }
+
+#[test]
+fn world_details_include_split_dimensions_pack_states_and_cached_disk_size() {
+    let h = Harness::new(false);
+    let files = files(&h);
+    fs::write(
+        h.cwd.join("world/level.dat"),
+        crate::world::tests::level_with_packs(),
+    )
+    .unwrap();
+    fs::create_dir_all(h.cwd.join("world_nether/DIM-1/region")).unwrap();
+    fs::write(
+        h.cwd.join("world_nether/DIM-1/region/r.0.0.mca"),
+        [1u8; 1024],
+    )
+    .unwrap();
+    fs::create_dir_all(h.cwd.join("world/datapacks/disabled")).unwrap();
+    fs::write(h.cwd.join("world/datapacks/enabled.zip"), b"fixture zip").unwrap();
+    fs::write(
+        h.cwd.join("world/datapacks/new.zip"),
+        b"not yet in level.dat",
+    )
+    .unwrap();
+    let first = files.world(&h.subject).unwrap();
+    assert!(first.details.size_complete);
+    assert!(
+        first
+            .details
+            .size_bytes
+            .as_ref()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            > 1024
+    );
+    assert_eq!(first.details.last_played_at_ms, Some(1791115200000));
+    assert!(
+        first
+            .details
+            .dimensions
+            .iter()
+            .any(|d| d.id == "nether" && d.present && d.layout == "split")
+    );
+    assert!(
+        first
+            .details
+            .datapacks
+            .iter()
+            .any(|p| p.id == "file/enabled.zip" && p.enabled == Some(true))
+    );
+    assert!(
+        first
+            .details
+            .datapacks
+            .iter()
+            .any(|p| p.id == "file/disabled" && p.enabled == Some(false))
+    );
+    assert!(
+        first
+            .details
+            .datapacks
+            .iter()
+            .any(|p| p.id == "file/new.zip" && p.enabled.is_none())
+    );
+    fs::write(h.cwd.join("world/new-chunk"), [2u8; 512]).unwrap();
+    assert_eq!(
+        files.world(&h.subject).unwrap().details.size_bytes,
+        first.details.size_bytes
+    );
+}
