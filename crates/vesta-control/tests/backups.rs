@@ -53,6 +53,8 @@ fn profile(name: &str, mode: BackupMode, keep_last: u32) -> BackupProfile {
         on_mutation: MutationPolicy::FailWorld,
         warn_seconds: 0,
         max_snapshots: None,
+        include: Vec::new(),
+        exclude: Vec::new(),
     }
 }
 
@@ -786,6 +788,8 @@ fn policy_document(profiles: &[(&str, &str, u32)], max_snapshots: Option<u32>) -
                 on_mutation: None,
                 warn_seconds: Some(0),
                 max_snapshots: None,
+                include: Vec::new(),
+                exclude: Vec::new(),
             })
             .collect(),
         limits: LimitsDocument {
@@ -813,7 +817,6 @@ fn an_owner_edits_the_backup_policy_at_runtime_with_revision_checks() {
     );
     // Invalid documents never reach storage.
     for bad in [
-        policy_document(&[], None),
         policy_document(&[("hourly", "paused", 3)], None),
         policy_document(&[("Bad Name", "stopped", 3)], None),
         policy_document(&[("a", "stopped", 1), ("a", "stopped", 1)], None),
@@ -877,7 +880,7 @@ fn an_owner_edits_the_backup_policy_at_runtime_with_revision_checks() {
     // A stored policy that no longer validates refuses to open rather than guessing.
     f.db.write(|c| {
         c.execute(
-            "UPDATE backup_policy SET policy_json='{\"profiles\":[]}'",
+            "UPDATE backup_policy SET policy_json='{\"profiles\":[{\"name\":\"bad\",\"mode\":\"invalid\"}]}'",
             [],
         )?;
         Ok(())
@@ -900,4 +903,100 @@ fn an_owner_edits_the_backup_policy_at_runtime_with_revision_checks() {
         },
     );
     assert_eq!(refused.err(), Some(BackupError::State));
+}
+
+#[test]
+fn remote_configuration_initializes_filters_persists_and_replays_without_overwriting() {
+    let mut f = fixture();
+    f.settings.profiles.clear();
+    let (backups, _, _) = open(&f, false);
+    assert!(!backups.repository_initialized());
+    let mut doc = policy_document(&[("daily", "stopped", 7)], None);
+    doc.profiles[0].include = vec!["world".into(), "server.properties".into()];
+    doc.profiles[0].exclude = vec!["world/region.mca".into()];
+    assert_eq!(
+        backups.configure(&subject(VIEWER, VIEWER_DEVICE), None, &doc, true, "setup"),
+        Err(BackupError::Forbidden)
+    );
+    assert!(!backups.repository_initialized());
+    assert_eq!(
+        backups.configure(&owner(), None, &doc, true, "setup"),
+        Ok(1)
+    );
+    assert!(backups.repository_initialized());
+    assert_eq!(
+        backups.configure(&owner(), None, &doc, true, "setup"),
+        Ok(1)
+    );
+    assert_eq!(
+        backups.configure(&owner(), None, &doc, true, "stale"),
+        Err(BackupError::PolicyConflict)
+    );
+    let id = backups
+        .submit(&owner(), "daily", JobKind::Backup, None)
+        .unwrap();
+    let job = wait(&backups, &id);
+    assert_eq!(job.state, JobState::Succeeded, "{:?}", job.error_code);
+    let restored = backups
+        .submit(
+            &owner(),
+            "daily",
+            restore(&job.snapshot_id.unwrap(), &[]),
+            None,
+        )
+        .unwrap();
+    assert_eq!(wait(&backups, &restored).state, JobState::Succeeded);
+    let files = tree(&f.settings.restore_root.as_ref().unwrap().join(restored));
+    assert!(files.contains_key("world/level.dat"));
+    assert!(files.contains_key("server.properties"));
+    assert!(!files.contains_key("world/region.mca"));
+    assert!(!files.contains_key("logs/latest.log"));
+    let empty = policy_document(&[], None);
+    assert_eq!(
+        backups.configure(&owner(), Some(1), &empty, false, "disable"),
+        Ok(2)
+    );
+    assert!(backups.policy().profiles.is_empty());
+    assert_eq!(
+        backups.configure(&owner(), Some(1), &empty, false, "setup"),
+        Err(BackupError::IdempotencyConflict)
+    );
+    drop(backups);
+    let (backups, _, _) = open(&f, false);
+    assert_eq!(backups.policy().revision, Some(2));
+    assert_eq!(
+        backups.configure(&owner(), None, &doc, true, "setup"),
+        Ok(1)
+    );
+    assert!(
+        backups.policy().profiles.is_empty(),
+        "a replay cannot resurrect a deleted profile"
+    );
+    let count: i64 = f.db.read(|c| Ok(c.query_row("SELECT count(*) FROM audit_events WHERE action IN ('backups.repository.configure','backups.config.update')", [], |r| r.get(0))?)).unwrap();
+    assert_eq!(count, 2);
+    let mut invalid = doc;
+    invalid.profiles[0].include = vec!["../state".into()];
+    assert_eq!(
+        backups.configure(&owner(), Some(2), &invalid, true, "escape"),
+        Err(BackupError::Invalid)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn remote_repository_initialization_refuses_a_junction_before_writing() {
+    let mut f = fixture();
+    let target = f._temp.path().join("external");
+    fs::create_dir(&target).unwrap();
+    let junction = f._temp.path().join("linked-repository");
+    let status = std::process::Command::new("cmd")
+        .args(["/d", "/c", "mklink", "/J"])
+        .arg(&junction).arg(&target).output().unwrap().status;
+    assert!(status.success());
+    f.settings.repository = BackupRepository::Local(junction);
+    let (backups, _, _) = open(&f, false);
+    let doc = policy_document(&[("daily", "stopped", 7)], None);
+    assert_eq!(backups.configure(&owner(), None, &doc, true, "linked-setup"), Err(BackupError::Invalid));
+    assert!(!target.join("config.json").exists());
+    assert_eq!(backups.policy().revision, None);
 }

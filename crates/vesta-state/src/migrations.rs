@@ -29,8 +29,24 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         23 => apply_v23(c),
         24 => apply_v24(c),
         25 => apply_v25(c),
+        26 => apply_v26(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
+}
+
+/// Backup configuration is reserved to owner/administrator, never remotely delegable.
+fn apply_v26(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(
+        r#"
+        DROP TRIGGER role_capabilities_builtin_no_insert;
+        INSERT OR IGNORE INTO role_capabilities(role_id,capability,scope)
+            SELECT id,'backups.configure','*' FROM roles WHERE id='administrator';
+        CREATE TRIGGER role_capabilities_builtin_no_insert BEFORE INSERT ON role_capabilities
+        WHEN (SELECT builtin FROM roles WHERE id=NEW.role_id)=1
+        BEGIN SELECT RAISE(ABORT, 'builtin roles are immutable'); END;
+    "#,
+    )?;
+    Ok(())
 }
 
 /// Preserve existing release rows while admitting native platform-reference artifacts.

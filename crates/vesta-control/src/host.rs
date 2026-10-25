@@ -645,51 +645,50 @@ fn compose(
         .start_driver(cell.clone())
         .map_err(HostError::Supervisor)?;
     let (event_sink, backup_events) = mpsc::channel();
-    let backups = match config.backups() {
-        None => None,
-        Some(settings) => {
-            let observed = cell.clone();
-            let event_sink = Mutex::new(event_sink);
-            let state = db.directory().clone();
-            Some(Arc::new(
-                Backups::open(
-                    db.clone(),
-                    settings.clone(),
-                    config.game(),
-                    BackupEnvironment {
-                        observe: Box::new(move || {
-                            let runtime = observed.get().ok_or("backup_runtime_unavailable")?;
-                            let snapshot = runtime
-                                .game_snapshot()
-                                .map_err(|_| "backup_game_state_unproven")?;
-                            if let Some(health) = runtime
-                                .supervision()
-                                .map_err(|_| "backup_game_state_unproven")?
-                                && (health.orphan_running
-                                    || health.launch_unresolved
-                                    || health.observation_failed)
-                            {
-                                return Err("backup_game_state_unproven");
-                            }
-                            Ok(snapshot.generation)
-                        }),
-                        supervisor: if supervised {
-                            vesta_supervisor::SupervisorClient::new(&state).ok()
-                        } else {
-                            None
-                        },
-                        start_gate: gate.clone(),
-                        events: Box::new(move |event| {
-                            if let Ok(sink) = event_sink.lock() {
-                                let _ = sink.send(event);
-                            }
-                        }),
-                        protected: config.host_protected_paths().to_vec(),
+    let default_backups = crate::config::BackupSettings::for_instance(config.base());
+    let backups = {
+        let settings = config.backups().unwrap_or(&default_backups);
+        let observed = cell.clone();
+        let event_sink = Mutex::new(event_sink);
+        let state = db.directory().clone();
+        Some(Arc::new(
+            Backups::open(
+                db.clone(),
+                settings.clone(),
+                config.game(),
+                BackupEnvironment {
+                    observe: Box::new(move || {
+                        let runtime = observed.get().ok_or("backup_runtime_unavailable")?;
+                        let snapshot = runtime
+                            .game_snapshot()
+                            .map_err(|_| "backup_game_state_unproven")?;
+                        if let Some(health) = runtime
+                            .supervision()
+                            .map_err(|_| "backup_game_state_unproven")?
+                            && (health.orphan_running
+                                || health.launch_unresolved
+                                || health.observation_failed)
+                        {
+                            return Err("backup_game_state_unproven");
+                        }
+                        Ok(snapshot.generation)
+                    }),
+                    supervisor: if supervised {
+                        vesta_supervisor::SupervisorClient::new(&state).ok()
+                    } else {
+                        None
                     },
-                )
-                .map_err(|e| HostError::Supervisor(e.code()))?,
-            ))
-        }
+                    start_gate: gate.clone(),
+                    events: Box::new(move |event| {
+                        if let Ok(sink) = event_sink.lock() {
+                            let _ = sink.send(event);
+                        }
+                    }),
+                    protected: config.host_protected_paths().to_vec(),
+                },
+            )
+            .map_err(|e| HostError::Supervisor(e.code()))?,
+        ))
     };
     let actions = Arc::new(HostActions::new(
         db.clone(),

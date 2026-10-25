@@ -309,14 +309,14 @@ impl Capability {
     }
 
     pub const fn owner_reserved(self) -> bool {
-        matches!(
-            self,
-            Self::BackupsRestore | Self::RecoveryExport | Self::BackupsConfigure
-        )
+        matches!(self, Self::BackupsRestore | Self::RecoveryExport)
     }
 
     pub const fn admin_reserved(self) -> bool {
-        matches!(self, Self::CredentialsManage | Self::SecurityManage)
+        matches!(
+            self,
+            Self::CredentialsManage | Self::SecurityManage | Self::BackupsConfigure
+        )
     }
 
     /// Whether remote delegation may carry this capability.

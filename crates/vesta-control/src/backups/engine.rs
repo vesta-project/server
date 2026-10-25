@@ -297,7 +297,7 @@ impl Engine {
         }
     }
 
-    fn require_initialized(&self) -> Result<()> {
+    pub fn require_initialized(&self) -> Result<()> {
         let bytes = match self.store.get("config.json") {
             Ok(bytes) => bytes,
             Err(StoreError::NotFound) => return Err(EngineError::Failed),

@@ -493,6 +493,7 @@ mod tests {
         fs::write(&java, b"inert never launched").unwrap();
         let receipt = Receipt {
             schema: 1,
+            processed: None,
             install_id: id,
             plan_hash: "a".repeat(64),
             software: vesta_server_install::Software::Vanilla,

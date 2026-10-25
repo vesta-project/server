@@ -197,6 +197,9 @@ pub struct BackupProfile {
     /// Most restore points this profile may hold after retention; a backup that would
     /// exceed it is refused (nothing is deleted to make room).
     pub max_snapshots: Option<u32>,
+    /// Literal game-relative roots; empty includes worlds, configs and other game files.
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
 }
 
 /// Default free space kept on the repository disk and, during restores, the game disk.
@@ -272,7 +275,7 @@ pub enum BackupRepository {
     S3(S3Repository),
 }
 
-/// Trusted backup configuration. Backups stay off unless this table exists.
+/// Trusted repository configuration. Without host settings, the instance default is used.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BackupSettings {
     pub repository: BackupRepository,
@@ -281,6 +284,14 @@ pub struct BackupSettings {
     pub limits: BackupLimits,
 }
 impl BackupSettings {
+    pub fn for_instance(base: &Path) -> Self {
+        Self {
+            repository: BackupRepository::Local(base.join("backups/repository")),
+            restore_root: Some(base.join("backups/restores")),
+            profiles: Vec::new(),
+            limits: BackupLimits::default(),
+        }
+    }
     pub fn profile(&self, name: &str) -> Option<&BackupProfile> {
         self.profiles.iter().find(|p| p.name == name)
     }
@@ -289,14 +300,15 @@ impl BackupSettings {
 pub const DEFAULT_WARN_SECONDS: u32 = 60;
 
 /// The rules for backup profiles and limits, wherever they come from (host.toml or a
-/// policy edited at runtime): 1 to 16 uniquely named profiles, bounded retention and
+/// policy edited at runtime): 0 to 16 uniquely named profiles, bounded retention and
 /// warnings, and no zero caps (a zero cap could only ever refuse; omit it instead).
 pub fn validate_backup_policy(profiles: &[BackupProfile], limits: &BackupLimits) -> Result<()> {
-    if profiles.is_empty() || profiles.len() > MAX_BACKUP_PROFILES {
+    if profiles.len() > MAX_BACKUP_PROFILES {
         return Err(ConfigError::InvalidDocument);
     }
     for (index, p) in profiles.iter().enumerate() {
-        if !valid_profile_name(&p.name)
+        if !crate::backups::ignore::valid_selection(&p.include, &p.exclude)
+            || !valid_profile_name(&p.name)
             || profiles[..index].iter().any(|q| q.name == p.name)
             || [p.keep_last, p.keep_daily, p.keep_weekly, p.keep_monthly]
                 .iter()
@@ -758,6 +770,8 @@ impl HostConfiguration {
                         on_mutation: p.on_mutation,
                         warn_seconds: p.warn_seconds.unwrap_or(DEFAULT_WARN_SECONDS),
                         max_snapshots: p.max_snapshots,
+                        include: p.include,
+                        exclude: p.exclude,
                     })
                     .collect();
                 let limits = match wire.limits {
@@ -1252,6 +1266,10 @@ struct WireBackupProfile {
     on_mutation: MutationPolicy,
     warn_seconds: Option<u32>,
     max_snapshots: Option<u32>,
+    #[serde(default)]
+    include: Vec<String>,
+    #[serde(default)]
+    exclude: Vec<String>,
 }
 
 #[derive(Deserialize)]

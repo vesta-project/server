@@ -241,7 +241,10 @@ fn server(host: &NetworkHost, mut value: serde_json::Value) -> serde_json::Value
     value["agent_version"] = serde_json::json!(env!("CARGO_PKG_VERSION"));
     value["minecraft_version"] = serde_json::json!(pack.minecraft_version());
     value["pack_version"] = serde_json::json!(pack.version());
-    value["backups_configured"] = serde_json::json!(host.backups().is_some());
+    value["backups_configured"] = serde_json::json!(
+        host.backups()
+            .is_some_and(|b| !b.policy().profiles.is_empty())
+    );
     value["join_address"] = serde_json::json!(pack.join().map(|join| {
         if join.address().contains(':') {
             format!("[{}]:{}", join.address(), join.port())

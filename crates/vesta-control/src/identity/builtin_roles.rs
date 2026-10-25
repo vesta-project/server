@@ -112,6 +112,7 @@ const ADMINISTRATOR_CAPABILITIES: &[Capability] = &[
     Capability::AutomationView,
     Capability::AutomationManage,
     Capability::NotificationsView,
+    Capability::BackupsConfigure,
     Capability::PrincipalsView,
     Capability::PrincipalsManage,
     Capability::DevicesRevoke,

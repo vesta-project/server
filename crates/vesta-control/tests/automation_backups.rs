@@ -69,6 +69,8 @@ fn a_manual_workflow_runs_a_backup_and_revocation_suspends_it() {
             on_mutation: MutationPolicy::FailWorld,
             warn_seconds: 0,
             max_snapshots: None,
+            include: Vec::new(),
+            exclude: Vec::new(),
         }],
         limits: vesta_control::config::BackupLimits {
             min_free_bytes: 0,

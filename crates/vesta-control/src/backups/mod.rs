@@ -375,6 +375,33 @@ pub fn initialize_repository(
         .map_err(EngineError::code)
 }
 
+/// Remote setup never follows symlinks or Windows junctions in repository ancestors.
+/// The destination itself is selected by trusted host configuration, never the request.
+fn safe_repository_location(settings: &BackupSettings) -> bool {
+    let BackupRepository::Local(root) = &settings.repository else {
+        return true;
+    };
+    for path in root.ancestors() {
+        match fs::symlink_metadata(path) {
+            Ok(meta) => {
+                if !meta.is_dir() || meta.file_type().is_symlink() {
+                    return false;
+                }
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    if meta.file_attributes() & 0x400 != 0 {
+                        return false;
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return false,
+        }
+    }
+    true
+}
+
 impl Backups {
     /// Open the service and recover interrupted jobs. Does not run anything yet.
     pub fn open(
@@ -967,7 +994,9 @@ impl Inner {
     }
 
     fn backup(&self, profile: &BackupProfile) -> Outcome {
-        let ignore = match ignore_file(&self.game) {
+        let ignore = match ignore_file(&self.game)
+            .and_then(|ignore| ignore.with_selection(&profile.include, &profile.exclude))
+        {
             Ok(ignore) => ignore,
             Err(code) => return Outcome::failed(code),
         };

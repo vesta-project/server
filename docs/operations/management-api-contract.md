@@ -1235,8 +1235,8 @@ production is host-only. Title/body/source are bounded to 256/8,192/128 bytes.
 | `POST backups/jobs/{id}/resolve-recovery` | `backups.restore` | `{}` | HTTP 200 `{job_id:string,state:"failed",recovery:"resolved_by_user"}` |
 | `GET backups/safety-snapshots` | `backups.view` | required `profile=<profile>` only | `{profile:string,snapshots:[{id:string,time:string}]}` |
 | `GET backups/policy` | `backups.view` | no query | `{source:"host_config"|"stored",revision:integer|null,profiles:[PolicyProfile],limits:{max_snapshots:integer|null,max_repository_bytes:integer|null,min_free_bytes:integer}}` |
-| `PUT backups/policy` | `backups.configure` (owner-reserved) | `{expected_revision:integer|null,profiles:[PolicyProfile],limits?:{max_snapshots?:integer,max_repository_bytes?:integer,min_free_bytes?:integer}}`; 1–16 profiles; no zero caps | `{source:"stored",revision:integer}`; stale `expected_revision` is 409 `backup_policy_revision_conflict`; never replay-cached |
-| `POST backups/policy/reset` | `backups.configure` (owner-reserved) | `{expected_revision:integer}` | `{source:"host_config",revision:null}`; 409 on a stale revision |
+| `PUT backups/policy` | `backups.configure` (owner/administrator-reserved) | `{expected_revision:integer|null,profiles:[PolicyProfile],limits?:{max_snapshots?:integer,max_repository_bytes?:integer,min_free_bytes?:integer}}`; 0–16 profiles; no zero caps | `{source:"stored",revision:integer}`; stale `expected_revision` is 409 `backup_policy_revision_conflict`; never replay-cached |
+| `POST backups/policy/reset` | `backups.configure` (owner/administrator-reserved) | `{expected_revision:integer}` | `{source:"host_config",revision:null}`; 409 on a stale revision |
 | `POST recovery/export` | `recovery.export` (owner-reserved) | `{passphrase?:string}` (8–1024 bytes) | HTTP 200 with the export itself: `application/json` without a passphrase, `application/octet-stream` (encrypted format, see recovery-export.md) with one. Built in memory up to 64 MiB; larger is 413 `recovery_export_too_large_use_local_command`. Audited with whether it was encrypted; the passphrase is never stored, audited or replay-cached |
 | `GET backups/storage` | `backups.view` | no query | `{repository_bytes:integer,restore_points:integer,safety_snapshots:integer,free_bytes:integer|null,limits:{max_snapshots:integer|null,max_repository_bytes:integer|null,min_free_bytes:integer},backups_stopped:"backup_snapshot_limit_reached"|"backup_storage_limit_reached"|"backup_disk_space_low"|null}`; single listing at a time like snapshot listing |
 
@@ -1248,7 +1248,7 @@ BackupProfile = {name:string,mode:"online"|"stopped",keep_last:integer,
 
 PolicyProfile = {name:string,mode:"online"|"stopped",keep_last?:integer,keep_daily?:integer,
   keep_weekly?:integer,keep_monthly?:integer,on_mutation?:"warn"|"fail-world"|"fail-any",
-  warn_seconds?:integer,max_snapshots?:integer|null}; omitted fields take the host.toml
+  warn_seconds?:integer,max_snapshots?:integer|null,include?:string[],exclude?:string[]}; omitted fields take the host.toml
   defaults (retention 0, fail-world, 60 s warning, no cap). Unknown fields are refused;
   repository, S3 and restore-root settings cannot be set through the API.
 BackupJob = {id:string,profile:string,kind:"backup"|"verify"|"restore"|"restore_in_place",
@@ -1279,8 +1279,9 @@ restore-root/job-ID folder. It never replaces a running/stopped game's files,
 starts the game or changes its configured world. The listing's legacy
 `restore_mode:"inspection_only"` describes that inspection route, not in-place
 jobs; in-place mutation and job-detail responses do not claim inspection-only. `restored_to` is returned only when it matches the
-current trusted configuration-derived job directory. Repository paths, S3
-credentials and native engine/storage diagnostics are never projected. Snapshot
+current trusted configuration-derived job directory. Repository paths are exposed only by
+the reserved `backups/config` setup route; S3 credentials and native engine/storage
+diagnostics are never projected. Snapshot
 projections deliberately omit internal tags and native source paths, and validate
 canonical RFC3339/RFC3339Nano dates before returning `time`; malformed metadata
 returns a fixed unavailable error rather than echoing native text. `changed_paths`
@@ -1868,3 +1869,43 @@ POST `/world/datapacks/toggle`, saved metadata semantics and D1 launcher removal
 
 See [metrics-history.md](metrics-history.md) for D9 native/TS range requests,
 columnar unknown/gap semantics and fixture coverage.
+
+## Remote backup configuration (launcher setup)
+
+This extends the backup API without requiring a host `[backups]` table. All paths
+below are relative to `/api/v3/manage/`; the normal authenticated JSON envelope applies.
+Both routes require `backups.configure`, reserved to Owner/Administrator and not
+remotely delegable (schema v26). Lower roles get 403 before any repository effect.
+
+| Route | Request | Data response |
+|---|---|---|
+| GET `backups/config` | no body/query | `{source:"host_config"|"stored",revision:integer|null,profiles:PolicyProfile[],limits:PolicyLimits,repository:{kind:"local"|"s3",location:string|null,initialized:boolean},backups_configured:boolean,schedule_owner:"automation"}` |
+| PUT `backups/config` | `{expected_revision:integer|null,profiles:PolicyProfile[],limits?:PolicyLimits,initialize_repository?:boolean}` + Idempotency-Key | `{revision:integer}` |
+
+The profile list is the complete replacement: create/update/delete by adding/editing/
+omitting entries. Empty disables backups and preserves stored snapshots. Revisions
+are safe integers 1..9007199254740991, null for host/default policy. Responses after
+a replay retain their original revision; GET observes current state. Conflicts are
+409 `backup_policy_revision_conflict` or `backup_idempotency_conflict`; invalid input
+is 400 `backup_invalid_request` (closed wire decode errors use `invalid_request`).
+The agent uses bounded durable receipts and audits in the same policy transaction.
+
+`PolicyProfile` retains existing name/mode/retention/mutation/warning/cap fields and
+adds `include?:string[]` and `exclude?:string[]`, each defaulting to empty and bounded
+to 64 entries. Includes are literal game-relative roots; empty includes the whole
+game, including worlds and configs. Excludes are single-line gitignore-subset
+patterns, max 512 bytes each, with no negation/comment prefix. Host file ignore rules
+still apply. All JSON documents are closed; repository paths, S3 credentials and
+schedule fields in PUT are refused.
+
+Without host configuration, storage is fixed at `<instance base>/backups/repository`
+and inspection restores at `backups/restores`. Initialization is opt-in, idempotent,
+and checks game/state separation and local linked ancestors. The host alone may
+choose another repository or S3 configuration. GET does not create storage. It
+reports `initialized:false` if repository readiness cannot be proven. See
+[backups.md](backups.md) for filesystem trust and interrupted initialization behavior.
+
+Schedules remain in Automation: create/edit workflows separately with
+`automation.manage`. A configuration save never starts/stops the game or schedules
+a backup. `backups_configured` on GET server is true exactly when the effective
+policy has at least one profile, including after configuration replacement/reset.

@@ -1341,7 +1341,14 @@ fn backup_repository_is_exactly_one_local_directory_or_s3_bucket() {
     let inside = local.replace("repository = 'backups'", "repository = 'game/backups'");
     refused(parse(&inside, &base), ConfigError::InvalidPath);
     let no_profiles = format!("{GOLDEN}\n[backups]\nrepository = 'backups'\n");
-    refused(parse(&no_profiles, &base), ConfigError::InvalidDocument);
+    assert!(
+        parse(&no_profiles, &base)
+            .unwrap()
+            .backups()
+            .unwrap()
+            .profiles
+            .is_empty()
+    );
     refused(
         parse(&local.replace("mode = 'stopped'", "mode = 'paused'"), &base),
         ConfigError::InvalidDocument,

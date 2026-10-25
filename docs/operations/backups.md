@@ -27,7 +27,12 @@ Backups use Vesta's own Rust engine; no third-party backup software is bundled o
 
 ## Configuration
 
-Backups are off unless `host.toml` has a `[backups]` table with exactly one repository,
+Backups can be configured remotely even when `[backups]` is absent. Until profiles are
+saved, `backups_configured` is false and no backup runs. The default local repository is
+`<instance base>/backups/repository`, with inspection restores in `backups/restores`.
+Opening the agent or reading configuration does not initialize that repository.
+
+A host may override this location using `[backups]`, with exactly one repository,
 either a local directory:
 
 ```toml
@@ -81,7 +86,7 @@ prints `backup_repository_initialized`. There is no repository key to keep.
 
 ## Editing profiles and limits at runtime
 
-`host.toml` gives the starting profiles, retention and limits. An owner can replace them
+`host.toml` gives the starting profiles, retention and limits. An owner or administrator can replace them
 through the management API (`PUT backups/policy`). The change applies to the next job
 without a restart.
 
@@ -93,7 +98,8 @@ without a restart.
 - **Revision checks:** each save names the revision it replaces (`null` while `host.toml`
   applies). A stale save fails with `backup_policy_revision_conflict` instead of
   overwriting someone else's change.
-- **Owner only:** editing needs the owner-reserved `backups.configure` permission, because
+- **Reserved authority:** editing needs `backups.configure`, reserved to Owner and
+  Administrator (schema v26), never remotely delegable, because
   lowering retention removes restore points at the next backup.
 - **Validation and audit:** the same rules as `host.toml` apply, and every save and reset
   is audited.
@@ -102,6 +108,79 @@ without a restart.
   under the same name lists them again.
 - **Fail closed:** if the stored policy is ever invalid (for example, edited by hand), the
   backup service refuses to open rather than guessing.
+
+## Launcher setup and profile editing
+
+Use `GET /api/v3/manage/backups/config` to load an editor, including for a server with
+no host backup table or profiles. Both GET and PUT require `backups.configure`.
+The response contains the effective profiles, limits, source, revision, repository
+kind/location/readiness, `backups_configured`, and `schedule_owner:"automation"`.
+S3 credentials and endpoint details are never returned.
+
+`PUT backups/config` accepts a complete replacement profile set and optional repository
+initialization in one request:
+
+```json
+{
+  "expected_revision": null,
+  "initialize_repository": true,
+  "profiles": [{
+    "name": "daily", "mode": "stopped", "keep_last": 7,
+    "keep_daily": 7, "keep_weekly": 4, "keep_monthly": 3,
+    "include": [], "exclude": []
+  }],
+  "limits": {"min_free_bytes": 1073741824}
+}
+```
+
+Add an entry to create a profile, replace it to edit/rename, or omit it to delete it.
+Zero to sixteen profiles are accepted; `[]` disables backups without deleting snapshots
+or repository data. `backups_configured` tracks the effective nonempty profile set
+immediately, including after reset. Initialization alone can use an empty profile set.
+Initialization does not take a backup, start/stop Minecraft, or install a schedule.
+
+Names use lowercase ASCII letters, digits and hyphens (1–32 characters, no leading
+hyphen). Each retention field is 0–1000; all zero keeps everything. Mode is `online`
+or `stopped`; online still requires a running separately supervised game. Warnings
+are 0–600 seconds. Defaults are `on_mutation:"fail-world"`, `warn_seconds:60`, no
+snapshot/byte cap and a 1 GiB free-space reserve.
+
+`include` defaults to `[]`, meaning the whole game directory. This includes worlds
+with custom names and game configs, without guessing `level-name`. A nonempty list
+selects literal relative files/directories, at most 64; directories include their
+descendants. Absolute paths, traversal, aliases and wildcard roots are refused.
+`exclude` defaults to `[]`: up to 64 single-line gitignore-subset patterns, 512 bytes
+each, applied after `.vesta-backupignore`. Exclusion negations/comments are refused
+in the API. Host profile TOML supports the same fields. In-place restore obeys the
+current profile selection and existing protected paths. Inspection restores copy
+the selected snapshot's content into a new directory.
+
+Every PUT requires a normal `Idempotency-Key` and the current revision (null while
+the host/default policy applies). Success is `{revision:integer}`; stale edits return
+409 `backup_policy_revision_conflict`, changed requests under a reused key return
+409 `backup_idempotency_conflict`. Receipts are bound to server, user, device, route
+and key; current authority is checked before replay. Retries return the original
+revision without rolling back newer changes. Receipts and audit are committed with
+the policy; the shared receipt store is bounded to 4096 entries, with 90-day retention.
+Every accepted change records `backups.config.update` or
+`backups.repository.configure`; replays do not duplicate audit.
+
+Repository initialization is an idempotent filesystem effect. A crash or database
+failure after initialization may leave a valid empty repository; retry the same
+request to commit the policy. Invalid/stale/forbidden requests never initialize it.
+No arbitrary paths, credentials, restore roots or S3 URLs are accepted remotely.
+Only the fixed instance default or the host-selected repository can be initialized.
+Initialization rechecks real-location separation from game/state and refuses local
+symlinks/junctions/reparse points in repository ancestors. Host administrators must
+protect the instance and repository directories against concurrent local replacement;
+the API is not a sandbox against a hostile local filesystem administrator. Storage
+is unencrypted: world and config contents may contain secrets; secure the host/disk.
+
+Schedules belong to Automation. Offer a link to create/edit an authorized workflow
+with an interval or cron trigger and a backup step referencing the saved profile
+name. This separately requires `automation.manage`; editing a profile does not
+silently change workflows. Renaming/removing a profile leaves references intact,
+and future steps fail with `backup_profile_unknown` until the workflow is updated.
 
 ## Limits
 

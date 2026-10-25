@@ -21,6 +21,7 @@ struct Rule {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Ignore {
     rules: Vec<Rule>,
+    include: Vec<String>,
 }
 
 impl Ignore {
@@ -54,11 +55,41 @@ impl Ignore {
                 negate,
             });
         }
-        Ok(Self { rules })
+        Ok(Self {
+            rules,
+            include: Vec::new(),
+        })
+    }
+
+    pub fn with_selection(
+        mut self,
+        include: &[String],
+        exclude: &[String],
+    ) -> Result<Self, &'static str> {
+        if !valid_selection(include, exclude) {
+            return Err("backup_ignore_file_invalid");
+        }
+        self.include = include.to_vec();
+        self.rules.extend(Self::parse(&exclude.join("\n"))?.rules);
+        Ok(self)
     }
 
     /// Whether a root-relative `/`-separated path is excluded.
     pub fn excluded(&self, path: &str, is_dir: bool) -> bool {
+        if !self.include.is_empty()
+            && !self.include.iter().any(|root| {
+                path == root
+                    || path
+                        .strip_prefix(root.as_str())
+                        .is_some_and(|tail| tail.starts_with('/'))
+                    || (is_dir
+                        && root
+                            .strip_prefix(path)
+                            .is_some_and(|tail| tail.starts_with('/')))
+            })
+        {
+            return true;
+        }
         let segments: Vec<&str> = path.split('/').collect();
         let mut excluded = false;
         for rule in &self.rules {
@@ -117,6 +148,22 @@ fn glob(pattern: &str, text: &str) -> bool {
         pi += 1;
     }
     pi == p.len()
+}
+
+/// Roots are literal paths; excludes are bounded single-line ignore patterns.
+pub fn valid_selection(include: &[String], exclude: &[String]) -> bool {
+    include.len() <= 64
+        && exclude.len() <= 64
+        && include.iter().all(|p| {
+            crate::files::RelativePath::parse(p).is_ok() && crate::backups::engine::literal_path(p)
+        })
+        && exclude.iter().all(|p| {
+            !p.is_empty()
+                && p.len() <= MAX_LINE
+                && !p.chars().any(char::is_control)
+                && !p.starts_with(['!', '#', '\\'])
+                && Ignore::parse(p).is_ok()
+        })
 }
 
 #[cfg(test)]

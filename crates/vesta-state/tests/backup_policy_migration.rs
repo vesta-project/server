@@ -4,7 +4,7 @@ use support::Fixture;
 use vesta_state::{CURRENT_SCHEMA_VERSION, StateDatabase};
 
 #[test]
-fn v20_upgrade_adds_the_backup_policy_table_and_owner_only_configure() {
+fn v20_upgrade_adds_the_backup_policy_table_and_reserved_configure() {
     let f = Fixture::open();
     let directory = f.db.directory().clone();
     f.db.write(|c| {
@@ -26,7 +26,7 @@ fn v20_upgrade_adds_the_backup_policy_table_and_owner_only_configure() {
                 .prepare("SELECT role_id FROM role_capabilities WHERE capability='backups.configure' ORDER BY role_id")?
                 .query_map([], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?;
-            assert_eq!(holders, vec!["owner".to_owned()]);
+            assert_eq!(holders, vec!["administrator".to_owned(), "owner".to_owned()]);
             Ok(())
         })
         .unwrap();

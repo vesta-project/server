@@ -139,12 +139,13 @@ fn request(root: &Path, name: &str, op: wire::Op, expected: wire::Reply) -> Resu
     }
 }
 
-/// Initialize the backup repository for a named server whose host configuration has a `[backups]` table.
+/// Initialize the host-selected repository, or the safe instance default.
 pub fn backup_init(root: &Path, name: &str) -> Result<()> {
     let server = crate::servers::resolve(root, name)?;
     let config =
         HostConfiguration::load_file(&server.config, &server.directory).map_err(|e| e.code())?;
-    let settings = config.backups().ok_or("backups_not_configured")?;
+    let default_backups = vesta_control::config::BackupSettings::for_instance(config.base());
+    let settings = config.backups().unwrap_or(&default_backups);
     let state = StateDirectory::new(config.state(), Some(config.game()))
         .map_err(|_| "local_state_refused")?;
     vesta_control::backups::initialize_repository(&state, settings, config.game())

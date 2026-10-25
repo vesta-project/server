@@ -391,7 +391,9 @@ impl Inner {
         if !restorable {
             return Outcome::failed("backup_snapshot_not_restorable");
         }
-        let ignore = match ignore_file(&self.game) {
+        let ignore = match ignore_file(&self.game)
+            .and_then(|ignore| ignore.with_selection(&profile.include, &profile.exclude))
+        {
             Ok(ignore) => ignore,
             Err(code) => return Outcome::failed(code),
         };

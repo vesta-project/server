@@ -1440,7 +1440,7 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
             .filter(|c| c.owner_reserved())
             .map(|c| c.id())
             .collect::<Vec<_>>(),
-        vec!["backups.restore", "recovery.export", "backups.configure"]
+        vec!["backups.restore", "recovery.export"]
     );
     assert_eq!(
         Capability::ALL
@@ -1448,7 +1448,7 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
             .filter(|c| c.admin_reserved())
             .map(|c| c.id())
             .collect::<Vec<_>>(),
-        vec!["credentials.manage", "security.manage"]
+        vec!["credentials.manage", "security.manage", "backups.configure"]
     );
 
     // 6 built-in role ids, names, ranks, local-grant-only flags and capability
@@ -1520,8 +1520,8 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
         } else if role == BuiltinRole::Moderator {
             expected_capabilities.insert(0, "notifications.view".to_owned());
         }
-        // V21 adds owner-only backup policy editing.
-        if role == BuiltinRole::Owner {
+        // V26 extends reserved backup policy editing to administrators.
+        if matches!(role, BuiltinRole::Owner | BuiltinRole::Administrator) {
             let at = expected_capabilities
                 .iter()
                 .position(|c| c == "notifications.view")

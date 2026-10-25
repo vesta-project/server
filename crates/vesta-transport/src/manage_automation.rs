@@ -42,6 +42,7 @@ enum Route<'a> {
     SafetySnapshots,
     Storage,
     Policy,
+    BackupConfig,
     PolicyReset,
     RecoveryExport,
     RestoreInPlace,
@@ -69,6 +70,7 @@ fn route(path: &str) -> Option<Route<'_>> {
         "backups/safety-snapshots" => Route::SafetySnapshots,
         "backups/storage" => Route::Storage,
         "backups/policy" => Route::Policy,
+        "backups/config" => Route::BackupConfig,
         "backups/policy/reset" => Route::PolicyReset,
         "recovery/export" => Route::RecoveryExport,
         "backups/restore-in-place" => Route::RestoreInPlace,
@@ -247,6 +249,7 @@ fn backup_read_failure(value: BackupError, snapshot_listing: bool) -> Reply {
 }
 fn capability(route: Route<'_>, method: &Method) -> Capability {
     match route {
+        Route::BackupConfig => Capability::BackupsConfigure,
         Route::Policy if *method == Method::GET => Capability::BackupsView,
         Route::Policy | Route::PolicyReset => Capability::BackupsConfigure,
         Route::RecoveryExport => Capability::RecoveryExport,
@@ -700,6 +703,30 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     let Some(key) = scoped_key(host, &subject, &request) else {
         return invalid();
     };
+    if matches!(route, Route::BackupConfig) {
+        if request.method != Method::PUT {
+            return invalid();
+        }
+        let Some(value) = decode::<PutBackupConfig>(request.bytes) else {
+            return invalid();
+        };
+        let Some(backups) = host.backups() else {
+            return backup_failure(BackupError::Disabled);
+        };
+        return match backups.configure(
+            &subject,
+            value.expected_revision,
+            &PolicyDocument {
+                profiles: value.profiles,
+                limits: value.limits,
+            },
+            value.initialize_repository,
+            &key,
+        ) {
+            Ok(revision) => ok(json!({"revision":revision})),
+            Err(e) => backup_failure(e),
+        };
+    }
     // A policy save names the revision it replaces, so a retry cannot apply twice;
     // it is not replayed either (a retried success reports the revision conflict).
     if matches!(route, Route::Policy | Route::PolicyReset) {
@@ -875,7 +902,8 @@ fn get(
         | Route::Snapshot(_)
         | Route::SafetySnapshots
         | Route::Storage
-        | Route::Policy => {
+        | Route::Policy
+        | Route::BackupConfig => {
             return get_backups(host, token, route, query);
         }
         _ => return invalid(),
@@ -991,6 +1019,7 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
         Snapshot(&'a str, &'a str),
         Storage,
         Policy,
+        Config,
     }
     let query = match route {
         Route::Backups => {
@@ -1029,12 +1058,16 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
         }
         Route::Storage if query.is_none() => Query::Storage,
         Route::Policy if query.is_none() => Query::Policy,
+        Route::BackupConfig if query.is_none() => Query::Config,
         _ => return invalid(),
     };
     let Some(backups) = host.backups() else {
         return backup_failure(BackupError::Disabled);
     };
     // Both list the repository under the same single-listing bound.
+    if backups.policy().profiles.is_empty() && !matches!(query, Query::Policy | Query::Config) {
+        return backup_failure(BackupError::Disabled);
+    }
     let snapshot_listing = matches!(
         &query,
         Query::Snapshots(..) | Query::Snapshot(..) | Query::Storage
@@ -1055,6 +1088,17 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
         Query::Snapshot(profile,id)=>backups.snapshots(profile).and_then(|snapshots|snapshot_detail(profile,id,snapshots)),
         Query::Storage => backups.storage().map(|status| storage_json(&status)),
         Query::Policy => Ok(policy_json(&backups.policy())),
+        Query::Config => {
+            let policy = backups.policy();
+            let mut value = policy_json(&policy);
+            value["backups_configured"] = json!(!policy.profiles.is_empty());
+            value["repository"] = match &backups.settings().repository {
+                vesta_control::config::BackupRepository::Local(path) => json!({"kind":"local","location":path.to_string_lossy(),"initialized":backups.repository_initialized()}),
+                vesta_control::config::BackupRepository::S3(_) => json!({"kind":"s3","location":null,"initialized":backups.repository_initialized()}),
+            };
+            value["schedule_owner"] = json!("automation");
+            Ok(value)
+        },
     };
     match result {
         Ok(Value::Null) => error(StatusCode::NOT_FOUND, "resource_not_found"),
@@ -1126,6 +1170,9 @@ fn submit_backup(
         return backup_failure(BackupError::Disabled);
     };
     let key = format!("{}:{key}", subject.principal.as_str());
+    if backups.policy().profiles.is_empty() {
+        return backup_failure(BackupError::Disabled);
+    }
     let kind_name = match &kind {
         JobKind::Backup => "backup",
         JobKind::Verify => "verify",
@@ -1200,6 +1247,16 @@ struct PutPolicy {
     profiles: Vec<ProfileDocument>,
     #[serde(default)]
     limits: LimitsDocument,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PutBackupConfig {
+    expected_revision: Option<i64>,
+    profiles: Vec<ProfileDocument>,
+    #[serde(default)]
+    limits: LimitsDocument,
+    #[serde(default)]
+    initialize_repository: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

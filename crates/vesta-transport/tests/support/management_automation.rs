@@ -2,6 +2,90 @@
 use super::*;
 use vesta_control::identity::BuiltinRole;
 
+#[test]
+fn backup_setup_works_without_host_configuration_and_requires_reserved_authority() {
+    let f = Fixture::new("minecraft", 8, 16384, 5);
+    let (_, _, owner, _) = actor(&f, BuiltinRole::Owner);
+    let (_, _, admin, _) = actor(&f, BuiltinRole::Administrator);
+    let (_, _, viewer, _) = actor(&f, BuiltinRole::Viewer);
+    let initial = send(&f, "GET", "backups/config", b"", Some(&owner), None);
+    assert_eq!(initial.status, 200);
+    assert_eq!(initial.json()["data"]["profiles"], serde_json::json!([]));
+    assert_eq!(initial.json()["data"]["repository"]["initialized"], false);
+    assert_eq!(
+        send(&f, "GET", "backups/config", b"", Some(&viewer), None).status,
+        403
+    );
+    assert_eq!(
+        send(&f, "GET", "backups/config", b"", Some(&admin), None).status,
+        200
+    );
+    let doc = serde_json::json!({"expected_revision":null,"initialize_repository":true,"profiles":[{"name":"daily","mode":"stopped","keep_last":7}]});
+    let key = "backup-setup-intent-0001";
+    assert_eq!(
+        call(&f, "PUT", "backups/config", &doc, &viewer, key).status,
+        403
+    );
+    let saved = call(&f, "PUT", "backups/config", &doc, &admin, key);
+    assert_eq!(saved.status, 200, "{}", saved.json());
+    assert_eq!(saved.json()["data"]["revision"], 1);
+    assert_eq!(
+        call(&f, "PUT", "backups/config", &doc, &admin, key).json()["data"],
+        saved.json()["data"]
+    );
+    assert_eq!(
+        call(
+            &f,
+            "PUT",
+            "backups/config",
+            &doc,
+            &owner,
+            "backup-stale-intent-001"
+        )
+        .status,
+        409
+    );
+    let mut path = doc.clone();
+    path["repository"] = serde_json::json!("C:/arbitrary");
+    assert_eq!(
+        call(
+            &f,
+            "PUT",
+            "backups/config",
+            &path,
+            &owner,
+            "backup-path-intent-0001"
+        )
+        .status,
+        400
+    );
+    assert_eq!(
+        send(&f, "GET", "server", b"", Some(&owner), None).json()["data"]["backups_configured"],
+        true
+    );
+    let empty = serde_json::json!({"expected_revision":1,"profiles":[]});
+    assert_eq!(
+        call(
+            &f,
+            "PUT",
+            "backups/config",
+            &empty,
+            &owner,
+            "backup-delete-intent-01"
+        )
+        .status,
+        200
+    );
+    assert_eq!(
+        send(&f, "GET", "server", b"", Some(&owner), None).json()["data"]["backups_configured"],
+        false
+    );
+    assert_eq!(
+        send(&f, "GET", "backups/config", b"", Some(&owner), None).json()["data"]["repository"]["initialized"],
+        true
+    );
+}
+
 fn send(
     f: &Fixture,
     method: &str,
