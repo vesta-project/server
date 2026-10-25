@@ -541,6 +541,7 @@ fn unknown_network_and_non_hardlink_filesystems_are_not_assumed_local() {
     #[cfg(windows)]
     {
         assert!(install::local_filesystem("NTFS"));
+        assert!(install::local_filesystem("ReFS"));
         assert!(!install::local_filesystem("ext4"));
     }
     #[cfg(not(windows))]
@@ -556,6 +557,25 @@ fn windows_native_volume_classification_resolves_the_local_fixture_disk() {
     let (mount, free) = install::disk_space(dir.path()).unwrap();
     assert!(mount.is_absolute());
     assert!(free > 0);
+}
+#[cfg(windows)]
+#[test]
+#[ignore = "requires VESTA_INSTALL_TEST_VOLUME pointing to an explicitly selected local test directory"]
+fn windows_selected_volume_supports_space_and_full_file_identity() {
+    let root = std::env::var_os("VESTA_INSTALL_TEST_VOLUME").expect("selected test directory");
+    let dir = tempfile::tempdir_in(root).unwrap();
+    let (mount, free) = install::disk_space(dir.path()).unwrap();
+    assert!(dir.path().starts_with(mount));
+    assert!(free > 0);
+    let path = dir.path().join("identity-probe");
+    std::fs::write(&path, b"owned storage fixture").unwrap();
+    let file = std::fs::File::open(&path).unwrap();
+    let identity = crate::execution_workspace::file_identity_with_links(&file, 1).unwrap();
+    let alias = dir.path().join("alias");
+    std::fs::hard_link(&path, &alias).unwrap();
+    assert!(crate::execution_workspace::file_identity_with_links(&file, 1).is_err());
+    std::fs::remove_file(alias).unwrap();
+    assert!(identity == crate::execution_workspace::file_identity_with_links(&file, 1).unwrap());
 }
 #[test]
 fn reservations_and_concurrency_are_bounded_and_released_by_actual_guard_lifetime() {

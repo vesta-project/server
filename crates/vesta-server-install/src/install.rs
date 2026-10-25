@@ -234,7 +234,7 @@ pub(crate) fn local_filesystem(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     #[cfg(windows)]
     {
-        name == "ntfs"
+        matches!(name.as_str(), "ntfs" | "refs")
     }
     #[cfg(not(windows))]
     {
@@ -254,7 +254,8 @@ fn local_mount(mount: &Path) -> Result<()> {
     {
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::{
-            Storage::FileSystem::GetDriveTypeW,
+            Storage::FileSystem::{GetDriveTypeW, GetVolumeInformationW},
+            System::SystemServices::{FILE_PERSISTENT_ACLS, FILE_SUPPORTS_HARD_LINKS},
             System::WindowsProgramming::{DRIVE_FIXED, DRIVE_REMOVABLE},
         };
         let root: Vec<u16> = mount.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -264,6 +265,25 @@ fn local_mount(mount: &Path) -> Result<()> {
             unsafe { GetDriveTypeW(root.as_ptr()) },
             DRIVE_FIXED | DRIVE_REMOVABLE
         ) {
+            return Err(InstallError::StorageUnknown);
+        }
+        let mut flags = 0;
+        // SAFETY: live NUL-terminated root and writable flags; unused outputs are null.
+        if unsafe {
+            GetVolumeInformationW(
+                root.as_ptr(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut flags,
+                std::ptr::null_mut(),
+                0,
+            )
+        } == 0
+            || flags & (FILE_PERSISTENT_ACLS | FILE_SUPPORTS_HARD_LINKS)
+                != (FILE_PERSISTENT_ACLS | FILE_SUPPORTS_HARD_LINKS)
+        {
             return Err(InstallError::StorageUnknown);
         }
     }

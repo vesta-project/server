@@ -441,7 +441,7 @@ fn check(deadline: Instant, reporter: &dyn ProgressReporter) -> Result<()> {
 #[derive(PartialEq, Eq)]
 pub(super) struct FileIdentity {
     volume: u64,
-    index: u64,
+    index: u128,
 }
 fn file_identity(file: &std::fs::File) -> Result<FileIdentity> {
     file_identity_with_links(file, 1)
@@ -452,7 +452,8 @@ pub(super) fn file_identity_with_links(file: &std::fs::File, links: u64) -> Resu
     {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::Storage::FileSystem::{
-            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+            FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+            BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO,
         };
         // SAFETY: this plain Win32 output record admits zero initialization; the file's
         // borrowed handle and writable record remain live for the read-only call.
@@ -462,10 +463,23 @@ pub(super) fn file_identity_with_links(file: &std::fs::File, links: u64) -> Resu
         {
             return Err(InstallError::PathRefused);
         }
+        // ReFS uses 128-bit identities; the legacy 64-bit index is not sufficient.
+        // SAFETY: zeroable output record, live borrowed handle and exact buffer size.
+        let mut identity: FILE_ID_INFO = unsafe { std::mem::zeroed() };
+        if unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileIdInfo,
+                (&mut identity as *mut FILE_ID_INFO).cast(),
+                std::mem::size_of::<FILE_ID_INFO>() as u32,
+            )
+        } == 0
+        {
+            return Err(InstallError::PathRefused);
+        }
         Ok(FileIdentity {
-            volume: u64::from(information.dwVolumeSerialNumber),
-            index: (u64::from(information.nFileIndexHigh) << 32)
-                | u64::from(information.nFileIndexLow),
+            volume: identity.VolumeSerialNumber,
+            index: u128::from_le_bytes(identity.FileId.Identifier),
         })
     }
     #[cfg(unix)]
@@ -477,7 +491,7 @@ pub(super) fn file_identity_with_links(file: &std::fs::File, links: u64) -> Resu
         }
         Ok(FileIdentity {
             volume: metadata.dev(),
-            index: metadata.ino(),
+            index: u128::from(metadata.ino()),
         })
     }
     #[cfg(not(any(windows, unix)))]
