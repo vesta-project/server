@@ -1,15 +1,25 @@
 use super::*;
 
+pub(super) struct RecipeInput {
+    pub processors: Vec<Processor>,
+    pub data: BTreeMap<String, Sided>,
+    pub legacy: Option<legacy::LegacyLaunch>,
+}
+
 pub(super) fn prepare(
     software: Software,
     minecraft: &str,
     coordinate: &str,
     loader_version: String,
-    profile: (Vec<Processor>, BTreeMap<String, Sided>),
+    profile: RecipeInput,
     embedded: BTreeMap<String, Vec<u8>>,
     artifacts: Vec<BundleArtifact>,
 ) -> Result<ProcessorPlan> {
-    let (processors, data) = profile;
+    let RecipeInput {
+        processors,
+        data,
+        legacy,
+    } = profile;
     let data = data
         .into_iter()
         .map(|(key, value)| {
@@ -85,13 +95,21 @@ pub(super) fn prepare(
                     | "--no-mod-manifest"
                     | "--extract-libraries-to"
                     | "--apply-patches"
+                    | "--in-jar"
+                    | "--out-jar"
+                    | "--srg-in"
             ) {
                 return Err(InstallError::Unavailable);
             }
         }
         let main = approved_tool(software, &processor.jar, &processor.args)?;
         let jar = format!("libraries/{}", maven(&processor.jar)?);
-        if !artifacts.iter().any(|a| a.destination == jar) {
+        let embedded = |path: &str| {
+            legacy
+                .as_ref()
+                .is_some_and(|l| l.embedded.contains_key(path))
+        };
+        if !artifacts.iter().any(|a| a.destination == jar) && !embedded(&jar) {
             return Err(InstallError::InvalidMetadata);
         }
         let classpath = processor
@@ -101,7 +119,7 @@ pub(super) fn prepare(
             .collect::<Result<Vec<_>>>()?;
         if classpath
             .iter()
-            .any(|p| !artifacts.iter().any(|a| &a.destination == p))
+            .any(|p| !artifacts.iter().any(|a| &a.destination == p) && !embedded(p))
         {
             return Err(InstallError::InvalidMetadata);
         }
@@ -111,6 +129,22 @@ pub(super) fn prepare(
             classpath,
             args: processor.args,
             outputs: processor.outputs,
+        });
+    }
+    if let Some(legacy) = legacy {
+        return Ok(ProcessorPlan {
+            minecraft: minecraft.into(),
+            coordinate: coordinate.into(),
+            loader_version,
+            artifacts,
+            embedded,
+            steps,
+            data,
+            launch: Vec::new(),
+            mappings: None,
+            shim_libraries: BTreeMap::new(),
+            disk_cap: 0,
+            legacy: Some(legacy),
         });
     }
     if steps.is_empty() {
@@ -180,6 +214,7 @@ pub(super) fn prepare(
         mappings: None,
         shim_libraries,
         disk_cap: 0,
+        legacy: None,
     };
     validate_launch(&plan.launch)?;
     Ok(plan)
@@ -270,10 +305,11 @@ fn approved_tool(software: Software, coordinate: &str, args: &[String]) -> Resul
     } else {
         matches!(group, "net.neoforged.installertools" | "net.neoforged")
     };
-    if !allowed {
+    if !(allowed || forge && group == "net.md-5" && tool == "SpecialSource") {
         return Err(InstallError::Unavailable);
     }
     let main = match tool {
+        "SpecialSource" if forge && group == "net.md-5" => "net.md_5.specialsource.SpecialSource",
         "installertools" => {
             let task = args
                 .windows(2)
@@ -372,6 +408,16 @@ fn validate_launch(tokens: &[String]) -> Result<()> {
     Ok(())
 }
 pub(super) fn launch(plan: &ProcessorPlan, root: &std::path::Path) -> Result<Vec<String>> {
+    if plan.legacy.is_some() {
+        return Ok(vec![
+            "-jar".into(),
+            root.join("launch.jar")
+                .to_str()
+                .ok_or(InstallError::PathRefused)?
+                .into(),
+            "nogui".into(),
+        ]);
+    }
     validate_launch(&plan.launch)?;
     let library = root
         .join("libraries")

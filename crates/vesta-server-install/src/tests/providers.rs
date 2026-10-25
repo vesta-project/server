@@ -124,7 +124,7 @@ async fn experimental_opt_in_still_prefers_stable_unless_exact_build_chosen() {
     assert!(p.warnings().contains(&Warning::ExperimentalBuild));
 }
 #[tokio::test]
-async fn legacy_forge_layouts_are_refused_without_network_or_writes() {
+async fn forge_versions_before_the_supported_baseline_are_refused_without_network_or_writes() {
     let f = Fixture::new(Software::Paper).await;
     for s in [Software::Forge, Software::NeoForge] {
         assert_eq!(
@@ -132,7 +132,7 @@ async fn legacy_forge_layouts_are_refused_without_network_or_writes() {
                 .plan(
                     s,
                     &Selection {
-                        version: Some("1.16.5".into()),
+                        version: Some("1.6.4".into()),
                         ..Selection::default()
                     },
                     &std::env::current_exe().unwrap(),

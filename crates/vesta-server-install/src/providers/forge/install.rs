@@ -72,7 +72,7 @@ fn plan(value: &InstallPlan) -> Result<&ProcessorPlan> {
     }
     let plan = value.processed.as_ref().ok_or(InstallError::InvalidInput)?;
     if plan.artifacts.len() > MAX_FILES
-        || plan.steps.is_empty()
+        || plan.steps.is_empty() && plan.legacy.is_none()
         || plan.steps.len() > MAX_PROCESSORS
     {
         return Err(InstallError::LimitExceeded);
@@ -90,7 +90,7 @@ fn parent(path: &Path) -> Result<()> {
     }
     publication::guard(directory)
 }
-async fn write(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(super) async fn write(path: &Path, bytes: &[u8]) -> Result<()> {
     parent(path)?;
     let mut file = tokio::fs::OpenOptions::new()
         .create_new(true)
@@ -105,7 +105,7 @@ async fn write(path: &Path, bytes: &[u8]) -> Result<()> {
         .await
         .map_err(|_| InstallError::PublishFailed)
 }
-async fn digest(path: &Path, cap: u64) -> Result<(u64, String)> {
+pub(super) async fn digest(path: &Path, cap: u64) -> Result<(u64, String)> {
     publication::plain_file(path)?;
     let before = std::fs::metadata(path).map_err(|_| InstallError::ArtifactChanged)?;
     if before.len() > cap {
@@ -266,7 +266,7 @@ impl Drop for Running {
     }
 }
 async fn processor(
-    java: &Path,
+    runtime: &crate::runtime::RuntimeBinding,
     root: &Path,
     step: &Step,
     args: Vec<String>,
@@ -289,7 +289,7 @@ async fn processor(
     if cp.iter().any(|s| s.contains(separator)) {
         return Err(InstallError::PathRefused);
     }
-    let mut command = Command::new(java);
+    let mut command = Command::new(&runtime.path);
     let temporary = root.parent().ok_or(InstallError::PathRefused)?.join("tmp");
     publication::child_directory(&temporary)?;
     let mut invocation = vec![
@@ -320,11 +320,23 @@ async fn processor(
     let invocation_file =
         temporary.join(format!("processor-{}.args", uuid::Uuid::new_v4().simple()));
     write(&invocation_file, &recipe::argfile(&invocation)?).await?;
-    command
-        .arg(format!(
+    if runtime.major >= 9 {
+        command.arg(format!(
             "@{}",
             invocation_file.to_str().ok_or(InstallError::PathRefused)?
-        ))
+        ));
+    } else {
+        // Java 8 has no @argfile support; processor classpaths are bounded.
+        let bytes = invocation
+            .iter()
+            .map(|s| s.encode_utf16().count().saturating_mul(2).saturating_add(4))
+            .sum::<usize>();
+        if bytes > 30_000 {
+            return Err(InstallError::LimitExceeded);
+        }
+        command.args(&invocation);
+    }
+    command
         .env("TMP", &temporary)
         .env("TEMP", &temporary)
         .env("TMPDIR", &temporary)
@@ -504,12 +516,15 @@ async fn steps(
                     | "--apply"
                     | "--extract-libraries-to"
                     | "--apply-patches"
+                    | "--in-jar"
+                    | "--out-jar"
+                    | "--srg-in"
             ) {
                 scoped(root, &pair[1])?;
             }
         }
         processor(
-            &value.runtime.path,
+            &value.runtime,
             root,
             step,
             args,
@@ -552,6 +567,9 @@ async fn steps(
     Ok(())
 }
 async fn verify_layout(plan: &ProcessorPlan, root: &Path, cap: u64) -> Result<()> {
+    if plan.legacy.is_some() {
+        return legacy::verify_layout(plan, root, cap).await;
+    }
     let patched = scoped(root, &recipe::resolve(plan, "{PATCHED}", root)?)?;
     publication::plain_file(&patched)?;
     if std::fs::metadata(&patched)
@@ -609,9 +627,10 @@ fn inventory(root: &Path, cap: u64) -> Result<Vec<PathBuf>> {
                     .ok_or(InstallError::PathRefused)?
                     .replace('\\', "/");
                 relative(&name)?;
-                if !name.starts_with("libraries/")
-                    && !name.starts_with("data/")
-                    && !matches!(
+                if !(name.starts_with("libraries/")
+                    || name.starts_with("data/")
+                    || name.starts_with("minecraft_server.") && name.ends_with(".jar")
+                    || matches!(
                         name.as_str(),
                         "minecraft.jar"
                             | "installer.jar"
@@ -621,7 +640,8 @@ fn inventory(root: &Path, cap: u64) -> Result<Vec<PathBuf>> {
                             | "user_jvm_args.txt"
                             | "README.txt"
                             | "launch.args"
-                    )
+                            | "launch.jar"
+                    ))
                 {
                     return Err(InstallError::PathRefused);
                 }
@@ -705,6 +725,9 @@ pub(crate) async fn execute(
     publication::child_directory(&root)?;
     let mut job = Job::new(value.limits, value.transferred);
     let records = inputs(&installer.http, recipe, &root, &mut job, reporter).await?;
+    if recipe.legacy.is_some() {
+        legacy::materialize(recipe, &root).await?;
+    }
     for (path, bytes) in &recipe.embedded {
         if path.starts_with("data/") {
             write(&root.join(path), bytes).await?;
@@ -714,6 +737,13 @@ pub(crate) async fn execute(
     steps(value, &root, &job, reporter).await?;
     verify_inputs(&root, &records).await?;
     verify_layout(recipe, &root, value.limits.artifact_bytes).await?;
+    if recipe.legacy.is_some() {
+        write(
+            &root.join("launch.jar"),
+            &legacy::pathing_jar(recipe, &value.destination().join("software"))?,
+        )
+        .await?;
+    }
     // Generate absolute launch paths for the final immutable install, not the staging cwd.
     let launch = recipe::argfile(&recipe::launch(
         recipe,
@@ -900,6 +930,14 @@ pub(crate) async fn verify(value: &InstallPlan, deadline: tokio::time::Instant) 
     }
     verify_layout(recipe, &root.join("software"), value.limits.artifact_bytes).await?;
     let expected = recipe::argfile(&recipe::launch(recipe, &root.join("software"))?)?;
+    if recipe.legacy.is_some()
+        && tokio::fs::read(root.join("software/launch.jar"))
+            .await
+            .map_err(|_| InstallError::ReceiptInvalid)?
+            != legacy::pathing_jar(recipe, &root.join("software"))?
+    {
+        return Err(InstallError::ArtifactChanged);
+    }
     if tokio::fs::read(root.join("software/launch.args"))
         .await
         .map_err(|_| InstallError::ReceiptInvalid)?
@@ -916,19 +954,29 @@ pub(crate) fn managed_launch(
     game: &Path,
 ) -> Result<ManagedLaunch> {
     let game = installer.validate_managed_game(game)?;
-    let args = vec![format!(
-        "@{}",
-        value
-            .destination()
-            .join("software/launch.args")
-            .to_str()
-            .ok_or(InstallError::PathRefused)?
-    )];
+    let args = if value.processed.as_ref().is_some_and(|p| p.legacy.is_some()) {
+        recipe::launch(plan(value)?, &value.destination().join("software"))?
+    } else {
+        vec![format!(
+            "@{}",
+            value
+                .destination()
+                .join("software/launch.args")
+                .to_str()
+                .ok_or(InstallError::PathRefused)?
+        )]
+    };
     Ok(ManagedLaunch {
         java: value.runtime.path.clone(),
         working_directory: game,
         args,
-        required_files: vec![value.destination().join("software/launch.args")],
+        required_files: vec![value.destination().join(
+            if value.processed.as_ref().is_some_and(|p| p.legacy.is_some()) {
+                "software/launch.jar"
+            } else {
+                "software/launch.args"
+            },
+        )],
         artifacts: receipt
             .files
             .iter()

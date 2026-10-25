@@ -466,6 +466,17 @@ impl InstallPlan {
         format!("{:x}", h.finalize())
     }
     pub fn launch_recipe(&self) -> LaunchRecipe {
+        if self.processed.as_ref().is_some_and(|p| p.legacy.is_some()) {
+            return LaunchRecipe {
+                kind: "java-jar".into(),
+                java: self.runtime.path.clone(),
+                working_directory: self.destination().join("game"),
+                artifact: Some(self.destination().join("software/launch.jar")),
+                args: vec!["nogui".into()],
+                argfile: None,
+                stop_mode: "console-stop".into(),
+            };
+        }
         if self.processed.is_some() {
             return LaunchRecipe {
                 kind: "java-argfile".into(),

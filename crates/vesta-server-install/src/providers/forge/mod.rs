@@ -9,6 +9,7 @@ use std::{
 
 mod catalogue;
 mod install;
+mod legacy;
 mod recipe;
 pub(crate) use catalogue::{releases, versions};
 pub use install::ProcessedReceipt;
@@ -32,6 +33,8 @@ pub(crate) struct ProcessorPlan {
     pub mappings: Option<BundleArtifact>,
     pub shim_libraries: BTreeMap<String, String>,
     pub disk_cap: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub legacy: Option<legacy::LegacyLaunch>,
 }
 fn embedded_evidence<S: serde::Serializer>(
     entries: &BTreeMap<String, Vec<u8>>,
@@ -148,7 +151,7 @@ fn family(url: &str) -> Result<SourceFamily> {
     }
     Err(InstallError::SourceRefused)
 }
-fn zip_entries(bytes: &[u8], cap: u64) -> Result<BTreeMap<String, Vec<u8>>> {
+fn zip_entries(bytes: &[u8], cap: u64, legacy: bool) -> Result<BTreeMap<String, Vec<u8>>> {
     if bytes.len() as u64 > ARCHIVE_BYTES {
         return Err(InstallError::LimitExceeded);
     }
@@ -174,6 +177,10 @@ fn zip_entries(bytes: &[u8], cap: u64) -> Result<BTreeMap<String, Vec<u8>>> {
         if name == "install_profile.json"
             || name.starts_with("data/")
             || name.starts_with("maven/") && name.ends_with("-shim.jar")
+            || legacy
+                && name.starts_with("maven/net/minecraftforge/forge/")
+                && name.ends_with(".jar")
+            || legacy && name.starts_with("forge-") && name.ends_with("-universal.jar")
         {
             if entry.is_dir() {
                 continue;
@@ -213,9 +220,10 @@ pub(super) async fn resolve(
         .version
         .as_deref()
         .ok_or(InstallError::InvalidInput)?;
-    // Legacy layouts need their own tested adapters; never pretend the modular launch works there.
-    let modern = version_order(version).is_some_and(|v| v >= vec![1, 17]);
-    if !modern {
+    let legacy = version_order(version).is_some_and(|v| v < vec![1, 17]);
+    if version_order(version).is_none_or(|v| v < vec![1, 7])
+        || legacy && software != Software::Forge
+    {
         return Err(InstallError::Unavailable);
     }
     let entries = catalogue::coordinates(http, software, job, reporter).await?;
@@ -267,7 +275,30 @@ pub(super) async fn resolve(
     if format!("{:x}", Sha1::digest(&archive.data)) != digest.hex {
         return Err(InstallError::ArtifactChanged);
     }
-    let embedded = zip_entries(&archive.data, job.limits.metadata_bytes)?;
+    let embedded = zip_entries(&archive.data, job.limits.metadata_bytes, legacy)?;
+    if legacy {
+        return legacy::resolve(
+            http,
+            legacy::Request {
+                version: version.into(),
+                coordinate,
+                loader_version,
+                embedded,
+                installer: ArtifactPin {
+                    url: installer_url.clone(),
+                    digest,
+                    size: Some(archive.size),
+                },
+                metadata: MetadataRevision {
+                    url: installer_url,
+                    observed_sha256: archive.observed_sha256,
+                },
+            },
+            job,
+            reporter,
+        )
+        .await;
+    }
     let profile: Profile = parse(
         embedded
             .get("install_profile.json")
@@ -356,7 +387,11 @@ pub(super) async fn resolve(
         version,
         &coordinate,
         loader_version,
-        (profile.processors.0, profile.data),
+        recipe::RecipeInput {
+            processors: profile.processors.0,
+            data: profile.data,
+            legacy: None,
+        },
         embedded,
         artifacts,
     )?;

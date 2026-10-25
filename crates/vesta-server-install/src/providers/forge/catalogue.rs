@@ -168,7 +168,15 @@ pub(crate) async fn versions(
             .filter_map(|v| v.split_once('-').map(|(mc, _)| mc.to_owned()))
             .collect()
     };
-    values.retain(|v| version_order(v).is_some_and(|v| v >= vec![1, 17]));
+    values.retain(|v| {
+        version_order(v).is_some_and(|v| {
+            v >= if software == Software::Forge {
+                vec![1, 7]
+            } else {
+                vec![1, 17]
+            }
+        })
+    });
     values.sort_by(|a, b| newer(a, b));
     values.dedup();
     Ok(values)
@@ -222,7 +230,17 @@ async fn release_choices(
         .map(|id| loader_id(software, &id, version))
         .collect::<Result<Vec<_>>>()?;
     result.retain(|id| {
-        id.split('.')
+        let numeric = if software == Software::Forge {
+            match id.split_once('-') {
+                Some((loader, suffix)) if suffix == version => loader,
+                Some(_) => return false,
+                None => id.as_str(),
+            }
+        } else {
+            id.as_str()
+        };
+        numeric
+            .split('.')
             .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
     });
     result.sort_by(|a, b| newer(a, b));

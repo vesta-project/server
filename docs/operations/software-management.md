@@ -55,8 +55,9 @@ Errors use the existing transport envelope with fixed `software_*` codes:
 
 Implemented automatic providers: Vanilla, Paper, Folia, Purpur, Fabric, Quilt,
 and the shared modern Forge/NeoForge processor adapter. The latter is implemented
-but awaits real installation/platform testing; pre-1.17 Forge layouts and
-prerelease-only loader versions are explicitly refused. See the
+but awaits real installation/platform testing. Legacy Forge 1.7–1.16 profiles now
+have a separate Java-8 adapter; prerelease-only loader versions remain refused.
+See the [legacy checkpoint](../reviews/2026-10-25-legacy-forge.md) and the
 [implementation checkpoint](../reviews/2026-10-25-forge-installation.md).
 Provider resolution,
 allowlisted HTTPS downloads, pinned checksums, selected local Java probing and
