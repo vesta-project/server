@@ -76,7 +76,6 @@ struct Group {
 #[derive(Deserialize)]
 struct Loader {
     id: String,
-    stable: bool,
 }
 async fn neo_games(
     http: &Transport,
@@ -92,10 +91,11 @@ async fn neo_games(
             reporter,
         )
         .await?;
-    let value: Manifest = parse(&data.data)?;
-    if value.game_versions.0.len() > job.limits.max_entries
-        || value.version_groups.len() > job.limits.max_entries
-    {
+    decode_neo_games(&data.data, job.limits.max_entries)
+}
+fn decode_neo_games(data: &[u8], max_entries: usize) -> Result<BTreeMap<String, Vec<String>>> {
+    let value: Manifest = parse(data)?;
+    if value.game_versions.0.len() > max_entries || value.version_groups.len() > max_entries {
         return Err(InstallError::LimitExceeded);
     }
     let mut groups = BTreeMap::new();
@@ -116,16 +116,16 @@ async fn neo_games(
                     .get(&group)
                     .ok_or(InstallError::InvalidMetadata)?
                     .iter()
-                    .map(|l| Loader {
-                        id: l.id.clone(),
-                        stable: l.stable,
-                    }),
+                    .map(|l| Loader { id: l.id.clone() }),
             );
         }
         let mut ids = HashSet::new();
         let values = loaders
             .into_iter()
-            .filter(|l| l.stable && !l.id.contains('-'))
+            // The mirror currently marks every NeoForge loader unstable, even
+            // official numeric releases. Maven membership is checked at plan/
+            // release selection; prerelease suffixes remain excluded here.
+            .filter(|l| !l.id.contains('-'))
             .map(|l| {
                 if !loader_identifier(&l.id) || !ids.insert(l.id.clone()) {
                     Err(InstallError::InvalidMetadata)
@@ -139,6 +139,18 @@ async fn neo_games(
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod catalogue_tests {
+    use super::*;
+
+    #[test]
+    fn numeric_neo_releases_survive_false_mirror_stability_flags() {
+        let data = br#"{"gameVersions":[{"id":"1.21.4","loaders":[{"id":"21.4.150","stable":false},{"id":"21.4.151-beta","stable":false}]}]}"#;
+        let games = decode_neo_games(data, 100).unwrap();
+        assert_eq!(games["1.21.4"], ["21.4.150"]);
+    }
 }
 fn newer(a: &str, b: &str) -> std::cmp::Ordering {
     let parts = |s: &str| {

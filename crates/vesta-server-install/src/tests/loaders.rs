@@ -25,14 +25,12 @@ async fn managed_fabric_and_quilt_use_absolute_classpaths_for_preserved_game_dir
             dunce::canonicalize(game.path()).unwrap()
         );
         assert_eq!(launch.args.len(), 5);
-        assert!(
-            launch.args[0].ends_with(
-                &p.destination()
-                    .join("software/vanilla.jar")
-                    .to_string_lossy()
-                    .to_string()
-            )
-        );
+        assert!(launch.args[0].ends_with(
+            &p.destination()
+                .join("software/vanilla.jar")
+                .to_string_lossy()
+                .to_string()
+        ));
         assert_eq!(launch.args[1], "-cp");
         assert_eq!(launch.args[3], bundle::server_main(software).unwrap());
         assert_eq!(launch.args[4], "nogui");
@@ -53,11 +51,9 @@ async fn managed_fabric_and_quilt_use_absolute_classpaths_for_preserved_game_dir
         // The original fresh-install receipt/relative argfile remains verifiable.
         f.installer.verify(&p).await.unwrap();
         std::fs::write(&launch.required_files[1], b"tampered loader").unwrap();
-        assert!(
-            crate::verify_managed_artifacts(&launch.artifacts)
-                .await
-                .is_err()
-        );
+        assert!(crate::verify_managed_artifacts(&launch.artifacts)
+            .await
+            .is_err());
     }
 }
 
@@ -196,16 +192,69 @@ struct Docs {
     sidecars: HashMap<String, Option<Vec<u8>>>,
     heads: HashMap<String, Option<Vec<u8>>>,
 }
+
+#[tokio::test]
+async fn historical_fabric_labels_do_not_poison_selectable_versions() {
+    let libs = fabric_libs();
+    let f = Fixture::new(Software::Vanilla).await;
+    let mut d = docs(Software::Fabric, &libs);
+    d.manifest["gameVersions"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id":"1.14 Pre-Release 1","loaders":[]}));
+    mount_docs(&f, Software::Fabric, &libs, &d).await;
+    let versions = f
+        .installer
+        .versions(Software::Fabric, &SilentProgressReporter)
+        .await
+        .unwrap();
+    assert_eq!(versions, ["1.21.3", GAME]);
+}
+
+#[tokio::test]
+async fn quilt_uses_selected_game_group_and_numeric_releases() {
+    let libs = quilt_libs();
+    let f = Fixture::new(Software::Vanilla).await;
+    let mut d = docs(Software::Quilt, &libs);
+    for loader in d.manifest["versionGroups"][0]["loaders"]
+        .as_array_mut()
+        .unwrap()
+    {
+        loader["stable"] = json!(false);
+    }
+    d.manifest["versionGroups"].as_array_mut().unwrap().push(json!({"id":"v1","loaders":[{"id":"0.29.0","stable":false,"url":"https://launcher-meta.modrinth.com/quilt/v1/version-group/v1/loader-version/0.29.0"}]}));
+    d.manifest["gameVersions"][0]["versionGroup"] = json!("v1");
+    mount_docs(&f, Software::Quilt, &libs, &d).await;
+    let old = f
+        .installer
+        .releases(Software::Quilt, "1.21.3", &SilentProgressReporter)
+        .await
+        .unwrap();
+    assert_eq!(old.len(), 1);
+    assert_eq!(old[0].id, "0.29.0");
+    let current = f
+        .installer
+        .releases(Software::Quilt, GAME, &SilentProgressReporter)
+        .await
+        .unwrap();
+    assert!(current.iter().any(|v| v.id == loader_of(Software::Quilt)));
+    assert!(current.iter().all(|v| !v.id.contains("beta")));
+}
 fn docs(s: Software, libs: &[Lib]) -> Docs {
     let loader = loader_of(s);
     let profile = |id: &str| {
+        if s == Software::Quilt {
+            return format!(
+                "https://launcher-meta.modrinth.com/quilt/v1/version-group/v2/loader-version/{id}"
+            );
+        }
         format!(
             "https://launcher-meta.modrinth.com/{}/v0/versions/{}.json",
             s.id(),
             id
         )
     };
-    let manifest = json!({"gameVersions":[
+    let mut manifest = json!({"gameVersions":[
         {"id":"1.21.3","loaders":[]},
         {"id":GAME,"loaders":[]},
         {"id":TOKEN,"loaders":[
@@ -214,6 +263,14 @@ fn docs(s: Software, libs: &[Lib]) -> Docs {
             {"id":"0.1.0","url":profile("0.1.0"),"stable":true}
         ]}
     ]});
+    if s == Software::Quilt {
+        let choices = manifest["gameVersions"][2]["loaders"].take();
+        manifest["gameVersions"].as_array_mut().unwrap().pop();
+        for game in manifest["gameVersions"].as_array_mut().unwrap() {
+            game["versionGroup"] = json!("v2");
+        }
+        manifest["versionGroups"] = json!([{ "id": "v2", "loaders": choices }]);
+    }
     let client = json!({
         "mainClass": bundle::client_main(s).unwrap(),
         "arguments": {"game": ["--modrinth-supplied"]},
@@ -286,14 +343,21 @@ async fn mount_docs(f: &Fixture, s: Software, libs: &[Lib], d: &Docs) {
     mount_with(
         &f.server,
         "GET",
-        &format!("/{id}/v0/manifest.json"),
+        &format!(
+            "/{id}/{}/manifest.json",
+            if s == Software::Quilt { "v1" } else { "v0" }
+        ),
         raw(&d.manifest),
     )
     .await;
     mount_with(
         &f.server,
         "GET",
-        &format!("/{id}/v0/versions/{loader}.json"),
+        &if s == Software::Quilt {
+            format!("/quilt/v1/version-group/v2/loader-version/{loader}")
+        } else {
+            format!("/{id}/v0/versions/{loader}.json")
+        },
         raw(&d.client),
     )
     .await;
@@ -1075,14 +1139,13 @@ async fn loader_library_count_is_capped_before_official_metadata_is_requested() 
         assert_eq!(result.is_ok(), accepted, "{count}");
         if !accepted {
             assert_eq!(result.unwrap_err(), InstallError::InvalidMetadata);
-            assert!(
-                !f.server
-                    .received_requests()
-                    .await
-                    .unwrap()
-                    .iter()
-                    .any(|r| r.url.path().ends_with("/server/json"))
-            );
+            assert!(!f
+                .server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|r| r.url.path().ends_with("/server/json")));
         }
     }
 }
@@ -1409,11 +1472,9 @@ async fn loader_releases_are_stable_choices_without_artifact_downloads() {
             .await
             .unwrap();
         assert!(!choices.is_empty());
-        assert!(
-            choices
-                .iter()
-                .all(|v| v.build.is_none() && v.loader_version.as_deref() == Some(v.id.as_str()))
-        );
+        assert!(choices
+            .iter()
+            .all(|v| v.build.is_none() && v.loader_version.as_deref() == Some(v.id.as_str())));
         assert_eq!(artifact_gets(&f, &libs).await, 0);
         assert!(entries(f.root.path()).is_empty());
     }

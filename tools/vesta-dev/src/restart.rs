@@ -243,7 +243,7 @@ fn spawn_independent(command: &mut Command) -> Result<Child> {
             }
             Err(error) => {
                 return Err(format!(
-                    "cannot launch independent agent ({error}); no process was force-killed"
+                    "cannot launch independent agent ({error}); Windows job containment prevents a proven independent lifetime. Exit this dev session and run scripts/dev-shell.ps1 from a standalone PowerShell terminal, then retry vesta-rebuild. Nothing was stopped or force-killed"
                 ));
             }
         }

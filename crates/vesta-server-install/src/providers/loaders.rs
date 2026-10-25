@@ -12,13 +12,22 @@ const TOKEN: &str = "${modrinth.gameVersion}";
 struct Manifest {
     #[serde(rename = "gameVersions")]
     games: List<Game>,
+    #[serde(default, rename = "versionGroups")]
+    groups: Vec<Group>,
+}
+#[derive(Deserialize)]
+struct Group {
+    id: String,
+    loaders: List<Loader>,
 }
 #[derive(Deserialize)]
 struct Game {
     id: String,
     loaders: List<Loader>,
+    #[serde(rename = "versionGroup")]
+    group: Option<String>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct Loader {
     id: String,
     url: String,
@@ -122,13 +131,15 @@ async fn catalogue(
     job: &mut Job,
     reporter: &dyn ProgressReporter,
     revisions: &mut Vec<MetadataRevision>,
+    target: Option<&str>,
 ) -> Result<(Vec<String>, Vec<Loader>)> {
     let (family, _) = families(s)?;
     let m: Manifest = fetch(
         http,
         &format!(
-            "https://launcher-meta.modrinth.com/{}/v0/manifest.json",
-            s.id()
+            "https://launcher-meta.modrinth.com/{}/{}/manifest.json",
+            s.id(),
+            if s == Software::Quilt { "v1" } else { "v0" }
         ),
         family,
         job,
@@ -136,12 +147,42 @@ async fn catalogue(
         revisions,
     )
     .await?;
-    if m.games.0.len() > job.limits.max_entries {
+    if m.games.0.len() > job.limits.max_entries || m.groups.len() > 16 {
         return Err(InstallError::InvalidMetadata);
     }
     let mut seen = HashSet::new();
     let mut versions = Vec::new();
     let mut loaders = None;
+    let mut groups = BTreeMap::new();
+    for mut group in m.groups {
+        if s != Software::Quilt {
+            return Err(InstallError::InvalidMetadata);
+        }
+        if !identifier(&group.id) || groups.contains_key(&group.id) {
+            return Err(InstallError::InvalidMetadata);
+        }
+        let mut ids = HashSet::new();
+        for loader in &group.loaders.0 {
+            let expected = format!(
+                "https://launcher-meta.modrinth.com/quilt/v1/version-group/{}/loader-version/{}",
+                group.id, loader.id
+            );
+            if !loader_identifier(&loader.id) || !ids.insert(&loader.id) || loader.url != expected {
+                return Err(InstallError::InvalidMetadata);
+            }
+            validate_family_url(&loader.url, family, Role::Metadata, false)?;
+        }
+        // The current Quilt mirror marks all loaders false, including releases.
+        // Numeric release IDs exclude beta/RC builds; planning still verifies
+        // their membership and libraries against the official Quilt service.
+        for loader in &mut group.loaders.0 {
+            loader.stable = loader
+                .id
+                .split('.')
+                .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+        }
+        groups.insert(group.id, group.loaders.0);
+    }
     for game in m.games.0 {
         if !seen.insert(game.id.clone()) {
             return Err(InstallError::InvalidMetadata);
@@ -167,7 +208,23 @@ async fn catalogue(
             }
             loaders = Some(game.loaders.0);
         } else {
-            if !identifier(&game.id) || !game.loaders.0.is_empty() {
+            if game.id.is_empty()
+                || game.id.len() > 64
+                || game.id.chars().any(char::is_control)
+                || !game.loaders.0.is_empty()
+            {
+                return Err(InstallError::InvalidMetadata);
+            }
+            // Historical display labels are not selectable version identifiers.
+            if !identifier(&game.id) {
+                continue;
+            }
+            if let Some(group) = game.group {
+                let choices = groups.get(&group).ok_or(InstallError::InvalidMetadata)?;
+                if target.map_or(loaders.is_none(), |id| id == game.id) {
+                    loaders = Some(choices.clone());
+                }
+            } else if s == Software::Quilt {
                 return Err(InstallError::InvalidMetadata);
             }
             versions.push(game.id);
@@ -182,7 +239,9 @@ pub(super) async fn versions(
     job: &mut Job,
     reporter: &dyn ProgressReporter,
 ) -> Result<Vec<String>> {
-    Ok(catalogue(http, s, job, reporter, &mut Vec::new()).await?.0)
+    Ok(catalogue(http, s, job, reporter, &mut Vec::new(), None)
+        .await?
+        .0)
 }
 pub(super) async fn releases(
     http: &Transport,
@@ -191,7 +250,15 @@ pub(super) async fn releases(
     job: &mut Job,
     reporter: &dyn ProgressReporter,
 ) -> Result<Vec<releases::SoftwareRelease>> {
-    let (versions, loaders) = catalogue(http, software, job, reporter, &mut Vec::new()).await?;
+    let (versions, loaders) = catalogue(
+        http,
+        software,
+        job,
+        reporter,
+        &mut Vec::new(),
+        Some(version),
+    )
+    .await?;
     if !versions.iter().any(|v| v == version) {
         return Err(InstallError::Unavailable);
     }
@@ -307,7 +374,15 @@ pub(super) async fn resolve(
     }
     let (profile_family, meta_family) = families(s)?;
     let mut revisions = Vec::new();
-    let (versions, loaders) = catalogue(http, s, job, reporter, &mut revisions).await?;
+    let (versions, loaders) = catalogue(
+        http,
+        s,
+        job,
+        reporter,
+        &mut revisions,
+        selection.version.as_deref(),
+    )
+    .await?;
     let version = select_version(
         &Catalogue {
             versions,

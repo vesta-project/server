@@ -2,6 +2,13 @@
 
 From this repository, run:
 
+On Windows, use `./scripts/dev-shell.ps1` from a standalone PowerShell terminal.
+It builds the helper with Cargo, then starts it after Cargo exits. This avoids
+Cargo versions whose kill-on-close Windows job prevents independent agent
+restarts. Exit any existing `cargo dev` shell before using this entry point.
+Arguments such as `--release` and `--server-root` are forwarded unchanged.
+Linux can continue using `cargo dev` below.
+
 ```powershell
 cargo dev
 # Equivalent long form:

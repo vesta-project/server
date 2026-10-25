@@ -658,7 +658,7 @@ pub(crate) fn validate_family_url(
         | SourceFamily::ModrinthNeoForge => return Err(InstallError::SourceRefused),
         SourceFamily::MojangObjects => ("piston-data.mojang.com", "/v1/objects/"),
         SourceFamily::ModrinthFabric => ("launcher-meta.modrinth.com", "/fabric/v0/"),
-        SourceFamily::ModrinthQuilt => ("launcher-meta.modrinth.com", "/quilt/v0/"),
+        SourceFamily::ModrinthQuilt => ("launcher-meta.modrinth.com", "/quilt/v1/"),
         SourceFamily::FabricMeta => ("meta.fabricmc.net", "/v2/versions/loader/"),
         SourceFamily::FabricMaven => ("maven.fabricmc.net", "/"),
         SourceFamily::QuiltMeta => ("meta.quiltmc.org", "/v3/versions/loader/"),
@@ -681,6 +681,14 @@ pub(crate) fn validate_family_url(
             .strip_prefix(prefix)
             .ok_or(InstallError::SourceRefused)?;
         if suffix != "manifest.json"
+            && !(family == SourceFamily::ModrinthQuilt && {
+                let parts: Vec<_> = suffix.split('/').collect();
+                parts.len() == 4
+                    && parts[0] == "version-group"
+                    && identifier(parts[1])
+                    && parts[2] == "loader-version"
+                    && loader_identifier(parts[3])
+            })
             && !suffix
                 .strip_prefix("versions/")
                 .and_then(|s| s.strip_suffix(".json"))
