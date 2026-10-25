@@ -109,8 +109,10 @@ string formula (26.x changed the numbering scheme).
 Use official Maven/profile metadata as the primary path. Earlier archived plans
 suggested Modrinth sided metadata; that remains an optional, separately validated
 adapter, not an assumed working endpoint or a reason to execute client recipes.
-The current client-constructed NeoForge v0 manifest URL returned 404 during this
-research. A mirror outage must not silently change a reviewed artifact identity.
+The research probe using `/neoforge/v0/manifest.json` returned 404, but that is
+not the launcher's endpoint: its installer maps NeoForge to `/neo/v0/manifest.json`.
+The failed probe does not establish a launcher bug or a Modrinth outage. A mirror
+outage must not silently change a reviewed artifact identity.
 
 Expose releases with `loader_version`, null numeric `build`, and exact IDs through
 the existing `/software/versions`, `/software/releases` and plan APIs. Sort using
