@@ -207,10 +207,71 @@ pub(crate) fn activity_line(line: &str) -> Option<(&str, &'static str)> {
     let message = message.strip_prefix("System chat: ").unwrap_or(message);
     let (name, kind) = if let Some(name) = message.strip_suffix(" joined the game") {
         (name, "join")
+    } else if let Some(name) = login_name(message) {
+        (name, "join")
+    } else if let Some((name, reason)) = message.split_once(" lost connection: ") {
+        if reason.is_empty() {
+            return None;
+        }
+        (name, "leave")
     } else {
         (message.strip_suffix(" left the game")?, "leave")
     };
     crate::moderation::valid_player(name).then_some((name, kind))
+}
+
+/// A shared Minecraft/Bukkit-family message shape, independent of software identity.
+/// Validate the whole message so chat and partial login diagnostics cannot become joins.
+fn login_name(message: &str) -> Option<&str> {
+    let (name, tail) = message.split_once('[')?;
+    if !crate::moderation::valid_player(name) {
+        return None;
+    }
+    let (address, tail) = tail.split_once("] logged in with entity id ")?;
+    address
+        .strip_prefix('/')?
+        .parse::<std::net::SocketAddr>()
+        .ok()?;
+    let (entity, position) = tail.split_once(" at (")?;
+    entity.parse::<i32>().ok()?;
+    let mut position = position.strip_suffix(')')?;
+    if let Some(world) = position.strip_prefix('[') {
+        let (world, coordinates) = world.split_once(']')?;
+        if world.is_empty() || world.len() > 256 || world.chars().any(char::is_control) {
+            return None;
+        }
+        position = coordinates;
+    }
+    let mut coordinates = position.split(',');
+    for _ in 0..3 {
+        if !coordinates.next()?.trim().parse::<f64>().ok()?.is_finite() {
+            return None;
+        }
+    }
+    if coordinates.next().is_some() {
+        return None;
+    }
+    Some(name)
+}
+
+/// Consecutive login/join and disconnect/leave lines describe one transition.
+/// Bounded independently of console retention, and reset at generation/stream gaps.
+#[derive(Default)]
+struct ActivityTransitions(std::collections::BTreeMap<String, &'static str>);
+impl ActivityTransitions {
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+    fn observe(&mut self, name: &str, kind: &'static str) -> Option<bool> {
+        if self.0.get(name).copied() == Some(kind) {
+            return Some(false);
+        }
+        if !self.0.contains_key(name) && self.0.len() >= 10_000 {
+            return None;
+        }
+        self.0.insert(name.to_owned(), kind);
+        Some(true)
+    }
 }
 
 #[cfg(test)]

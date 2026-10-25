@@ -69,6 +69,59 @@ fn event(at: i64, name: &str) -> Activity {
     }
 }
 #[test]
+fn shared_login_and_disconnect_formats_are_anchored() {
+    let login = "[21:35:20 INFO]: Eatham532[/127.0.0.1:55640] logged in with entity id 71 at ([minecraft:overworld]-580.483593576846, 70.0, 621.2972399635175)";
+    assert_eq!(activity_line(login), Some(("Eatham532", "join")));
+    assert_eq!(
+        activity_line(
+            "[21:35:20] [Server thread/INFO]: Alex[/[::1]:55640] logged in with entity id -71 at ([world]1.0, 70.0, -2.0)"
+        ),
+        Some(("Alex", "join"))
+    );
+    assert_eq!(
+        activity_line(
+            "[21:35:20 INFO]: Alex[/192.0.2.1:25565] logged in with entity id 1 at (1, 2, 3)"
+        ),
+        Some(("Alex", "join"))
+    );
+    assert_eq!(
+        activity_line("[21:35:21 INFO]: Eatham532 lost connection: Disconnected"),
+        Some(("Eatham532", "leave"))
+    );
+    for line in [
+        login.replace("INFO", "WARN"),
+        login.replace("Eatham532[", "<Bob> Eatham532["),
+        login.replace("127.0.0.1:55640", "not-an-address"),
+        login.replace("entity id 71", "entity id missing"),
+        login.replace("70.0", "NaN"),
+        login.replace("70.0", "inf"),
+        format!("{login} extra"),
+        login.trim_end_matches(')').to_owned(),
+        "[21:35:21 INFO]: <Bob> Eatham532 lost connection: Disconnected".into(),
+        "[21:35:21 INFO]: Eatham532 lost connection: ".into(),
+    ] {
+        assert!(activity_line(&line).is_none(), "{line}");
+    }
+}
+
+#[test]
+fn activity_transitions_deduplicate_formats_allow_rejoins_and_bound_memory() {
+    let mut transitions = ActivityTransitions::default();
+    assert_eq!(transitions.observe("Alex", "join"), Some(true));
+    assert_eq!(transitions.observe("Alex", "join"), Some(false));
+    assert_eq!(transitions.observe("Alex", "leave"), Some(true));
+    assert_eq!(transitions.observe("Alex", "leave"), Some(false));
+    assert_eq!(transitions.observe("Alex", "join"), Some(true));
+    transitions.clear();
+    assert_eq!(transitions.observe("Alex", "join"), Some(true));
+    for i in 0..9999 {
+        assert_eq!(transitions.observe(&format!("P{i}"), "join"), Some(true));
+    }
+    assert_eq!(transitions.observe("Overflow", "join"), None);
+    assert_eq!(transitions.observe("Alex", "leave"), Some(true));
+}
+
+#[test]
 fn metrics_activity_is_anchored_and_rejects_chat_impersonation() {
     assert_eq!(
         activity_line("[12:34:56] [Server thread/INFO]: System chat: Alex joined the game"),

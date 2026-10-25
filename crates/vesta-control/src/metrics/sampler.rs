@@ -33,6 +33,7 @@ pub(crate) struct Sampler {
     cursor: u64,
     gap: bool,
     initialized: bool,
+    activity_transitions: ActivityTransitions,
 }
 impl Sampler {
     pub(crate) fn new(
@@ -64,6 +65,7 @@ impl Sampler {
             cursor: 0,
             gap: false,
             initialized: false,
+            activity_transitions: ActivityTransitions::default(),
         }
     }
     pub(crate) fn with_tick_detection(mut self, detection: super::ticks::Detection) -> Self {
@@ -209,6 +211,7 @@ impl Sampler {
         });
         let mut events = Vec::new();
         if !self.initialized || generation != self.generation {
+            self.activity_transitions.clear();
             // A boundary may have passed between ticks, including a restart while
             // the agent was down. Skip backlog rather than attribute old output.
             self.cursor = runtime
@@ -225,17 +228,31 @@ impl Sampler {
                 break;
             };
             if page.gap {
+                self.activity_transitions.clear();
                 self.gap = true;
             }
             let mut expected = self.cursor.saturating_add(1);
             for line in &page.lines {
                 if line.cursor != expected || line.truncated {
+                    self.activity_transitions.clear();
                     self.gap = true;
                 }
                 if !line.truncated
                     && let (Some(generation), Some((name, kind))) =
                         (generation, activity_line(&line.text))
                 {
+                    match self.activity_transitions.observe(name, kind) {
+                        Some(true) => {}
+                        Some(false) => {
+                            expected = line.cursor.saturating_add(1);
+                            continue;
+                        }
+                        None => {
+                            self.gap = true;
+                            expected = line.cursor.saturating_add(1);
+                            continue;
+                        }
+                    }
                     let observed = line
                         .observed_at
                         .duration_since(UNIX_EPOCH)
@@ -255,6 +272,7 @@ impl Sampler {
             self.cursor = page.next_cursor;
             if page.lines.len() < MAX_PAGE_LINES {
                 if page.latest_cursor > self.cursor {
+                    self.activity_transitions.clear();
                     self.gap = true;
                     self.cursor = page.latest_cursor;
                 }
@@ -267,6 +285,7 @@ impl Sampler {
         }) != generation
         {
             events.clear();
+            self.activity_transitions.clear();
             self.gap = true;
         }
         if self.gap {

@@ -766,6 +766,12 @@ fn management_roster_seeds_once_tracks_activity_and_rechecks_authority() {
     }
     assert_eq!(harness.commands().as_deref(), Some("list\n"));
     // Inject into the same owned capture used by the process reader.
+    owned.runtime.network_handle().player_queries().console.ingest(
+        vesta_game_runtime::console::ConsoleStream::Stdout,
+        "[12:00:01 INFO]: OwnedGamma[/127.0.0.1:55640] logged in with entity id 71 at ([minecraft:overworld]-580.4, 70.0, 621.2)",
+        false,
+    ).unwrap();
+    assert_eq!(read().unwrap().players.len(), 3);
     owned
         .runtime
         .network_handle()
@@ -777,6 +783,13 @@ fn management_roster_seeds_once_tracks_activity_and_rechecks_authority() {
             false,
         )
         .unwrap();
+    assert_eq!(read().unwrap().players.len(), 3); // Login + join is one player.
+    owned.runtime.network_handle().player_queries().console.ingest(
+        vesta_game_runtime::console::ConsoleStream::Stdout,
+        "[12:00:01 INFO]: OwnedAlpha lost connection: Disconnected",
+        false,
+    ).unwrap();
+    assert_eq!(read().unwrap().players.len(), 2);
     owned
         .runtime
         .network_handle()
