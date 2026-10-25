@@ -2,10 +2,12 @@
 //!
 //! A timeout retains the child and all I/O workers. Finalization requires observed
 //! child exit AND joined workers. Descendants holding pipes can keep it Draining.
-//! Drop is synchronous last-resort kill/reap/join and may block indefinitely;
+//! Force-kill also terminates the owned process family (Windows job / Unix group).
+//! Drop is synchronous last-resort kill/reap/join and may block on native failure;
 //! explicit stop/kill/wait are the bounded, observable application paths.
 mod io;
 mod launch;
+mod tree;
 
 pub use launch::{LaunchSpec, MAX_ARG_BYTES, MAX_ARGS, MAX_ARGV_BYTES, MAX_PATH_BYTES};
 pub(crate) use launch::{MAX_REQUIRED_FILES, validate_args};
@@ -205,6 +207,7 @@ impl<E> GuardedInput<E> {
 
 struct OwnedChild {
     child: Child,
+    tree: tree::ProcessTree,
     generation: GenerationId,
     stop: GracefulStop,
     stopping: bool,
@@ -215,12 +218,15 @@ struct OwnedChild {
 impl Drop for OwnedChild {
     fn drop(&mut self) {
         self.io.close_input();
-        // No detached child/worker and no timeout interpreted as termination.
+        // The Unix leader stays unreaped until this point, pinning the group ID.
         // Repeated native failure can make last-resort destruction unbounded.
-        while self.exit.is_none() {
-            let _ = self.child.kill();
+        loop {
+            let _ = self.tree.kill(&mut self.child);
             match self.child.wait() {
-                Ok(status) => self.exit = Some(status),
+                Ok(status) => {
+                    self.exit = Some(status);
+                    break;
+                }
                 Err(_) => thread::sleep(POLL_INTERVAL),
             }
         }
@@ -264,11 +270,12 @@ impl GameProcess {
         let generation = self.new_generation()?;
         // All fallible thread creation is before the external process effect.
         let io = io::IoThreads::prepare(&self.console)?;
+        let tree = tree::ProcessTree::prepare()?;
         let child = spec
             .command()
             .spawn()
             .map_err(|_| RuntimeError::SpawnFailed)?;
-        self.own_spawned(child, generation, spec.stop(), io)
+        self.own_spawned(child, generation, spec.stop(), io, tree)
     }
 
     /// All fallible preparation precedes the guard. A successful guard is
@@ -286,10 +293,11 @@ impl GameProcess {
         spec.preflight()?;
         let generation = self.new_generation()?;
         let io = io::IoThreads::prepare(&self.console)?;
+        let tree = tree::ProcessTree::prepare()?;
         let mut command = spec.command();
         guard(self.snapshot()).map_err(GuardedError::Guard)?;
         let child = command.spawn().map_err(|_| RuntimeError::SpawnFailed)?;
-        self.own_spawned(child, generation, spec.stop(), io)
+        self.own_spawned(child, generation, spec.stop(), io, tree)
             .map_err(GuardedError::Runtime)
     }
 
@@ -299,9 +307,11 @@ impl GameProcess {
         generation: GenerationId,
         stop: GracefulStop,
         io: io::IoThreads,
+        tree: tree::ProcessTree,
     ) -> Result<GenerationId, RuntimeError> {
         self.owned = Some(OwnedChild {
             child,
+            tree,
             generation,
             stop,
             stopping: false,
@@ -310,7 +320,9 @@ impl GameProcess {
             io,
         });
         let owned = self.owned.as_mut().ok_or(RuntimeError::StartupUncertain)?;
-        if owned.io.attach(&mut owned.child).is_err() {
+        let tree_attached = owned.tree.attach(&owned.child);
+        let pipes_attached = owned.io.attach(&mut owned.child);
+        if tree_attached.is_err() || pipes_attached.is_err() {
             owned.stopping = true;
             return Err(RuntimeError::StartupUncertain);
         }
@@ -318,7 +330,7 @@ impl GameProcess {
     }
 
     pub fn poll(&mut self) -> Result<ProcessSnapshot, RuntimeError> {
-        self.poll_with(|child| child.try_wait().map_err(|_| RuntimeError::ObserveFailed))
+        self.poll_with(tree::observe)
     }
 
     fn poll_with(
@@ -467,8 +479,8 @@ impl GameProcess {
         generation: GenerationId,
         timeout: Duration,
     ) -> Result<WaitOutcome, RuntimeError> {
-        self.kill_with(generation, timeout, |child| {
-            child.kill().map_err(|_| RuntimeError::KillFailed)
+        self.kill_with(generation, timeout, |owned| {
+            owned.tree.kill(&mut owned.child)
         })
     }
 
@@ -489,13 +501,10 @@ impl GameProcess {
         }
         let snapshot = self.snapshot();
         let owned = self.current(generation)?;
-        if owned.exit.is_some() {
-            return Err(RuntimeError::StaleGeneration.into());
-        }
         guard(snapshot).map_err(GuardedError::Guard)?;
         // Retain ownership even when native kill fails.
         owned.stopping = true;
-        owned.child.kill().map_err(|_| RuntimeError::KillFailed)?;
+        owned.tree.kill(&mut owned.child)?;
         self.wait_until(generation, until)
             .map_err(GuardedError::Runtime)
     }
@@ -504,7 +513,7 @@ impl GameProcess {
         &mut self,
         generation: GenerationId,
         timeout: Duration,
-        kill: impl FnOnce(&mut Child) -> Result<(), RuntimeError>,
+        kill: impl FnOnce(&mut OwnedChild) -> Result<(), RuntimeError>,
     ) -> Result<WaitOutcome, RuntimeError> {
         let deadline = deadline(timeout)?;
         self.poll()?;
@@ -512,11 +521,9 @@ impl GameProcess {
             return Ok(WaitOutcome::Exited(exit));
         }
         let owned = self.current(generation)?;
-        if owned.exit.is_none() {
-            // Retain stopping ownership even when native kill fails.
-            owned.stopping = true;
-            kill(&mut owned.child)?;
-        }
+        // Includes Draining: inherited pipes still belong to this generation.
+        owned.stopping = true;
+        kill(owned)?;
         self.wait_until(generation, deadline)
     }
 

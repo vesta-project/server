@@ -734,3 +734,101 @@ fn apply_refuses_without_enough_free_space_before_any_change() {
         .apply(&id, source.path(), &[], &none, &[], Some(0))
         .unwrap();
 }
+
+#[test]
+fn mismatched_file_sizes_refuse_both_restore_paths_and_preserve_existing_file() {
+    for variant in 0..4 {
+        let source = game();
+        let store = MemStore::default();
+        let engine = Engine::new(Box::new(store.clone()));
+        engine.init().unwrap();
+        let id = snapshot_of(&engine, source.path(), &Ignore::default());
+        let mut manifest = engine.manifest(&id).unwrap();
+        let file = manifest
+            .files
+            .iter_mut()
+            .find(|f| f.path == "world/region/r.0.0.mca")
+            .unwrap();
+        match variant {
+            0 => {
+                file.chunks.pop();
+            }
+            1 => {
+                file.size += 1;
+            }
+            2 => {
+                file.size -= 1;
+            }
+            _ => {
+                file.chunks.clear();
+            }
+        }
+        store
+            .put(
+                &format!("snapshots/{id}"),
+                &compress(&serde_json::to_vec(&manifest).unwrap()),
+            )
+            .unwrap();
+        let restored = tempfile::tempdir().unwrap();
+        let includes = vec!["world/region/r.0.0.mca".into()];
+        assert_eq!(
+            engine.restore(&id, restored.path(), &includes),
+            Err(EngineError::Corrupt)
+        );
+        fs::write(
+            source.path().join(&includes[0]),
+            b"existing file must survive",
+        )
+        .unwrap();
+        let before = tree(source.path());
+        let error = engine
+            .apply(&id, source.path(), &includes, &Ignore::default(), &[], None)
+            .unwrap_err();
+        assert_eq!(error.error, EngineError::Corrupt);
+        assert!(!error.modified);
+        assert_eq!(tree(source.path()), before);
+    }
+}
+
+#[test]
+fn inspection_restore_publishes_only_complete_output_and_cleans_failed_stage() {
+    let source = game();
+    let store = MemStore::default();
+    let engine = Engine::new(Box::new(store.clone()));
+    engine.init().unwrap();
+    let id = snapshot_of(&engine, source.path(), &Ignore::default());
+    let output = tempfile::tempdir().unwrap();
+    let published = output.path().join("job");
+    let manifest = engine.manifest(&id).unwrap();
+    let hash = manifest
+        .files
+        .iter()
+        .find(|f| f.path == "world/region/r.0.0.mca")
+        .unwrap()
+        .chunks
+        .last()
+        .unwrap();
+    let key = chunk_key(hash);
+    let chunk = store.get(&key).unwrap();
+    store
+        .put(&key, &compress(b"corrupt after earlier files were written"))
+        .unwrap();
+    assert_eq!(
+        engine.restore_published(&id, &published, &[]),
+        Err(EngineError::Corrupt)
+    );
+    assert!(!published.exists());
+    assert_eq!(
+        fs::read_dir(output.path()).unwrap().count(),
+        0,
+        "private partial output removed"
+    );
+    store.put(&key, &chunk).unwrap();
+    engine.restore_published(&id, &published, &[]).unwrap();
+    assert_eq!(tree(&published), tree(source.path()));
+    assert_eq!(
+        engine.restore_published(&id, &published, &[]),
+        Err(EngineError::TargetUnsafe)
+    );
+    assert_eq!(tree(&published), tree(source.path()));
+}

@@ -46,7 +46,9 @@ fn inert_child_fixture() {
 }
 
 fn child(cwd: &TempDir) -> Child {
-    Command::new(std::env::current_exe().unwrap())
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    tree::ProcessTree::configure(&mut command);
+    command
         .args([
             "--exact",
             "process::fault_tests::inert_child_fixture",
@@ -84,7 +86,13 @@ fn failed_native_kill_retains_ownership_and_does_not_suppress_graceful_recovery(
     let io = io::IoThreads::prepare(&runtime.console).unwrap();
     let generation = runtime.new_generation().unwrap();
     runtime
-        .own_spawned(child(&cwd), generation, GracefulStop::MinecraftCommand, io)
+        .own_spawned(
+            child(&cwd),
+            generation,
+            GracefulStop::MinecraftCommand,
+            io,
+            tree::ProcessTree::prepare().unwrap(),
+        )
         .unwrap();
     wait_ready(&cwd);
     assert_eq!(
@@ -114,7 +122,13 @@ fn failed_second_pipe_dispatch_retains_undelivered_handles_and_reports_uncertain
     io.disconnect_stdout_for_test();
     let generation = runtime.new_generation().unwrap();
     assert_eq!(
-        runtime.own_spawned(child(&cwd), generation, GracefulStop::MinecraftCommand, io),
+        runtime.own_spawned(
+            child(&cwd),
+            generation,
+            GracefulStop::MinecraftCommand,
+            io,
+            tree::ProcessTree::prepare().unwrap()
+        ),
         Err(RuntimeError::StartupUncertain)
     );
     wait_ready(&cwd);
@@ -164,7 +178,13 @@ fn missing_first_pipe_never_extracts_or_drops_the_unattempted_output_pipes() {
     let mut child = child(&cwd);
     let stdin = child.stdin.take().unwrap();
     assert_eq!(
-        runtime.own_spawned(child, generation, GracefulStop::MinecraftCommand, io),
+        runtime.own_spawned(
+            child,
+            generation,
+            GracefulStop::MinecraftCommand,
+            io,
+            tree::ProcessTree::prepare().unwrap()
+        ),
         Err(RuntimeError::StartupUncertain)
     );
     wait_ready(&cwd);
@@ -184,7 +204,13 @@ fn poisoned_console_still_drains_actual_pipes_and_child_processes_a_later_stop()
     let io = io::IoThreads::prepare(&runtime.console).unwrap();
     let generation = runtime.new_generation().unwrap();
     runtime
-        .own_spawned(child(&cwd), generation, GracefulStop::MinecraftCommand, io)
+        .own_spawned(
+            child(&cwd),
+            generation,
+            GracefulStop::MinecraftCommand,
+            io,
+            tree::ProcessTree::prepare().unwrap(),
+        )
         .unwrap();
     wait_ready(&cwd);
     runtime.console.poison_for_test();
@@ -249,7 +275,13 @@ fn observe_failure_retains_exact_live_generation_and_all_workers_until_recovery(
     let io = io::IoThreads::prepare(&runtime.console).unwrap();
     let generation = runtime.new_generation().unwrap();
     runtime
-        .own_spawned(child(&cwd), generation, GracefulStop::MinecraftCommand, io)
+        .own_spawned(
+            child(&cwd),
+            generation,
+            GracefulStop::MinecraftCommand,
+            io,
+            tree::ProcessTree::prepare().unwrap(),
+        )
         .unwrap();
     wait_ready(&cwd);
     assert_eq!(
@@ -298,7 +330,13 @@ fn full_stdin_queue_refuses_stop_without_admission_or_phase_change_then_recovers
         .expect("writer actually entered controlled gate");
     let generation = runtime.new_generation().unwrap();
     runtime
-        .own_spawned(child(&cwd), generation, GracefulStop::MinecraftCommand, io)
+        .own_spawned(
+            child(&cwd),
+            generation,
+            GracefulStop::MinecraftCommand,
+            io,
+            tree::ProcessTree::prepare().unwrap(),
+        )
         .unwrap();
     wait_ready(&cwd);
     for index in 0..8 {

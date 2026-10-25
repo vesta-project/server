@@ -136,3 +136,23 @@ supervisor executable. Current execution target is Windows; design for intended 
 record other OS/MSRV/architecture as unexecuted. Parent owns implementation, manifests/builds/
 fixture interface and verification. Bunny may own a separate public integration test batch after
 fixture modes are frozen. Sol independent review follows source handoff, not assumed pass.
+
+
+## Process-family cleanup (2026-10-25)
+
+Each launch now owns a private Unix process group or a Windows kill-on-close Job
+Object. On Windows the child is spawned suspended, assigned to its job, then
+resumed; assignment/resume failure retains uncertain startup ownership for cleanup.
+No uncontained Windows child is allowed to execute application code first.
+
+Force-kill (including its guarded path) and final owner cleanup terminate that
+family, including when the direct child has exited but inherited output pipes keep
+the generation Draining. Worker joins and actual exit observation still precede
+Stopped and the next generation. Unix retains the exited group leader until final
+cleanup so its group ID cannot be reused while Draining. Ordinary graceful exit
+continues draining output.
+This is process lifetime management, not a separate-user/plugin security sandbox;
+Unix descendants that deliberately leave the process group are outside this boundary.
+
+Native contracts: [Windows job objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+and [Rust Unix process groups](https://doc.rust-lang.org/std/os/unix/process/trait.CommandExt.html#method.process_group).

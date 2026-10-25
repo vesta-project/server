@@ -37,6 +37,7 @@ russh = { version = "=0.64.1", default-features = false, features = ["ring"] }
 russh-sftp = "=3.0.1"
 rand = "=0.10.1"
 bytes = "1.12"
+tempfile.workspace = true
 ipnet = { version = "=2.12.0", features = ["serde"] }
 
 [target.'cfg(unix)'.dependencies]
@@ -44,9 +45,6 @@ libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true
 
 [lints]
 workspace = true

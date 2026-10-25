@@ -1120,10 +1120,10 @@ impl Inner {
         }
         // A fresh directory per job: restores never overwrite anything.
         let directory = root.join(id);
-        if fs::create_dir_all(root).is_err() || fs::create_dir(&directory).is_err() {
+        if fs::create_dir_all(root).is_err() {
             return Outcome::failed("backup_restore_target_unavailable");
         }
-        match self.engine.restore(&snapshot, &directory, &paths) {
+        match self.engine.restore_published(&snapshot, &directory, &paths) {
             Ok(()) => Outcome {
                 state: JobState::Succeeded,
                 snapshot: Some(snapshot),

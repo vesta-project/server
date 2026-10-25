@@ -19,6 +19,7 @@ impl Drop for ReleaseOnDrop {
 }
 
 #[test]
+#[cfg_attr(unix, allow(unsafe_code))]
 fn actual_child_exit_retains_draining_generation_until_inherited_pipes_really_close() {
     let mut fixture = Fixture::new(vec!["inherit-pipes".into()], GracefulStop::MinecraftCommand);
     // Declared after owner, so unwind publishes release BEFORE blocking owner destruction.
@@ -38,6 +39,28 @@ fn actual_child_exit_retains_draining_generation_until_inherited_pipes_really_cl
             "no actual child-exit/inherited-pipe witness"
         );
         thread::sleep(Duration::from_millis(5));
+    }
+    #[cfg(unix)]
+    {
+        let pid: libc::id_t = fs::read_to_string(fixture.dir.path().join("parent-pid"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        // The runtime must not reap its Unix leader while a family kill is still
+        // possible: retaining the zombie reserves the group ID against reuse.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid,
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            },
+            0
+        );
+        assert_eq!(unsafe { info.si_pid() } as libc::id_t, pid);
     }
     let replacement = LaunchSpec::new(
         program(),
@@ -92,5 +115,76 @@ fn panic_unwind_terminates_live_direct_child_before_releasing_its_native_lease()
     assert!(
         fixture.dir.path().exists(),
         "working directory survives through native cleanup"
+    );
+}
+
+#[test]
+fn force_kill_terminates_inherited_pipe_helpers_in_running_and_draining_generations() {
+    for mode in ["inherit-pipes", "inherit-pipes-running"] {
+        for guarded in [false, true] {
+            let mut fixture = Fixture::new(vec![mode.into()], GracefulStop::MinecraftCommand);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let state = fixture.process.poll().unwrap();
+                if fixture.dir.path().join("descendant-ready").is_file()
+                    && (mode != "inherit-pipes" || state.phase == ProcessPhase::Draining)
+                {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "helper did not become ready");
+                thread::sleep(Duration::from_millis(5));
+            }
+            let result = if guarded {
+                fixture
+                    .process
+                    .force_kill_guarded(fixture.generation, Duration::from_secs(3), |_| {
+                        Ok::<(), ()>(())
+                    })
+                    .unwrap()
+            } else {
+                fixture
+                    .process
+                    .force_kill(fixture.generation, Duration::from_secs(3))
+                    .unwrap()
+            };
+            assert!(
+                matches!(result, WaitOutcome::Exited(_)),
+                "helper retained output after force kill: {result:?}"
+            );
+            assert_eq!(fixture.process.poll().unwrap().phase, ProcessPhase::Stopped);
+            let next = LaunchSpec::new(
+                program(),
+                vec!["graceful".into()],
+                fixture.dir.path().into(),
+                GracefulStop::MinecraftCommand,
+            )
+            .unwrap();
+            let generation = fixture.process.start(next).unwrap();
+            assert!(matches!(
+                fixture
+                    .process
+                    .stop(generation, Duration::from_secs(3))
+                    .unwrap(),
+                WaitOutcome::Exited(_)
+            ));
+        }
+    }
+}
+
+#[test]
+fn drop_after_direct_exit_also_terminates_inherited_pipe_helpers() {
+    let mut fixture = Fixture::new(vec!["inherit-pipes".into()], GracefulStop::MinecraftCommand);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while fixture.process.poll().unwrap().phase != ProcessPhase::Draining
+        || !fixture.dir.path().join("descendant-ready").is_file()
+    {
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(5));
+    }
+    let before = Instant::now();
+    drop(fixture.process);
+    assert!(
+        before.elapsed() < Duration::from_secs(5),
+        "drop waited for the helper's ten-second self-exit"
     );
 }

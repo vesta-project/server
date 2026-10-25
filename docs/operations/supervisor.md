@@ -251,7 +251,9 @@ permissions, gzip and download work and are tracked in the management API contra
   (activation only while stopped).
 - Degraded control of an orphan through connector/RCON adapters. Today an orphan is
   observable only through its own logs, and stdin control needs an approved restart.
-- Process-tree containment of game descendants.
+- Strong security confinement of game descendants (including Unix group escape).
+  Ordinary process-family force-kill/drop cleanup is implemented in the game runtime;
+  see [game-process-api.md](game-process-api.md#process-family-cleanup-2026-10-25).
 - Linux execution evidence. The Linux branches were written for the same contract
   but were not compiled or run here. Unix socket path length limits apply.
 - Repeated agent/supervisor/host failure drills (the P3 gate).

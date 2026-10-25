@@ -732,6 +732,49 @@ impl Engine {
         Ok(())
     }
 
+    /// Publish inspection output only after every file has been verified. The stage
+    /// is an owned temporary directory; failure removes only that private tree.
+    pub(super) fn restore_published(
+        &self,
+        snapshot: &str,
+        target: &Path,
+        includes: &[String],
+    ) -> Result<()> {
+        match fs::symlink_metadata(target) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            _ => return Err(EngineError::TargetUnsafe),
+        }
+        let parent = target.parent().ok_or(EngineError::TargetUnsafe)?;
+        let stage = tempfile::Builder::new()
+            .prefix(".vesta-restore-")
+            .tempdir_in(parent)
+            .map_err(|_| EngineError::Failed)?;
+        self.restore(snapshot, stage.path(), includes)?;
+        fs::rename(stage.path(), target).map_err(|_| EngineError::Failed)?;
+        Ok(())
+    }
+
+    fn write_restored_file(&self, file: &FileEntry, out: &mut impl Write) -> Result<()> {
+        let mut written = 0u64;
+        for hash in &file.chunks {
+            if !valid_hash(hash) {
+                return Err(EngineError::Corrupt);
+            }
+            let data = decompress(&self.store.get(&chunk_key(hash))?, CHUNK_SIZE)?;
+            written = written
+                .checked_add(data.len() as u64)
+                .ok_or(EngineError::Corrupt)?;
+            if written > file.size || hash_hex(&data) != *hash {
+                return Err(EngineError::Corrupt);
+            }
+            out.write_all(&data).map_err(|_| EngineError::Failed)?;
+        }
+        if written != file.size {
+            return Err(EngineError::Corrupt);
+        }
+        Ok(())
+    }
+
     /// Restore a snapshot into `target` (which must be empty or absent), optionally only
     /// files at or under the given literal relative paths. Every chunk is re-hashed.
     pub fn restore(&self, snapshot: &str, target: &Path, includes: &[String]) -> Result<()> {
@@ -766,16 +809,7 @@ impl Engine {
                 .create_new(true)
                 .open(&path)
                 .map_err(|_| EngineError::Failed)?;
-            for hash in &file.chunks {
-                if !valid_hash(hash) {
-                    return Err(EngineError::Corrupt);
-                }
-                let data = decompress(&self.store.get(&chunk_key(hash))?, CHUNK_SIZE)?;
-                if hash_hex(&data) != *hash {
-                    return Err(EngineError::Corrupt);
-                }
-                out.write_all(&data).map_err(|_| EngineError::Failed)?;
-            }
+            self.write_restored_file(file, &mut out)?;
             out.sync_all().map_err(|_| EngineError::Failed)?;
         }
         Ok(())

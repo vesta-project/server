@@ -132,6 +132,7 @@ impl LaunchSpec {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        super::tree::ProcessTree::configure(&mut command);
         // No shell, environment rewriting or detached-process flags.
         command
     }

@@ -59,7 +59,8 @@ fn main() {
     if mode == "crash" {
         process::exit(23);
     }
-    if mode == "inherit-pipes" {
+    if mode == "inherit-pipes" || mode == "inherit-pipes-running" {
+        fs::write("parent-pid", process::id().to_string()).expect("fixture pid");
         let descendant = process::Command::new(env::current_exe().expect("fixture executable"))
             .arg("hold-pipes")
             .stdin(process::Stdio::null())
@@ -67,10 +68,12 @@ fn main() {
             .stderr(process::Stdio::inherit())
             .spawn()
             .expect("fixture inherited pipes");
-        // Intentionally model the unimplemented process-tree boundary, not production cleanup.
+        // Inherited-pipe witness for owned process-family cleanup.
         // The descendant has explicit release and a ten-second self-termination fallback.
         drop(descendant);
-        return;
+        if mode == "inherit-pipes" {
+            return;
+        }
     }
     if mode == "closed-stdin" {
         // This mode never reads; the pipe can fill while the child stays alive.

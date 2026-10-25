@@ -153,7 +153,13 @@ fn delayed_writer_rechecks_fresh_guard_and_preserves_typed_refusal_without_stdin
     entered_rx.recv_timeout(WAIT).unwrap();
     let generation = process.new_generation().unwrap();
     process
-        .own_spawned(spec.command().spawn().unwrap(), generation, spec.stop(), io)
+        .own_spawned(
+            spec.command().spawn().unwrap(),
+            generation,
+            spec.stop(),
+            io,
+            tree::ProcessTree::prepare().unwrap(),
+        )
         .unwrap();
     wait_for(|| cwd.path().join("guarded-ready").exists());
     let allowed = Arc::new(AtomicBool::new(true));
@@ -297,7 +303,13 @@ fn delayed_list_writer_refuses_revocation_without_command_or_phase_change() {
     entered_rx.recv_timeout(WAIT).unwrap();
     let generation = process.new_generation().unwrap();
     process
-        .own_spawned(spec.command().spawn().unwrap(), generation, spec.stop(), io)
+        .own_spawned(
+            spec.command().spawn().unwrap(),
+            generation,
+            spec.stop(),
+            io,
+            tree::ProcessTree::prepare().unwrap(),
+        )
         .unwrap();
     wait_for(|| cwd.path().join("guarded-ready").exists());
     let allowed = Arc::new(AtomicBool::new(true));

@@ -8,14 +8,14 @@
 //! each file is either old or new; the whole tree is not atomic, which is why every
 //! failure after the first change reports `modified`.
 use super::{
-    CHUNK_SIZE, Engine, EngineError, FileEntry, MAX_CHUNKS_LISTED, MAX_FILES, chunk_key,
-    decompress, hash_hex, literal_path, native, valid_hash,
+    CHUNK_SIZE, Engine, EngineError, FileEntry, MAX_CHUNKS_LISTED, MAX_FILES, hash_hex,
+    literal_path, native, valid_hash,
 };
 use crate::backups::ignore::Ignore;
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     fs,
-    io::{Read, Write},
+    io::Read,
     path::Path,
     time::{Duration, UNIX_EPOCH},
 };
@@ -388,13 +388,7 @@ impl Engine {
                     .create_new(true)
                     .open(&temp)
                     .map_err(|_| EngineError::Failed)?;
-                for hash in &entry.chunks {
-                    let data = decompress(&self.store.get(&chunk_key(hash))?, CHUNK_SIZE)?;
-                    if hash_hex(&data) != *hash {
-                        return Err(EngineError::Corrupt);
-                    }
-                    out.write_all(&data).map_err(|_| EngineError::Failed)?;
-                }
+                self.write_restored_file(entry, &mut out)?;
                 set_modified(&out, entry.modified_ms);
                 out.sync_all().map_err(|_| EngineError::Failed)?;
                 Ok(())
