@@ -21,6 +21,88 @@ fn request(files: &FileBrowser, h: &Harness) -> NewWorld {
     }
 }
 #[test]
+#[ignore = "requires VESTA_WORLD_TEST_ROOT explicitly selecting a world directory; read-only"]
+fn selected_world_metadata_is_read_without_modification() {
+    let root = std::path::PathBuf::from(
+        std::env::var_os("VESTA_WORLD_TEST_ROOT").expect("selected world directory"),
+    );
+    let level = fs::read(root.join("level.dat")).unwrap();
+    crate::world::details(&level).unwrap();
+    if crate::world::seed(&level).unwrap().is_none() {
+        let path = [
+            "dimensions/minecraft/overworld/data/minecraft/world_gen_settings.dat",
+            "data/minecraft/world_gen_settings.dat",
+        ]
+        .into_iter()
+        .map(|path| root.join(path))
+        .find(|path| path.exists())
+        .expect("overworld metadata");
+        let data = fs::read(path).unwrap();
+        // Never print the selected world's seed or other private metadata.
+        assert!(
+            !crate::world::world_generation_seed(&data)
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn dimension_local_worldgen_metadata_and_dimensions_are_detected_without_software_identity() {
+    let h = Harness::new(false);
+    let files = files(&h);
+    fs::write(
+        h.cwd.join("world/level.dat"),
+        crate::world::tests::split_level(),
+    )
+    .unwrap();
+    let dimensions = h.cwd.join("world/dimensions/minecraft");
+    for dimension in ["overworld", "the_nether", "the_end"] {
+        let data = dimensions.join(dimension).join("data/minecraft");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(
+            data.join("world_gen_settings.dat"),
+            crate::world::tests::split_worldgen(if dimension == "overworld" { 42 } else { 99 }),
+        )
+        .unwrap();
+    }
+    let first = files.world(&h.subject).unwrap();
+    assert_eq!(first.seed.as_deref(), Some("42"));
+    for dimension in ["overworld", "nether", "end"] {
+        assert!(
+            first
+                .details
+                .dimensions
+                .iter()
+                .any(|d| d.id == dimension && d.present)
+        );
+    }
+    let source = dimensions.join("overworld/data/minecraft/world_gen_settings.dat");
+    fs::write(&source, crate::world::tests::split_worldgen(43)).unwrap();
+    let next = files.world(&h.subject).unwrap();
+    assert_eq!(next.seed.as_deref(), Some("43"));
+    assert_ne!(first.revision, next.revision);
+    // A stale root-layout file must not override or mask the dimension-local one.
+    fs::create_dir_all(h.cwd.join("world/data/minecraft")).unwrap();
+    fs::write(
+        h.cwd.join("world/data/minecraft/world_gen_settings.dat"),
+        crate::world::tests::split_worldgen(7),
+    )
+    .unwrap();
+    fs::write(&source, b"invalid metadata").unwrap();
+    assert!(matches!(
+        files.world(&h.subject),
+        Err(crate::files::FileError::Corrupt)
+    ));
+    fs::remove_file(source).unwrap();
+    fs::remove_file(h.cwd.join("world/data/minecraft/world_gen_settings.dat")).unwrap();
+    assert!(matches!(
+        files.world(&h.subject),
+        Err(crate::files::FileError::Corrupt)
+    )); // Never borrow another dimension's seed.
+}
+
+#[test]
 fn split_worldgen_seed_is_read_and_fenced_in_world_revision() {
     let h = Harness::new(false);
     let files = files(&h);

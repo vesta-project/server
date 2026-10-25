@@ -65,19 +65,35 @@ impl FileBrowser {
             match crate::world::seed(metadata.bytes())? {
                 Some(seed) => Some(seed),
                 None => {
-                    let path = RelativePath::parse(&format!(
-                        "{name}/data/minecraft/world_gen_settings.dat"
-                    ))?;
-                    let worldgen = self
-                        .for_remote()
-                        .read(subject, &path, crate::world::MAX_LEVEL_BYTES)
-                        .map_err(|error| match error {
-                            FileError::NotFound => FileError::Corrupt,
-                            other => other,
-                        })?;
+                    // Shared on-disk layouts, independent of server software.
+                    // Prefer the dimension-local overworld file when present;
+                    // never substitute a Nether/End seed or bypass a corrupt file.
+                    let mut selected = None;
+                    for relative in [
+                        format!(
+                            "{name}/dimensions/minecraft/overworld/data/minecraft/world_gen_settings.dat"
+                        ),
+                        format!("{name}/data/minecraft/world_gen_settings.dat"),
+                    ] {
+                        let path = RelativePath::parse(&relative)?;
+                        match self
+                            .for_remote()
+                            .read(subject, &path, crate::world::MAX_LEVEL_BYTES)
+                        {
+                            Ok(read) => {
+                                selected = Some((relative, read));
+                                break;
+                            }
+                            Err(FileError::NotFound) => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    let (relative, worldgen) = selected.ok_or(FileError::Corrupt)?;
                     // A changed split seed must invalidate the same world confirmation
                     // revision as a changed embedded seed. Retain ordinary path authority.
                     revision.update(b"\0world-gen-settings\0");
+                    revision.update(relative.as_bytes());
+                    revision.update(b"\0");
                     revision.update(worldgen.bytes());
                     Some(crate::world::world_generation_seed(worldgen.bytes())?)
                 }

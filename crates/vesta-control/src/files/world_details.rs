@@ -24,14 +24,28 @@ impl FileBrowser {
         level: LevelDetails,
     ) -> Result<WorldDetails> {
         let layouts = [
-            ("overworld", vec![name.to_owned()]),
+            (
+                "overworld",
+                vec![
+                    name.to_owned(),
+                    format!("{name}/dimensions/minecraft/overworld"),
+                ],
+            ),
             (
                 "nether",
-                vec![format!("{name}/DIM-1"), format!("{name}_nether/DIM-1")],
+                vec![
+                    format!("{name}/DIM-1"),
+                    format!("{name}_nether/DIM-1"),
+                    format!("{name}/dimensions/minecraft/the_nether"),
+                ],
             ),
             (
                 "end",
-                vec![format!("{name}/DIM1"), format!("{name}_the_end/DIM1")],
+                vec![
+                    format!("{name}/DIM1"),
+                    format!("{name}_the_end/DIM1"),
+                    format!("{name}/dimensions/minecraft/the_end"),
+                ],
             ),
         ];
         let mut dimensions = Vec::new();
