@@ -305,6 +305,26 @@ impl SoftwareHandle {
         self.authorize(subject)?;
         Ok(result)
     }
+    pub async fn releases(
+        &self,
+        subject: &Subject,
+        software: Software,
+        version: &str,
+    ) -> Result<Vec<vesta_server_install::SoftwareRelease>> {
+        self.authorize(subject)?;
+        let _permit = self
+            .inner
+            .query_permit
+            .try_acquire()
+            .map_err(|_| SoftwareError::Busy)?;
+        let result = self
+            .inner
+            .installer
+            .releases(software, version, &SilentProgressReporter)
+            .await?;
+        self.authorize(subject)?;
+        Ok(result)
+    }
     pub async fn plan(&self, subject: &Subject, request: PlanRequest) -> Result<PreparedPlan> {
         self.authorize(subject)?;
         validate_request(&request)?;
@@ -350,6 +370,7 @@ impl SoftwareHandle {
             software: plan.software(),
             version: plan.version().into(),
             build: plan.build(),
+            loader_version: plan.loader_version().map(str::to_owned),
             java: plan.java_requirement().clone(),
             java_compatible: plan.selected_java_major() >= plan.java_requirement().major,
             selected_java_major: plan.selected_java_major(),

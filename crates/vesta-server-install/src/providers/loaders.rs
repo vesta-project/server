@@ -184,6 +184,27 @@ pub(super) async fn versions(
 ) -> Result<Vec<String>> {
     Ok(catalogue(http, s, job, reporter, &mut Vec::new()).await?.0)
 }
+pub(super) async fn releases(
+    http: &Transport,
+    software: Software,
+    version: &str,
+    job: &mut Job,
+    reporter: &dyn ProgressReporter,
+) -> Result<Vec<releases::SoftwareRelease>> {
+    let (versions, loaders) = catalogue(http, software, job, reporter, &mut Vec::new()).await?;
+    if !versions.iter().any(|v| v == version) {
+        return Err(InstallError::Unavailable);
+    }
+    Ok(loaders
+        .into_iter()
+        .filter(|l| l.stable)
+        .map(|l| releases::SoftwareRelease {
+            id: l.id.clone(),
+            build: None,
+            loader_version: Some(l.id),
+        })
+        .collect())
+}
 /// Narrow Maven grammar, no general interpolation, classifiers, extensions or ranges.
 /// Classifiers are deliberately unsupported at this checkpoint.
 pub(crate) fn maven_path(coordinate: &str) -> Result<String> {

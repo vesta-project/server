@@ -22,6 +22,7 @@ pub(crate) fn implemented(path: &str) -> bool {
             | "/api/v3/manage/java/download"
             | "/api/v3/manage/software"
             | "/api/v3/manage/software/versions"
+            | "/api/v3/manage/software/releases"
             | "/api/v3/manage/software/plan"
             | "/api/v3/manage/software/apply"
             | "/api/v3/manage/software/jobs"
@@ -77,7 +78,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         .path
         .strip_prefix("/api/v3/manage/")
         .unwrap_or_default();
-    if action != "software/versions" && request.query.is_some() {
+    if !matches!(action, "software/versions" | "software/releases") && request.query.is_some() {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
     if action == "world" && request.method == Method::GET {
@@ -375,6 +376,20 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                 Err(e) => software_error(e),
             }
         }
+        ("software/releases", &Method::GET) => {
+            let Some((software, version)) = release_query(request.query) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            let service = service.clone();
+            let actor = subject.clone();
+            let query_version = version.clone();
+            match run_async(host, async move {
+                service.releases(&actor, software, &query_version).await
+            }) {
+                Ok(value) => ok(json!({"software":software,"version":version,"releases":value})),
+                Err(e) => software_error(e),
+            }
+        }
         ("software/plan", &Method::POST) => {
             let Some(input) = decode::<PlanRequest>(request.bytes) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
@@ -445,4 +460,39 @@ fn run_async<T: Send + 'static>(
     owner
         .block_on(owner.spawn(future))
         .map_err(|_| SoftwareError::RuntimeUnavailable)?
+}
+
+// Fixed query grammar. Version identifiers never contain URL delimiters or escapes.
+fn release_query(query: Option<&str>) -> Option<(vesta_server_install::Software, String)> {
+    let (software, version) = query?.strip_prefix("software=")?.split_once("&version=")?;
+    if version.is_empty()
+        || version.len() > 128
+        || !version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    {
+        return None;
+    }
+    Some((
+        serde_json::from_value(json!(software)).ok()?,
+        version.into(),
+    ))
+}
+#[cfg(test)]
+mod release_query_tests {
+    use super::*;
+    #[test]
+    fn rejects_ambiguous_or_unsafe_queries() {
+        assert!(release_query(Some("software=paper&version=1.21.4")).is_some());
+        for query in [
+            None,
+            Some("software=paper"),
+            Some("software=paper&version=../x"),
+            Some("software=paper&version=1&version=2"),
+            Some("software=unknown&version=1"),
+            Some("software=paper&version=%2F"),
+        ] {
+            assert!(release_query(query).is_none());
+        }
+    }
 }

@@ -159,6 +159,7 @@ pub struct PreparedPlan {
     pub software: Software,
     pub version: String,
     pub build: Option<u32>,
+    pub loader_version: Option<String>,
     pub java: JavaRequirement,
     pub java_compatible: bool,
     pub selected_java_major: u32,

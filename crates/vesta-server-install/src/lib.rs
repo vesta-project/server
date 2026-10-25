@@ -19,14 +19,14 @@ mod transfer;
 pub use bundle::{ArtifactRecord, BundleReceipt};
 pub use config::TransportConfig;
 pub use install::{InstallOutcome, InstallRoots, Receipt};
-pub use managed::{verify_managed_artifacts, ManagedArtifact, ManagedLaunch};
+pub use managed::{ManagedArtifact, ManagedLaunch, verify_managed_artifacts};
 pub use model::{
     Acknowledgments, Approval, ArtifactReview, DigestAlgorithm, GeneratedFile, InstallError,
     InstallPlan, JavaRequirement, LaunchRecipe, Limits, PublishedDigest, Result, Software,
     SoftwareDescriptor, SourceFamily, Warning,
 };
 pub use progress::{ProgressReporter, SilentProgressReporter};
-pub use providers::Selection;
+pub use providers::{Selection, releases::SoftwareRelease};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -89,6 +89,25 @@ impl ServerInstaller {
         providers::versions(
             &self.http,
             software,
+            &mut transfer::Job::new(self.limits, 0),
+            reporter,
+        )
+        .await
+    }
+    /// Available build/loader choices. Metadata only; planning still verifies the selection.
+    pub async fn releases(
+        &self,
+        software: Software,
+        version: &str,
+        reporter: &dyn ProgressReporter,
+    ) -> Result<Vec<SoftwareRelease>> {
+        if reporter.is_dry_run() {
+            return Err(InstallError::InvalidInput);
+        }
+        providers::releases::list(
+            &self.http,
+            software,
+            version,
             &mut transfer::Job::new(self.limits, 0),
             reporter,
         )

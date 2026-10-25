@@ -4,8 +4,8 @@ use super::{
 };
 use crate::progress::ProgressReporter;
 use serde::{
-    de::{MapAccess, SeqAccess, Visitor},
     Deserialize, Deserializer,
+    de::{MapAccess, SeqAccess, Visitor},
 };
 use std::{
     collections::{BTreeMap, HashSet},
@@ -14,6 +14,7 @@ use std::{
 };
 
 pub(super) mod loaders;
+pub(crate) mod releases;
 
 const MAX_ENTRIES: usize = 10_000;
 

@@ -378,6 +378,11 @@ impl InstallPlan {
     pub fn build(&self) -> Option<u32> {
         self.build
     }
+    pub fn loader_version(&self) -> Option<&str> {
+        self.bundle
+            .as_ref()
+            .map(|bundle| bundle.loader_version.as_str())
+    }
     pub fn digest(&self) -> &PublishedDigest {
         &self.primary_pin().digest
     }

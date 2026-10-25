@@ -33,13 +33,14 @@ macro_rules! provider_case {
             );
             assert_eq!(p.java_requirement().major, 21);
             assert!(entries(f.root.path()).is_empty());
-            assert!(!f
-                .server
-                .received_requests()
-                .await
-                .unwrap()
-                .iter()
-                .any(|r| r.url.path() == f.artifact_path));
+            assert!(
+                !f.server
+                    .received_requests()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|r| r.url.path() == f.artifact_path)
+            );
         }
     };
 }
@@ -310,13 +311,14 @@ async fn purpur_explicit_failed_build_never_substitutes_another_build() {
             .unwrap_err(),
         InstallError::Unavailable
     );
-    assert!(!f
-        .server
-        .received_requests()
-        .await
-        .unwrap()
-        .iter()
-        .any(|r| r.url.path().ends_with("/6")));
+    assert!(
+        !f.server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.url.path().ends_with("/6"))
+    );
 }
 #[tokio::test]
 async fn purpur_default_search_is_capped_at_five_candidate_requests() {
@@ -395,9 +397,58 @@ async fn duplicate_legacy_vanilla_id_is_not_hidden_by_filtering() {
 async fn unsupported_upstream_state_requires_warning_review() {
     let f = Fixture::new(Software::Paper).await;
     override_json(&f,"/v3/projects/paper/versions/1.21.4",json!({"version":{"id":"1.21.4","java":{"version":{"minimum":21}},"support":{"status":"UNSUPPORTED"}},"builds":[7]})).await;
-    assert!(f
-        .plan()
-        .await
-        .warnings()
-        .contains(&Warning::UnsupportedUpstream));
+    assert!(
+        f.plan()
+            .await
+            .warnings()
+            .contains(&Warning::UnsupportedUpstream)
+    );
+}
+
+#[tokio::test]
+async fn release_catalogues_are_metadata_only_and_builds_are_descending() {
+    for software in [Software::Paper, Software::Folia, Software::Purpur] {
+        let f = Fixture::new(software).await;
+        let choices = f
+            .installer
+            .releases(software, "1.21.4", &SilentProgressReporter)
+            .await
+            .unwrap();
+        assert_eq!(choices[0].build, Some(7));
+        assert!(choices.windows(2).all(|w| w[0].build > w[1].build));
+        assert!(choices.iter().all(|v| v.loader_version.is_none()));
+        assert!(entries(f.root.path()).is_empty());
+        assert!(
+            !f.server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|r| r.url.path() == f.artifact_path)
+        );
+    }
+}
+#[tokio::test]
+async fn release_catalogue_rejects_duplicate_builds_and_unsafe_version() {
+    let f = Fixture::new(Software::Paper).await;
+    override_json(
+        &f,
+        "/v3/projects/paper/versions/1.21.4",
+        json!({"version":{"id":"1.21.4"},"builds":[7,7]}),
+    )
+    .await;
+    assert!(matches!(
+        f.installer
+            .releases(Software::Paper, "1.21.4", &SilentProgressReporter)
+            .await,
+        Err(InstallError::InvalidMetadata)
+    ));
+    let count = f.server.received_requests().await.unwrap().len();
+    assert!(matches!(
+        f.installer
+            .releases(Software::Paper, "../x", &SilentProgressReporter)
+            .await,
+        Err(InstallError::InvalidInput)
+    ));
+    assert_eq!(count, f.server.received_requests().await.unwrap().len());
 }
