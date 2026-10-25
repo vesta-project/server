@@ -1,5 +1,9 @@
 # Server software management
 
+Forge/NeoForge research and staged implementation are documented in
+[the installation plan](../architecture/FORGE_NEOFORGE_INSTALLATION_PLAN.md).
+That plan does not enable either provider or claim installation certification.
+
 Implementation contract, 2026-10-24. All routes use the existing authenticated
 management session. The service independently rechecks canonical owner status and
 `content.install` on every read and write, and again before activation. Anonymous,
