@@ -244,6 +244,7 @@ impl BundleReceipt {
             warnings: self.warnings.clone(),
             completed_at: self.completed_at,
             bundle: Some(self),
+            processed: None,
         })
     }
 }
@@ -329,7 +330,7 @@ fn context(installer: &super::ServerInstaller, plan: &InstallPlan) -> Result<()>
 }
 /// Original pin plus independently observed SHA-256; opened/reopened native identity,
 /// exact authorized hardlink count, size and mtime are checked at both ends.
-async fn rehash(
+pub(crate) async fn rehash(
     path: &Path,
     pin: &ArtifactPin,
     size: u64,

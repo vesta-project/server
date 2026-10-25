@@ -6,19 +6,19 @@ use super::RuntimeError;
 use std::process::{Child, Command};
 
 #[cfg(unix)]
-pub(super) struct ProcessTree {
+pub struct ProcessTree {
     group: Option<i32>,
 }
 #[cfg(unix)]
 impl ProcessTree {
-    pub(super) fn prepare() -> Result<Self, RuntimeError> {
+    pub fn prepare() -> Result<Self, RuntimeError> {
         Ok(Self { group: None })
     }
-    pub(super) fn configure(command: &mut Command) {
+    pub fn configure(command: &mut Command) {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    pub(super) fn attach(&mut self, child: &Child) -> Result<(), RuntimeError> {
+    pub fn attach(&mut self, child: &Child) -> Result<(), RuntimeError> {
         let group = i32::try_from(child.id()).map_err(|_| RuntimeError::StartupUncertain)?;
         if group <= 1 {
             return Err(RuntimeError::StartupUncertain);
@@ -26,7 +26,7 @@ impl ProcessTree {
         self.group = Some(group);
         Ok(())
     }
-    pub(super) fn kill(&self, child: &mut Child) -> Result<(), RuntimeError> {
+    pub fn kill(&self, child: &mut Child) -> Result<(), RuntimeError> {
         let Some(group) = self.group else {
             return child.kill().map_err(|_| RuntimeError::KillFailed);
         };
@@ -73,12 +73,12 @@ mod windows {
             },
         },
     };
-    pub(crate) struct ProcessTree {
+    pub struct ProcessTree {
         job: OwnedHandle,
         attached: bool,
     }
     impl ProcessTree {
-        pub(crate) fn prepare() -> Result<Self, RuntimeError> {
+        pub fn prepare() -> Result<Self, RuntimeError> {
             // SAFETY: anonymous non-inheritable job, valid owned handle thereafter.
             let raw = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
             if raw.is_null() {
@@ -104,10 +104,10 @@ mod windows {
                 attached: false,
             })
         }
-        pub(crate) fn configure(command: &mut Command) {
+        pub fn configure(command: &mut Command) {
             command.creation_flags(CREATE_SUSPENDED);
         }
-        pub(crate) fn attach(&mut self, child: &Child) -> Result<(), RuntimeError> {
+        pub fn attach(&mut self, child: &Child) -> Result<(), RuntimeError> {
             // SAFETY: child is still suspended; assignment precedes executing its code.
             if unsafe {
                 AssignProcessToJobObject(
@@ -159,7 +159,7 @@ mod windows {
             }
             Ok(())
         }
-        pub(crate) fn kill(&self, child: &mut Child) -> Result<(), RuntimeError> {
+        pub fn kill(&self, child: &mut Child) -> Result<(), RuntimeError> {
             if !self.attached {
                 return child.kill().map_err(|_| RuntimeError::KillFailed);
             }
@@ -173,12 +173,12 @@ mod windows {
     }
 }
 #[cfg(windows)]
-pub(super) use windows::ProcessTree;
+pub use windows::ProcessTree;
 
 // Keep the Unix group leader unreaped until owner finalization, so its numeric
 // process-group ID cannot be reused while Draining still permits a family kill.
 #[cfg(unix)]
-pub(super) fn observe(child: &mut Child) -> Result<Option<std::process::ExitStatus>, RuntimeError> {
+pub fn observe(child: &mut Child) -> Result<Option<std::process::ExitStatus>, RuntimeError> {
     use std::os::unix::process::ExitStatusExt;
     // SAFETY: waitid writes this initialized native buffer for our exclusive child.
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
@@ -211,6 +211,6 @@ pub(super) fn observe(child: &mut Child) -> Result<Option<std::process::ExitStat
     Ok(Some(std::process::ExitStatus::from_raw(raw)))
 }
 #[cfg(windows)]
-pub(super) fn observe(child: &mut Child) -> Result<Option<std::process::ExitStatus>, RuntimeError> {
+pub fn observe(child: &mut Child) -> Result<Option<std::process::ExitStatus>, RuntimeError> {
     child.try_wait().map_err(|_| RuntimeError::ObserveFailed)
 }

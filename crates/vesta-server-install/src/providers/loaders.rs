@@ -507,6 +507,7 @@ pub(super) async fn resolve(
         warnings.push(Warning::ExperimentalBuild);
     }
     Ok(Resolved {
+        processed: None,
         version,
         build: None,
         artifact: None,

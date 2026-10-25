@@ -19,14 +19,14 @@ mod transfer;
 pub use bundle::{ArtifactRecord, BundleReceipt};
 pub use config::TransportConfig;
 pub use install::{InstallOutcome, InstallRoots, Receipt};
-pub use managed::{ManagedArtifact, ManagedLaunch, verify_managed_artifacts};
+pub use managed::{verify_managed_artifacts, ManagedArtifact, ManagedLaunch};
 pub use model::{
     Acknowledgments, Approval, ArtifactReview, DigestAlgorithm, GeneratedFile, InstallError,
     InstallPlan, JavaRequirement, LaunchRecipe, Limits, PublishedDigest, Result, Software,
     SoftwareDescriptor, SourceFamily, Warning,
 };
 pub use progress::{ProgressReporter, SilentProgressReporter};
-pub use providers::{Selection, releases::SoftwareRelease};
+pub use providers::{releases::SoftwareRelease, Selection};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -124,7 +124,7 @@ impl ServerInstaller {
         let plan = self
             .plan_preview(software, selection, java, reporter)
             .await?;
-        if plan.runtime.major < plan.required_java.major {
+        if !plan.runtime_compatible() {
             return Err(InstallError::RuntimeIncompatible);
         }
         Ok(plan)
@@ -169,7 +169,14 @@ impl ServerInstaller {
         }
         job.ready(reporter).await?;
         Ok(InstallPlan {
-            schema: if resolved.bundle.is_some() { 2 } else { 1 },
+            schema: if resolved.processed.is_some() {
+                3
+            } else if resolved.bundle.is_some() {
+                2
+            } else {
+                1
+            },
+            processed: resolved.processed,
             install_id: format!("srv_{}", uuid::Uuid::new_v4().simple()),
             software,
             version: resolved.version,

@@ -43,6 +43,9 @@ impl ServerInstaller {
     pub async fn managed_launch(&self, plan: &InstallPlan, game: &Path) -> Result<ManagedLaunch> {
         let receipt = self.verify(plan).await?;
         plan.runtime.recheck()?;
+        if let Some(processed) = &receipt.processed {
+            return crate::providers::forge::managed_launch(self, plan, processed, game);
+        }
         let mut launch = self.managed_launch_checked(plan, game)?;
         launch.artifacts = if let Some(bundle) = receipt.bundle {
             bundle
@@ -134,7 +137,7 @@ impl ServerInstaller {
 /// an API accepting caller-provided paths/digests. Bounded streaming, no writes.
 pub async fn verify_managed_artifacts(artifacts: &[ManagedArtifact]) -> Result<()> {
     tokio::time::timeout(std::time::Duration::from_secs(600), async {
-        if artifacts.len() > 129 {
+        if artifacts.len() > 1024 {
             return Err(InstallError::LimitExceeded);
         }
         let mut total = 0_u64;

@@ -7,7 +7,9 @@
 //! explicit stop/kill/wait are the bounded, observable application paths.
 mod io;
 mod launch;
-mod tree;
+/// Trusted native process-family ownership shared with installation jobs.
+/// This is not a sandbox or a remote-command API.
+pub mod tree;
 
 pub use launch::{LaunchSpec, MAX_ARG_BYTES, MAX_ARGS, MAX_ARGV_BYTES, MAX_PATH_BYTES};
 pub(crate) use launch::{MAX_REQUIRED_FILES, validate_args};

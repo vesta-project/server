@@ -33,14 +33,13 @@ macro_rules! provider_case {
             );
             assert_eq!(p.java_requirement().major, 21);
             assert!(entries(f.root.path()).is_empty());
-            assert!(
-                !f.server
-                    .received_requests()
-                    .await
-                    .unwrap()
-                    .iter()
-                    .any(|r| r.url.path() == f.artifact_path)
-            );
+            assert!(!f
+                .server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|r| r.url.path() == f.artifact_path));
         }
     };
 }
@@ -125,24 +124,20 @@ async fn experimental_opt_in_still_prefers_stable_unless_exact_build_chosen() {
     assert!(p.warnings().contains(&Warning::ExperimentalBuild));
 }
 #[tokio::test]
-async fn forge_family_loaders_fail_without_network_or_writes() {
+async fn legacy_forge_layouts_are_refused_without_network_or_writes() {
     let f = Fixture::new(Software::Paper).await;
     for s in [Software::Forge, Software::NeoForge] {
         assert_eq!(
             f.installer
                 .plan(
                     s,
-                    &Selection::default(),
+                    &Selection {
+                        version: Some("1.16.5".into()),
+                        ..Selection::default()
+                    },
                     &std::env::current_exe().unwrap(),
                     &SilentProgressReporter
                 )
-                .await
-                .unwrap_err(),
-            InstallError::Unavailable
-        );
-        assert_eq!(
-            f.installer
-                .versions(s, &SilentProgressReporter)
                 .await
                 .unwrap_err(),
             InstallError::Unavailable
@@ -311,14 +306,13 @@ async fn purpur_explicit_failed_build_never_substitutes_another_build() {
             .unwrap_err(),
         InstallError::Unavailable
     );
-    assert!(
-        !f.server
-            .received_requests()
-            .await
-            .unwrap()
-            .iter()
-            .any(|r| r.url.path().ends_with("/6"))
-    );
+    assert!(!f
+        .server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .any(|r| r.url.path().ends_with("/6")));
 }
 #[tokio::test]
 async fn purpur_default_search_is_capped_at_five_candidate_requests() {
@@ -397,12 +391,11 @@ async fn duplicate_legacy_vanilla_id_is_not_hidden_by_filtering() {
 async fn unsupported_upstream_state_requires_warning_review() {
     let f = Fixture::new(Software::Paper).await;
     override_json(&f,"/v3/projects/paper/versions/1.21.4",json!({"version":{"id":"1.21.4","java":{"version":{"minimum":21}},"support":{"status":"UNSUPPORTED"}},"builds":[7]})).await;
-    assert!(
-        f.plan()
-            .await
-            .warnings()
-            .contains(&Warning::UnsupportedUpstream)
-    );
+    assert!(f
+        .plan()
+        .await
+        .warnings()
+        .contains(&Warning::UnsupportedUpstream));
 }
 
 #[tokio::test]
@@ -418,14 +411,13 @@ async fn release_catalogues_are_metadata_only_and_builds_are_descending() {
         assert!(choices.windows(2).all(|w| w[0].build > w[1].build));
         assert!(choices.iter().all(|v| v.loader_version.is_none()));
         assert!(entries(f.root.path()).is_empty());
-        assert!(
-            !f.server
-                .received_requests()
-                .await
-                .unwrap()
-                .iter()
-                .any(|r| r.url.path() == f.artifact_path)
-        );
+        assert!(!f
+            .server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.url.path() == f.artifact_path));
     }
 }
 #[tokio::test]

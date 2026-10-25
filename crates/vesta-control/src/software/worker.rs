@@ -99,6 +99,7 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
             }
             StoredLaunch {
                 installation: super::Installation {
+                    loader_version: plan.loader_version().map(str::to_owned),
                     software: Some(plan.software()),
                     version: Some(plan.version().into()),
                     build: plan.build(),

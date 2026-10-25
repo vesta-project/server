@@ -4,8 +4,8 @@ use super::{
 };
 use crate::progress::ProgressReporter;
 use serde::{
-    Deserialize, Deserializer,
     de::{MapAccess, SeqAccess, Visitor},
+    Deserialize, Deserializer,
 };
 use std::{
     collections::{BTreeMap, HashSet},
@@ -13,6 +13,7 @@ use std::{
     marker::PhantomData,
 };
 
+pub(crate) mod forge;
 pub(super) mod loaders;
 pub(crate) mod releases;
 
@@ -223,6 +224,7 @@ struct PurpurBuild {
 }
 
 pub(crate) struct Resolved {
+    pub processed: Option<forge::ProcessorPlan>,
     pub version: String,
     pub build: Option<u32>,
     pub artifact: Option<ArtifactPin>,
@@ -352,6 +354,9 @@ pub(crate) async fn versions(
     job: &mut Job,
     reporter: &dyn ProgressReporter,
 ) -> Result<Vec<String>> {
+    if matches!(software, Software::Forge | Software::NeoForge) {
+        return forge::versions(http, software, job, reporter).await;
+    }
     if matches!(software, Software::Fabric | Software::Quilt) {
         return loaders::versions(http, software, job, reporter).await;
     }
@@ -638,6 +643,7 @@ async fn resolve_single(
         warnings.push(Warning::ProxyResolution);
     }
     Ok(Resolved {
+        processed: None,
         version,
         build,
         artifact: Some(artifact),
@@ -681,6 +687,9 @@ pub(crate) async fn resolve(
         || selection.build == Some(0)
     {
         return Err(InstallError::InvalidInput);
+    }
+    if matches!(software, Software::Forge | Software::NeoForge) {
+        return forge::resolve(http, software, selection, job, reporter).await;
     }
     if matches!(software, Software::Fabric | Software::Quilt) {
         loaders::resolve(http, software, selection, job, reporter).await

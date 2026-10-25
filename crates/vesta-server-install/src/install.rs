@@ -441,6 +441,7 @@ pub struct Receipt {
     pub warnings: Vec<Warning>,
     pub completed_at: u64,
     pub bundle: Option<super::bundle::BundleReceipt>,
+    pub processed: Option<super::providers::forge::ProcessedReceipt>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -466,6 +467,9 @@ impl Serialize for Receipt {
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
+        if let Some(processed) = &self.processed {
+            return processed.serialize(serializer);
+        }
         if let Some(bundle) = &self.bundle {
             return bundle.serialize(serializer);
         }
@@ -497,10 +501,14 @@ impl<'de> Deserialize<'de> for Receipt {
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Wire {
+            Processed(super::providers::forge::ProcessedReceipt),
             Single(LegacyReceipt),
             Bundle(super::bundle::BundleReceipt),
         }
         match Wire::deserialize(deserializer)? {
+            Wire::Processed(r) => r
+                .into_receipt()
+                .map_err(|_| serde::de::Error::custom("invalid processed receipt")),
             Wire::Single(r) if r.schema == 1 => Ok(Self {
                 schema: r.schema,
                 install_id: r.install_id,
@@ -518,6 +526,7 @@ impl<'de> Deserialize<'de> for Receipt {
                 warnings: r.warnings,
                 completed_at: r.completed_at,
                 bundle: None,
+                processed: None,
             }),
             Wire::Single(_) => Err(serde::de::Error::custom("invalid receipt schema")),
             Wire::Bundle(r) => r
@@ -594,6 +603,15 @@ pub(crate) async fn execute(
     }
     if reporter.is_cancelled() {
         return Err(InstallError::Cancelled);
+    }
+    if plan.schema == 3 {
+        if reporter.is_dry_run() {
+            return Ok(InstallOutcome::DryRun);
+        }
+        return super::providers::forge::execute(installer, plan, reporter).await;
+    }
+    if plan.processed.is_some() {
+        return Err(InstallError::InvalidInput);
     }
     if plan.schema == 2 {
         if plan.artifact.is_some() || plan.build.is_some() {
@@ -676,6 +694,7 @@ pub(crate) async fn execute(
         warnings: plan.warnings.clone(),
         completed_at: super::now()?,
         bundle: None,
+        processed: None,
     };
     let data = serde_json::to_vec(&receipt).map_err(|_| InstallError::ReceiptInvalid)?;
     if data.len() > 65_536 {
@@ -750,6 +769,12 @@ pub(crate) async fn verify(plan: &InstallPlan) -> Result<Receipt> {
         .map_err(|_| InstallError::Deadline)?
 }
 async fn verify_inner(plan: &InstallPlan, deadline: tokio::time::Instant) -> Result<Receipt> {
+    if plan.schema == 3 {
+        return super::providers::forge::verify(plan, deadline).await;
+    }
+    if plan.processed.is_some() {
+        return Err(InstallError::ReceiptInvalid);
+    }
     if plan.schema == 2 {
         return super::bundle::verify(plan, deadline).await;
     }

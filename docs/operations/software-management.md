@@ -53,8 +53,12 @@ Errors use the existing transport envelope with fixed `software_*` codes:
 
 ## Runtime and persistence integration
 
-Supported automatic providers: Vanilla, Paper, Folia, Purpur, Fabric, Quilt.
-Forge/NeoForge descriptors remain visibly unavailable. Provider resolution,
+Implemented automatic providers: Vanilla, Paper, Folia, Purpur, Fabric, Quilt,
+and the shared modern Forge/NeoForge processor adapter. The latter is implemented
+but awaits real installation/platform testing; pre-1.17 Forge layouts and
+prerelease-only loader versions are explicitly refused. See the
+[implementation checkpoint](../reviews/2026-10-25-forge-installation.md).
+Provider resolution,
 allowlisted HTTPS downloads, pinned checksums, selected local Java probing and
 disk reservations reuse `vesta-server-install`.
 

@@ -110,6 +110,7 @@ impl SoftwareService {
         let game = installer.validate_managed_game(&game)?;
         let original = StoredLaunch {
             installation: Installation {
+                loader_version: None,
                 software: None,
                 version: None,
                 build: None,
@@ -372,9 +373,9 @@ impl SoftwareHandle {
             build: plan.build(),
             loader_version: plan.loader_version().map(str::to_owned),
             java: plan.java_requirement().clone(),
-            java_compatible: plan.selected_java_major() >= plan.java_requirement().major,
+            java_compatible: plan.runtime_compatible(),
             selected_java_major: plan.selected_java_major(),
-            managed_download_major: (plan.selected_java_major() < plan.java_requirement().major)
+            managed_download_major: (!plan.runtime_compatible())
                 .then_some(plan.java_requirement().major),
             warnings: plan.warnings().to_vec(),
             risks: vec![
@@ -392,7 +393,7 @@ impl SoftwareHandle {
             .lock()
             .map_err(|_| SoftwareError::StateUnavailable)?;
         plans.retain(|_, p| p.expires > now);
-        if plans.len() >= MAX_PLANS {
+        if plans.len() >= MAX_PLANS || plans.values().map(|p|p.plan.retained_metadata_bytes()).sum::<usize>().saturating_add(plan.retained_metadata_bytes()) > 32*1024*1024 {
             return Err(SoftwareError::Busy);
         }
         plans.insert(

@@ -169,6 +169,8 @@ pub struct PreparedPlan {
 }
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct Installation {
+    #[serde(default)]
+    pub loader_version: Option<String>,
     pub software: Option<Software>,
     pub version: Option<String>,
     pub build: Option<u32>,

@@ -119,6 +119,7 @@ impl Fixture {
     fn previous(&self, document: &str) {
         let launch = StoredLaunch {
             installation: Installation {
+                loader_version: None,
                 software: Some(Software::Paper),
                 version: Some("1.21.4".into()),
                 build: Some(1),
@@ -355,7 +356,7 @@ fn revoked_owner_cannot_replay_durable_jobs() {
 }
 
 #[test]
-fn remote_path_url_and_unimplemented_provider_inputs_are_rejected() {
+fn remote_paths_and_urls_are_rejected_and_forge_family_requests_are_recognized() {
     for value in [
         serde_json::json!({"software":"paper","version":"1.21.4","java":"C:/attacker.exe"}),
         serde_json::json!({"software":"paper","version":"1.21.4","url":"https://attacker.invalid"}),
@@ -363,7 +364,7 @@ fn remote_path_url_and_unimplemented_provider_inputs_are_rejected() {
         assert!(serde_json::from_value::<PlanRequest>(value).is_err());
     }
     for software in [Software::Forge, Software::NeoForge] {
-        assert!(!software.descriptor().automatic_backend);
+        assert!(software.descriptor().automatic_backend);
         assert!(
             validate_request(&PlanRequest {
                 software,
@@ -372,7 +373,7 @@ fn remote_path_url_and_unimplemented_provider_inputs_are_rejected() {
                 loader_version: None,
                 experimental: false
             })
-            .is_err()
+            .is_ok()
         );
     }
     for version in ["../../world", "https://example.com/jar", "1.21\nstop", ""] {

@@ -6,6 +6,7 @@ type InstallPlanMutation = Box<dyn Fn(&mut InstallPlan)>;
 #[test]
 fn canonical_snapshot_matches_independent_node_hash_vector() {
     let p = InstallPlan {
+        processed: None,
         schema: 1,
         install_id: "srv_fixture".into(),
         software: Software::Paper,
@@ -49,14 +50,13 @@ fn canonical_snapshot_matches_independent_node_hash_vector() {
 }
 
 #[test]
-fn descriptors_keep_all_eight_initial_providers_and_forge_family_unavailable() {
+fn descriptors_keep_all_eight_initial_providers() {
     let mut ids = std::collections::HashSet::new();
-    for (i, s) in Software::ALL.into_iter().enumerate() {
+    for s in Software::ALL {
         let d = s.descriptor();
         assert!(ids.insert(s.id()));
-        // Vanilla, JAR providers, then download-only Fabric/Quilt; Forge/NeoForge remain unavailable.
-        assert_eq!(d.automatic_backend, i < 6);
-        assert_eq!(d.unavailable_reason.is_some(), i >= 6);
+        assert!(d.automatic_backend);
+        assert!(d.unavailable_reason.is_none());
         for url in [d.source, d.licence, d.eula] {
             assert!(url.starts_with("https://"));
         }

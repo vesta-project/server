@@ -23,6 +23,8 @@ sha1 = "=0.10.6"
 md-5 = "=0.10.6"
 sysinfo = "=0.38.4"
 dunce = "=1.0.5"
+zip = { workspace = true, features = ["deflate-flate2-zlib-rs"] }
+vesta-game-runtime = { path = "../vesta-game-runtime" }
 url = "=2.5.8"
 
 [target.'cfg(windows)'.dependencies]

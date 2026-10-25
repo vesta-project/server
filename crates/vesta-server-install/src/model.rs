@@ -146,7 +146,14 @@ impl Software {
     pub(crate) fn automatic(self) -> bool {
         matches!(
             self,
-            Self::Vanilla | Self::Paper | Self::Folia | Self::Purpur | Self::Fabric | Self::Quilt
+            Self::Vanilla
+                | Self::Paper
+                | Self::Folia
+                | Self::Purpur
+                | Self::Fabric
+                | Self::Quilt
+                | Self::Forge
+                | Self::NeoForge
         )
     }
     pub(crate) fn jar_path(self) -> String {
@@ -302,6 +309,8 @@ impl Limits {
 
 #[derive(Clone, Serialize)]
 pub struct InstallPlan {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) processed: Option<super::providers::forge::ProcessorPlan>,
     pub(crate) schema: u32,
     pub(crate) install_id: String,
     pub(crate) software: Software,
@@ -331,10 +340,28 @@ impl fmt::Debug for InstallPlan {
     }
 }
 impl InstallPlan {
+    pub fn retained_metadata_bytes(&self) -> usize {
+        self.processed
+            .as_ref()
+            .map(|p| p.embedded.values().map(Vec::len).sum())
+            .unwrap_or(0)
+    }
+    pub fn runtime_compatible(&self) -> bool {
+        // Historical loader/tool chains are certified per Java major, not for
+        // every newer Java. Other providers retain their minimum-major policy.
+        if self.processed.is_some() {
+            self.runtime.major == self.required_java.major
+        } else {
+            self.runtime.major >= self.required_java.major
+        }
+    }
     pub fn selected_java_major(&self) -> u32 {
         self.runtime.major
     }
     fn primary_pin(&self) -> &ArtifactPin {
+        if let Some(p) = &self.processed {
+            return &p.artifacts[0].pin;
+        }
         self.artifact.as_ref().unwrap_or_else(|| {
             &self
                 .bundle
@@ -346,6 +373,20 @@ impl InstallPlan {
     }
     /// Ordered review evidence; schema 2 begins with the Vanilla game JAR.
     pub fn artifacts(&self) -> Vec<ArtifactReview<'_>> {
+        if let Some(plan) = &self.processed {
+            return plan
+                .artifacts
+                .iter()
+                .chain(plan.mappings.iter())
+                .map(|a| ArtifactReview {
+                    destination: a.destination.clone(),
+                    digest: &a.pin.digest,
+                    size: a.pin.size,
+                    url: &a.pin.url,
+                    family: Some(a.family),
+                })
+                .collect();
+        }
         if let Some(bundle) = &self.bundle {
             bundle
                 .artifacts
@@ -379,9 +420,14 @@ impl InstallPlan {
         self.build
     }
     pub fn loader_version(&self) -> Option<&str> {
-        self.bundle
+        self.processed
             .as_ref()
-            .map(|bundle| bundle.loader_version.as_str())
+            .map(|p| p.loader_version.as_str())
+            .or_else(|| {
+                self.bundle
+                    .as_ref()
+                    .map(|bundle| bundle.loader_version.as_str())
+            })
     }
     pub fn digest(&self) -> &PublishedDigest {
         &self.primary_pin().digest
@@ -405,6 +451,11 @@ impl InstallPlan {
     pub fn hash(&self) -> String {
         let bytes = serde_json::to_vec(self).expect("validated UTF-8 plan is serializable");
         let mut h = Sha256::new();
+        if self.schema == 3 {
+            h.update(b"vesta.server-install.plan.v3\0");
+            h.update(bytes);
+            return format!("{:x}", h.finalize());
+        }
         // Schema 1 keeps its original domain so existing approvals/receipts stay valid.
         h.update(if self.schema == 1 {
             b"vesta.server-install.plan.v1\0"
@@ -415,6 +466,17 @@ impl InstallPlan {
         format!("{:x}", h.finalize())
     }
     pub fn launch_recipe(&self) -> LaunchRecipe {
+        if self.processed.is_some() {
+            return LaunchRecipe {
+                kind: "java-argfile".into(),
+                java: self.runtime.path.clone(),
+                working_directory: self.destination().join("game"),
+                artifact: None,
+                argfile: Some(self.destination().join("software/launch.args")),
+                args: Vec::new(),
+                stop_mode: "console-stop".into(),
+            };
+        }
         LaunchRecipe {
             kind: if self.schema == 2 {
                 "java-argfile"
@@ -469,7 +531,7 @@ pub struct Approval {
 }
 impl Approval {
     pub fn review(plan: &InstallPlan, acknowledgments: Acknowledgments) -> Result<Self> {
-        if plan.runtime.major < plan.required_java.major {
+        if !plan.runtime_compatible() {
             return Err(InstallError::RuntimeIncompatible);
         }
         if super::now()? >= plan.expires {
@@ -501,6 +563,10 @@ pub(crate) fn sha256(bytes: &[u8]) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceFamily {
+    ForgeMaven,
+    NeoForgeMaven,
+    MinecraftLibraries,
+    ModrinthNeoForge,
     MojangObjects,
     ModrinthFabric,
     ModrinthQuilt,

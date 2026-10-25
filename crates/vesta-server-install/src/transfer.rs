@@ -618,7 +618,44 @@ pub(crate) fn validate_family_url(
     {
         return Err(InstallError::SourceRefused);
     }
+    if matches!(
+        family,
+        SourceFamily::ForgeMaven
+            | SourceFamily::NeoForgeMaven
+            | SourceFamily::MinecraftLibraries
+            | SourceFamily::ModrinthNeoForge
+    ) {
+        let (host, prefix) = match family {
+            SourceFamily::ForgeMaven => ("maven.minecraftforge.net", "/"),
+            SourceFamily::NeoForgeMaven => ("maven.neoforged.net", "/releases/"),
+            SourceFamily::MinecraftLibraries => ("libraries.minecraft.net", "/"),
+            _ => ("launcher-meta.modrinth.com", "/neo/v0/"),
+        };
+        if u.host_str() != Some(host) || !u.path().starts_with(prefix) {
+            return Err(InstallError::SourceRefused);
+        }
+        let path = u
+            .path()
+            .strip_prefix(prefix)
+            .ok_or(InstallError::SourceRefused)?;
+        super::paths::relative(path, |_, _| true).map_err(|_| InstallError::SourceRefused)?;
+        let artifact = path.ends_with(".jar") || path.ends_with(".zip") || path.ends_with(".txt");
+        let metadata = artifact
+            || path.ends_with(".jar.sha1")
+            || path.ends_with("maven-metadata.xml")
+            || family == SourceFamily::ModrinthNeoForge && path == "manifest.json";
+        if matches!(role, Role::Artifact) && !artifact
+            || matches!(role, Role::Metadata) && !metadata
+        {
+            return Err(InstallError::SourceRefused);
+        }
+        return Ok(u);
+    }
     let (host, prefix) = match family {
+        SourceFamily::ForgeMaven
+        | SourceFamily::NeoForgeMaven
+        | SourceFamily::MinecraftLibraries
+        | SourceFamily::ModrinthNeoForge => return Err(InstallError::SourceRefused),
         SourceFamily::MojangObjects => ("piston-data.mojang.com", "/v1/objects/"),
         SourceFamily::ModrinthFabric => ("launcher-meta.modrinth.com", "/fabric/v0/"),
         SourceFamily::ModrinthQuilt => ("launcher-meta.modrinth.com", "/quilt/v0/"),
@@ -670,7 +707,10 @@ pub(crate) fn validate_family_url(
     let maven = matches!(family, SourceFamily::FabricMaven | SourceFamily::QuiltMaven);
     let objects = family == SourceFamily::MojangObjects;
     match role {
-        Role::Artifact if !(maven || objects) || !u.path().ends_with(".jar") => {
+        Role::Artifact
+            if !(maven || objects)
+                || !(u.path().ends_with(".jar") || objects && u.path().ends_with(".txt")) =>
+        {
             return Err(InstallError::SourceRefused)
         }
         Role::Metadata if head && !maven => return Err(InstallError::SourceRefused),
