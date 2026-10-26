@@ -1957,3 +1957,37 @@ Incompatible software families return 409 `content_mods_unsupported` or
 Custom status includes `current.custom_jar:{path}` and its job kinds are
 `custom_jar|restore_managed`; existing software errors, activation journaling,
 selected Java/JVM flags and recovery semantics apply.
+
+## Client pack workspace (Stage 2)
+
+See [pack-workspace.md](pack-workspace.md) for lifecycle, payloads, bounds and
+compatibility rules. All paths below are under `/api/v3/manage/`. Reads/edits use
+`pack.edit`; preview additionally uses `pack.build`; publish uses all three of
+`pack.edit`, `pack.build`, `pack.publish`, plus `pack.force_update` when required.
+Existing inventory/config scopes protect the server mismatch report. Writes
+require `Idempotency-Key`; preview is read-only and does not require one.
+
+| Method | Route | Contract |
+|---|---|---|
+| GET | `pack/draft` | Revisioned draft, MC drift, publication/minimum and snapshot advice |
+| GET | `pack/draft/icon` | Nullable PNG/JPEG MIME type and base64 bytes |
+| POST | `pack/draft` | `{expected_revision,manifest}` replaces draft |
+| POST | `pack/draft/add` | `{expected_revision,entries}` or pinned provider root + selected dependencies |
+| POST | `pack/draft/delete` | `{expected_revision}` clears entries/loader |
+| POST | `pack/draft/upload` | Small base64 upload -> SHA-256 |
+| POST | `pack/draft/uploads/begin` | `{upload_id,total_size,sha256,archive}` |
+| POST | `pack/draft/uploads/chunk` | `{upload_id,offset,content_base64}` |
+| POST | `pack/draft/uploads/finish` | `{upload_id}` verifies bytes and returns receipt |
+| POST | `pack/draft/uploads/cancel` | `{upload_id}` discards unused transfer |
+| POST | `pack/draft/import` | Archive bytes/upload or current release, with expected draft/release revisions |
+| GET | `pack/suggestions` | Read-only missing/newer/removed/drift suggestions and warnings |
+| POST | `pack/preview` | `{draft_revision,resolved_entries}` -> validation, diff, manifest, review digest |
+| POST | `pack/publish` | Existing configured-source body, or `{expected_revision,draft_revision,resolved_entries,review_sha256,required_update,acknowledge_lower_version}` |
+| POST | `pack/minimum` | Existing monotonic minimum policy, unchanged |
+
+Draft and release revisions are separate decimal-string clocks. The workspace
+loader is independent of server software. HTTP uses snake_case; native IPC uses
+camelCase. Provider identities contain only Modrinth/CurseForge IDs. Successful
+workspace publication atomically records the release, published manifest, audit
+and exact-body receipt. `resolved_entries` are ephemeral dependency additions or
+exact optional-to-required promotions, never arbitrary replacement of draft pins.
