@@ -582,6 +582,7 @@ pub(super) async fn resolve(
         warnings.push(Warning::ExperimentalBuild);
     }
     Ok(Resolved {
+        source_build: None,
         processed: None,
         version,
         build: None,

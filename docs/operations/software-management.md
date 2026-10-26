@@ -128,6 +128,11 @@ silently manufactured or declared successful by this service.
 
 ## Verified rollback and baseline recovery
 
+CraftBukkit and Spigot use a shared source-build adapter. See
+[BuildTools installations](buildtools.md) for prerequisites and limits. Their
+compilation holds the stopped gate for the entire build, before the usual verified
+activation. Download-only providers keep their existing activation-time hold.
+
 Status reports `previous_restorable` when retained artifact evidence is available. Ordinary rollback requires that evidence, and the worker verifies the recorded hashes before activation. Metadata or an old launch document alone does not establish a restorable installation.
 
 An unverified baseline may only be reapplied while recovery is required after an interrupted change. This recovers the saved launch configuration; it does not restore or verify the old software files. The launcher labels this separately from normal software restore. Actor-bound confirmation, stopped-state exclusion and ordinary launch validation still apply.

@@ -6,6 +6,7 @@ type InstallPlanMutation = Box<dyn Fn(&mut InstallPlan)>;
 #[test]
 fn canonical_snapshot_matches_independent_node_hash_vector() {
     let p = InstallPlan {
+        source_build: None,
         processed: None,
         schema: 1,
         install_id: "srv_fixture".into(),
@@ -50,18 +51,13 @@ fn canonical_snapshot_matches_independent_node_hash_vector() {
 }
 
 #[test]
-fn descriptors_keep_initial_providers_and_gate_both_buildtools_targets() {
+fn descriptors_include_both_shared_buildtools_targets() {
     let mut ids = std::collections::HashSet::new();
     for s in Software::ALL {
         let d = s.descriptor();
         assert!(ids.insert(s.id()));
-        if matches!(s, Software::Bukkit | Software::Spigot) {
-            assert!(!d.automatic_backend);
-            assert_eq!(d.unavailable_reason, Some("buildtools_execution_pending"));
-        } else {
-            assert!(d.automatic_backend);
-            assert!(d.unavailable_reason.is_none());
-        }
+        assert!(d.automatic_backend);
+        assert!(d.unavailable_reason.is_none());
         for url in [d.source, d.licence, d.eula] {
             assert!(url.starts_with("https://"));
         }

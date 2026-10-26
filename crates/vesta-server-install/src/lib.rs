@@ -1,6 +1,7 @@
 //! Local automatic JAR installation backend, not an authenticated management API.
 //! Plans are reviewed snapshots; receipts and software support grant no authority.
 //! No EULA acceptance, server launch, update/adoption, service or listener is implemented.
+mod build_process;
 mod execution;
 // Compiled internal primitives; production loader recipe constructors are deliberately absent.
 mod bundle;
@@ -19,19 +20,20 @@ mod transfer;
 
 pub use bundle::{ArtifactRecord, BundleReceipt};
 pub use catalogue_cache::{
-    CatalogueRecord, CatalogueStore, CATALOGUE_CACHE_DISK_BYTES, CATALOGUE_CACHE_DOCUMENT_BYTES,
-    CATALOGUE_CACHE_ENTRIES,
+    CATALOGUE_CACHE_DISK_BYTES, CATALOGUE_CACHE_DOCUMENT_BYTES, CATALOGUE_CACHE_ENTRIES,
+    CatalogueRecord, CatalogueStore,
 };
 pub use config::TransportConfig;
 pub use install::{InstallOutcome, InstallRoots, Receipt};
-pub use managed::{verify_managed_artifacts, ManagedArtifact, ManagedLaunch};
+pub use managed::{ManagedArtifact, ManagedLaunch, verify_managed_artifacts};
 pub use model::{
     Acknowledgments, Approval, ArtifactReview, DigestAlgorithm, GeneratedFile, InstallError,
     InstallPlan, JavaRequirement, LaunchRecipe, Limits, PublishedDigest, Result, Software,
     SoftwareDescriptor, SourceFamily, Warning,
 };
 pub use progress::{ProgressReporter, SilentProgressReporter};
-pub use providers::{releases::SoftwareRelease, Selection};
+pub use providers::buildtools::{BuiltReceipt, SourceRefs};
+pub use providers::{Selection, releases::SoftwareRelease};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -254,8 +256,15 @@ impl ServerInstaller {
             return Err(InstallError::PathRefused);
         }
         job.ready(reporter).await?;
+        let mut source_build = resolved.source_build;
+        if let Some(build) = &mut source_build {
+            build.bind_tools(&runtime, &self.roots.base)?;
+        }
+        let lifetime = if source_build.is_some() { 7200 } else { 3600 };
         Ok(InstallPlan {
-            schema: if resolved.processed.is_some() {
+            schema: if source_build.is_some() {
+                4
+            } else if resolved.processed.is_some() {
                 3
             } else if resolved.bundle.is_some() {
                 2
@@ -263,6 +272,7 @@ impl ServerInstaller {
                 1
             },
             processed: resolved.processed,
+            source_build,
             install_id: format!("srv_{}", uuid::Uuid::new_v4().simple()),
             software,
             version: resolved.version,
@@ -272,7 +282,9 @@ impl ServerInstaller {
             required_java: resolved.java,
             base: self.roots.base.clone(),
             forbidden: self.roots.forbidden.clone(),
-            expires: now()?.checked_add(3600).ok_or(InstallError::InvalidInput)?,
+            expires: now()?
+                .checked_add(lifetime)
+                .ok_or(InstallError::InvalidInput)?,
             warnings: resolved.warnings,
             metadata: resolved.metadata,
             transferred: job.bytes,
@@ -288,7 +300,7 @@ impl ServerInstaller {
         approval: Approval,
         reporter: &dyn ProgressReporter,
     ) -> Result<InstallOutcome> {
-        install::execute(self, plan, approval, reporter).await
+        Box::pin(install::execute(self, plan, approval, reporter)).await
     }
     /// Rehashes installed bytes against a strictly parsed, plan-bound receipt. Not ongoing confinement.
     pub async fn verify(&self, plan: &InstallPlan) -> Result<Receipt> {

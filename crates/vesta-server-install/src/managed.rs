@@ -47,7 +47,13 @@ impl ServerInstaller {
             return crate::providers::forge::managed_launch(self, plan, processed, game);
         }
         let mut launch = self.managed_launch_checked(plan, game)?;
-        launch.artifacts = if let Some(bundle) = receipt.bundle {
+        launch.artifacts = if let Some(built) = receipt.built {
+            vec![ManagedArtifact {
+                path: plan.destination().join(built.output.path),
+                size: built.output.size,
+                sha256: built.output.sha256,
+            }]
+        } else if let Some(bundle) = receipt.bundle {
             bundle
                 .artifacts
                 .into_iter()

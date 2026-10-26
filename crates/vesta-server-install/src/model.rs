@@ -39,6 +39,10 @@ pub enum InstallError {
     RuntimeIncompatible,
     #[error("server_install.runtime_failed")]
     RuntimeFailed,
+    #[error("server_install.build_tools_missing")]
+    BuildToolsMissing,
+    #[error("server_install.build_memory_low")]
+    BuildMemoryLow,
     #[error("server_install.path_refused")]
     PathRefused,
     #[error("server_install.destination_exists")]
@@ -170,6 +174,8 @@ impl Software {
                 | Self::Quilt
                 | Self::Forge
                 | Self::NeoForge
+                | Self::Bukkit
+                | Self::Spigot
         )
     }
     pub(crate) fn jar_path(self) -> String {
@@ -261,6 +267,7 @@ pub enum Warning {
     RegionThreading,
     FirstRunEffects,
     ProxyResolution,
+    SourceBuild,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -326,6 +333,8 @@ impl Limits {
 #[derive(Clone, Serialize)]
 pub struct InstallPlan {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source_build: Option<super::providers::buildtools::BuildPlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) processed: Option<super::providers::forge::ProcessorPlan>,
     pub(crate) schema: u32,
     pub(crate) install_id: String,
@@ -363,6 +372,9 @@ impl InstallPlan {
             .unwrap_or(0)
     }
     pub fn runtime_compatible(&self) -> bool {
+        if let Some(build) = &self.source_build {
+            return (build.java_min..=build.java_max).contains(&self.runtime.major);
+        }
         // Historical loader/tool chains are certified per Java major, not for
         // every newer Java. Other providers retain their minimum-major policy.
         if self.processed.is_some() {
@@ -370,6 +382,10 @@ impl InstallPlan {
         } else {
             self.runtime.major >= self.required_java.major
         }
+    }
+    /// Hosts hold their stopped gate throughout compilation, before activation.
+    pub fn requires_stopped_build(&self) -> bool {
+        self.source_build.is_some()
     }
     pub fn selected_java_major(&self) -> u32 {
         self.runtime.major
@@ -389,6 +405,9 @@ impl InstallPlan {
     }
     /// Ordered review evidence; schema 2 begins with the Vanilla game JAR.
     pub fn artifacts(&self) -> Vec<ArtifactReview<'_>> {
+        if let Some(build) = &self.source_build {
+            return vec![build.tool_review()];
+        }
         if let Some(plan) = &self.processed {
             return plan
                 .artifacts
@@ -467,6 +486,11 @@ impl InstallPlan {
     pub fn hash(&self) -> String {
         let bytes = serde_json::to_vec(self).expect("validated UTF-8 plan is serializable");
         let mut h = Sha256::new();
+        if self.schema == 4 {
+            h.update(b"vesta.server-install.plan.v4\0");
+            h.update(bytes);
+            return format!("{:x}", h.finalize());
+        }
         if self.schema == 3 {
             h.update(b"vesta.server-install.plan.v3\0");
             h.update(bytes);
@@ -596,6 +620,7 @@ pub enum SourceFamily {
     ModrinthNeoForge,
     ModrinthForge,
     SpigotVersions,
+    SpigotBuildTools,
     MojangObjects,
     ModrinthFabric,
     ModrinthQuilt,
@@ -712,5 +737,5 @@ fn decode_args<'de, D: serde::Deserializer<'de>>(
 pub(super) fn decode_warnings<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> std::result::Result<Vec<Warning>, D::Error> {
-    bounded_vec::<D, Warning, 6>(d)
+    bounded_vec::<D, Warning, 7>(d)
 }

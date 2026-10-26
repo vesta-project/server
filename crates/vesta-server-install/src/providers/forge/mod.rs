@@ -13,6 +13,7 @@ mod legacy;
 mod recipe;
 pub(crate) use catalogue::{releases, versions};
 pub use install::ProcessedReceipt;
+pub(crate) use install::digest;
 pub(crate) use install::{execute, managed_launch, verify};
 
 const MAX_FILES: usize = 1024;
@@ -420,6 +421,7 @@ pub(super) async fn resolve(
         .ok_or(InstallError::LimitExceeded)?
         .min(job.limits.total_bytes);
     Ok(Resolved {
+        source_build: None,
         version: version.into(),
         build: None,
         artifact: None,

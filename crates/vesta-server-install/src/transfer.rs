@@ -1,5 +1,5 @@
 use super::model::*;
-use crate::{progress::ProgressReporter, TransportConfig};
+use crate::{TransportConfig, progress::ProgressReporter};
 use futures::Future;
 use sha1::Sha1;
 use sha2::{Digest as _, Sha256};
@@ -731,6 +731,17 @@ pub(crate) fn validate_family_url(
         }
         return Ok(u);
     }
+    if family == SourceFamily::SpigotBuildTools {
+        return if !head
+            && u.host_str() == Some("hub.spigotmc.org")
+            && raw
+                == "https://hub.spigotmc.org/jenkins/job/BuildTools/201/artifact/target/BuildTools.jar"
+        {
+            Ok(u)
+        } else {
+            Err(InstallError::SourceRefused)
+        };
+    }
     if family == SourceFamily::SpigotVersions {
         let suffix = u.path().strip_prefix("/versions/");
         let valid = suffix.is_some_and(|suffix| {
@@ -773,6 +784,7 @@ pub(crate) fn validate_family_url(
         | SourceFamily::ModrinthNeoForge => return Err(InstallError::SourceRefused),
         SourceFamily::ModrinthForge => return Err(InstallError::SourceRefused),
         SourceFamily::SpigotVersions => return Err(InstallError::SourceRefused),
+        SourceFamily::SpigotBuildTools => return Err(InstallError::SourceRefused),
         SourceFamily::MojangObjects => ("piston-data.mojang.com", "/v1/objects/"),
         SourceFamily::ModrinthFabric => ("launcher-meta.modrinth.com", "/fabric/v0/"),
         SourceFamily::ModrinthQuilt => ("launcher-meta.modrinth.com", "/quilt/v1/"),
@@ -836,7 +848,7 @@ pub(crate) fn validate_family_url(
             if !(maven || objects)
                 || !(u.path().ends_with(".jar") || objects && u.path().ends_with(".txt")) =>
         {
-            return Err(InstallError::SourceRefused)
+            return Err(InstallError::SourceRefused);
         }
         Role::Metadata if head && !maven => return Err(InstallError::SourceRefused),
         Role::Metadata if objects => return Err(InstallError::SourceRefused),
@@ -848,7 +860,7 @@ pub(crate) fn validate_family_url(
                     u.path().ends_with(".jar.sha256")
                 }) =>
         {
-            return Err(InstallError::SourceRefused)
+            return Err(InstallError::SourceRefused);
         }
         _ => {}
     }

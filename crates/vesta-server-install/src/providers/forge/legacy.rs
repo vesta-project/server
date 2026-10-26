@@ -370,6 +370,7 @@ pub(super) async fn resolve(
         .ok_or(InstallError::LimitExceeded)?
         .min(job.limits.total_bytes);
     Ok(Resolved {
+        source_build: None,
         version,
         build: None,
         artifact: None,

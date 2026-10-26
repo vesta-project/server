@@ -4,8 +4,8 @@ use super::{
 };
 use crate::progress::ProgressReporter;
 use serde::{
-    de::{MapAccess, SeqAccess, Visitor},
     Deserialize, Deserializer,
+    de::{MapAccess, SeqAccess, Visitor},
 };
 use std::{
     collections::{BTreeMap, HashSet},
@@ -13,7 +13,7 @@ use std::{
     marker::PhantomData,
 };
 
-mod buildtools;
+pub(crate) mod buildtools;
 pub(crate) mod forge;
 pub(super) mod loaders;
 pub(crate) mod releases;
@@ -230,6 +230,7 @@ struct PurpurBuild {
 }
 
 pub(crate) struct Resolved {
+    pub source_build: Option<buildtools::BuildPlan>,
     pub processed: Option<forge::ProcessorPlan>,
     pub version: String,
     pub build: Option<u32>,
@@ -652,6 +653,7 @@ async fn resolve_single(
         warnings.push(Warning::ProxyResolution);
     }
     Ok(Resolved {
+        source_build: None,
         processed: None,
         version,
         build,
@@ -688,6 +690,9 @@ pub(crate) async fn resolve(
     job: &mut Job,
     reporter: &dyn ProgressReporter,
 ) -> Result<Resolved> {
+    if matches!(software, Software::Bukkit | Software::Spigot) {
+        return buildtools::resolve(http, software, selection, job, reporter).await;
+    }
     if selection.version.as_ref().is_some_and(|v| !identifier(v))
         || selection
             .loader_version

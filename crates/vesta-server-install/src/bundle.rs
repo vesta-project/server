@@ -228,6 +228,7 @@ impl BundleReceipt {
         }
         let vanilla = self.artifacts.first().ok_or(InstallError::ReceiptInvalid)?;
         Ok(Receipt {
+            built: None,
             schema: self.schema,
             install_id: self.install_id.clone(),
             plan_hash: self.plan_hash.clone(),

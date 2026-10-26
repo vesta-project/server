@@ -492,6 +492,7 @@ mod tests {
         let java = root.join("inert-java-placeholder");
         fs::write(&java, b"inert never launched").unwrap();
         let receipt = Receipt {
+            built: None,
             schema: 1,
             processed: None,
             install_id: id,

@@ -71,6 +71,12 @@ impl SoftwareError {
                 vesta_server_install::InstallError::RuntimeFailed => {
                     "server_install.runtime_failed"
                 }
+                vesta_server_install::InstallError::BuildToolsMissing => {
+                    "server_install.build_tools_missing"
+                }
+                vesta_server_install::InstallError::BuildMemoryLow => {
+                    "server_install.build_memory_low"
+                }
                 vesta_server_install::InstallError::PathRefused => "server_install.path_refused",
                 vesta_server_install::InstallError::DestinationExists => {
                     "server_install.destination_exists"

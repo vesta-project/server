@@ -1,19 +1,16 @@
 //! Staged processing and receipt-last publication shared by both Forge families.
 use super::*;
 use crate::{
-    install as publication, InstallOutcome, InstallPlan, ManagedArtifact, ManagedLaunch, Receipt,
-    ServerInstaller,
+    InstallOutcome, InstallPlan, ManagedArtifact, ManagedLaunch, Receipt, ServerInstaller,
+    install as publication,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use std::sync::{Arc, OnceLock};
 use std::{
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
-    time::Duration,
+    process::{Command, Stdio},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use vesta_game_runtime::process::tree::ProcessTree;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -42,6 +39,7 @@ impl ProcessedReceipt {
         }
         let first = &self.inputs[0];
         Ok(Receipt {
+            built: None,
             schema: 3,
             install_id: self.install_id.clone(),
             plan_hash: self.plan_hash.clone(),
@@ -105,7 +103,7 @@ pub(super) async fn write(path: &Path, bytes: &[u8]) -> Result<()> {
         .await
         .map_err(|_| InstallError::PublishFailed)
 }
-pub(super) async fn digest(path: &Path, cap: u64) -> Result<(u64, String)> {
+pub(crate) async fn digest(path: &Path, cap: u64) -> Result<(u64, String)> {
     publication::plain_file(path)?;
     let before = std::fs::metadata(path).map_err(|_| InstallError::ArtifactChanged)?;
     if before.len() > cap {
@@ -244,27 +242,6 @@ async fn extraction(plan: &ProcessorPlan, step: &Step, root: &Path) -> Result<()
     }
     Ok(())
 }
-struct Running {
-    child: Child,
-    tree: ProcessTree,
-    confirmed: bool,
-}
-impl Drop for Running {
-    fn drop(&mut self) {
-        if !self.confirmed {
-            let _ = self.tree.kill(&mut self.child);
-            let _ = self.child.kill();
-            // Keep the exact child owned through a bounded cleanup attempt, never look up a PID.
-            let until = std::time::Instant::now() + Duration::from_secs(2);
-            while std::time::Instant::now() < until {
-                if self.child.try_wait().ok().flatten().is_some() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        }
-    }
-}
 async fn processor(
     runtime: &crate::runtime::RuntimeBinding,
     root: &Path,
@@ -353,112 +330,20 @@ async fn processor(
     ] {
         command.env_remove(key);
     }
-    let tree = ProcessTree::prepare().map_err(|_| InstallError::RuntimeFailed)?;
-    ProcessTree::configure(&mut command);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
-        command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
-    }
-    let child = command.spawn().map_err(|_| InstallError::RuntimeFailed)?;
-    let mut running = Running {
-        child,
-        tree,
-        confirmed: false,
-    };
-    running
-        .tree
-        .attach(&running.child)
-        .map_err(|_| InstallError::RuntimeFailed)?;
-    let out = running
-        .child
-        .stdout
-        .take()
-        .ok_or(InstallError::RuntimeFailed)?;
-    let err = running
-        .child
-        .stderr
-        .take()
-        .ok_or(InstallError::RuntimeFailed)?;
-    let drain = |mut pipe: Box<dyn Read + Send>, path: PathBuf| {
-        tokio::task::spawn_blocking(move || {
-            let mut log = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)
-                .map_err(|_| InstallError::RuntimeFailed)?;
-            let mut buffer = [0u8; 8192];
-            let mut total = 0usize;
-            loop {
-                let n = pipe
-                    .read(&mut buffer)
-                    .map_err(|_| InstallError::RuntimeFailed)?;
-                if n == 0 {
-                    return Ok(());
-                }
-                total += n;
-                if total > 1024 * 1024 {
-                    return Err(InstallError::LimitExceeded);
-                }
-                std::io::Write::write_all(&mut log, &buffer[..n])
-                    .map_err(|_| InstallError::RuntimeFailed)?;
-            }
-        })
-    };
-    let mut stdout = Some(drain(
-        Box::new(out),
-        invocation_file.with_extension("stdout.log"),
-    ));
-    let mut stderr = Some(drain(
-        Box::new(err),
-        invocation_file.with_extension("stderr.log"),
-    ));
-    let mut measure_at = tokio::time::Instant::now();
-    loop {
-        crate::execution::check(deadline, reporter)?;
-        if tokio::time::Instant::now() >= measure_at {
-            measure(root.parent().ok_or(InstallError::PathRefused)?, disk_cap)?;
-            measure_at = tokio::time::Instant::now() + Duration::from_secs(1);
-        }
-        for output in [&mut stdout, &mut stderr] {
-            if output.as_ref().is_some_and(|task| task.is_finished()) {
-                output
-                    .take()
-                    .ok_or(InstallError::RuntimeFailed)?
-                    .await
-                    .map_err(|_| InstallError::RuntimeFailed)??;
-            }
-        }
-        if let Some(status) = vesta_game_runtime::process::tree::observe(&mut running.child)
-            .map_err(|_| InstallError::RuntimeFailed)?
-        {
-            // On Unix observe keeps the group leader unreaped until the family kill.
-            running
-                .tree
-                .kill(&mut running.child)
-                .map_err(|_| InstallError::RuntimeFailed)?;
-            running
-                .child
-                .wait()
-                .map_err(|_| InstallError::RuntimeFailed)?;
-            let drains = async {
-                for output in [stdout.take(), stderr.take()].into_iter().flatten() {
-                    output.await.map_err(|_| InstallError::RuntimeFailed)??;
-                }
-                Ok(())
-            };
-            crate::transfer::controlled(drains, deadline, reporter).await?;
-            running.confirmed = true;
-            let _ = std::fs::remove_file(&invocation_file);
-            return if status.success() {
-                Ok(())
-            } else {
-                Err(InstallError::RuntimeFailed)
-            };
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    let result = crate::build_process::run(
+        command,
+        invocation_file.clone(),
+        deadline,
+        reporter,
+        crate::build_process::LogPolicy {
+            limit: 1024 * 1024,
+            reject_incomplete_decompilation: false,
+        },
+        || measure(root.parent().ok_or(InstallError::PathRefused)?, disk_cap),
+    )
+    .await;
+    let _ = std::fs::remove_file(&invocation_file);
+    result
 }
 async fn steps(
     value: &InstallPlan,
@@ -699,12 +584,7 @@ pub(crate) async fn execute(
     let recipe = plan(value)?;
     // Processor jobs are CPU/memory heavy even though the agent is not. One
     // Forge-family installation per agent process leaves room for control and Minecraft.
-    static PROCESSORS: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
-    let _processor_slot = PROCESSORS
-        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1)))
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| InstallError::Busy)?;
+    let _processor_slot = crate::build_process::heavy_slot()?;
     let _slot = installer.coordinator.slot()?;
     let (volume, free) = installer.space()?;
     let reservation = installer.coordinator.reserve(

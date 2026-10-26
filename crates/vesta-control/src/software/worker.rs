@@ -85,6 +85,12 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
         })?;
         return Ok(());
     }
+    let mut source_hold = match &work.kind {
+        WorkKind::Apply(plan, _) if plan.requires_stopped_build() => {
+            Some(inner.runtime.acquire_stopped()?)
+        }
+        _ => None,
+    };
     let candidate = match &mut work.kind {
         WorkKind::Apply(plan, approval) => {
             let approval = approval.take().ok_or(SoftwareError::ConfirmationInvalid)?;
@@ -175,7 +181,10 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
     }
     // All provider/download/hash work finishes before taking the tiny stopped
     // activation exclusion. The guard must also refuse a pending crash restart.
-    let mut guard = inner.runtime.acquire_stopped()?;
+    let mut guard = match source_hold.take() {
+        Some(guard) => guard,
+        None => inner.runtime.acquire_stopped()?,
+    };
     inner.db.write_with(|tx| -> Result<()> {
         let c=tx.connection();
         store::authorize(c,&inner.db,&work.actor)?;

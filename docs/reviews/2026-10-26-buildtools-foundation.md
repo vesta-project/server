@@ -1,5 +1,8 @@
 # Shared CraftBukkit and Spigot discovery checkpoint
 
+Historical discovery checkpoint. The subsequent source executor is documented in
+`../operations/buildtools.md`; the gated status below describes this earlier commit.
+
 Both targets now use `providers/buildtools.rs`, rather than separate provider
 implementations. The backend identifiers are `bukkit` and `spigot`.
 

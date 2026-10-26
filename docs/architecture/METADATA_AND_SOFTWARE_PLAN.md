@@ -7,9 +7,9 @@ Implementation checkpoints:
 
 - `d191aaf`: bounded agent browsing cache and protected persistence; fresh install
   evidence remains separate. See `docs/reviews/2026-10-26-agent-catalogue-cache.md`.
-- Shared CraftBukkit/Spigot discovery and provenance are implemented, with
-  automatic execution still gated. See
-  `docs/reviews/2026-10-26-buildtools-foundation.md` for remaining executor work.
+- Shared CraftBukkit/Spigot source installation now extends the discovery
+  checkpoint. See `docs/operations/buildtools.md` for requirements, input binding,
+  limits and failure behavior. Real-build validation is recorded separately.
 
 ## Goals and boundaries
 

@@ -100,7 +100,7 @@ pub(crate) fn guard(p: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn redirected(m: &std::fs::Metadata) -> bool {
+pub(crate) fn redirected(m: &std::fs::Metadata) -> bool {
     if m.file_type().is_symlink() {
         return true;
     }
@@ -445,6 +445,7 @@ pub(crate) fn disk_space(base: &Path) -> Result<(PathBuf, u64)> {
 
 #[derive(Debug, Clone)]
 pub struct Receipt {
+    pub built: Option<super::providers::buildtools::BuiltReceipt>,
     pub schema: u32,
     pub install_id: String,
     pub plan_hash: String,
@@ -487,6 +488,9 @@ impl Serialize for Receipt {
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
+        if let Some(built) = &self.built {
+            return built.serialize(serializer);
+        }
         if let Some(processed) = &self.processed {
             return processed.serialize(serializer);
         }
@@ -521,11 +525,15 @@ impl<'de> Deserialize<'de> for Receipt {
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Wire {
+            Built(Box<super::providers::buildtools::BuiltReceipt>),
             Processed(super::providers::forge::ProcessedReceipt),
             Single(LegacyReceipt),
             Bundle(super::bundle::BundleReceipt),
         }
         match Wire::deserialize(deserializer)? {
+            Wire::Built(r) => (*r)
+                .into_receipt()
+                .map_err(|_| serde::de::Error::custom("invalid source receipt")),
             Wire::Processed(r) => r
                 .into_receipt()
                 .map_err(|_| serde::de::Error::custom("invalid processed receipt")),
@@ -547,6 +555,7 @@ impl<'de> Deserialize<'de> for Receipt {
                 completed_at: r.completed_at,
                 bundle: None,
                 processed: None,
+                built: None,
             }),
             Wire::Single(_) => Err(serde::de::Error::custom("invalid receipt schema")),
             Wire::Bundle(r) => r
@@ -649,45 +658,71 @@ pub(crate) async fn execute(
     if plan.schema == 2 {
         return super::bundle::execute(installer, plan, reporter).await;
     }
-    if plan.schema != 1 || plan.bundle.is_some() {
+    if !matches!(plan.schema, 1 | 4)
+        || plan.bundle.is_some()
+        || (plan.schema == 4) != plan.source_build.is_some()
+    {
         return Err(InstallError::InvalidInput);
     }
     let artifact = plan.artifact.as_ref().ok_or(InstallError::InvalidInput)?;
     let _slot = installer.coordinator.slot()?;
     let (volume, free) = installer.space()?;
-    let bytes = artifact.size.unwrap_or(plan.limits.artifact_bytes);
+    let bytes = if plan.source_build.is_some() {
+        plan.limits
+            .total_bytes
+            .checked_add(plan.limits.artifact_bytes)
+            .ok_or(InstallError::LimitExceeded)?
+    } else {
+        artifact.size.unwrap_or(plan.limits.artifact_bytes)
+    };
     let reservation =
         installer
             .coordinator
             .reserve(volume, free, bytes, plan.limits.reserve_bytes)?;
     let mut job = Job::new(plan.limits, plan.transferred);
     let stage = Stage::create(&plan.base)?;
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&stage.artifact)
-        .await
-        .map_err(|_| InstallError::PublishFailed)?;
-    reporter.start_step("Downloading server software", Some(1));
+    let (received, built_input) = if plan.source_build.is_some() {
+        let output = Box::pin(super::providers::buildtools::build(
+            installer,
+            plan,
+            &stage.artifact,
+            reporter,
+        ))
+        .await?;
+        // Compilation has its own reviewed budget. Publication keeps the normal
+        // short deadline instead of inheriting an expired download deadline.
+        job.deadline = tokio::time::Instant::now() + plan.limits.duration();
+        (output.received, Some(output.input))
+    } else {
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&stage.artifact)
+            .await
+            .map_err(|_| InstallError::PublishFailed)?;
+        reporter.start_step("Downloading server software", Some(1));
+        let received = installer
+            .http
+            .receive(
+                Source {
+                    url: &artifact.url,
+                    software: plan.software,
+                },
+                Role::Artifact,
+                Some(artifact),
+                &mut job,
+                reporter,
+                Some(&mut file),
+            )
+            .await?;
+        drop(file);
+        (received, None)
+    };
     let Received {
         size,
         observed_sha256,
         ..
-    } = installer
-        .http
-        .receive(
-            Source {
-                url: &artifact.url,
-                software: plan.software,
-            },
-            Role::Artifact,
-            Some(artifact),
-            &mut job,
-            reporter,
-            Some(&mut file),
-        )
-        .await?;
-    drop(file);
+    } = received;
     job.ready(reporter).await?;
     if super::now()? >= plan.expires {
         return Err(InstallError::Expired);
@@ -697,24 +732,57 @@ pub(crate) async fn execute(
     let (volume, free) = installer.space()?;
     reservation.recheck(&volume, free, plan.limits.reserve_bytes)?;
     plain_file(&stage.artifact)?;
-    let receipt = Receipt {
-        schema: 1,
-        install_id: plan.install_id.clone(),
-        plan_hash: plan.hash(),
-        software: plan.software,
-        version: plan.version.clone(),
-        build: plan.build,
-        published_digest: artifact.digest.clone(),
-        published_size: artifact.size,
-        observed_sha256,
-        actual_size: size,
-        java_requirement: plan.required_java.clone(),
-        launch: plan.launch_recipe(),
-        eula: "not_accepted".into(),
-        warnings: plan.warnings.clone(),
-        completed_at: super::now()?,
-        bundle: None,
-        processed: None,
+    let receipt = if let Some(input) = built_input {
+        let recipe = plan
+            .source_build
+            .as_ref()
+            .ok_or(InstallError::InvalidInput)?;
+        let (sources, source_url, source_sha256) = recipe.source_evidence(plan)?;
+        super::providers::buildtools::BuiltReceipt {
+            schema: 4,
+            install_id: plan.install_id.clone(),
+            plan_hash: plan.hash(),
+            software: plan.software,
+            version: plan.version.clone(),
+            build: plan.build.ok_or(InstallError::InvalidInput)?,
+            sources,
+            source_url,
+            source_sha256,
+            selected_java_major: plan.runtime.major,
+            reference_sha256: recipe.output_reference(),
+            input,
+            output: GeneratedFile {
+                path: plan.software.jar_path(),
+                size,
+                sha256: observed_sha256,
+            },
+            java_requirement: plan.required_java.clone(),
+            launch: plan.launch_recipe(),
+            warnings: plan.warnings.clone(),
+            completed_at: super::now()?,
+        }
+        .into_receipt()?
+    } else {
+        Receipt {
+            built: None,
+            schema: plan.schema,
+            install_id: plan.install_id.clone(),
+            plan_hash: plan.hash(),
+            software: plan.software,
+            version: plan.version.clone(),
+            build: plan.build,
+            published_digest: artifact.digest.clone(),
+            published_size: artifact.size,
+            observed_sha256,
+            actual_size: size,
+            java_requirement: plan.required_java.clone(),
+            launch: plan.launch_recipe(),
+            eula: "not_accepted".into(),
+            warnings: plan.warnings.clone(),
+            completed_at: super::now()?,
+            bundle: None,
+            processed: None,
+        }
     };
     let data = serde_json::to_vec(&receipt).map_err(|_| InstallError::ReceiptInvalid)?;
     if data.len() > 65_536 {
@@ -789,6 +857,9 @@ pub(crate) async fn verify(plan: &InstallPlan) -> Result<Receipt> {
         .map_err(|_| InstallError::Deadline)?
 }
 async fn verify_inner(plan: &InstallPlan, deadline: tokio::time::Instant) -> Result<Receipt> {
+    if plan.schema == 4 {
+        return super::providers::buildtools::verify(plan).await;
+    }
     if plan.schema == 3 {
         return super::providers::forge::verify(plan, deadline).await;
     }
@@ -798,7 +869,10 @@ async fn verify_inner(plan: &InstallPlan, deadline: tokio::time::Instant) -> Res
     if plan.schema == 2 {
         return super::bundle::verify(plan, deadline).await;
     }
-    if plan.schema != 1 || plan.bundle.is_some() {
+    if !matches!(plan.schema, 1 | 4)
+        || plan.bundle.is_some()
+        || (plan.schema == 4) != plan.source_build.is_some()
+    {
         return Err(InstallError::ReceiptInvalid);
     }
     let artifact = plan.artifact.as_ref().ok_or(InstallError::ReceiptInvalid)?;
@@ -821,7 +895,7 @@ async fn verify_inner(plan: &InstallPlan, deadline: tokio::time::Instant) -> Res
         .validate()
         .map_err(|_| InstallError::ReceiptInvalid)?;
     if r.bundle.is_some()
-        || r.schema != 1
+        || r.schema != plan.schema
         || r.plan_hash != plan.hash()
         || r.install_id != plan.install_id
         || r.software != plan.software
