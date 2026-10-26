@@ -12,6 +12,7 @@ pub(super) fn implemented(path: &str) -> bool {
             | "/api/v3/manage/pack/draft/delete"
             | "/api/v3/manage/pack/draft/upload"
             | "/api/v3/manage/pack/draft/import"
+            | "/api/v3/manage/pack/suggestions"
     )
 }
 fn value(result: Result<impl serde::Serialize>) -> Reply {
@@ -70,6 +71,41 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         .path
         .strip_prefix("/api/v3/manage/")
         .unwrap_or_default();
+    if action == "pack/suggestions" && request.method == Method::GET {
+        if !request.bytes.is_empty() {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        let (family, _) = match host.software().map(|s| s.content_target()).transpose() {
+            Ok(v) => v.unwrap_or_default(),
+            Err(_) => {
+                return error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "software_state_unavailable",
+                );
+            }
+        };
+        let world = match host.files().world(&subject) {
+            Ok(w) => w,
+            Err(e) => return super::files::file_error(e),
+        };
+        let inventory = match host
+            .files()
+            .content_inventory(&subject, family, mc.clone(), &world)
+        {
+            Ok(v) => v,
+            Err(e) => return super::files::file_error(e),
+        };
+        let providers = vesta_control::content::UreqProviderClient::new(
+            std::env::var("VESTA_CURSEFORGE_API_KEY").ok(),
+        );
+        return value(workspace.suggestions(
+            &subject,
+            &mc,
+            &inventory.items,
+            inventory.truncated,
+            &providers,
+        ));
+    }
     if action == "pack/draft" && request.method == Method::GET {
         if !request.bytes.is_empty() {
             return error(StatusCode::BAD_REQUEST, "invalid_request");

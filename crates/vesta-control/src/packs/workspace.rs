@@ -1,13 +1,17 @@
 //! Protected, revisioned client-pack workspace. No writes to the game tree.
 mod import;
+mod providers;
+mod suggestions;
 use super::ReleaseError;
 use crate::identity::{self, Capability, Decision, Subject};
 use base64::{Engine, engine::general_purpose::STANDARD};
 pub use import::ImportRequest;
+pub use providers::{ProviderDependency, ProviderMetadata, WorkspaceProvider};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+pub use suggestions::{PackSuggestion, PackSuggestions};
 use vesta_state::{
     StateDatabase,
     audit::{AuditActor, AuditLog, AuditRecord},

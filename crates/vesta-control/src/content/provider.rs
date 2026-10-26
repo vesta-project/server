@@ -12,6 +12,49 @@ pub struct UreqProviderClient {
     curseforge_api_key: Option<String>,
 }
 impl UreqProviderClient {
+    /// Fixed pack metadata endpoints. No caller URL, redirect or download authority.
+    pub(crate) fn pack_document(
+        &self,
+        provider: Provider,
+        project: &str,
+        version: Option<&str>,
+        versions: bool,
+    ) -> Result<serde_json::Value> {
+        validate_id(project)?;
+        if let Some(id) = version {
+            validate_id(id)?;
+        }
+        match provider {
+            Provider::Modrinth => {
+                let url = if let Some(id) = version {
+                    format!("https://api.modrinth.com/v2/version/{id}")
+                } else if versions {
+                    format!("https://api.modrinth.com/v2/project/{project}/version")
+                } else {
+                    format!("https://api.modrinth.com/v2/project/{project}")
+                };
+                self.metadata(&url, None)
+            }
+            Provider::Curseforge => {
+                let project = numeric_id(project)?;
+                let suffix = if let Some(id) = version {
+                    format!("/files/{}", numeric_id(id)?)
+                } else if versions {
+                    "/files?pageSize=50".into()
+                } else {
+                    String::new()
+                };
+                let response: serde_json::Value = self.metadata(
+                    &format!("https://api.curseforge.com/v1/mods/{project}{suffix}"),
+                    self.curseforge_api_key.as_deref(),
+                )?;
+                response
+                    .get("data")
+                    .cloned()
+                    .ok_or(ContentError::InvalidMetadata)
+            }
+        }
+    }
     /// One optional bounded lookup; successful negative results are cacheable.
     pub fn identify_sha512(&self, hash: &str) -> Result<Option<super::ContentProvider>> {
         ExpectedHash::Sha512(hash.into()).validate()?;
