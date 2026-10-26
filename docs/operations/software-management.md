@@ -55,6 +55,10 @@ SQLite file/WAL allocation is additional. Cache hits do not write state. Candida
 documents are committed only after the complete catalogue query validates, and
 same-key requests share bounded admission. Software-service queueing and fetching
 together remain inside the 12-second deadline, with at most eight waiting callers.
+Transient provider failures are shared with the queued request wave for 250 ms,
+so twenty readers do not each repeat the installer's three upstream retries.
+These failures are not persisted or treated as valid catalogue data. Cancellation
+and malformed metadata are not retained by that transient-failure mechanism.
 
 Origin no-store/no-cache and freshness/age restrictions are respected. Conditional
 ETag revalidation is not implemented by this first cache layer: expired entries

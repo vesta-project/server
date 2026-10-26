@@ -57,6 +57,13 @@ Strict installer/control all-target Clippy passed before the final equivalent SQ
 read cleanup. Additional final command logs are kept under `V:/tmp/metadata-cache-*`.
 No real BuildTools/Forge installer or Minecraft process was executed.
 
+Follow-up regression coverage confirms that metadata fetched later in a query
+cannot extend an earlier document's freshness lifetime. A transient provider
+failure is shared for 250 ms with the current waiter wave; twenty callers cause
+three total bounded upstream attempts rather than three attempts per caller.
+Cancellation/invalid metadata are not stored by this short failure mechanism.
+All nine catalogue-cache integration cases passed after this refinement.
+
 One live direct-connection diagnostic run observed:
 
 | Software | First version query | Immediate repeated query |

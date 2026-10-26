@@ -13,6 +13,7 @@ pub const CATALOGUE_CACHE_DISK_BYTES: usize = 64 * 1024 * 1024;
 pub const CATALOGUE_CACHE_ENTRIES: usize = 64;
 pub const CATALOGUE_CACHE_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const TTL: Duration = Duration::from_secs(300);
+const FAILURE_COOLDOWN: Duration = Duration::from_millis(250);
 
 /// Protected, optional persistence supplied by the owning host. Implementations
 /// must enforce the public disk/entry limits and never accept caller file paths.
@@ -50,16 +51,38 @@ struct Memory {
     bytes: usize,
     clock: u64,
 }
+struct Query {
+    gate: Arc<tokio::sync::Mutex<()>>,
+    failure: Mutex<Option<(std::time::Instant, InstallError)>>,
+}
 pub(crate) struct CatalogueCache {
     memory: Mutex<Memory>,
     store: Option<Arc<dyn CatalogueStore>>,
     disk: Arc<Semaphore>,
-    queries: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    queries: tokio::sync::Mutex<HashMap<String, Arc<Query>>>,
     waiters: Arc<Semaphore>,
 }
 pub(crate) struct QueryGuard {
     _waiter: OwnedSemaphorePermit,
     _key: tokio::sync::OwnedMutexGuard<()>,
+    state: Arc<Query>,
+}
+impl QueryGuard {
+    pub fn failed(&self, error: InstallError) {
+        // Share a short transient failure with the existing waiter wave instead
+        // of serially repeating every provider retry for all queued readers.
+        // Cancellation and invalid metadata are never retained as successful data.
+        if !matches!(
+            error,
+            InstallError::TransportFailed | InstallError::Deadline
+        ) {
+            return;
+        }
+        let Ok(mut failure) = self.state.failure.lock() else {
+            return;
+        };
+        *failure = Some((std::time::Instant::now(), error));
+    }
 }
 impl CatalogueCache {
     pub fn new(store: Option<Arc<dyn CatalogueStore>>) -> Arc<Self> {
@@ -85,27 +108,43 @@ impl CatalogueCache {
             .map_err(|_| InstallError::Busy)?;
         let gate = {
             let mut gates = self.queries.lock().await;
-            gates.retain(|_, gate| Arc::strong_count(gate) > 1);
+            gates.retain(|_, state| {
+                Arc::strong_count(state) > 1
+                    || state.failure.lock().is_ok_and(|failure| {
+                        failure.is_some_and(|(at, _)| at.elapsed() < FAILURE_COOLDOWN)
+                    })
+            });
             if let Some(gate) = gates.get(key) {
                 gate.clone()
             } else {
                 if gates.len() >= 8 {
                     return Err(InstallError::Busy);
                 }
-                let gate = Arc::new(tokio::sync::Mutex::new(()));
+                let gate = Arc::new(Query {
+                    gate: Arc::new(tokio::sync::Mutex::new(())),
+                    failure: Mutex::new(None),
+                });
                 gates.insert(key.into(), gate.clone());
                 gate
             }
         };
         let key = transfer::controlled(
-            async { Ok(gate.lock_owned().await) },
+            async { Ok(gate.gate.clone().lock_owned().await) },
             job.deadline,
             reporter,
         )
         .await?;
+        if let Ok(failure) = gate.failure.lock() {
+            if let Some((at, error)) = *failure {
+                if at.elapsed() < FAILURE_COOLDOWN {
+                    return Err(error);
+                }
+            }
+        }
         Ok(QueryGuard {
             _waiter: waiter,
             _key: key,
+            state: gate,
         })
     }
 

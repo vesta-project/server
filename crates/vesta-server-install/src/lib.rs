@@ -117,13 +117,15 @@ impl ServerInstaller {
         let key = self
             .http
             .catalogue_key(&format!("versions:{software:?}:{:?}", self.limits));
-        let _guard = self.http.catalogues.query(&key, &job, reporter).await?;
+        let guard = self.http.catalogues.query(&key, &job, reporter).await?;
         if let Some(value) = self.cached_result::<String>(&key, &job, reporter).await? {
             if value.iter().all(|id| model::identifier(id)) {
                 return Ok(value);
             }
         }
-        let value = providers::versions(&self.http, software, &mut job, reporter).await?;
+        let value = providers::versions(&self.http, software, &mut job, reporter)
+            .await
+            .inspect_err(|error| guard.failed(*error))?;
         self.cache_result(key, &value, job);
         Ok(value)
     }
@@ -146,7 +148,7 @@ impl ServerInstaller {
             "releases:{software:?}:{version}:{:?}",
             self.limits
         ));
-        let _guard = self.http.catalogues.query(&key, &job, reporter).await?;
+        let guard = self.http.catalogues.query(&key, &job, reporter).await?;
         if let Some(value) = self
             .cached_result::<SoftwareRelease>(&key, &job, reporter)
             .await?
@@ -162,8 +164,9 @@ impl ServerInstaller {
                 return Ok(value);
             }
         }
-        let value =
-            providers::releases::list(&self.http, software, version, &mut job, reporter).await?;
+        let value = providers::releases::list(&self.http, software, version, &mut job, reporter)
+            .await
+            .inspect_err(|error| guard.failed(*error))?;
         self.cache_result(key, &value, job);
         Ok(value)
     }
