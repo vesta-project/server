@@ -205,7 +205,13 @@ pub(crate) fn open(
         })
         .transpose()?
         .unwrap_or_default();
-    let root = config.base().join("software-installations");
+    // Absolute fixture/instance paths must not put downloads in the caller's cwd.
+    // In particular, management smoke tools may run from the repository root.
+    let root = config
+        .state()
+        .parent()
+        .ok_or(software::SoftwareError::InvalidRequest)?
+        .join("software-installations");
     vesta_state::StateDirectory::new(&root, None)
         .and_then(|directory| directory.prepare())
         .map_err(unavailable)?;
