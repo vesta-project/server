@@ -150,9 +150,13 @@ pub fn remove_directory_link(link: &Path) -> io::Result<()> {
     }
 }
 
-/// V25 public invitation IDs.
+/// V27 protected pack draft/upload tables.
+pub const REMOVE_V27_SCHEMA: &str = "DROP TABLE pack_workspace_uploads; DROP TABLE pack_workspace_published; DROP TABLE pack_workspace_receipts; DROP TABLE pack_workspace_blobs; DROP TABLE pack_workspace;";
+
+/// V25 public invitation IDs and later workspace tables. Older simulated schemas
+/// must remove all subsequent additions, rather than only lower user_version.
 #[allow(dead_code)]
-pub const REMOVE_V25_SCHEMA: &str = "DROP TABLE management_invitation_ids;";
+pub const REMOVE_V25_SCHEMA: &str = "DROP TABLE pack_workspace_uploads; DROP TABLE pack_workspace_published; DROP TABLE pack_workspace_receipts; DROP TABLE pack_workspace_blobs; DROP TABLE pack_workspace; DROP TABLE management_invitation_ids;";
 
 /// V24 metrics additions. Usable inside an existing transaction.
 #[allow(dead_code)]

@@ -113,6 +113,8 @@ pub fn project_index(manifest: &BuilderManifest) -> Result<VestaIndexV1, PackPro
         })
         .collect();
     Ok(VestaIndexV1 {
+        summary: None,
+        icon: None,
         join: None, // Only the trusted backend build may attach join configuration.
         format_version: FORMAT_VERSION,
         name: manifest.name.clone(),

@@ -85,6 +85,11 @@ const MUST_BE_EMPTY: &[&str] = &[
     "workflow_runs",
     "run_steps",
     "pack_releases",
+    "pack_workspace",
+    "pack_workspace_blobs",
+    "pack_workspace_receipts",
+    "pack_workspace_published",
+    "pack_workspace_uploads",
 ];
 
 fn nonempty() -> StateError {

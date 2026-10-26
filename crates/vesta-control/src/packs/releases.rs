@@ -750,7 +750,7 @@ fn validate_version(version: &str) -> Result<(), ReleaseError> {
 
 /// Numeric dotted versions compare by value (`1.10 > 1.9`, `1.0 == 1.0.0`); any other
 /// spelling is only "not lower" when identical, so the owner must acknowledge it.
-fn version_not_lower(next: &str, current: &str) -> bool {
+pub(super) fn version_not_lower(next: &str, current: &str) -> bool {
     match (dotted(next), dotted(current)) {
         (Some(next), Some(current)) => {
             let length = next.len().max(current.len());

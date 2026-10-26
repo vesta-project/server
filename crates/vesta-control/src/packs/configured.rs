@@ -13,7 +13,7 @@ use vesta_protocol::pack::catalogue::{
 pub struct PreparedPack {
     pub(super) manifest: Manifest,
     pub(super) content: PreparedContent,
-    missing_directories: Vec<RelativePath>,
+    pub(super) missing_directories: Vec<RelativePath>,
 }
 pub(super) enum PreparedContent {
     Scanned(BuiltVestaPack),

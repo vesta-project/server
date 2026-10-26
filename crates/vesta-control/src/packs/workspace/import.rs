@@ -6,6 +6,10 @@ use std::io::{Cursor, Read};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ImportRequest {
+    UploadedArchive {
+        expected_revision: String,
+        upload_id: String,
+    },
     Archive {
         expected_revision: String,
         content_base64: String,
@@ -29,7 +33,10 @@ impl PackWorkspace {
             return Ok(outcome);
         }
         let expected = match input {
-            ImportRequest::Archive {
+            ImportRequest::UploadedArchive {
+                expected_revision, ..
+            }
+            | ImportRequest::Archive {
                 expected_revision, ..
             }
             | ImportRequest::Published {
@@ -41,14 +48,15 @@ impl PackWorkspace {
         }
         let mut release_revision = None;
         let (manifest, blobs) = match input {
+            ImportRequest::UploadedArchive { upload_id, .. } => parse_archive(
+                &self.archive_upload(subject, upload_id)?,
+                providers,
+                |hash| Ok(providers.identify_sha512(hash).ok().flatten()),
+            )?,
             ImportRequest::Archive { content_base64, .. } => parse_archive(
                 &STANDARD.decode(content_base64).map_err(|_| invalid())?,
                 providers,
-                |hash| {
-                    providers
-                        .identify_sha512(hash)
-                        .map_err(|_| super::super::PackError::UnresolvedFile.into())
-                },
+                |hash| Ok(providers.identify_sha512(hash).ok().flatten()),
             )?,
             ImportRequest::Published {
                 expected_published_revision,
@@ -68,9 +76,7 @@ impl PackWorkspace {
                         .artifacts()
                         .load(current.artifact(), super::super::MAX_ARTIFACT_BYTES)?;
                     parse_archive(loaded.bytes(), providers, |hash| {
-                        providers
-                            .identify_sha512(hash)
-                            .map_err(|_| super::super::PackError::UnresolvedFile.into())
+                        Ok(providers.identify_sha512(hash).ok().flatten())
                     })?
                 }
             }
@@ -89,6 +95,9 @@ impl PackWorkspace {
             for bytes in blobs {
                 self.store_blob(c, &bytes)?;
             }
+            if let ImportRequest::UploadedArchive{upload_id,..}=input {
+                c.execute("DELETE FROM pack_workspace_uploads WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),upload_id])?;
+            }
             self.write_in(c, subject, mc, expected, manifest)
         })
     }
@@ -103,7 +112,7 @@ fn kind(path: &str) -> Result<EntryKind> {
         "shaderpacks" => Ok(EntryKind::Shader),
         "datapacks" => Ok(EntryKind::Datapack),
         "config" => Ok(EntryKind::ConfigOverride),
-        _ => Err(invalid()),
+        _ => Ok(EntryKind::ConfigOverride),
     }
 }
 fn entry(
@@ -129,13 +138,46 @@ fn entry(
         source,
     })
 }
-fn parse_archive(
+pub(super) fn parse_archive(
     bytes: &[u8],
     providers: &dyn ProviderClient,
     identify: impl Fn(&str) -> Result<Option<crate::content::ContentProvider>>,
 ) -> Result<(PackManifest, Vec<Vec<u8>>)> {
     if bytes.len() > super::super::MAX_ARTIFACT_BYTES {
         return Err(super::super::PackError::TooLarge.into());
+    }
+    if bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'{') {
+        let manifest = vesta_protocol::pack::catalogue::Manifest::decode(bytes)
+            .map_err(super::super::PackError::from)?;
+        let vesta_protocol::pack::catalogue::PackContent::Platform(pack) = manifest.content()
+        else {
+            return Err(invalid());
+        };
+        let reference = pack.source();
+        let provider = match reference.platform_name() {
+            Some(vesta_protocol::pack::catalogue::Platform::Modrinth) => Provider::Modrinth,
+            Some(vesta_protocol::pack::catalogue::Platform::Curseforge) => Provider::Curseforge,
+            _ => return Err(invalid()),
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let source = providers
+            .resolve_with_deadline(
+                provider,
+                reference.project_id().ok_or_else(invalid)?,
+                reference.version_id().ok_or_else(invalid)?,
+                deadline,
+            )
+            .map_err(|_| super::super::PackError::UnresolvedFile)?;
+        let archive = crate::content::fetch_verified_source(
+            &source,
+            &crate::content::UreqDownloadHttp::default(),
+            deadline,
+        )
+        .map_err(|_| super::super::PackError::UnresolvedFile)?;
+        if archive.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'{') {
+            return Err(invalid());
+        }
+        return parse_archive(&archive, providers, identify);
     }
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| invalid())?;
     if zip.len() > super::super::MAX_VESTA_ENTRIES {
@@ -166,6 +208,78 @@ fn parse_archive(
         if body.len() > super::super::MAX_PINNED_FILE_BYTES || files.insert(name, body).is_some() {
             return Err(invalid());
         }
+    }
+    if let Some(index) = files.remove(vesta_protocol::pack::INDEX_NAME) {
+        let index: vesta_protocol::pack::model::VestaIndexV1 =
+            serde_json::from_slice(&index).map_err(|_| invalid())?;
+        if index.format_version != 1 || index.files.len() > MAX_ENTRIES + 1 {
+            return Err(invalid());
+        }
+        let loader = match index.modloader_type.as_deref() {
+            None | Some("none") => ClientLoader::None,
+            Some("fabric") => ClientLoader::Fabric,
+            Some("quilt") => ClientLoader::Quilt,
+            Some("forge") => ClientLoader::Forge,
+            Some("neoforge") => ClientLoader::Neoforge,
+            _ => return Err(invalid()),
+        };
+        let icon_path = index.icon.clone();
+        let mut manifest = PackManifest {
+            name: index.name.unwrap_or_else(|| "Client pack".into()),
+            summary: index.summary.unwrap_or_default(),
+            icon: None,
+            display_version: index.version.unwrap_or_else(|| "1.0".into()),
+            minecraft_version: index.minecraft_version.ok_or_else(invalid)?,
+            loader,
+            loader_version: index.modloader_version,
+            entries: Vec::new(),
+        };
+        let mut blobs = Vec::new();
+        for (i, file) in index.files.into_iter().enumerate() {
+            let source = if file.source.r#type == "modrinth"
+                || file.source.r#type == "curseforge"
+                || file.source.platform.is_some()
+            {
+                EntrySource::Provider {
+                    provider: file.source.platform.unwrap_or(file.source.r#type),
+                    project_id: file.source.project_id.ok_or_else(invalid)?,
+                    version_id: file.source.version_id.ok_or_else(invalid)?,
+                }
+            } else if let Some(bytes) = files.remove(&format!("overrides/{}", file.path)) {
+                let sha = digest(&bytes);
+                if file.hashes.sha256.as_deref() != Some(&sha) || file.size != bytes.len() as i64 {
+                    return Err(invalid());
+                }
+                blobs.push(bytes);
+                EntrySource::Upload { sha256: sha }
+            } else {
+                EntrySource::Manual {
+                    reason: "published_file_unavailable".into(),
+                }
+            };
+            if icon_path.as_deref() == Some(&file.path) {
+                if let EntrySource::Upload { sha256 } = source {
+                    icon_mime(blobs.last().ok_or_else(invalid)?)?;
+                    manifest.icon = Some(sha256);
+                    continue;
+                } else {
+                    return Err(invalid());
+                }
+            }
+            manifest.entries.push(entry(
+                format!("published-{i}"),
+                file.path,
+                source,
+                file.env.client != "optional",
+                match file.env.server.as_str() {
+                    "required" => Side::Required,
+                    "optional" => Side::Optional,
+                    _ => Side::Unsupported,
+                },
+            )?);
+        }
+        validate_manifest(&manifest)?;
+        return Ok((manifest, blobs));
     }
     let mr = files.remove("modrinth.index.json");
     let cf = files.remove("manifest.json");
@@ -303,7 +417,9 @@ fn parse_archive(
     vesta_protocol::pack::catalogue::RelativePath::parse(cf_prefix)
         .map_err(super::super::PackError::from)?;
     let mut blobs = Vec::new();
-    for (name, bytes) in files {
+    let mut overrides = files.into_iter().collect::<Vec<_>>();
+    overrides.sort_by_key(|(name, _)| name.starts_with("client-overrides/"));
+    for (name, bytes) in overrides {
         let path = name
             .strip_prefix("client-overrides/")
             .or_else(|| name.strip_prefix(&format!("{cf_prefix}/")));

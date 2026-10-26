@@ -3503,6 +3503,7 @@ dependencies = [
  "vesta-server-install",
  "vesta-state",
  "zeroize",
+ "zip",
 ]
 
 [[package]]

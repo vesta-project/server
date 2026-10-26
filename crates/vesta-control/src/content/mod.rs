@@ -393,56 +393,75 @@ impl<'a> ContentInstaller<'a> {
         url: &mut Url,
         deadline: Option<Instant>,
     ) -> Result<Vec<u8>> {
-        for redirects in 0..=MAX_REDIRECTS {
-            // Never let the HTTP adapter follow redirects implicitly.
-            validate_download_url(source.provider, url)?;
-            let response = match deadline {
-                Some(d) => self.http.get_with_deadline(url, d)?,
-                None => self.http.get(url)?,
-            };
-            if matches!(response.status, 301 | 302 | 303 | 307 | 308) {
-                if redirects == MAX_REDIRECTS {
-                    return Err(ContentError::TooManyRedirects);
-                }
-                let location = response.location.ok_or(ContentError::DownloadFailed)?;
-                if location.len() > MAX_URL_BYTES {
-                    return Err(ContentError::DisallowedUrl);
-                }
-                *url = url
-                    .join(&location)
-                    .map_err(|_| ContentError::DisallowedUrl)?;
-                validate_download_url(source.provider, url)?;
-                continue;
-            }
-            if response.status != 200
-                || response
-                    .content_encoding
-                    .as_deref()
-                    .is_some_and(|e| !e.eq_ignore_ascii_case("identity"))
-            {
-                return Err(ContentError::DownloadFailed);
-            }
-            if response
-                .content_length
-                .is_some_and(|length| length > MAX_WRITE_BYTES as u64)
-            {
-                return Err(ContentError::TooLarge);
-            }
-            let body: Box<dyn Read> = match deadline {
-                Some(d) => Box::new(DeadlineRead {
-                    reader: response.body,
-                    deadline: d,
-                }),
-                None => response.body,
-            };
-            let bytes = verified_bytes(body, &source.expected_hash)?;
-            if let Some(deadline) = deadline {
-                deadline_check(deadline)?;
-            }
-            return Ok(bytes);
-        }
-        Err(ContentError::TooManyRedirects)
+        download_verified(source, self.http, url, deadline)
     }
+}
+
+/// Shared bounded provider download for protected pack staging and live content.
+pub fn fetch_verified_source(
+    source: &ResolvedSource,
+    http: &dyn DownloadHttp,
+    deadline: Instant,
+) -> Result<Vec<u8>> {
+    let _permit = InstallPermit::acquire()?;
+    let (_, mut url) = validate_source(source)?;
+    download_verified(source, http, &mut url, Some(deadline))
+}
+fn download_verified(
+    source: &ResolvedSource,
+    http: &dyn DownloadHttp,
+    url: &mut Url,
+    deadline: Option<Instant>,
+) -> Result<Vec<u8>> {
+    for redirects in 0..=MAX_REDIRECTS {
+        // Never let the HTTP adapter follow redirects implicitly.
+        validate_download_url(source.provider, url)?;
+        let response = match deadline {
+            Some(d) => http.get_with_deadline(url, d)?,
+            None => http.get(url)?,
+        };
+        if matches!(response.status, 301 | 302 | 303 | 307 | 308) {
+            if redirects == MAX_REDIRECTS {
+                return Err(ContentError::TooManyRedirects);
+            }
+            let location = response.location.ok_or(ContentError::DownloadFailed)?;
+            if location.len() > MAX_URL_BYTES {
+                return Err(ContentError::DisallowedUrl);
+            }
+            *url = url
+                .join(&location)
+                .map_err(|_| ContentError::DisallowedUrl)?;
+            validate_download_url(source.provider, url)?;
+            continue;
+        }
+        if response.status != 200
+            || response
+                .content_encoding
+                .as_deref()
+                .is_some_and(|e| !e.eq_ignore_ascii_case("identity"))
+        {
+            return Err(ContentError::DownloadFailed);
+        }
+        if response
+            .content_length
+            .is_some_and(|length| length > MAX_WRITE_BYTES as u64)
+        {
+            return Err(ContentError::TooLarge);
+        }
+        let body: Box<dyn Read> = match deadline {
+            Some(d) => Box::new(DeadlineRead {
+                reader: response.body,
+                deadline: d,
+            }),
+            None => response.body,
+        };
+        let bytes = verified_bytes(body, &source.expected_hash)?;
+        if let Some(deadline) = deadline {
+            deadline_check(deadline)?;
+        }
+        return Ok(bytes);
+    }
+    Err(ContentError::TooManyRedirects)
 }
 
 fn validate_id(text: &str) -> Result<()> {
@@ -462,7 +481,8 @@ fn validate_source(source: &ResolvedSource) -> Result<(RelativePath, Url)> {
     if source.filename.contains('/')
         || source.filename.contains('\\')
         || !(source.filename.to_ascii_lowercase().ends_with(".jar")
-            || source.filename.to_ascii_lowercase().ends_with(".zip"))
+            || source.filename.to_ascii_lowercase().ends_with(".zip")
+            || source.filename.to_ascii_lowercase().ends_with(".mrpack"))
     {
         return Err(ContentError::UnsafeFilename);
     }

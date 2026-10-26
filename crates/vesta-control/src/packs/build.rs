@@ -157,6 +157,21 @@ pub fn build_vesta(
     metadata: &PackMetadata,
     limits: VestaBuildLimits,
 ) -> Result<BuiltVestaPack, VestaBuildError> {
+    build_vesta_with_environments(
+        snapshot,
+        metadata,
+        limits,
+        &std::collections::BTreeMap::new(),
+        None,
+    )
+}
+pub(crate) fn build_vesta_with_environments(
+    snapshot: &PreparedSnapshot,
+    metadata: &PackMetadata,
+    limits: VestaBuildLimits,
+    environments: &std::collections::BTreeMap<String, (String, String)>,
+    presentation: Option<(&str, Option<&str>)>,
+) -> Result<BuiltVestaPack, VestaBuildError> {
     let observed = snapshot.manifest.metadata();
     if observed.name() != metadata.name()
         || observed.version() != metadata.version()
@@ -257,6 +272,16 @@ pub fn build_vesta(
         overrides: None,
     };
     let mut index = project_index(&manifest).map_err(|_| VestaBuildError::InvalidSnapshot)?;
+    if let Some((summary, icon)) = presentation {
+        index.summary = Some(summary.into());
+        index.icon = icon.map(str::to_string);
+    }
+    for file in &mut index.files {
+        if let Some((client, server)) = environments.get(&file.path) {
+            file.env.client = client.clone();
+            file.env.server = server.clone();
+        }
+    }
     index.join = metadata.join().cloned();
     let mut index_sink = BoundedBuffer::new(limits.index_bytes);
     let encoded = serde_json::to_writer(&mut index_sink, &index);

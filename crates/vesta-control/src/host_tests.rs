@@ -682,6 +682,8 @@ fn host_startup_upgrades_original_v8_without_upload_table_and_purges_orphan_stag
         )
         .unwrap();
     let legacy_release_sql = release_sql.replace(", 'catalogue'", "");
+    // These v27 tables must also be absent in the simulated original v8 database.
+    offline.execute_batch("DROP TABLE pack_workspace_uploads; DROP TABLE pack_workspace_published; DROP TABLE pack_workspace_receipts; DROP TABLE pack_workspace_blobs; DROP TABLE pack_workspace;").unwrap();
     offline
         .execute_batch(&format!("DROP TABLE pack_releases; {legacy_release_sql};"))
         .unwrap();

@@ -75,6 +75,11 @@ pub struct BuilderFileSource {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VestaIndexV1 {
+    /// Optional pack presentation; icon is an indexed embedded relative path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     /// Optional backend-authored player information, not installation authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub join: Option<super::join::JoinDescriptor>,

@@ -7,6 +7,7 @@ fn v24_invitations_receive_independent_ids_and_cascade_on_removal() {
     let directory = f.db.directory().clone();
     let server = f.db.server_id().to_owned();
     f.db.write(|c| {
+        c.execute_batch(support::REMOVE_V27_SCHEMA)?;
         c.execute_batch("DROP TABLE management_invitation_ids; PRAGMA user_version=24;")?;
         c.execute(
             "INSERT INTO principals VALUES('inviter',?,'Alice','active',1,1)",

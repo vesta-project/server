@@ -29,6 +29,8 @@ const KEY: &[u8] = include_bytes!("fixtures/test-only-server-key.pem");
 const CA: &[u8] = include_bytes!("fixtures/test-only-ca.pem");
 const PASSWORD: &str = "transport test password only";
 type TlsStream = StreamOwned<ClientConnection, TcpStream>;
+#[path = "pack_workspace/mod.rs"]
+mod pack_workspace_tests;
 
 #[test]
 fn world_read_supports_split_worldgen_and_reports_metadata_errors() {

@@ -176,6 +176,19 @@ impl Drop for SoftwareService {
 }
 
 impl SoftwareHandle {
+    pub(crate) fn pack_target_in(
+        c: &rusqlite::Connection,
+    ) -> crate::packs::workspace::Result<Option<(i64, Option<String>)>> {
+        let exists:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='software_state')",[],|r|r.get(0))?;
+        if !exists {
+            return Ok(None);
+        }
+        let state = store::state(c).map_err(|_| crate::packs::PackError::Unavailable)?;
+        Ok(Some((
+            state.revision as i64,
+            state.current.installation.version,
+        )))
+    }
     /// Non-secret target facts for content capability projection; no launch document.
     pub fn content_target(&self) -> Result<(Option<String>, Option<String>)> {
         self.inner

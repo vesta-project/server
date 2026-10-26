@@ -222,6 +222,12 @@ fn unsafe_paths_collisions_and_invalid_loader_metadata_refuse_without_advancing(
         },
     });
     assert!(validate_manifest(&m).is_err());
+    m.entries[0].path = "mods/Foo/a.jar".into();
+    let mut alias = m.entries[0].clone();
+    alias.id = "alias".into();
+    alias.path = "mods/foo/b.jar".into();
+    m.entries.push(alias);
+    assert!(validate_manifest(&m).is_err());
     assert_eq!(
         f.workspace.read(&f.subject, "1.21.1").unwrap().revision,
         "0"

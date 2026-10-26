@@ -226,6 +226,11 @@ const EXCLUDED: &[&str] = &[
     "workflow_runs",
     "run_steps",
     "pack_releases",
+    "pack_workspace",
+    "pack_workspace_blobs",
+    "pack_workspace_receipts",
+    "pack_workspace_published",
+    "pack_workspace_uploads",
     "meta",
     // SQLite's AUTOINCREMENT bookkeeping is runtime state, not application data.
     "sqlite_sequence",

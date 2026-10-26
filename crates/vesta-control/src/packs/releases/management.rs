@@ -5,6 +5,14 @@ use super::*;
 pub struct PackMutation {
     key: String,
     input: String,
+    workspace: Option<WorkspacePublication>,
+}
+struct WorkspacePublication {
+    required_update: bool,
+    software_revision: Option<i64>,
+    draft_revision: u64,
+    manifest_json: String,
+    acknowledge_lower_version: bool,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PackOutcome {
@@ -12,6 +20,27 @@ pub struct PackOutcome {
     pub minimum_revision: u64,
 }
 impl PackMutation {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn workspace_publish(
+        key: String,
+        expected: u64,
+        input_sha256: &str,
+        draft_revision: u64,
+        manifest_json: String,
+        acknowledge_lower_version: bool,
+        software_revision: Option<i64>,
+        required_update: bool,
+    ) -> Result<Self, ReleaseError> {
+        let mut request = Self::new(key, format!("publish:{expected}:{input_sha256}"))?;
+        request.workspace = Some(WorkspacePublication {
+            required_update,
+            software_revision,
+            draft_revision,
+            manifest_json,
+            acknowledge_lower_version,
+        });
+        Ok(request)
+    }
     pub fn publish(key: String, expected: u64) -> Result<Self, ReleaseError> {
         Self::new(key, format!("publish:{expected}"))
     }
@@ -22,7 +51,11 @@ impl PackMutation {
         if key.is_empty() || key.len() > 128 || !key.bytes().all(|v| v.is_ascii_graphic()) {
             return Err(ReleaseError::Conflict);
         }
-        Ok(Self { key, input })
+        Ok(Self {
+            key,
+            input,
+            workspace: None,
+        })
     }
 }
 impl PackReleases {
@@ -46,6 +79,21 @@ impl PackReleases {
         if let Decision::Deny(reason) = policy.check(capability, None) {
             return Err(ControlError::forbidden(reason).into());
         }
+        if request.workspace.is_some() {
+            for cap in [Capability::PackEdit, Capability::PackBuild] {
+                if let Decision::Deny(reason) = policy.check(cap, None) {
+                    return Err(ControlError::forbidden(reason).into());
+                }
+            }
+        }
+        if request
+            .workspace
+            .as_ref()
+            .is_some_and(|w| w.required_update)
+            && let Decision::Deny(reason) = policy.check(Capability::PackForceUpdate, None)
+        {
+            return Err(ControlError::forbidden(reason).into());
+        }
         Ok(())
     }
     fn remote_in(
@@ -55,6 +103,7 @@ impl PackReleases {
         request: &PackMutation,
     ) -> Result<Option<PackOutcome>, ReleaseError> {
         self.remote_authorize(connection, subject, request)?;
+
         let row: Option<(String, i64, i64)> = connection.query_row(
             "SELECT input_json,revision,minimum_revision FROM management_pack_outcomes WHERE server_id=? AND principal_id=? AND request_key=?",
             params![self.db.server_id(), subject.principal.as_str(), request.key], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))
@@ -86,6 +135,24 @@ impl PackReleases {
         minimum: u64,
     ) -> Result<(), ReleaseError> {
         self.remote_authorize(connection, subject, request)?;
+        if let Some(workspace) = &request.workspace {
+            if crate::software::SoftwareHandle::pack_target_in(connection)?.map(|(r, _)| r)
+                != workspace.software_revision
+            {
+                return Err(ReleaseError::Conflict);
+            }
+            let current: Option<i64> = connection
+                .query_row(
+                    "SELECT revision FROM pack_workspace WHERE server_id=?",
+                    [self.db.server_id()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if current.unwrap_or(0) as u64 != workspace.draft_revision {
+                return Err(ReleaseError::Conflict);
+            }
+            connection.execute("INSERT INTO pack_workspace_published(server_id,release_revision,draft_revision,manifest_json) VALUES(?,?,?,?) ON CONFLICT(server_id) DO UPDATE SET release_revision=excluded.release_revision,draft_revision=excluded.draft_revision,manifest_json=excluded.manifest_json",params![self.db.server_id(),to_sql(revision)?,to_sql(workspace.draft_revision)?,workspace.manifest_json])?;
+        }
         connection.execute("INSERT INTO management_pack_outcomes(server_id,principal_id,request_key,input_json,revision,minimum_revision) VALUES(?,?,?,?,?,?)",
             params![self.db.server_id(),subject.principal.as_str(),request.key,request.input,to_sql(revision)?,to_sql(minimum)?])?;
         Ok(())
@@ -98,7 +165,12 @@ impl PackReleases {
         pack: &super::super::PreparedPack,
         request: &PackMutation,
     ) -> Result<PackOutcome, ReleaseError> {
-        if request.input != format!("publish:{}", plan.previous) {
+        if request.input != format!("publish:{}", plan.previous)
+            && !(request.workspace.is_some()
+                && request
+                    .input
+                    .starts_with(&format!("publish:{}:", plan.previous)))
+        {
             return Err(ReleaseError::Conflict);
         }
         if let Some(outcome) = self.remote_outcome(subject, request)? {
@@ -110,7 +182,11 @@ impl PackReleases {
         {
             return Err(ReleaseError::RevisionMismatch);
         }
-        self.preflight(subject, plan, metadata.version(), false)?;
+        let acknowledge_lower_version = request
+            .workspace
+            .as_ref()
+            .is_some_and(|w| w.acknowledge_lower_version);
+        self.preflight(subject, plan, metadata.version(), acknowledge_lower_version)?;
         let publication = match &pack.content {
             super::super::configured::PreparedContent::Scanned(built) => {
                 self.artifacts.publish_vesta_tracked(built)?
@@ -127,7 +203,7 @@ impl PackReleases {
             plan,
             publication,
             metadata.version(),
-            false,
+            acknowledge_lower_version,
             Some(request),
         ) {
             Ok(release) => Ok(PackOutcome {

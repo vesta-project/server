@@ -39,22 +39,29 @@ fn apply_v27(c: &Connection) -> crate::Result<()> {
     c.execute_batch(
         r#"
         CREATE TABLE pack_workspace (
-            server_id TEXT PRIMARY KEY, revision INTEGER NOT NULL CHECK(revision > 0),
+            server_id TEXT PRIMARY KEY REFERENCES server_identity(server_id), revision INTEGER NOT NULL CHECK(revision > 0),
             manifest_json TEXT NOT NULL CHECK(length(manifest_json) <= 1048576)
-        );
+        ) STRICT;
         CREATE TABLE pack_workspace_blobs (
-            server_id TEXT NOT NULL, sha256 TEXT NOT NULL, body BLOB NOT NULL,
+            server_id TEXT NOT NULL REFERENCES server_identity(server_id), sha256 TEXT NOT NULL, body BLOB NOT NULL,
             PRIMARY KEY(server_id,sha256), CHECK(length(body) <= 16777216)
-        );
+        ) STRICT;
         CREATE TABLE pack_workspace_receipts (
-            server_id TEXT NOT NULL, principal_id TEXT NOT NULL, device_id TEXT NOT NULL,
+            server_id TEXT NOT NULL REFERENCES server_identity(server_id), principal_id TEXT NOT NULL, device_id TEXT NOT NULL,
             request_key TEXT NOT NULL, input_sha256 TEXT NOT NULL, outcome_json TEXT NOT NULL,
             PRIMARY KEY(server_id,principal_id,device_id,request_key)
-        );
+        ) STRICT;
         CREATE TABLE pack_workspace_published (
-            server_id TEXT PRIMARY KEY, release_revision INTEGER NOT NULL,
+            server_id TEXT PRIMARY KEY REFERENCES server_identity(server_id), release_revision INTEGER NOT NULL,
             draft_revision INTEGER NOT NULL, manifest_json TEXT NOT NULL
-        );
+        ) STRICT;
+        CREATE TABLE pack_workspace_uploads (
+            server_id TEXT NOT NULL REFERENCES server_identity(server_id), principal_id TEXT NOT NULL, device_id TEXT NOT NULL,
+            upload_id TEXT NOT NULL, total_size INTEGER NOT NULL, sha256 TEXT NOT NULL,
+            archive INTEGER NOT NULL, complete INTEGER NOT NULL DEFAULT 0, body BLOB NOT NULL,
+            PRIMARY KEY(server_id,principal_id,device_id,upload_id),
+            CHECK(total_size >= 0 AND total_size <= 71303168), CHECK(length(body) <= total_size)
+        ) STRICT;
     "#,
     )?;
     Ok(())

@@ -13,6 +13,12 @@ pub(super) fn implemented(path: &str) -> bool {
             | "/api/v3/manage/pack/draft/upload"
             | "/api/v3/manage/pack/draft/import"
             | "/api/v3/manage/pack/suggestions"
+            | "/api/v3/manage/pack/preview"
+            | "/api/v3/manage/pack/draft/icon"
+            | "/api/v3/manage/pack/draft/uploads/begin"
+            | "/api/v3/manage/pack/draft/uploads/chunk"
+            | "/api/v3/manage/pack/draft/uploads/finish"
+            | "/api/v3/manage/pack/draft/uploads/cancel"
     )
 }
 fn value(result: Result<impl serde::Serialize>) -> Reply {
@@ -28,6 +34,11 @@ fn value(result: Result<impl serde::Serialize>) -> Reply {
 #[serde(deny_unknown_fields)]
 struct Expected {
     expected_revision: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UploadId {
+    upload_id: String,
 }
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     let Some(token) = request.authorization else {
@@ -71,6 +82,10 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         .path
         .strip_prefix("/api/v3/manage/")
         .unwrap_or_default();
+    if action=="pack/draft/icon"&&request.method==Method::GET {
+        if !request.bytes.is_empty(){return error(StatusCode::BAD_REQUEST,"invalid_request");}
+        return value(workspace.icon(&subject,&mc));
+    }
     if action == "pack/suggestions" && request.method == Method::GET {
         if !request.bytes.is_empty() {
             return error(StatusCode::BAD_REQUEST, "invalid_request");
@@ -115,6 +130,88 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     if request.method != Method::POST {
         return error(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
     }
+    if matches!(action, "pack/preview" | "pack/publish") {
+        for cap in if action == "pack/publish" {
+            vec![Capability::PackBuild, Capability::PackPublish]
+        } else {
+            vec![Capability::PackBuild]
+        } {
+            if let Err(e) = host.management().authorize(token, cap, None) {
+                return management_error(e);
+            }
+        }
+        let (family, _) = match host.software().map(|s| s.content_target()).transpose() {
+            Ok(v) => v.unwrap_or_default(),
+            Err(_) => {
+                return error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "software_state_unavailable",
+                );
+            }
+        };
+        let world = match host.files().world(&subject) {
+            Ok(w) => w,
+            Err(e) => return super::files::file_error(e),
+        };
+        let inventory = match host
+            .files()
+            .content_inventory(&subject, family, mc.clone(), &world)
+        {
+            Ok(v) => v,
+            Err(e) => return super::files::file_error(e),
+        };
+        let providers = vesta_control::content::UreqProviderClient::new(
+            std::env::var("VESTA_CURSEFORGE_API_KEY").ok(),
+        );
+        let suggestions = match workspace.server_mismatches(
+            &subject,
+            &mc,
+            &inventory.items,
+            inventory.truncated,
+            &providers,
+        ) {
+            Ok(v) => v,
+            Err(e) => return pack_error(e),
+        };
+        if action == "pack/preview" {
+            let Some(input) = decode::<PreviewRequest>(request.bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            return value(workspace.preview(
+                &subject,
+                &mc,
+                &input,
+                host.releases(),
+                &providers,
+                suggestions,
+            ));
+        }
+        let Some(key) = super::key(
+            request.idempotency,
+            host.database().server_id(),
+            subject.device.as_str(),
+            request.path,
+        ) else {
+            return error(StatusCode::BAD_REQUEST, "idempotency_key_required");
+        };
+        let Some(input) = decode::<WorkspacePublish>(request.bytes) else {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        };
+        return match workspace.publish(
+            &subject,
+            &mc,
+            &key,
+            &input,
+            host.releases(),
+            &providers,
+            &vesta_control::content::UreqDownloadHttp::default(),
+            host.configuration().pack(),
+            suggestions,
+        ) {
+            Ok(v) => super::pack_outcome(v),
+            Err(e) => pack_error(e),
+        };
+    }
     let Some(key) = super::key(
         request.idempotency,
         host.database().server_id(),
@@ -124,6 +221,30 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         return error(StatusCode::BAD_REQUEST, "idempotency_key_required");
     };
     match action {
+        "pack/draft/uploads/begin" => {
+            let Some(input) = decode::<UploadBegin>(request.bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            value(workspace.upload_begin(&subject, &key, &input))
+        }
+        "pack/draft/uploads/chunk" => {
+            let Some(input) = decode::<UploadChunk>(request.bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            value(workspace.upload_chunk(&subject, &key, &input))
+        }
+        "pack/draft/uploads/finish" => {
+            let Some(input) = decode::<UploadId>(request.bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            value(workspace.upload_finish(&subject, &key, &input.upload_id))
+        }
+        "pack/draft/uploads/cancel" => {
+            let Some(input) = decode::<UploadId>(request.bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            value(workspace.upload_cancel(&subject, &key, &input.upload_id))
+        }
         "pack/draft" => {
             let Some(input) = decode::<DraftWrite>(request.bytes) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
@@ -131,10 +252,16 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             value(workspace.write(&subject, &mc, &key, &input))
         }
         "pack/draft/add" => {
-            let Some(input) = decode::<DraftAdd>(request.bytes) else {
-                return error(StatusCode::BAD_REQUEST, "invalid_request");
-            };
-            value(workspace.add(&subject, &mc, &key, &input))
+            if let Some(input) = decode::<DraftAdd>(request.bytes) {
+                value(workspace.add(&subject, &mc, &key, &input))
+            } else if let Some(input) = decode::<ProviderAdd>(request.bytes) {
+                let providers = vesta_control::content::UreqProviderClient::new(
+                    std::env::var("VESTA_CURSEFORGE_API_KEY").ok(),
+                );
+                value(workspace.add_provider(&subject, &mc, &key, &input, &providers))
+            } else {
+                error(StatusCode::BAD_REQUEST, "invalid_request")
+            }
         }
         "pack/draft/delete" => {
             let Some(input) = decode::<Expected>(request.bytes) else {

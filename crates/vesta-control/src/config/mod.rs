@@ -403,6 +403,35 @@ pub struct PackMetadata {
     join: Option<JoinDescriptor>,
 }
 impl PackMetadata {
+    pub(crate) fn workspace(
+        base: &Self,
+        manifest: &crate::packs::workspace::PackManifest,
+        revision: u64,
+        minimum_revision: u64,
+    ) -> Self {
+        use crate::packs::workspace::ClientLoader;
+        let kind = match manifest.loader {
+            ClientLoader::None => None,
+            ClientLoader::Fabric => Some(LoaderKind::Fabric),
+            ClientLoader::Quilt => Some(LoaderKind::Quilt),
+            ClientLoader::Forge => Some(LoaderKind::Forge),
+            ClientLoader::Neoforge => Some(LoaderKind::Neoforge),
+        };
+        Self {
+            name: manifest.name.clone(),
+            version: manifest.display_version.clone(),
+            revision,
+            minimum_revision,
+            minecraft_version: manifest.minecraft_version.clone(),
+            description: Some(manifest.summary.clone()),
+            loader: kind.map(|kind| LoaderDescription {
+                kind,
+                version: manifest.loader_version.clone().unwrap_or_default(),
+            }),
+            unresolved_disposition: UnresolvedDisposition::Refuse,
+            join: base.join.clone(),
+        }
+    }
     pub fn name(&self) -> &str {
         &self.name
     }

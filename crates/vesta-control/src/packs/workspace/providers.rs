@@ -11,6 +11,8 @@ pub struct ProviderDependency {
 }
 #[derive(Clone, Debug)]
 pub struct ProviderMetadata {
+    pub client_required: bool,
+    pub server_requirement: Side,
     pub minecraft_versions: Vec<String>,
     pub loaders: Vec<String>,
     pub kind: EntryKind,
@@ -179,6 +181,12 @@ fn decode_metadata(
             });
         }
         Ok(ProviderMetadata {
+            client_required: p["client_side"] == "required",
+            server_requirement: match p["server_side"].as_str() {
+                Some("required") => Side::Required,
+                Some("optional") => Side::Optional,
+                _ => Side::Unsupported,
+            },
             minecraft_versions: strings(&v["game_versions"]),
             loaders,
             kind,
@@ -222,6 +230,8 @@ fn decode_metadata(
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(ProviderMetadata {
+            client_required: false,
+            server_requirement: Side::Unsupported,
             minecraft_versions: versions,
             loaders,
             kind,

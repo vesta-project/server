@@ -25,8 +25,8 @@ impl PackWorkspace {
         providers: &dyn WorkspaceProvider,
     ) -> Result<PackSuggestions> {
         let draft = self.read(subject, mc)?;
-        let mut items = server_suggestions(&draft, mc, server, truncated);
-        let mut warnings = Vec::new();
+        let (mut items, mut warnings) =
+            verified_server_suggestions(&draft, mc, server, truncated, providers);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         for entry in &draft.manifest.entries {
             if std::time::Instant::now() > deadline {
@@ -67,10 +67,48 @@ impl PackWorkspace {
         })
     }
 }
+pub(super) fn verified_server_suggestions(
+    draft: &PackDraft,
+    mc: &str,
+    server: &[ContentEntry],
+    truncated: bool,
+    providers: &dyn WorkspaceProvider,
+) -> (Vec<PackSuggestion>, Vec<String>) {
+    let mut server = server.to_vec();
+    let mut warnings = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    for item in &mut server {
+        if item.kind != ContentKind::Mod || item.enabled != Some(true) {
+            continue;
+        }
+        let Some(reference) = &item.provider else {
+            continue;
+        };
+        if std::time::Instant::now() > deadline {
+            warnings.push("provider_budget_exhausted".into());
+            break;
+        }
+        match providers.pack_metadata(
+            &reference.provider,
+            &reference.project_id,
+            &reference.version_id,
+        ) {
+            Ok(metadata) => {
+                let declared = item.declared.get_or_insert_default();
+                declared.side = metadata.client_required.then(|| "required".into());
+            }
+            Err(_) => {
+                warnings.push(format!("provider_unavailable:{}", item.path));
+                item.declared = None;
+            }
+        }
+    }
+    (server_suggestions(draft, mc, &server, truncated), warnings)
+}
 fn same_project(entry: &PackEntry, reference: &crate::content::ContentProvider) -> bool {
     matches!(&entry.source,EntrySource::Provider{provider,project_id,..} if provider==&reference.provider&&project_id==&reference.project_id)
 }
-fn server_suggestions(
+pub(super) fn server_suggestions(
     draft: &PackDraft,
     mc: &str,
     server: &[ContentEntry],
@@ -100,7 +138,7 @@ fn server_suggestions(
             .declared
             .as_ref()
             .and_then(|d| d.side.as_deref())
-            .is_some_and(|s| matches!(s, "both" | "*" | "client" | "required"));
+            .is_some_and(|s| s == "required");
         if needs_client
             && !draft
                 .manifest
@@ -192,14 +230,15 @@ mod tests {
                 version_id: "v2".into(),
             }),
             declared: Some(crate::content::DeclaredMetadata {
-                side: Some("both".into()),
+                side: Some("required".into()),
                 ..Default::default()
             }),
             pending: None,
             pending_id: None,
             pending_error: None,
         };
-        let suggestions = server_suggestions(&draft, "1.21.4", &[server.clone()], false);
+        let suggestions =
+            server_suggestions(&draft, "1.21.4", std::slice::from_ref(&server), false);
         assert_eq!(
             suggestions
                 .iter()

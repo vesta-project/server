@@ -223,6 +223,29 @@ fn pack_error(error_value: vesta_control::packs::ReleaseError) -> Reply {
         vesta_control::packs::ReleaseError::Control(_) => {
             error(StatusCode::FORBIDDEN, "management_forbidden")
         }
+        vesta_control::packs::ReleaseError::RevisionMismatch => {
+            error(StatusCode::CONFLICT, "pack_release_revision_mismatch")
+        }
+        vesta_control::packs::ReleaseError::VersionNotIncreasing => {
+            error(StatusCode::CONFLICT, "pack_release_version_not_increasing")
+        }
+        vesta_control::packs::ReleaseError::InvalidVersion => {
+            error(StatusCode::BAD_REQUEST, "pack_release_version_invalid")
+        }
+        vesta_control::packs::ReleaseError::Pack(e) => match e {
+            vesta_control::packs::PackError::TooLarge => {
+                error(StatusCode::PAYLOAD_TOO_LARGE, "pack_too_large")
+            }
+            vesta_control::packs::PackError::UnresolvedFile => {
+                error(StatusCode::CONFLICT, "pack_unresolved_file")
+            }
+            vesta_control::packs::PackError::InvalidPath
+            | vesta_control::packs::PackError::Catalogue(_)
+            | vesta_control::packs::PackError::InvalidArchive => {
+                error(StatusCode::BAD_REQUEST, e.code())
+            }
+            _ => error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
+        },
         _ => error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
     }
 }
@@ -354,6 +377,12 @@ pub(super) struct Request<'a> {
     pub if_range: Option<&'a str>,
 }
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
+    if request.path == "/api/v3/manage/pack/publish"
+        && serde_json::from_slice::<Value>(request.bytes)
+            .is_ok_and(|v| v.get("draft_revision").is_some())
+    {
+        return pack_workspace::dispatch(host, request);
+    }
     if pack_workspace::implemented(request.path) {
         return pack_workspace::dispatch(host, request);
     }
