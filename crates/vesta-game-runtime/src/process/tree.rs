@@ -14,6 +14,10 @@ impl ProcessTree {
     pub fn prepare() -> Result<Self, RuntimeError> {
         Ok(Self { group: None })
     }
+    /// Unix process groups already survive owner exit. Explicit kill remains owned.
+    pub fn prepare_surviving_owner_exit() -> Result<Self, RuntimeError> {
+        Self::prepare()
+    }
     pub fn configure(command: &mut Command) {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
@@ -79,6 +83,14 @@ mod windows {
     }
     impl ProcessTree {
         pub fn prepare() -> Result<Self, RuntimeError> {
+            Self::prepare_mode(true)
+        }
+        /// Supervised Minecraft must survive a supervisor crash. Retain the
+        /// owned job for explicit family termination, without kill-on-close.
+        pub fn prepare_surviving_owner_exit() -> Result<Self, RuntimeError> {
+            Self::prepare_mode(false)
+        }
+        fn prepare_mode(kill_on_close: bool) -> Result<Self, RuntimeError> {
             // SAFETY: anonymous non-inheritable job, valid owned handle thereafter.
             let raw = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
             if raw.is_null() {
@@ -86,7 +98,11 @@ mod windows {
             }
             let job = unsafe { OwnedHandle::from_raw_handle(raw) };
             let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            limits.BasicLimitInformation.LimitFlags = if kill_on_close {
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            } else {
+                0
+            };
             // SAFETY: buffer is the declared native layout and remains alive for the call.
             if unsafe {
                 SetInformationJobObject(

@@ -242,6 +242,7 @@ impl Drop for OwnedChild {
 /// Use zero-duration stop/wait plus polling for a responsive application loop.
 /// Start refuses an existing generation instead of providing a restart API.
 pub struct GameProcess {
+    survive_owner_exit: bool,
     console: ConsoleCapture,
     owned: Option<OwnedChild>,
     last_exit: Option<ExitSummary>,
@@ -257,9 +258,27 @@ impl fmt::Debug for GameProcess {
 impl GameProcess {
     pub fn new(console: ConsoleCapture) -> Self {
         Self {
+            survive_owner_exit: false,
             console,
             owned: None,
             last_exit: None,
+        }
+    }
+
+    /// For the durable supervisor only: abrupt owner exit preserves Minecraft.
+    /// Explicit stop/kill and Rust Drop still terminate the owned process family.
+    /// The supervisor must persist its generation record before reporting success.
+    pub fn new_surviving_owner_exit(console: ConsoleCapture) -> Self {
+        Self {
+            survive_owner_exit: true,
+            ..Self::new(console)
+        }
+    }
+    fn prepare_tree(&self) -> Result<tree::ProcessTree, RuntimeError> {
+        if self.survive_owner_exit {
+            tree::ProcessTree::prepare_surviving_owner_exit()
+        } else {
+            tree::ProcessTree::prepare()
         }
     }
 
@@ -272,7 +291,7 @@ impl GameProcess {
         let generation = self.new_generation()?;
         // All fallible thread creation is before the external process effect.
         let io = io::IoThreads::prepare(&self.console)?;
-        let tree = tree::ProcessTree::prepare()?;
+        let tree = self.prepare_tree()?;
         let child = spec
             .command()
             .spawn()
@@ -295,7 +314,7 @@ impl GameProcess {
         spec.preflight()?;
         let generation = self.new_generation()?;
         let io = io::IoThreads::prepare(&self.console)?;
-        let tree = tree::ProcessTree::prepare()?;
+        let tree = self.prepare_tree()?;
         let mut command = spec.command();
         guard(self.snapshot()).map_err(GuardedError::Guard)?;
         let child = command.spawn().map_err(|_| RuntimeError::SpawnFailed)?;

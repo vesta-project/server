@@ -384,7 +384,7 @@ pub async fn run(config: SupervisorConfig, stop: impl Future<Output = ()>) -> Re
     )?;
     let console = ConsoleCapture::new();
     let core: Shared = Arc::new(Mutex::new(Core {
-        process: Preserved(Some(GameProcess::new(console.clone()))),
+        process: Preserved(Some(GameProcess::new_surviving_owner_exit(console.clone()))),
         console,
         launch: config.launch,
         launch_identity: config.launch_identity,
