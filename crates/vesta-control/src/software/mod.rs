@@ -2,6 +2,7 @@
 //! external; canonical owner/capability checks are repeated here on every request.
 //! Downloads never run on the urgent lifecycle worker. Activation never stops or
 //! starts Minecraft, and an ambiguous activation blocks starts until rollback.
+pub(crate) mod catalogue_store;
 mod custom;
 mod model;
 mod runtime;
@@ -76,6 +77,7 @@ struct Inner {
     rollbacks: Mutex<BTreeMap<String, PendingRollback>>,
     custom_plans: Mutex<BTreeMap<String, custom::PendingCustom>>,
     query_permit: Semaphore,
+    query_waiters: Semaphore,
     queue: Mutex<Queue>,
     wake: Condvar,
     cancel: AtomicBool,
@@ -139,6 +141,7 @@ impl SoftwareService {
             rollbacks: Mutex::new(BTreeMap::new()),
             custom_plans: Mutex::new(BTreeMap::new()),
             query_permit: Semaphore::new(1),
+            query_waiters: Semaphore::new(8),
             queue: Mutex::new(Queue::default()),
             wake: Condvar::new(),
             cancel: AtomicBool::new(false),
@@ -330,19 +333,13 @@ impl SoftwareHandle {
     /// Demand-only metadata query; call on a non-urgent async/background executor.
     /// Exactly one query/plan may use provider/Java resources for this service.
     pub async fn versions(&self, subject: &Subject, software: Software) -> Result<Vec<String>> {
-        self.authorize(subject)?;
-        let _permit = self
-            .inner
-            .query_permit
-            .try_acquire()
-            .map_err(|_| SoftwareError::Busy)?;
-        let result = self
-            .inner
-            .installer
-            .versions(software, &SilentProgressReporter)
-            .await?;
-        self.authorize(subject)?;
-        Ok(result)
+        self.catalogue(
+            subject,
+            self.inner
+                .installer
+                .versions(software, &SilentProgressReporter),
+        )
+        .await
     }
     pub async fn releases(
         &self,
@@ -350,17 +347,37 @@ impl SoftwareHandle {
         software: Software,
         version: &str,
     ) -> Result<Vec<vesta_server_install::SoftwareRelease>> {
+        self.catalogue(
+            subject,
+            self.inner
+                .installer
+                .releases(software, version, &SilentProgressReporter),
+        )
+        .await
+    }
+    async fn catalogue<T>(
+        &self,
+        subject: &Subject,
+        query: impl std::future::Future<Output = vesta_server_install::Result<T>>,
+    ) -> Result<T> {
         self.authorize(subject)?;
-        let _permit = self
+        let waiting = self
             .inner
-            .query_permit
+            .query_waiters
             .try_acquire()
             .map_err(|_| SoftwareError::Busy)?;
-        let result = self
-            .inner
-            .installer
-            .releases(software, version, &SilentProgressReporter)
-            .await?;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(12), async {
+            let _permit = self
+                .inner
+                .query_permit
+                .acquire()
+                .await
+                .map_err(|_| SoftwareError::Busy)?;
+            drop(waiting);
+            query.await.map_err(SoftwareError::Install)
+        })
+        .await
+        .map_err(|_| SoftwareError::Install(vesta_server_install::InstallError::Deadline))??;
         self.authorize(subject)?;
         Ok(result)
     }

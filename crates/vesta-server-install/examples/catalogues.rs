@@ -28,6 +28,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     versions.len(),
                     started.elapsed()
                 );
+                let warm = Instant::now();
+                match installer.versions(software, &SilentProgressReporter).await {
+                    Ok(values) => println!(
+                        "  repeated versions: {} in {:?}",
+                        values.len(),
+                        warm.elapsed()
+                    ),
+                    Err(error) => {
+                        failures += 1;
+                        println!("  repeated versions: {error}");
+                    }
+                }
                 // Providers do not all return the same ordering. Sample the
                 // newest numeric release, not an arbitrary first entry.
                 let newest = versions

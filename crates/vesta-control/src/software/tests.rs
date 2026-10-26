@@ -168,6 +168,101 @@ fn owner() -> Subject {
 }
 
 #[test]
+fn catalogue_persistence_is_bounded_and_never_changes_installation_state() {
+    use vesta_server_install::{CATALOGUE_CACHE_ENTRIES, CatalogueRecord};
+    let fixture = Fixture::new();
+    let service = fixture.open();
+    let handle = service.handle();
+    let cache = super::catalogue_store::open(fixture.db.clone()).unwrap();
+    let before = handle.status(&owner()).unwrap();
+    for index in 0..70 {
+        let key = format!("{index:064x}");
+        let bytes = vec![index as u8; 1024];
+        cache.save(&[(
+            key,
+            CatalogueRecord {
+                sha256: hex::encode(sha2::Sha256::digest(&bytes)),
+                bytes,
+                stored_at_ms: 1000 + index,
+                expires_at_ms: 301_000 + index,
+            },
+        )]);
+    }
+    let count = fixture
+        .db
+        .read(|connection| {
+            Ok(connection.query_row(
+                "SELECT count(*) FROM software_catalogue_cache",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(count, CATALOGUE_CACHE_ENTRIES as i64);
+    assert!(cache.load(&format!("{:064x}", 0)).is_none());
+    assert!(cache.load(&format!("{:064x}", 69)).is_some());
+    let after = handle.status(&owner()).unwrap();
+    assert_eq!(before.revision, after.revision);
+    assert_eq!(
+        before.current.installation_id,
+        after.current.installation_id
+    );
+    fixture.unchanged();
+}
+
+#[tokio::test]
+async fn catalogue_authority_is_checked_before_and_after_cached_query_work() {
+    let fixture = Fixture::new();
+    let service = fixture.open();
+    let handle = service.handle();
+    let polled = AtomicBool::new(false);
+    let result = handle
+        .catalogue(&viewer(), async {
+            polled.store(true, Ordering::SeqCst);
+            Ok(42)
+        })
+        .await;
+    assert!(matches!(result, Err(SoftwareError::Forbidden)));
+    assert!(!polled.load(Ordering::SeqCst));
+    let result = handle
+        .catalogue(&owner(), async {
+            fixture
+                .db
+                .write(|connection| {
+                    connection.execute(
+                        "DELETE FROM role_assignments WHERE principal_id=?",
+                        [PRINCIPAL],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+            Ok(42)
+        })
+        .await;
+    assert!(matches!(result, Err(SoftwareError::Forbidden)));
+}
+
+#[tokio::test]
+async fn cancelled_catalogue_waiter_releases_bounded_admission() {
+    let fixture = Fixture::new();
+    let service = fixture.open();
+    let handle = service.handle();
+    let held = handle.inner.query_permit.acquire().await.unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_millis(30),
+        handle.catalogue(&owner(), async { Ok(42) }),
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(handle.inner.query_waiters.available_permits(), 8);
+    drop(held);
+    assert_eq!(
+        handle.catalogue(&owner(), async { Ok(42) }).await.unwrap(),
+        42
+    );
+}
+
+#[test]
 fn custom_jar_is_confirmed_owner_only_and_restores_managed_with_java() {
     use std::io::{Cursor, Write};
     struct CustomHooks(Arc<NativeState>);

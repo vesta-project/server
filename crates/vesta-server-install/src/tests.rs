@@ -16,6 +16,7 @@ use wiremock::{
 };
 
 mod execution;
+mod catalogue_cache;
 mod execution_workspace;
 mod installation;
 mod loaders;

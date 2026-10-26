@@ -46,6 +46,24 @@ so a stalled provider releases the query slot before the launcher's 15-second
 request expires. Tighter installer limits still apply. Planning and installation
 keep their separate longer job deadlines. Catalogue timeout returns
 `server_install.deadline`; it does not modify the selected software.
+
+Catalogue browsing now uses a bounded per-installer memory cache with optional
+protected agent-state persistence. Validated raw documents and normalized lists
+share an 8 MiB retained-memory budget and 64-entry cap. Persistence keeps at most
+64 MiB of encoded records plus accounting overhead in `software_catalogue_cache`;
+SQLite file/WAL allocation is additional. Cache hits do not write state. Candidate
+documents are committed only after the complete catalogue query validates, and
+same-key requests share bounded admission. Software-service queueing and fetching
+together remain inside the 12-second deadline, with at most eight waiting callers.
+
+Origin no-store/no-cache and freshness/age restrictions are respected. Conditional
+ETag revalidation is not implemented by this first cache layer: expired entries
+are fetched again. Forge's official Maven catalogue forbids storage; browsing
+therefore uses the same compact Modrinth loader-ID mirror used by the launcher.
+Mirror URLs are ignored. Fresh installation planning still checks exact Forge
+Maven membership, official metadata and artifact pins; browsing snapshots never
+authorize a download or change an installed receipt. The Forge mirror source
+family is metadata-only and cannot download JARs.
 Rollback explicitly selects the durable previous launch, preserves both software
 installations, and never downgrades/reverts world data. It requires an exact
 revision and confirmation; warn that an upgraded world may require backup restore.

@@ -59,7 +59,7 @@ pub(super) async fn coordinates(
 struct Manifest {
     game_versions: List<Game>,
     #[serde(default)]
-    version_groups: Vec<Group>,
+    version_groups: List<Group>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,24 +82,59 @@ async fn neo_games(
     job: &mut Job,
     reporter: &dyn ProgressReporter,
 ) -> Result<BTreeMap<String, Vec<String>>> {
-    let data = http
-        .family_metadata(
+    mirror_games(http, Software::NeoForge, job, reporter).await
+}
+async fn mirror_games(
+    http: &Transport,
+    software: Software,
+    job: &mut Job,
+    reporter: &dyn ProgressReporter,
+) -> Result<BTreeMap<String, Vec<String>>> {
+    let (url, family) = match software {
+        Software::Forge => (
+            "https://launcher-meta.modrinth.com/forge/v0/manifest.json",
+            SourceFamily::ModrinthForge,
+        ),
+        Software::NeoForge => (
             "https://launcher-meta.modrinth.com/neo/v0/manifest.json",
             SourceFamily::ModrinthNeoForge,
-            None,
-            job,
-            reporter,
-        )
+        ),
+        _ => return Err(InstallError::Unavailable),
+    };
+    let data = http
+        .family_metadata(url, family, None, job, reporter)
         .await?;
-    decode_neo_games(&data.data, job.limits.max_entries)
+    decode_games(&data.data, job.limits.max_entries, software)
 }
+#[cfg(test)]
 fn decode_neo_games(data: &[u8], max_entries: usize) -> Result<BTreeMap<String, Vec<String>>> {
+    decode_games(data, max_entries, Software::NeoForge)
+}
+fn stable_loader(software: Software, id: &str, minecraft: &str) -> bool {
+    let numeric = if software == Software::Forge {
+        match id.split_once('-') {
+            Some((loader, suffix)) if suffix == minecraft => loader,
+            Some(_) => return false,
+            None => id,
+        }
+    } else {
+        id
+    };
+    numeric
+        .split('.')
+        .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+fn decode_games(
+    data: &[u8],
+    max_entries: usize,
+    software: Software,
+) -> Result<BTreeMap<String, Vec<String>>> {
     let value: Manifest = parse(data)?;
-    if value.game_versions.0.len() > max_entries || value.version_groups.len() > max_entries {
+    if value.game_versions.0.len() > max_entries || value.version_groups.0.len() > max_entries {
         return Err(InstallError::LimitExceeded);
     }
     let mut groups = BTreeMap::new();
-    for group in value.version_groups {
+    for group in value.version_groups.0 {
         if groups.insert(group.id, group.loaders.0).is_some() {
             return Err(InstallError::InvalidMetadata);
         }
@@ -122,10 +157,10 @@ fn decode_neo_games(data: &[u8], max_entries: usize) -> Result<BTreeMap<String, 
         let mut ids = HashSet::new();
         let values = loaders
             .into_iter()
-            // The mirror currently marks every NeoForge loader unstable, even
-            // official numeric releases. Maven membership is checked at plan/
-            // release selection; prerelease suffixes remain excluded here.
-            .filter(|l| !l.id.contains('-'))
+            // Mirror stability flags are advisory, including false flags on
+            // numeric releases. Browsing keeps canonical stable IDs; fresh
+            // planning independently checks official Maven membership.
+            .filter(|l| stable_loader(software, &l.id, &game.id))
             .map(|l| {
                 if !loader_identifier(&l.id) || !ids.insert(l.id.clone()) {
                     Err(InstallError::InvalidMetadata)
@@ -155,8 +190,8 @@ pub(crate) async fn versions(
     job: &mut Job,
     reporter: &dyn ProgressReporter,
 ) -> Result<Vec<String>> {
-    let mut values = if software == Software::NeoForge {
-        neo_games(http, job, reporter)
+    let mut values = if software == Software::NeoForge || job.catalogue {
+        mirror_games(http, software, job, reporter)
             .await?
             .into_iter()
             .filter(|(_, v)| !v.is_empty())
@@ -199,6 +234,19 @@ pub(crate) async fn releases(
     job: &mut Job,
     reporter: &dyn ProgressReporter,
 ) -> Result<Vec<super::super::releases::SoftwareRelease>> {
+    if job.catalogue && software == Software::Forge {
+        let games = mirror_games(http, software, job, reporter).await?;
+        let mut loaders = games.get(version).ok_or(InstallError::Unavailable)?.clone();
+        loaders.sort_by(|a, b| newer(a, b));
+        return Ok(loaders
+            .into_iter()
+            .map(|id| super::super::releases::SoftwareRelease {
+                id: id.clone(),
+                build: None,
+                loader_version: Some(id),
+            })
+            .collect());
+    }
     let coordinates = coordinates(http, software, job, reporter).await?;
     release_choices(http, software, version, coordinates, job, reporter).await
 }
@@ -230,20 +278,7 @@ async fn release_choices(
         })
         .map(|id| loader_id(software, &id, version))
         .collect::<Result<Vec<_>>>()?;
-    result.retain(|id| {
-        let numeric = if software == Software::Forge {
-            match id.split_once('-') {
-                Some((loader, suffix)) if suffix == version => loader,
-                Some(_) => return false,
-                None => id.as_str(),
-            }
-        } else {
-            id.as_str()
-        };
-        numeric
-            .split('.')
-            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
-    });
+    result.retain(|id| stable_loader(software, id, version));
     result.sort_by(|a, b| newer(a, b));
     Ok(result
         .into_iter()

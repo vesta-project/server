@@ -222,6 +222,12 @@ pub(crate) fn open(
         )?,
         TransportConfig::direct(),
     )?;
+    // Cache failure is an optimization failure, not a reason to disable software
+    // management. The installer retains its bounded in-memory cache as fallback.
+    let installer = match software::catalogue_store::open(db.clone()) {
+        Ok(store) => installer.with_catalogue_store(store),
+        Err(_) => installer,
+    };
     let hooks = Arc::new(Hooks {
         config: config.clone(),
         db: db.clone(),

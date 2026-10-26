@@ -4,6 +4,7 @@
 mod execution;
 // Compiled internal primitives; production loader recipe constructors are deliberately absent.
 mod bundle;
+mod catalogue_cache;
 mod config;
 #[allow(dead_code)]
 mod execution_workspace;
@@ -17,6 +18,10 @@ mod runtime;
 mod transfer;
 
 pub use bundle::{ArtifactRecord, BundleReceipt};
+pub use catalogue_cache::{
+    CatalogueRecord, CatalogueStore, CATALOGUE_CACHE_DISK_BYTES, CATALOGUE_CACHE_DOCUMENT_BYTES,
+    CATALOGUE_CACHE_ENTRIES,
+};
 pub use config::TransportConfig;
 pub use install::{InstallOutcome, InstallRoots, Receipt};
 pub use managed::{verify_managed_artifacts, ManagedArtifact, ManagedLaunch};
@@ -59,7 +64,16 @@ impl ServerInstaller {
     fn catalogue_job(&self) -> transfer::Job {
         let mut limits = self.limits;
         limits.total_ms = limits.total_ms.min(CATALOGUE_TOTAL_MS);
-        transfer::Job::new(limits, 0)
+        let mut job = transfer::Job::new(limits, 0);
+        job.catalogue = true;
+        job
+    }
+
+    /// Optional protected host persistence. Browsing snapshots never authorize
+    /// install plans; those keep independent fresh provider reads.
+    pub fn with_catalogue_store(mut self, store: Arc<dyn CatalogueStore>) -> Self {
+        self.http.catalogues = catalogue_cache::CatalogueCache::new(Some(store));
+        self
     }
 
     pub fn new(roots: InstallRoots, transport: TransportConfig) -> Result<Self> {
@@ -88,7 +102,8 @@ impl ServerInstaller {
             fixture_space_error: None,
         })
     }
-    /// Metadata-only network catalogue. No filesystem writes or runtime execution.
+    /// Browsing catalogue. Optional protected cache writes only; no game writes
+    /// or runtime execution. Installation plans resolve their own fresh evidence.
     pub async fn versions(
         &self,
         software: Software,
@@ -97,7 +112,20 @@ impl ServerInstaller {
         if reporter.is_dry_run() {
             return Err(InstallError::InvalidInput);
         }
-        providers::versions(&self.http, software, &mut self.catalogue_job(), reporter).await
+        let mut job = self.catalogue_job();
+        job.ready(reporter).await?;
+        let key = self
+            .http
+            .catalogue_key(&format!("versions:{software:?}:{:?}", self.limits));
+        let _guard = self.http.catalogues.query(&key, &job, reporter).await?;
+        if let Some(value) = self.cached_result::<String>(&key, &job, reporter).await? {
+            if value.iter().all(|id| model::identifier(id)) {
+                return Ok(value);
+            }
+        }
+        let value = providers::versions(&self.http, software, &mut job, reporter).await?;
+        self.cache_result(key, &value, job);
+        Ok(value)
     }
     /// Available build/loader choices. Metadata only; planning still verifies the selection.
     pub async fn releases(
@@ -109,14 +137,64 @@ impl ServerInstaller {
         if reporter.is_dry_run() {
             return Err(InstallError::InvalidInput);
         }
-        providers::releases::list(
-            &self.http,
-            software,
-            version,
-            &mut self.catalogue_job(),
+        if !model::identifier(version) {
+            return Err(InstallError::InvalidInput);
+        }
+        let mut job = self.catalogue_job();
+        job.ready(reporter).await?;
+        let key = self.http.catalogue_key(&format!(
+            "releases:{software:?}:{version}:{:?}",
+            self.limits
+        ));
+        let _guard = self.http.catalogues.query(&key, &job, reporter).await?;
+        if let Some(value) = self
+            .cached_result::<SoftwareRelease>(&key, &job, reporter)
+            .await?
+        {
+            if value.iter().all(|release| {
+                model::identifier(&release.id)
+                    && release.build != Some(0)
+                    && release
+                        .loader_version
+                        .as_deref()
+                        .is_none_or(model::identifier)
+            }) {
+                return Ok(value);
+            }
+        }
+        let value =
+            providers::releases::list(&self.http, software, version, &mut job, reporter).await?;
+        self.cache_result(key, &value, job);
+        Ok(value)
+    }
+
+    async fn cached_result<T: serde::de::DeserializeOwned>(
+        &self,
+        key: &str,
+        job: &transfer::Job,
+        reporter: &dyn ProgressReporter,
+    ) -> Result<Option<Vec<T>>> {
+        let value = transfer::controlled(
+            async { Ok(self.http.catalogues.get(key).await) },
+            job.deadline,
             reporter,
         )
-        .await
+        .await?;
+        Ok(value
+            .and_then(|record| serde_json::from_slice::<providers::List<T>>(&record.bytes).ok())
+            .filter(|list| list.0.len() <= job.limits.max_entries)
+            .map(|list| list.0))
+    }
+    fn cache_result(&self, key: String, value: &impl serde::Serialize, mut job: transfer::Job) {
+        if let Ok(bytes) = serde_json::to_vec(value) {
+            job.cache_candidate(
+                key,
+                &bytes,
+                job.fresh_until
+                    .saturating_duration_since(tokio::time::Instant::now()),
+            );
+        }
+        self.http.catalogues.commit(job.pending_cache);
     }
     /// Resolves an exact artifact and probes the caller-selected existing Java; no install writes.
     pub async fn plan(

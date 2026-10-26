@@ -1,7 +1,8 @@
 //! Metadata-only choices, using the same catalogues and limits as planning.
 use super::*;
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SoftwareRelease {
     pub id: String,
     pub build: Option<u32>,
@@ -16,7 +17,9 @@ pub(crate) async fn list(
     reporter: &dyn ProgressReporter,
 ) -> Result<Vec<SoftwareRelease>> {
     if matches!(software, Software::Forge | Software::NeoForge) {
-        if !identifier(version) { return Err(InstallError::InvalidInput); }
+        if !identifier(version) {
+            return Err(InstallError::InvalidInput);
+        }
         return super::forge::releases(http, software, version, job, reporter).await;
     }
     if !identifier(version) {

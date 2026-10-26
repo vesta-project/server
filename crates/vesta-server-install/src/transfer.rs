@@ -29,6 +29,10 @@ pub(crate) struct Job {
     pub deadline: Instant,
     pub bytes: u64,
     pub limits: Limits,
+    pub catalogue: bool,
+    pub fresh_until: Instant,
+    pub pending_cache: Vec<(String, crate::catalogue_cache::CatalogueRecord)>,
+    pending_bytes: usize,
 }
 impl Job {
     pub fn new(limits: Limits, bytes: u64) -> Self {
@@ -36,6 +40,22 @@ impl Job {
             deadline: Instant::now() + limits.duration(),
             bytes,
             limits,
+            catalogue: false,
+            fresh_until: Instant::now() + Duration::from_secs(300),
+            pending_cache: Vec::new(),
+            pending_bytes: 0,
+        }
+    }
+    pub fn cache_candidate(&mut self, key: String, bytes: &[u8], fresh_for: Duration) {
+        self.fresh_until = self.fresh_until.min(Instant::now() + fresh_for);
+        if self.pending_bytes.saturating_add(bytes.len())
+            > crate::catalogue_cache::CATALOGUE_CACHE_MEMORY_BYTES
+        {
+            return;
+        }
+        if let Some(record) = crate::catalogue_cache::record(bytes.to_vec(), fresh_for) {
+            self.pending_bytes += record.bytes.len();
+            self.pending_cache.push((key, record));
         }
     }
     pub fn charge(&mut self, n: usize) -> Result<()> {
@@ -89,6 +109,7 @@ pub(crate) async fn controlled<T>(
 pub(crate) struct Transport {
     proxy: Option<String>,
     pub policy_id: String,
+    pub catalogues: std::sync::Arc<crate::catalogue_cache::CatalogueCache>,
     #[cfg(test)]
     pub fixture_origin: Option<Url>,
 }
@@ -97,12 +118,36 @@ impl Transport {
         Self {
             proxy: config.into_proxy(),
             policy_id: uuid::Uuid::new_v4().simple().to_string(),
+            catalogues: crate::catalogue_cache::CatalogueCache::new(None),
             #[cfg(test)]
             fixture_origin: None,
         }
     }
     pub fn uses_proxy(&self) -> bool {
         self.proxy.is_some()
+    }
+    pub fn catalogue_key(&self, selection: &str) -> String {
+        // Stable across restarts, partitioned by transport credentials/policy.
+        // Approval policy_id remains independently random and never cache-derived.
+        #[cfg(test)]
+        let origin = self
+            .fixture_origin
+            .as_ref()
+            .map(|url| url.as_str())
+            .unwrap_or("");
+        #[cfg(not(test))]
+        let origin = "";
+        let mut digest = Sha256::new();
+        for part in [
+            "vesta.catalogue.v1",
+            selection,
+            self.proxy.as_deref().unwrap_or(""),
+            origin,
+        ] {
+            digest.update((part.len() as u64).to_le_bytes());
+            digest.update(part.as_bytes());
+        }
+        format!("{:x}", digest.finalize())
     }
 
     async fn request(
@@ -300,6 +345,31 @@ impl Transport {
         if pin.and_then(|p| p.size).is_some_and(|s| s == 0 || s > cap) {
             return Err(InstallError::LimitExceeded);
         }
+        let cache_key = (job.catalogue && matches!(role, Role::Metadata) && !head).then(|| {
+            self.catalogue_key(&format!("raw:{software:?}:{family:?}:{}", initial.as_str()))
+        });
+        if let Some(key) = &cache_key {
+            let cached = controlled(
+                async { Ok(self.catalogues.get(key).await) },
+                job.deadline,
+                reporter,
+            )
+            .await?;
+            if let Some(cached) = cached {
+                if cached.bytes.len() as u64 > cap {
+                    return Err(InstallError::LimitExceeded);
+                }
+                job.charge(cached.bytes.len())?;
+                let fresh_for = crate::catalogue_cache::remaining(&cached);
+                job.fresh_until = job.fresh_until.min(Instant::now() + fresh_for);
+                return Ok(Received {
+                    data: cached.bytes.clone(),
+                    size: cached.bytes.len() as u64,
+                    observed_sha256: cached.sha256.clone(),
+                    fresh_for,
+                });
+            }
+        }
         for attempt in 0..job.limits.attempts {
             job.ready(reporter).await?;
             if let Some(f) = file.as_deref_mut() {
@@ -325,7 +395,12 @@ impl Transport {
                 )
                 .await;
             match result {
-                Ok(value) => return Ok(value),
+                Ok(value) => {
+                    if let Some(key) = cache_key.clone() {
+                        job.cache_candidate(key, &value.data, value.fresh_for);
+                    }
+                    return Ok(value);
+                }
                 Err(InstallError::TransportFailed) if attempt + 1 < job.limits.attempts => {
                     controlled(
                         async {
@@ -389,6 +464,8 @@ impl Transport {
             }
         }
         let mut r = response.ok_or(InstallError::SourceRefused)?;
+        let freshness_start = Instant::now();
+        let fresh_for = crate::catalogue_cache::freshness(r.headers());
         if r.status().as_u16() == 429 || r.status().is_server_error() {
             return Err(InstallError::TransportFailed);
         }
@@ -438,6 +515,7 @@ impl Transport {
                 data: Vec::new(),
                 size,
                 observed_sha256: String::new(),
+                fresh_for: Duration::ZERO,
             });
         }
         let mut strong = Sha256::new();
@@ -518,6 +596,7 @@ impl Transport {
             data,
             size,
             observed_sha256,
+            fresh_for: fresh_for.saturating_sub(freshness_start.elapsed()),
         })
     }
 }
@@ -526,6 +605,7 @@ pub(crate) struct Received {
     pub data: Vec<u8>,
     pub size: u64,
     pub observed_sha256: String,
+    pub fresh_for: Duration,
 }
 
 pub(crate) fn validate_url(raw: &str, software: Software, role: Role) -> Result<Url> {
@@ -651,11 +731,26 @@ pub(crate) fn validate_family_url(
         }
         return Ok(u);
     }
+    if family == SourceFamily::ModrinthForge {
+        return if matches!(role, Role::Metadata)
+            && !head
+            && u.host_str() == Some("launcher-meta.modrinth.com")
+            && u.path() == "/forge/v0/manifest.json"
+            && !raw
+                .split('/')
+                .any(|part| part == "." || part.contains(".."))
+        {
+            Ok(u)
+        } else {
+            Err(InstallError::SourceRefused)
+        };
+    }
     let (host, prefix) = match family {
         SourceFamily::ForgeMaven
         | SourceFamily::NeoForgeMaven
         | SourceFamily::MinecraftLibraries
         | SourceFamily::ModrinthNeoForge => return Err(InstallError::SourceRefused),
+        SourceFamily::ModrinthForge => return Err(InstallError::SourceRefused),
         SourceFamily::MojangObjects => ("piston-data.mojang.com", "/v1/objects/"),
         SourceFamily::ModrinthFabric => ("launcher-meta.modrinth.com", "/fabric/v0/"),
         SourceFamily::ModrinthQuilt => ("launcher-meta.modrinth.com", "/quilt/v1/"),

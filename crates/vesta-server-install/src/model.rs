@@ -578,6 +578,7 @@ pub enum SourceFamily {
     NeoForgeMaven,
     MinecraftLibraries,
     ModrinthNeoForge,
+    ModrinthForge,
     MojangObjects,
     ModrinthFabric,
     ModrinthQuilt,

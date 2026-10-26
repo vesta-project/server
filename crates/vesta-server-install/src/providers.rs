@@ -20,7 +20,12 @@ pub(crate) mod releases;
 const MAX_ENTRIES: usize = 10_000;
 
 // Hard limits are enforced by visitors, before collecting an arbitrary catalogue.
-struct List<T>(Vec<T>);
+pub(crate) struct List<T>(pub(crate) Vec<T>);
+impl<T> Default for List<T> {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for List<T> {
     fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
         struct V<T>(PhantomData<T>);
