@@ -551,7 +551,7 @@ pub(crate) async fn build(
         .as_ref()
         .is_some_and(|expected| expected != &hash)
     {
-        return Err(InstallError::ArtifactChanged);
+        return Err(InstallError::BuildOutputMismatch);
     }
     super::layout::verify(
         &jar,

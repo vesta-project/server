@@ -43,6 +43,8 @@ pub enum InstallError {
     BuildToolsMissing,
     #[error("server_install.build_memory_low")]
     BuildMemoryLow,
+    #[error("server_install.build_output_mismatch")]
+    BuildOutputMismatch,
     #[error("server_install.path_refused")]
     PathRefused,
     #[error("server_install.destination_exists")]

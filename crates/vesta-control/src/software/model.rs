@@ -77,6 +77,9 @@ impl SoftwareError {
                 vesta_server_install::InstallError::BuildMemoryLow => {
                     "server_install.build_memory_low"
                 }
+                vesta_server_install::InstallError::BuildOutputMismatch => {
+                    "server_install.build_output_mismatch"
+                }
                 vesta_server_install::InstallError::PathRefused => "server_install.path_refused",
                 vesta_server_install::InstallError::DestinationExists => {
                     "server_install.destination_exists"
