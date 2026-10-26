@@ -151,6 +151,7 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
         })?,
     };
     if matches!(work.kind, WorkKind::Rollback) {
+        if candidate.artifacts.is_empty() && !inner.db.read_with(|tx| -> Result<bool> { Ok(store::state(tx.connection())?.recovery) })? { return Err(SoftwareError::PreviousUnavailable); }
         vesta_server_install::verify_managed_artifacts(&candidate.artifacts).await?;
     }
     if inner.cancel.load(std::sync::atomic::Ordering::Acquire) {

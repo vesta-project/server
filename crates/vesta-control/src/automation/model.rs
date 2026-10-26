@@ -57,6 +57,7 @@ pub enum Trigger {
     ServerCrashed,
     PlayerCountZero,
     FirstPlayerJoined,
+    PlayerFirstJoined,
     BackupCompleted {
         profile: Option<String>,
     },
@@ -187,6 +188,7 @@ pub enum AutomationEvent {
     ServerCrashed,
     PlayerCountZero,
     FirstPlayerJoined,
+    PlayerFirstJoined { player: String, uuid: String },
     BackupCompleted { profile: String },
     BackupFailed { profile: String },
     UpdateAvailable,
@@ -195,6 +197,7 @@ pub enum AutomationEvent {
 impl AutomationEvent {
     pub fn matches_trigger(&self, trigger: &Trigger) -> bool {
         match (self, trigger) {
+            (Self::PlayerFirstJoined { player, uuid }, Trigger::PlayerFirstJoined) => crate::moderation::valid_player(player) && uuid::Uuid::parse_str(uuid).is_ok(),
             (Self::AgentStarted, Trigger::AgentStartup)
             | (Self::ServerStarted, Trigger::ServerStarted)
             | (Self::ServerStopped, Trigger::ServerStopped)

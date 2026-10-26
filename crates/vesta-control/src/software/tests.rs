@@ -1,5 +1,6 @@
 use super::*;
 use rusqlite::params;
+use sha2::Digest;
 use std::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::{Duration, Instant},
@@ -117,6 +118,8 @@ impl Fixture {
         .unwrap()
     }
     fn previous(&self, document: &str) {
+        let artifact = self.game.join("retained-software.jar");
+        std::fs::write(&artifact, b"retained software").unwrap();
         let launch = StoredLaunch {
             installation: Installation {
                 loader_version: None,
@@ -126,7 +129,7 @@ impl Fixture {
                 installation_id: "srv_previous".into(),
             },
             document: document.into(),
-            artifacts: vec![],
+            artifacts: vec![vesta_server_install::ManagedArtifact { path: artifact, size: 17, sha256: hex::encode(sha2::Sha256::digest(b"retained software")) }],
         };
         self.db
             .write(|c| {
@@ -284,6 +287,25 @@ fn running_game_refuses_activation_without_changing_launch_or_world() {
     assert_eq!(h.status(&owner()).unwrap().revision, 0);
     assert_eq!(*f.native.document.lock().unwrap(), "original launch");
     assert!(!f.native.blocked.load(Ordering::SeqCst));
+    f.unchanged();
+}
+#[test]
+fn unverified_previous_launch_is_only_available_for_interrupted_change_recovery() {
+    let f = Fixture::new(); let service = f.open(); let h = service.handle();
+    f.previous("original launch");
+    assert!(h.status(&owner()).unwrap().previous_restorable);
+    f.db.write(|c| {
+        let mut previous = store::state(c).unwrap().previous.unwrap();
+        previous.artifacts.clear();
+        c.execute("UPDATE software_state SET previous_launch=?", [store::encode(&previous).unwrap()])?;
+        Ok(())
+    }).unwrap();
+    assert!(matches!(h.prepare_rollback(&owner(),0), Err(SoftwareError::PreviousUnavailable)));
+    assert!(!h.status(&owner()).unwrap().previous_restorable);
+    f.db.write(|c| { c.execute("UPDATE software_state SET recovery_required=1", [])?; Ok(()) }).unwrap();
+    let plan = h.prepare_rollback(&owner(),0).unwrap();
+    let job = h.rollback(&owner(),request(&plan,"recover-unverified-config")).unwrap();
+    assert_eq!(finished(&h,&job.id).state,"succeeded");
     f.unchanged();
 }
 

@@ -270,6 +270,7 @@ impl SoftwareHandle {
                     unavailable_reason: None,
                     revision: s.revision,
                     current: s.current.installation,
+                    previous_restorable: s.previous.as_ref().is_some_and(|p| !p.artifacts.is_empty()),
                     previous: s.previous.map(|p| p.installation),
                     recovery_required: s.recovery,
                     catalog: Software::ALL
@@ -520,6 +521,13 @@ impl SoftwareHandle {
             return Err(SoftwareError::RevisionConflict);
         }
         let target = status.previous.ok_or(SoftwareError::PreviousUnavailable)?;
+        self.inner.db.read_with(|tx| -> Result<()> {
+            let state = store::state(tx.connection())?;
+            if state.revision != expected_revision { return Err(SoftwareError::RevisionConflict); }
+            let previous = state.previous.ok_or(SoftwareError::PreviousUnavailable)?;
+            if previous.artifacts.is_empty() && !state.recovery { return Err(SoftwareError::PreviousUnavailable); }
+            Ok(())
+        })?;
         let token = ConfirmationToken::random().map_err(|_| SoftwareError::RuntimeUnavailable)?;
         let now = self.inner.db.clock().millis();
         let expires = now

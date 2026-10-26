@@ -137,6 +137,7 @@ const STEP_COLUMNS: &str =
     "run_id,index_no,attempt,state,operation_ref,output_json,error_code,started_at,finished_at";
 impl Automation {
     pub fn new(db: StateDatabase, port: Arc<dyn ActionPort>) -> Result<Self> {
+        db.write(|c| { c.execute_batch("CREATE TABLE IF NOT EXISTS automation_player_visits (uuid TEXT PRIMARY KEY NOT NULL, first_name TEXT NOT NULL, first_seen_at INTEGER NOT NULL) STRICT;")?; Ok(()) })?;
         let audit = AuditLog::new(db.clone())?;
         Ok(Self { db, port, audit })
     }
@@ -555,6 +556,41 @@ impl Automation {
                 }
             }
             Ok(runs)
+        })
+    }
+    /// Join observation and its matching runs commit together. Never forget visits during retention.
+    pub(crate) fn seed_player_history(&self, ids: &[uuid::Uuid]) -> Result<()> {
+        if ids.len() > 128 { return Err(invalid()); }
+        if ids.is_empty() { return Ok(()); }
+        self.write(|c| {
+            let mut count = c.query_row("SELECT count(*) FROM automation_player_visits", [], |r| r.get::<_,i64>(0))?;
+            for id in ids {
+                let id = id.to_string();
+                if count >= 100_000 && c.query_row("SELECT 1 FROM automation_player_visits WHERE uuid=?", [&id], |_| Ok(())).optional()?.is_none() { return Err(conflict()); }
+                count += c.execute("INSERT OR IGNORE INTO automation_player_visits(uuid,first_name,first_seen_at) VALUES (?,'',?)", params![id,self.now()])? as i64;
+            }
+            Ok(())
+        })
+    }
+    pub(crate) fn observe_player_join(&self, uuid: uuid::Uuid, player: &str, historical: bool) -> Result<bool> {
+        if !crate::moderation::valid_player(player) { return Err(invalid()); }
+        let uuid = uuid.to_string();
+        if self.read(|c| Ok(c.query_row("SELECT 1 FROM automation_player_visits WHERE uuid=?", [&uuid], |_| Ok(())).optional()?.is_some()))? { return Ok(false); }
+        self.write(|c| {
+            if c.query_row("SELECT 1 FROM automation_player_visits WHERE uuid=?", [&uuid], |_| Ok(())).optional()?.is_some() { return Ok(false); }
+            if c.query_row("SELECT count(*) FROM automation_player_visits", [], |r| r.get::<_,i64>(0))? >= 100_000 { return Err(conflict()); }
+            c.execute("INSERT INTO automation_player_visits(uuid,first_name,first_seen_at) VALUES (?,?,?)", params![uuid,player,self.now()])?;
+            if historical { return Ok(false); }
+            let event = AutomationEvent::PlayerFirstJoined { player: player.into(), uuid };
+            let mut query = c.prepare(&format!("SELECT {WORKFLOW_COLUMNS} FROM workflows WHERE enabled=1 ORDER BY id"))?;
+            let workflows = query.query_map([], workflow_row)?.collect::<std::result::Result<Vec<_>,_>>()?;
+            for workflow in workflows {
+                if event.matches_trigger(&workflow.definition.trigger) && self.enqueue(c, &workflow, &serde_json::json!({"kind":"event","event":event}), self.now(), true)?.is_none() {
+                    // Roll back both history and fan-out. The console observer retries after pressure clears.
+                    return Err(conflict());
+                }
+            }
+            Ok(true)
         })
     }
     pub(super) fn load_workflow(&self, c: &Connection, id: &str) -> Result<Workflow> {

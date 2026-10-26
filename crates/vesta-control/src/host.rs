@@ -163,6 +163,7 @@ impl AutomationDriver {
                     thread::sleep(Duration::from_millis(20));
                 };
                 let _ = automation.publish(AutomationEvent::AgentStarted);
+                let mut joins = crate::automation::joins::JoinTracker::new(game_directory.clone(), &runtime);
                 let mut generation = runtime.game_snapshot().ok().and_then(|s| s.generation);
                 let startup_policy = startup.1.on_agent_start(startup.0).unwrap_or(crate::config::OnAgentStart::StayStopped);
                 let mut startup_allowed = true;
@@ -190,6 +191,7 @@ impl AutomationDriver {
                         .map(|d| d.as_millis() as i64)
                         .unwrap_or(0);
                     metrics.tick(&runtime, now);
+                    joins.tick(&runtime, &automation);
                     let _ = automation.tick(now);
                     let _ = actions.expire_bans(&game_directory);
                     if let Ok(failed) = actions.tick_startup_whitelist(&runtime) {

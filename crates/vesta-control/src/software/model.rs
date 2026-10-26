@@ -183,6 +183,7 @@ pub struct Status {
     pub revision: u64,
     pub current: Installation,
     pub previous: Option<Installation>,
+    pub previous_restorable: bool,
     pub recovery_required: bool,
     pub catalog: Vec<SoftwareDescriptor>,
 }

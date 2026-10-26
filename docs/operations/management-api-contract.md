@@ -1135,7 +1135,7 @@ forward, never loop. The closed tagged unions are:
 ```text
 trigger:
   {kind:"manual"|"agent_startup"|"server_started"|"server_stopped"|
-    "server_crashed"|"player_count_zero"|"first_player_joined"|"update_available"}
+    "server_crashed"|"player_count_zero"|"first_player_joined"|"player_first_joined"|"update_available"}
   {kind:"cron",expr:string,utc_offset_minutes:integer}
   {kind:"interval",seconds:integer}
   {kind:"backup_completed"|"backup_failed",profile:string|null}
