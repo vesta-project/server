@@ -1,4 +1,4 @@
-# Metadata ownership, performance and CraftBukkit support
+# Metadata ownership, performance, CraftBukkit and Spigot support
 
 Status: implementation plan, not implemented features. Date: 2026-10-26.
 Baselines: agent `fed0674`, launcher `f4af2e3f`.
@@ -164,12 +164,13 @@ already provide useful protection. Do not add worker threads, shorten polling
 intervals, or tune JVM heap flags just to improve a synthetic benchmark. Report
 full-agent overhead separately from Minecraft CPU/RAM.
 
-## 5. CraftBukkit support
+## 5. CraftBukkit and Spigot support
 
-Assumption: "bulkit" means Bukkit/CraftBukkit. The runnable server choice should
-be labelled **CraftBukkit**, with the existing `bukkit` family/identifier spelling
-used consistently in backend contracts. Its plugin family can reuse existing content
-rules, which already recognize `bukkit` and `spigot` alongside Paper/Purpur/Folia.
+Confirmed scope: both **CraftBukkit** and **Spigot** are initial targets, not a
+CraftBukkit implementation with Spigot deferred. Display CraftBukkit for the
+`bukkit` identifier and Spigot for `spigot`. Both use the existing Bukkit plugin
+family rules, which already recognize those identifiers alongside
+Paper/Purpur/Folia. Do not introduce a separate client modloader for either.
 
 The official BuildTools route compiles CraftBukkit/Spigot. For current CraftBukkit
 targets it supports `--compile craftbukkit`, and `--rev` selects the Minecraft
@@ -181,7 +182,8 @@ Implementation outline:
 
 1. Add an explicit provider/recipe type for locally built software, alongside
    existing direct JAR, loader bundle and processor recipes. Use one BuildTools
-   adapter capable of CraftBukkit and later Spigot; do not duplicate pipelines.
+   adapter with typed CraftBukkit/Spigot targets. Only target selection, output
+   identity and the necessary invocation flags differ; do not duplicate pipelines.
 2. Resolve official version/build metadata and a specific BuildTools revision.
    Record its source, digest, source revisions and selected toolchain. Never
    leave `latest` or `lastSuccessfulBuild` unresolved in a reviewed plan.
@@ -213,9 +215,39 @@ keep managed automation blocked pending a concrete policy, rather than inventing
 a claim of fully pinned builds. Low-end users can continue using the explicit
 custom-JAR import route for builds produced on another trusted machine.
 
-Do not add CraftBukkit to the offered software list until the recipe, failure
+Do not add either target to the offered software list until its recipe, failure
 recovery and supported host prerequisites work. The initial implementation is
 backend-only; later UI integration remains a separate task for Claude.
+
+### Reuse boundaries
+
+Keep the shared adapter beside the Forge family, not inside it. BuildTools builds
+from source; Forge processor profiles are a different recipe. Reuse their common
+foundations without pretending their trust/evidence formats are interchangeable.
+
+| Responsibility | Existing foundation to reuse |
+| --- | --- |
+| Metadata/download bounds and source validation | Installer `transfer::Transport`, `Job`, source-family policy and the new metadata store |
+| Java selection and identity | `runtime::RuntimeBinding` and existing Java preflight |
+| Owned subprocess tree, cancellation and bounded output | `execution::{Invocation, Budget, Pool}` and game-runtime process-tree ownership |
+| Isolated build paths and output inventory | `execution_workspace` protected workspace primitives |
+| Disk admission and publication | Installer coordinator/reservations and existing verified publication/receipt helpers |
+| Stopped activation, revision checks and rollback | Software service worker and `RuntimeHooks`/`StoppedGuard` |
+| Plugin placement and compatibility family | Existing content model rules for `bukkit` and `spigot` |
+| Logging/progress/history | Existing durable jobs, progress reporter and audit projection |
+
+Suggested adapter split: `providers/buildtools/{mod,catalogue,recipe,install}.rs`.
+Use one typed target description with target ID, compile mode, expected outputs
+and launch rules. Keep target differences declarative where possible. Introduce
+new common helpers only when at least two existing consumers need them; do not
+create another generic installer framework or copy Forge's entire install module.
+Preserve old plan/receipt schema domains and fail closed on unsupported new ones.
+
+One test matrix must run the same successful/failing build scenarios for both
+targets: metadata identity, pinned tool inputs, missing Java/Git, output mismatch,
+cancelled process trees, disk failure, activation and rollback. Add target-specific
+cases only for real differences. Both targets must remain unavailable in automatic
+selection until their own supported version/host matrix passes.
 
 ## Delivery order and acceptance checks
 
@@ -232,8 +264,9 @@ backend-only; later UI integration remains a separate task for Claude.
    server-resource owners, then active-over-speculative scheduling. Test rapid
    provider/version changes, warmup versus mounted views, trust replacement,
    offline browsing and Retry-After. Keep UI design work separate.
-4. **CraftBukkit recipe:** preflight, durable build and activation with shared
-   BuildTools foundations. Test missing prerequisites, supported historical and
+4. **CraftBukkit and Spigot recipes:** one shared BuildTools implementation with
+   both typed targets, preflight, durable build and activation. Test missing
+   prerequisites, supported historical and
    current versions, cancellation, child cleanup, bad outputs and interrupted
    publication. Test actual official builds separately from inert fixtures.
 5. **Measure end to end:** one core/2 GiB and two cores/4 GiB VMs, direct and
@@ -271,7 +304,7 @@ Checked against low-end hosts, failure cases and existing contracts:
   Bound both admitted waiters and the underlying task after cancellation.
 - Catalogue storage is protected and separate from mutable game/SFTP paths.
   Eviction cannot remove retained rollback evidence or installed artifacts.
-- CraftBukkit compilation is materially heavier than downloading Paper. No
+- BuildTools compilation is materially heavier than downloading Paper. No
   promise is made that building it fits a 2 GiB machine; measure first and retain
   trusted off-host build/import as a practical path.
 - No changes to live agents, network configuration, world files, unrelated
