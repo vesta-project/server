@@ -171,11 +171,15 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                 );
             }
         };
-        let world = match host.files().world(&subject) {
-            Ok(world) => world,
-            Err(e) => return super::files::file_error(e),
+        let world_name = if input.kind == ContentKind::Datapack {
+            match host.files().world(&subject) {
+                Ok(world) => world.name,
+                Err(e) => return super::files::file_error(e),
+            }
+        } else {
+            String::new()
         };
-        let directory = match input.kind.directory(family.as_deref(), &world.name) {
+        let directory = match input.kind.directory(family.as_deref(), &world_name) {
             Ok(dir) => dir,
             Err(ContentError::ModsUnsupported) => {
                 return error(StatusCode::CONFLICT, "content_mods_unsupported");

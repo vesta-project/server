@@ -31,24 +31,65 @@ fn digest(bytes: &[u8]) -> String {
 }
 #[test]
 fn server_content_inventory_mutation_and_family_refusals_are_real_routes() {
-    let f=Fixture::new("minecraft",8,65536,5);
+    let f = Fixture::new("minecraft", 8, 65536, 5);
     std::fs::create_dir_all(f.temp.path().join("game/mods")).unwrap();
-    std::fs::write(f.temp.path().join("game/mods/unknown.jar"),b"unknown jar").unwrap();
-    let (device,key)=enroll_management(&f,vesta_control::identity::BuiltinRole::Owner);
-    let token=management_session(&f,&device,&key);
-    let inventory=send(&f,"GET","/api/v3/manage/content",b"",Some(&token),None,None);
-    assert_eq!(inventory.status,200);
-    assert_eq!(inventory.json()["data"]["items"][0]["filename"],"unknown.jar");
+    std::fs::write(f.temp.path().join("game/mods/unknown.jar"), b"unknown jar").unwrap();
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    let inventory = send(
+        &f,
+        "GET",
+        "/api/v3/manage/content",
+        b"",
+        Some(&token),
+        None,
+        None,
+    );
+    assert_eq!(inventory.status, 200);
+    assert_eq!(
+        inventory.json()["data"]["items"][0]["filename"],
+        "unknown.jar"
+    );
     assert!(inventory.json()["data"]["items"][0]["provider"].is_null());
-    for (kind,code) in [("mod","content_mods_unsupported"),("plugin","content_plugins_unsupported")] {
+    let subject = f.host().management().authenticate(&token).unwrap();
+    f.host().database().write(|c|{c.execute("INSERT INTO principal_overrides (id,principal_id,capability,scope,effect,granted_by,created_at) VALUES ('00000000-0000-4000-8000-000000000123',?,'config.view','*','deny','fixture',?)",rusqlite::params![subject.principal.as_str(),f.host().database().clock().millis()])?;Ok(())}).unwrap();
+    for (kind, code) in [
+        ("mod", "content_mods_unsupported"),
+        ("plugin", "content_plugins_unsupported"),
+    ] {
         let body=serde_json::json!({"kind":kind,"provider":"modrinth","project_id":"p","version_id":"v"}).to_string();
-        management_reply_error(&send(&f,"POST","/api/v3/manage/content/install",body.as_bytes(),Some(&token),Some("content-install-refused"),None),409,code);
+        management_reply_error(
+            &send(
+                &f,
+                "POST",
+                "/api/v3/manage/content/install",
+                body.as_bytes(),
+                Some(&token),
+                Some("content-install-refused"),
+                None,
+            ),
+            409,
+            code,
+        );
     }
     let body=serde_json::json!({"action":"disable","kind":"mod","path":"mods/unknown.jar","expected_sha256":digest(b"unknown jar")}).to_string();
-    let changed=send(&f,"POST","/api/v3/manage/content/mutate",body.as_bytes(),Some(&token),Some("content-disable-unknown"),None);
-    assert_eq!(changed.status,200);
-    assert_eq!(changed.json()["data"]["state"],"applied");
-    assert!(f.temp.path().join("game/mods/unknown.jar.disabled").exists());
+    let changed = send(
+        &f,
+        "POST",
+        "/api/v3/manage/content/mutate",
+        body.as_bytes(),
+        Some(&token),
+        Some("content-disable-unknown"),
+        None,
+    );
+    assert_eq!(changed.status, 200);
+    assert_eq!(changed.json()["data"]["state"], "applied");
+    assert!(
+        f.temp
+            .path()
+            .join("game/mods/unknown.jar.disabled")
+            .exists()
+    );
 }
 #[test]
 fn file_surfaces_refuse_pack_only_and_anonymous_devices() {
