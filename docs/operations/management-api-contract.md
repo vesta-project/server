@@ -1909,3 +1909,51 @@ Schedules remain in Automation: create/edit workflows separately with
 `automation.manage`. A configuration save never starts/stops the game or schedules
 a backup. `backups_configured` on GET server is true exactly when the effective
 policy has at least one profile, including after configuration replacement/reset.
+# Server resource management (Stage 1)
+
+Full operational bounds and recovery behavior: [server-content.md](server-content.md).
+These routes do not edit or publish the separate client modpack.
+
+| Method | `/api/v3/manage/` route | Request / result |
+|---|---|---|
+| GET | `content` | `ContentInventory {items,capabilities,minecraft_version,software,truncated}` |
+| POST | `content/install` | `{kind,provider,project_id,version_id}` -> `ContentChange` |
+| POST | `content/update` | Install identifiers plus `{path,expected_sha256}` -> `ContentChange` |
+| POST | `content/mutate` | `{action:remove\|enable\|disable,kind,path,expected_sha256}` -> `ContentChange` |
+| POST | `content/cancel` | `{id}` -> cancelled `ContentChange` |
+| POST | `content/identify` | `{path}` -> nullable provider reference; optional bounded hash lookup |
+| POST | `software/custom-jar/plan` | `{path,expected_revision}` -> reviewed custom JAR plan |
+| POST | `software/restore-managed/plan` | `{expected_revision}` -> reviewed managed restoration plan |
+| POST | `software/custom-jar/apply` | `{plan_id,confirmation_token,idempotency_key}` -> software job |
+
+POST requests carry `Idempotency-Key`; custom apply also binds the same body key.
+Custom plans are ephemeral, actor/device/revision-bound, expire after 120 seconds,
+and require an owner. The token must never be exposed to webview code.
+
+`kind` is `mod|plugin|datapack`. Each inventory item has `kind,path,filename,size`
+(decimal bytes), nullable `enabled,sha256,provider,declared,pending,pending_id,pending_error`.
+Provider references are `{provider,project_id,version_id}`. Declared metadata has
+nullable `loader,side,name,version` and string `dependencies`. Unreadable and
+unidentified JARs stay visible. Datapack enabled state reuses saved world metadata;
+toggle through the existing world routes rather than renaming datapacks.
+
+`ContentChange` has `id,state:pending|applied|cancelled,pending,path,error,trash_path`.
+`pending` is `install|remove|update|enable|disable` or null. Folder datapack removal
+retains a journaled directory tree at `trash_path`; ordinary files use file trash.
+Content changes reuse `content.install` plus the precise file mutation scopes.
+Inventory capabilities expose `list,install,update,remove,toggle,cancel`,
+`mods_supported,plugins_supported,datapack_toggle_offline,datapack_toggle_running`.
+
+Running/draining/uncertain Minecraft never receives live managed JAR writes.
+Pending changes apply before the next explicit start/restart; a durable marker also
+prevents autonomous supervisor launches while they remain. Failures retain pending
+state and block launch. Cancellation is available to the originating device or a
+current owner before an effect starts. Current actor authority and original file
+validators are checked again during application. No implicit restart is performed.
+
+Incompatible software families return 409 `content_mods_unsupported` or
+`content_plugins_unsupported`; a datapack filename toggle returns 409
+`content_datapack_toggle_requires_world`. Other file errors retain existing mapping.
+Custom status includes `current.custom_jar:{path}` and its job kinds are
+`custom_jar|restore_managed`; existing software errors, activation journaling,
+selected Java/JVM flags and recovery semantics apply.
