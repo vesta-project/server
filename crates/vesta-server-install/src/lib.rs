@@ -50,7 +50,18 @@ pub struct ServerInstaller {
     #[cfg(test)]
     fixture_space_error: Option<InstallError>,
 }
+
+// Catalogue browsing must finish before the launcher's 15-second HTTP budget.
+// Installation/planning retain their independent, longer job deadline.
+const CATALOGUE_TOTAL_MS: u64 = 12_000;
+
 impl ServerInstaller {
+    fn catalogue_job(&self) -> transfer::Job {
+        let mut limits = self.limits;
+        limits.total_ms = limits.total_ms.min(CATALOGUE_TOTAL_MS);
+        transfer::Job::new(limits, 0)
+    }
+
     pub fn new(roots: InstallRoots, transport: TransportConfig) -> Result<Self> {
         Self::with_limits(roots, Limits::default(), transport)
     }
@@ -86,13 +97,7 @@ impl ServerInstaller {
         if reporter.is_dry_run() {
             return Err(InstallError::InvalidInput);
         }
-        providers::versions(
-            &self.http,
-            software,
-            &mut transfer::Job::new(self.limits, 0),
-            reporter,
-        )
-        .await
+        providers::versions(&self.http, software, &mut self.catalogue_job(), reporter).await
     }
     /// Available build/loader choices. Metadata only; planning still verifies the selection.
     pub async fn releases(
@@ -108,7 +113,7 @@ impl ServerInstaller {
             &self.http,
             software,
             version,
-            &mut transfer::Job::new(self.limits, 0),
+            &mut self.catalogue_job(),
             reporter,
         )
         .await

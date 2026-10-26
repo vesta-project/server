@@ -1,4 +1,71 @@
 use super::*;
+
+#[tokio::test]
+async fn catalogue_queries_finish_before_the_launcher_request_deadline() {
+    let mut versions = Fixture::new(Software::Paper).await;
+    let mut releases = Fixture::new(Software::Paper).await;
+    // Installation jobs may run for ten minutes. Browsing catalogues must not
+    // retain the agent query slot after its 15-second client has timed out.
+    for fixture in [&mut versions, &mut releases] {
+        fixture.installer.limits.total_ms = Limits::default().total_ms;
+        fixture.installer.limits.idle_ms = Limits::default().idle_ms;
+    }
+    for (fixture, route) in [
+        (&versions, "/v3/projects/paper"),
+        (&releases, "/v3/projects/paper/versions/1.21.4"),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)))
+            .with_priority(1)
+            .mount(&fixture.server)
+            .await;
+    }
+    let start = std::time::Instant::now();
+    let result = tokio::time::timeout(Duration::from_secs(14), async {
+        tokio::join!(
+            versions
+                .installer
+                .versions(Software::Paper, &SilentProgressReporter),
+            releases
+                .installer
+                .releases(Software::Paper, "1.21.4", &SilentProgressReporter),
+        )
+    })
+    .await
+    .expect("catalogue outlived the launcher's request budget");
+    assert_eq!(result.0.unwrap_err(), InstallError::Deadline);
+    assert_eq!(result.1.unwrap_err(), InstallError::Deadline);
+    assert!(start.elapsed() < Duration::from_secs(14));
+    for fixture in [&versions, &releases] {
+        assert_eq!(fixture.server.received_requests().await.unwrap().len(), 1);
+        assert!(entries(fixture.root.path()).is_empty());
+    }
+}
+
+#[tokio::test]
+async fn catalogue_deadline_preserves_tighter_caller_limits() {
+    let mut fixture = Fixture::new(Software::Paper).await;
+    fixture.installer.limits.total_ms = 50;
+    Mock::given(method("GET"))
+        .and(path("/v3/projects/paper"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(500)))
+        .with_priority(1)
+        .mount(&fixture.server)
+        .await;
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        fixture
+            .installer
+            .versions(Software::Paper, &SilentProgressReporter),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.unwrap_err(), InstallError::Deadline);
+    assert_eq!(fixture.installer.limits.total_ms, 50);
+    assert_eq!(fixture.server.received_requests().await.unwrap().len(), 1);
+}
+
 async fn override_json(f: &Fixture, route: &str, value: Value) {
     Mock::given(method("GET"))
         .and(path(route))

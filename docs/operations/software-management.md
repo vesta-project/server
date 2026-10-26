@@ -41,6 +41,11 @@ Minecraft-version queries and planning, and rechecks owner authorization after t
 fetch. The launcher requests releases after the Minecraft-version query completes.
 No catalogue request downloads artifacts or changes launch state. Plans also return
 the resolved `loader_version` so the review shows the exact selected loader.
+Catalogue lookups have a 12-second total deadline, including retries and redirects,
+so a stalled provider releases the query slot before the launcher's 15-second
+request expires. Tighter installer limits still apply. Planning and installation
+keep their separate longer job deadlines. Catalogue timeout returns
+`server_install.deadline`; it does not modify the selected software.
 Rollback explicitly selects the durable previous launch, preserves both software
 installations, and never downgrades/reverts world data. It requires an exact
 revision and confirmation; warn that an upgraded world may require backup restore.

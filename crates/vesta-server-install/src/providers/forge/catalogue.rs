@@ -141,17 +141,6 @@ fn decode_neo_games(data: &[u8], max_entries: usize) -> Result<BTreeMap<String, 
     Ok(result)
 }
 
-#[cfg(test)]
-mod catalogue_tests {
-    use super::*;
-
-    #[test]
-    fn numeric_neo_releases_survive_false_mirror_stability_flags() {
-        let data = br#"{"gameVersions":[{"id":"1.21.4","loaders":[{"id":"21.4.150","stable":false},{"id":"21.4.151-beta","stable":false}]}]}"#;
-        let games = decode_neo_games(data, 100).unwrap();
-        assert_eq!(games["1.21.4"], ["21.4.150"]);
-    }
-}
 fn newer(a: &str, b: &str) -> std::cmp::Ordering {
     let parts = |s: &str| {
         s.split(['.', '-'])
@@ -338,4 +327,16 @@ pub(super) async fn mappings(
             size: Some(value.size),
         },
     })
+}
+
+#[cfg(test)]
+mod catalogue_tests {
+    use super::*;
+
+    #[test]
+    fn numeric_neo_releases_survive_false_mirror_stability_flags() {
+        let data = br#"{"gameVersions":[{"id":"1.21.4","loaders":[{"id":"21.4.150","stable":false},{"id":"21.4.151-beta","stable":false}]}]}"#;
+        let games = decode_neo_games(data, 100).unwrap();
+        assert_eq!(games["1.21.4"], ["21.4.150"]);
+    }
 }
