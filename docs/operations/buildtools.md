@@ -49,6 +49,12 @@ the selected version document's target SHA-256. The verified build input and the
 generated output have separate receipt fields. A mismatch never activates the
 new software.
 
+Validation on 2026-10-27 found a reference mismatch for 26.3 build 4664, including
+with the stock upstream BuildTools command. Vesta refuses those outputs. Both
+1.21.8 targets matched their official hashes on Windows and Ubuntu. See the
+[installation validation report](../reviews/2026-10-27-buildtools-implementation.md)
+for exact inputs, results and reproduction evidence.
+
 Cross-host byte consistency needs explicit newline handling. Repositories retain
 LF checkout bytes and normalize generated source commits. The private JVM options
 also set LF line separators for every compiler/Maven subprocess. Without that,

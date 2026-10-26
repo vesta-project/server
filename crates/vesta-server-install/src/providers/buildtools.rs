@@ -23,7 +23,7 @@ const BUILD_SECONDS: u64 = 3600;
 #[derive(Clone, Serialize)]
 pub(crate) struct BuildPlan {
     refs: Refs,
-    // Check a published reference when available; generated output and verified
+    // Current plans require a published reference. Generated output and verified
     // build inputs still have separate receipt fields and trust roles.
     reference_hash: Option<String>,
     tool: ArtifactPin,

@@ -28,6 +28,8 @@ and JAR. Minecraft was not started.
 | Ubuntu 24.04 / WSL | CraftBukkit | 1.21.8 | Temurin 21.0.13+9 | Matches official SHA-256 |
 | Ubuntu 24.04 / WSL | Spigot | 1.21.8 | Temurin 21.0.13+9 | Matches official SHA-256 |
 | Windows and Ubuntu | Spigot | 26.3 | Temurin 25.0.3+9 | Refused: output differs from official SHA-256 |
+| Ubuntu 24.04 / WSL | Spigot | 26.3 | Temurin 26.0.2+10 | Same output hash as Java 25; refused |
+| Ubuntu 24.04 / WSL | CraftBukkit | 26.3 | Temurin 25.0.3+9 | Refused: output differs from official SHA-256 |
 
 The 1.21.8 source build is 4534. CraftBukkit output is 84,207,987 bytes,
 SHA-256 `482e909b28925d34ce28e6cf0e8aea2301985e59906f31e3fd266cc736bbdf60`.
@@ -39,6 +41,31 @@ the test user's cache; no system Java/Rust installation or shell profile changed
 
 Logs: `V:/tmp/buildtools canonical-20261027/{bukkit,spigot}.log` and
 `V:/tmp/buildtools-linux-installations-20261027.log`.
+
+### 26.3 upstream reproduction
+
+The stock, unmodified pinned BuildTools 201 was also run on Ubuntu with
+`java -Xmx512m -jar BuildTools.jar --nogui --rev 26.3 --compile spigot`, a private
+Git/Maven home, a 1 GiB child heap, two visible processors and a 20-minute owned
+timeout. It fetched the official version document and repos itself, without
+Vesta's `--dont-update` or pre-created repositories. It exited successfully and
+produced exactly Vesta's Spigot hash:
+
+`c5a3ad776e222219b7a0aad44173a591fb5757b01b57f4f0aa2354ff08c2df56`.
+
+The official version document still advertises
+`d64fb48abc0a02c09273487248b641005b363c5070860d97bc13a35c8808a4e4`.
+CraftBukkit's isolated output was
+`fe16d328e258f80765f5b204fab42cf7ccbeef09166ad62d7e66cd880b3dca62`, against
+the advertised `5a0d737a972defb8a0c0c263b727eebe799ee28e52dff9f47c398d50d597fb05`.
+
+This reproduces the discrepancy outside Vesta under the tested conditions. It
+does not establish which upstream build input differed at publication time.
+Do not bypass the check or claim verified 26.3 support from successful compiler
+exit alone. The original failed stages and stock build remain available for
+inspection. Stock result: `V:/tmp/buildtools-linux-stock26-run2-20261027.log`;
+detailed logs reside under the isolated WSL directory
+`/home/eatham/.cache/vesta-buildtools-runs-20261027/stock-spigot-26.3-run2`.
 
 ## Problems found by real builds
 
@@ -62,6 +89,11 @@ Logs: `V:/tmp/buildtools canonical-20261027/{bukkit,spigot}.log` and
   child budget for Java 25+ releases and check available memory before starting.
   A subsequent complete Java 25 build still differed from the reference, so it
   remains refused rather than weakening the output check.
+- Java 26 produced exactly the same Spigot 26.3 bytes as Java 25. Exact source
+  refs, full Git history, release name, manifest versions and commit-derived
+  timestamps were checked. The compiler-major hypothesis did not explain the
+  difference. A dedicated `build_output_mismatch` reason now distinguishes this
+  case from malformed downloads and confirms the current software is unchanged.
 - The workspace regression run exposed Windows supervisor owner-crash behavior
   killing Minecraft. This was fixed and checkpointed separately in `23d7116`;
   explicit game stop/kill and installer process ownership remain enforced.
@@ -75,12 +107,19 @@ Logs: `V:/tmp/buildtools canonical-20261027/{bukkit,spigot}.log` and
 - Current full workspace/all-target compilation and strict Clippy for installer,
   control, game runtime and supervisor pass.
 - Launcher typechecking and 33 hosting, reset-UI and localization checks pass.
+- Client adverse-link/control scheduling regressions: 13 passed, zero failures.
+  These cover delayed/throttled/stalled reads, coalescing, reserved control
+  capacity, remote pacing and uncertain mutation replies without replay. This
+  is application-level TLS response shaping, not packet-level 3G emulation.
 - Before the last source provenance/headroom additions, the full server workspace
   all-target test run passed 2,016 tests, with zero failures and four opt-in tests
   ignored. Those additions received the scoped installer suites above.
 
 Latest logs use `V:/tmp/buildtools-resume-*-20261027.log`. The earlier full run is
-`V:/tmp/buildtools-workspace-tests-final-20261026.log`.
+`V:/tmp/buildtools-workspace-tests-final-20261026.log`. After adding the dedicated
+checksum-failure reason, Windows installer tests, strict installer/control
+Clippy, full workspace compilation, launcher typechecking and all 33 launcher
+checks were repeated successfully (`V:/tmp/buildtools-error-*-20261027.log`).
 
 ## Measurement limits
 
