@@ -17,6 +17,7 @@ pub(crate) fn implemented(path: &str) -> bool {
         "/api/v3/manage/world"
             | "/api/v3/manage/world/new"
             | "/api/v3/manage/world/datapacks/toggle"
+            | "/api/v3/manage/world/datapacks/offline"
             | "/api/v3/manage/java"
             | "/api/v3/manage/java/select"
             | "/api/v3/manage/java/download"
@@ -102,6 +103,36 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         return match host
             .files()
             .new_world(host.runtime(), &subject, &key, patch)
+        {
+            Ok(value) => ok(value),
+            Err(e) => world_error(e),
+        };
+    }
+    if action == "world/datapacks/offline" {
+        if request.method != Method::POST || request.query.is_some() {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        if let Err(e) = host
+            .management()
+            .authorize(token, Capability::ConfigEdit, None)
+        {
+            return management_error(e);
+        }
+        let Some(patch) = decode::<vesta_control::world::OfflineDatapackPatch>(request.bytes)
+        else {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        };
+        let Some(key) = super::key(
+            request.idempotency,
+            host.management().server_id(),
+            subject.device.as_str(),
+            request.path,
+        ) else {
+            return error(StatusCode::BAD_REQUEST, "idempotency_key_required");
+        };
+        return match host
+            .files()
+            .patch_offline_datapack(host.runtime(), &subject, &key, patch)
         {
             Ok(value) => ok(value),
             Err(e) => world_error(e),

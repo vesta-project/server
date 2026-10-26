@@ -21,6 +21,37 @@ fn request(files: &FileBrowser, h: &Harness) -> NewWorld {
     }
 }
 #[test]
+fn offline_datapack_edits_are_guarded_revision_checked_and_replayable() {
+    let h = Harness::new(false);
+    let files = files(&h);
+    fs::write(h.cwd.join("world/level.dat"), crate::world::tests::level_with_packs()).unwrap();
+    fs::create_dir_all(h.cwd.join("world/datapacks/disabled")).unwrap();
+    let owned = h.runtime(Duration::from_secs(1));
+    let original = fs::read(h.cwd.join("world/level.dat")).unwrap();
+    let patch = crate::world::OfflineDatapackPatch { pack_id: "file/disabled".into(), enabled: true, expected_revision: files.world(&h.subject).unwrap().revision };
+    let result = files.patch_offline_datapack(&owned.runtime.network_handle(), &h.subject, "offline-pack", patch.clone()).unwrap();
+    let changed = fs::read(h.cwd.join("world/level.dat")).unwrap();
+    assert_ne!(original, changed);
+    assert!(files.world(&h.subject).unwrap().details.datapacks.iter().any(|pack| pack.id == "file/disabled" && pack.enabled == Some(true)));
+    assert_eq!(files.patch_offline_datapack(&owned.runtime.network_handle(), &h.subject, "offline-pack", patch.clone()).unwrap(), result);
+    assert!(files.patch_offline_datapack(&owned.runtime.network_handle(), &h.subject, "stale-pack", patch.clone()).is_err());
+    let mut builtin = patch.clone(); builtin.pack_id = "vanilla".into(); builtin.expected_revision = files.world(&h.subject).unwrap().revision;
+    assert!(files.patch_offline_datapack(&owned.runtime.network_handle(), &h.subject, "builtin-pack", builtin).is_err());
+    assert_eq!(fs::read(h.cwd.join("world/level.dat")).unwrap(), changed);
+    let current_revision = files.world(&h.subject).unwrap().revision;
+    let start = h.submit(GameCommand::Start);
+    h.wait_state(&start, OperationState::Succeeded);
+    let running_patch = crate::world::OfflineDatapackPatch { expected_revision: current_revision.clone(), enabled: false, ..patch.clone() };
+    assert!(files.patch_offline_datapack(&owned.runtime.network_handle(), &h.subject, "running-pack", running_patch).is_err());
+    assert_eq!(fs::read(h.cwd.join("world/level.dat")).unwrap(), changed);
+    let stop = h.submit(GameCommand::Stop { expected_generation: owned.runtime.game_snapshot().unwrap().generation.unwrap() });
+    h.wait_state(&stop, OperationState::Succeeded);
+    h.db.write(|c| { c.execute("DELETE FROM role_assignments WHERE principal_id=?", [h.subject.principal.as_str()])?; Ok(()) }).unwrap();
+    let revoked = crate::world::OfflineDatapackPatch { expected_revision: current_revision, enabled: false, ..patch };
+    assert!(files.patch_offline_datapack(&owned.runtime.network_handle(), &h.subject, "revoked-pack", revoked).is_err());
+    assert_eq!(fs::read(h.cwd.join("world/level.dat")).unwrap(), changed);
+}
+#[test]
 #[ignore = "requires VESTA_WORLD_TEST_ROOT explicitly selecting a world directory; read-only"]
 fn selected_world_metadata_is_read_without_modification() {
     let root = std::path::PathBuf::from(

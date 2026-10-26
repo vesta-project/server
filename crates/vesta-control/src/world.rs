@@ -24,6 +24,13 @@ pub struct NewWorld {
     pub expected_revision: String,
     pub confirm_world: String,
 }
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OfflineDatapackPatch {
+    pub pack_id: String,
+    pub enabled: bool,
+    pub expected_revision: String,
+}
 
 /// Embedded seeds before 26.1; None means a valid level needs its split worldgen file.
 pub(crate) fn seed(bytes: &[u8]) -> Result<Option<String>> {
@@ -42,6 +49,11 @@ pub(crate) fn details(bytes: &[u8]) -> Result<LevelDetails> {
     parse_level(bytes, false).map(|v| v.1)
 }
 fn parse_level(bytes: &[u8], split: bool) -> Result<(Option<String>, LevelDetails)> {
+    parse_document(bytes, split).map(|(seed, details, _, _)| (seed, details))
+}
+type PackRanges = [Option<(usize, usize)>; 2];
+type LevelDocument = (Option<String>, LevelDetails, Vec<u8>, PackRanges);
+fn parse_document(bytes: &[u8], split: bool) -> Result<LevelDocument> {
     if bytes.len() > MAX_LEVEL_BYTES {
         return Err(FileError::TooLarge);
     }
@@ -63,6 +75,8 @@ fn parse_level(bytes: &[u8], split: bool) -> Result<(Option<String>, LevelDetail
         level_data: false,
         embedded_worldgen: false,
         details: LevelDetails::default(),
+        pack_ranges: [None, None],
+        datapack_compound: false,
     };
     if nbt.byte()? != 10 {
         return Err(FileError::Corrupt);
@@ -78,10 +92,120 @@ fn parse_level(bytes: &[u8], split: bool) -> Result<(Option<String>, LevelDetail
     if !split && nbt.embedded_worldgen && nbt.modern.is_none() && nbt.legacy.is_none() {
         return Err(FileError::Corrupt);
     }
-    Ok((
-        nbt.modern.or(nbt.legacy).map(|seed| seed.to_string()),
-        nbt.details,
-    ))
+    let seed = nbt.modern.or(nbt.legacy).map(|seed| seed.to_string());
+    let details = nbt.details;
+    let ranges = nbt.pack_ranges;
+    Ok((seed, details, expanded, ranges))
+}
+
+/// Change only the two selection lists; retain every other NBT byte verbatim.
+pub(crate) fn toggle_datapack(bytes: &[u8], id: &str, enabled: bool) -> Result<Vec<u8>> {
+    use std::io::Write;
+    if !id.starts_with("file/") || id.len() > 1024 || id.chars().any(char::is_control) {
+        return Err(FileError::InvalidPath);
+    }
+    let (_, details, mut document, ranges) = parse_document(bytes, false)?;
+    let mut lists = [
+        details.enabled.ok_or(FileError::Corrupt)?,
+        details.disabled.ok_or(FileError::Corrupt)?,
+    ];
+    if lists[0].iter().any(|pack| lists[1].contains(pack)) {
+        return Err(FileError::Corrupt);
+    }
+    if lists[usize::from(!enabled)].iter().any(|pack| pack == id) {
+        return Ok(bytes.to_vec());
+    }
+    for list in &mut lists {
+        list.retain(|pack| pack != id);
+    }
+    lists[usize::from(!enabled)].push(id.to_owned());
+    let mut replacements = Vec::new();
+    for (index, list) in lists.iter().enumerate() {
+        if list.len() > 2048 {
+            return Err(FileError::TooLarge);
+        }
+        let range = ranges[index].ok_or(FileError::Corrupt)?;
+        let mut payload = vec![8];
+        payload.extend_from_slice(&(list.len() as i32).to_be_bytes());
+        for pack in list {
+            let encoded = nbt_text_encode(pack);
+            payload.extend_from_slice(&(encoded.len() as u16).to_be_bytes());
+            payload.extend_from_slice(&encoded);
+        }
+        replacements.push((range, payload));
+    }
+    replacements.sort_by_key(|(range, _)| std::cmp::Reverse(range.0));
+    for ((start, end), payload) in replacements {
+        document.splice(start..end, payload);
+    }
+    if document.len() > MAX_NBT_BYTES {
+        return Err(FileError::TooLarge);
+    }
+    let mut compressed = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    compressed
+        .write_all(&document)
+        .map_err(|_| FileError::Unavailable)?;
+    let result = compressed.finish().map_err(|_| FileError::Unavailable)?;
+    if result.len() > MAX_LEVEL_BYTES {
+        return Err(FileError::TooLarge);
+    }
+    self::details(&result)?;
+    Ok(result)
+}
+
+// Java NBT strings use modified UTF-8, including UTF-16 surrogate pairs.
+fn nbt_text_encode(text: &str) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for unit in text.encode_utf16() {
+        match unit {
+            1..=0x7f => bytes.push(unit as u8),
+            0..=0x7ff => {
+                bytes.push(0xc0 | (unit >> 6) as u8);
+                bytes.push(0x80 | (unit & 63) as u8);
+            }
+            _ => {
+                bytes.push(0xe0 | (unit >> 12) as u8);
+                bytes.push(0x80 | ((unit >> 6) & 63) as u8);
+                bytes.push(0x80 | (unit & 63) as u8);
+            }
+        }
+    }
+    bytes
+}
+fn nbt_text_decode(bytes: &[u8]) -> Result<String> {
+    let mut units = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let first = bytes[index];
+        index += 1;
+        let count = match first {
+            0..=0x7f => 0,
+            0xc0..=0xdf => 1,
+            0xe0..=0xef => 2,
+            _ => return Err(FileError::Corrupt),
+        };
+        let mut unit = u16::from(
+            first
+                & match count {
+                    0 => 0x7f,
+                    1 => 0x1f,
+                    _ => 0x0f,
+                },
+        );
+        for _ in 0..count {
+            let next = *bytes.get(index).ok_or(FileError::Corrupt)?;
+            index += 1;
+            if next & 0xc0 != 0x80 {
+                return Err(FileError::Corrupt);
+            }
+            unit = (unit << 6) | u16::from(next & 63);
+        }
+        if (count == 1 && unit < 128 && unit != 0) || (count == 2 && unit < 0x800) {
+            return Err(FileError::Corrupt);
+        }
+        units.push(unit);
+    }
+    String::from_utf16(&units).map_err(|_| FileError::Corrupt)
 }
 
 struct Nbt<'a> {
@@ -94,6 +218,8 @@ struct Nbt<'a> {
     level_data: bool,
     embedded_worldgen: bool,
     details: LevelDetails,
+    pack_ranges: PackRanges,
+    datapack_compound: bool,
 }
 impl<'a> Nbt<'a> {
     fn take(&mut self, count: usize) -> Result<&'a [u8]> {
@@ -119,6 +245,17 @@ impl<'a> Nbt<'a> {
             return Err(FileError::TooLarge);
         }
         self.work -= 1;
+        if path.len() == 2 && path[0] == b"Data" && path[1] == b"DataPacks" && tag != 10 {
+            return Err(FileError::Corrupt);
+        }
+        if path.len() == 3
+            && path[0] == b"Data"
+            && path[1] == b"DataPacks"
+            && matches!(path[2].as_slice(), b"Enabled" | b"Disabled")
+            && tag != 9
+        {
+            return Err(FileError::Corrupt);
+        }
         let seed_path = if self.split {
             path.len() == 2 && path[0] == b"data" && path[1] == b"seed"
         } else {
@@ -179,6 +316,7 @@ impl<'a> Nbt<'a> {
                 self.text()?;
             }
             9 => {
+                let payload_start = self.offset;
                 let element = self.byte()?;
                 let count = self.count()?;
                 if count > self.work || (element == 0 && count != 0) {
@@ -189,13 +327,12 @@ impl<'a> Nbt<'a> {
                     && path[1] == b"DataPacks"
                     && matches!(path[2].as_slice(), b"Enabled" | b"Disabled")
                 {
-                    if element != 8 || count > 2048 {
+                    if (element != 8 && !(element == 0 && count == 0)) || count > 2048 {
                         return Err(FileError::Corrupt);
                     }
                     let mut packs = Vec::new();
                     for _ in 0..count {
-                        let value = String::from_utf8(self.text()?.to_vec())
-                            .map_err(|_| FileError::Corrupt)?;
+                        let value = nbt_text_decode(self.text()?)?;
                         if value.len() > 1024 || packs.contains(&value) {
                             return Err(FileError::Corrupt);
                         }
@@ -209,6 +346,8 @@ impl<'a> Nbt<'a> {
                     if slot.replace(packs).is_some() {
                         return Err(FileError::Corrupt);
                     }
+                    self.pack_ranges[usize::from(path[2] == b"Disabled")] =
+                        Some((payload_start, self.offset));
                     return Ok(());
                 }
                 // List contents do not extend a named compound path.
@@ -219,6 +358,12 @@ impl<'a> Nbt<'a> {
                 path.pop();
             }
             10 => {
+                if path.len() == 2 && path[0] == b"Data" && path[1] == b"DataPacks" {
+                    if self.datapack_compound {
+                        return Err(FileError::Corrupt);
+                    }
+                    self.datapack_compound = true;
+                }
                 if !self.split
                     && path.len() == 2
                     && path[0] == b"Data"
@@ -335,6 +480,68 @@ pub(crate) mod tests {
             vec!["vanilla", "file/enabled.zip"]
         );
         assert_eq!(details.disabled.unwrap(), vec!["file/disabled"]);
+    }
+    #[test]
+    fn offline_datapack_selection_preserves_world_bytes_and_order() {
+        let original = level_with_packs();
+        let edited = toggle_datapack(&original, "file/disabled", true).unwrap();
+        let selected = details(&edited).unwrap();
+        assert_eq!(
+            selected.enabled.unwrap(),
+            ["vanilla", "file/enabled.zip", "file/disabled"]
+        );
+        assert!(selected.disabled.unwrap().is_empty());
+        assert_eq!(seed(&edited).unwrap(), seed(&original).unwrap());
+        assert_eq!(
+            toggle_datapack(&edited, "file/disabled", true).unwrap(),
+            edited
+        );
+        let restored = toggle_datapack(&edited, "file/disabled", false).unwrap();
+        let expand = |bytes: &[u8]| {
+            let mut out = Vec::new();
+            flate2::read::GzDecoder::new(bytes)
+                .read_to_end(&mut out)
+                .unwrap();
+            out
+        };
+        assert_eq!(expand(&restored), expand(&original));
+    }
+    #[test]
+    fn offline_datapack_selection_handles_java_unicode_and_rejects_unsafe_inputs() {
+        let original = level_with_packs();
+        let name = "file/雪😀.zip";
+        let changed = toggle_datapack(&original, name, true).unwrap();
+        assert!(
+            details(&changed)
+                .unwrap()
+                .enabled
+                .unwrap()
+                .contains(&name.into())
+        );
+        for id in [
+            "vanilla",
+            "paper",
+            "minecart_improvements",
+            "file/bad\nname",
+        ] {
+            assert!(toggle_datapack(&original, id, false).is_err());
+        }
+        assert!(toggle_datapack(b"not gzip", "file/pack.zip", true).is_err());
+        assert!(toggle_datapack(&level(42, true), "file/pack.zip", true).is_err());
+        assert!(nbt_text_decode(&[0xed, 0xa0, 0x80]).is_err());
+        assert!(nbt_text_decode(&[0xc0, 0xaf]).is_err());
+    }
+    #[test]
+    fn offline_datapack_selection_accepts_empty_end_typed_lists_and_refuses_wrong_tags() {
+        let edited = toggle_datapack(&level_with_packs(), "file/disabled", true).unwrap();
+        let (_, _, mut document, ranges) = parse_document(&edited, false).unwrap();
+        let disabled_start = ranges[1].unwrap().0;
+        document[disabled_start] = 0;
+        let empty_end = gzip(&document);
+        assert!(details(&empty_end).unwrap().disabled.unwrap().is_empty());
+        assert!(toggle_datapack(&empty_end, "file/enabled.zip", false).is_ok());
+        document[disabled_start - 3 - "Disabled".len()] = 8;
+        assert!(toggle_datapack(&gzip(&document), "file/enabled.zip", false).is_err());
     }
     fn gzip(bytes: &[u8]) -> Vec<u8> {
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());

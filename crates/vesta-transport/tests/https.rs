@@ -86,6 +86,9 @@ fn hosting_routes_use_authenticated_owner_and_durable_sftp_key_receipts() {
         .request("GET", "/api/v3/manage/world", b"", Some(&token))
         .json()["data"]
         .clone();
+    assert_eq!(f.request("POST", "/api/v3/manage/world/datapacks/offline", b"{}", None).status, 401);
+    let invalid_pack = management_mutation(&f, &token, "world/datapacks/offline", "offline-pack-invalid-1", &serde_json::json!({"pack_id":"file/test.zip","enabled":true,"expected_revision":"invalid"}));
+    assert_eq!(invalid_pack.status, 400);
     let selected = management_mutation(
         &f,
         &token,

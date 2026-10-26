@@ -29,6 +29,9 @@ pub struct StoppedGuard {
     properties: Option<(std::path::PathBuf, Vec<u8>)>,
 }
 impl StoppedGuard {
+    pub(super) fn pin_properties(&mut self, path: std::path::PathBuf, bytes: Vec<u8>) {
+        self.properties = Some((path, bytes));
+    }
     pub(crate) fn supervisor_token(&self) -> Option<String> {
         self.supervisor.as_ref().map(|(_, token)| token.clone())
     }

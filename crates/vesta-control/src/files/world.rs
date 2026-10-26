@@ -6,16 +6,88 @@ use crate::{
     world::{NewWorld, WorldStatus},
 };
 use serde_json::{Value, json};
+type WorldObservation = (WorldStatus, Vec<u8>, Option<String>, Option<String>);
 
 impl FileBrowser {
+    /// Edit saved selection only while both local and supervised starts are excluded.
+    pub fn patch_offline_datapack(
+        &self,
+        runtime: &RuntimeHandle,
+        subject: &Subject,
+        key: &str,
+        patch: crate::world::OfflineDatapackPatch,
+    ) -> Result<Value> {
+        if patch.expected_revision.len() != 64
+            || !patch
+                .expected_revision
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(FileError::InvalidPath);
+        }
+        self.check_global_authority(subject, Capability::ConfigEdit)?;
+        let files = self.for_remote();
+        let current = files.world(subject)?;
+        let path = RelativePath::parse(&format!("{}/level.dat", current.name))?;
+        files.execute_remote(
+            subject,
+            key,
+            json!(["offline-datapack", patch]),
+            || {
+                Ok(vec![
+                    (Capability::ConfigEdit.id().into(), String::new()),
+                    (Capability::ConfigView.id().into(), String::new()),
+                    (Capability::FilesRead.id().into(), path.as_str().into()),
+                    (Capability::FilesCreate.id().into(), path.as_str().into()),
+                    (Capability::FilesOverwrite.id().into(), path.as_str().into()),
+                ])
+            },
+            |files| {
+                let mut hold = StoppedGuard::acquire(runtime, files.db.directory())?;
+                let (world, properties, _, level_hash) = files.world_observation(subject)?;
+                if world.revision != patch.expected_revision || world.name != current.name {
+                    return Err(FileError::Conflict(Some(world.revision)));
+                }
+                std::sync::Arc::get_mut(&mut hold)
+                    .ok_or(FileError::Unavailable)?
+                    .pin_properties(files.root.raw_path().join("server.properties"), properties);
+                let pack = world
+                    .details
+                    .datapacks
+                    .iter()
+                    .find(|pack| {
+                        pack.id == patch.pack_id && matches!(pack.kind.as_str(), "folder" | "zip")
+                    })
+                    .ok_or(FileError::InvalidPath)?;
+                let pack_path =
+                    RelativePath::parse(pack.path.as_deref().ok_or(FileError::InvalidPath)?)?;
+                files.root.resolve(Some(&pack_path))?;
+                let read = files.read(subject, &path, crate::world::MAX_LEVEL_BYTES)?;
+                if level_hash.as_deref() != Some(read.sha256()) {
+                    return Err(FileError::Conflict(None));
+                }
+                let bytes =
+                    crate::world::toggle_datapack(read.bytes(), &patch.pack_id, patch.enabled)?;
+                let outcome = json!({"outcome":"succeeded"});
+                let mut guarded = files.clone();
+                guarded.stopped_guard = Some(hold);
+                guarded.remote_outcome = Some(outcome.clone());
+                guarded.write(
+                    subject,
+                    &path,
+                    &WritePrecondition::Matches(read.sha256().to_owned()),
+                    &bytes,
+                )?;
+                Ok(outcome)
+            },
+        )
+    }
     /// Observation only; an unset creation seed never masquerades as the saved seed.
     pub fn world(&self, subject: &Subject) -> Result<WorldStatus> {
-        self.world_observation(subject).map(|(status, _, _)| status)
+        self.world_observation(subject)
+            .map(|(status, _, _, _)| status)
     }
-    fn world_observation(
-        &self,
-        subject: &Subject,
-    ) -> Result<(WorldStatus, Vec<u8>, Option<String>)> {
+    fn world_observation(&self, subject: &Subject) -> Result<WorldObservation> {
         self.check_global_authority(subject, Capability::ConfigView)?;
         let files = self.for_properties(None);
         let (bytes, hash) = match files.read_with_capability(
@@ -59,6 +131,7 @@ impl FileBrowser {
             .map(|m| crate::world::details(m.bytes()))
             .transpose()?
             .unwrap_or_default();
+        let level_hash = metadata.as_ref().map(|read| read.sha256().to_owned());
         let details = self.world_details(subject, &name, level_details)?;
         let seed = if let Some(metadata) = metadata {
             revision.update(metadata.bytes());
@@ -112,6 +185,7 @@ impl FileBrowser {
             },
             bytes,
             hash,
+            level_hash,
         ))
     }
 
@@ -173,7 +247,7 @@ impl FileBrowser {
             },
             |files| {
                 let hold = StoppedGuard::acquire(runtime, files.db.directory())?;
-                let (current, original, original_hash) = files.world_observation(subject)?;
+                let (current, original, original_hash, _) = files.world_observation(subject)?;
                 if current.name != patch.confirm_world
                     || current.revision != patch.expected_revision
                 {
