@@ -154,9 +154,9 @@ revision. The first publication always requires its first revision.
 
 Recommend a configured safety snapshot before destructive draft replacement or
 publication (`files-and-content-008`); the response explicitly carries this advice.
-No snapshot is taken implicitly and no live server file set is updated. Signing,
-linked-instance consumption, rollback rejection and executable-change consent are
-Stage 3 work; this workspace does not claim those guarantees.
+No snapshot is taken implicitly and no live server file set is updated. Stage 3
+signed consumption is documented below; linked-instance ownership, rollback and
+executable consent are in the launcher's `features/servers/PACK-SYNC.md`.
 
 ## Errors and verification
 
