@@ -1,0 +1,501 @@
+//! Protected, revisioned client-pack workspace. No writes to the game tree.
+mod import;
+use super::ReleaseError;
+use crate::identity::{self, Capability, Decision, Subject};
+use base64::{Engine, engine::general_purpose::STANDARD};
+pub use import::ImportRequest;
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
+use vesta_state::{
+    StateDatabase,
+    audit::{AuditActor, AuditLog, AuditRecord},
+};
+
+pub type Result<T> = std::result::Result<T, ReleaseError>;
+pub const MAX_ENTRIES: usize = 256;
+pub const MAX_BLOBS: usize = 64 * 1024 * 1024;
+pub fn invalid() -> ReleaseError {
+    ReleaseError::Pack(super::PackError::InvalidPath)
+}
+pub fn digest(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+pub fn revision(value: &str) -> Result<u64> {
+    let n = value.parse::<u64>().map_err(|_| invalid())?;
+    if n.to_string() != value || n > vesta_protocol::pack::catalogue::MAX_REVISION {
+        return Err(invalid());
+    }
+    Ok(n)
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientLoader {
+    None,
+    Fabric,
+    Quilt,
+    Neoforge,
+    Forge,
+}
+impl ClientLoader {
+    pub fn id(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Fabric => "fabric",
+            Self::Quilt => "quilt",
+            Self::Neoforge => "neoforge",
+            Self::Forge => "forge",
+        }
+    }
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryKind {
+    Mod,
+    ResourcePack,
+    Shader,
+    Datapack,
+    ConfigOverride,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Side {
+    Required,
+    Optional,
+    Unsupported,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Environment {
+    pub client: Side,
+    pub server: Side,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EntrySource {
+    Provider {
+        provider: String,
+        project_id: String,
+        version_id: String,
+    },
+    Upload {
+        sha256: String,
+    },
+    /// Import retained an unresolvable file identity. No imported URL is fetched.
+    Manual {
+        reason: String,
+    },
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PackEntry {
+    pub id: String,
+    pub kind: EntryKind,
+    pub path: String,
+    pub required: bool,
+    pub environment: Environment,
+    pub source: EntrySource,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PackManifest {
+    pub name: String,
+    pub summary: String,
+    pub icon: Option<String>,
+    pub display_version: String,
+    pub minecraft_version: String,
+    pub loader: ClientLoader,
+    pub loader_version: Option<String>,
+    pub entries: Vec<PackEntry>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PackDraft {
+    pub revision: String,
+    pub manifest: PackManifest,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct WorkspaceView {
+    pub draft: PackDraft,
+    pub server_minecraft_version: String,
+    pub minecraft_drift: bool,
+    pub published_revision: String,
+    pub minimum_revision: String,
+    pub pending_publication: bool,
+    pub safety_snapshot_recommended: bool,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DraftWrite {
+    pub expected_revision: String,
+    pub manifest: PackManifest,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DraftAdd {
+    pub expected_revision: String,
+    pub entries: Vec<PackEntry>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UploadRequest {
+    pub content_base64: String,
+}
+
+pub struct PackWorkspace {
+    db: StateDatabase,
+    audit: AuditLog,
+}
+impl PackWorkspace {
+    pub fn open(db: &StateDatabase) -> Result<Self> {
+        Ok(Self {
+            db: db.clone(),
+            audit: AuditLog::new(db.clone())?,
+        })
+    }
+    pub fn authorize_in(
+        &self,
+        c: &Connection,
+        subject: &Subject,
+        capability: Capability,
+    ) -> Result<()> {
+        let policy = identity::policy_in(
+            c,
+            self.db.server_id(),
+            self.db.clock().millis(),
+            Some(subject),
+        )?;
+        if let Decision::Deny(reason) = policy.check(capability, None) {
+            return Err(crate::ControlError::forbidden(reason).into());
+        }
+        Ok(())
+    }
+    pub fn read(&self, subject: &Subject, mc: &str) -> Result<PackDraft> {
+        Ok(self.db.read_with(|s| {
+            self.authorize_in(s.connection(), subject, Capability::PackEdit)?;
+            self.read_in(s.connection(), mc)
+        })?)
+    }
+    fn read_in(&self, c: &Connection, mc: &str) -> Result<PackDraft> {
+        let row: Option<(i64, String)> = c
+            .query_row(
+                "SELECT revision,manifest_json FROM pack_workspace WHERE server_id=?",
+                [self.db.server_id()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        match row {
+            Some((rev, json)) => Ok(PackDraft {
+                revision: rev.to_string(),
+                manifest: serde_json::from_str(&json).map_err(|_| invalid())?,
+            }),
+            None => Ok(PackDraft {
+                revision: "0".into(),
+                manifest: PackManifest {
+                    name: "Client pack".into(),
+                    summary: String::new(),
+                    icon: None,
+                    display_version: "1.0".into(),
+                    minecraft_version: mc.into(),
+                    loader: ClientLoader::None,
+                    loader_version: None,
+                    entries: Vec::new(),
+                },
+            }),
+        }
+    }
+    pub fn view(
+        &self,
+        subject: &Subject,
+        mc: &str,
+        releases: &super::PackReleases,
+    ) -> Result<WorkspaceView> {
+        let draft = self.read(subject, mc)?;
+        let release = releases.current()?;
+        let published = self.published(subject)?;
+        Ok(WorkspaceView {
+            minecraft_drift: draft.manifest.minecraft_version != mc,
+            pending_publication: published.as_ref().is_none_or(|p| {
+                p.1 != draft.manifest || release.as_ref().is_none_or(|r| r.revision() != p.0)
+            }),
+            draft,
+            server_minecraft_version: mc.into(),
+            published_revision: release.as_ref().map_or(0, |r| r.revision()).to_string(),
+            minimum_revision: release
+                .as_ref()
+                .map_or(0, |r| r.minimum_revision())
+                .to_string(),
+            safety_snapshot_recommended: true,
+        })
+    }
+    pub fn published(&self, subject: &Subject) -> Result<Option<(u64, PackManifest)>> {
+        Ok(self.db.read_with(|s| {
+            self.authorize_in(s.connection(),subject,Capability::PackEdit)?;
+            let row: Option<(i64,String)>=s.connection().query_row("SELECT release_revision,manifest_json FROM pack_workspace_published WHERE server_id=?",[self.db.server_id()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            row.map(|(r,j)|Ok((r as u64,serde_json::from_str(&j).map_err(|_| invalid())?))).transpose()
+        })?)
+    }
+    pub fn write(
+        &self,
+        subject: &Subject,
+        mc: &str,
+        key: &str,
+        input: &DraftWrite,
+    ) -> Result<PackDraft> {
+        self.mutate(subject, key, input, |c| {
+            self.write_in(
+                c,
+                subject,
+                mc,
+                &input.expected_revision,
+                input.manifest.clone(),
+            )
+        })
+    }
+    pub fn add(
+        &self,
+        subject: &Subject,
+        mc: &str,
+        key: &str,
+        input: &DraftAdd,
+    ) -> Result<PackDraft> {
+        self.mutate(subject, key, input, |c| {
+            let mut manifest = self.read_in(c, mc)?.manifest;
+            for entry in &input.entries {
+                if let Some(old) = manifest.entries.iter_mut().find(|old| old.id == entry.id) {
+                    *old = entry.clone();
+                } else {
+                    manifest.entries.push(entry.clone());
+                }
+            }
+            self.write_in(c, subject, mc, &input.expected_revision, manifest)
+        })
+    }
+    pub fn delete(
+        &self,
+        subject: &Subject,
+        mc: &str,
+        key: &str,
+        expected: &str,
+    ) -> Result<PackDraft> {
+        self.mutate(subject, key, &("delete", expected), |c| {
+            let mut manifest = self.read_in(c, mc)?.manifest;
+            manifest.entries.clear();
+            manifest.minecraft_version = mc.into();
+            manifest.loader = ClientLoader::None;
+            manifest.loader_version = None;
+            self.write_in(c, subject, mc, expected, manifest)
+        })
+    }
+    fn write_in(
+        &self,
+        c: &Connection,
+        subject: &Subject,
+        mc: &str,
+        expected: &str,
+        manifest: PackManifest,
+    ) -> Result<PackDraft> {
+        self.authorize_in(c, subject, Capability::PackEdit)?;
+        if self.read_in(c, mc)?.revision != expected {
+            return Err(ReleaseError::Conflict);
+        }
+        validate_manifest(&manifest)?;
+        if manifest.minecraft_version != mc {
+            return Err(ReleaseError::RevisionMismatch);
+        }
+        for entry in &manifest.entries {
+            if let EntrySource::Upload { sha256 } = &entry.source {
+                self.blob_in(c, sha256)?;
+            }
+        }
+        if let Some(icon) = &manifest.icon {
+            self.blob_in(c, icon)?;
+        }
+        let next = revision(expected)?
+            .checked_add(1)
+            .filter(|n| *n <= vesta_protocol::pack::catalogue::MAX_REVISION)
+            .ok_or(ReleaseError::RevisionExhausted)?;
+        let json = serde_json::to_string(&manifest).map_err(|_| invalid())?;
+        c.execute("INSERT INTO pack_workspace(server_id,revision,manifest_json) VALUES(?,?,?) ON CONFLICT(server_id) DO UPDATE SET revision=excluded.revision,manifest_json=excluded.manifest_json",params![self.db.server_id(),next as i64,json])?;
+        Ok(PackDraft {
+            revision: next.to_string(),
+            manifest,
+        })
+    }
+    pub fn upload(&self, subject: &Subject, key: &str, input: &UploadRequest) -> Result<String> {
+        self.mutate(subject, key, input, |c| {
+            let bytes = STANDARD
+                .decode(&input.content_base64)
+                .map_err(|_| invalid())?;
+            self.store_blob(c, &bytes)
+        })
+    }
+    fn store_blob(&self, c: &Connection, bytes: &[u8]) -> Result<String> {
+        if bytes.len() > super::MAX_PINNED_FILE_BYTES {
+            return Err(super::PackError::TooLarge.into());
+        }
+        let sha = digest(bytes);
+        let exists: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pack_workspace_blobs WHERE server_id=? AND sha256=?)",
+            params![self.db.server_id(), sha],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            let total: i64 = c.query_row(
+                "SELECT coalesce(sum(length(body)),0) FROM pack_workspace_blobs WHERE server_id=?",
+                [self.db.server_id()],
+                |r| r.get(0),
+            )?;
+            if total as usize + bytes.len() > MAX_BLOBS {
+                return Err(super::PackError::TooLarge.into());
+            }
+            c.execute(
+                "INSERT INTO pack_workspace_blobs(server_id,sha256,body) VALUES(?,?,?)",
+                params![self.db.server_id(), sha, bytes],
+            )?;
+        }
+        Ok(sha)
+    }
+    fn blob_in(&self, c: &Connection, sha: &str) -> Result<Vec<u8>> {
+        let bytes: Option<Vec<u8>> = c
+            .query_row(
+                "SELECT body FROM pack_workspace_blobs WHERE server_id=? AND sha256=?",
+                params![self.db.server_id(), sha],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let bytes = bytes.ok_or(super::PackError::UnresolvedFile)?;
+        if digest(&bytes) != sha {
+            return Err(super::PackError::Conflict.into());
+        }
+        Ok(bytes)
+    }
+    fn replay<T: Serialize, R: serde::de::DeserializeOwned>(
+        &self,
+        subject: &Subject,
+        key: &str,
+        input: &T,
+    ) -> Result<Option<R>> {
+        let input = digest(&serde_json::to_vec(input).map_err(|_| invalid())?);
+        Ok(self.db.read_with(|s| {
+            let c=s.connection(); self.authorize_in(c,subject,Capability::PackEdit)?;
+            let row:Option<(String,String)>=c.query_row("SELECT input_sha256,outcome_json FROM pack_workspace_receipts WHERE server_id=? AND principal_id=? AND device_id=? AND request_key=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),key],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            row.map(|(old,outcome)| { if old!=input {return Err(ReleaseError::IdempotencyConflict);} serde_json::from_str(&outcome).map_err(|_|invalid()) }).transpose()
+        })?)
+    }
+    fn mutate<T: Serialize, R: Serialize + serde::de::DeserializeOwned>(
+        &self,
+        subject: &Subject,
+        key: &str,
+        input: &T,
+        work: impl FnOnce(&Connection) -> Result<R>,
+    ) -> Result<R> {
+        if key.is_empty() || key.len() > 128 || !key.bytes().all(|b| b.is_ascii_graphic()) {
+            return Err(invalid());
+        }
+        let input = digest(&serde_json::to_vec(input).map_err(|_| invalid())?);
+        Ok(self.db.write_with(|t| {
+            let c=t.connection(); self.authorize_in(c,subject,Capability::PackEdit)?;
+            let row:Option<(String,String)>=c.query_row("SELECT input_sha256,outcome_json FROM pack_workspace_receipts WHERE server_id=? AND principal_id=? AND device_id=? AND request_key=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),key],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            if let Some((old,outcome))=row { if old!=input { return Err(ReleaseError::IdempotencyConflict); } return serde_json::from_str(&outcome).map_err(|_|invalid()); }
+            let count:i64=c.query_row("SELECT count(*) FROM pack_workspace_receipts",[],|r|r.get(0))?;
+            if count>=10_000 { return Err(super::PackError::TooLarge.into()); }
+            let result=work(c)?;
+            c.execute("INSERT INTO pack_workspace_receipts(server_id,principal_id,device_id,request_key,input_sha256,outcome_json) VALUES(?,?,?,?,?,?)",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),key,input,serde_json::to_string(&result).map_err(|_|invalid())?])?;
+            self.audit.append(c,&AuditRecord::new(AuditActor::new(subject.principal.as_str().into(),subject.device.as_str().into(),"pack-workspace".into())?,"pack_workspace.edit".into(),"pack-workspace".into(),"success".into(),None,[("input_sha256".into(),Some(input))])?)?;
+            Ok(result)
+        })?)
+    }
+}
+pub fn validate_manifest(m: &PackManifest) -> Result<()> {
+    let text =
+        |s: &str, n: usize| !s.is_empty() && s.len() <= n && !s.chars().any(char::is_control);
+    if !text(&m.name, 256)
+        || m.summary.len() > 4096
+        || !text(&m.minecraft_version, 64)
+        || !text(&m.display_version, 64)
+        || !m
+            .display_version
+            .split('.')
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        || m.entries.len() > MAX_ENTRIES
+    {
+        return Err(invalid());
+    }
+    match m.loader {
+        ClientLoader::None if m.loader_version.is_some() => return Err(invalid()),
+        ClientLoader::None => {}
+        _ if !m.loader_version.as_deref().is_some_and(|s| text(s, 128)) => return Err(invalid()),
+        _ => {}
+    }
+    if m.icon.as_ref().is_some_and(|s| !valid_sha(s)) {
+        return Err(invalid());
+    }
+    let mut ids = BTreeSet::new();
+    let mut paths = BTreeSet::new();
+    let mut projects = BTreeSet::new();
+    for e in &m.entries {
+        vesta_protocol::pack::catalogue::RelativePath::parse(&e.path)
+            .map_err(super::PackError::from)?;
+        let lower = e.path.to_ascii_lowercase();
+        let prefix = match e.kind {
+            EntryKind::Mod => "mods/",
+            EntryKind::ResourcePack => "resourcepacks/",
+            EntryKind::Shader => "shaderpacks/",
+            EntryKind::Datapack => "datapacks/",
+            EntryKind::ConfigOverride => "config/",
+        };
+        if !text(&e.id, 128)
+            || !ids.insert(&e.id)
+            || !lower.starts_with(prefix)
+            || !paths.insert(lower.clone())
+        {
+            return Err(invalid());
+        }
+        for path in &paths {
+            if path != &lower
+                && (path.starts_with(&format!("{lower}/"))
+                    || lower.starts_with(&format!("{path}/")))
+            {
+                return Err(invalid());
+            }
+        }
+        match &e.source {
+            EntrySource::Provider {
+                provider,
+                project_id,
+                version_id,
+            } => {
+                if !matches!(provider.as_str(), "modrinth" | "curseforge")
+                    || !identifier(project_id)
+                    || !identifier(version_id)
+                    || !projects.insert((provider, project_id))
+                    || e.kind == EntryKind::ConfigOverride
+                {
+                    return Err(invalid());
+                }
+            }
+            EntrySource::Upload { sha256 } if !valid_sha(sha256) => return Err(invalid()),
+            EntrySource::Manual { reason } if !text(reason, 256) => return Err(invalid()),
+            _ => {}
+        }
+    }
+    if serde_json::to_vec(m).map_err(|_| invalid())?.len() > 1_048_576 {
+        return Err(super::PackError::TooLarge.into());
+    }
+    Ok(())
+}
+pub fn identifier(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+fn valid_sha(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+#[cfg(test)]
+mod tests;

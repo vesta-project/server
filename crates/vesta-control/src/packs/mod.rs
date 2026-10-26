@@ -6,6 +6,7 @@ mod configured;
 pub use configured::PreparedPack;
 mod publish;
 mod releases;
+pub mod workspace;
 pub use build::{
     BuiltVestaPack, MAX_VESTA_ARCHIVE_BYTES, MAX_VESTA_ENTRIES, MAX_VESTA_INDEX_BYTES,
     VestaBuildError, VestaBuildLimits, build_vesta,

@@ -29,6 +29,8 @@ pub(super) mod hosting;
 mod metrics;
 #[path = "manage_moderation.rs"]
 mod moderation;
+#[path = "manage_pack_workspace.rs"]
+pub(super) mod pack_workspace;
 #[path = "manage_permissions.rs"]
 mod permissions;
 #[path = "manage_presentation.rs"]
@@ -50,7 +52,8 @@ pub(super) fn automation_endpoint(path: &str) -> bool {
     automation::implemented(path)
 }
 pub(super) fn implemented(path: &str) -> bool {
-    hosting::implemented(path)
+    pack_workspace::implemented(path)
+        || hosting::implemented(path)
         || automation::implemented(path)
         || presentation::implemented(path)
         || moderation::implemented(path)
@@ -351,6 +354,9 @@ pub(super) struct Request<'a> {
     pub if_range: Option<&'a str>,
 }
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
+    if pack_workspace::implemented(request.path) {
+        return pack_workspace::dispatch(host, request);
+    }
     if hosting::implemented(request.path) {
         return hosting::dispatch(host, request);
     }

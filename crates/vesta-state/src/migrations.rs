@@ -30,8 +30,34 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         24 => apply_v24(c),
         25 => apply_v25(c),
         26 => apply_v26(c),
+        27 => apply_v27(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
+}
+
+fn apply_v27(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(
+        r#"
+        CREATE TABLE pack_workspace (
+            server_id TEXT PRIMARY KEY, revision INTEGER NOT NULL CHECK(revision > 0),
+            manifest_json TEXT NOT NULL CHECK(length(manifest_json) <= 1048576)
+        );
+        CREATE TABLE pack_workspace_blobs (
+            server_id TEXT NOT NULL, sha256 TEXT NOT NULL, body BLOB NOT NULL,
+            PRIMARY KEY(server_id,sha256), CHECK(length(body) <= 16777216)
+        );
+        CREATE TABLE pack_workspace_receipts (
+            server_id TEXT NOT NULL, principal_id TEXT NOT NULL, device_id TEXT NOT NULL,
+            request_key TEXT NOT NULL, input_sha256 TEXT NOT NULL, outcome_json TEXT NOT NULL,
+            PRIMARY KEY(server_id,principal_id,device_id,request_key)
+        );
+        CREATE TABLE pack_workspace_published (
+            server_id TEXT PRIMARY KEY, release_revision INTEGER NOT NULL,
+            draft_revision INTEGER NOT NULL, manifest_json TEXT NOT NULL
+        );
+    "#,
+    )?;
+    Ok(())
 }
 
 /// Backup configuration is reserved to owner/administrator, never remotely delegable.
