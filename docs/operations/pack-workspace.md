@@ -160,6 +160,27 @@ Stage 3 work; this workspace does not claim those guarantees.
 
 ## Errors and verification
 
+## Stage 3 consumption transport
+
+Paired clients use `GET /api/v3/manage/pack/sync?installed=N&nonce=HEX32`.
+The response data contains `payload_base64`, `certificate_base64` and
+`signature_base64`. The exact decoded payload is signed after the byte prefix
+`vesta-pack-sync-v1\0` (the final byte is NUL), using the active TLS private key.
+The included leaf DER must hash to the client's already approved TLS fingerprint.
+The signed JSON binds server ID, fingerprint, installed revision, fresh nonce,
+latest/minimum revisions, status, artifact format/size/SHA-256. All counters are
+decimal strings. Clients verify the signature, all bindings and monotonicity
+before trusting a statement; discovering a certificate is never trust approval.
+
+`GET /api/v3/manage/pack/artifact?revision=N&sha256=HEX64` streams only the
+currently published artifact and refuses a stale selection with 412. Both routes
+recheck ordinary pack-download policy, including automatic roles and revocation,
+and use the existing bounded HTTP/download admission and integrity-checked body.
+Statements are generated from the committed release, so minimum-only policy
+changes are signed too. A TLS rotation requires explicit client trust approval;
+no independent download key is silently substituted. The nonce prevents replay
+of an old signed minimum. Offline status cannot establish current join policy.
+
 Revision/review conflicts retain 412 `precondition_failed`; intent reuse with a
 different body returns 409 `idempotency_conflict`. MC drift uses 409
 `pack_release_revision_mismatch`; lower-display-version refusal uses 409

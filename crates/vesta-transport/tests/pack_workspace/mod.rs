@@ -2,6 +2,35 @@
 use super::*;
 use serde_json::json;
 #[test]
+fn signed_pack_sync_binds_freshness_identity_policy_and_latest_download() {
+    use base64::{Engine,engine::general_purpose::STANDARD};
+    let f=Fixture::new("minecraft",8,65536,5);
+    let (device,key)=enroll_management(&f,vesta_control::identity::BuiltinRole::Owner);
+    let token=management_session(&f,&device,&key);
+    let initial=f.request("GET","/api/v3/manage/pack/draft",b"",Some(&token));
+    let manifest=initial.json()["data"]["draft"]["manifest"].clone();
+    let saved=management_mutation(&f,&token,"pack/draft","sync-edit-00000001",&json!({"expected_revision":"0","manifest":manifest}));assert_eq!(saved.status,200);
+    let preview=management_mutation(&f,&token,"pack/preview","sync-preview-0001",&json!({"draft_revision":"1","resolved_entries":[]}));assert_eq!(preview.status,200);
+    let published=management_mutation(&f,&token,"pack/publish","sync-publish-0001",&json!({"expected_revision":"0","draft_revision":"1","resolved_entries":[],"review_sha256":preview.json()["data"]["review_sha256"],"required_update":true,"acknowledge_lower_version":false}));assert_eq!(published.status,200);
+    let path="/api/v3/manage/pack/sync?installed=0&nonce=0123456789abcdef0123456789abcdef";
+    assert_eq!(f.request("GET",path,b"",None).status,401);
+    let response=f.request("GET",path,b"",Some(&token));assert_eq!(response.status,200,"{}",String::from_utf8_lossy(&response.body));
+    let envelope=response.json()["data"].clone();
+    let payload:serde_json::Value=serde_json::from_slice(&STANDARD.decode(envelope["payload_base64"].as_str().unwrap()).unwrap()).unwrap();
+    assert_eq!(payload["revision"],"1");assert_eq!(payload["minimum_revision"],"1");assert_eq!(payload["status"],"update_required");
+    assert_eq!(payload["server_id"],f.host().management().server_id());
+    assert_eq!(payload["nonce"],"0123456789abcdef0123456789abcdef");
+    assert!(!STANDARD.decode(envelope["signature_base64"].as_str().unwrap()).unwrap().is_empty());
+    assert_eq!(payload["fingerprint"],f.transport.as_ref().unwrap().tls_fingerprint().unwrap());
+    let download=format!("/api/v3/manage/pack/artifact?revision=1&sha256={}",payload["sha256"].as_str().unwrap());
+    let artifact=f.request("GET",&download,b"",Some(&token));assert_eq!(artifact.status,200);
+    assert_eq!(artifact.body.len().to_string(),payload["size"].as_str().unwrap());
+    let stale=download.replace("revision=1","revision=0");assert_eq!(f.request("GET",&stale,b"",Some(&token)).status,412);
+    assert_eq!(f.request("GET",&path.replace("installed=0","installed=2"),b"",Some(&token)).status,409);
+    assert_eq!(f.request("GET",&path.replace("installed=0","installed=01"),b"",Some(&token)).status,400);
+    assert_eq!(f.request("POST",path,b"",Some(&token)).status,405);
+}
+#[test]
 fn workspace_routes_separate_client_loader_draft_and_atomic_release() {
     let f = Fixture::new("minecraft", 8, 65536, 5);
     let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);

@@ -327,6 +327,9 @@ pub(super) async fn route(
         // Blocking work outlives a cancelled HTTP waiter: its bytes and permit
         // must have the same owner, rather than releasing the budget too early.
         let _body_permit = body_permit;
+        if crate::pack_sync::implemented(&path) {
+            return crate::pack_sync::dispatch(&host, &method, &path, query.as_deref(), authorization.as_ref().map(|s|s.as_str()), downloads, &tls);
+        }
         if operational {
             let fingerprint = if path == "/api/v3/manage/invitations" && method == Method::POST {
                 tls.fingerprint().ok()
@@ -373,9 +376,9 @@ pub(super) async fn route(
 }
 
 /// Download admission for one request: the shared limiter and the socket peer.
-struct Requester {
-    downloads: Arc<super::Downloads<vesta_control::pack_access::RealtimeSession>>,
-    peer: std::net::IpAddr,
+pub(crate) struct Requester {
+    pub(crate) downloads: Arc<super::Downloads<vesta_control::pack_access::RealtimeSession>>,
+    pub(crate) peer: std::net::IpAddr,
 }
 
 fn json(value: serde_json::Value) -> Reply {

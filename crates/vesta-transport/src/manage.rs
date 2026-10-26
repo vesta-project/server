@@ -52,7 +52,7 @@ pub(super) fn automation_endpoint(path: &str) -> bool {
     automation::implemented(path)
 }
 pub(super) fn implemented(path: &str) -> bool {
-    pack_workspace::implemented(path)
+    crate::pack_sync::implemented(path) || pack_workspace::implemented(path)
         || hosting::implemented(path)
         || automation::implemented(path)
         || presentation::implemented(path)
@@ -99,7 +99,7 @@ fn envelope(status: StatusCode, payload: Value) -> Reply {
 pub(super) fn error(status: StatusCode, code: &'static str) -> Reply {
     envelope(status, json!({"error":{"code":code}}))
 }
-fn ok(data: Value) -> Reply {
+pub(super) fn ok(data: Value) -> Reply {
     envelope(StatusCode::OK, json!({"data": data}))
 }
 pub(super) fn management_error(e: ManagementError) -> Reply {

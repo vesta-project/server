@@ -64,6 +64,7 @@ mod file_body;
 mod manage;
 mod realtime;
 mod routes;
+mod pack_sync;
 mod tls;
 type Reply = Response<ReplyBody>;
 const DOWNLOADS: usize = 2;

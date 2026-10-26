@@ -39,6 +39,7 @@ use vesta_control::{config::TlsListener, host::read_tls_document};
 
 type Identity = (Option<SystemTime>, u64, [u8; 32]);
 pub(crate) struct Snapshot {
+    certified: rustls::sign::CertifiedKey,
     config: Arc<rustls::ServerConfig>,
     fingerprint: String,
     documents: (Identity, Identity),
@@ -53,6 +54,35 @@ pub(crate) struct Material {
     pub(crate) state: Mutex<State>,
 }
 impl Material {
+    /// Certificate, fingerprint and signature come from one TLS snapshot.
+    pub(crate) fn sign_pack(
+        &self,
+        value: &mut serde_json::Value,
+    ) -> Result<serde_json::Value, TransportError> {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let state = self.lock()?;
+        value["fingerprint"] = state.current.fingerprint.clone().into();
+        let payload = serde_json::to_vec(value).map_err(|_| TransportError::TlsMaterial)?;
+        let mut message = b"vesta-pack-sync-v1\0".to_vec();
+        message.extend_from_slice(&payload);
+        let signer = state
+            .current
+            .certified
+            .key
+            .choose_scheme(&[
+                rustls::SignatureScheme::ED25519,
+                rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+                rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+                rustls::SignatureScheme::RSA_PSS_SHA256,
+            ])
+            .ok_or(TransportError::TlsMaterial)?;
+        let signature = signer
+            .sign(&message)
+            .map_err(|_| TransportError::TlsMaterial)?;
+        Ok(
+            serde_json::json!({"payload_base64":STANDARD.encode(payload),"certificate_base64":STANDARD.encode(state.current.certified.cert[0].as_ref()),"signature_base64":STANDARD.encode(signature)}),
+        )
+    }
     pub(crate) fn new(listener: &TlsListener) -> Result<Self, TransportError> {
         Ok(Self {
             listener: listener.clone(),
@@ -158,9 +188,12 @@ pub(crate) fn load(listener: &TlsListener) -> Result<Snapshot, TransportError> {
         .with_safe_default_protocol_versions()
         .map_err(|_| TransportError::TlsMaterial)?
         .with_no_client_auth()
-        .with_cert_resolver(Arc::new(rustls::sign::SingleCertAndKey::from(certified)));
+        .with_cert_resolver(Arc::new(rustls::sign::SingleCertAndKey::from(
+            certified.clone(),
+        )));
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
     Ok(Snapshot {
+        certified,
         config: Arc::new(config),
         fingerprint,
         documents: (certificate_identity, key_identity),
