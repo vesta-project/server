@@ -173,6 +173,7 @@ impl Drop for StartBlock {
 }
 
 pub(super) struct GameLifecycle {
+    pub(super) content_files: Option<crate::files::FileBrowser>,
     // No caller can access mutable process ownership, launch paths or stdin.
     pub(super) process: ProcessBackend,
     pub(super) console: ConsoleCapture,
@@ -232,6 +233,7 @@ impl GameLifecycle {
             local_floor: None,
             local_identity: None,
             start_block: StartGate::default(),
+            content_files: None,
             offline: None,
             offline_uncertain: false,
             process: ProcessBackend::Local(process),
@@ -252,6 +254,7 @@ impl GameLifecycle {
             local_floor: None,
             local_identity: None,
             start_block: StartGate::default(),
+            content_files: None,
             offline: None,
             offline_uncertain: false,
             process: ProcessBackend::Supervised(remote),
@@ -370,6 +373,15 @@ impl GameLifecycle {
         &mut self,
         guard: impl FnOnce(&SourceRevision) -> OperationsResult<()>,
     ) -> Result<GenerationId, GuardedError<super::OperationError>> {
+        if let Some(files) = &self.content_files {
+            let snapshot = self.process.snapshot();
+            if snapshot.phase != ProcessPhase::Stopped || snapshot.generation.is_some() {
+                return Err(RuntimeError::AlreadyOwned.into());
+            }
+            files
+                .apply_pending_content()
+                .map_err(|_| GuardedError::Runtime(RuntimeError::ObserveFailed))?;
+        }
         if self.offline_uncertain {
             return Err(RuntimeError::ObserveFailed.into());
         }

@@ -851,3 +851,257 @@ fn separate_install_admission_is_bounded_and_released() {
     assert!(InstallPermit::acquire().is_ok());
     drop(second);
 }
+
+#[test]
+fn content_inert() {
+    use std::io::{BufRead, Write};
+    if fs::read("content-inert").ok().as_deref() != Some(b"owned-content-fixture") {
+        return;
+    }
+    fs::write("content-ready", b"ready").unwrap();
+    std::io::stdout().flush().unwrap();
+    for line in std::io::stdin().lock().lines() {
+        if line.unwrap() == "stop" {
+            return;
+        }
+    }
+}
+fn content_runtime(f: &Fixture) -> crate::operations::OperationRuntime {
+    let launch = vesta_game_runtime::process::LaunchSpec::new(
+        std::env::current_exe().unwrap(),
+        vec![
+            "--exact".into(),
+            "content::tests::content_inert".into(),
+            "--nocapture".into(),
+        ],
+        f.game.clone(),
+        vesta_game_runtime::process::GracefulStop::MinecraftCommand,
+    )
+    .unwrap();
+    crate::operations::OperationRuntime::open(
+        crate::operations::Operations::new(f.db.clone())
+            .unwrap()
+            .with_content(f.files.clone()),
+        launch,
+    )
+    .unwrap()
+}
+fn until_content(mut predicate: impl FnMut() -> bool) {
+    let end = Instant::now() + Duration::from_secs(10);
+    while !predicate() {
+        assert!(Instant::now() < end, "content fixture timeout");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+#[test]
+fn content_stages_while_running_applies_before_restart_and_cancels() {
+    use crate::operations::LocalAction;
+    let f = Fixture::new();
+    fs::write(f.game.join("content-inert"), b"owned-content-fixture").unwrap();
+    fs::write(f.game.join("mods/old.jar"), b"old").unwrap();
+    let mut runtime = content_runtime(&f);
+    let handle = runtime.network_handle();
+    runtime.local_handle().request(LocalAction::Start).unwrap();
+    until_content(|| f.game.join("content-ready").exists());
+    let hash = hex::encode(Sha256::digest(b"old"));
+    let change = f
+        .files
+        .content_mutate(
+            &handle,
+            &f.owner,
+            "disable",
+            ContentMutation::Disable {
+                kind: ContentKind::Mod,
+                path: "mods/old.jar".into(),
+                expected_sha256: hash.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(change.state, "pending");
+    assert!(f.game.join("mods/old.jar").exists());
+    assert!(f.db.directory().path().join("content-pending").exists());
+    let replay = f
+        .files
+        .content_mutate(
+            &handle,
+            &f.owner,
+            "disable",
+            ContentMutation::Disable {
+                kind: ContentKind::Mod,
+                path: "mods/old.jar".into(),
+                expected_sha256: hash.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(change.id, replay.id);
+    assert!(
+        f.files
+            .content_mutate(
+                &handle,
+                &f.owner,
+                "disable",
+                ContentMutation::Remove {
+                    kind: ContentKind::Mod,
+                    path: "mods/old.jar".into(),
+                    expected_sha256: hash.clone()
+                }
+            )
+            .is_err()
+    );
+    let cancelled=f.files.content_cancel_remote(&f.owner,&change.id,"cancel-first").unwrap();
+    assert_eq!(cancelled["state"],"cancelled");
+    assert_eq!(f.files.content_cancel_remote(&f.owner,&change.id,"cancel-first").unwrap(),cancelled);
+    assert!(!f.db.directory().path().join("content-pending").exists());
+    let change = f
+        .files
+        .content_mutate(
+            &handle,
+            &f.owner,
+            "disable-again",
+            ContentMutation::Disable {
+                kind: ContentKind::Mod,
+                path: "mods/old.jar".into(),
+                expected_sha256: hash,
+            },
+        )
+        .unwrap();
+    runtime
+        .local_handle()
+        .request(LocalAction::Restart)
+        .unwrap();
+    until_content(|| f.game.join("mods/old.jar.disabled").exists());
+    assert!(matches!(
+        f.files.content_cancel(&f.owner, &change.id),
+        Err(FileError::Conflict(None))
+    ));
+    runtime.local_handle().request(LocalAction::Stop).unwrap();
+    until_content(|| handle.game_snapshot().unwrap().generation.is_none());
+    runtime.shutdown(Duration::from_secs(5)).unwrap();
+}
+#[test]
+fn content_stopped_install_provenance_update_trash_and_rename() {
+    let f = Fixture::new();
+    let mut runtime = content_runtime(&f);
+    let handle = runtime.network_handle();
+    let provider = ContentProvider {
+        provider: "modrinth".into(),
+        project_id: "p".into(),
+        version_id: "v1".into(),
+    };
+    let install = f
+        .files
+        .content_install_bytes(
+            &handle,
+            &f.owner,
+            "install",
+            ContentKind::Mod,
+            "mods/demo.jar".into(),
+            None,
+            provider.clone(),
+            b"one",
+        )
+        .unwrap();
+    assert_eq!(install.state, "applied");
+    let hash = hex::encode(Sha256::digest(b"one"));
+    f.files
+        .content_install_bytes(
+            &handle,
+            &f.owner,
+            "update",
+            ContentKind::Mod,
+            "mods/demo.jar".into(),
+            Some(hash),
+            ContentProvider {
+                version_id: "v2".into(),
+                ..provider
+            },
+            b"two",
+        )
+        .unwrap();
+    assert_eq!(fs::read(f.game.join("mods/demo.jar")).unwrap(), b"two");
+    assert_eq!(f.files.trash_entries(&f.owner).unwrap().len(), 1);
+    let world = f.files.world(&f.owner).unwrap();
+    let inventory = f
+        .files
+        .content_inventory(&f.owner, Some("fabric".into()), "1.21.1".into(), &world)
+        .unwrap();
+    assert_eq!(
+        inventory.items[0].provider.as_ref().unwrap().version_id,
+        "v2"
+    );
+    assert!(inventory.capabilities.mods_supported);
+    assert!(!inventory.capabilities.plugins_supported);
+    fs::write(f.game.join("mods/demo.jar"), b"outside edit").unwrap();
+    let inventory = f
+        .files
+        .content_inventory(&f.owner, Some("fabric".into()), "1.21.1".into(), &world)
+        .unwrap();
+    assert!(inventory.items[0].provider.is_none());
+    runtime.shutdown(Duration::from_secs(5)).unwrap();
+}
+#[test]
+fn content_kinds_refuse_incompatible_software() {
+    assert_eq!(
+        ContentKind::Mod.directory(Some("paper"), "world"),
+        Err(ContentError::ModsUnsupported)
+    );
+    assert_eq!(
+        ContentKind::Plugin.directory(Some("vanilla"), "world"),
+        Err(ContentError::PluginsUnsupported)
+    );
+    assert_eq!(
+        ContentKind::Plugin
+            .directory(Some("purpur"), "world")
+            .unwrap(),
+        "plugins"
+    );
+    assert_eq!(
+        ContentKind::Datapack.directory(None, "world").unwrap(),
+        "world/datapacks"
+    );
+}
+
+#[test]
+fn content_folder_datapack_removal_preserves_tree_in_trash() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.game.join("world/datapacks/custom/data")).unwrap();
+    fs::write(f.game.join("world/datapacks/custom/pack.mcmeta"), b"{}").unwrap();
+    fs::write(
+        f.game.join("world/datapacks/custom/data/test.json"),
+        b"data",
+    )
+    .unwrap();
+    let world = f.files.world(&f.owner).unwrap();
+    let inventory = f
+        .files
+        .content_inventory(&f.owner, Some("vanilla".into()), "1.21.4".into(), &world)
+        .unwrap();
+    let pack = inventory
+        .items
+        .iter()
+        .find(|i| i.kind == ContentKind::Datapack)
+        .unwrap();
+    assert_eq!(pack.size, "6");
+    let mut runtime = content_runtime(&f);
+    let change = f
+        .files
+        .content_mutate(
+            &runtime.network_handle(),
+            &f.owner,
+            "remove-folder",
+            ContentMutation::Remove {
+                kind: ContentKind::Datapack,
+                path: pack.path.clone(),
+                expected_sha256: pack.sha256.clone().unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(change.state, "applied");
+    let trash = change.trash_path.unwrap();
+    assert_eq!(
+        fs::read(f.game.join(trash).join("data/test.json")).unwrap(),
+        b"data"
+    );
+    assert!(!f.game.join("world/datapacks/custom").exists());
+    runtime.shutdown(Duration::from_secs(5)).unwrap();
+}

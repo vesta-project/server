@@ -89,9 +89,33 @@ impl FileBrowser {
         from: &RelativePath,
         to: &RelativePath,
     ) -> Result<()> {
+        self.rename_directory_checked(subject, from, to, None)
+    }
+    pub(crate) fn rename_content_directory(
+        &self,
+        subject: &Subject,
+        from: &RelativePath,
+        to: &RelativePath,
+        expected: &str,
+    ) -> Result<()> {
+        self.rename_directory_checked(subject, from, to, Some(expected))
+    }
+    fn rename_directory_checked(
+        &self,
+        subject: &Subject,
+        from: &RelativePath,
+        to: &RelativePath,
+        expected: Option<&str>,
+    ) -> Result<()> {
         let files = self.for_remote();
         let admission = mutation_admission(files.db.directory().path())?;
         let _guard = files.mutation_guard(&admission)?;
+        if let Some(expected) = expected {
+            let (hash, _) = files.content_tree(subject, from.as_str())?;
+            if hash != expected {
+                return Err(FileError::Conflict(Some(hash)));
+            }
+        }
         files
             .db
             .read_with(|tx| files.directory_rename_authority(tx.connection(), subject, from, to))

@@ -610,7 +610,9 @@ fn compose(
         .map_err(|_| HostError::Supervisor("sftp_state_unavailable"))?;
     let spec = launch.into_launch_spec(None).map_err(HostError::Launch)?;
     let tick_detection = crate::metrics::ticks::detect(&spec, config.game());
-    let operations = Operations::new(db.clone()).map_err(HostError::Operation)?;
+    let operations = Operations::new(db.clone())
+        .map_err(HostError::Operation)?
+        .with_content(files.clone());
     // The status probe target comes from server.properties at open time; a changed
     // port is picked up when the agent is restarted.
     let readiness = vesta_game_runtime::readiness::ReadinessConfig {

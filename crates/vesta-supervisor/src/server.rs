@@ -109,7 +109,11 @@ impl Core {
     /// Observe, classify exits and fire a due automatic restart.
     fn observe(&mut self) {
         self.observe_state();
-        if !self.stopping && self.hold.is_none() && self.restarts.take_due(Instant::now()) {
+        if !self.stopping
+            && self.hold.is_none()
+            && !self.content_pending()
+            && self.restarts.take_due(Instant::now())
+        {
             // A failed automatic launch counts as another crash, so a broken launch
             // definition reaches the breaker instead of retrying forever.
             if self.launch().is_err() {
@@ -972,9 +976,16 @@ fn start(core: &Shared, launch_identity: &str) -> std::result::Result<Reply, Rep
 }
 
 impl Core {
+    fn content_pending(&self) -> bool {
+        // Protected agent-owned barrier, also respected after agent disconnect.
+        std::fs::symlink_metadata(std::path::Path::new(&self.state).join("content-pending")).is_ok()
+    }
     /// Launch the trusted definition with durable intent and record. Returns the
     /// generation and whether its I/O attachment was uncertain.
     fn launch(&mut self) -> std::result::Result<(GenerationId, bool), Reply> {
+        if self.content_pending() {
+            return Err(refused("content_pending_restart"));
+        }
         if self.hold.is_some() {
             return Err(refused("supervisor_maintenance_hold"));
         }

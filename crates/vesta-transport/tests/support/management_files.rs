@@ -30,6 +30,27 @@ fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 #[test]
+fn server_content_inventory_mutation_and_family_refusals_are_real_routes() {
+    let f=Fixture::new("minecraft",8,65536,5);
+    std::fs::create_dir_all(f.temp.path().join("game/mods")).unwrap();
+    std::fs::write(f.temp.path().join("game/mods/unknown.jar"),b"unknown jar").unwrap();
+    let (device,key)=enroll_management(&f,vesta_control::identity::BuiltinRole::Owner);
+    let token=management_session(&f,&device,&key);
+    let inventory=send(&f,"GET","/api/v3/manage/content",b"",Some(&token),None,None);
+    assert_eq!(inventory.status,200);
+    assert_eq!(inventory.json()["data"]["items"][0]["filename"],"unknown.jar");
+    assert!(inventory.json()["data"]["items"][0]["provider"].is_null());
+    for (kind,code) in [("mod","content_mods_unsupported"),("plugin","content_plugins_unsupported")] {
+        let body=serde_json::json!({"kind":kind,"provider":"modrinth","project_id":"p","version_id":"v"}).to_string();
+        management_reply_error(&send(&f,"POST","/api/v3/manage/content/install",body.as_bytes(),Some(&token),Some("content-install-refused"),None),409,code);
+    }
+    let body=serde_json::json!({"action":"disable","kind":"mod","path":"mods/unknown.jar","expected_sha256":digest(b"unknown jar")}).to_string();
+    let changed=send(&f,"POST","/api/v3/manage/content/mutate",body.as_bytes(),Some(&token),Some("content-disable-unknown"),None);
+    assert_eq!(changed.status,200);
+    assert_eq!(changed.json()["data"]["state"],"applied");
+    assert!(f.temp.path().join("game/mods/unknown.jar.disabled").exists());
+}
+#[test]
 fn file_surfaces_refuse_pack_only_and_anonymous_devices() {
     let f = Fixture::new("minecraft", 8, 4096, 3);
     let mut sources = f.host().management().access_local().unwrap();
@@ -56,6 +77,11 @@ fn file_surfaces_refuse_pack_only_and_anonymous_devices() {
         ("POST", "files/mkdir"),
         ("POST", "files/rename"),
         ("POST", "content/install"),
+        ("GET", "content"),
+        ("POST", "content/mutate"),
+        ("POST", "content/update"),
+        ("POST", "content/cancel"),
+        ("POST", "content/identify"),
         ("GET", "config/server-properties"),
         ("PATCH", "config/server-properties"),
     ] {

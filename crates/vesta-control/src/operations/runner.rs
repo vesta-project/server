@@ -537,7 +537,7 @@ impl OperationRuntime {
 
     fn open_lifecycle(
         operations: Operations,
-        game: GameLifecycle,
+        mut game: GameLifecycle,
         stop_wait: Duration,
     ) -> OperationsResult<Self> {
         if stop_wait > MAX_SHUTDOWN_WAIT {
@@ -546,6 +546,7 @@ impl OperationRuntime {
         // Kernel owner is from this exact DB, acquires one OS lock, reconciles,
         // and retains a runtime DB lease before any native or driver work.
         let owner = operations.open_owner()?;
+        game.content_files = operations.content_files.clone();
         let operations = owner.operations().clone();
         let start_block = game.start_block.clone();
         let (shared, players, ticks) = DriverState::new(&owner, &game);

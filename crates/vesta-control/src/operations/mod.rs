@@ -76,6 +76,7 @@ pub struct Operations {
     db: StateDatabase,
     audit: AuditLog,
     events: EventLog,
+    content_files: Option<crate::files::FileBrowser>,
 }
 impl std::fmt::Debug for Operations {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -86,7 +87,16 @@ impl Operations {
     pub fn new(db: StateDatabase) -> OperationsResult<Self> {
         let audit = AuditLog::new(db.clone())?;
         let events = EventLog::new(db.clone());
-        Ok(Self { db, audit, events })
+        Ok(Self {
+            db,
+            audit,
+            events,
+            content_files: None,
+        })
+    }
+    pub(crate) fn with_content(mut self, files: crate::files::FileBrowser) -> Self {
+        self.content_files = Some(files);
+        self
     }
 
     /// Trusted host composition only: the operation a principal already submitted under

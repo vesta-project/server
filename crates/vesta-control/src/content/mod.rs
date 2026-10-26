@@ -6,7 +6,9 @@
 //! `FileBrowser::write` owns the completion transaction, replacement trash and audit.
 //! The mods directory must already exist. No archive extraction or dependency install.
 mod http;
+mod model;
 mod provider;
+pub use model::*;
 
 pub use http::{DownloadHttp, HttpResponse, UreqDownloadHttp};
 pub use provider::UreqProviderClient;
@@ -177,6 +179,97 @@ pub struct ContentInstaller<'a> {
     registry: &'a TrustedSourceRegistry,
 }
 impl<'a> ContentInstaller<'a> {
+    /// Managed server target; requesters still supply provider identifiers only.
+    #[allow(clippy::too_many_arguments)]
+    pub fn install_content(
+        &self,
+        runtime: &crate::operations::RuntimeHandle,
+        subject: &Subject,
+        key: &str,
+        request: &InstallRequest,
+        kind: ContentKind,
+        directory: &str,
+        replace: Option<(&str, &str)>,
+    ) -> Result<ContentChange> {
+        let InstallRequest::Provider {
+            provider,
+            project_id,
+            version_id,
+        } = request
+        else {
+            return Err(ContentError::InvalidRequest);
+        };
+        validate_id(project_id)?;
+        validate_id(version_id)?;
+        self.files
+            .check_global_authority(subject, crate::identity::Capability::ContentInstall)
+            .map_err(ContentError::File)?;
+        let condition = replace.map_or(WritePrecondition::Absent, |(_, hash)| {
+            WritePrecondition::Matches(hash.into())
+        });
+        self.files
+            .check_content_directory_admission(
+                subject,
+                &condition,
+                directory,
+                if kind == ContentKind::Datapack {
+                    ".zip"
+                } else {
+                    ".jar"
+                },
+            )
+            .map_err(ContentError::File)?;
+        let deadline = Instant::now() + REMOTE_INSTALL_TIMEOUT;
+        let _permit = InstallPermit::acquire()?;
+        let source = self
+            .providers
+            .resolve_with_deadline(*provider, project_id, version_id, deadline)?;
+        if source.provider != *provider {
+            return Err(ContentError::InvalidMetadata);
+        }
+        let (_, mut url) = validate_source(&source)?;
+        let path = if let Some((path, _)) = replace {
+            path.to_owned()
+        } else {
+            format!("{directory}/{}", source.filename)
+        };
+        let expected = replace.map(|(_, hash)| hash.to_owned());
+        let relative = RelativePath::parse(&path).map_err(ContentError::File)?;
+        if !path.starts_with(&format!("{directory}/")) || path[directory.len() + 1..].contains('/')
+        {
+            return Err(ContentError::InvalidRequest);
+        }
+        self.files
+            .check_write_authority(
+                subject,
+                &relative,
+                &expected
+                    .clone()
+                    .map_or(WritePrecondition::Absent, WritePrecondition::Matches),
+            )
+            .map_err(ContentError::File)?;
+        let bytes = self.download_source(&source, &mut url, Some(deadline))?;
+        self.files
+            .content_install_bytes(
+                runtime,
+                subject,
+                key,
+                kind,
+                path,
+                expected,
+                ContentProvider {
+                    provider: match provider {
+                        Provider::Modrinth => "modrinth",
+                        Provider::Curseforge => "curseforge",
+                    }
+                    .into(),
+                    project_id: project_id.clone(),
+                    version_id: version_id.clone(),
+                },
+                &bytes,
+            )
+            .map_err(ContentError::File)
+    }
     pub fn new(
         files: &'a FileBrowser,
         providers: &'a dyn ProviderClient,
@@ -277,18 +370,35 @@ impl<'a> ContentInstaller<'a> {
             }
         };
         let (path, mut url) = validate_source(&source)?;
+        if !source.filename.to_ascii_lowercase().ends_with(".jar") {
+            return Err(ContentError::UnsafeFilename);
+        }
         files
             .check_write_authority(subject, &path, precondition)
             .map_err(ContentError::File)?;
         files
             .remote_content_authority(subject, &path)
             .map_err(ContentError::File)?;
+        let bytes = self.download_source(&source, &mut url, deadline)?;
+        let _admission = files
+            .remote_effect_admission()
+            .map_err(ContentError::File)?;
+        files
+            .write(subject, &path, precondition, &bytes)
+            .map_err(ContentError::File)
+    }
+    fn download_source(
+        &self,
+        source: &ResolvedSource,
+        url: &mut Url,
+        deadline: Option<Instant>,
+    ) -> Result<Vec<u8>> {
         for redirects in 0..=MAX_REDIRECTS {
             // Never let the HTTP adapter follow redirects implicitly.
-            validate_download_url(source.provider, &url)?;
+            validate_download_url(source.provider, url)?;
             let response = match deadline {
-                Some(d) => self.http.get_with_deadline(&url, d)?,
-                None => self.http.get(&url)?,
+                Some(d) => self.http.get_with_deadline(url, d)?,
+                None => self.http.get(url)?,
             };
             if matches!(response.status, 301 | 302 | 303 | 307 | 308) {
                 if redirects == MAX_REDIRECTS {
@@ -298,10 +408,10 @@ impl<'a> ContentInstaller<'a> {
                 if location.len() > MAX_URL_BYTES {
                     return Err(ContentError::DisallowedUrl);
                 }
-                url = url
+                *url = url
                     .join(&location)
                     .map_err(|_| ContentError::DisallowedUrl)?;
-                validate_download_url(source.provider, &url)?;
+                validate_download_url(source.provider, url)?;
                 continue;
             }
             if response.status != 200
@@ -326,15 +436,10 @@ impl<'a> ContentInstaller<'a> {
                 None => response.body,
             };
             let bytes = verified_bytes(body, &source.expected_hash)?;
-            let _admission = files
-                .remote_effect_admission()
-                .map_err(ContentError::File)?;
             if let Some(deadline) = deadline {
                 deadline_check(deadline)?;
             }
-            return files
-                .write(subject, &path, precondition, &bytes)
-                .map_err(ContentError::File);
+            return Ok(bytes);
         }
         Err(ContentError::TooManyRedirects)
     }
@@ -356,7 +461,8 @@ fn validate_source(source: &ResolvedSource) -> Result<(RelativePath, Url)> {
     // A provider filename is a leaf, not a provider-controlled relative path.
     if source.filename.contains('/')
         || source.filename.contains('\\')
-        || !source.filename.to_ascii_lowercase().ends_with(".jar")
+        || !(source.filename.to_ascii_lowercase().ends_with(".jar")
+            || source.filename.to_ascii_lowercase().ends_with(".zip"))
     {
         return Err(ContentError::UnsafeFilename);
     }
@@ -426,6 +532,8 @@ fn verified_bytes(mut reader: Box<dyn Read>, expected: &ExpectedHash) -> Result<
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum ContentError {
+    ModsUnsupported,
+    PluginsUnsupported,
     InvalidRequest,
     InvalidMetadata,
     UnknownSource,

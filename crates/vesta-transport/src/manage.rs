@@ -19,6 +19,8 @@ use vesta_control::{
 
 #[path = "manage_automation.rs"]
 mod automation;
+#[path = "manage_content.rs"]
+pub(super) mod content;
 #[path = "manage_files.rs"]
 pub(super) mod files;
 #[path = "manage_hosting.rs"]

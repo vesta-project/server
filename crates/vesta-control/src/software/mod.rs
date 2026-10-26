@@ -170,6 +170,21 @@ impl Drop for SoftwareService {
 }
 
 impl SoftwareHandle {
+    /// Non-secret target facts for content capability projection; no launch document.
+    pub fn content_target(&self) -> Result<(Option<String>, Option<String>)> {
+        self.inner
+            .db
+            .read_with(|tx| -> Result<_> {
+                let current = store::state(tx.connection())?.current.installation;
+                let family = current
+                    .software
+                    .map(|v| serde_json::to_value(v).map_err(|_| SoftwareError::StateUnavailable))
+                    .transpose()?
+                    .and_then(|v| v.as_str().map(str::to_owned));
+                Ok((family, current.version))
+            })
+            .map_err(Into::into)
+    }
     pub fn selected_java_path(&self, subject: &Subject) -> Result<PathBuf> {
         self.authorize(subject)?;
         self.inner

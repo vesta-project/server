@@ -29,6 +29,11 @@ pub(super) fn implemented(path: &str) -> bool {
             | "/api/v3/manage/files/uploads"
             | "/api/v3/manage/trash"
             | "/api/v3/manage/content/install"
+            | "/api/v3/manage/content"
+            | "/api/v3/manage/content/mutate"
+            | "/api/v3/manage/content/update"
+            | "/api/v3/manage/content/cancel"
+            | "/api/v3/manage/content/identify"
             | "/api/v3/manage/config/server-properties"
     ) || upload_route(path).is_some()
         || restore_route(path).is_some()
@@ -176,6 +181,11 @@ struct Begin {
 struct Empty {}
 
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
+    if request.path == "/api/v3/manage/content"
+        || request.path.starts_with("/api/v3/manage/content/")
+    {
+        return super::content::dispatch(host, request);
+    }
     let Some(token) = request.authorization else {
         return error(StatusCode::UNAUTHORIZED, "management_session_invalid");
     };

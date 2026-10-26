@@ -12,6 +12,57 @@ pub struct UreqProviderClient {
     curseforge_api_key: Option<String>,
 }
 impl UreqProviderClient {
+    /// One optional bounded lookup; successful negative results are cacheable.
+    pub fn identify_sha512(&self, hash: &str) -> Result<Option<super::ContentProvider>> {
+        ExpectedHash::Sha512(hash.into()).validate()?;
+        let client = http::agent_with_timeout(std::time::Duration::from_secs(5));
+        let body = serde_json::json!({"hashes":[hash],"algorithm":"sha512"}).to_string();
+        let mut response = client
+            .post("https://api.modrinth.com/v2/version_files")
+            .header("Content-Type", "application/json")
+            .header("Accept-Encoding", "identity")
+            .header("User-Agent", "vesta-control/content-inventory")
+            .send(body.as_bytes())
+            .map_err(|_| ContentError::DownloadFailed)?;
+        validate_metadata_response(
+            response.status().as_u16(),
+            response
+                .headers()
+                .get("content-encoding")
+                .map(|v| v.as_bytes()),
+        )?;
+        let mut bytes = Vec::new();
+        response
+            .body_mut()
+            .with_config()
+            .limit((MAX_METADATA_BYTES + 1) as u64)
+            .reader()
+            .take((MAX_METADATA_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| ContentError::DownloadFailed)?;
+        if bytes.len() > MAX_METADATA_BYTES {
+            return Err(ContentError::InvalidMetadata);
+        }
+        let versions: std::collections::BTreeMap<String, ModrinthVersion> =
+            serde_json::from_slice(&bytes).map_err(|_| ContentError::InvalidMetadata)?;
+        let Some(version) = versions.get(hash) else {
+            return Ok(None);
+        };
+        if !version
+            .files
+            .iter()
+            .any(|f| f.hashes.sha512.eq_ignore_ascii_case(hash))
+        {
+            return Err(ContentError::InvalidMetadata);
+        }
+        validate_id(&version.id)?;
+        validate_id(&version.project_id)?;
+        Ok(Some(super::ContentProvider {
+            provider: "modrinth".into(),
+            project_id: version.project_id.clone(),
+            version_id: version.id.clone(),
+        }))
+    }
     /// API key is trusted server configuration, not a request field.
     pub fn new(curseforge_api_key: Option<String>) -> Self {
         Self {

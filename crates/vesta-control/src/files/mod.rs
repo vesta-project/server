@@ -10,6 +10,7 @@
 //! Unix replacement/restore preserves permission mode bits (not ownership, ACLs, xattrs or
 //! timestamps). Windows preserves the read-only attribute and refuses read-only replacement
 //! or deletion; it does not copy custom ACLs or other attributes. Stages start private on Unix.
+mod content;
 mod ignore;
 mod local_document;
 mod offline_whitelist;
@@ -267,6 +268,7 @@ impl FileBrowser {
     /// Trusted host composition only. This opens no listener and grants no authority.
     /// The canonical state root is always excluded even if the host omits it.
     pub fn open(db: StateDatabase, root: &Path, protected: &[&Path]) -> Result<Self> {
+        content::initialize(&db)?;
         let mut protected = protected.to_vec();
         protected.push(db.directory().path());
         let root = root::Root::open(root, &protected)?;
@@ -296,11 +298,20 @@ impl FileBrowser {
         subject: &Subject,
         precondition: &WritePrecondition,
     ) -> Result<()> {
+        self.check_content_directory_admission(subject, precondition, "mods", ".jar")
+    }
+    pub(crate) fn check_content_directory_admission(
+        &self,
+        subject: &Subject,
+        precondition: &WritePrecondition,
+        directory: &str,
+        suffix: &str,
+    ) -> Result<()> {
         let capability = match precondition {
             WritePrecondition::Absent => Capability::FilesCreate,
             WritePrecondition::Matches(_) => Capability::FilesOverwrite,
         };
-        let directory = RelativePath::parse("mods")?;
+        let directory = RelativePath::parse(directory)?;
         self.db
             .read_with(|snapshot| {
                 let policy = identity::policy_in(
@@ -310,7 +321,7 @@ impl FileBrowser {
                     Some(subject),
                 )?;
                 let check = |resource: &Resource| match policy
-                    .check_any_direct_child(capability, resource, ".jar")
+                    .check_any_direct_child(capability, resource, suffix)
                 {
                     identity::Decision::Allow => Ok(()),
                     identity::Decision::Deny(reason) => {

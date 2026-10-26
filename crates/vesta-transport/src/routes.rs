@@ -314,7 +314,7 @@ pub(super) async fn route(
     let jobs = if control_request(&method, &path, query.as_deref()) {
         state.control_jobs.reap(false).await;
         &state.control_jobs
-    } else if (path == "/api/v3/manage/content/install" && method == Method::POST)
+    } else if (path.starts_with("/api/v3/manage/content/") && method == Method::POST)
         || super::manage::hosting::implemented(&path)
     {
         state.install_jobs.reap(false).await;
