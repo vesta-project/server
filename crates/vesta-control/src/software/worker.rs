@@ -1,4 +1,4 @@
-use super::{Inner, Result, SoftwareError, Work, WorkKind, model::StoredLaunch, store};
+use super::{Inner, Result, SoftwareError, Work, WorkKind, custom, model::StoredLaunch, store};
 use rusqlite::params;
 use std::sync::Arc;
 use vesta_server_install::ProgressReporter;
@@ -99,6 +99,7 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
             }
             StoredLaunch {
                 installation: super::Installation {
+                    custom_jar: None,
                     loader_version: plan.loader_version().map(str::to_owned),
                     software: Some(plan.software()),
                     version: Some(plan.version().into()),
@@ -115,6 +116,15 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
             }
         }
         WorkKind::JavaDownload(..) => unreachable!(),
+        WorkKind::CustomLaunch(candidate, _) => {
+            vesta_server_install::verify_managed_artifacts(&candidate.artifacts).await?;
+            if let Some(custom) = &candidate.installation.custom_jar {
+                let files = crate::files::FileBrowser::open(inner.db.clone(), &inner.game, &[])
+                    .map_err(|_| SoftwareError::InvalidRequest)?;
+                custom::probe(&files, &work.actor, &custom.path)?;
+            }
+            candidate.as_ref().clone()
+        }
         WorkKind::JavaSelect(path) => {
             crate::java::probe(path, false).await?;
             let mut candidate = inner
@@ -151,7 +161,13 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
         })?,
     };
     if matches!(work.kind, WorkKind::Rollback) {
-        if candidate.artifacts.is_empty() && !inner.db.read_with(|tx| -> Result<bool> { Ok(store::state(tx.connection())?.recovery) })? { return Err(SoftwareError::PreviousUnavailable); }
+        if candidate.artifacts.is_empty()
+            && !inner
+                .db
+                .read_with(|tx| -> Result<bool> { Ok(store::state(tx.connection())?.recovery) })?
+        {
+            return Err(SoftwareError::PreviousUnavailable);
+        }
         vesta_server_install::verify_managed_artifacts(&candidate.artifacts).await?;
     }
     if inner.cancel.load(std::sync::atomic::Ordering::Acquire) {
@@ -165,10 +181,13 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
         store::authorize(c,&inner.db,&work.actor)?;
         let s=store::state(c)?;
         if s.revision!=expected {return Err(SoftwareError::RevisionConflict);}
-        if matches!(work.kind,WorkKind::Apply(..) | WorkKind::JavaSelect(..)) && s.recovery {return Err(SoftwareError::RecoveryRequired);}
+        if !matches!(work.kind,WorkKind::Rollback) && s.recovery {return Err(SoftwareError::RecoveryRequired);}
         // Previous is written BEFORE touching the actual launch. During recovery
         // rollback always targets the known old launch, even after a partial write.
-        if matches!(work.kind,WorkKind::Apply(..) | WorkKind::JavaSelect(..)) {
+        if !matches!(work.kind,WorkKind::Rollback) {
+            if matches!(work.kind,WorkKind::CustomLaunch(_,false)) && s.current.installation.custom_jar.is_none() {
+                c.execute("INSERT OR REPLACE INTO software_managed_launch VALUES(1,?)",[store::encode(&s.current)?])?;
+            }
             c.execute("UPDATE software_state SET previous_launch=current_launch,recovery_required=1 WHERE singleton=1",[])?;
         } else {
             c.execute("UPDATE software_state SET recovery_required=1 WHERE singleton=1",[])?;

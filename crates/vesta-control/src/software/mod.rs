@@ -2,10 +2,12 @@
 //! external; canonical owner/capability checks are repeated here on every request.
 //! Downloads never run on the urgent lifecycle worker. Activation never stops or
 //! starts Minecraft, and an ambiguous activation blocks starts until rollback.
+mod custom;
 mod model;
 mod runtime;
 mod store;
 mod worker;
+pub use custom::{CustomJarPlan, CustomJarRequest};
 pub use model::{
     ApplyRequest, Installation, Job, PlanRequest, PreparedPlan, PreparedRollback, Result,
     RollbackRequest, SoftwareError, Status,
@@ -47,6 +49,7 @@ struct PendingRollback {
     revision: u64,
 }
 enum WorkKind {
+    CustomLaunch(Box<StoredLaunch>, bool),
     Apply(Box<InstallPlan>, Option<Approval>),
     Rollback,
     JavaSelect(PathBuf),
@@ -71,6 +74,7 @@ struct Inner {
     runtime: Arc<dyn RuntimeHooks>,
     plans: Mutex<BTreeMap<String, PendingPlan>>,
     rollbacks: Mutex<BTreeMap<String, PendingRollback>>,
+    custom_plans: Mutex<BTreeMap<String, custom::PendingCustom>>,
     query_permit: Semaphore,
     queue: Mutex<Queue>,
     wake: Condvar,
@@ -110,6 +114,7 @@ impl SoftwareService {
         let game = installer.validate_managed_game(&game)?;
         let original = StoredLaunch {
             installation: Installation {
+                custom_jar: None,
                 loader_version: None,
                 software: None,
                 version: None,
@@ -132,6 +137,7 @@ impl SoftwareService {
             runtime,
             plans: Mutex::new(BTreeMap::new()),
             rollbacks: Mutex::new(BTreeMap::new()),
+            custom_plans: Mutex::new(BTreeMap::new()),
             query_permit: Semaphore::new(1),
             queue: Mutex::new(Queue::default()),
             wake: Condvar::new(),
@@ -285,7 +291,10 @@ impl SoftwareHandle {
                     unavailable_reason: None,
                     revision: s.revision,
                     current: s.current.installation,
-                    previous_restorable: s.previous.as_ref().is_some_and(|p| !p.artifacts.is_empty()),
+                    previous_restorable: s
+                        .previous
+                        .as_ref()
+                        .is_some_and(|p| !p.artifacts.is_empty()),
                     previous: s.previous.map(|p| p.installation),
                     recovery_required: s.recovery,
                     catalog: Software::ALL
@@ -409,7 +418,14 @@ impl SoftwareHandle {
             .lock()
             .map_err(|_| SoftwareError::StateUnavailable)?;
         plans.retain(|_, p| p.expires > now);
-        if plans.len() >= MAX_PLANS || plans.values().map(|p|p.plan.retained_metadata_bytes()).sum::<usize>().saturating_add(plan.retained_metadata_bytes()) > 32*1024*1024 {
+        if plans.len() >= MAX_PLANS
+            || plans
+                .values()
+                .map(|p| p.plan.retained_metadata_bytes())
+                .sum::<usize>()
+                .saturating_add(plan.retained_metadata_bytes())
+                > 32 * 1024 * 1024
+        {
             return Err(SoftwareError::Busy);
         }
         plans.insert(
@@ -538,9 +554,13 @@ impl SoftwareHandle {
         let target = status.previous.ok_or(SoftwareError::PreviousUnavailable)?;
         self.inner.db.read_with(|tx| -> Result<()> {
             let state = store::state(tx.connection())?;
-            if state.revision != expected_revision { return Err(SoftwareError::RevisionConflict); }
+            if state.revision != expected_revision {
+                return Err(SoftwareError::RevisionConflict);
+            }
             let previous = state.previous.ok_or(SoftwareError::PreviousUnavailable)?;
-            if previous.artifacts.is_empty() && !state.recovery { return Err(SoftwareError::PreviousUnavailable); }
+            if previous.artifacts.is_empty() && !state.recovery {
+                return Err(SoftwareError::PreviousUnavailable);
+            }
             Ok(())
         })?;
         let token = ConfirmationToken::random().map_err(|_| SoftwareError::RuntimeUnavailable)?;

@@ -29,6 +29,9 @@ pub(crate) fn implemented(path: &str) -> bool {
             | "/api/v3/manage/software/jobs"
             | "/api/v3/manage/software/rollback/plan"
             | "/api/v3/manage/software/rollback"
+            | "/api/v3/manage/software/custom-jar/plan"
+            | "/api/v3/manage/software/custom-jar/apply"
+            | "/api/v3/manage/software/restore-managed/plan"
             | "/api/v3/manage/sftp"
             | "/api/v3/manage/sftp/keys"
     ) || path
@@ -301,6 +304,53 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             )
         };
     };
+    if matches!(
+        action,
+        "software/custom-jar/plan" | "software/restore-managed/plan"
+    ) && request.method == Method::POST
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Custom {
+            path: Option<String>,
+            expected_revision: u64,
+        }
+        let Some(input) = decode::<Custom>(request.bytes) else {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        };
+        if (action == "software/custom-jar/plan") != input.path.is_some() {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        return match service.prepare_custom_jar(&subject, input.path, input.expected_revision) {
+            Ok(value) => json_value(value),
+            Err(e) => software_error(e),
+        };
+    }
+    if action == "software/custom-jar/apply" && request.method == Method::POST {
+        let Some(mut input) = decode::<vesta_control::software::CustomJarRequest>(request.bytes)
+        else {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        };
+        let Some(key) = request.idempotency else {
+            return error(StatusCode::BAD_REQUEST, "idempotency_key_required");
+        };
+        if key != input.idempotency_key {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        input.idempotency_key = match super::key(
+            Some(key),
+            host.database().server_id(),
+            subject.device.as_str(),
+            request.path,
+        ) {
+            Some(key) => key,
+            None => return error(StatusCode::BAD_REQUEST, "invalid_request"),
+        };
+        return match service.apply_custom_jar(&subject, input) {
+            Ok(value) => json_value(value),
+            Err(e) => software_error(e),
+        };
+    }
     if action.starts_with("java") {
         if let Err(e) = vesta_control::java::authorize(host.database(), &subject) {
             return software_error(e);

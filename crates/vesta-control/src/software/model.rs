@@ -170,11 +170,17 @@ pub struct PreparedPlan {
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct Installation {
     #[serde(default)]
+    pub custom_jar: Option<CustomJar>,
+    #[serde(default)]
     pub loader_version: Option<String>,
     pub software: Option<Software>,
     pub version: Option<String>,
     pub build: Option<u32>,
     pub installation_id: String,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct CustomJar {
+    pub path: String,
 }
 #[derive(Serialize)]
 pub struct Status {

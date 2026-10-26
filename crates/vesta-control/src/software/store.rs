@@ -154,6 +154,13 @@ pub(super) fn initialize(db: &StateDatabase, original: &StoredLaunch) -> Result<
     db.write_with(|tx| -> Result<bool> {
         let c=tx.connection();
         c.execute_batch(include_str!("schema.sql"))?;
+        let schema:String=c.query_row("SELECT sql FROM sqlite_master WHERE name='software_jobs'",[],|r|r.get(0))?;
+        if !schema.contains("'custom_jar'") {
+            c.execute_batch("ALTER TABLE software_jobs RENAME TO software_jobs_legacy")?;
+            c.execute_batch(include_str!("schema.sql"))?;
+            c.execute_batch("INSERT INTO software_jobs SELECT * FROM software_jobs_legacy; DROP TABLE software_jobs_legacy;")?;
+        }
+        c.execute_batch("CREATE TABLE IF NOT EXISTS software_managed_launch(singleton INTEGER PRIMARY KEY,launch_json TEXT NOT NULL)")?;
         c.execute("INSERT OR IGNORE INTO software_state(singleton,revision,current_launch) VALUES(1,0,?)",[encode(original)?])?;
         let now=db.clock().millis();
         // Never replay a process/activation step with an ambiguous admitted result.

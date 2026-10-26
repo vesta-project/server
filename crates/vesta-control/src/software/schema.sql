@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS software_state (
 ) STRICT;
 CREATE TABLE IF NOT EXISTS software_jobs (
     id TEXT PRIMARY KEY,
-    kind TEXT NOT NULL CHECK(kind IN ('apply','rollback')),
+    kind TEXT NOT NULL CHECK(kind IN ('apply','rollback','java_select','java_download','custom_jar','restore_managed')),
     state TEXT NOT NULL CHECK(state IN ('queued','staging','activating','succeeded','failed','recovery_required')),
     principal TEXT NOT NULL,
     device TEXT NOT NULL,

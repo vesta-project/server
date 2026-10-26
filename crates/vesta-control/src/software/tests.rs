@@ -122,6 +122,7 @@ impl Fixture {
         std::fs::write(&artifact, b"retained software").unwrap();
         let launch = StoredLaunch {
             installation: Installation {
+                custom_jar: None,
                 loader_version: None,
                 software: Some(Software::Paper),
                 version: Some("1.21.4".into()),
@@ -129,7 +130,11 @@ impl Fixture {
                 installation_id: "srv_previous".into(),
             },
             document: document.into(),
-            artifacts: vec![vesta_server_install::ManagedArtifact { path: artifact, size: 17, sha256: hex::encode(sha2::Sha256::digest(b"retained software")) }],
+            artifacts: vec![vesta_server_install::ManagedArtifact {
+                path: artifact,
+                size: 17,
+                sha256: hex::encode(sha2::Sha256::digest(b"retained software")),
+            }],
         };
         self.db
             .write(|c| {
@@ -160,6 +165,116 @@ fn actor(device: &str) -> Subject {
 }
 fn owner() -> Subject {
     actor(DEVICE)
+}
+
+#[test]
+fn custom_jar_is_confirmed_owner_only_and_restores_managed_with_java() {
+    use std::io::{Cursor, Write};
+    struct CustomHooks(Arc<NativeState>);
+    impl RuntimeHooks for CustomHooks {
+        fn launch_document(&self, launch: &ManagedLaunch) -> Result<String> {
+            Ok(format!(
+                "[minecraft]\nworking-directory={}\n[launch]\nkind='native'\nexecutable={}\nargs={}\nstop='console-stop'\n",
+                toml::Value::String(launch.working_directory.to_string_lossy().into()),
+                toml::Value::String(launch.java.to_string_lossy().into()),
+                toml::Value::Array(
+                    launch
+                        .args
+                        .iter()
+                        .cloned()
+                        .map(toml::Value::String)
+                        .collect()
+                )
+            ))
+        }
+        fn acquire_stopped(&self) -> Result<Box<dyn StoppedGuard>> {
+            Hooks(self.0.clone()).acquire_stopped()
+        }
+        fn recovery_block(&self, blocked: bool) -> Result<()> {
+            Hooks(self.0.clone()).recovery_block(blocked)
+        }
+    }
+    let f = Fixture::new();
+    let original = format!(
+        "[minecraft]\nworking-directory={}\n[launch]\nkind='native'\nexecutable={}\nargs=[]\nstop='console-stop'\n",
+        toml::Value::String(f.game.to_string_lossy().into()),
+        toml::Value::String(std::env::current_exe().unwrap().to_string_lossy().into())
+    );
+    *f.native.document.lock().unwrap() = original.clone();
+    let service = SoftwareService::open(
+        f.db.clone(),
+        f.installer.clone(),
+        std::env::current_exe().unwrap(),
+        f.game.clone(),
+        original,
+        Arc::new(CustomHooks(f.native.clone())),
+    )
+    .unwrap();
+    let handle = service.handle();
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.start_file(
+        "META-INF/MANIFEST.MF",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    zip.write_all(b"Manifest-Version: 1.0\r\nMain-Class: example.Server\r\n\r\n")
+        .unwrap();
+    std::fs::write(
+        f.game.join("custom.jar"),
+        zip.finish().unwrap().into_inner(),
+    )
+    .unwrap();
+    assert!(matches!(
+        handle.prepare_custom_jar(&viewer(), Some("custom.jar".into()), 0),
+        Err(SoftwareError::Forbidden)
+    ));
+    assert!(
+        handle
+            .prepare_custom_jar(&owner(), Some("../custom.jar".into()), 0)
+            .is_err()
+    );
+    let plan = handle
+        .prepare_custom_jar(&owner(), Some("custom.jar".into()), 0)
+        .unwrap();
+    assert_eq!(plan.main_class.as_deref(), Some("example.Server"));
+    assert_eq!(f.native.calls.load(Ordering::SeqCst), 0);
+    let request = CustomJarRequest {
+        plan_id: plan.plan_id,
+        confirmation_token: plan.confirmation_token,
+        idempotency_key: "custom-jar".into(),
+    };
+    let job = handle.apply_custom_jar(&owner(), request).unwrap();
+    assert_eq!(finished(&handle, &job.id).state, "succeeded");
+    assert_eq!(
+        handle
+            .status(&owner())
+            .unwrap()
+            .current
+            .custom_jar
+            .unwrap()
+            .path,
+        "custom.jar"
+    );
+    let plan = handle.prepare_custom_jar(&owner(), None, 1).unwrap();
+    let job = handle
+        .apply_custom_jar(
+            &owner(),
+            CustomJarRequest {
+                plan_id: plan.plan_id,
+                confirmation_token: plan.confirmation_token,
+                idempotency_key: "restore-managed".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(finished(&handle, &job.id).state, "succeeded");
+    assert!(
+        handle
+            .status(&owner())
+            .unwrap()
+            .current
+            .custom_jar
+            .is_none()
+    );
 }
 fn viewer() -> Subject {
     Subject {
@@ -291,21 +406,36 @@ fn running_game_refuses_activation_without_changing_launch_or_world() {
 }
 #[test]
 fn unverified_previous_launch_is_only_available_for_interrupted_change_recovery() {
-    let f = Fixture::new(); let service = f.open(); let h = service.handle();
+    let f = Fixture::new();
+    let service = f.open();
+    let h = service.handle();
     f.previous("original launch");
     assert!(h.status(&owner()).unwrap().previous_restorable);
     f.db.write(|c| {
         let mut previous = store::state(c).unwrap().previous.unwrap();
         previous.artifacts.clear();
-        c.execute("UPDATE software_state SET previous_launch=?", [store::encode(&previous).unwrap()])?;
+        c.execute(
+            "UPDATE software_state SET previous_launch=?",
+            [store::encode(&previous).unwrap()],
+        )?;
         Ok(())
-    }).unwrap();
-    assert!(matches!(h.prepare_rollback(&owner(),0), Err(SoftwareError::PreviousUnavailable)));
+    })
+    .unwrap();
+    assert!(matches!(
+        h.prepare_rollback(&owner(), 0),
+        Err(SoftwareError::PreviousUnavailable)
+    ));
     assert!(!h.status(&owner()).unwrap().previous_restorable);
-    f.db.write(|c| { c.execute("UPDATE software_state SET recovery_required=1", [])?; Ok(()) }).unwrap();
-    let plan = h.prepare_rollback(&owner(),0).unwrap();
-    let job = h.rollback(&owner(),request(&plan,"recover-unverified-config")).unwrap();
-    assert_eq!(finished(&h,&job.id).state,"succeeded");
+    f.db.write(|c| {
+        c.execute("UPDATE software_state SET recovery_required=1", [])?;
+        Ok(())
+    })
+    .unwrap();
+    let plan = h.prepare_rollback(&owner(), 0).unwrap();
+    let job = h
+        .rollback(&owner(), request(&plan, "recover-unverified-config"))
+        .unwrap();
+    assert_eq!(finished(&h, &job.id).state, "succeeded");
     f.unchanged();
 }
 
