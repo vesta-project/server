@@ -10,6 +10,7 @@ mod layout;
 mod receipt;
 pub(crate) use install::build;
 pub use receipt::BuiltReceipt;
+pub(crate) use receipt::output_warnings;
 pub(crate) use receipt::verify;
 
 // Audited upstream runner. Updating it requires reviewing its source and pin.
@@ -33,6 +34,7 @@ pub(crate) struct BuildPlan {
     shell: Option<RuntimeBinding>,
     compiler: Option<RuntimeBinding>,
     decompiler_heap_mib: u32,
+    reference_policy: &'static str,
     // Explicit source-build budget, separate from the network query deadline.
     seconds: u64,
 }
@@ -218,6 +220,7 @@ pub(super) async fn resolve(
             shell: None,
             compiler: None,
             decompiler_heap_mib: if java_min >= 25 { 1024 } else { 512 },
+            reference_policy: "warn_on_local_output_difference",
             seconds: BUILD_SECONDS,
         }),
         processed: None,

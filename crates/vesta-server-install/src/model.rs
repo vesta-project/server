@@ -270,6 +270,7 @@ pub enum Warning {
     FirstRunEffects,
     ProxyResolution,
     SourceBuild,
+    SourceBuildReferenceMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

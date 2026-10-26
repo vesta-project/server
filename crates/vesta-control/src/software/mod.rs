@@ -115,6 +115,7 @@ impl SoftwareService {
         }
         let game = installer.validate_managed_game(&game)?;
         let original = StoredLaunch {
+            warnings: Vec::new(),
             installation: Installation {
                 custom_jar: None,
                 loader_version: None,

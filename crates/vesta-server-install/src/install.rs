@@ -738,6 +738,7 @@ pub(crate) async fn execute(
             .as_ref()
             .ok_or(InstallError::InvalidInput)?;
         let (sources, source_url, source_sha256) = recipe.source_evidence(plan)?;
+        let warnings = super::providers::buildtools::output_warnings(plan, &observed_sha256);
         super::providers::buildtools::BuiltReceipt {
             schema: 4,
             install_id: plan.install_id.clone(),
@@ -758,7 +759,7 @@ pub(crate) async fn execute(
             },
             java_requirement: plan.required_java.clone(),
             launch: plan.launch_recipe(),
-            warnings: plan.warnings.clone(),
+            warnings,
             completed_at: super::now()?,
         }
         .into_receipt()?

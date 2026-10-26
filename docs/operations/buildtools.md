@@ -44,13 +44,17 @@ This avoids a second mutable metadata lookup inside BuildTools. Local refs are
 verified again after compilation. BuildData's Minecraft version must match the
 reviewed selection.
 
-BuildTools produces a local build. Vesta requires the generated output to match
-the selected version document's target SHA-256. The verified build input and the
-generated output have separate receipt fields. A mismatch never activates the
-new software.
+BuildTools produces a local build. A difference from the selected version
+document's reference SHA-256 is a result warning, not a failed installation.
+BuildTools inputs, reviewed source refs, successful compiler exit and bootstrap
+layout/library checks are still required. Downloaded artifacts still require
+their published checksums. The verified build input and the generated output
+have separate receipt fields. Launch and rollback use the recorded local output
+checksum; changing the installed JAR afterwards still fails verification.
 
 Validation on 2026-10-27 found a reference mismatch for 26.3 build 4664, including
-with the stock upstream BuildTools command. Vesta refuses those outputs. Both
+with the stock upstream BuildTools command. These outputs now install with the
+`source_build_reference_mismatch` warning. Both
 1.21.8 targets matched their official hashes on Windows and Ubuntu. See the
 [installation validation report](../reviews/2026-10-27-buildtools-implementation.md)
 for exact inputs, results and reproduction evidence.
@@ -68,7 +72,9 @@ list entry is skipped exactly as the upstream bootstrap does; it is not a
 separately embedded runtime file. The complete generated JAR is hashed locally.
 A schema-4 receipt records the verified BuildTools input separately from this
 local output, retaining the four source commits, source-document URL/hash and
-selected Java major as well as the approved plan hash. Publication is receipt-last. Managed launch and rollback rehash the
+selected Java major as well as the approved plan hash. Reference policy is bound
+into the source-build plan hash. A mismatch warning must agree with the recorded
+reference and output; removing that warning invalidates the receipt. Publication is receipt-last. Managed launch and rollback rehash the
 retained local output. Schema-1/2/3 approval hashes remain unchanged.
 
 The previous software and game directory remain intact until normal activation.

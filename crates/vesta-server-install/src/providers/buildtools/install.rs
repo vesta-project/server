@@ -358,6 +358,7 @@ pub(crate) async fn build(
         || value.processed.is_some()
         || value.bundle.is_some()
         || recipe.seconds != BUILD_SECONDS
+        || recipe.reference_policy != "warn_on_local_output_difference"
         || recipe.decompiler_heap_mib != if recipe.java_min >= 25 { 1024 } else { 512 }
     {
         return Err(InstallError::InvalidInput);
@@ -546,13 +547,6 @@ pub(crate) async fn build(
     verify_refs(&stage, &work, value, recipe, deadline, reporter).await?;
     let jar = work.join(format!("{target}-{}.jar", value.version));
     let (size, hash) = crate::providers::forge::digest(&jar, value.limits.artifact_bytes).await?;
-    if recipe
-        .reference_hash
-        .as_ref()
-        .is_some_and(|expected| expected != &hash)
-    {
-        return Err(InstallError::BuildOutputMismatch);
-    }
     super::layout::verify(
         &jar,
         value.software,

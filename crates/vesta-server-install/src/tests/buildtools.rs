@@ -180,13 +180,23 @@ fn build_tool_policy_only_accepts_the_reviewed_immutable_release() {
 
 #[tokio::test]
 async fn built_receipts_launch_only_the_reverified_jar_and_reject_tampering() {
-    for software in [Software::Bukkit, Software::Spigot] {
+    for (software, mismatch) in [
+        (Software::Bukkit, false),
+        (Software::Spigot, false),
+        (Software::Bukkit, true),
+        (Software::Spigot, true),
+    ] {
         let mut fixture = Fixture::new(Software::Paper).await;
         fixture.installer.limits.artifact_bytes = 4 * 1024 * 1024;
         let mut plan = fixture.plan().await;
         let mut source = metadata();
-        source["hashes"]["CraftBukkit"] = json!(model::sha256(BODY));
-        source["hashes"]["Spigot"] = json!(model::sha256(BODY));
+        let reference = if mismatch {
+            "0".repeat(64)
+        } else {
+            model::sha256(BODY)
+        };
+        source["hashes"]["CraftBukkit"] = json!(reference);
+        source["hashes"]["Spigot"] = json!(reference);
         mount_json(&fixture.server, "/versions/1.21.8.json", source).await;
         let resolved = crate::providers::resolve(
             &fixture.installer.http,
@@ -248,7 +258,7 @@ async fn built_receipts_launch_only_the_reverified_jar_and_reject_tampering() {
             },
             java_requirement: plan.required_java.clone(),
             launch: plan.launch_recipe(),
-            warnings: plan.warnings.clone(),
+            warnings: crate::providers::buildtools::output_warnings(&plan, &model::sha256(BODY)),
             completed_at: crate::now().unwrap(),
         };
         std::fs::write(
@@ -265,6 +275,30 @@ async fn built_receipts_launch_only_the_reverified_jar_and_reject_tampering() {
         assert_eq!(launch.args, ["-jar", jar.to_str().unwrap(), "nogui"]);
         assert_eq!(launch.required_files.as_slice(), std::slice::from_ref(&jar));
         assert_eq!(launch.artifacts.len(), 1);
+        let verified = fixture.installer.verify(&plan).await.unwrap();
+        assert_eq!(
+            verified
+                .warnings
+                .contains(&Warning::SourceBuildReferenceMismatch),
+            mismatch
+        );
+        if mismatch {
+            let mut hidden = receipt.clone();
+            hidden
+                .warnings
+                .retain(|warning| warning != &Warning::SourceBuildReferenceMismatch);
+            std::fs::write(
+                destination.join("control/receipt.json"),
+                serde_json::to_vec(&hidden).unwrap(),
+            )
+            .unwrap();
+            assert!(fixture.installer.verify(&plan).await.is_err());
+            std::fs::write(
+                destination.join("control/receipt.json"),
+                serde_json::to_vec(&receipt).unwrap(),
+            )
+            .unwrap();
+        }
         std::fs::write(jar, b"tampered").unwrap();
         assert!(fixture.installer.verify(&plan).await.is_err());
     }

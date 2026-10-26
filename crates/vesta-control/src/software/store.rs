@@ -79,6 +79,19 @@ pub(super) fn decode(text: &str) -> Result<StoredLaunch> {
     serde_json::from_str(text).map_err(|_| SoftwareError::StateUnavailable)
 }
 fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
+    let encoded: Option<String> = r.get(6)?;
+    let warnings = encoded
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                6,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?
+        .unwrap_or_default();
     Ok(Job {
         id: r.get(0)?,
         kind: r.get(1)?,
@@ -86,9 +99,10 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
         created_at_ms: r.get(3)?,
         updated_at_ms: r.get(4)?,
         error: r.get(5)?,
+        warnings,
     })
 }
-const COLUMNS: &str = "SELECT id,kind,state,created_at_ms,updated_at_ms,error FROM software_jobs";
+const COLUMNS: &str = "SELECT id,kind,state,created_at_ms,updated_at_ms,error,(SELECT warnings_json FROM software_job_results WHERE job_id=software_jobs.id) FROM software_jobs";
 pub(super) fn job(c: &Connection, id: &str) -> Result<Job> {
     c.query_row(&format!("{COLUMNS} WHERE id=?"), [id], row)
         .map_err(Into::into)

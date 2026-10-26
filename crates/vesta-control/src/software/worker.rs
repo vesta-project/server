@@ -94,16 +94,27 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
     let candidate = match &mut work.kind {
         WorkKind::Apply(plan, approval) => {
             let approval = approval.take().ok_or(SoftwareError::ConfirmationInvalid)?;
-            inner
+            let outcome = inner
                 .installer
                 .install(plan, approval, &Reporter(inner))
                 .await?;
+            let warnings = match outcome {
+                vesta_server_install::InstallOutcome::Installed(receipt) => receipt
+                    .warnings
+                    .into_iter()
+                    .filter(|warning| !plan.warnings().contains(warning))
+                    .collect(),
+                vesta_server_install::InstallOutcome::DryRun => {
+                    return Err(SoftwareError::RuntimeUnavailable);
+                }
+            };
             let launch = inner.installer.managed_launch(plan, &inner.game).await?;
             let document = inner.runtime.launch_document(&launch)?;
             if document.is_empty() || document.len() > 65_536 {
                 return Err(SoftwareError::RuntimeUnavailable);
             }
             StoredLaunch {
+                warnings,
                 installation: super::Installation {
                     custom_jar: None,
                     loader_version: plan.loader_version().map(str::to_owned),
@@ -202,6 +213,10 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
             c.execute("UPDATE software_state SET recovery_required=1 WHERE singleton=1",[])?;
         }
         c.execute("UPDATE software_jobs SET state='activating',candidate_launch=?,updated_at_ms=? WHERE id=?",params![store::encode(&candidate)?,inner.db.clock().millis(),work.id])?;
+        if !candidate.warnings.is_empty() {
+            let warnings = serde_json::to_string(&candidate.warnings).map_err(|_| SoftwareError::StateUnavailable)?;
+            c.execute("INSERT INTO software_job_results(job_id,warnings_json) VALUES(?,?)", params![work.id,warnings])?;
+        }
         store::audit(c,&inner.audit,&work.actor,"software.activate",&work.id,"pending")?;
         Ok(())
     })?;

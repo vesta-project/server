@@ -106,6 +106,7 @@ impl SoftwareHandle {
                 }],
             };
             let candidate = StoredLaunch {
+                warnings: Vec::new(),
                 installation: Installation {
                     custom_jar: Some(model::CustomJar { path }),
                     loader_version: None,

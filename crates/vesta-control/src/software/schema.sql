@@ -1,4 +1,9 @@
 -- Service-owned extension tables, installed only during trusted host composition.
+-- Keep small public results separate from potentially large private launch documents.
+CREATE TABLE IF NOT EXISTS software_job_results (
+    job_id TEXT PRIMARY KEY,
+    warnings_json TEXT NOT NULL CHECK(length(warnings_json) <= 4096)
+) STRICT;
 CREATE TABLE IF NOT EXISTS software_state (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
     revision INTEGER NOT NULL CHECK(revision >= 0),

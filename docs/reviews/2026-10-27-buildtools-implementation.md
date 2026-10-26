@@ -1,5 +1,10 @@
 # CraftBukkit and Spigot installation validation
 
+**Policy follow-up:** the earlier refusal results below are historical. Following
+upstream research and the user's decision, a reference difference for a locally
+compiled output now succeeds with a durable warning. Downloaded inputs retain
+strict checksum verification. See [warning-result validation](2026-10-27-source-build-warnings.md).
+
 ## Implemented path
 
 Both providers share the official BuildTools runner, source discovery, tool/JDK

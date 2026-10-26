@@ -210,11 +210,15 @@ pub struct Job {
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub error: Option<String>,
+    #[serde(default)]
+    pub warnings: Vec<Warning>,
 }
 
 /// Protected internal state. Never serialize this into a remote response.
 #[derive(Clone, Deserialize, Serialize)]
 pub(super) struct StoredLaunch {
+    #[serde(default)]
+    pub warnings: Vec<Warning>,
     pub installation: Installation,
     pub document: String,
     #[serde(default)]

@@ -121,6 +121,7 @@ impl Fixture {
         let artifact = self.game.join("retained-software.jar");
         std::fs::write(&artifact, b"retained software").unwrap();
         let launch = StoredLaunch {
+            warnings: Vec::new(),
             installation: Installation {
                 custom_jar: None,
                 loader_version: None,
@@ -558,6 +559,42 @@ fn partial_activation_survives_restart_and_requires_explicit_rollback() {
     assert!(!h.status(&owner()).unwrap().recovery_required);
     assert!(!f.native.blocked.load(Ordering::SeqCst));
     f.unchanged();
+}
+
+#[test]
+fn successful_job_warnings_survive_reopen_and_idempotent_reads() {
+    let f = Fixture::new();
+    let service = f.open();
+    f.db.write_with(|tx| -> Result<()> {
+        let c = tx.connection();
+        let mut launch = store::state(c)?.current;
+        launch.warnings = vec![vesta_server_install::Warning::SourceBuildReferenceMismatch];
+        c.execute("INSERT INTO software_jobs(id,kind,state,principal,device,idempotency_key,request_hash,expected_revision,candidate_launch,created_at_ms,updated_at_ms) VALUES('warning','apply','succeeded',?,?,'warning-key','warning-hash',0,?,1,1)", params![PRINCIPAL,DEVICE,store::encode(&launch)?])?;
+        c.execute("INSERT INTO software_job_results(job_id,warnings_json) VALUES('warning',?)", [serde_json::to_string(&launch.warnings).unwrap()])?;
+        Ok(())
+    }).unwrap();
+    assert_eq!(
+        service.handle().jobs(&owner()).unwrap()[0].warnings.len(),
+        1
+    );
+    drop(service);
+    let reopened = f.open();
+    let job =
+        f.db.read_with(|tx| -> Result<_> {
+            store::existing(tx.connection(), &owner(), "warning-key", "warning-hash")
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(job.state, "succeeded");
+    assert!(job.error.is_none());
+    assert_eq!(
+        job.warnings,
+        vec![vesta_server_install::Warning::SourceBuildReferenceMismatch]
+    );
+    assert_eq!(
+        reopened.handle().jobs(&owner()).unwrap()[0].warnings,
+        job.warnings
+    );
 }
 
 #[test]

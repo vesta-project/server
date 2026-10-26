@@ -4,6 +4,19 @@ use crate::{ArtifactRecord, InstallPlan, LaunchRecipe, Receipt, install as publi
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 
+pub(crate) fn output_warnings(plan: &InstallPlan, actual: &str) -> Vec<Warning> {
+    let mut warnings = plan.warnings.clone();
+    if plan
+        .source_build
+        .as_ref()
+        .and_then(|recipe| recipe.reference_hash.as_deref())
+        .is_some_and(|expected| expected != actual)
+    {
+        warnings.push(Warning::SourceBuildReferenceMismatch);
+    }
+    warnings
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BuiltReceipt {
@@ -36,7 +49,14 @@ impl BuiltReceipt {
             || self
                 .reference_sha256
                 .as_ref()
+                .is_some_and(|hash| !hex(hash, 64))
+            || (self
+                .reference_sha256
+                .as_ref()
                 .is_some_and(|hash| hash != &self.output.sha256)
+                != self
+                    .warnings
+                    .contains(&Warning::SourceBuildReferenceMismatch))
             || !hex(&self.source_sha256, 64)
             || self.source_url != format!("{INDEX}{}.json", self.version)
             || !(8..=99).contains(&self.selected_java_major)
@@ -130,15 +150,11 @@ pub(crate) async fn verify(value: &InstallPlan) -> Result<Receipt> {
         || receipt.reference_sha256 != recipe.reference_hash
         || receipt.java_requirement != value.required_java
         || receipt.launch != value.launch_recipe()
-        || receipt.warnings != value.warnings
+        || receipt.warnings != output_warnings(value, &receipt.output.sha256)
         || receipt.completed_at == 0
         || receipt.completed_at >= value.expires
         || receipt.completed_at > crate::now()?
         || receipt.output.size > value.limits.artifact_bytes
-        || recipe
-            .reference_hash
-            .as_ref()
-            .is_some_and(|expected| expected != &receipt.output.sha256)
         || receipt.input.actual_size > value.limits.artifact_bytes
         || receipt.input.url != recipe.tool.url
         || receipt.input.published_digest != recipe.tool.digest
