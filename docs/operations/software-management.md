@@ -64,6 +64,12 @@ Mirror URLs are ignored. Fresh installation planning still checks exact Forge
 Maven membership, official metadata and artifact pins; browsing snapshots never
 authorize a download or change an installed receipt. The Forge mirror source
 family is metadata-only and cannot download JARs.
+
+CraftBukkit (`bukkit`) and Spigot (`spigot`) share first-party BuildTools metadata
+discovery. They currently report `automatic_backend:false` with
+`buildtools_execution_pending` and must remain hidden from install choices.
+Version/build metadata availability does not mean compilation or activation is
+implemented. No unofficial prebuilt JAR source is used.
 Rollback explicitly selects the durable previous launch, preserves both software
 installations, and never downgrades/reverts world data. It requires an exact
 revision and confirmation; warn that an upgraded world may require backup restore.

@@ -10,16 +10,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let roots = InstallRoots::new(temp.path(), &[])?;
     let installer = ServerInstaller::new(roots, TransportConfig::direct())?;
     let mut failures = 0;
-    for software in [
-        Software::Vanilla,
-        Software::Paper,
-        Software::Folia,
-        Software::Purpur,
-        Software::Fabric,
-        Software::Quilt,
-        Software::Forge,
-        Software::NeoForge,
-    ] {
+    for software in Software::ALL {
         let started = Instant::now();
         match installer.versions(software, &SilentProgressReporter).await {
             Ok(versions) => {

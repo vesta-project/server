@@ -16,6 +16,9 @@ pub(crate) async fn list(
     job: &mut Job,
     reporter: &dyn ProgressReporter,
 ) -> Result<Vec<SoftwareRelease>> {
+    if matches!(software, Software::Bukkit | Software::Spigot) {
+        return super::buildtools::releases(http, software, version, job, reporter).await;
+    }
     if matches!(software, Software::Forge | Software::NeoForge) {
         if !identifier(version) {
             return Err(InstallError::InvalidInput);

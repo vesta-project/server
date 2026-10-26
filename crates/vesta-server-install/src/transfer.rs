@@ -731,6 +731,27 @@ pub(crate) fn validate_family_url(
         }
         return Ok(u);
     }
+    if family == SourceFamily::SpigotVersions {
+        let suffix = u.path().strip_prefix("/versions/");
+        let valid = suffix.is_some_and(|suffix| {
+            suffix.is_empty()
+                || suffix.strip_suffix(".json").is_some_and(|id| {
+                    super::providers::version_order(id).is_some() && identifier(id)
+                })
+        });
+        return if matches!(role, Role::Metadata)
+            && !head
+            && u.host_str() == Some("hub.spigotmc.org")
+            && valid
+            && !raw
+                .split('/')
+                .any(|part| part == "." || part.contains(".."))
+        {
+            Ok(u)
+        } else {
+            Err(InstallError::SourceRefused)
+        };
+    }
     if family == SourceFamily::ModrinthForge {
         return if matches!(role, Role::Metadata)
             && !head
@@ -751,6 +772,7 @@ pub(crate) fn validate_family_url(
         | SourceFamily::MinecraftLibraries
         | SourceFamily::ModrinthNeoForge => return Err(InstallError::SourceRefused),
         SourceFamily::ModrinthForge => return Err(InstallError::SourceRefused),
+        SourceFamily::SpigotVersions => return Err(InstallError::SourceRefused),
         SourceFamily::MojangObjects => ("piston-data.mojang.com", "/v1/objects/"),
         SourceFamily::ModrinthFabric => ("launcher-meta.modrinth.com", "/fabric/v0/"),
         SourceFamily::ModrinthQuilt => ("launcher-meta.modrinth.com", "/quilt/v1/"),

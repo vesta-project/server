@@ -3,6 +3,14 @@
 Status: implementation plan, not implemented features. Date: 2026-10-26.
 Baselines: agent `fed0674`, launcher `f4af2e3f`.
 
+Implementation checkpoints:
+
+- `d191aaf`: bounded agent browsing cache and protected persistence; fresh install
+  evidence remains separate. See `docs/reviews/2026-10-26-agent-catalogue-cache.md`.
+- Shared CraftBukkit/Spigot discovery and provenance are implemented, with
+  automatic execution still gated. See
+  `docs/reviews/2026-10-26-buildtools-foundation.md` for remaining executor work.
+
 ## Goals and boundaries
 
 Support comfortable management on a 1-2 core, 2-4 GiB host, leaving resources for

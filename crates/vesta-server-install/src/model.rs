@@ -66,9 +66,11 @@ pub enum Software {
     Quilt,
     Forge,
     NeoForge,
+    Bukkit,
+    Spigot,
 }
 impl Software {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Vanilla,
         Self::Paper,
         Self::Folia,
@@ -77,6 +79,8 @@ impl Software {
         Self::Quilt,
         Self::Forge,
         Self::NeoForge,
+        Self::Bukkit,
+        Self::Spigot,
     ];
     pub fn id(self) -> &'static str {
         match self {
@@ -88,6 +92,8 @@ impl Software {
             Self::Quilt => "quilt",
             Self::Forge => "forge",
             Self::NeoForge => "neoforge",
+            Self::Bukkit => "bukkit",
+            Self::Spigot => "spigot",
         }
     }
     pub fn descriptor(self) -> SoftwareDescriptor {
@@ -124,12 +130,22 @@ impl Software {
                 "https://neoforged.net",
                 "https://github.com/neoforged/NeoForge/blob/main/LICENSE.txt",
             ),
+            Self::Bukkit => (
+                "https://www.spigotmc.org/wiki/buildtools/",
+                "https://hub.spigotmc.org/stash/projects/SPIGOT/repos/craftbukkit/browse",
+            ),
+            Self::Spigot => (
+                "https://www.spigotmc.org/wiki/buildtools/",
+                "https://hub.spigotmc.org/stash/projects/SPIGOT/repos/spigot/browse",
+            ),
         };
         SoftwareDescriptor {
             software: self,
             automatic_backend: self.automatic(),
             unavailable_reason: if self.automatic() {
                 None
+            } else if matches!(self, Self::Bukkit | Self::Spigot) {
+                Some("buildtools_execution_pending")
             } else {
                 Some("provider_not_implemented")
             },
@@ -579,6 +595,7 @@ pub enum SourceFamily {
     MinecraftLibraries,
     ModrinthNeoForge,
     ModrinthForge,
+    SpigotVersions,
     MojangObjects,
     ModrinthFabric,
     ModrinthQuilt,

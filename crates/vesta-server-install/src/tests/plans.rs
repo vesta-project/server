@@ -50,16 +50,28 @@ fn canonical_snapshot_matches_independent_node_hash_vector() {
 }
 
 #[test]
-fn descriptors_keep_all_eight_initial_providers() {
+fn descriptors_keep_initial_providers_and_gate_both_buildtools_targets() {
     let mut ids = std::collections::HashSet::new();
     for s in Software::ALL {
         let d = s.descriptor();
         assert!(ids.insert(s.id()));
-        assert!(d.automatic_backend);
-        assert!(d.unavailable_reason.is_none());
+        if matches!(s, Software::Bukkit | Software::Spigot) {
+            assert!(!d.automatic_backend);
+            assert_eq!(d.unavailable_reason, Some("buildtools_execution_pending"));
+        } else {
+            assert!(d.automatic_backend);
+            assert!(d.unavailable_reason.is_none());
+        }
         for url in [d.source, d.licence, d.eula] {
             assert!(url.starts_with("https://"));
         }
+    }
+    assert_eq!(ids.len(), 10);
+    for id in [
+        "vanilla", "paper", "folia", "purpur", "fabric", "quilt", "forge", "neoforge", "bukkit",
+        "spigot",
+    ] {
+        assert!(ids.contains(id));
     }
     assert_eq!(
         Software::Folia.descriptor().caution,

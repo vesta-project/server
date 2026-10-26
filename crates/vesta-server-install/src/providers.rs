@@ -13,6 +13,7 @@ use std::{
     marker::PhantomData,
 };
 
+mod buildtools;
 pub(crate) mod forge;
 pub(super) mod loaders;
 pub(crate) mod releases;
@@ -359,6 +360,9 @@ pub(crate) async fn versions(
     job: &mut Job,
     reporter: &dyn ProgressReporter,
 ) -> Result<Vec<String>> {
+    if matches!(software, Software::Bukkit | Software::Spigot) {
+        return buildtools::versions(http, job, reporter).await;
+    }
     if matches!(software, Software::Forge | Software::NeoForge) {
         return forge::versions(http, software, job, reporter).await;
     }
@@ -369,7 +373,7 @@ pub(crate) async fn versions(
         .await?
         .versions)
 }
-fn version_order(s: &str) -> Option<Vec<u32>> {
+pub(crate) fn version_order(s: &str) -> Option<Vec<u32>> {
     s.split('.').map(|p| p.parse::<u32>().ok()).collect()
 }
 fn select_version(c: &Catalogue, selection: &Selection) -> Result<String> {
