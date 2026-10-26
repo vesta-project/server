@@ -89,6 +89,18 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     {
         return management_error(e);
     }
+    // Preserve pre-body admission: malformed requests must not bypass a missing
+    // file capability or reach provider work under content.install alone.
+    let write_capability = match action {
+        "content/install" => Some(Capability::FilesCreate),
+        "content/update" => Some(Capability::FilesOverwrite),
+        _ => None,
+    };
+    if let Some(capability) = write_capability
+        && let Err(e) = host.files().check_remote_surface(&subject, &[capability])
+    {
+        return super::files::file_error(e);
+    }
     let Some(key) = super::key(
         request.idempotency,
         host.database().server_id(),

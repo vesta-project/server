@@ -1242,6 +1242,30 @@ fn stopped_hold_fences_start_and_stale_tokens() {
 }
 
 #[test]
+fn pending_content_barrier_survives_client_disconnect_and_refuses_launch() {
+    let fixture = Fixture::new();
+    let running = Running::start(&fixture);
+    fs::write(fixture.state.path().join("content-pending"), b"").unwrap();
+    for _ in 0..2 {
+        let raw = SupervisorClient::new(&fixture.state).unwrap();
+        assert_eq!(
+            raw.call(
+                Op::Start {
+                    launch_identity: IDENTITY.into()
+                },
+                Duration::from_secs(2)
+            )
+            .unwrap(),
+            Reply::Refused {
+                code: "content_pending_restart".into()
+            }
+        );
+    }
+    fs::remove_file(fixture.state.path().join("content-pending")).unwrap();
+    drop(running);
+}
+
+#[test]
 fn stopped_launch_replacement_requires_hold_and_updates_real_process_owner() {
     let fixture = Fixture::new();
     let running = Running::start(&fixture);
