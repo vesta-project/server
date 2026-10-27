@@ -12,7 +12,7 @@ use vesta_control::{
 };
 
 pub(crate) fn implemented(path: &str) -> bool {
-    matches!(
+    super::resource_packs::implemented(path) || matches!(
         path,
         "/api/v3/manage/world"
             | "/api/v3/manage/world/new"
@@ -84,6 +84,9 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         .unwrap_or_default();
     if !matches!(action, "software/versions" | "software/releases") && request.query.is_some() {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if super::resource_packs::implemented(request.path) {
+        return super::resource_packs::dispatch(host, &subject, request);
     }
     if action == "world" && request.method == Method::GET {
         return match host.files().world(&subject) {

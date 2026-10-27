@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{fmt, fs::File, time::Duration};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,7 +46,8 @@ impl From<std::io::Error> for Error {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PackFormat {
     pub major: u32,
     pub minor: u32,
@@ -136,7 +137,7 @@ impl BuildLimits {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Resolution {
     HigherPriority,
@@ -145,13 +146,13 @@ pub enum Resolution {
     AtlasSources,
     FontProviders,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResolvedPath {
     pub path: String,
     pub layers: Vec<String>,
     pub resolution: Resolution,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BuildReport {
     /// Low to high priority, exactly the supplied order. No implicit sorting of packs.
     pub inputs: Vec<String>,

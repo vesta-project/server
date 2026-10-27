@@ -120,6 +120,7 @@ pub struct Host {
     sleep_driver: Option<crate::sleep::Driver>,
     software: Option<crate::software::SoftwareService>,
     sftp: Arc<crate::sftp::SftpService>,
+    resource_packs: Option<crate::resource_packs::hosting::Service>,
     runtime: OperationRuntime,
     backups: Option<Arc<Backups>>,
     automation: Arc<Automation>,
@@ -497,6 +498,7 @@ impl Host {
                 .as_ref()
                 .map(crate::software::SoftwareService::handle),
             sftp: self.sftp.clone(),
+            resource_packs: self.resource_packs.as_ref().expect("host services open").handle(),
         }
     }
     /// Present only when `[backups]` is configured.
@@ -524,6 +526,7 @@ impl Host {
                 }
             }
         }
+        drop(self.resource_packs.take());
         drop(self.software.take());
         match self
             .runtime
@@ -727,13 +730,25 @@ fn compose(
     }
     .map_err(HostError::Operation)?;
     let _ = cell.set(runtime.network_handle());
+    let maintenance = Arc::new(tokio::sync::Mutex::new(()));
     let software = crate::host_software::open(
         &config,
         db,
         runtime.network_handle(),
         runtime.local_handle(),
+        maintenance.clone(),
     )
     .map_err(|_| HostError::Supervisor("software_state_unavailable"))?;
+    let resource_packs = crate::resource_packs::hosting::Service::open(db.clone(), Arc::new(
+        crate::resource_packs::hosting::native::NativeHooks {
+            recovery: Mutex::new(None),
+            maintenance,
+            db: db.clone(), files: files.for_remote(), runtime: runtime.network_handle(),
+            software: software.as_ref().map(crate::software::SoftwareService::handle),
+            fallback_minecraft_version: config.pack().minecraft_version().into(),
+            game: config.game().to_path_buf(),
+        }
+    )).map_err(|_| HostError::Supervisor("resource_pack_state_unavailable"))?;
     driver.attach(runtime.local_handle());
     drop(startup_gate);
     Ok(Host {
@@ -752,6 +767,7 @@ fn compose(
         releases,
         graceful_stop,
         software,
+        resource_packs: Some(resource_packs),
         sftp,
         runtime,
         backups,
@@ -922,6 +938,7 @@ fn discover_components(
 /// Cloneable management/pack facade; never exposes OS-local owner authority.
 #[derive(Clone)]
 pub struct NetworkHost {
+    resource_packs: crate::resource_packs::hosting::Handle,
     software: Option<crate::software::SoftwareHandle>,
     sftp: Arc<crate::sftp::SftpService>,
     management: ManagementAccess,
@@ -958,6 +975,7 @@ impl Drop for AdmissionRefresh {
     }
 }
 impl NetworkHost {
+    pub fn resource_packs(&self) -> &crate::resource_packs::hosting::Handle { &self.resource_packs }
     pub fn software(&self) -> Option<&crate::software::SoftwareHandle> {
         self.software.as_ref()
     }

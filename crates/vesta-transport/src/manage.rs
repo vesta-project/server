@@ -25,6 +25,8 @@ pub(super) mod content;
 pub(super) mod files;
 #[path = "manage_hosting.rs"]
 pub(super) mod hosting;
+#[path = "manage_resource_packs.rs"]
+pub(super) mod resource_packs;
 #[path = "manage_metrics.rs"]
 mod metrics;
 #[path = "manage_moderation.rs"]

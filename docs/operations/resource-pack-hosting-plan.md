@@ -1,7 +1,9 @@
 # Server resource-pack hosting plan
 
-Status: the [ordered backend builder](resource-pack-builder.md) is implemented;
-hosting, managed drafts/jobs and configuration activation remain planned. The accompanying
+Status: the [ordered backend builder](resource-pack-builder.md) and the
+[durable hosting API](resource-pack-hosting-api.md) are implemented. Launcher UI,
+automatic format detection, real Minecraft/public-origin acceptance checks and
+the remaining limitations in the API document are still outstanding. The accompanying
 [research report](../reviews/2026-10-27-resource-pack-hosting-research.md) records
 primary sources and the limits of the merging evidence.
 

@@ -10,6 +10,7 @@ const MAX_METADATA_BYTES: usize = 1_024 * 1_024;
 pub struct UreqProviderClient {
     agent: ureq::Agent,
     curseforge_api_key: Option<String>,
+    deadline: Option<Instant>,
 }
 impl UreqProviderClient {
     /// Fixed pack metadata endpoints. No caller URL, redirect or download authority.
@@ -111,11 +112,26 @@ impl UreqProviderClient {
         Self {
             agent: http::agent(),
             curseforge_api_key,
+            deadline: None,
         }
     }
+    /// Reuse canonical metadata parsing within an owned job's remaining budget.
+    pub(crate) fn with_deadline(&self, deadline: Instant) -> Result<Self> {
+        super::deadline_check(deadline)?;
+        Ok(Self {
+            agent: http::agent_with_timeout(deadline.saturating_duration_since(Instant::now())),
+            curseforge_api_key: self.curseforge_api_key.clone(),
+            deadline: Some(deadline),
+        })
+    }
     fn metadata<T: serde::de::DeserializeOwned>(&self, url: &str, key: Option<&str>) -> Result<T> {
-        let mut request = self
-            .agent
+        let agent = if let Some(deadline) = self.deadline {
+            super::deadline_check(deadline)?;
+            http::agent_with_timeout(deadline.saturating_duration_since(Instant::now()))
+        } else {
+            self.agent.clone()
+        };
+        let mut request = agent
             .get(url)
             .header("Accept", "application/json")
             .header("Accept-Encoding", "identity")
@@ -145,6 +161,9 @@ impl UreqProviderClient {
         if bytes.len() > MAX_METADATA_BYTES {
             return Err(ContentError::InvalidMetadata);
         }
+        if let Some(deadline) = self.deadline {
+            super::deadline_check(deadline)?;
+        }
         serde_json::from_slice(&bytes).map_err(|_| ContentError::InvalidMetadata)
     }
 }
@@ -160,6 +179,7 @@ impl ProviderClient for UreqProviderClient {
         let client = Self {
             agent: http::agent_with_timeout(deadline.saturating_duration_since(Instant::now())),
             curseforge_api_key: self.curseforge_api_key.clone(),
+            deadline: Some(deadline),
         };
         let source = client.resolve(provider, project_id, version_id)?;
         super::deadline_check(deadline)?;

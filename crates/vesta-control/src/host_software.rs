@@ -20,6 +20,7 @@ fn unavailable<T>(_: T) -> software::SoftwareError {
 }
 
 struct Hooks {
+    maintenance: Arc<tokio::sync::Mutex<()>>,
     config: HostConfiguration,
     db: StateDatabase,
     runtime: RuntimeHandle,
@@ -28,6 +29,7 @@ struct Hooks {
     recovery: Mutex<Option<StartBlock>>,
 }
 struct Held {
+    _maintenance: tokio::sync::OwnedMutexGuard<()>,
     hooks: Arc<Hooks>,
     hold: Arc<files::StoppedGuard>,
 }
@@ -137,6 +139,7 @@ impl RuntimeHooks for Arc<Hooks> {
         Ok(text)
     }
     fn acquire_stopped(&self) -> Result<Box<dyn software::StoppedGuard>> {
+        let maintenance = self.maintenance.clone().try_lock_owned().map_err(|_|software::SoftwareError::Busy)?;
         let hold = files::StoppedGuard::acquire(&self.runtime, self.db.directory())
             .map_err(unavailable)?;
         if self
@@ -148,6 +151,7 @@ impl RuntimeHooks for Arc<Hooks> {
             return Err(software::SoftwareError::Busy);
         }
         Ok(Box::new(Held {
+            _maintenance: maintenance,
             hooks: self.clone(),
             hold,
         }))
@@ -167,6 +171,7 @@ pub(crate) fn open(
     db: &StateDatabase,
     runtime: RuntimeHandle,
     local: LocalRuntime,
+    maintenance: Arc<tokio::sync::Mutex<()>>,
 ) -> Result<Option<software::SoftwareService>> {
     let bytes =
         files::read_local_document(config.launch_definition(), 65_536).map_err(unavailable)?;
@@ -229,6 +234,7 @@ pub(crate) fn open(
         Err(_) => installer,
     };
     let hooks = Arc::new(Hooks {
+        maintenance,
         config: config.clone(),
         db: db.clone(),
         runtime,

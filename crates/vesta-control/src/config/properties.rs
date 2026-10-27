@@ -344,6 +344,49 @@ fn weakens(key: &str, value: &str, previous: Option<&String>) -> bool {
     }
 }
 impl<'a> ServerPropertiesEditor<'a> {
+    /// Dedicated hosting review. Raw values are never included in general settings
+    /// projections; only the existing pack URL is returned to its owner here.
+    pub(crate) fn hosted_preview(
+        &self,
+        subject: &Subject,
+        changes: &BTreeMap<String, String>,
+    ) -> Result<(String, String, String), FileError> {
+        self.files.check_global_authority(subject, Capability::ConfigEdit)?;
+        let path = RelativePath::parse("server.properties")?;
+        let read = self.files.for_properties(None).read_with_capability(
+            subject, &path, MAX_SERVER_PROPERTIES_BYTES, Some(Capability::ConfigView),
+        )?;
+        let parsed = Document::parse(read.bytes())?;
+        let edited = parsed.edited(changes)?;
+        Ok((read.sha256().into(), hex::encode(Sha256::digest(&edited)),
+            parsed.values.get("resource-pack").cloned().unwrap_or_default()))
+    }
+
+    /// Kept out of the general properties schema: hosting alone supplies these
+    /// fixed keys after a reviewed, actor-bound release has been admitted.
+    pub(crate) fn hosted_apply(
+        &self,
+        subject: &Subject,
+        key: &str,
+        expected: &str,
+        changes: &BTreeMap<String, String>,
+        hold: std::sync::Arc<crate::files::StoppedGuard>,
+    ) -> Result<(), FileError> {
+        let files = self.files.for_properties(None).with_stopped_guard(hold);
+        files.execute_remote(subject, key, json!(["hosted-resource-pack", expected, changes]),
+            || Ok(vec![(Capability::ConfigEdit.id().into(), String::new()),
+                (Capability::FilesRead.id().into(), "server.properties".into()),
+                (Capability::FilesOverwrite.id().into(), "server.properties".into())]),
+            |files| {
+                let path = RelativePath::parse("server.properties")?;
+                let read = files.read(subject, &path, MAX_SERVER_PROPERTIES_BYTES)?;
+                if read.sha256() != expected { return Err(FileError::Conflict(Some(read.sha256().into()))); }
+                let edited = Document::parse(read.bytes())?.edited(changes)?;
+                files.write(subject, &path, &WritePrecondition::Matches(expected.into()), &edited)?;
+                Ok(json!({"outcome":"succeeded"}))
+            })?;
+        Ok(())
+    }
     pub fn new(files: &'a FileBrowser) -> Self {
         Self { files }
     }

@@ -31,6 +31,8 @@ const PASSWORD: &str = "transport test password only";
 type TlsStream = StreamOwned<ClientConnection, TcpStream>;
 #[path = "pack_workspace/mod.rs"]
 mod pack_workspace_tests;
+#[path = "hosted_resource_packs/mod.rs"]
+mod hosted_resource_pack_tests;
 
 #[test]
 fn world_read_supports_split_worldgen_and_reports_metadata_errors() {

@@ -52,7 +52,7 @@ pub struct BuiltPack {
     report: BuildReport,
 }
 /// Immutable artifact only. This does not change the active Minecraft pack.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PublishedPack {
     artifact_name: String,
     sha256: String,
@@ -114,6 +114,12 @@ impl BuiltPack {
     }
 }
 impl PublishedPack {
+    /// Complete path provenance remains embedded in the ZIP. Do not duplicate it
+    /// into every historical job and status response.
+    pub(crate) fn compact_report(mut self) -> Self {
+        self.report.resolved.clear();
+        self
+    }
     pub fn artifact_name(&self) -> &str {
         &self.artifact_name
     }

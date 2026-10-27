@@ -65,6 +65,7 @@ mod manage;
 mod realtime;
 mod routes;
 mod pack_sync;
+mod public_resource_packs;
 mod tls;
 type Reply = Response<ReplyBody>;
 const DOWNLOADS: usize = 2;
@@ -417,17 +418,20 @@ impl ArtifactBody {
         artifact: &vesta_control::packs::PublishedArtifact,
         permit: DownloadPermit,
     ) -> io::Result<Self> {
+        Self::from_identity(file, artifact.size(), *artifact.sha256().as_bytes(), permit)
+    }
+    fn from_identity(file: File, size: u64, expected_hash: [u8;32], permit: DownloadPermit) -> io::Result<Self> {
         // Hyper may never poll a zero-length body. Validate that identity now.
-        if artifact.size() == 0 && Sha256::digest([])[..] != artifact.sha256().as_bytes()[..] {
+        if size == 0 && Sha256::digest([])[..] != expected_hash[..] {
             return Err(io::Error::other("artifact identity mismatch"));
         }
         Ok(Self {
             stream: Some(ArtifactStream {
                 file,
                 hash: Sha256::new(),
-                expected_hash: *artifact.sha256().as_bytes(),
-                size: artifact.size(),
-                remaining: artifact.size(),
+                expected_hash,
+                size,
+                remaining: size,
                 permit: Arc::new(permit),
             }),
             pending: None,
@@ -746,6 +750,7 @@ struct Shared {
     realtime_jobs: BlockingJobs,
     install_jobs: BlockingJobs,
     downloads: Arc<Downloads<vesta_control::pack_access::RealtimeSession>>,
+    public_downloads: Arc<Semaphore>,
     realtime: realtime::Sockets,
     stop: watch::Receiver<bool>,
 }
@@ -850,6 +855,8 @@ async fn serve(
     let Ok(listener) = TcpListener::from_std(socket) else {
         return;
     };
+    let downloads = Arc::new(Downloads::new(DOWNLOADS));
+    let public_downloads = downloads.global.clone();
     let shared = Arc::new(Shared {
         tls,
         host,
@@ -875,7 +882,8 @@ async fn serve(
             )
             .expect("validated session rate policy"),
         )),
-        downloads: Arc::new(Downloads::new(DOWNLOADS)),
+        downloads,
+        public_downloads,
         realtime: realtime::Sockets::new(),
         stop: stop.clone(),
         jobs: BlockingJobs::with_workers(tokio::runtime::Handle::current(), 1),

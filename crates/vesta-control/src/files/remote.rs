@@ -501,6 +501,11 @@ impl FileBrowser {
         files.properties_approval = approval;
         files
     }
+    pub(crate) fn with_stopped_guard(&self, guard: std::sync::Arc<super::StoppedGuard>) -> Self {
+        let mut files = self.clone();
+        files.stopped_guard = Some(guard);
+        files
+    }
     pub(super) fn before_remote_write(&self, c: &Connection, subject: &Subject) -> Result<()> {
         self.check_world_owner(c, subject)?;
         if let Some(guard) = &self.stopped_guard {

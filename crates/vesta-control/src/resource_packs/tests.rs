@@ -9,7 +9,7 @@ use std::{
 use vesta_state::StateDirectory;
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
-static SERIAL: Mutex<()> = Mutex::new(());
+pub(super) static SERIAL: Mutex<()> = Mutex::new(());
 struct Fixture {
     _serial: MutexGuard<'static, ()>,
     temp: tempfile::TempDir,

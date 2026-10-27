@@ -1,12 +1,13 @@
 //! Trusted composition for ordered, disk-backed Minecraft resource-pack builds.
 //!
-//! This module does not authorize a caller, fetch URLs, expose downloads, edit
-//! Minecraft configuration or activate a release. Inputs are pinned open files;
-//! artifacts reuse protected state storage and never replace existing bytes.
+//! The builder accepts pinned open inputs and immutable protected artifacts.
+//! The separate `hosting` service adds canonical owner authority, durable drafts,
+//! jobs, reviewed settings activation and explicit public-release registration.
 mod archive;
 mod build;
 mod model;
 mod semantic;
+pub mod hosting;
 
 pub use build::{BuiltPack, PublishedPack, build};
 pub use model::{BuildLimits, BuildReport, Error, Input, PackFormat, Resolution, ResolvedPath};

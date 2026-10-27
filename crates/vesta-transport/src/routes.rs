@@ -140,7 +140,8 @@ pub(super) async fn route(
                 | "/api/v3/manage/device/enroll"
                 | "/api/v3/manage/password"
         );
-    let recognized = management
+    let public_pack = super::public_resource_packs::implemented(&path);
+    let recognized = management || public_pack
         || matches!(
             (method.as_str(), path.as_str()),
             (
@@ -311,6 +312,7 @@ pub(super) async fn route(
         peer: peer.ip(),
     };
     let tls = state.tls.clone();
+    let public_downloads = state.public_downloads.clone();
     let jobs = if control_request(&method, &path, query.as_deref()) {
         state.control_jobs.reap(false).await;
         &state.control_jobs
@@ -327,6 +329,9 @@ pub(super) async fn route(
         // Blocking work outlives a cancelled HTTP waiter: its bytes and permit
         // must have the same owner, rather than releasing the budget too early.
         let _body_permit = body_permit;
+        if public_pack {
+            return super::public_resource_packs::dispatch(&host, &method, &path, public_downloads);
+        }
         if crate::pack_sync::implemented(&path) {
             return crate::pack_sync::dispatch(&host, &method, &path, query.as_deref(), authorization.as_ref().map(|s|s.as_str()), downloads, &tls);
         }
