@@ -1062,6 +1062,24 @@ fn content_kinds_refuse_incompatible_software() {
 }
 
 #[test]
+fn datapack_destination_uses_configured_main_world_for_vanilla_and_plugin_forks() {
+    let f = Fixture::new();
+    fs::write(f.game.join("server.properties"), b"level-name=survival\n").unwrap();
+    for name in ["survival", "survival_nether", "survival_the_end"] {
+        fs::create_dir(f.game.join(name)).unwrap();
+    }
+    let world = f.files.world(&f.owner).unwrap();
+    assert_eq!(world.name, "survival");
+    for software in ["vanilla", "fabric", "bukkit", "spigot", "paper", "purpur", "folia"] {
+        let destination = ContentKind::Datapack.directory(Some(software), &world.name).unwrap();
+        assert_eq!(destination, "survival/datapacks");
+        assert!(!destination.contains("_nether"));
+        assert!(!destination.contains("_the_end"));
+    }
+    assert!(!f.game.join("world").exists());
+}
+
+#[test]
 fn content_folder_datapack_removal_preserves_tree_in_trash() {
     let f = Fixture::new();
     fs::create_dir_all(f.game.join("world/datapacks/custom/data")).unwrap();
