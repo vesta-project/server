@@ -24,6 +24,7 @@ pub mod operations;
 pub mod pack_access;
 pub mod packs;
 pub mod recovery_export;
+pub mod resource_packs;
 pub mod sftp;
 pub mod sleep;
 pub mod software;

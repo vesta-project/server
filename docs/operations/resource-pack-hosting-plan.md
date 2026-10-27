@@ -1,6 +1,7 @@
 # Server resource-pack hosting plan
 
-Status: researched and planned, not implemented. The accompanying
+Status: the [ordered backend builder](resource-pack-builder.md) is implemented;
+hosting, managed drafts/jobs and configuration activation remain planned. The accompanying
 [research report](../reviews/2026-10-27-resource-pack-hosting-research.md) records
 primary sources and the limits of the merging evidence.
 
@@ -53,16 +54,16 @@ must retain the previous configured release and enough state to reconcile it.
 
 Maintain explicit input priority and build one ordinary resource-pack ZIP, not a
 ZIP of nested archives. Preview input identities, target compatibility, duplicates,
-conflicts and resulting size. Synthesize root metadata deliberately. Initially
-combine non-overlapping assets only; report overlapping paths as build blockers.
-This restriction must be visible before publication.
+conflicts and resulting size. Synthesize root metadata deliberately. The approved
+policy is a priority hierarchy: ordinary overlapping files select the higher pack
+without blocking installation. Record the resolution for inspection.
 
-Add semantic merging only with a verified, version-specific contract and fixtures.
-Language entries and sound-event replacement/append behavior need dedicated rules.
-Font providers, atlas sources, filters and overlays require further verification.
-A generic last-file-wins merge must not be described as equivalent to Minecraft's
-pack stack. Deterministic output ordering, fixed ZIP metadata and unchanged-input
-reuse should avoid rebuilding identical releases.
+Language keys, sound-event replacement/append/subtitle behavior, font fallback
+providers and atlas source ordering are implemented against the verified reference
+client semantics and covered by fixtures. Active pack-level filters and overlays
+still need a version-aware transformation and explicitly refuse for now. The
+builder is not a universal emulator of every Minecraft resource loader. Deterministic
+output ordering, fixed ZIP metadata and content addressing reuse identical releases.
 
 Bound compressed bytes, expanded bytes, entry count, path length, input count,
 output size and build time. Reject traversal, linked/special members, duplicate
