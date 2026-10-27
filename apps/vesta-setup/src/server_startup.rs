@@ -233,7 +233,7 @@ mod linux {
                     }
                     if !result.success() {
                         return Err(format!(
-                            "{program} failed ({result}); check current-user systemd session and permission to enable linger"
+                            "{program} failed ({result}); inspect systemctl --user status and journalctl --user for the selected unit"
                         ));
                     }
                     return String::from_utf8(bytes).map_err(|_| "non-UTF-8 command output".into());

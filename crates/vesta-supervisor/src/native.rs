@@ -30,6 +30,29 @@ pub fn endpoint(state: &Path, _directory: &Path) -> Result<PathBuf> {
 pub fn endpoint(_state: &Path, directory: &Path) -> Result<PathBuf> {
     Ok(directory.join("supervisor.sock"))
 }
+
+/// Linux sun_path is limited to 108 bytes. Resolve through an owned directory
+/// descriptor so deeply nested installations retain their protected socket path.
+#[cfg(target_os = "linux")]
+pub(crate) fn socket_address(endpoint: &Path) -> Result<(std::fs::File, PathBuf)> {
+    use std::os::{
+        fd::AsRawFd,
+        unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    };
+    let parent = endpoint.parent().ok_or("supervisor_acl_refused")?;
+    let name = endpoint.file_name().ok_or("supervisor_acl_refused")?;
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(parent)
+        .map_err(|_| "supervisor_acl_refused")?;
+    let metadata = directory.metadata().map_err(|_| "supervisor_acl_refused")?;
+    if metadata.uid() != linux_uid() || metadata.permissions().mode() & 0o077 != 0 {
+        return Err("supervisor_acl_refused");
+    }
+    let address = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd())).join(name);
+    Ok((directory, address))
+}
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn endpoint(_state: &Path, _directory: &Path) -> Result<PathBuf> {
     Err("supervisor_platform_unsupported")
@@ -154,7 +177,8 @@ pub async fn connect(endpoint: &Path) -> Result<Stream> {
     {
         return Err("supervisor_acl_refused");
     }
-    let client = tokio::net::UnixStream::connect(endpoint)
+    let (_directory, address) = socket_address(endpoint)?;
+    let client = tokio::net::UnixStream::connect(address)
         .await
         .map_err(|_| "supervisor_not_running")?;
     if client

@@ -21,6 +21,44 @@ const WAIT: Duration = Duration::from_secs(20);
 const ENABLE: &[u8] = b"vesta-owned-inert-supervisor-fixture-v1";
 const IDENTITY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 
+#[cfg(target_os = "linux")]
+#[test]
+fn deeply_nested_installation_socket_binds_connects_and_reclaims_stale_socket() {
+    let mut fixture = Fixture::new();
+    let parent = fixture
+        .root
+        .path()
+        .join("long-installation-folder".repeat(3))
+        .join("servers");
+    fs::create_dir_all(&parent).unwrap();
+    fixture.state = StateDirectory::new(parent.join("state"), Some(&fixture.game)).unwrap();
+    fixture.state.prepare().unwrap();
+    let endpoint = native::endpoint(
+        fixture.state.path(),
+        &fixture.state.path().join("supervisor"),
+    )
+    .unwrap();
+    assert!(endpoint.as_os_str().len() > 108);
+    // Leave an actual crashed-listener socket to exercise the reclaim path too.
+    let (directory, address) = {
+        use std::os::fd::AsRawFd;
+        fixture.state.supervisor().unwrap();
+        let fd = fs::File::open(fixture.state.path().join("supervisor")).unwrap();
+        let path = PathBuf::from(format!("/proc/self/fd/{}/supervisor.sock", fd.as_raw_fd()));
+        (fd, path)
+    };
+    drop(std::os::unix::net::UnixListener::bind(address).unwrap());
+    drop(directory);
+    let running = Running::start(&fixture);
+    assert!(
+        vesta_supervisor::probe(&client(&fixture))
+            .unwrap()
+            .is_some()
+    );
+    running.join().unwrap();
+    assert!(!endpoint.exists());
+}
+
 #[test]
 fn inert_supervised_game() {
     if fs::read("supervisor-fixture-enabled").ok().as_deref() != Some(ENABLE) {

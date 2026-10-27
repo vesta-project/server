@@ -1441,7 +1441,8 @@ mod endpoint {
             if metadata.uid() != native::linux_uid() || metadata.permissions().mode() & 0o077 != 0 {
                 return Err("supervisor_acl_refused");
             }
-            let inner = match UnixListener::bind(endpoint) {
+            let (_directory, address) = native::socket_address(endpoint)?;
+            let inner = match UnixListener::bind(&address) {
                 Ok(inner) => inner,
                 Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
                     // A crashed supervisor's socket: reclaim it only if it is our own
@@ -1451,7 +1452,7 @@ mod endpoint {
                     if !stale.file_type().is_socket() || stale.uid() != native::linux_uid() {
                         return Err("supervisor_acl_refused");
                     }
-                    match std::os::unix::net::UnixStream::connect(endpoint) {
+                    match std::os::unix::net::UnixStream::connect(&address) {
                         Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
                         _ => return Err("supervisor_already_running"),
                     }
@@ -1461,7 +1462,7 @@ mod endpoint {
                         return Err("supervisor_already_running");
                     }
                     std::fs::remove_file(endpoint).map_err(|_| "supervisor_already_running")?;
-                    UnixListener::bind(endpoint).map_err(|_| "supervisor_already_running")?
+                    UnixListener::bind(&address).map_err(|_| "supervisor_already_running")?
                 }
                 Err(_) => return Err("supervisor_bind_failed"),
             };
