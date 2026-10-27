@@ -295,6 +295,49 @@ impl Drop for SocketCleanup {
         }
     }
 }
+/// Caller owns the managed instance lease and runtime runner lock. Reclaim only
+/// an owner-only socket inode that demonstrably has no listener.
+#[cfg(target_os = "linux")]
+fn bind_control(endpoint: &Path) -> Result<(tokio::net::UnixListener, SocketCleanup)> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+    local_files::guard(endpoint)?;
+    let (_directory, address) = vesta_supervisor::native::socket_address(endpoint)
+        .map_err(|_| "local_control_acl_refused")?;
+    let listener = match tokio::net::UnixListener::bind(&address) {
+        Ok(listener) => listener,
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            let stale =
+                std::fs::symlink_metadata(endpoint).map_err(|_| "local_control_bind_failed")?;
+            if !stale.file_type().is_socket()
+                || stale.uid() != linux_uid()
+                || stale.permissions().mode() & 0o077 != 0
+            {
+                return Err("local_control_acl_refused");
+            }
+            match std::os::unix::net::UnixStream::connect(&address) {
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => (),
+                _ => return Err("local_control_bind_failed"),
+            }
+            let again =
+                std::fs::symlink_metadata(endpoint).map_err(|_| "local_control_bind_failed")?;
+            if again.dev() != stale.dev() || again.ino() != stale.ino() {
+                return Err("local_control_bind_failed");
+            }
+            std::fs::remove_file(endpoint).map_err(|_| "local_control_bind_failed")?;
+            tokio::net::UnixListener::bind(&address).map_err(|_| "local_control_bind_failed")?
+        }
+        Err(_) => return Err("local_control_bind_failed"),
+    };
+    let metadata = std::fs::symlink_metadata(endpoint).map_err(|_| "local_control_acl_refused")?;
+    let cleanup = SocketCleanup {
+        path: endpoint.to_owned(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    };
+    std::fs::set_permissions(endpoint, std::fs::Permissions::from_mode(0o600))
+        .map_err(|_| "local_control_acl_refused")?;
+    Ok((listener, cleanup))
+}
 pub struct Server {
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<Result<()>>,
@@ -327,19 +370,7 @@ impl Server {
             if metadata.uid() != uid || metadata.permissions().mode() & 0o077 != 0 {
                 return Err("local_control_acl_refused");
             }
-            // Refuse stale endpoints rather than unlink an unknown socket.
-            let listener = tokio::net::UnixListener::bind(&endpoint)
-                .map_err(|_| "local_control_bind_failed")?;
-            let metadata =
-                std::fs::symlink_metadata(&endpoint).map_err(|_| "local_control_acl_refused")?;
-            let cleanup = SocketCleanup {
-                path: endpoint.clone(),
-                device: metadata.dev(),
-                inode: metadata.ino(),
-            };
-            std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o600))
-                .map_err(|_| "local_control_acl_refused")?;
-            (listener, cleanup)
+            bind_control(&endpoint)?
         };
         #[cfg(any(windows, target_os = "linux"))]
         let task = tokio::spawn(async move {
@@ -436,7 +467,9 @@ pub async fn request_data(state: &Path, name: String, op: Op) -> Result<Option<s
         {
             return Err("local_control_acl_refused");
         }
-        let client = tokio::net::UnixStream::connect(endpoint)
+        let (_directory, address) = vesta_supervisor::native::socket_address(&endpoint)
+            .map_err(|_| "local_control_acl_refused")?;
+        let client = tokio::net::UnixStream::connect(address)
             .await
             .map_err(|_| "local_agent_not_running_start_serve_first")?;
         if client
@@ -499,6 +532,60 @@ fn response_data(response: Response) -> Result<Option<serde_json::Value>> {
 #[cfg(test)]
 mod response_tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn long_local_control_path_recovers_only_owned_stale_socket_and_connects() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp
+            .path()
+            .join("managed-server-registry".repeat(4))
+            .join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let endpoint = endpoint(&state).unwrap();
+        assert!(endpoint.as_os_str().len() > 108);
+        let (_directory, address) = vesta_supervisor::native::socket_address(&endpoint).unwrap();
+        drop(std::os::unix::net::UnixListener::bind(&address).unwrap());
+        std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (listener, cleanup) = bind_control(&endpoint).unwrap();
+            let serve = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                read_frame(&mut stream).await.unwrap();
+                write_frame(
+                    &mut stream,
+                    &Response {
+                        version: 1,
+                        code: Code::Complete,
+                        data: None,
+                    },
+                )
+                .await
+                .unwrap();
+                listener
+            });
+            assert_eq!(
+                request_data(&state, "owned".into(), Op::Status)
+                    .await
+                    .unwrap(),
+                None
+            );
+            let listener = serve.await.unwrap();
+            // Refuse an existing live endpoint instead of replacing it.
+            assert!(bind_control(&endpoint).is_err());
+            drop(listener);
+            drop(cleanup);
+            assert!(!endpoint.exists());
+            std::fs::write(&endpoint, b"foreign file").unwrap();
+            assert!(bind_control(&endpoint).is_err());
+            assert_eq!(std::fs::read(&endpoint).unwrap(), b"foreign file");
+        });
+    }
     #[test]
     fn unsupported_old_protocol_is_distinct_from_refusal_or_uncertain_delivery() {
         for (code, expected) in [

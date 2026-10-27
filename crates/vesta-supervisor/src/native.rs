@@ -34,7 +34,7 @@ pub fn endpoint(_state: &Path, directory: &Path) -> Result<PathBuf> {
 /// Linux sun_path is limited to 108 bytes. Resolve through an owned directory
 /// descriptor so deeply nested installations retain their protected socket path.
 #[cfg(target_os = "linux")]
-pub(crate) fn socket_address(endpoint: &Path) -> Result<(std::fs::File, PathBuf)> {
+pub fn socket_address(endpoint: &Path) -> Result<(std::fs::File, PathBuf)> {
     use std::os::{
         fd::AsRawFd,
         unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
@@ -199,6 +199,23 @@ pub async fn connect(_endpoint: &Path) -> Result<std::convert::Infallible> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn socket_directory_descriptor_refuses_shared_or_linked_directories() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("private");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(socket_address(&parent.join("supervisor.sock")).is_err());
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(socket_address(&parent.join("supervisor.sock")).is_ok());
+        let alias = temp.path().join("alias");
+        symlink(&parent, &alias).unwrap();
+        assert!(socket_address(&alias.join("supervisor.sock")).is_err());
+        assert!(!parent.join("supervisor.sock").exists());
+    }
 
     #[test]
     fn current_process_is_alive_and_a_wrong_start_time_is_not() {
