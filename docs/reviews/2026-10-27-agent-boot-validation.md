@@ -46,4 +46,17 @@ with sign-in startup. WSL restart testing does not establish physical-machine bo
 behavior or Linux ARM64 coverage. Launcher onboarding after host setup remains
 unfinished. No EULA was accepted and no real Minecraft process was started.
 
-Final isolated installation/restart outcome is recorded separately by Terra.
+## Final result
+
+Terra's [final black-box report](2026-10-27-clean-install-boot-passed-terra.md)
+passes fresh installation into a deliberately long managed registry path, initial
+agent readiness, automatic recovery after terminating/reopening only the disposable
+WSL distro, and explicit scoped agent stop/start. Minecraft remained stopped and
+the EULA remained unaccepted throughout. Boot policy stayed enabled after manual
+stop/start. A check about 0.6 seconds into startup was too early; readiness succeeded
+about three seconds after service start without manual intervention.
+
+One idle sample recorded one agent at 18,044 KiB RSS and one supervisor at 3,944 KiB.
+This is an observation, not a low-end resource benchmark, and excludes other
+processes/shared-memory accounting. A physical Linux boot without user sign-in and
+Windows boot registration remain unverified or unsupported as described above.
