@@ -2,6 +2,15 @@
 
 `vesta_setup::server_startup` controls only the managed server agent. It never starts Minecraft, accepts an EULA, or changes Minecraft autostart.
 
+New installations choosing boot startup use the existing separate game supervisor,
+with Minecraft startup explicitly set to `stay_stopped`. This lets the agent
+recover after an abrupt exit without bypassing the in-process orphan guard.
+The supervisor is another small process while the agent is active; Minecraft is
+still started only by its separate policy or an explicit command. Existing
+in-process installations must be deliberately stopped and configured for separate
+supervision before enabling boot startup. An unresolved old session is preserved,
+not automatically cleared or reclassified.
+
 API:
 
 - `prepare(id: &str, directory: &Path, executable: &Path) -> Result<Registration, String>` validates a full `srv_` plus 32 lowercase hexadecimal ID and resolves existing absolute server and executable paths.

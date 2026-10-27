@@ -25,6 +25,7 @@ pub fn choose(selected: Option<AgentStartupChoice>) -> Result<AgentStartupChoice
     println!("The agent stays available for management while Minecraft is stopped.");
     #[cfg(target_os = "linux")]
     println!("Boot startup keeps your Linux user services running without signing in.");
+    println!("Boot-managed servers use a separate supervisor for safe agent recovery.");
     print!("Start this server's agent at machine boot? [y/N] ");
     io::stdout()
         .flush()
@@ -77,6 +78,14 @@ fn load(directory: &Path) -> Result<Option<Registration>> {
 }
 
 pub fn enable(directory: &Path) -> Result<()> {
+    let configuration = vesta_control::config::HostConfiguration::load_file(
+        &directory.join("host.toml"),
+        directory,
+    )
+    .map_err(|_| "local_agent_startup_config_invalid")?;
+    if configuration.supervision() != vesta_control::config::Supervision::Separate {
+        return Err("Boot startup requires [process] supervision = 'separate' in host.toml. Stop the agent and Minecraft before changing supervision; unresolved sessions require deliberate recovery.");
+    }
     let registration = match load(directory)? {
         Some(registration) => registration,
         None => {

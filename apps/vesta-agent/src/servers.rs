@@ -15,8 +15,8 @@ use vesta_server_install::{
     SilentProgressReporter, TransportConfig,
 };
 use vesta_state::{
-    StateDatabase, StateDirectory, SystemClock,
     audit::{AuditActor, AuditLog, AuditRecord},
+    StateDatabase, StateDirectory, SystemClock,
 };
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -257,7 +257,14 @@ pub async fn create(options: Create, base: &Path) -> Result<()> {
         vesta_server_install::InstallOutcome::Installed(r) => r,
         vesta_server_install::InstallOutcome::DryRun => return Err("local_install_incomplete"),
     };
-    publish(&root, &options.name, &receipt, options.bind, options.port)?;
+    publish(
+        &root,
+        &options.name,
+        &receipt,
+        options.bind,
+        options.port,
+        startup == crate::cli::AgentStartupChoice::Boot,
+    )?;
     println!(
         "created; eula=pending; owner_must_read_and_accept_eula_txt_themselves; no_game_started"
     );
@@ -300,7 +307,14 @@ fn install_warning(warning: &vesta_server_install::Warning) -> &'static str {
         Warning::ProxyResolution => "Downloads use the configured proxy.",
     }
 }
-fn publish(root: &Path, name: &str, receipt: &Receipt, bind: IpAddr, port: u16) -> Result<()> {
+fn publish(
+    root: &Path,
+    name: &str,
+    receipt: &Receipt,
+    bind: IpAddr,
+    port: u16,
+    supervised: bool,
+) -> Result<()> {
     let directory = root.join("instances").join(&receipt.install_id);
     local_files::guard(&directory)?;
     let game = directory.join("game");
@@ -332,6 +346,13 @@ fn publish(root: &Path, name: &str, receipt: &Receipt, bind: IpAddr, port: u16) 
         serde_json::to_string(name).map_err(|_| "local_name_invalid")?,
         serde_json::to_string(&receipt.version).map_err(|_| "local_recipe_invalid")?
     );
+    // A boot-managed agent must recover independently from its game owner. Keep
+    // the conservative in-process orphan guard for manually managed installs.
+    let config = if supervised {
+        format!("{config}\n[process]\nsupervision = 'separate'\non-agent-start = 'stay_stopped'\n")
+    } else {
+        config
+    };
     local_files::write_new(&directory.join("host.toml"), config.as_bytes())?;
     local_files::write_new(&directory.join("local-name"), name.as_bytes())?;
     let record = serde_json::to_vec(&Record {
@@ -582,6 +603,7 @@ mod tests {
             &receipt,
             "127.0.0.1".parse().unwrap(),
             25565,
+            true,
         )
         .unwrap();
         assert!(
@@ -593,6 +615,14 @@ mod tests {
         let config =
             vesta_control::config::HostConfiguration::load_file(&server.config, &root).unwrap();
         config.validate_host_paths().unwrap();
+        assert_eq!(
+            config.supervision(),
+            vesta_control::config::Supervision::Separate
+        );
+        assert_eq!(
+            config.on_agent_start(),
+            vesta_control::config::OnAgentStart::StayStopped
+        );
         assert!(matches!(
             config.listener(),
             vesta_control::config::ListenerDescription::Disabled
