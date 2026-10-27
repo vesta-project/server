@@ -8,7 +8,7 @@ use vesta_control::{
 use vesta_state::SystemClock;
 use vesta_transport::{Transport, TransportShutdown};
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-pub async fn run(source: &Path, base: &Path, local_only: bool) -> ExitCode {
+pub async fn run(source: &Path, base: &Path, local_only: bool, allow_local: bool) -> ExitCode {
     let configuration = match HostConfiguration::load_file(source, base) {
         Ok(c) => c,
         Err(e) => {
@@ -20,7 +20,7 @@ pub async fn run(source: &Path, base: &Path, local_only: bool) -> ExitCode {
         ListenerDescription::Tls(listener) if !local_only && listener.bind().is_loopback() => {
             Some(listener)
         }
-        ListenerDescription::Disabled if local_only => None,
+        ListenerDescription::Disabled if local_only || allow_local => None,
         ListenerDescription::Disabled => {
             eprintln!("listener_disabled");
             return ExitCode::FAILURE;

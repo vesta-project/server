@@ -395,7 +395,7 @@ exit 0
 }
 
 #[cfg(target_os = "linux")]
-mod linux {
+pub(crate) mod linux {
     use super::*;
     use std::fs::{self, OpenOptions};
     use std::io::{Read, Write};
@@ -420,10 +420,23 @@ mod linux {
         let root_s = root.to_string_lossy();
         let exe_s = executable.to_string_lossy();
         format!(
-            "[Unit]\nDescription=Vesta host for current user\n\n[Service]\nType=simple\nWorkingDirectory={}\nExecStart={} host --root {}\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n",
-            systemd_quote(&root_s),
+            // The host resolves every path from its absolute --root. WorkingDirectory
+            // is a path setting, not an ExecStart argument: shell quotes become literal
+            // path bytes here. A fixed directory avoids path-specific parsing entirely.
+            "[Unit]\nDescription=Vesta host for current user\n\n[Service]\nType=simple\nWorkingDirectory=/\nExecStart={} host --root {}\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n",
             systemd_quote(&exe_s),
             systemd_quote(&root_s)
+        )
+    }
+
+    fn legacy_unit_contents(root: &Path, executable: &Path) -> String {
+        unit_contents(root, executable).replacen(
+            "WorkingDirectory=/\n",
+            &format!(
+                "WorkingDirectory={}\n",
+                systemd_quote(&root.to_string_lossy())
+            ),
+            1,
         )
     }
 
@@ -449,6 +462,15 @@ mod linux {
     }
 
     pub fn enable(root: &Path, executable: &Path, name: &str) -> Result<(), String> {
+        enable_inner(root, executable, name, true)
+    }
+
+    fn enable_inner(
+        root: &Path,
+        executable: &Path,
+        name: &str,
+        allow_legacy_repair: bool,
+    ) -> Result<(), String> {
         if bounded_status(Command::new("systemctl").args(["--user", "show-environment"])).is_err() {
             return Err("user systemd session is unavailable".into());
         }
@@ -478,6 +500,23 @@ mod linux {
                     .read_to_end(&mut existing)
                     .map_err(|_| "startup unit name is already in use")?;
                 if !unit_is_owned(&existing, &contents) {
+                    // These exact legacy units cannot start because their quoted
+                    // WorkingDirectory is invalid. Repair only an inactive, owned
+                    // registration, without stopping any running host or game.
+                    let legacy = legacy_unit_contents(root, executable);
+                    if allow_legacy_repair && unit_is_owned(&existing, &legacy) {
+                        if systemctl(&["is-active", &format!("{name}.service")]).is_ok() {
+                            return Err("legacy startup unit is active; stop it deliberately before repairing startup".into());
+                        }
+                        if !read_owned_unit(&path, &legacy)? {
+                            return Err("startup unit changed while repairing".into());
+                        }
+                        fs::remove_file(&path)
+                            .map_err(|_| "could not repair owned startup unit")?;
+                        systemctl(&["daemon-reload"])
+                            .map_err(|_| "could not reload user startup units")?;
+                        return enable_inner(root, executable, name, false);
+                    }
                     return Err("startup unit name is already in use".into());
                 }
                 systemctl(&["enable", "--now", &format!("{name}.service")])
@@ -531,7 +570,13 @@ mod linux {
             Some(()) => dir.join(format!("{name}.service")),
             None => return Ok(()),
         };
-        let expected = unit_contents(root, executable);
+        let current = unit_contents(root, executable);
+        let legacy = legacy_unit_contents(root, executable);
+        let expected = if read_owned_unit(&path, &legacy).is_ok_and(|owned| owned) {
+            legacy
+        } else {
+            current
+        };
         if !read_owned_unit(&path, &expected)? {
             return Ok(());
         }
@@ -553,7 +598,7 @@ mod linux {
         Ok(())
     }
 
-    fn inspect_existing_unit_dir(path: &Path) -> Result<Option<()>, String> {
+    pub(crate) fn inspect_existing_unit_dir(path: &Path) -> Result<Option<()>, String> {
         let mut current = PathBuf::from("/");
         for component in path.components() {
             match component {
@@ -573,7 +618,7 @@ mod linux {
         Ok(Some(()))
     }
 
-    fn read_owned_unit(path: &Path, expected: &str) -> Result<bool, String> {
+    pub(crate) fn read_owned_unit(path: &Path, expected: &str) -> Result<bool, String> {
         let meta = match fs::symlink_metadata(path) {
             Ok(meta) => meta,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -610,7 +655,7 @@ mod linux {
         bounded_status(Command::new("systemctl").arg("--user").args(args)).map_err(|_| ())
     }
 
-    fn ensure_safe_dir(path: &Path) -> Result<(), String> {
+    pub(crate) fn ensure_safe_dir(path: &Path) -> Result<(), String> {
         let mut current = PathBuf::from("/");
         for component in path.components() {
             match component {
@@ -648,10 +693,51 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    #[ignore = "requires systemd-analyze; validates unit syntax without registering or starting services"]
+    fn linux_generated_startup_unit_parser() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Path::new("/tmp/Vesta test % $ root");
+        let executable = Path::new("/usr/bin/true");
+        let unit = temp.path().join("vesta-parser.service");
+        let fixed = linux::unit_contents(root, executable);
+        std::fs::write(&unit, &fixed).unwrap();
+        let output = bounded_output(
+            Command::new("systemd-analyze")
+                .args(["--user", "verify"])
+                .arg(&unit),
+            true,
+        )
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let legacy = fixed.replacen(
+            "WorkingDirectory=/\n",
+            "WorkingDirectory=\"/tmp/Vesta test % $ root\"\n",
+            1,
+        );
+        std::fs::write(&unit, legacy).unwrap();
+        let output = bounded_output(
+            Command::new("systemd-analyze")
+                .args(["--user", "verify"])
+                .arg(&unit),
+            true,
+        )
+        .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("WorkingDirectory"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn linux_unit_ownership_requires_exact_content() {
         let root = Path::new("/opt/Vesta root");
         let executable = root.join("bin/vesta-setup");
         let expected = linux::unit_contents(root, &executable);
+        assert!(expected.contains("WorkingDirectory=/\n"));
+        assert!(expected.contains("--root \"/opt/Vesta root\""));
         assert!(linux::unit_is_owned(expected.as_bytes(), &expected));
 
         let other_root = Path::new("/opt/Other root");

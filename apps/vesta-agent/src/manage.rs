@@ -12,7 +12,7 @@ use std::{
     process::ExitCode,
 };
 
-pub const USAGE: &str = "Server management\n\n  vesta manage <server_id|name> [command ...] [--install-root <root>]\n\n  start | stop | restart       Minecraft lifecycle\n  status                      Live agent and Minecraft status\n  player_list                 Fresh bounded player query; unavailable stays unknown\n  config                      Open this server's configuration\n  pair [--role role] [--expires minutes]\n  devices list | revoke <device-id>\n  owner list | link --minecraft-uuid <uuid> [--role role]\n  owner unlink --minecraft-uuid <uuid> [--revoke-devices]\n  access show | set [access flags]\n  superadmin grant|revoke <user-id>\n  backup init | resolve [<job-id> --confirm <job-id>]\n  recovery export --output <file> [--passphrase-file <file>]\n  recovery import --input <file> --confirm <identity-id> [--passphrase-file <file>]\n  resolve-launch --confirm <server_id>\n  reset-restarts\n  delete --confirm <server_id>\n\n  help                        Show these commands\n  exit | quit | back           Return to your terminal\n\nThe prompt stays bound to one server. Exit/EOF does not stop it.\nCtrl+C and Ctrl+D leave a supported line-editor terminal.\nQuote paths containing spaces; backslashes remain literal. No OS shell expansion.\nCommands are not saved to history. Direct commands return their normal exit code.";
+pub const USAGE: &str = "Server management\n\n  vesta manage <server_id|name> [command ...] [--install-root <root>]\n\n  start | stop | restart       Minecraft lifecycle\n  status                      Live agent and Minecraft status\n  agent start | stop          Agent lifecycle, separate from Minecraft\n  agent startup status|boot|manual\n                              Per-server agent startup policy\n  player_list                 Fresh bounded player query; unavailable stays unknown\n  config                      Open this server's configuration\n  pair [--role role] [--expires minutes]\n  devices list | revoke <device-id>\n  owner list | link --minecraft-uuid <uuid> [--role role]\n  owner unlink --minecraft-uuid <uuid> [--revoke-devices]\n  access show | set [access flags]\n  superadmin grant|revoke <user-id>\n  backup init | resolve [<job-id> --confirm <job-id>]\n  recovery export --output <file> [--passphrase-file <file>]\n  recovery import --input <file> --confirm <identity-id> [--passphrase-file <file>]\n  resolve-launch --confirm <server_id>\n  reset-restarts\n  delete --confirm <server_id>\n\n  help                        Show these commands\n  exit | quit | back           Return to your terminal\n\nThe prompt stays bound to one server. Exit/EOF does not stop it.\nCtrl+C and Ctrl+D leave a supported line-editor terminal.\nQuote paths containing spaces; backslashes remain literal. No OS shell expansion.\nCommands are not saved to history. Direct commands return their normal exit code.";
 
 pub fn parse_list(args: &[OsString]) -> Result<Command, ()> {
     let mut root = None;
@@ -115,12 +115,37 @@ impl Scope {
             .ok_or(())?
             .replace('_', "-");
         args[0] = first.clone().into();
-        if matches!(first.as_str(), "backup" | "recovery") {
+        if matches!(first.as_str(), "backup" | "recovery" | "agent") {
             let second = args.get(1).and_then(|s| s.to_str()).ok_or(())?;
             args[0] = format!("{first}-{second}").into();
             args.remove(1);
         }
         let op = args[0].to_str().ok_or(())?;
+        if op == "agent-start" && args.len() == 1 {
+            return Ok(Command::AgentStart {
+                name: self.name.clone(),
+                root: self.root.clone(),
+            });
+        }
+        if op == "agent-stop" && args.len() == 1 {
+            return Ok(Command::Shutdown(
+                self.root.join("instances").join(&self.id).join("host.toml"),
+            ));
+        }
+        if op == "agent-startup" {
+            let choice = match args.get(1).and_then(|arg| arg.to_str()) {
+                None | Some("status") if args.len() <= 2 => None,
+                Some(value) if args.len() == 2 => {
+                    Some(crate::cli::AgentStartupChoice::parse(value).ok_or(())?)
+                }
+                _ => return Err(()),
+            };
+            return Ok(Command::AgentStartup {
+                name: self.name.clone(),
+                root: self.root.clone(),
+                choice,
+            });
+        }
         if matches!(op, "status" | "player-list" | "players") {
             if args.len() != 1 {
                 return Err(());
@@ -359,6 +384,53 @@ fn words(line: &str) -> Result<Vec<OsString>, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn agent_lifecycle_and_boot_policy_remain_bound_to_the_selected_server() {
+        assert!(matches!(
+            scope().command(&args(&["agent", "start"])).unwrap(),
+            Command::AgentStart { .. }
+        ));
+        assert!(matches!(
+            scope().command(&args(&["agent", "stop"])).unwrap(),
+            Command::Shutdown(_)
+        ));
+        assert!(matches!(
+            scope()
+                .command(&args(&["agent", "startup", "boot"]))
+                .unwrap(),
+            Command::AgentStartup {
+                choice: Some(crate::cli::AgentStartupChoice::Boot),
+                ..
+            }
+        ));
+        assert!(matches!(
+            scope()
+                .command(&args(&["agent", "startup", "status"]))
+                .unwrap(),
+            Command::AgentStartup { choice: None, .. }
+        ));
+        assert!(
+            scope()
+                .command(&args(&["agent", "startup", "login"]))
+                .is_err()
+        );
+        assert!(
+            scope()
+                .command(&args(&["agent", "start", "another-server"]))
+                .is_err()
+        );
+        assert!(
+            scope()
+                .command(&args(&[
+                    "agent",
+                    "startup",
+                    "boot",
+                    "--install-root",
+                    "other"
+                ]))
+                .is_err()
+        );
+    }
     #[test]
     fn json_override_is_per_command_and_does_not_change_scope_or_arguments() {
         let (command, format) = presentation(&args(&["status", "--json"]), Format::Human).unwrap();

@@ -5,6 +5,7 @@ pub mod network;
 pub mod paths;
 pub mod platform;
 pub mod release;
+pub mod server_startup;
 pub mod ui;
 pub mod updates;
 pub mod visual_states;

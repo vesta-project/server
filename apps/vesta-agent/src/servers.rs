@@ -190,7 +190,18 @@ pub async fn create(options: Create, base: &Path) -> Result<()> {
     if !options.approve {
         return Err("local_install_approval_required_use_approve_install");
     }
-    let java = local_files::absolute(&options.java, base)?;
+    let startup = crate::agent_startup::choose(options.agent_startup)?;
+    crate::agent_startup::preflight(startup)?;
+    // Operator-selected Java commonly uses /usr/bin/java -> alternatives -> JDK.
+    // Bind the resolved executable, then apply the usual no-link path checks.
+    let selected_java = if options.java.is_absolute() {
+        options.java.clone()
+    } else {
+        base.join(&options.java)
+    };
+    let java = fs::canonicalize(selected_java)
+        .map_err(|_| "local_install_java_unavailable_check_java_path")?;
+    local_files::guard(&java)?;
     let installer = ServerInstaller::new(
         InstallRoots::new(&root, &[]).map_err(|_| "local_install_root_refused")?,
         TransportConfig::direct(),
@@ -225,6 +236,9 @@ pub async fn create(options: Create, base: &Path) -> Result<()> {
         plan.version(),
         plan.warnings().len()
     );
+    for warning in plan.warnings() {
+        println!("Warning: {}", install_warning(warning));
+    }
     let approval = Approval::review(
         &plan,
         Acknowledgments {
@@ -251,7 +265,40 @@ pub async fn create(options: Create, base: &Path) -> Result<()> {
         "host_config={}",
         plan.destination().join("host.toml").display()
     );
+    drop(_lock);
+    if startup == crate::cli::AgentStartupChoice::Boot {
+        crate::agent_startup::enable(&plan.destination())?;
+        crate::agent_startup::start_registered(&plan.destination())?;
+        println!("Agent started; configured for machine boot. Minecraft remains stopped.");
+    } else {
+        println!(
+            "Agent startup: manual. Start it with vesta agent serve <host_config> --allow-local. Minecraft remains stopped."
+        );
+    }
     Ok(())
+}
+fn install_warning(warning: &vesta_server_install::Warning) -> &'static str {
+    use vesta_server_install::Warning;
+    match warning {
+        Warning::LegacyChecksum => {
+            "Upstream publishes a legacy checksum. Confirm with --ack-legacy-checksum."
+        }
+        Warning::FirstRunEffects => {
+            "Minecraft may extract libraries on its first start. Its EULA stays unaccepted."
+        }
+        Warning::SourceBuild => {
+            "Builds from reviewed sources using Git and a JDK; reference checksum differences are warnings."
+        }
+        Warning::SourceBuildReferenceMismatch => {
+            "The locally built server differs from the reference checksum. Its local hash is recorded."
+        }
+        Warning::UnsupportedUpstream => "This software is no longer supported upstream.",
+        Warning::ExperimentalBuild => "This is an experimental build.",
+        Warning::RegionThreading => {
+            "This software uses region threading; check plugin compatibility."
+        }
+        Warning::ProxyResolution => "Downloads use the configured proxy.",
+    }
 }
 fn publish(root: &Path, name: &str, receipt: &Receipt, bind: IpAddr, port: u16) -> Result<()> {
     let directory = root.join("instances").join(&receipt.install_id);
@@ -377,6 +424,7 @@ pub(crate) fn delete_guarded(root: &Path, name: &str, confirm: &str) -> Result<P
         None
     };
     let recovery_root = root.join("recoverable");
+    crate::agent_startup::disable_quiescent(&server.directory)?;
     local_files::guard(&recovery_root)?;
     if !recovery_root.is_dir() {
         return Err("local_recovery_unavailable");

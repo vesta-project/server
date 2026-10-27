@@ -1,5 +1,6 @@
 // Trusted OS-local CLI entrypoint. Shared by the vesta and vesta-agent binaries.
 use std::process::ExitCode;
+mod agent_startup;
 mod cli;
 mod commands;
 mod control;

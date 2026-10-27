@@ -6,7 +6,7 @@ use std::{
 };
 use vesta_server_install::Software;
 
-pub const USAGE: &str = "Vesta agent\n\n  vesta list [--json] [--install-root <root>]\n  vesta manage <server_id|name> [command ...] [--install-root <root>]\n  vesta manage --help\n  vesta create <name> --install-root <root> --minecraft-version <version> --java <path> [install flags]\n  vesta agent serve <host.toml> [--local-only]\n  vesta agent check-config|status <host.toml>\n  vesta version | update\n\nUse manage without a command to enter the server terminal.\nThe vesta-agent executable supports the same commands.";
+pub const USAGE: &str = "Vesta agent\n\n  vesta list [--json] [--install-root <root>]\n  vesta manage <server_id|name> [command ...] [--install-root <root>]\n  vesta manage --help\n  vesta create <name> --install-root <root> --minecraft-version <version> --java <path> [--agent-startup manual|boot] [install flags]\n  vesta agent serve <host.toml> [--local-only|--allow-local]\n  vesta agent check-config|status <host.toml>\n  vesta version | update\n\nUse manage without a command to enter the server terminal.\nThe vesta-agent executable supports the same commands.";
 #[derive(Debug)]
 pub enum Command {
     Help,
@@ -35,6 +35,16 @@ pub enum Command {
     Serve {
         source: PathBuf,
         local_only: bool,
+        allow_local: bool,
+    },
+    AgentStartup {
+        name: String,
+        root: PathBuf,
+        choice: Option<AgentStartupChoice>,
+    },
+    AgentStart {
+        name: String,
+        root: PathBuf,
     },
     Create(Create),
     Management {
@@ -94,6 +104,7 @@ pub enum NamedOp {
 }
 #[derive(Debug)]
 pub struct Create {
+    pub agent_startup: Option<AgentStartupChoice>,
     pub name: String,
     pub root: PathBuf,
     pub version: String,
@@ -105,6 +116,20 @@ pub struct Create {
     pub approve: bool,
     pub warnings: bool,
     pub legacy: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentStartupChoice {
+    Manual,
+    Boot,
+}
+impl AgentStartupChoice {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "manual" => Some(Self::Manual),
+            "boot" => Some(Self::Boot),
+            _ => None,
+        }
+    }
 }
 pub fn valid_name(name: &str) -> bool {
     !matches!(
@@ -191,14 +216,19 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
             let mut at = 0;
             let source = PathBuf::from(value(&args, &mut at)?);
             let local_only = command == "serve" && args.len() == 3 && args[2] == "--local-only";
-            if args.len() != 2 && !local_only {
+            let allow_local = command == "serve" && args.len() == 3 && args[2] == "--allow-local";
+            if args.len() != 2 && !local_only && !allow_local {
                 return Err(());
             }
             return Ok(match command {
                 "status" => Command::Status(source),
                 "shutdown" => Command::Shutdown(source),
                 "check-config" => Command::Check(source),
-                _ => Command::Serve { source, local_only },
+                _ => Command::Serve {
+                    source,
+                    local_only,
+                    allow_local,
+                },
             });
         }
         "superadmin" => return parse_superadmin(&args),
@@ -220,6 +250,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
     let mut bind = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let mut port = 25565;
     let (mut approve, mut warnings, mut legacy) = (false, false, false);
+    let mut agent_startup = None;
     let mut seen = std::collections::HashSet::new();
     let mut at = 2;
     while at < args.len() {
@@ -236,6 +267,10 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
                 version = Some(text(value(&args, &mut at)?)?)
             }
             "--java" if command == "create" => java = Some(PathBuf::from(value(&args, &mut at)?)),
+            "--agent-startup" if command == "create" => {
+                agent_startup =
+                    Some(AgentStartupChoice::parse(&text(value(&args, &mut at)?)?).ok_or(())?)
+            }
             "--loader-version" if command == "create" => {
                 loader_version = Some(text(value(&args, &mut at)?)?)
             }
@@ -278,6 +313,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
                 return Err(());
             }
             Command::Create(Create {
+                agent_startup,
                 name,
                 root: root.ok_or(())?,
                 version,
@@ -339,6 +375,8 @@ mod tests {
         }
         assert!(p(&["delete", "s", "--confirm", "s"]).is_ok());
         assert!(p(&["serve", "x", "--local-only"]).is_ok());
+        assert!(p(&["serve", "x", "--allow-local"]).is_ok());
+        assert!(p(&["serve", "x", "--local-only", "--allow-local"]).is_err());
         for command in ["version", "update", "--help"] {
             assert!(p(&[command]).is_ok());
         }
@@ -356,6 +394,14 @@ mod tests {
             "java",
         ];
         assert!(p(&base).is_ok());
+        for mode in ["manual", "boot"] {
+            let mut args = base.to_vec();
+            args.extend(["--agent-startup", mode]);
+            assert!(p(&args).is_ok());
+        }
+        let mut args = base.to_vec();
+        args.extend(["--agent-startup", "login"]);
+        assert!(p(&args).is_err());
         for flags in [
             ["--accept-eula", "yes"],
             ["--bind", "0.0.0.0"],

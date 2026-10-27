@@ -49,7 +49,7 @@ pub async fn run_with_format(command: Command, base: &Path, format: Format) -> E
         }
         Command::CreateHelp => {
             println!(
-                "vesta create <name> --install-root <root> --minecraft-version <version> --java <path>\n  [--loader vanilla|paper|folia|purpur|fabric|quilt] [--loader-version <version>]\n  [--bind <loopback-ip>] [--port <port>] [--approve-install]\n  [--ack-warnings] [--ack-legacy-checksum]"
+                "vesta create <name> --install-root <root> --minecraft-version <version> --java <path>\n  [--loader vanilla|paper|folia|purpur|fabric|quilt] [--loader-version <version>]\n  [--bind <loopback-ip>] [--port <port>] [--approve-install]\n  [--ack-warnings] [--ack-legacy-checksum]\n  [--agent-startup manual|boot] (prompted in an interactive terminal; required headless)"
             );
             return ExitCode::SUCCESS;
         }
@@ -90,9 +90,17 @@ pub async fn run_with_format(command: Command, base: &Path, format: Format) -> E
             };
         }
         Command::Status(source) => return status::run(&source, base),
-        Command::Serve { source, local_only } => {
-            return serve::run(&source, base, local_only).await;
+        Command::Serve {
+            source,
+            local_only,
+            allow_local,
+        } => {
+            return serve::run(&source, base, local_only, allow_local).await;
         }
+        Command::AgentStartup { name, root, choice } => {
+            crate::agent_startup::command(&root, &name, choice)
+        }
+        Command::AgentStart { name, root } => crate::agent_startup::start(&root, &name),
         Command::Create(options) => servers::create(options, base).await,
         Command::Delete {
             name,

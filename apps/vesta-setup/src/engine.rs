@@ -538,21 +538,36 @@ pub fn progress_view(phase: &str, file: &str, done: u64, total: u64) -> View {
 }
 pub fn complete_view(receipt: &Receipt) -> View {
     let h = handoff(receipt);
+    let cli = paths::display(
+        &receipt
+            .answers
+            .root
+            .join("bin")
+            .join(format!("vesta-agent{}", std::env::consts::EXE_SUFFIX)),
+    );
+    let create_help = if cfg!(windows) {
+        format!("& '{}' create --help", cli.replace('\'', "''"))
+    } else {
+        format!("'{}' create --help", cli.replace('\'', "'\\''"))
+    };
     View {
         step: 6,
-        heading: "Your host is ready".into(),
-        description: vec!["Vesta is installed and the local connection is open.".into()],
+        heading: "Vesta host installed".into(),
+        description: vec![
+            "Create a server with the CLI. Launcher onboarding is not available in this build yet."
+                .into(),
+        ],
         rows: vec![
             Row::Detail {
                 label: "External access".into(),
                 value: receipt.external_status.label().into(),
             },
             Row::Detail {
-                label: "Connection".into(),
+                label: "Setup endpoint".into(),
                 value: h.endpoint,
             },
             Row::Detail {
-                label: "Startup".into(),
+                label: "Setup host startup".into(),
                 value: if receipt.answers.startup == Startup::Automatic {
                     platform::startup_description().into()
                 } else {
@@ -563,8 +578,12 @@ pub fn complete_view(receipt: &Receipt) -> View {
                 label: "Installed in".into(),
                 value: paths::display(&receipt.answers.root),
             },
+            Row::Detail {
+                label: "Create a server".into(),
+                value: create_help,
+            },
         ],
-        hint: String::new(),
+        hint: "For short commands, add the installation's bin folder to PATH.".into(),
     }
 }
 pub fn failure_view(code: &str) -> View {

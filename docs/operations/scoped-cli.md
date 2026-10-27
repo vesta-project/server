@@ -30,6 +30,33 @@ Raw standalone `host.toml` configurations remain supported through `vesta agent`
 commands. This change does not silently adopt unregistered directories or move
 existing servers into a new registry.
 
+## Agent startup
+
+Create the registry directory before the first `vesta create`. Interactive creation
+asks whether this server's agent should start at boot. Scripts must choose
+`--agent-startup manual` or `--agent-startup boot` explicitly. This choice controls
+the agent, not Minecraft, and never accepts the Minecraft EULA.
+
+```sh
+vesta manage my-server agent startup status
+vesta manage my-server agent startup boot
+vesta manage my-server agent startup manual
+vesta manage my-server agent start
+vesta manage my-server agent stop
+```
+
+Linux boot startup uses a per-user systemd service and account linger, so the
+agent can run without a sign-in. Enabling boot on an existing server registers
+future startup; `agent start` starts it now. Changing to manual requires a stopped
+agent and game. Windows boot registration is currently unsupported; choose manual.
+See [managed agent startup](managed-agent-startup.md) for ownership and removal rules.
+
+Manual startup accepts a disabled network listener, allowing local setup before
+pairing. The equivalent direct command is
+`vesta-agent agent serve /absolute/server/host.toml --allow-local`. Unlike
+`--local-only`, `--allow-local` preserves a configured remote listener. Java paths
+such as `/usr/bin/java` are resolved through alternatives before validation.
+
 ## Interactive management
 
 ```text

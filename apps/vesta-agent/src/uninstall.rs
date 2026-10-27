@@ -808,6 +808,7 @@ async fn execute(reviewed: Plan, choice: DataChoice, request: &Request, base: &P
             leases.push(local_files::lock_for_uninstall(&lease)?);
         }
         runners.extend(wait_quiescent(&target.directory)?);
+        crate::agent_startup::disable_quiescent(&target.directory)?;
     }
     runners.extend(wait_quiescent(root)?);
     let executable = root
