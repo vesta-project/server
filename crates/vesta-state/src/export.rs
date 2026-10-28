@@ -230,6 +230,7 @@ const EXCLUDED: &[&str] = &[
     "pack_workspace_blobs",
     "pack_workspace_receipts",
     "pack_workspace_published",
+    "pack_publication_history",
     "pack_workspace_uploads",
     "meta",
     // SQLite's AUTOINCREMENT bookkeeping is runtime state, not application data.

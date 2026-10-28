@@ -20,6 +20,11 @@ pub struct PackOutcome {
     pub minimum_revision: u64,
 }
 impl PackMutation {
+    pub(super) fn workspace_manifest(&self) -> Option<super::super::workspace::PackManifest> {
+        self.workspace
+            .as_ref()
+            .and_then(|w| serde_json::from_str(&w.manifest_json).ok())
+    }
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn workspace_publish(
         key: String,
@@ -136,6 +141,10 @@ impl PackReleases {
     ) -> Result<(), ReleaseError> {
         self.remote_authorize(connection, subject, request)?;
         if let Some(workspace) = &request.workspace {
+            connection.execute(
+                "UPDATE pack_workspace SET customizing_provider=0 WHERE server_id=?",
+                [self.db.server_id()],
+            )?;
             if crate::software::SoftwareHandle::pack_target_in(connection)?.map(|(r, _)| r)
                 != workspace.software_revision
             {

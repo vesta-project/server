@@ -85,9 +85,21 @@ mod tests {
     fn pointer_publication_is_revisioned_required_and_never_hosts_provider_bytes() {
         let f = Fixture::new();
         let releases = PackReleases::open(&f.db).unwrap();
+        let draft = f
+            .workspace
+            .write(
+                &f.subject,
+                "1.21.1",
+                "prelink",
+                &DraftWrite {
+                    expected_revision: "0".into(),
+                    manifest: f.manifest(),
+                },
+            )
+            .unwrap();
         let input = ProviderPackPublish {
             expected_revision: "0".into(),
-            draft_revision: "0".into(),
+            draft_revision: draft.revision,
             provider: "modrinth".into(),
             project_id: "project".into(),
             version_id: "v1".into(),
@@ -107,7 +119,19 @@ mod tests {
         );
         assert!(current.artifact().size() < 1024);
         let view = f.workspace.view(&f.subject, "1.21.1", &releases).unwrap();
+        assert!(!view.pending_publication);
+        assert!(!view.customizing_provider);
         assert_eq!(view.provider_pack.unwrap().version_id, "v1");
+        let history = f.workspace.history(&f.subject).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].revision, "1");
+        assert_eq!(
+            history[0].published_by.as_deref(),
+            Some(f.subject.principal.as_str())
+        );
+        assert!(history[0].required_update);
+        assert_eq!(history[0].provider_version.as_deref(), Some("v1"));
+        assert_eq!((history[0].entry_count, history[0].override_count), (Some(0), Some(0)));
         assert_eq!(
             f.workspace
                 .publish_provider_pack(&f.subject, "1.21.1", "pointer", &input, &releases)

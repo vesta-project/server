@@ -516,6 +516,14 @@ impl PackReleases {
                     ],
                 )?,
             )?;
+            let manifest = request.and_then(|r| r.workspace_manifest());
+            let (entries, overrides) = manifest.as_ref().map_or((0,0), |m| (m.entries.len(), m.override_files.iter().filter(|f| !f.trashed && f.sha256.is_some()).count()));
+            let provider_version = if artifact.format() == ArtifactFormat::Catalogue {
+                let loaded = self.artifacts.load(&artifact, super::MAX_ARTIFACT_BYTES)?;
+                let catalogue = vesta_protocol::pack::catalogue::Manifest::decode(loaded.bytes()).map_err(PackError::from)?;
+                match catalogue.content() { vesta_protocol::pack::catalogue::PackContent::Platform(p) => p.source().version_id().map(str::to_owned), _ => None }
+            } else { None };
+            connection.execute("INSERT INTO pack_publication_history VALUES(?,?,?,?,?,?,?)", params![server,to_sql(plan.revision)?,subject.principal.as_str(),matches!(plan.policy, UpdatePolicy::Required),if provider_version.is_some(){0}else{entries as i64},if provider_version.is_some(){0}else{overrides as i64},provider_version])?;
             if let Some(request) = request { self.record_remote(connection, subject, request, plan.revision, plan.minimum_revision)?; }
             Ok(PackRelease {
                 revision: plan.revision,

@@ -132,6 +132,7 @@ pub struct PackDraft {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct WorkspaceView {
+    pub customizing_provider: bool,
     pub provider_pack: Option<crate::content::ContentProvider>,
     pub draft: PackDraft,
     pub server_minecraft_version: String,
@@ -422,7 +423,17 @@ impl PackWorkspace {
         } else {
             None
         };
+        let customizing_provider = self.db.read(|c| {
+            Ok(c.query_row(
+                "SELECT customizing_provider FROM pack_workspace WHERE server_id=?",
+                [self.db.server_id()],
+                |r| r.get::<_, bool>(0),
+            )
+            .optional()?
+            .unwrap_or(false))
+        })?;
         Ok(WorkspaceView {
+            customizing_provider,
             provider_pack,
             minecraft_drift: draft.manifest.minecraft_version != mc,
             pending_publication: published.as_ref().is_none_or(|p| {
@@ -759,3 +770,23 @@ fn valid_sha(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PublishedRevision {
+    pub revision: String,
+    pub published_at: i64,
+    pub published_by: Option<String>,
+    pub required_update: bool,
+    pub entry_count: Option<i64>,
+    pub override_count: Option<i64>,
+    pub provider_version: Option<String>,
+}
+impl PackWorkspace {
+    pub fn history(&self, subject: &Subject) -> Result<Vec<PublishedRevision>> {
+        Ok(self.db.read_with(|s| { let c=s.connection(); self.authorize_in(c, subject, Capability::PackEdit)?;
+ let mut q=c.prepare("SELECT r.revision,r.published_at,h.published_by,coalesce(h.required_update,r.minimum_revision=r.revision),h.entry_count,h.override_count,h.provider_version FROM pack_releases r LEFT JOIN pack_publication_history h ON h.server_id=r.server_id AND h.revision=r.revision WHERE r.server_id=? ORDER BY r.revision DESC")?;
+ let rows=q.query_map([self.db.server_id()], |r| Ok(PublishedRevision{revision:r.get::<_,i64>(0)?.to_string(),published_at:r.get(1)?,published_by:r.get(2)?,required_update:r.get(3)?,entry_count:r.get(4)?,override_count:r.get(5)?,provider_version:r.get(6)?}))?;
+ Ok(rows.collect::<std::result::Result<Vec<_>,_>>()?)
+ })?)
+    }
+}

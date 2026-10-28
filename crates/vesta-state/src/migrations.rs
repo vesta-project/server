@@ -31,6 +31,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         25 => apply_v25(c),
         26 => apply_v26(c),
         27 => apply_v27(c),
+        28 => apply_v28(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -1137,6 +1138,21 @@ fn apply_v25(c: &Connection) -> crate::Result<()> {
         ) STRICT;
         INSERT INTO management_invitation_ids(id,code_hash)
             SELECT lower(hex(randomblob(16))),code_hash FROM management_invitation_issuers;
+    "#)?;
+    Ok(())
+}
+
+fn apply_v28(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(r#"
+        ALTER TABLE pack_workspace ADD COLUMN customizing_provider INTEGER NOT NULL DEFAULT 0 CHECK(customizing_provider IN (0,1));
+        CREATE TABLE pack_publication_history (
+            server_id TEXT NOT NULL REFERENCES server_identity(server_id),
+            revision INTEGER NOT NULL, published_by TEXT NOT NULL,
+            required_update INTEGER NOT NULL CHECK(required_update IN (0,1)),
+            entry_count INTEGER NOT NULL CHECK(entry_count >= 0),
+            override_count INTEGER NOT NULL CHECK(override_count >= 0),
+            provider_version TEXT, PRIMARY KEY(server_id,revision)
+        ) STRICT;
     "#)?;
     Ok(())
 }

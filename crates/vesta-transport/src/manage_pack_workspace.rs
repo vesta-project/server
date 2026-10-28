@@ -7,7 +7,8 @@ use vesta_control::{host::NetworkHost, identity::Capability, packs::workspace::*
 pub(super) fn implemented(path: &str) -> bool {
     matches!(
         path,
-        "/api/v3/manage/pack/draft"
+        "/api/v3/manage/pack/history"
+            | "/api/v3/manage/pack/draft"
             | "/api/v3/manage/pack/draft/add"
             | "/api/v3/manage/pack/draft/delete"
             | "/api/v3/manage/pack/draft/upload"
@@ -88,6 +89,12 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         .path
         .strip_prefix("/api/v3/manage/")
         .unwrap_or_default();
+    if action == "pack/history" && request.method == Method::GET {
+        if !request.bytes.is_empty() {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        return value(workspace.history(&subject));
+    }
     if action == "pack/draft/icon" && request.method == Method::GET {
         if !request.bytes.is_empty() {
             return error(StatusCode::BAD_REQUEST, "invalid_request");

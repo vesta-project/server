@@ -89,6 +89,7 @@ const MUST_BE_EMPTY: &[&str] = &[
     "pack_workspace_blobs",
     "pack_workspace_receipts",
     "pack_workspace_published",
+    "pack_publication_history",
     "pack_workspace_uploads",
 ];
 

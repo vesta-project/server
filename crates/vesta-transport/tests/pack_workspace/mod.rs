@@ -33,6 +33,11 @@ fn signed_pack_sync_binds_freshness_identity_policy_and_latest_download() {
         &json!({"expected_revision":"0","draft_revision":"1","resolved_entries":[],"review_sha256":preview.json()["data"]["review_sha256"],"required_update":true,"acknowledge_lower_version":false}),
     );
     assert_eq!(published.status, 200);
+    let history = f.request("GET", "/api/v3/manage/pack/history", b"", Some(&token));
+    assert_eq!(history.status, 200);
+    assert_eq!(history.json()["data"][0]["revision"], "1");
+    assert_eq!(history.json()["data"][0]["required_update"], true);
+    assert_eq!(f.request("GET", "/api/v3/manage/pack/history", b"", None).status, 401);
     let path = "/api/v3/manage/pack/sync?installed=0&nonce=0123456789abcdef0123456789abcdef";
     assert_eq!(f.request("GET", path, b"", None).status, 401);
     let response = f.request("GET", path, b"", Some(&token));

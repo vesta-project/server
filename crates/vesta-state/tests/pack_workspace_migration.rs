@@ -17,6 +17,7 @@ fn v26_upgrades_to_a_separate_empty_workspace_without_changing_server_identity()
     assert_eq!(db.server_id(), server);
     db.read(|c| {
         for table in [
+            "pack_publication_history",
             "pack_workspace",
             "pack_workspace_blobs",
             "pack_workspace_receipts",

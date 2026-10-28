@@ -207,7 +207,11 @@ impl PackWorkspace {
             if let ImportRequest::UploadedArchive{upload_id,..}=input {
                 c.execute("DELETE FROM pack_workspace_uploads WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),upload_id])?;
             }
-            self.write_in(c, subject, mc, expected, manifest)
+            let draft = self.write_in(c, subject, mc, expected, manifest)?;
+            if matches!(input, ImportRequest::Published { .. }) {
+                c.execute("UPDATE pack_workspace SET customizing_provider=1 WHERE server_id=?", [self.db.server_id()])?;
+            }
+            Ok(draft)
         })
     }
 }
