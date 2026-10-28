@@ -118,10 +118,10 @@ pub(super) fn validate_files(files: &[OverrideFile]) -> Result<()> {
             for part in file.path.split('/') {
                 prefix.push('/');
                 prefix.push_str(part);
-                if let Some(old) = components.insert(prefix.to_ascii_lowercase(), prefix.clone()) {
-                    if old != prefix {
-                        return Err(invalid());
-                    }
+                if let Some(old) = components.insert(prefix.to_ascii_lowercase(), prefix.clone())
+                    && old != prefix
+                {
+                    return Err(invalid());
                 }
             }
         }
