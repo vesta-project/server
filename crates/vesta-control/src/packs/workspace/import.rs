@@ -113,6 +113,9 @@ impl PackWorkspace {
                         version_id,
                     }),
                 EntrySource::Manual { .. } => result.unresolved_files.push(entry.path.clone()),
+                EntrySource::Upload { .. } if entry.kind != EntryKind::ConfigOverride => {
+                    result.unresolved_files.push(entry.path.clone())
+                }
                 _ => {}
             }
             if entry.kind == EntryKind::ConfigOverride {
