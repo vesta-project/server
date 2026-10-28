@@ -561,6 +561,9 @@ pub(super) fn parse_archive(
         .map_err(super::super::PackError::from)?;
     let mut blobs = Vec::new();
     for (name, bytes) in files {
+        if cf.is_some() && name == "modlist.html" {
+            continue;
+        }
         let scoped = name
             .strip_prefix("client-overrides/")
             .map(|p| ("client-overrides", p))
@@ -643,7 +646,10 @@ mod tests {
     fn curseforge_import_pins_ids_and_uses_the_provider_filename() {
         let document=br#"{"manifestType":"minecraftModpack","manifestVersion":1,"name":"CF","version":"1.2","minecraft":{"version":"1.21.1","modLoaders":[{"id":"forge-52.0.0","primary":true}]},"files":[{"projectID":123,"fileID":456,"required":true}]}"#;
         let (m, _) = parse_archive(
-            &archive(&[("manifest.json", document)]),
+            &archive(&[
+                ("manifest.json", document),
+                ("modlist.html", b"<html>metadata</html>"),
+            ]),
             &Providers,
             |_| unreachable!(),
         )
