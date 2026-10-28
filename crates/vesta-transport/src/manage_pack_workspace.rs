@@ -13,6 +13,8 @@ pub(super) fn implemented(path: &str) -> bool {
             | "/api/v3/manage/pack/draft/upload"
             | "/api/v3/manage/pack/draft/import"
             | "/api/v3/manage/pack/provider/publish"
+            | "/api/v3/manage/pack/files/read"
+            | "/api/v3/manage/pack/files/mutate"
             | "/api/v3/manage/pack/suggestions"
             | "/api/v3/manage/pack/preview"
             | "/api/v3/manage/pack/draft/icon"
@@ -83,9 +85,11 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         .path
         .strip_prefix("/api/v3/manage/")
         .unwrap_or_default();
-    if action=="pack/draft/icon"&&request.method==Method::GET {
-        if !request.bytes.is_empty(){return error(StatusCode::BAD_REQUEST,"invalid_request");}
-        return value(workspace.icon(&subject,&mc));
+    if action == "pack/draft/icon" && request.method == Method::GET {
+        if !request.bytes.is_empty() {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        return value(workspace.icon(&subject, &mc));
     }
     if action == "pack/suggestions" && request.method == Method::GET {
         if !request.bytes.is_empty() {
@@ -213,6 +217,12 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             Err(e) => pack_error(e),
         };
     }
+    if action == "pack/files/read" {
+        let Some(input) = decode::<FileRead>(request.bytes) else {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        };
+        return value(workspace.file_read(&subject, &mc, &input));
+    }
     let Some(key) = super::key(
         request.idempotency,
         host.database().server_id(),
@@ -232,6 +242,12 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             }
         }
 
+        "pack/files/mutate" => {
+            let Some(input) = decode::<FileMutation>(request.bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            value(workspace.file_mutate(&subject, &mc, &key, &input))
+        }
 
         "pack/draft/uploads/begin" => {
             let Some(input) = decode::<UploadBegin>(request.bytes) else {

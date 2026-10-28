@@ -106,7 +106,7 @@ impl PackWorkspace {
 fn string<'a>(v: &'a serde_json::Value, key: &str) -> Result<&'a str> {
     v.get(key).and_then(|v| v.as_str()).ok_or_else(invalid)
 }
-fn kind(path: &str) -> Result<EntryKind> {
+pub(super) fn kind(path: &str) -> Result<EntryKind> {
     match path.split('/').next().unwrap_or_default() {
         "mods" => Ok(EntryKind::Mod),
         "resourcepacks" => Ok(EntryKind::ResourcePack),
@@ -233,7 +233,8 @@ pub(super) fn parse_archive(
             minecraft_version: index.minecraft_version.ok_or_else(invalid)?,
             loader,
             loader_version: index.modloader_version,
-            entries: Vec::new(),
+            override_files: Vec::new(),
+        entries: Vec::new(),
         };
         let mut blobs = Vec::new();
         for (i, file) in index.files.into_iter().enumerate() {
@@ -306,6 +307,7 @@ pub(super) fn parse_archive(
         minecraft_version: String::new(),
         loader: ClientLoader::None,
         loader_version: None,
+        override_files: Vec::new(),
         entries: Vec::new(),
     };
     if mr.is_some() {
@@ -418,35 +420,31 @@ pub(super) fn parse_archive(
     vesta_protocol::pack::catalogue::RelativePath::parse(cf_prefix)
         .map_err(super::super::PackError::from)?;
     let mut blobs = Vec::new();
-    let mut overrides = files.into_iter().collect::<Vec<_>>();
-    overrides.sort_by_key(|(name, _)| name.starts_with("client-overrides/"));
-    for (name, bytes) in overrides {
-        let path = name
+    for (name, bytes) in files {
+        let scoped = name
             .strip_prefix("client-overrides/")
-            .or_else(|| name.strip_prefix(&format!("{cf_prefix}/")));
-        if let Some(path) = path {
-            // Client overrides take precedence over shared overrides, without silently
-            // overwriting a provider entry whose identity would then be incorrect.
-            let source = EntrySource::Upload {
-                sha256: digest(&bytes),
-            };
-            if let Some(old) = manifest.entries.iter_mut().find(|e| e.path == path) {
-                if !matches!(old.source, EntrySource::Upload { .. }) {
-                    return Err(invalid());
-                }
-                old.source = source;
-            } else {
-                manifest.entries.push(entry(
-                    format!("override-{}", manifest.entries.len()),
-                    path.into(),
-                    source,
-                    true,
-                    Side::Unsupported,
-                )?);
-            }
+            .map(|p| ("client-overrides", p))
+            .or_else(|| {
+                name.strip_prefix("server-overrides/")
+                    .map(|p| ("server-overrides", p))
+            })
+            .or_else(|| {
+                name.strip_prefix(&format!("{cf_prefix}/"))
+                    .map(|p| ("overrides", p))
+            });
+        if let Some((root, path)) = scoped {
+            manifest.override_files.push(OverrideFile {
+                root: root.into(),
+                path: path.into(),
+                sha256: Some(digest(&bytes)),
+                trashed: false,
+            });
             blobs.push(bytes);
+        } else {
+            return Err(invalid());
         }
     }
+    super::files::validate_files(&manifest.override_files)?;
     validate_manifest(&manifest)?;
     Ok((manifest, blobs))
 }

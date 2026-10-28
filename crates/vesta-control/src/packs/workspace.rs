@@ -1,7 +1,9 @@
 //! Protected, revisioned client-pack workspace. No writes to the game tree.
-mod import;
+mod files;
 mod provider_pack;
 pub use provider_pack::ProviderPackPublish;
+mod import;
+pub use files::*;
 mod providers;
 mod publication;
 mod uploads;
@@ -118,6 +120,8 @@ pub struct PackManifest {
     pub loader: ClientLoader,
     pub loader_version: Option<String>,
     pub entries: Vec<PackEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub override_files: Vec<OverrideFile>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PackDraft {
@@ -360,6 +364,7 @@ impl PackWorkspace {
                     minecraft_version: mc.into(),
                     loader: ClientLoader::None,
                     loader_version: None,
+                    override_files: Vec::new(),
                     entries: Vec::new(),
                 },
             }),
@@ -503,6 +508,12 @@ impl PackWorkspace {
             return Err(ReleaseError::Conflict);
         }
         validate_manifest(&manifest)?;
+        files::validate_files(&manifest.override_files)?;
+        for file in &manifest.override_files {
+            if let Some(sha) = &file.sha256 {
+                self.blob_in(c, sha)?;
+            }
+        }
         if manifest.minecraft_version != mc {
             return Err(ReleaseError::RevisionMismatch);
         }

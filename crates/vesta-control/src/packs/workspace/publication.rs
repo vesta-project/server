@@ -114,6 +114,7 @@ impl PackWorkspace {
             manifest.entries.push(dependency.clone());
         }
         validate_manifest(&manifest)?;
+        self.client_manifest(&manifest)?;
         let release = releases.current()?;
         let published_revision = release.as_ref().map_or(0, |r| r.revision());
         let published = self
@@ -375,14 +376,14 @@ impl PackWorkspace {
             plan.revision(),
             plan.minimum_revision(),
         );
-        let snapshot = self.snapshot(&preview.manifest, &metadata, providers, http)?;
+        let client_manifest = self.client_manifest(&preview.manifest)?;
+        let snapshot = self.snapshot(&client_manifest, &metadata, providers, http)?;
         let icon_path = snapshot
             .bodies
             .keys()
             .find(|p| matches!(p.as_str(), "pack-icon.png" | "pack-icon.jpg"))
             .map(|p| p.as_str());
-        let mut env: BTreeMap<String, (String, String)> = preview
-            .manifest
+        let mut env: BTreeMap<String, (String, String)> = client_manifest
             .entries
             .iter()
             .map(|e| {
@@ -558,7 +559,15 @@ fn diff(before: Option<&PackManifest>, after: &PackManifest) -> PackDiff {
             || b.loader != after.loader
             || b.loader_version != after.loader_version
             || b.display_version != after.display_version
+            || b.override_files != after.override_files
     });
+    result.custom_overrides.extend(
+        after
+            .override_files
+            .iter()
+            .filter(|f| !f.trashed && f.sha256.is_some())
+            .map(|f| format!("{}/{}", f.root, f.path)),
+    );
     result
 }
 
