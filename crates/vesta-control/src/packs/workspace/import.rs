@@ -45,6 +45,9 @@ impl PackWorkspace {
     ) -> Result<ArchiveInspection> {
         let bytes = self.archive_upload(subject, &input.upload_id)?;
         let zip = zip::ZipArchive::new(Cursor::new(&bytes)).map_err(|_| invalid())?;
+        if zip.len() > super::super::MAX_VESTA_ENTRIES {
+            return Err(super::super::PackError::TooLarge.into());
+        }
         let names: Vec<_> = zip.file_names().map(str::to_owned).collect();
         let format = if names.iter().any(|n| n == "modrinth.index.json") {
             "mrpack"
