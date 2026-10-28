@@ -711,6 +711,94 @@ mode = 'disabled'
         }
     }
     #[test]
+    fn publication_embeds_client_override_precedence_and_never_server_only_bytes() {
+        use std::io::Read;
+        let f = super::super::tests::Fixture::new();
+        let releases = PackReleases::open(&f.db).unwrap();
+        for (i, root) in ["overrides", "client-overrides", "server-overrides"]
+            .iter()
+            .enumerate()
+        {
+            f.workspace
+                .file_mutate(
+                    &f.subject,
+                    "1.21.1",
+                    &format!("file-{i}"),
+                    &FileMutation {
+                        expected_revision: i.to_string(),
+                        change: FileOperation::Write {
+                            root: (*root).into(),
+                            path: if i == 2 {
+                                "config/server-secret.txt"
+                            } else {
+                                "config/a.txt"
+                            }
+                            .into(),
+                            content_base64: STANDARD.encode(root),
+                        },
+                    },
+                )
+                .unwrap();
+        }
+        let preview = f
+            .workspace
+            .preview(
+                &f.subject,
+                "1.21.1",
+                &PreviewRequest {
+                    draft_revision: "3".into(),
+                    resolved_entries: vec![],
+                },
+                &releases,
+                &Providers,
+                vec![],
+            )
+            .unwrap();
+        assert!(preview.valid);
+        assert!(
+            preview
+                .diff
+                .custom_overrides
+                .contains(&"server-overrides/config/server-secret.txt".into())
+        );
+        f.workspace
+            .publish(
+                &f.subject,
+                "1.21.1",
+                "publish-overrides",
+                &WorkspacePublish {
+                    expected_revision: "0".into(),
+                    draft_revision: "3".into(),
+                    resolved_entries: vec![],
+                    review_sha256: preview.review_sha256,
+                    required_update: false,
+                    acknowledge_lower_version: false,
+                },
+                &releases,
+                &Providers,
+                &ProviderHttp {
+                    edit: None,
+                    corrupt: false,
+                },
+                &base(&f),
+                vec![],
+            )
+            .unwrap();
+        let release = releases.current().unwrap().unwrap();
+        let artifact = releases
+            .artifacts()
+            .load(release.artifact(), crate::packs::MAX_ARTIFACT_BYTES)
+            .unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(artifact.bytes())).unwrap();
+        assert!(!zip.file_names().any(|name| name.contains("server-secret")));
+        let mut body = String::new();
+        zip.by_name("overrides/config/a.txt")
+            .unwrap()
+            .read_to_string(&mut body)
+            .unwrap();
+        assert_eq!(body, "client-overrides");
+    }
+    #[test]
     fn validation_requires_compatible_complete_dependencies_without_editing_draft() {
         let f = super::super::tests::Fixture::new();
         let releases = PackReleases::open(&f.db).unwrap();
