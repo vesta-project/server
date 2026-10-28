@@ -69,6 +69,7 @@ impl PackWorkspace {
                 release_revision = Some(current.revision());
                 if let Some((r, manifest)) = self.published(subject)?
                     && r == current.revision()
+                    && current.artifact().format() != super::super::ArtifactFormat::Catalogue
                 {
                     (manifest, Vec::new())
                 } else {

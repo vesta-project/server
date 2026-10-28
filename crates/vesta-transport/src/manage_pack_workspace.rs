@@ -12,6 +12,7 @@ pub(super) fn implemented(path: &str) -> bool {
             | "/api/v3/manage/pack/draft/delete"
             | "/api/v3/manage/pack/draft/upload"
             | "/api/v3/manage/pack/draft/import"
+            | "/api/v3/manage/pack/provider/publish"
             | "/api/v3/manage/pack/suggestions"
             | "/api/v3/manage/pack/preview"
             | "/api/v3/manage/pack/draft/icon"
@@ -221,6 +222,17 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         return error(StatusCode::BAD_REQUEST, "idempotency_key_required");
     };
     match action {
+        "pack/provider/publish" => {
+            let Some(input) = decode::<ProviderPackPublish>(request.bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            match workspace.publish_provider_pack(&subject, &mc, &key, &input, host.releases()) {
+                Ok(v) => super::pack_outcome(v),
+                Err(e) => pack_error(e),
+            }
+        }
+
+
         "pack/draft/uploads/begin" => {
             let Some(input) = decode::<UploadBegin>(request.bytes) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");

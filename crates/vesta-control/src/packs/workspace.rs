@@ -1,5 +1,7 @@
 //! Protected, revisioned client-pack workspace. No writes to the game tree.
 mod import;
+mod provider_pack;
+pub use provider_pack::ProviderPackPublish;
 mod providers;
 mod publication;
 mod uploads;
@@ -124,6 +126,7 @@ pub struct PackDraft {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct WorkspaceView {
+    pub provider_pack: Option<crate::content::ContentProvider>,
     pub draft: PackDraft,
     pub server_minecraft_version: String,
     pub minecraft_drift: bool,
@@ -379,7 +382,40 @@ impl PackWorkspace {
             )
             .optional()?)
         })?;
+        let provider_pack = if let Some(release) = &release {
+            if release.artifact().format() == super::ArtifactFormat::Catalogue {
+                let loaded = releases
+                    .artifacts()
+                    .load(release.artifact(), super::MAX_ARTIFACT_BYTES)?;
+                let catalogue = vesta_protocol::pack::catalogue::Manifest::decode(loaded.bytes())
+                    .map_err(super::PackError::from)?;
+                if let vesta_protocol::pack::catalogue::PackContent::Platform(pack) =
+                    catalogue.content()
+                {
+                    let source = pack.source();
+                    Some(crate::content::ContentProvider {
+                        provider: match source.platform_name() {
+                            Some(vesta_protocol::pack::catalogue::Platform::Modrinth) => "modrinth",
+                            Some(vesta_protocol::pack::catalogue::Platform::Curseforge) => {
+                                "curseforge"
+                            }
+                            _ => return Err(invalid()),
+                        }
+                        .into(),
+                        project_id: source.project_id().ok_or_else(invalid)?.into(),
+                        version_id: source.version_id().ok_or_else(invalid)?.into(),
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         Ok(WorkspaceView {
+            provider_pack,
             minecraft_drift: draft.manifest.minecraft_version != mc,
             pending_publication: published.as_ref().is_none_or(|p| {
                 published_draft.map(|r| r.to_string()).as_ref() != Some(&draft.revision)
