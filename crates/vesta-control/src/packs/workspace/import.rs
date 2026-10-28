@@ -384,7 +384,8 @@ pub(super) fn parse_archive(
                 match file.env.server.as_str() {
                     "required" => Side::Required,
                     "optional" => Side::Optional,
-                    _ => Side::Unsupported,
+                    "unsupported" => Side::Unsupported,
+                    _ => Side::Optional,
                 },
             )?);
         }
@@ -495,7 +496,8 @@ pub(super) fn parse_archive(
             let server = match row["env"]["server"].as_str() {
                 Some("required") => Side::Required,
                 Some("optional") => Side::Optional,
-                _ => Side::Unsupported,
+                Some("unsupported") => Side::Unsupported,
+                _ => Side::Optional,
             };
             manifest.entries.push(entry(
                 format!("import-{i}"),
@@ -552,7 +554,7 @@ pub(super) fn parse_archive(
                     version_id: version,
                 },
                 row["required"] != false,
-                Side::Unsupported,
+                Side::Optional,
             )?);
         }
     }

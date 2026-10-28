@@ -25,6 +25,8 @@ pub(super) fn initialize(db: &StateDatabase) -> Result<()> {
 #[derive(Clone, Serialize, Deserialize)]
 struct Change {
     #[serde(default)]
+    pack_file: bool,
+    #[serde(default)]
     folder: bool,
     kind: ContentKind,
     action: String,
@@ -52,6 +54,86 @@ impl Change {
     }
 }
 impl FileBrowser {
+    pub(crate) fn pack_jar_side(bytes: &[u8]) -> Option<String> {
+        jar_metadata(std::io::Cursor::new(bytes))
+            .ok()
+            .flatten()
+            .and_then(|m| m.side)
+    }
+
+    pub(crate) fn pack_admission(&self) -> Result<std::sync::MutexGuard<'static, ()>> {
+        CONTENT_ADMISSION.lock().map_err(|_| FileError::Unavailable)
+    }
+    /// Insert a reviewed pack atomically with its receipt; always wait for restart.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn stage_pack_in(
+        &self,
+        c: &rusqlite::Connection,
+        subject: &Subject,
+        key: &str,
+        files: &[(String, Option<String>, Vec<u8>, Option<ContentProvider>)],
+    ) -> Result<Vec<String>> {
+        let (count, size): (i64, i64) = c.query_row("SELECT count(*),coalesce(sum(length(bytes)),0) FROM server_content_changes WHERE state='pending'", [], |r| Ok((r.get(0)?,r.get(1)?)))?;
+        let retained: i64 =
+            c.query_row("SELECT count(*) FROM server_content_changes", [], |r| {
+                r.get(0)
+            })?;
+        if retained + files.len() as i64 > 10_000 {
+            return Err(FileError::IntentsFull);
+        }
+        if count + files.len() as i64 > MAX_PENDING
+            || size + files.iter().map(|f| f.2.len() as i64).sum::<i64>() > MAX_STAGED
+        {
+            return Err(FileError::IntentsFull);
+        }
+        let mut ids = Vec::new();
+        for (index, (path, expected, bytes, provider)) in files.iter().enumerate() {
+            let change = Change {
+                folder: false,
+                pack_file: true,
+                kind: ContentKind::Mod,
+                action: if expected.is_some() {
+                    "update"
+                } else {
+                    "install"
+                }
+                .into(),
+                path: path.clone(),
+                target: None,
+                expected: expected.clone(),
+                provider: provider.clone(),
+            };
+            self.validate_content_change(&change)?;
+            if bytes.len() > MAX_WRITE_BYTES {
+                return Err(FileError::TooLarge);
+            }
+            self.remote_authorize(c, subject, &change.authority())?;
+            let busy: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM server_content_changes WHERE state='pending' AND json_extract(change_json,'$.path')=?)",[path],|r|r.get(0))?;
+            if busy {
+                return Err(FileError::Conflict(None));
+            }
+            let id = uuid::Uuid::new_v4().to_string();
+            let raw = serde_json::to_string(&change).map_err(|_| FileError::Unavailable)?;
+            c.execute(
+                "INSERT INTO server_content_changes VALUES(?,?,?,?,?,?,?,'pending',NULL)",
+                params![
+                    id,
+                    subject.principal.as_str(),
+                    subject.device.as_str(),
+                    format!("{key}-{index}"),
+                    hex::encode(Sha256::digest([raw.as_bytes(), bytes].concat())),
+                    raw,
+                    bytes
+                ],
+            )?;
+            content_audit(c, &self.audit, subject, "content.stage", &id)?;
+            ids.push(id);
+        }
+        if !ids.is_empty() {
+            self.content_barrier(true)?;
+        }
+        Ok(ids)
+    }
     pub(super) fn content_tree(&self, subject: &Subject, path: &str) -> Result<(String, u64)> {
         let mut work = vec![path.to_owned()];
         let mut entries = Vec::new();
@@ -431,6 +513,7 @@ impl FileBrowser {
             subject,
             key,
             Change {
+                pack_file: false,
                 folder,
                 kind,
                 action: action.into(),
@@ -459,6 +542,7 @@ impl FileBrowser {
             subject,
             key,
             Change {
+                pack_file: false,
                 folder: false,
                 kind,
                 action: if expected.is_some() {
@@ -477,6 +561,11 @@ impl FileBrowser {
     }
     fn validate_content_change(&self, change: &Change) -> Result<()> {
         RelativePath::parse(&change.path)?;
+        if change.pack_file {
+            crate::packs::workspace::validate_install_path(&change.path)
+                .map_err(|_| FileError::InvalidPath)?;
+            return Ok(());
+        }
         let valid = match change.kind {
             ContentKind::Mod => {
                 change.path.starts_with("mods/")
@@ -577,9 +666,9 @@ impl FileBrowser {
         let _admission = CONTENT_ADMISSION
             .lock()
             .map_err(|_| FileError::Unavailable)?;
-        self.content_cancel_inner(subject,id)
+        self.content_cancel_inner(subject, id)
     }
-    fn content_cancel_inner(&self,subject:&Subject,id:&str)->Result<ContentChange> {
+    fn content_cancel_inner(&self, subject: &Subject, id: &str) -> Result<ContentChange> {
         self.db
             .write_with(|tx| {
                 let c = tx.connection();
@@ -623,7 +712,9 @@ impl FileBrowser {
         id: &str,
         key: &str,
     ) -> Result<serde_json::Value> {
-        let _admission=CONTENT_ADMISSION.lock().map_err(|_|FileError::Unavailable)?;
+        let _admission = CONTENT_ADMISSION
+            .lock()
+            .map_err(|_| FileError::Unavailable)?;
         self.for_remote().execute_remote(
             subject,
             key,
@@ -712,6 +803,15 @@ impl FileBrowser {
                 self.mkdir(&subject, &trash)?;
             }
         }
+        if change.pack_file {
+            let parts: Vec<_> = change.path.split('/').collect();
+            for n in 1..parts.len() {
+                let parent = RelativePath::parse(&parts[..n].join("/"))?;
+                if matches!(self.list(&subject, Some(&parent)), Err(FileError::NotFound)) {
+                    self.mkdir(&subject, &parent)?;
+                }
+            }
+        }
         let old =
             self.content_provider(&change.path, change.expected.as_deref().unwrap_or_default())?;
         let result = files.execute_remote(&subject,&key,json!(["content",id]),||Ok(change.authority()),|files| {
@@ -740,7 +840,7 @@ impl FileBrowser {
             Ok(_) => self.db.write_with(|tx| {
                 let c=tx.connection();
                 c.execute("DELETE FROM server_content_provenance WHERE path=?",[&change.path])?;
-                if let Some(provider)=change.provider.as_ref().or(old.as_ref()) && change.action!="remove" {
+                if let Some(provider)=change.provider.as_ref().or(if change.pack_file {None}else{old.as_ref()}) && change.action!="remove" {
                     let hash=if bytes.is_empty(){change.expected.clone().unwrap_or_default()}else{hex::encode(Sha256::digest(&bytes))};
                     c.execute("INSERT OR REPLACE INTO server_content_provenance VALUES(?,?,?)",params![change.target.as_ref().unwrap_or(&change.path),hash,serde_json::to_string(provider).map_err(|_|FileError::Unavailable)?])?;
                 }

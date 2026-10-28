@@ -13,6 +13,8 @@ pub(super) fn implemented(path: &str) -> bool {
             | "/api/v3/manage/pack/draft/upload"
             | "/api/v3/manage/pack/draft/import"
             | "/api/v3/manage/pack/archive/inspect"
+            | "/api/v3/manage/pack/install/plan"
+            | "/api/v3/manage/pack/install/apply"
             | "/api/v3/manage/pack/provider/publish"
             | "/api/v3/manage/pack/files/read"
             | "/api/v3/manage/pack/files/mutate"
@@ -217,6 +219,77 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             Ok(v) => super::pack_outcome(v),
             Err(e) => pack_error(e),
         };
+    }
+    if matches!(action, "pack/install/plan" | "pack/install/apply") {
+        let (family, _) = match host.software().map(|s| s.content_target()).transpose() {
+            Ok(v) => v.unwrap_or_default(),
+            Err(_) => {
+                return error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "software_state_unavailable",
+                );
+            }
+        };
+        let providers = vesta_control::content::UreqProviderClient::new(
+            std::env::var("VESTA_CURSEFORGE_API_KEY").ok(),
+        );
+        if action == "pack/install/plan" {
+            let Some(input) = decode::<PackInstallRequest>(request.bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            return value(workspace.install_plan(
+                &subject,
+                &mc,
+                family.as_deref(),
+                &input,
+                host.files(),
+                host.releases(),
+                &providers,
+            ));
+        }
+        let Some(input) = decode::<PackInstallApply>(request.bytes) else {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        };
+        let Some(key) = super::key(
+            request.idempotency,
+            host.database().server_id(),
+            subject.device.as_str(),
+            request.path,
+        ) else {
+            return error(StatusCode::BAD_REQUEST, "idempotency_key_required");
+        };
+        let outcome = match workspace.install_apply(
+            &subject,
+            &mc,
+            family.as_deref(),
+            &key,
+            &input,
+            host.files(),
+        ) {
+            Ok(o) => o,
+            Err(e) => return pack_error(e),
+        };
+        let assigned = if input.set_as_modpack {
+            match workspace.install_assign(
+                &subject,
+                &mc,
+                &input,
+                host.releases(),
+                &providers,
+                host.configuration().pack(),
+            ) {
+                Ok(r) => Some(r),
+                Err(e) => return pack_error(e),
+            }
+        } else {
+            None
+        };
+        if let Err(e) = workspace.install_finish(&subject, &input.plan_id) {
+            return pack_error(e);
+        }
+        return ok(
+            serde_json::json!({"state":outcome.state,"pending_ids":outcome.pending_ids,"modpack_revision":assigned}),
+        );
     }
     if action == "pack/files/read" {
         let Some(input) = decode::<FileRead>(request.bytes) else {

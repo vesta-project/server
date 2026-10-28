@@ -185,7 +185,8 @@ fn decode_metadata(
             server_requirement: match p["server_side"].as_str() {
                 Some("required") => Side::Required,
                 Some("optional") => Side::Optional,
-                _ => Side::Unsupported,
+                Some("unsupported") => Side::Unsupported,
+                _ => Side::Optional,
             },
             minecraft_versions: strings(&v["game_versions"]),
             loaders,
@@ -231,7 +232,7 @@ fn decode_metadata(
             .collect::<Result<Vec<_>>>()?;
         Ok(ProviderMetadata {
             client_required: false,
-            server_requirement: Side::Unsupported,
+            server_requirement: Side::Optional,
             minecraft_versions: versions,
             loaders,
             kind,

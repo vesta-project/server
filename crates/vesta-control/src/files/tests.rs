@@ -883,3 +883,163 @@ fn protected_raw_edits_bind_receipt_payload_actor_and_validator() {
             .is_err()
     );
 }
+#[test]
+fn pack_install_review_stages_overrides_until_restart_and_replays() {
+    use crate::packs::{PackReleases, workspace::*};
+    let f = Fixture::open();
+    f.write("config/shared.txt", b"old");
+    let workspace = PackWorkspace::open(&f.db).unwrap();
+    let first = workspace
+        .file_mutate(
+            &f.owner,
+            "1.21.1",
+            "pack-shared",
+            &FileMutation {
+                expected_revision: "0".into(),
+                change: FileOperation::Write {
+                    root: "overrides".into(),
+                    path: "config/shared.txt".into(),
+                    content_base64: "c2hhcmVk".into(),
+                },
+            },
+        )
+        .unwrap();
+    let draft = workspace
+        .file_mutate(
+            &f.owner,
+            "1.21.1",
+            "pack-server",
+            &FileMutation {
+                expected_revision: first.revision,
+                change: FileOperation::Write {
+                    root: "server-overrides".into(),
+                    path: "config/shared.txt".into(),
+                    content_base64: "c2VydmVy".into(),
+                },
+            },
+        )
+        .unwrap();
+    let releases = PackReleases::open(&f.db).unwrap();
+    let plan = workspace
+        .install_plan(
+            &f.owner,
+            "1.21.1",
+            Some("vanilla"),
+            &PackInstallRequest {
+                source: InstallSource::Draft {
+                    revision: draft.revision,
+                },
+            },
+            &f.browser,
+            &releases,
+            &crate::content::UreqProviderClient::new(None),
+        )
+        .unwrap();
+    assert_eq!(plan.files.len(), 1);
+    assert_eq!(plan.files[0].sha256, hex::encode(Sha256::digest(b"server")));
+    assert!(plan.files[0].conflict.is_some());
+    let mut apply = PackInstallApply {
+        plan_id: plan.plan_id,
+        confirmation_token: "wrong".into(),
+        choices: vec![InstallChoice {
+            path: "config/shared.txt".into(),
+            choice: "replace".into(),
+        }],
+        set_as_modpack: false,
+    };
+    assert!(
+        workspace
+            .install_apply(
+                &f.owner,
+                "1.21.1",
+                Some("vanilla"),
+                "pack-apply",
+                &apply,
+                &f.browser
+            )
+            .is_err()
+    );
+    apply.confirmation_token = plan.confirmation_token;
+    assert!(
+        workspace
+            .install_apply(
+                &f.owner,
+                "1.20.1",
+                Some("vanilla"),
+                "pack-apply",
+                &apply,
+                &f.browser
+            )
+            .is_err()
+    );
+    let result = workspace
+        .install_apply(
+            &f.owner,
+            "1.21.1",
+            Some("vanilla"),
+            "pack-apply",
+            &apply,
+            &f.browser,
+        )
+        .unwrap();
+    assert_eq!(result.pending_ids.len(), 1);
+    assert_eq!(
+        std::fs::read(f.game.join("config/shared.txt")).unwrap(),
+        b"old"
+    );
+    assert_eq!(
+        workspace
+            .install_apply(
+                &f.owner,
+                "1.21.1",
+                Some("vanilla"),
+                "pack-apply",
+                &apply,
+                &f.browser
+            )
+            .unwrap()
+            .pending_ids,
+        result.pending_ids
+    );
+    f.browser.apply_pending_content().unwrap();
+    assert_eq!(
+        std::fs::read(f.game.join("config/shared.txt")).unwrap(),
+        b"server"
+    );
+    apply.choices[0].choice = "keep".into();
+    assert!(
+        workspace
+            .install_apply(
+                &f.owner,
+                "1.21.1",
+                Some("vanilla"),
+                "pack-apply",
+                &apply,
+                &f.browser
+            )
+            .is_err()
+    );
+}
+#[test]
+fn pack_batch_rejects_protected_paths_atomically() {
+    let f = Fixture::open();
+    let batch = vec![
+        ("config/good.txt".into(), None, b"good".to_vec(), None),
+        ("server.properties".into(), None, b"unsafe".to_vec(), None),
+    ];
+    let result = f.db.write_with(|t| {
+        f.browser
+            .stage_pack_in(t.connection(), &f.owner, "pack-bad", &batch)
+    });
+    assert!(result.is_err());
+    let count: i64 =
+        f.db.read(|c| {
+            c.query_row("SELECT count(*) FROM server_content_changes", [], |r| {
+                r.get(0)
+            })
+            .map_err(Into::into)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+    assert!(!f.game.join("config/good.txt").exists());
+}

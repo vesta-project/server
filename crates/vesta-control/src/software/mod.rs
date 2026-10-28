@@ -180,6 +180,20 @@ impl Drop for SoftwareService {
 }
 
 impl SoftwareHandle {
+    pub(crate) fn pack_install_target_in(
+        c: &rusqlite::Connection,
+    ) -> crate::packs::workspace::Result<Option<Installation>> {
+        if Self::pack_target_in(c)?.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(
+            store::state(c)
+                .map_err(|_| crate::packs::PackError::Unavailable)?
+                .current
+                .installation,
+        ))
+    }
+
     pub(crate) fn pack_target_in(
         c: &rusqlite::Connection,
     ) -> crate::packs::workspace::Result<Option<(i64, Option<String>)>> {

@@ -1,4 +1,6 @@
 //! Protected, revisioned client-pack workspace. No writes to the game tree.
+mod install;
+pub use install::*;
 mod files;
 mod provider_pack;
 pub use provider_pack::ProviderPackPublish;
@@ -313,6 +315,7 @@ impl PackWorkspace {
         .0)
     }
     pub fn open(db: &StateDatabase) -> Result<Self> {
+        db.write(|c| c.execute_batch("CREATE TABLE IF NOT EXISTS pack_install_plans(id TEXT PRIMARY KEY, principal TEXT NOT NULL, device TEXT NOT NULL, expires INTEGER NOT NULL, token_hash TEXT NOT NULL, body TEXT NOT NULL)").map_err(Into::into))?;
         Ok(Self {
             db: db.clone(),
             audit: AuditLog::new(db.clone())?,
