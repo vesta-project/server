@@ -12,6 +12,7 @@ pub(super) fn implemented(path: &str) -> bool {
             | "/api/v3/manage/pack/draft/delete"
             | "/api/v3/manage/pack/draft/upload"
             | "/api/v3/manage/pack/draft/import"
+            | "/api/v3/manage/pack/archive/inspect"
             | "/api/v3/manage/pack/provider/publish"
             | "/api/v3/manage/pack/files/read"
             | "/api/v3/manage/pack/files/mutate"
@@ -222,6 +223,15 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             return error(StatusCode::BAD_REQUEST, "invalid_request");
         };
         return value(workspace.file_read(&subject, &mc, &input));
+    }
+    if action == "pack/archive/inspect" {
+        let Some(input) = decode::<InspectRequest>(request.bytes) else {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        };
+        let providers = vesta_control::content::UreqProviderClient::new(
+            std::env::var("VESTA_CURSEFORGE_API_KEY").ok(),
+        );
+        return value(workspace.inspect_archive(&subject, &mc, &input, &providers));
     }
     let Some(key) = super::key(
         request.idempotency,

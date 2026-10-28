@@ -19,7 +19,106 @@ pub enum ImportRequest {
         expected_published_revision: String,
     },
 }
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InspectRequest {
+    pub upload_id: String,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct ArchiveInspection {
+    pub format: String,
+    pub manifest: PackManifest,
+    pub entry_count: usize,
+    pub provider_entries: Vec<crate::content::ContentProvider>,
+    pub unresolved_files: Vec<String>,
+    pub overrides: Vec<String>,
+    pub provider_pack: Option<crate::content::ContentProvider>,
+    pub warnings: Vec<String>,
+}
 impl PackWorkspace {
+    pub fn inspect_archive(
+        &self,
+        subject: &Subject,
+        mc: &str,
+        input: &InspectRequest,
+        providers: &UreqProviderClient,
+    ) -> Result<ArchiveInspection> {
+        let bytes = self.archive_upload(subject, &input.upload_id)?;
+        let zip = zip::ZipArchive::new(Cursor::new(&bytes)).map_err(|_| invalid())?;
+        let names: Vec<_> = zip.file_names().map(str::to_owned).collect();
+        let format = if names.iter().any(|n| n == "modrinth.index.json") {
+            "mrpack"
+        } else if names.iter().any(|n| n == "manifest.json") {
+            "curseforge"
+        } else if names.iter().any(|n| n == vesta_protocol::pack::INDEX_NAME) {
+            "vesta"
+        } else {
+            "zip"
+        };
+        let (mut manifest, _) = parse_archive(&bytes, providers, |hash| {
+            Ok(providers.identify_sha512(hash).ok().flatten())
+        })?;
+        if manifest.minecraft_version.is_empty() {
+            manifest.minecraft_version = mc.into();
+        }
+        let override_paths = manifest
+            .override_files
+            .iter()
+            .filter(|f| !f.trashed)
+            .map(|f| format!("{}/{}", f.root, f.path))
+            .collect();
+        let provider_pack = if format == "mrpack" {
+            use sha2::Sha512;
+            providers
+                .identify_sha512(&hex::encode(Sha512::digest(&bytes)))
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+        let mut result = ArchiveInspection {
+            format: format.into(),
+            entry_count: manifest.entries.len(),
+            provider_entries: Vec::new(),
+            unresolved_files: Vec::new(),
+            overrides: override_paths,
+            provider_pack,
+            warnings: Vec::new(),
+            manifest: manifest.clone(),
+        };
+        if result.provider_pack.is_none() {
+            result
+                .warnings
+                .push("archive_does_not_establish_pack_provider_identity".into());
+        }
+        if format == "zip" {
+            result
+                .warnings
+                .push("archive_runtime_inferred_from_server".into());
+        }
+        for entry in manifest.entries {
+            match entry.source {
+                EntrySource::Provider {
+                    provider,
+                    project_id,
+                    version_id,
+                } => result
+                    .provider_entries
+                    .push(crate::content::ContentProvider {
+                        provider,
+                        project_id,
+                        version_id,
+                    }),
+                EntrySource::Manual { .. } => result.unresolved_files.push(entry.path.clone()),
+                _ => {}
+            }
+            if entry.kind == EntryKind::ConfigOverride {
+                result.overrides.push(entry.path);
+            }
+        }
+        Ok(result)
+    }
+
     pub fn import(
         &self,
         subject: &Subject,
@@ -47,7 +146,7 @@ impl PackWorkspace {
             return Err(ReleaseError::Conflict);
         }
         let mut release_revision = None;
-        let (manifest, blobs) = match input {
+        let (mut manifest, blobs) = match input {
             ImportRequest::UploadedArchive { upload_id, .. } => parse_archive(
                 &self.archive_upload(subject, upload_id)?,
                 providers,
@@ -82,6 +181,9 @@ impl PackWorkspace {
                 }
             }
         };
+        if manifest.minecraft_version.is_empty() {
+            manifest.minecraft_version = mc.into();
+        }
         self.mutate(subject, key, input, |c| {
             if let Some(release_revision) = release_revision {
                 let actual: i64 = c.query_row(
@@ -234,7 +336,7 @@ pub(super) fn parse_archive(
             loader,
             loader_version: index.modloader_version,
             override_files: Vec::new(),
-        entries: Vec::new(),
+            entries: Vec::new(),
         };
         let mut blobs = Vec::new();
         for (i, file) in index.files.into_iter().enumerate() {
@@ -285,6 +387,38 @@ pub(super) fn parse_archive(
     }
     let mr = files.remove("modrinth.index.json");
     let cf = files.remove("manifest.json");
+    if mr.is_none() && cf.is_none() {
+        let mut manifest = PackManifest {
+            name: "Imported pack".into(),
+            summary: String::new(),
+            icon: None,
+            display_version: "1.0".into(),
+            minecraft_version: "unknown".into(),
+            loader: ClientLoader::None,
+            loader_version: None,
+            override_files: Vec::new(),
+            entries: Vec::new(),
+        };
+        let mut blobs = Vec::new();
+        for (path, bytes) in files {
+            manifest.entries.push(entry(
+                format!("import-{}", manifest.entries.len()),
+                path,
+                EntrySource::Upload {
+                    sha256: digest(&bytes),
+                },
+                true,
+                Side::Optional,
+            )?);
+            blobs.push(bytes);
+        }
+        if manifest.entries.is_empty() {
+            return Err(invalid());
+        }
+        validate_manifest(&manifest)?;
+        manifest.minecraft_version.clear();
+        return Ok((manifest, blobs));
+    }
     if mr.is_some() == cf.is_some() {
         return Err(invalid());
     }
@@ -510,6 +644,42 @@ mod tests {
         .unwrap();
         assert_eq!(m.entries[0].path, "mods/example.jar");
         assert_eq!(m.loader_version.as_deref(), Some("52.0.0"));
+    }
+    #[test]
+    fn plain_zip_retains_bytes_and_defers_runtime_to_the_server() {
+        let (m, blobs) = parse_archive(
+            &archive(&[
+                ("mods/example.jar", b"jar"),
+                ("config/example.toml", b"x=true"),
+            ]),
+            &Providers,
+            |_| unreachable!(),
+        )
+        .unwrap();
+        assert!(m.minecraft_version.is_empty());
+        assert_eq!(m.entries.len(), 2);
+        assert_eq!(blobs.len(), 2);
+        assert!(
+            m.entries
+                .iter()
+                .all(|e| matches!(e.source, EntrySource::Upload { .. }))
+        );
+        assert!(
+            parse_archive(
+                &archive(&[("mods/a.jar", b"x"), ("mods/A.jar", b"y")]),
+                &Providers,
+                |_| unreachable!()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_archive(
+                &archive(&[("server.properties", b"x")]),
+                &Providers,
+                |_| unreachable!()
+            )
+            .is_err()
+        );
     }
     #[test]
     fn archive_traversal_and_non_pack_archives_refuse() {

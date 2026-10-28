@@ -12,7 +12,7 @@ mod suggestions;
 use super::ReleaseError;
 use crate::identity::{self, Capability, Decision, Subject};
 use base64::{Engine, engine::general_purpose::STANDARD};
-pub use import::ImportRequest;
+pub use import::{ArchiveInspection, ImportRequest, InspectRequest};
 pub use providers::{ProviderDependency, ProviderMetadata, WorkspaceProvider};
 pub use publication::{PackDiff, PackIssue, PackPreview, PreviewRequest, WorkspacePublish};
 use rusqlite::{Connection, OptionalExtension, params};
