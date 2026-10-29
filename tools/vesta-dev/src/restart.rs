@@ -258,15 +258,25 @@ fn spawn_independent(command: &mut Command) -> Result<Child> {
         .map_err(|_| "cannot launch rebuilt agent".into())
 }
 
+/// Reject a terminal that cannot keep agents alive before building or opening a shell.
+#[cfg(windows)]
+pub(super) fn check_shell_lifetime() -> Result<()> {
+    let mut command = Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
+    command.arg("--help").stdin(Stdio::null());
+    check_launch(&mut command)
+}
+
 fn check_independent_launch(agent: &Agent) -> Result<()> {
     // Check the exact replacement binary and process containment before stopping
     // a working host. `version` opens no host, listener or game runtime.
     let mut command = agent.command();
-    command
-        .arg("version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let mut child = spawn_independent(&mut command)?;
+    command.arg("version");
+    check_launch(&mut command)
+}
+
+fn check_launch(command: &mut Command) -> Result<()> {
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    let mut child = spawn_independent(command)?;
     let until = Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(status) = child

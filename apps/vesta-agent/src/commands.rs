@@ -77,7 +77,8 @@ pub async fn run_with_format(command: Command, base: &Path, format: Format) -> E
         }
         Command::Check(source) => {
             return match HostConfiguration::load_file(&source, base)
-                .and_then(|c| c.validate_host_paths())
+                .map_err(vesta_control::host::HostError::Config)
+                .and_then(|c| vesta_control::host::validate_launch(&c))
             {
                 Ok(_) => {
                     println!("configuration_valid; runtime_and_transport_not_started");

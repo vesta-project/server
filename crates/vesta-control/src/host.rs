@@ -848,6 +848,17 @@ fn restart_policy(
         .map_err(HostError::Supervisor)
 }
 
+/// Read-only startup preflight, including the executable and required launch files.
+/// Does not open a database, acquire runtime ownership or start any process.
+pub fn validate_launch(config: &HostConfiguration) -> Result<(), HostError> {
+    let checked = check_launch(config)?;
+    checked
+        .launch
+        .into_launch_spec(None)
+        .map_err(HostError::Launch)?;
+    Ok(())
+}
+
 /// Validate a configuration for supervision without opening the database.
 pub fn supervised_launch(config: &HostConfiguration) -> Result<SupervisedLaunch, HostError> {
     if config.supervision() != Supervision::Separate {

@@ -1,15 +1,26 @@
 # Build and test from a temporary development shell
 
-From this repository, run:
+On Windows, open a standalone PowerShell terminal in this repository and run:
 
-On Windows, use `./scripts/dev-shell.ps1` from a standalone PowerShell terminal.
+```powershell
+./scripts/dev-shell.ps1
+```
+
+Exit the management prompt with `exit`, then exit the old development shell
+with `exit` before running this command.
 It builds the helper with Cargo, then starts it after Cargo exits. This avoids
 Cargo versions whose kill-on-close Windows job prevents independent agent
 restarts. Exit any existing `cargo dev` shell before using this entry point.
 Arguments such as `--release` and `--server-root` are forwarded unchanged.
-Linux can continue using `cargo dev` below.
+The script runs a temporary copy of the helper so the session does not keep
+the build output executable locked. That copy is removed when the session exits.
+The helper checks independent process launch before opening a session or doing
+a rebuild with restart. A blocked terminal fails before building; build-only
+commands remain available. This does not stop any running agent.
 
-```powershell
+On Linux:
+
+```sh
 cargo dev
 # Equivalent long form:
 cargo run -p vesta-dev --
@@ -102,8 +113,9 @@ The helper distinguishes an unsupported local request from a runtime refusal or
 uncertain delivery, and checks independent process launch before stopping a host.
 
 This is development tooling, not installation or signed release activation.
-Already-open dev shells need to be replaced with a fresh `cargo dev` session
-once to load the updated tool and shell function.
+Already-open dev shells need to be replaced with a fresh development session
+once to load the updated tool and shell function. On Windows, use
+`./scripts/dev-shell.ps1` instead of `cargo dev`.
 
 ## Select server data
 
@@ -112,7 +124,7 @@ test-server registry `%TEMP%\vesta-dev-server\servers` on Windows or
 `${TMPDIR:-/tmp}/vesta-dev-server/servers` on Linux. Set it explicitly when needed:
 
 ```powershell
-cargo dev --server-root 'D:\Vesta test\servers'
+./scripts/dev-shell.ps1 --server-root 'D:\Vesta test\servers'
 ```
 
 The session does not create a server, accept the EULA, start an agent, or select

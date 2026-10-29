@@ -120,6 +120,24 @@ fn password_access_mode_composes_the_pack_password_service() {
 }
 
 #[test]
+fn launch_preflight_checks_required_files_without_creating_state() {
+    let f = Fixture::new();
+    let config = f.config("minecraft", "private/launch.toml");
+    validate_launch(&config).unwrap();
+    assert!(!f.database_file().exists());
+
+    let launch = NATIVE_LAUNCH.to_owned() + "required-files = ['../bin/server.jar']\n";
+    std::fs::write(f.base().join("private/launch.toml"), &launch).unwrap();
+    refused(validate_launch(&config), "game_invalid_launch");
+    assert!(!f.database_file().exists());
+    std::fs::write(f.base().join("bin/server.jar"), b"fixture").unwrap();
+    validate_launch(&config).unwrap();
+    std::fs::remove_file(f.base().join("bin/inert-placeholder")).unwrap();
+    refused(validate_launch(&config), "game_invalid_launch");
+    assert!(!f.database_file().exists());
+}
+
+#[test]
 fn a_missing_or_malformed_launch_definition_refuses_before_any_state_is_created() {
     let f = Fixture::new();
     refused(

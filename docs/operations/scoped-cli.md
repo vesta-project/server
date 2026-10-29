@@ -5,7 +5,7 @@ New release bundles include both. The installer still accepts previously signed
 three-component bundles; the only permitted fourth artifact is the signed short
 CLI executable. Existing scripts using legacy commands continue to work.
 
-For source builds, [`cargo dev`](dev-session.md) builds all four server commands
+For source builds, [the development shell](dev-session.md) builds all four server commands
 and puts them on PATH in a temporary terminal session. `vesta-rebuild` selects a
 fresh build there without restarting running servers.
 

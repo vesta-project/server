@@ -12,7 +12,7 @@ const BINARIES: [&str; 4] = ["vesta", "vesta-agent", "vesta-supervisor", "vesta-
 #[cfg(windows)]
 mod console;
 mod restart;
-const HELP: &str = "Vesta development shell\n\n  cargo dev [--release] [--server-root <registry>]\n  cargo dev build [--release]\n  cargo run -p vesta-dev -- [same options]\n\nBuilds and stages all four commands. The default opens a child terminal session\nwith temporary PATH and VESTA_SERVER_ROOT. Use vesta-rebuild there; exit returns\nto the original terminal. Default builds never install, start or stop a server.\nUse vesta-rebuild --restart <id|name> to gracefully restart one dev server.\n";
+const HELP: &str = "Vesta development shell\n\n  Windows: ./scripts/dev-shell.ps1 [--release] [--server-root <registry>]\n  Linux:   cargo dev [--release] [--server-root <registry>]\n  Build only: cargo dev build [--release]\n\nBuilds and stages all four commands. The default opens a child terminal session\nwith temporary PATH and VESTA_SERVER_ROOT. Use vesta-rebuild there; exit returns\nto the original terminal. Default builds never install, start or stop a server.\nUse vesta-rebuild --restart <id|name> to gracefully restart one dev server.\n";
 
 #[derive(Default)]
 struct Options {
@@ -166,6 +166,13 @@ fn stage(session: &Path, artifacts: &BTreeMap<String, PathBuf>) -> Result<PathBu
 }
 
 fn run(options: Options) -> Result<i32, String> {
+    // Cargo on Windows can place the whole interactive session in a job that
+    // forbids breakaway. Refuse before expensive builds or session files, rather
+    // than opening a shell whose agents cannot later be started/replaced.
+    #[cfg(windows)]
+    if !options.build_only || options.restart.is_some() {
+        restart::check_shell_lifetime()?;
+    }
     // Cargo supplies an absolute manifest directory. Taking parents avoids
     // verbatim-path conversion and preserves Windows UNC paths for shell startup.
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
