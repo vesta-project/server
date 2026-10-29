@@ -206,6 +206,7 @@ fn workspace_routes_separate_client_loader_draft_and_atomic_release() {
         412
     );
     assert!(f.host().releases().current().unwrap().is_none());
+
     let preview = management_mutation(
         &f,
         &token,
@@ -299,4 +300,186 @@ fn workspace_denies_pack_users_and_rechecks_build_capability() {
         403,
         "management_forbidden",
     );
+}
+
+#[test]
+fn server_follow_delivery_uses_installed_provider_and_monotonic_mode_switches_over_https() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let f = Fixture::new("minecraft", 8, 65536, 5);
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    let db = f.host().database();
+    // Exercise the public routes against durable installation receipts. Provider IDs
+    // are intentionally non-resolvable: delivering them must not fetch the provider.
+    f.request("GET", "/api/v3/manage/pack/draft", b"", Some(&token));
+    let source = |version: &str| json!({"source":"provider","provider":"modrinth","project_id":"pack","version_id":version});
+    let link = json!({"source":source("pending"),"display_version":"2","files":{},"state":"staged_until_restart","pending_ids":["not-applied"],"installed":{"source":source("installed"),"display_version":"1"},"pending":{"source":source("pending"),"display_version":"2"}});
+    db.write(|c| {
+        c.execute(
+            "INSERT INTO server_modpack_link VALUES(?,?)",
+            rusqlite::params![db.server_id(), link.to_string()],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let mode = |name: &str, required: bool, intent: &str| {
+        let response = management_mutation(
+            &f,
+            &token,
+            "pack/client-mode",
+            &format!("{intent}-00000001"),
+            &json!({"mode":name,"require_update":required}),
+        );
+        assert_eq!(
+            response.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&response.body)
+        );
+    };
+    mode("server-modpack", false, "delivery-follow-1");
+    let path = "/api/v3/manage/pack/sync?installed=0&nonce=0123456789abcdef0123456789abcdef";
+    let sync = || {
+        let reply = f.request("GET", path, b"", Some(&token));
+        assert_eq!(
+            reply.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&reply.body)
+        );
+        serde_json::from_slice::<serde_json::Value>(
+            &STANDARD
+                .decode(reply.json()["data"]["payload_base64"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let first = sync();
+    assert_eq!(first["format"], "catalogue");
+    let download = format!(
+        "/api/v3/manage/pack/artifact?revision={}&sha256={}",
+        first["revision"].as_str().unwrap(),
+        first["sha256"].as_str().unwrap()
+    );
+    let bytes = f.request("GET", &download, b"", Some(&token));
+    assert_eq!(bytes.status, 200);
+    let catalogue: serde_json::Value = serde_json::from_slice(&bytes.body).unwrap();
+    assert_eq!(catalogue["content"]["versionId"], "installed");
+    assert!(bytes.body.len() < 1024);
+    mode("none", false, "delivery-none-1");
+    assert_eq!(f.request("GET", path, b"", Some(&token)).status, 404);
+    assert_eq!(
+        f.request("GET", "/api/v2/pack/status?installed=0", b"", Some(&token))
+            .json()["published"],
+        false
+    );
+    mode("server-modpack", false, "delivery-follow-2");
+    assert_eq!(sync()["sha256"], first["sha256"]);
+    db.write(|c| {
+        c.execute(
+            "UPDATE server_modpack_link SET body=json_set(body,'$.pending_ids',json('[]'))",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let second = sync();
+    assert!(
+        second["revision"].as_str().unwrap().parse::<u64>().unwrap()
+            > first["revision"].as_str().unwrap().parse::<u64>().unwrap()
+    );
+    assert_eq!(second["minimum_revision"], first["minimum_revision"]);
+    assert_eq!(f.request("GET", &download, b"", Some(&token)).status, 412);
+    mode("server-modpack", true, "delivery-required-1");
+    let required = sync();
+    assert_eq!(required["minimum_revision"], second["revision"]);
+    mode("server-modpack", false, "delivery-optional-1");
+    assert_eq!(sync()["minimum_revision"], required["minimum_revision"]);
+    assert_eq!(
+        f.request("GET", "/api/v2/pack/artifact", b"", Some(&token))
+            .status,
+        200
+    );
+    assert!(f.host().releases().current().unwrap().is_none());
+    let custom = management_mutation(
+        &f,
+        &token,
+        "pack/provider/publish",
+        "delivery-custom-publication-1",
+        &json!({"expected_revision":"0","draft_revision":"0","provider":"modrinth","project_id":"custom-pack","version_id":"custom-version","required_update":false,"acknowledge_lower_version":false}),
+    );
+    assert_eq!(
+        custom.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&custom.body)
+    );
+    mode("custom", false, "delivery-mode-custom");
+    let custom_offered = sync();
+    assert!(
+        custom_offered["revision"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            > required["revision"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+    );
+    mode("server-modpack", false, "delivery-mode-follow-again");
+    let following = sync();
+    assert!(
+        following["revision"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            > custom_offered["revision"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+    );
+    assert_eq!(following["minimum_revision"], required["minimum_revision"]);
+    assert_eq!(
+        f.host().releases().current().unwrap().unwrap().revision(),
+        1
+    );
+    // Hosted archive installations use the same signed route and pinned download,
+    // while the upload itself may already have been deleted.
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    zip.start_file("vesta.index.json", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(br#"{"formatVersion":1,"revision":1,"minimumRevision":1,"name":"Archive","minecraftVersion":"1.21.1","files":[]}"#).unwrap();
+    let archive = zip.finish().unwrap().into_inner();
+    let source = json!({"source":"uploaded_archive","upload_id":"deleted-upload"});
+    let link = json!({"source":source,"display_version":"archive","files":{},"state":"installed","pending_ids":[]});
+    db.write(|c| {
+        c.execute("UPDATE server_modpack_link SET body=?", [link.to_string()])?;
+        c.execute(
+            "INSERT INTO server_modpack_delivery VALUES(?,?,?)",
+            rusqlite::params![db.server_id(), source.to_string(), archive],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let hosted = sync();
+    assert_eq!(hosted["format"], "vestapack");
+    let url = format!(
+        "/api/v3/manage/pack/artifact?revision={}&sha256={}",
+        hosted["revision"].as_str().unwrap(),
+        hosted["sha256"].as_str().unwrap()
+    );
+    let artifact = f.request("GET", &url, b"", Some(&token));
+    assert_eq!(artifact.status, 200);
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(artifact.body)).unwrap();
+    let index: serde_json::Value =
+        serde_json::from_reader(zip.by_name("vesta.index.json").unwrap()).unwrap();
+    assert_eq!(
+        index["revision"].as_u64().unwrap().to_string(),
+        hosted["revision"].as_str().unwrap()
+    );
+    assert_eq!(index["name"], "Archive");
 }

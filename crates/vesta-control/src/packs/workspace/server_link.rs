@@ -43,6 +43,7 @@ pub struct ServerModpackUnlink {
 pub(super) fn initialize(db: &StateDatabase) -> Result<()> {
     db.write(|c| c.execute_batch("CREATE TABLE IF NOT EXISTS server_modpack_link(server_id TEXT PRIMARY KEY, body TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS server_modpack_files(path TEXT PRIMARY KEY, sha256 TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS server_modpack_delivery(server_id TEXT NOT NULL, source TEXT NOT NULL, archive BLOB NOT NULL, PRIMARY KEY(server_id,source));
         CREATE TABLE IF NOT EXISTS client_pack_config(server_id TEXT PRIMARY KEY, body TEXT NOT NULL);").map_err(Into::into))?;
     db.write(|c| {
         let published: bool = c.query_row(
@@ -72,45 +73,50 @@ pub(super) fn initialize(db: &StateDatabase) -> Result<()> {
 }
 impl PackWorkspace {
     pub(super) fn server_link_in(&self, c: &Connection) -> Result<Option<ServerModpackLink>> {
-        let raw: Option<String> = c
-            .query_row(
-                "SELECT body FROM server_modpack_link WHERE server_id=?",
-                [self.db.server_id()],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let mut link: Option<ServerModpackLink> = raw
-            .map(|raw| serde_json::from_str(&raw).map_err(|_| invalid()))
-            .transpose()?;
-        if let Some(link) = &mut link {
-            let mut pending = false;
-            for id in &link.pending_ids {
-                let state: Option<String> = c
-                    .query_row(
-                        "SELECT state FROM server_content_changes WHERE id=?",
-                        [id],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-                if state.as_deref() != Some("applied") {
-                    pending = true;
-                }
-            }
-            let selected = ServerModpackVersion {
-                source: link.source.clone(),
-                display_version: link.display_version.clone(),
-            };
-            if pending {
-                link.state = "staged_until_restart".into();
-                link.pending = Some(selected);
-            } else {
-                link.state = "installed".into();
-                link.installed = Some(selected);
-                link.pending = None;
+        read_link(c, self.db.server_id())
+    }
+}
+pub(crate) fn read_link(c: &Connection, server: &str) -> Result<Option<ServerModpackLink>> {
+    let raw: Option<String> = c
+        .query_row(
+            "SELECT body FROM server_modpack_link WHERE server_id=?",
+            [server],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let mut link: Option<ServerModpackLink> = raw
+        .map(|raw| serde_json::from_str(&raw).map_err(|_| invalid()))
+        .transpose()?;
+    if let Some(link) = &mut link {
+        let mut pending = false;
+        for id in &link.pending_ids {
+            let state: Option<String> = c
+                .query_row(
+                    "SELECT state FROM server_content_changes WHERE id=?",
+                    [id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if state.as_deref() != Some("applied") {
+                pending = true;
             }
         }
-        Ok(link)
+        let selected = ServerModpackVersion {
+            source: link.source.clone(),
+            display_version: link.display_version.clone(),
+        };
+        if pending {
+            link.state = "staged_until_restart".into();
+            link.pending = Some(selected);
+        } else {
+            link.state = "installed".into();
+            link.installed = Some(selected);
+            link.pending = None;
+        }
     }
+    Ok(link)
+}
+impl PackWorkspace {
     pub fn server_link(&self, s: &Subject) -> Result<Option<ServerModpackLink>> {
         self.db
             .read_with(|t| {
@@ -198,6 +204,7 @@ impl PackWorkspace {
                 [self.db.server_id()],
             )?;
             c.execute("DELETE FROM server_modpack_files", [])?;
+            c.execute("DELETE FROM server_modpack_delivery WHERE server_id=?",[self.db.server_id()])?;
             let raw: Option<String> = c
                 .query_row(
                     "SELECT body FROM client_pack_config WHERE server_id=?",

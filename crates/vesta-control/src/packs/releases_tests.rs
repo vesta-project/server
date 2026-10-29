@@ -894,6 +894,7 @@ fn crash_prune(f: &Fixture, commit: bool, include_hosted: bool) -> String {
                 hosted.as_ref().map(PackRelease::artifact)
             },
             &operation,
+            c,
             &mut moved,
         )?;
         if !commit {

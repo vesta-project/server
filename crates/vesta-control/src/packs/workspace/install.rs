@@ -84,6 +84,10 @@ struct Stored {
     #[serde(default)]
     applied_key: Option<String>,
     #[serde(default)]
+    client_archive: Option<Vec<u8>>,
+    #[serde(default)]
+    expected_publication: Option<String>,
+    #[serde(default)]
     expected_link: Option<ServerModpackLink>,
     manifest: PackManifest,
     source: InstallSource,
@@ -184,6 +188,7 @@ impl PackWorkspace {
             .map_err(|_| invalid())?;
             parse(&bytes)
         };
+        let mut linked_source = request.source.clone();
         let (mut manifest, blobs) = match &request.source {
             InstallSource::Provider {
                 provider,
@@ -206,6 +211,11 @@ impl PackWorkspace {
                     return Err(ReleaseError::Conflict);
                 }
                 if let Some(p) = self.view(s, mc, releases)?.provider_pack {
+                    linked_source = InstallSource::Provider {
+                        provider: p.provider.clone(),
+                        project_id: p.project_id.clone(),
+                        version_id: p.version_id.clone(),
+                    };
                     provider_archive(&p.provider, &p.project_id, &p.version_id)?
                 } else if let Some((rev, m)) = self.published(s)? {
                     if rev != current.revision() {
@@ -443,7 +453,7 @@ impl PackWorkspace {
                 warnings.push(format!("retained_unidentified_content:{}", i.path));
             }
         }
-        let plan = PackInstallPlan {
+        let mut plan = PackInstallPlan {
             plan_id: uuid::Uuid::new_v4().to_string(),
             confirmation_token: uuid::Uuid::new_v4().to_string(),
             expires_at_ms: self.db.clock().millis() + 900_000,
@@ -463,14 +473,67 @@ impl PackWorkspace {
                 .filter(|(path, _)| !destinations.contains(&path.to_lowercase()))
                 .collect(),
         };
+        let view = self.view(s, mc, releases)?;
+        // Pin the client projection beyond upload/plan expiry. Provider links keep IDs only.
+        let client_archive = if matches!(linked_source, InstallSource::Provider { .. }) {
+            None
+        } else {
+            let captured = (|| -> Result<Vec<u8>> {
+                let client = self.client_manifest(&manifest)?;
+                let metadata = crate::config::PackMetadata::linked(&client, 1, 1, None);
+                let snapshot = self.snapshot(
+                    &client,
+                    &metadata,
+                    providers,
+                    &content::UreqDownloadHttp::default(),
+                    &blob_map,
+                )?;
+                let env = client
+                    .entries
+                    .iter()
+                    .map(|e| {
+                        (
+                            e.path.clone(),
+                            (
+                                if e.required { "required" } else { "optional" }.into(),
+                                "unsupported".into(),
+                            ),
+                        )
+                    })
+                    .collect();
+                Ok(super::super::build::build_vesta_with_environments(
+                    &snapshot,
+                    &metadata,
+                    super::super::VestaBuildLimits::default(),
+                    &env,
+                    None,
+                )
+                .map_err(|_| invalid())?
+                .bytes()
+                .to_vec())
+            })();
+            match captured {
+                Ok(bytes) => Some(bytes),
+                Err(error) => {
+                    plan.warnings
+                        .push(format!("client_delivery_unavailable:{}", error.code()));
+                    None
+                }
+            }
+        };
         let mut stored_plan = plan.clone();
         stored_plan.confirmation_token.clear();
-        let view = self.view(s, mc, releases)?;
         let stored = Stored {
             applied_key: None,
+            client_archive,
+            expected_publication: if let InstallSource::Published { revision } = &request.source {
+                Some(revision.clone())
+            } else {
+                None
+            },
             expected_link: self.server_link(s)?,
             manifest,
-            source: request.source.clone(),
+            source: linked_source,
             draft_revision: view.draft.revision,
             published_revision: view.published_revision,
             blobs: retained_blobs,
@@ -540,7 +603,7 @@ impl PackWorkspace {
             let mut stored:Stored=serde_json::from_str(&body).map_err(|_|invalid())?;
             if !stored.plan.valid{return Err(ReleaseError::Conflict)}
             if serde_json::to_value(self.server_link_in(c)?).map_err(|_|invalid())? != serde_json::to_value(&stored.expected_link).map_err(|_|invalid())? {return Err(ReleaseError::Conflict)}
-            if matches!(stored.source,InstallSource::Published{..}) {
+            if stored.expected_publication.is_some() || matches!(stored.source,InstallSource::Published{..}) {
                 let published:i64=c.query_row("SELECT coalesce(max(revision),0) FROM pack_releases WHERE server_id=?",[self.db.server_id()],|r|r.get(0))?;
                 if published as u64!=revision(&stored.published_revision)?{return Err(ReleaseError::Conflict)}
 
@@ -562,7 +625,14 @@ impl PackWorkspace {
             c.execute("UPDATE pack_install_plans SET expires=? WHERE id=?",params![self.db.clock().millis()+2_592_000_000i64,input.plan_id])?;
             let mut pending_ids=files.stage_pack_in(c,s,key,&selected).map_err(file_error)?;
             pending_ids.extend(files.stage_pack_removals_in(c,s,&format!("{key}-remove"),&stored.plan.removed).map_err(file_error)?);
+            if let Some(archive) = &stored.client_archive {
+                c.execute("INSERT OR REPLACE INTO server_modpack_delivery VALUES(?,?,?)", params![self.db.server_id(), serde_json::to_string(&stored.source).map_err(|_|invalid())?, archive])?;
+            }
             let installed = self.server_link_in(c)?.and_then(|link| link.installed);
+            // Retain only the confirmed and incoming client projections, independently
+            // of expiring uploads/plans and of the editable custom workspace.
+            let prior_source=installed.as_ref().map(|v|serde_json::to_string(&v.source)).transpose().map_err(|_|invalid())?.unwrap_or_default();
+            c.execute("DELETE FROM server_modpack_delivery WHERE server_id=? AND source NOT IN (?,?)",params![self.db.server_id(),prior_source,serde_json::to_string(&stored.source).map_err(|_|invalid())?])?;
             let pending = Some(ServerModpackVersion { source: stored.source.clone(), display_version: stored.manifest.display_version.clone() });
             let link=ServerModpackLink{source:stored.source,display_version:stored.manifest.display_version,files:link_files,state:"staged_until_restart".into(),pending_ids:pending_ids.clone(),installed,pending};
             c.execute("INSERT OR REPLACE INTO server_modpack_link VALUES(?,?)",params![self.db.server_id(),serde_json::to_string(&link).map_err(|_|invalid())?])?;

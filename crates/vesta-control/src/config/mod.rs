@@ -409,6 +409,14 @@ impl PackMetadata {
         revision: u64,
         minimum_revision: u64,
     ) -> Self {
+        Self::linked(manifest, revision, minimum_revision, base.join.clone())
+    }
+    pub(crate) fn linked(
+        manifest: &crate::packs::workspace::PackManifest,
+        revision: u64,
+        minimum_revision: u64,
+        join: Option<JoinDescriptor>,
+    ) -> Self {
         use crate::packs::workspace::ClientLoader;
         let kind = match manifest.loader {
             ClientLoader::None => None,
@@ -429,7 +437,7 @@ impl PackMetadata {
                 version: manifest.loader_version.clone().unwrap_or_default(),
             }),
             unresolved_disposition: UnresolvedDisposition::Refuse,
-            join: base.join.clone(),
+            join,
         }
     }
     pub fn name(&self) -> &str {

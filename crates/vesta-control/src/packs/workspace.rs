@@ -1,5 +1,5 @@
 //! Protected, revisioned client-pack workspace. No writes to the game tree.
-mod server_link;
+pub(crate) mod server_link;
 pub use server_link::*;
 mod server_updates;
 pub use server_updates::*;

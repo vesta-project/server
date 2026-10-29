@@ -465,7 +465,7 @@ async fn snapshot(
                 })
                 .map_err(|_| Refusal::Unavailable)?
                 .map_err(|_| Refusal::Revoked)?;
-                host.releases().current().map_err(|_| Refusal::Unavailable)
+                host.releases().offered().map_err(|_| Refusal::Unavailable)
             }
         },
     )

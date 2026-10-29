@@ -147,11 +147,11 @@ impl UpdateStatus {
 /// The hosted release. Revisions are compatibility signals, not a security boundary.
 #[derive(Clone, Eq, PartialEq)]
 pub struct PackRelease {
-    revision: u64,
-    minimum_revision: u64,
-    display_version: String,
-    artifact: PublishedArtifact,
-    published_at: EpochMillis,
+    pub(super) revision: u64,
+    pub(super) minimum_revision: u64,
+    pub(super) display_version: String,
+    pub(super) artifact: PublishedArtifact,
+    pub(super) published_at: EpochMillis,
 }
 impl PackRelease {
     pub const fn revision(&self) -> u64 {
@@ -236,6 +236,7 @@ impl fmt::Debug for PackReleases {
 }
 impl PackReleases {
     pub fn open(db: &StateDatabase) -> Result<Self, ReleaseError> {
+        super::delivery::initialize(db)?;
         let releases = Self {
             audit: AuditLog::new(db.clone())?,
             artifacts: PackArtifacts::open(db)?,
@@ -278,17 +279,7 @@ impl PackReleases {
 
     /// Player-facing release selection. Management keeps the custom history intact.
     pub fn offered(&self) -> Result<Option<PackRelease>, ReleaseError> {
-        let mode:Option<String>=self.db.read(|c| {
-            let exists:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='client_pack_config')",[],|r|r.get(0))?;
-            if !exists {return Ok(None)}
-            c.query_row("SELECT json_extract(body,'$.mode') FROM client_pack_config WHERE server_id=?",[self.db.server_id()],|r|r.get(0)).optional().map_err(Into::into)
-        })?;
-        match mode.as_deref() {
-            Some("none") => Ok(None),
-            // Never serve a custom publication under a server-following identity.
-            Some("server-modpack") => Err(PackError::Unavailable.into()),
-            _ => self.current(),
-        }
+        super::delivery::offered(&self.db, &self.artifacts)
     }
 
     /// Reserve the next revision against `expected` (0 when nothing is published yet).
@@ -579,6 +570,7 @@ impl PackReleases {
                 let report = self.artifacts.quarantine_except(
                     current.as_ref().map(PackRelease::artifact),
                     &operation,
+                    connection,
                     &mut moved,
                 )?;
                 self.audit.append(
@@ -705,7 +697,10 @@ fn plan_from(
     })
 }
 
-fn current(connection: &Connection, server: &str) -> Result<Option<PackRelease>, ReleaseError> {
+pub(super) fn current(
+    connection: &Connection,
+    server: &str,
+) -> Result<Option<PackRelease>, ReleaseError> {
     let row = connection
         .query_row(
             "SELECT revision,minimum_revision,display_version,format,sha256,size,published_at FROM pack_releases WHERE server_id=? ORDER BY revision DESC LIMIT 1",

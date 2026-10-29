@@ -202,7 +202,7 @@ impl PackArtifacts {
     }
 
     // `created` is true only when this call won the no-replacement link.
-    fn publish_tracked(
+    pub(super) fn publish_tracked(
         &self,
         format: ArtifactFormat,
         bytes: &[u8],

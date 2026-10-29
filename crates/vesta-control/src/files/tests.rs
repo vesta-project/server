@@ -1138,6 +1138,23 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
             )
             .is_err()
     );
+    workspace
+        .set_client_pack(
+            &f.owner,
+            "follow-installed",
+            &ClientPackConfig {
+                mode: ClientPackMode::ServerModpack,
+                require_update: false,
+            },
+        )
+        .unwrap();
+    assert!(releases.offered().unwrap().is_none());
+    // Remove the review plan: delivery must no longer depend on it.
+    f.db.write(|c| {
+        c.execute("DELETE FROM pack_install_plans", [])?;
+        Ok(())
+    })
+    .unwrap();
     assert!(releases.current().unwrap().is_none());
     assert_eq!(
         workspace.server_link(&f.owner).unwrap().unwrap().state,
@@ -1148,6 +1165,14 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
         workspace.server_link(&f.owner).unwrap().unwrap().state,
         "installed"
     );
+    let delivered = releases.offered().unwrap().unwrap();
+    let bytes = releases
+        .artifacts()
+        .load(delivered.artifact(), crate::packs::MAX_ARTIFACT_BYTES)
+        .unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.bytes())).unwrap();
+    assert!(zip.by_name("overrides/config/owned.txt").is_err()); // server-only
+    let first_revision = delivered.revision();
     let draft = workspace
         .file_mutate(
             &f.owner,
@@ -1180,11 +1205,16 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
     assert!(
         matches!(staged.pending.unwrap().source, InstallSource::Draft { revision } if revision == target_revision)
     );
+    assert_eq!(
+        releases.offered().unwrap().unwrap().revision(),
+        first_revision
+    );
     assert_eq!(plan.removed.len(), 1);
     assert_eq!(outcome.pending_ids.len(), 1);
     assert!(f.game.join("config/owned.txt").exists());
     f.browser.apply_pending_content().unwrap();
     assert!(!f.game.join("config/owned.txt").exists());
+    assert!(releases.offered().unwrap().unwrap().revision() > first_revision);
     let installed = reopened.server_link(&f.owner).unwrap().unwrap();
     assert!(installed.pending.is_none());
     assert!(
@@ -1205,6 +1235,7 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
         )
         .unwrap();
     assert!(workspace.server_link(&f.owner).unwrap().is_none());
+    assert!(releases.offered().unwrap().is_none());
     assert_eq!(
         std::fs::read(f.game.join("config/user.txt")).unwrap(),
         b"user"
@@ -1233,4 +1264,39 @@ fn pack_owned_removal_rejects_local_edits_at_restart() {
         std::fs::read(f.game.join("config/owned.txt")).unwrap(),
         b"local edit"
     );
+}
+
+#[test]
+fn uploaded_archive_delivery_survives_upload_and_plan_removal() {
+    use crate::packs::{PackReleases,workspace::*};
+    use base64::{Engine,engine::general_purpose::STANDARD};
+    use std::io::{Cursor,Write,Read};
+    let f=Fixture::open();
+    let workspace=PackWorkspace::open(&f.db).unwrap();
+    let releases=PackReleases::open(&f.db).unwrap();
+    let mut zip=zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.start_file("config/archive.txt",zip::write::SimpleFileOptions::default()).unwrap();
+    zip.write_all(b"retained-client").unwrap();
+    let archive=zip.finish().unwrap().into_inner();
+    let upload="retained-archive";
+    workspace.upload_begin(&f.owner,"begin-archive",&UploadBegin{upload_id:upload.into(),total_size:archive.len().to_string(),sha256:digest(&archive),archive:true}).unwrap();
+    workspace.upload_chunk(&f.owner,"chunk-archive",&UploadChunk{upload_id:upload.into(),offset:"0".into(),content_base64:STANDARD.encode(&archive)}).unwrap();
+    workspace.upload_finish(&f.owner,"finish-archive",upload).unwrap();
+    let plan=workspace.install_plan(&f.owner,"1.21.1",Some("vanilla"),&PackInstallRequest{source:InstallSource::UploadedArchive{upload_id:upload.into()}},&f.browser,&releases,&crate::content::UreqProviderClient::new(None)).unwrap();
+    workspace.install_apply(&f.owner,"1.21.1",Some("vanilla"),"apply-archive",&PackInstallApply{plan_id:plan.plan_id.clone(),confirmation_token:plan.confirmation_token,choices:vec![],set_as_modpack:false},&f.browser).unwrap();
+    workspace.set_client_pack(&f.owner,"follow-archive",&ClientPackConfig{mode:ClientPackMode::ServerModpack,require_update:true}).unwrap();
+    assert!(releases.offered().unwrap().is_none());
+    workspace.install_finish(&f.owner,&plan.plan_id).unwrap();
+    workspace.upload_cancel(&f.owner,"cancel-archive",upload).unwrap();
+    f.browser.apply_pending_content().unwrap();
+    let release=releases.offered().unwrap().unwrap();
+    assert_eq!(release.minimum_revision(),release.revision());
+    assert!(releases.current().unwrap().is_none());
+    releases.prune(&f.owner).unwrap();
+    let loaded=releases.artifacts().load(release.artifact(),crate::packs::MAX_ARTIFACT_BYTES).unwrap();
+    let mut zip=zip::ZipArchive::new(Cursor::new(loaded.bytes())).unwrap();
+    let mut body=String::new();zip.by_name("overrides/config/archive.txt").unwrap().read_to_string(&mut body).unwrap();
+    assert_eq!(body,"retained-client");
+    let reopened=PackReleases::open(&f.db).unwrap();
+    assert_eq!(reopened.offered().unwrap().unwrap().artifact().sha256(),release.artifact().sha256());
 }

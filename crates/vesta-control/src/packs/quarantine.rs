@@ -48,6 +48,7 @@ impl PackArtifacts {
         &self,
         keep: Option<&PublishedArtifact>,
         operation: &str,
+        connection: &Connection,
         moved: &mut Vec<Quarantined>,
     ) -> Result<PruneReport, ReleaseError> {
         let keep = keep.map(PublishedArtifact::name).transpose()?;
@@ -57,7 +58,10 @@ impl PackArtifacts {
             .list(super::MAX_ARTIFACT_ENTRIES)
             .map_err(state_error)?
         {
-            if Some(&original) == keep.as_ref() || !owned_name(original.as_str()) {
+            if Some(&original) == keep.as_ref()
+                || delivery_retained(connection, original.as_str())?
+                || !owned_name(original.as_str())
+            {
                 continue;
             }
             let quarantine = ArtifactName::new(&format!("q-{operation}-{}", original.as_str()))
@@ -211,7 +215,9 @@ impl PackArtifacts {
             )?;
             self.resolve_quarantines(
                 std::slice::from_ref(&entry),
-                committed && Some(&entry.original) != keep.as_ref(),
+                committed
+                    && Some(&entry.original) != keep.as_ref()
+                    && !delivery_retained(connection, entry.original.as_str())?,
             )?;
         }
         Ok(())
@@ -261,6 +267,19 @@ fn rename_absent(_from: &Path, _to: &Path) -> std::io::Result<()> {
     Err(std::io::ErrorKind::Unsupported.into())
 }
 
+fn delivery_retained(c: &Connection, name: &str) -> Result<bool, ReleaseError> {
+    let exists: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='player_pack_offering')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        return Ok(false);
+    }
+    Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM player_pack_offering WHERE json_extract(body,'$.sha256') || '.' || json_extract(body,'$.format')=?)",[name],|r|r.get(0))?)
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,9 +304,10 @@ mod tests {
         file.write_all(b"owned bytes").unwrap();
         drop(file);
         let mut moved = Vec::new();
-        store
-            .quarantine_except(None, "0123456789abcdef", &mut moved)
-            .unwrap();
+        db.write_with(|t| {
+            store.quarantine_except(None, "0123456789abcdef", t.connection(), &mut moved)
+        })
+        .unwrap();
         let mut replacement = store.directory.create_new(&original).unwrap();
         replacement.write_all(b"replacement").unwrap();
         drop(replacement);
@@ -323,9 +343,10 @@ mod tests {
         file.write_all(b"owned bytes").unwrap();
         drop(file);
         let mut moved = Vec::new();
-        store
-            .quarantine_except(None, "0123456789abcdef", &mut moved)
-            .unwrap();
+        db.write_with(|t| {
+            store.quarantine_except(None, "0123456789abcdef", t.connection(), &mut moved)
+        })
+        .unwrap();
         let open = store.directory.open(&moved[0].quarantine).unwrap().unwrap();
         assert_eq!(
             store.complete_quarantines(&moved).unwrap_err(),

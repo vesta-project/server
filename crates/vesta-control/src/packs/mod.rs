@@ -4,6 +4,7 @@
 mod build;
 mod configured;
 pub use configured::PreparedPack;
+mod delivery;
 mod publish;
 mod releases;
 pub mod workspace;

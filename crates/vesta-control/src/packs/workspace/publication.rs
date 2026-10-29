@@ -377,7 +377,13 @@ impl PackWorkspace {
             plan.minimum_revision(),
         );
         let client_manifest = self.client_manifest(&preview.manifest)?;
-        let snapshot = self.snapshot(&client_manifest, &metadata, providers, http)?;
+        let snapshot = self.snapshot(
+            &client_manifest,
+            &metadata,
+            providers,
+            http,
+            &BTreeMap::new(),
+        )?;
         let icon_path = snapshot
             .bodies
             .keys()
@@ -425,12 +431,13 @@ impl PackWorkspace {
         };
         releases.publish_remote(subject, &plan, &prepared, &request)
     }
-    fn snapshot(
+    pub(super) fn snapshot(
         &self,
         m: &PackManifest,
         metadata: &PackMetadata,
         providers: &dyn WorkspaceProvider,
         http: &dyn DownloadHttp,
+        retained: &BTreeMap<String, Vec<u8>>,
     ) -> Result<PreparedSnapshot> {
         let mut files = Vec::new();
         let mut bodies = BTreeMap::new();
@@ -442,8 +449,12 @@ impl PackWorkspace {
             }
             let (bytes, source) = match &entry.source {
                 EntrySource::Upload { sha256 } => (
-                    self.db
-                        .read_with(|s| self.blob_in(s.connection(), sha256))?,
+                    match retained.get(sha256) {
+                        Some(b) => b.clone(),
+                        None => self
+                            .db
+                            .read_with(|s| self.blob_in(s.connection(), sha256))?,
+                    },
                     FileSource::embedded(),
                 ),
                 EntrySource::Provider {
@@ -499,7 +510,10 @@ impl PackWorkspace {
             );
         }
         if let Some(sha) = &m.icon {
-            let bytes = self.db.read_with(|s| self.blob_in(s.connection(), sha))?;
+            let bytes = match retained.get(sha) {
+                Some(b) => b.clone(),
+                None => self.db.read_with(|s| self.blob_in(s.connection(), sha))?,
+            };
             let path = if icon_mime(&bytes)? == "image/png" {
                 "pack-icon.png"
             } else {
