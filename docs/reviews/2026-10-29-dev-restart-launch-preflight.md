@@ -31,3 +31,9 @@ Validation:
   formatting in hosted resource-pack composition; it was left unchanged.
 
 The recovered artifact is runtime data ignored by Git, not a source addition.
+
+
+Follow-up CLI verification: the former check-config success fixture omitted both
+its launch definition and executable. It now supplies an inert existing native
+launch and asserts the definition remains unchanged. Nothing is executed by the
+preflight. Full vesta-agent tests pass (77); vesta-dev: 8 passed, 1 manual ignored.

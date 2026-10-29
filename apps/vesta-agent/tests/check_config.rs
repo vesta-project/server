@@ -29,6 +29,9 @@ fn check_config_inspects_owned_configuration_without_creating_state_or_game_data
     fs::create_dir_all(temp.path().join("game/public")).unwrap();
     fs::write(temp.path().join("host.toml"), DOCUMENT).unwrap();
     fs::write(temp.path().join("game/retained"), b"owned fixture bytes").unwrap();
+    let launch = "[minecraft]\nworking-directory = 'game'\n[launch]\nkind = 'native'\nexecutable = 'inert-placeholder'\nstop = 'console-stop'\n";
+    fs::write(temp.path().join("launch.toml"), launch).unwrap();
+    fs::write(temp.path().join("game/inert-placeholder"), b"").unwrap();
     let output = command()
         .current_dir(temp.path())
         .args(["check-config", "host.toml"])
@@ -41,7 +44,10 @@ fn check_config_inspects_owned_configuration_without_creating_state_or_game_data
     );
     assert!(output.stderr.is_empty());
     assert!(!temp.path().join("private-state").exists());
-    assert!(!temp.path().join("launch.toml").exists());
+    assert_eq!(
+        fs::read_to_string(temp.path().join("launch.toml")).unwrap(),
+        launch
+    );
     assert!(!temp.path().join("game/eula.txt").exists());
     assert_eq!(
         fs::read(temp.path().join("game/retained")).unwrap(),
