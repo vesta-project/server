@@ -1,4 +1,6 @@
 //! Protected, revisioned client-pack workspace. No writes to the game tree.
+mod server_link;
+pub use server_link::*;
 mod install;
 pub use install::*;
 mod files;
@@ -132,6 +134,8 @@ pub struct PackDraft {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct WorkspaceView {
+    pub server_modpack: Option<ServerModpackLink>,
+    pub client_pack: ClientPackConfig,
     pub customizing_provider: bool,
     pub provider_pack: Option<crate::content::ContentProvider>,
     pub draft: PackDraft,
@@ -317,6 +321,7 @@ impl PackWorkspace {
     }
     pub fn open(db: &StateDatabase) -> Result<Self> {
         db.write(|c| c.execute_batch("CREATE TABLE IF NOT EXISTS pack_install_plans(id TEXT PRIMARY KEY, principal TEXT NOT NULL, device TEXT NOT NULL, expires INTEGER NOT NULL, token_hash TEXT NOT NULL, body TEXT NOT NULL)").map_err(Into::into))?;
+        server_link::initialize(db)?;
         Ok(Self {
             db: db.clone(),
             audit: AuditLog::new(db.clone())?,
@@ -433,6 +438,8 @@ impl PackWorkspace {
             .unwrap_or(false))
         })?;
         Ok(WorkspaceView {
+            server_modpack: self.server_link(subject)?,
+            client_pack: self.client_pack(subject, release.is_some())?,
             customizing_provider,
             provider_pack,
             minecraft_drift: draft.manifest.minecraft_version != mc,

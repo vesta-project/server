@@ -7,7 +7,10 @@ use vesta_control::{host::NetworkHost, identity::Capability, packs::workspace::*
 pub(super) fn implemented(path: &str) -> bool {
     matches!(
         path,
-        "/api/v3/manage/pack/history"
+        "/api/v3/manage/pack/server-link"
+            | "/api/v3/manage/pack/server-link/unlink"
+            | "/api/v3/manage/pack/client-mode"
+            | "/api/v3/manage/pack/history"
             | "/api/v3/manage/pack/draft"
             | "/api/v3/manage/pack/draft/add"
             | "/api/v3/manage/pack/draft/delete"
@@ -89,6 +92,12 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         .path
         .strip_prefix("/api/v3/manage/")
         .unwrap_or_default();
+    if action == "pack/server-link" && request.method == Method::GET {
+        if !request.bytes.is_empty() {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        return value(workspace.server_link(&subject));
+    }
     if action == "pack/history" && request.method == Method::GET {
         if !request.bytes.is_empty() {
             return error(StatusCode::BAD_REQUEST, "invalid_request");
@@ -276,26 +285,11 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             Ok(o) => o,
             Err(e) => return pack_error(e),
         };
-        let assigned = if input.set_as_modpack {
-            match workspace.install_assign(
-                &subject,
-                &mc,
-                &input,
-                host.releases(),
-                &providers,
-                host.configuration().pack(),
-            ) {
-                Ok(r) => Some(r),
-                Err(e) => return pack_error(e),
-            }
-        } else {
-            None
-        };
         if let Err(e) = workspace.install_finish(&subject, &input.plan_id) {
             return pack_error(e);
         }
         return ok(
-            serde_json::json!({"state":outcome.state,"pending_ids":outcome.pending_ids,"modpack_revision":assigned}),
+            serde_json::json!({"state":outcome.state,"pending_ids":outcome.pending_ids,"modpack_revision":null,"server_modpack":workspace.server_link(&subject).ok().flatten()}),
         );
     }
     if action == "pack/files/read" {
@@ -322,6 +316,19 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         return error(StatusCode::BAD_REQUEST, "idempotency_key_required");
     };
     match action {
+        "pack/client-mode" => {
+            let Some(input) = decode::<ClientPackConfig>(request.bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            value(workspace.set_client_pack(&subject, &key, &input))
+        }
+        "pack/server-link/unlink" => {
+            let Some(input) = decode::<ServerModpackUnlink>(request.bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            value(workspace.unlink_server_modpack(&subject, &key, &input, host.files()))
+        }
+
         "pack/provider/publish" => {
             let Some(input) = decode::<ProviderPackPublish>(request.bytes) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");

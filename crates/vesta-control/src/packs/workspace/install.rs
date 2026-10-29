@@ -37,6 +37,8 @@ pub struct InstallFile {
     pub sha256: String,
     pub expected_sha256: Option<String>,
     pub conflict: Option<String>,
+    #[serde(default)]
+    pub operation: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PackInstallPlan {
@@ -52,6 +54,8 @@ pub struct PackInstallPlan {
     pub skipped: Vec<String>,
     pub warnings: Vec<String>,
     pub backup_recommended: bool,
+    #[serde(default)]
+    pub removed: Vec<(String, String)>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -66,6 +70,8 @@ pub struct PackInstallApply {
     pub confirmation_token: String,
     /// Exactly one replace/keep choice per conflicting destination.
     pub choices: Vec<InstallChoice>,
+    /// Deprecated compatibility input; apply always links the server and never publishes clients.
+    #[serde(default)]
     pub set_as_modpack: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -77,6 +83,8 @@ pub struct PackInstallOutcome {
 struct Stored {
     #[serde(default)]
     applied_key: Option<String>,
+    #[serde(default)]
+    expected_link: Option<ServerModpackLink>,
     manifest: PackManifest,
     source: InstallSource,
     draft_revision: String,
@@ -130,7 +138,7 @@ impl PackWorkspace {
         })?)
     }
 
-    fn install_authority(&self, c: &Connection, s: &Subject) -> Result<()> {
+    pub(super) fn install_authority(&self, c: &Connection, s: &Subject) -> Result<()> {
         let p = identity::policy_in(c, self.db.server_id(), self.db.clock().millis(), Some(s))?;
         if !p.holds_builtin(identity::BuiltinRole::Owner)
             && !p.holds_builtin(identity::BuiltinRole::Administrator)
@@ -311,6 +319,7 @@ impl PackWorkspace {
         if inventory.truncated {
             return Err(ReleaseError::Conflict);
         }
+        let owned = self.server_link(s)?.map(|l| l.files).unwrap_or_default();
         let mut review = Vec::new();
         let mut bytes = Vec::new();
         let mut refs = Vec::new();
@@ -372,7 +381,22 @@ impl PackWorkspace {
                     .into(),
                 );
             }
+            if expected
+                .as_ref()
+                .is_some_and(|hash| owned.get(&path) == Some(hash))
+            {
+                conflict = None;
+            }
+            let operation = if expected.is_none() {
+                "added"
+            } else if expected.as_deref() == Some(digest(&body).as_str()) {
+                "unchanged"
+            } else {
+                "updated"
+            }
+            .into();
             review.push(InstallFile {
+                operation,
                 path,
                 sha256: digest(&body),
                 expected_sha256: expected,
@@ -428,12 +452,17 @@ impl PackWorkspace {
             skipped,
             warnings,
             backup_recommended: true,
+            removed: owned
+                .into_iter()
+                .filter(|(path, _)| !destinations.contains(&path.to_lowercase()))
+                .collect(),
         };
         let mut stored_plan = plan.clone();
         stored_plan.confirmation_token.clear();
         let view = self.view(s, mc, releases)?;
         let stored = Stored {
             applied_key: None,
+            expected_link: self.server_link(s)?,
             manifest,
             source: request.source.clone(),
             draft_revision: view.draft.revision,
@@ -504,10 +533,11 @@ impl PackWorkspace {
             if expires<self.db.clock().millis()||hash!=digest(input.confirmation_token.as_bytes()){return Err(ReleaseError::Conflict)}
             let mut stored:Stored=serde_json::from_str(&body).map_err(|_|invalid())?;
             if !stored.plan.valid{return Err(ReleaseError::Conflict)}
-            if input.set_as_modpack || matches!(stored.source,InstallSource::Published{..}) {
+            if serde_json::to_value(self.server_link_in(c)?).map_err(|_|invalid())? != serde_json::to_value(&stored.expected_link).map_err(|_|invalid())? {return Err(ReleaseError::Conflict)}
+            if matches!(stored.source,InstallSource::Published{..}) {
                 let published:i64=c.query_row("SELECT coalesce(max(revision),0) FROM pack_releases WHERE server_id=?",[self.db.server_id()],|r|r.get(0))?;
                 if published as u64!=revision(&stored.published_revision)?{return Err(ReleaseError::Conflict)}
-                if input.set_as_modpack && self.read_in(c,mc)?.revision!=stored.draft_revision{return Err(ReleaseError::Conflict)}
+
             }
 
             if let Some(current)=crate::software::SoftwareHandle::pack_install_target_in(c)? {
@@ -521,105 +551,17 @@ impl PackWorkspace {
             let conflicts:BTreeSet<_>=stored.plan.files.iter().filter(|f|f.conflict.is_some()).map(|f|f.path.clone()).collect();
             let choices:BTreeMap<_,_>=input.choices.iter().map(|c|(c.path.clone(),c.choice.clone())).collect();
             if choices.len()!=input.choices.len()||conflicts!=choices.keys().cloned().collect()||choices.values().any(|v|v!="replace"&&v!="keep"){return Err(invalid())}
-            let selected:Vec<_>=stored.plan.files.into_iter().zip(stored.bytes).zip(stored.providers).filter_map(|((f,b),p)|{if choices.get(&f.path).is_some_and(|v|v=="keep"){None}else{Some((f.path,f.expected_sha256,b,p))}}).collect();
+            let link_files = stored.plan.files.iter().filter(|f| choices.get(&f.path).is_none_or(|v|v!="keep")).map(|f|(f.path.clone(), f.sha256.clone())).collect();
+            let selected:Vec<_>=stored.plan.files.clone().into_iter().zip(stored.bytes).zip(stored.providers).filter_map(|((f,b),p)|{if choices.get(&f.path).is_some_and(|v|v=="keep"){None}else{Some((f.path,f.expected_sha256,b,p))}}).collect();
             c.execute("UPDATE pack_install_plans SET expires=? WHERE id=?",params![self.db.clock().millis()+2_592_000_000i64,input.plan_id])?;
-            let pending_ids=files.stage_pack_in(c,s,key,&selected).map_err(file_error)?;
+            let mut pending_ids=files.stage_pack_in(c,s,key,&selected).map_err(file_error)?;
+            pending_ids.extend(files.stage_pack_removals_in(c,s,&format!("{key}-remove"),&stored.plan.removed).map_err(file_error)?);
+            let link=ServerModpackLink{source:stored.source,display_version:stored.manifest.display_version,files:link_files,state:"staged_until_restart".into(),pending_ids:pending_ids.clone()};
+            c.execute("INSERT OR REPLACE INTO server_modpack_link VALUES(?,?)",params![self.db.server_id(),serde_json::to_string(&link).map_err(|_|invalid())?])?;
+            c.execute("DELETE FROM server_modpack_files",[])?;
+            for (path,hash) in &link.files {c.execute("INSERT INTO server_modpack_files VALUES(?,?)",params![path,hash])?;}
+
             Ok(PackInstallOutcome{state:"staged_until_restart".into(),pending_ids})
         })
-    }
-}
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(tag = "kind")]
-enum Assignment {
-    Provider(ProviderPackPublish),
-    Custom(WorkspacePublish),
-    Current(String),
-}
-impl PackWorkspace {
-    /// Assignment is a resumable second step; stage receipt is retained if publication refuses.
-    pub fn install_assign(
-        &self,
-        s: &Subject,
-        mc: &str,
-        input: &PackInstallApply,
-        releases: &super::super::PackReleases,
-        providers: &content::UreqProviderClient,
-        base: &crate::config::PackMetadata,
-    ) -> Result<String> {
-        let key = format!("install-assign-{}", input.plan_id);
-        let assignment: Assignment = if let Some(a) = self.replay(s, &key, input)? {
-            a
-        } else {
-            let stored:Stored=self.db.read_with(|t|{let c=t.connection();self.install_authority(c,s)?;let raw:String=c.query_row("SELECT body FROM pack_install_plans WHERE id=? AND principal=? AND device=? AND token_hash=?",params![input.plan_id,s.principal.as_str(),s.device.as_str(),digest(input.confirmation_token.as_bytes())],|r|r.get(0))?;serde_json::from_str(&raw).map_err(|_|invalid())})?;
-            let prepared = match &stored.source {
-                InstallSource::Published { revision } => Assignment::Current(revision.clone()),
-                InstallSource::Provider {
-                    provider,
-                    project_id,
-                    version_id,
-                } => Assignment::Provider(ProviderPackPublish {
-                    expected_revision: stored.published_revision,
-                    draft_revision: stored.draft_revision,
-                    provider: provider.clone(),
-                    project_id: project_id.clone(),
-                    version_id: version_id.clone(),
-                    required_update: false,
-                    acknowledge_lower_version: false,
-                }),
-                _ => {
-                    let draft: PackDraft =
-                        self.mutate(s, &format!("install-draft-{}", input.plan_id), input, |c| {
-                            self.install_authority(c, s)?;
-                            for b in &stored.blobs {
-                                self.store_blob(c, b)?;
-                            }
-                            self.write_in(c, s, mc, &stored.draft_revision, stored.manifest.clone())
-                        })?;
-                    let preview = self.preview(
-                        s,
-                        mc,
-                        &PreviewRequest {
-                            draft_revision: draft.revision.clone(),
-                            resolved_entries: Vec::new(),
-                        },
-                        releases,
-                        providers,
-                        Vec::new(),
-                    )?;
-                    if !preview.valid {
-                        return Err(ReleaseError::Conflict);
-                    }
-                    Assignment::Custom(WorkspacePublish {
-                        expected_revision: stored.published_revision,
-                        draft_revision: draft.revision,
-                        resolved_entries: Vec::new(),
-                        review_sha256: preview.review_sha256,
-                        required_update: false,
-                        acknowledge_lower_version: false,
-                    })
-                }
-            };
-            self.mutate(s, &key, input, |_| Ok(prepared))?
-        };
-        let publish_key = format!("install-publish-{}", input.plan_id);
-        match assignment {
-            Assignment::Current(r) => Ok(r),
-            Assignment::Provider(p) => self
-                .publish_provider_pack(s, mc, &publish_key, &p, releases)
-                .map(|o| o.hosted_revision.to_string()),
-            Assignment::Custom(p) => self
-                .publish(
-                    s,
-                    mc,
-                    &publish_key,
-                    &p,
-                    releases,
-                    providers,
-                    &content::UreqDownloadHttp::default(),
-                    base,
-                    Vec::new(),
-                )
-                .map(|o| o.hosted_revision.to_string()),
-        }
     }
 }

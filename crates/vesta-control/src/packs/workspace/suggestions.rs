@@ -218,6 +218,7 @@ mod tests {
             manifest,
         };
         let server = ContentEntry {
+            modpack_owned: false,
             kind: ContentKind::Mod,
             path: "mods/needed.jar".into(),
             filename: "needed.jar".into(),

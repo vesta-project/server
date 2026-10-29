@@ -134,6 +134,41 @@ impl FileBrowser {
         }
         Ok(ids)
     }
+    pub(crate) fn stage_pack_removals_in(
+        &self,
+        c: &rusqlite::Connection,
+        subject: &Subject,
+        key: &str,
+        removals: &[(String, String)],
+    ) -> Result<Vec<String>> {
+        let mut ids = Vec::new();
+        for (index, (path, hash)) in removals.iter().enumerate() {
+            let change = Change {
+                pack_file: true,
+                folder: false,
+                kind: ContentKind::Mod,
+                action: "remove".into(),
+                path: path.clone(),
+                target: None,
+                expected: Some(hash.clone()),
+                provider: None,
+            };
+            self.remote_authorize(c, subject, &change.authority())?;
+            let batch = vec![(path.clone(), Some(hash.clone()), Vec::new(), None)];
+            let staged = self.stage_pack_in(c, subject, &format!("{key}-{index}"), &batch)?;
+            for id in &staged {
+                c.execute(
+                    "UPDATE server_content_changes SET change_json=? WHERE id=?",
+                    params![
+                        serde_json::to_string(&change).map_err(|_| FileError::Unavailable)?,
+                        id
+                    ],
+                )?;
+            }
+            ids.extend(staged);
+        }
+        Ok(ids)
+    }
     pub(super) fn content_tree(&self, subject: &Subject, path: &str) -> Result<(String, u64)> {
         let mut work = vec![path.to_owned()];
         let mut entries = Vec::new();
@@ -283,6 +318,7 @@ impl FileBrowser {
                     None
                 };
                 items.push(ContentEntry {
+                    modpack_owned: false,
                     kind,
                     path,
                     filename: entry.name.clone(),
@@ -326,6 +362,7 @@ impl FileBrowser {
                 .transpose()?
                 .flatten();
             items.push(ContentEntry {
+                modpack_owned: false,
                 kind: ContentKind::Datapack,
                 path: path.clone(),
                 filename: pack.name.clone(),
@@ -356,6 +393,7 @@ impl FileBrowser {
                 &mut items[index]
             } else {
                 items.push(ContentEntry {
+                    modpack_owned: false,
                     kind: change.kind,
                     filename: change.path.rsplit('/').next().unwrap_or_default().into(),
                     path: change.path.clone(),
@@ -373,6 +411,15 @@ impl FileBrowser {
             item.pending = Some(change.action);
             item.pending_id = Some(id);
             item.pending_error = error;
+        }
+        let ownership: BTreeMap<String,String> = self.db.read(|c| {
+            let exists:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='server_modpack_files')",[],|r|r.get(0))?;
+            if !exists {return Ok(BTreeMap::new())}
+            let mut q=c.prepare("SELECT path,sha256 FROM server_modpack_files")?;
+            q.query_map([],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<_,_>>().map_err(Into::into)
+        })?;
+        for item in &mut items {
+            item.modpack_owned = ownership.contains_key(&item.path);
         }
         let policy = self
             .db

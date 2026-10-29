@@ -48,6 +48,8 @@ pub struct DeclaredMetadata {
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ContentEntry {
+    #[serde(default)]
+    pub modpack_owned: bool,
     pub kind: ContentKind,
     pub path: String,
     pub filename: String,

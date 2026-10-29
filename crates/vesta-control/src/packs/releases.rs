@@ -276,6 +276,21 @@ impl PackReleases {
             .read_with(|snapshot| current(snapshot.connection(), self.db.server_id()))?)
     }
 
+    /// Player-facing release selection. Management keeps the custom history intact.
+    pub fn offered(&self) -> Result<Option<PackRelease>, ReleaseError> {
+        let mode:Option<String>=self.db.read(|c| {
+            let exists:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='client_pack_config')",[],|r|r.get(0))?;
+            if !exists {return Ok(None)}
+            c.query_row("SELECT json_extract(body,'$.mode') FROM client_pack_config WHERE server_id=?",[self.db.server_id()],|r|r.get(0)).optional().map_err(Into::into)
+        })?;
+        match mode.as_deref() {
+            Some("none") => Ok(None),
+            // Never serve a custom publication under a server-following identity.
+            Some("server-modpack") => Err(PackError::Unavailable.into()),
+            _ => self.current(),
+        }
+    }
+
     /// Reserve the next revision against `expected` (0 when nothing is published yet).
     pub fn plan(
         &self,

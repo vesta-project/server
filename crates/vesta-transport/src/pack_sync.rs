@@ -31,7 +31,7 @@ pub(crate) fn dispatch(
     }) else {
         return error(StatusCode::FORBIDDEN, "pack_access_denied");
     };
-    let release = match host.releases().current() {
+    let release = match host.releases().offered() {
         Ok(Some(r)) => r,
         Ok(None) => return error(StatusCode::NOT_FOUND, "pack_not_published"),
         Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "pack_unavailable"),

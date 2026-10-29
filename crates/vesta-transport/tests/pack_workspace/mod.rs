@@ -37,9 +37,23 @@ fn signed_pack_sync_binds_freshness_identity_policy_and_latest_download() {
     assert_eq!(history.status, 200);
     assert_eq!(history.json()["data"][0]["revision"], "1");
     assert_eq!(history.json()["data"][0]["required_update"], true);
-    assert_eq!(f.request("GET", "/api/v3/manage/pack/history", b"", None).status, 401);
+    assert_eq!(
+        f.request("GET", "/api/v3/manage/pack/history", b"", None)
+            .status,
+        401
+    );
     let path = "/api/v3/manage/pack/sync?installed=0&nonce=0123456789abcdef0123456789abcdef";
     assert_eq!(f.request("GET", path, b"", None).status, 401);
+    // Publishing a custom workspace does not implicitly offer it to players.
+    assert_eq!(f.request("GET", path, b"", Some(&token)).status, 404);
+    let mode = management_mutation(
+        &f,
+        &token,
+        "pack/client-mode",
+        "sync-mode-custom-1",
+        &json!({"mode":"custom","require_update":false}),
+    );
+    assert_eq!(mode.status, 200);
     let response = f.request("GET", path, b"", Some(&token));
     assert_eq!(
         response.status,

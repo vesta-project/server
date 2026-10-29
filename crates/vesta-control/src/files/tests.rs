@@ -1043,3 +1043,140 @@ fn pack_batch_rejects_protected_paths_atomically() {
     assert_eq!(count, 0);
     assert!(!f.game.join("config/good.txt").exists());
 }
+
+#[test]
+fn server_modpack_update_and_unlink_preserve_user_content() {
+    use crate::packs::{PackReleases, workspace::*};
+    let f = Fixture::open();
+    let workspace = PackWorkspace::open(&f.db).unwrap();
+    let releases = PackReleases::open(&f.db).unwrap();
+    f.write("config/user.txt", b"user");
+    let draft = workspace
+        .file_mutate(
+            &f.owner,
+            "1.21.1",
+            "owned-draft",
+            &FileMutation {
+                expected_revision: "0".into(),
+                change: FileOperation::Write {
+                    root: "server-overrides".into(),
+                    path: "config/owned.txt".into(),
+                    content_base64: "b3duZWQ=".into(),
+                },
+            },
+        )
+        .unwrap();
+    let install = |revision: String, key: &str| {
+        let plan = workspace
+            .install_plan(
+                &f.owner,
+                "1.21.1",
+                Some("vanilla"),
+                &PackInstallRequest {
+                    source: InstallSource::Draft { revision },
+                },
+                &f.browser,
+                &releases,
+                &crate::content::UreqProviderClient::new(None),
+            )
+            .unwrap();
+        let outcome = workspace
+            .install_apply(
+                &f.owner,
+                "1.21.1",
+                Some("vanilla"),
+                key,
+                &PackInstallApply {
+                    plan_id: plan.plan_id.clone(),
+                    confirmation_token: plan.confirmation_token.clone(),
+                    choices: plan
+                        .files
+                        .iter()
+                        .filter(|f| f.conflict.is_some())
+                        .map(|f| InstallChoice {
+                            path: f.path.clone(),
+                            choice: "replace".into(),
+                        })
+                        .collect(),
+                    set_as_modpack: true,
+                },
+                &f.browser,
+            )
+            .unwrap();
+        (plan, outcome)
+    };
+    install(draft.revision.clone(), "owned-install");
+    assert!(releases.current().unwrap().is_none());
+    assert_eq!(
+        workspace.server_link(&f.owner).unwrap().unwrap().state,
+        "staged_until_restart"
+    );
+    f.browser.apply_pending_content().unwrap();
+    assert_eq!(
+        workspace.server_link(&f.owner).unwrap().unwrap().state,
+        "installed"
+    );
+    let draft = workspace
+        .file_mutate(
+            &f.owner,
+            "1.21.1",
+            "trash-owned",
+            &FileMutation {
+                expected_revision: draft.revision,
+                change: FileOperation::Trash {
+                    root: "server-overrides".into(),
+                    path: "config/owned.txt".into(),
+                },
+            },
+        )
+        .unwrap();
+    let (plan, outcome) = install(draft.revision, "owned-update");
+    assert_eq!(plan.removed.len(), 1);
+    assert_eq!(outcome.pending_ids.len(), 1);
+    assert!(f.game.join("config/owned.txt").exists());
+    f.browser.apply_pending_content().unwrap();
+    assert!(!f.game.join("config/owned.txt").exists());
+    assert_eq!(
+        std::fs::read(f.game.join("config/user.txt")).unwrap(),
+        b"user"
+    );
+    workspace
+        .unlink_server_modpack(
+            &f.owner,
+            "unlink-keep",
+            &ServerModpackUnlink {
+                remove_owned_files: false,
+            },
+            &f.browser,
+        )
+        .unwrap();
+    assert!(workspace.server_link(&f.owner).unwrap().is_none());
+    assert_eq!(
+        std::fs::read(f.game.join("config/user.txt")).unwrap(),
+        b"user"
+    );
+}
+
+#[test]
+fn pack_owned_removal_rejects_local_edits_at_restart() {
+    let f = Fixture::open();
+    f.write("config/owned.txt", b"owned");
+    f.db.write_with(|t| {
+        f.browser.stage_pack_removals_in(
+            t.connection(),
+            &f.owner,
+            "remove-owned",
+            &[(
+                "config/owned.txt".into(),
+                hex::encode(Sha256::digest(b"owned")),
+            )],
+        )
+    })
+    .unwrap();
+    f.write("config/owned.txt", b"local edit");
+    assert!(f.browser.apply_pending_content().is_err());
+    assert_eq!(
+        std::fs::read(f.game.join("config/owned.txt")).unwrap(),
+        b"local edit"
+    );
+}

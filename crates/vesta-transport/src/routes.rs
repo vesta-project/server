@@ -457,7 +457,7 @@ fn dispatch(
                 Some(n) => n,
                 None => return error(StatusCode::BAD_REQUEST, "invalid_request"),
             };
-            match host.releases().current() {
+            match host.releases().offered() {
                 Ok(None) => json(serde_json::json!({"published": false})),
                 Ok(Some(release)) => json(
                     serde_json::json!({"published": true, "name": host.configuration().pack().name(), "version": host.configuration().pack().version(), "revision": release.revision(), "minimum_revision": release.minimum_revision(), "display_version": release.display_version(), "status": release.status_for(installed).wire()}),
@@ -580,7 +580,7 @@ fn dispatch(
             }) else {
                 return error(StatusCode::UNAUTHORIZED, "pack_session_invalid");
             };
-            let release = match host.releases().current() {
+            let release = match host.releases().offered() {
                 Ok(Some(r)) => r,
                 Ok(None) => return error(StatusCode::NOT_FOUND, "pack_not_published"),
                 Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "pack_unavailable"),
