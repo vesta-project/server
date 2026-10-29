@@ -160,6 +160,12 @@ impl PackWorkspace {
     ) -> Result<PackInstallPlan> {
         self.db
             .read_with(|t| self.install_authority(t.connection(), s))?;
+        if self
+            .server_link(s)?
+            .is_some_and(|link| link.pending.is_some())
+        {
+            return Err(ReleaseError::Conflict);
+        }
         let deadline = Instant::now() + Duration::from_secs(120);
         let parse = |b: &[u8]| {
             super::import::parse_archive(b, providers, |h| {
@@ -556,7 +562,9 @@ impl PackWorkspace {
             c.execute("UPDATE pack_install_plans SET expires=? WHERE id=?",params![self.db.clock().millis()+2_592_000_000i64,input.plan_id])?;
             let mut pending_ids=files.stage_pack_in(c,s,key,&selected).map_err(file_error)?;
             pending_ids.extend(files.stage_pack_removals_in(c,s,&format!("{key}-remove"),&stored.plan.removed).map_err(file_error)?);
-            let link=ServerModpackLink{source:stored.source,display_version:stored.manifest.display_version,files:link_files,state:"staged_until_restart".into(),pending_ids:pending_ids.clone()};
+            let installed = self.server_link_in(c)?.and_then(|link| link.installed);
+            let pending = Some(ServerModpackVersion { source: stored.source.clone(), display_version: stored.manifest.display_version.clone() });
+            let link=ServerModpackLink{source:stored.source,display_version:stored.manifest.display_version,files:link_files,state:"staged_until_restart".into(),pending_ids:pending_ids.clone(),installed,pending};
             c.execute("INSERT OR REPLACE INTO server_modpack_link VALUES(?,?)",params![self.db.server_id(),serde_json::to_string(&link).map_err(|_|invalid())?])?;
             c.execute("DELETE FROM server_modpack_files",[])?;
             for (path,hash) in &link.files {c.execute("INSERT INTO server_modpack_files VALUES(?,?)",params![path,hash])?;}

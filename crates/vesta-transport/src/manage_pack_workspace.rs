@@ -8,6 +8,7 @@ pub(super) fn implemented(path: &str) -> bool {
     matches!(
         path,
         "/api/v3/manage/pack/server-link"
+            | "/api/v3/manage/pack/server-link/update"
             | "/api/v3/manage/pack/server-link/unlink"
             | "/api/v3/manage/pack/client-mode"
             | "/api/v3/manage/pack/history"
@@ -97,6 +98,28 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             return error(StatusCode::BAD_REQUEST, "invalid_request");
         }
         return value(workspace.server_link(&subject));
+    }
+    if action == "pack/server-link/update" && request.method == Method::GET {
+        if !request.bytes.is_empty() {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        let family = match host.software().map(|s| s.content_target()).transpose() {
+            Ok(v) => v.unwrap_or_default().0,
+            Err(_) => {
+                return error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "software_state_unavailable",
+                );
+            }
+        };
+        return value(workspace.server_modpack_update(
+            &subject,
+            &mc,
+            family.as_deref(),
+            &vesta_control::content::UreqProviderClient::new(
+                std::env::var("VESTA_CURSEFORGE_API_KEY").ok(),
+            ),
+        ));
     }
     if action == "pack/history" && request.method == Method::GET {
         if !request.bytes.is_empty() {

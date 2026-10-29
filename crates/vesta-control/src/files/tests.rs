@@ -1106,6 +1106,38 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
         (plan, outcome)
     };
     install(draft.revision.clone(), "owned-install");
+    let link = workspace.server_link(&f.owner).unwrap().unwrap();
+    assert!(link.installed.is_none());
+    assert!(link.pending.is_some());
+    assert!(
+        workspace
+            .install_plan(
+                &f.owner,
+                "1.21.1",
+                Some("vanilla"),
+                &PackInstallRequest {
+                    source: InstallSource::Draft {
+                        revision: draft.revision.clone()
+                    }
+                },
+                &f.browser,
+                &releases,
+                &crate::content::UreqProviderClient::new(None),
+            )
+            .is_err()
+    );
+    assert!(
+        workspace
+            .unlink_server_modpack(
+                &f.owner,
+                "pending-unlink",
+                &ServerModpackUnlink {
+                    remove_owned_files: false
+                },
+                &f.browser,
+            )
+            .is_err()
+    );
     assert!(releases.current().unwrap().is_none());
     assert_eq!(
         workspace.server_link(&f.owner).unwrap().unwrap().state,
@@ -1130,12 +1162,34 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
             },
         )
         .unwrap();
+    let old_installed = workspace
+        .server_link(&f.owner)
+        .unwrap()
+        .unwrap()
+        .installed
+        .unwrap();
+    let target_revision = draft.revision.clone();
     let (plan, outcome) = install(draft.revision, "owned-update");
+    // Reading through a reopened workspace cannot promote a staged target.
+    let reopened = PackWorkspace::open(&f.db).unwrap();
+    let staged = reopened.server_link(&f.owner).unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(&staged.installed).unwrap(),
+        serde_json::to_value(&old_installed).unwrap()
+    );
+    assert!(
+        matches!(staged.pending.unwrap().source, InstallSource::Draft { revision } if revision == target_revision)
+    );
     assert_eq!(plan.removed.len(), 1);
     assert_eq!(outcome.pending_ids.len(), 1);
     assert!(f.game.join("config/owned.txt").exists());
     f.browser.apply_pending_content().unwrap();
     assert!(!f.game.join("config/owned.txt").exists());
+    let installed = reopened.server_link(&f.owner).unwrap().unwrap();
+    assert!(installed.pending.is_none());
+    assert!(
+        matches!(installed.installed.unwrap().source, InstallSource::Draft { revision } if revision == target_revision)
+    );
     assert_eq!(
         std::fs::read(f.game.join("config/user.txt")).unwrap(),
         b"user"

@@ -9,6 +9,17 @@ pub struct ServerModpackLink {
     pub state: String,
     #[serde(default)]
     pub pending_ids: Vec<String>,
+    /// Confirmed version; never advances while content is pending or cancelled.
+    #[serde(default)]
+    pub installed: Option<ServerModpackVersion>,
+    /// Reviewed incoming version, promoted only after all journal entries apply.
+    #[serde(default)]
+    pub pending: Option<ServerModpackVersion>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ServerModpackVersion {
+    pub source: InstallSource,
+    pub display_version: String,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -85,12 +96,18 @@ impl PackWorkspace {
                     pending = true;
                 }
             }
-            link.state = if pending {
-                "staged_until_restart"
+            let selected = ServerModpackVersion {
+                source: link.source.clone(),
+                display_version: link.display_version.clone(),
+            };
+            if pending {
+                link.state = "staged_until_restart".into();
+                link.pending = Some(selected);
             } else {
-                "installed"
+                link.state = "installed".into();
+                link.installed = Some(selected);
+                link.pending = None;
             }
-            .into();
         }
         Ok(link)
     }
@@ -164,6 +181,10 @@ impl PackWorkspace {
         self.mutate(s, key, input, |c| {
             self.install_authority(c, s)?;
             let link = self.server_link_in(c)?.ok_or(ReleaseError::Conflict)?;
+            // Do not orphan staged writes or discard their installation receipt.
+            if link.pending.is_some() {
+                return Err(ReleaseError::Conflict);
+            }
             let removals = if input.remove_owned_files {
                 link.files.into_iter().collect::<Vec<_>>()
             } else {
@@ -240,6 +261,8 @@ mod tests {
             files: BTreeMap::new(),
             state: "installed".into(),
             pending_ids: Vec::new(),
+            installed: None,
+            pending: None,
         };
         f.db.write(|c| {
             c.execute(

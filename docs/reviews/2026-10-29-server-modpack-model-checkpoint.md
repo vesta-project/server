@@ -65,3 +65,43 @@ unrelated launcher changes staged. Server source metadata uses the existing
 instance modpack fields; protected TLS/high-water receipts remain in the adapter.
 The adapter is routed through common update checks, but its lifecycle is not yet
 fully merged. Required updates continue blocking launch.
+
+## 2026-10-29 resume checkpoint
+
+Added explicit installed/pending version identities. New installs retain no
+confirmed identity until all associated journal entries apply; updates preserve
+the preceding confirmed identity across reload and promote only after restart.
+A second plan and unlink refuse while pending, preventing orphaned content work.
+Cancelled/missing/failed entries remain pending; transactional cancellation and
+recovery are still needed and must not be represented as successful completion.
+
+GET /api/v3/manage/pack/server-link/update is read-only and requires pack.edit.
+It reports installed, pending and a nullable available provider InstallSource.
+Modrinth/CurseForge candidates must match the linked project, be newer by provider
+publication date, match Minecraft and exact loader, and have an available download.
+Metadata uses fixed endpoints and a 20-second deadline; installation is rechecked
+after fetching. Pending installs suppress discovery. Candidates still require the
+normal install plan/review/apply. Pagination beyond the existing bounded metadata
+adapter (256 Modrinth / 50 CurseForge rows) and live-provider acceptance remain.
+
+Launcher native/client/browser contracts and fixtures are wired; the regression
+covers initial install, restart, v1 remaining installed while v2 is pending, then
+promotion to v2. No pages or unrelated launcher changes were edited/staged.
+
+Following-pack delivery and common instance apply/rollback remain unimplemented.
+The exact remaining work and UI handoff are in the launcher's MODPACK-REDESIGN.md
+resume section. Do not enable the following client-pack option at this checkpoint.
+
+Resume validation: control units 1,074 passed, one failed, two ignored. Sole failure
+is the already-recorded original-v8 host fixture (host_tests.rs:729,
+state_migration_failed); new journal/identity and provider-discovery regressions pass.
+Six control integration targets pass (28 tests). Full agent suite passes (77).
+Client full suite and all-target clippy pass. Launcher check passes with existing
+warnings. Desktop typecheck passes; final expanded frontend selection passes all
+409 tests in 36 files after an initial existing HOT_SCOPE_TIME console failure.
+V: ran out of space during initial broad Rust linking; final Rust validation uses
+a temporary C: target, debug info off and incremental off, without repository
+profile changes. Exact UI changes/remaining work are in the launcher handoff.
+Control/transport all-target clippy with -D warnings passes. Transport: 47 unit and
+122 HTTPS tests pass, one manual ignored (serial HTTPS). vesta-dev: eight pass,
+one manual ignored. This is still an incomplete model-rework checkpoint.
