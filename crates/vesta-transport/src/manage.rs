@@ -938,7 +938,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             if query.is_some() {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
             }
-            match host.releases().current() {
+            match host.releases().offered() {
                 Ok(Some(v)) => ok(
                     json!({"hosted_revision":v.revision().to_string(),"minimum_revision":v.minimum_revision().to_string(),"status":"published"}),
                 ),
