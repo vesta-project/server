@@ -131,6 +131,8 @@ pub struct InstallChoice {
 #[serde(deny_unknown_fields)]
 pub struct PackInstallApply {
     #[serde(default)]
+    pub acknowledge_warnings: bool,
+    #[serde(default)]
     pub acknowledge_software_switch: bool,
     pub plan_id: String,
     pub confirmation_token: String,
@@ -426,7 +428,7 @@ impl PackWorkspace {
                             Some(&meta.filename),
                         )
                     })?;
-                if e.path.rsplit('/').next() != Some(source.filename.as_str()) {
+                if e.path.rsplit('/').next() != Some(content::provider_storage_name(&source.filename).map_err(ReleaseError::from)?.as_str()) {
                     return Err(ReleaseError::provider_file(
                         content::ContentError::InvalidMetadata,
                         provider,
@@ -807,6 +809,7 @@ impl PackWorkspace {
                 warnings.push(format!("retained_unidentified_content:{}", i.path));
             }
         }
+        if selected_bytes > 64 * 1024 * 1024 { warnings.push(format!("pack_size_warning:{selected_bytes}")); }
         let mut plan = PackInstallPlan {
             software_switch: None,
             plan_id: uuid::Uuid::new_v4().to_string(),
@@ -990,7 +993,7 @@ impl PackWorkspace {
             let (expires, hash, body) = row.ok_or(ReleaseError::Conflict)?;
             if expires < self.db.clock().millis() || hash != digest(input.confirmation_token.as_bytes()) { return Err(ReleaseError::Conflict); }
             let stored: Stored = serde_json::from_str(&body).map_err(|_| invalid())?;
-            if !stored.plan.valid || !input.acknowledge_software_switch { return Err(ReleaseError::Conflict); }
+            if (!stored.plan.warnings.is_empty() && !input.acknowledge_warnings) || !stored.plan.valid || !input.acknowledge_software_switch { return Err(ReleaseError::Conflict); }
             let conflicts: BTreeSet<_> = stored.plan.files.iter().filter(|f| f.conflict.is_some()).map(|f| f.path.as_str()).collect();
             let choices: BTreeSet<_> = input.choices.iter().map(|c| c.path.as_str()).collect();
             if choices.len() != input.choices.len() || choices != conflicts || input.choices.iter().any(|c| c.choice != "keep" && c.choice != "replace") { return Err(invalid()); }
@@ -1029,6 +1032,7 @@ impl PackWorkspace {
             if stored.payloads.len()!=stored.plan.files.len() || stored.providers.len()!=stored.plan.files.len() {return Err(invalid());}
             if stored.payloads.iter().zip(&stored.plan.files).any(|(p,f)|p.sha256!=f.sha256) {return Err(ReleaseError::Conflict);}
             if !stored.plan.valid{return Err(ReleaseError::Conflict)}
+            if !stored.plan.warnings.is_empty() && !input.acknowledge_warnings {return Err(invalid());}
             if serde_json::to_value(self.server_link_in(c)?).map_err(|_|invalid())? != serde_json::to_value(&stored.expected_link).map_err(|_|invalid())? {return Err(ReleaseError::Conflict)}
             if stored.expected_publication.is_some() || matches!(stored.source,InstallSource::Published{..}) {
                 let published:i64=c.query_row("SELECT coalesce(max(revision),0) FROM pack_releases WHERE server_id=?",[self.db.server_id()],|r|r.get(0))?;

@@ -945,6 +945,7 @@ fn pack_install_review_stages_overrides_until_restart_and_replays() {
     assert_eq!(plan.files[0].sha256, hex::encode(Sha256::digest(b"server")));
     assert!(plan.files[0].conflict.is_some());
     let mut apply = PackInstallApply {
+                acknowledge_warnings: true,
         acknowledge_software_switch: false,
         plan_id: plan.plan_id,
         confirmation_token: "wrong".into(),
@@ -1099,6 +1100,7 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
                 Some("vanilla"),
                 key,
                 &PackInstallApply {
+                acknowledge_warnings: true,
                     acknowledge_software_switch: false,
                     plan_id: plan.plan_id.clone(),
                     confirmation_token: plan.confirmation_token.clone(),
@@ -1156,6 +1158,7 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
             &f.owner,
             "follow-installed",
             &ClientPackConfig {
+                allow_custom_content: false,
                 mode: ClientPackMode::ServerModpack,
                 require_update: false,
             },
@@ -1344,6 +1347,7 @@ fn uploaded_archive_delivery_survives_upload_and_plan_removal() {
             Some("vanilla"),
             "apply-archive",
             &PackInstallApply {
+                acknowledge_warnings: true,
                 acknowledge_software_switch: false,
                 plan_id: plan.plan_id.clone(),
                 confirmation_token: plan.confirmation_token,
@@ -1358,6 +1362,7 @@ fn uploaded_archive_delivery_survives_upload_and_plan_removal() {
             &f.owner,
             "follow-archive",
             &ClientPackConfig {
+                allow_custom_content: false,
                 mode: ClientPackMode::ServerModpack,
                 require_update: true,
             },

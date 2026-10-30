@@ -375,6 +375,13 @@ impl PackReleases {
     }
 
     /// Player-facing release selection. Management keeps the custom history intact.
+    /// Included in the signed player release, independently of management access.
+    pub fn allow_custom_content(&self) -> Result<bool, ReleaseError> {
+        Ok(self.db.read(|c| {
+            let raw: Option<String> = c.query_row("SELECT body FROM client_pack_config WHERE server_id=?", [self.db.server_id()], |r| r.get(0)).optional()?;
+            Ok(raw.and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()).is_some_and(|v| v["allow_custom_content"] == true))
+        })?)
+    }
     pub fn offered(&self) -> Result<Option<PackRelease>, ReleaseError> {
         super::delivery::offered(&self.db, &self.artifacts)
     }

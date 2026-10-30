@@ -32,6 +32,8 @@ pub enum ClientPackMode {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClientPackConfig {
+    #[serde(default)]
+    pub allow_custom_content: bool,
     pub mode: ClientPackMode,
     pub require_update: bool,
 }
@@ -57,6 +59,7 @@ pub(super) fn initialize(db: &StateDatabase) -> Result<()> {
             } else {
                 ClientPackMode::None
             },
+            allow_custom_content: false,
             require_update: false,
         };
         c.execute(
@@ -146,7 +149,8 @@ impl PackWorkspace {
                         } else {
                             ClientPackMode::None
                         },
-                        require_update: false,
+                        allow_custom_content: false,
+            require_update: false,
                     }),
                 }
             })
@@ -255,6 +259,7 @@ mod tests {
         );
         let follow = ClientPackConfig {
             mode: ClientPackMode::ServerModpack,
+            allow_custom_content: false,
             require_update: true,
         };
         assert!(
@@ -297,7 +302,8 @@ mod tests {
                 "custom",
                 &ClientPackConfig {
                     mode: ClientPackMode::Custom,
-                    require_update: false,
+                    allow_custom_content: false,
+            require_update: false,
                 },
             )
             .unwrap();

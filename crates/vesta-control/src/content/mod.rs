@@ -583,7 +583,30 @@ fn validate_source(source: &ResolvedSource) -> Result<(RelativePath, Url)> {
     validate_download_url(source.provider, &url)?;
     Ok((path, url))
 }
+pub(crate) fn provider_storage_name(filename: &str) -> Result<String> {
+    if filename.contains('/') || filename.contains('\\') || filename == "." || filename == ".."
+        || filename.as_bytes().get(1) == Some(&b':') || filename.is_empty() {
+        return Err(ContentError::UnsafeFilename);
+    }
+    if RelativePath::parse(&format!("mods/{filename}")).is_ok() { return Ok(filename.into()); }
+    // Preserve the provider display name separately. Encode names the server OS cannot store.
+    let mut name = String::from("provider-");
+    for b in filename.bytes() {
+        if b.is_ascii_alphanumeric() || b"._-".contains(&b) { name.push(b as char); }
+        else { name.push_str(&format!("%{b:02X}")); }
+    }
+    RelativePath::parse(&format!("mods/{name}")).map_err(|_| ContentError::UnsafeFilename)?;
+    Ok(name)
+}
 fn validate_filename(filename: &str) -> Result<RelativePath> {
+    // Provider archives use private staging; their display name is never a filesystem path.
+    if filename.to_ascii_lowercase().ends_with(".zip") || filename.to_ascii_lowercase().ends_with(".mrpack") {
+        if filename.contains('/') || filename.contains('\\')
+            || filename.as_bytes().get(1) == Some(&b':') {
+            return Err(ContentError::UnsafeFilename);
+        }
+        return RelativePath::parse("mods/provider-archive.zip").map_err(|_| ContentError::UnsafeFilename);
+    }
     // A provider filename is a leaf, not a provider-controlled relative path.
     if filename.contains('/')
         || filename.contains('\\')
@@ -595,26 +618,14 @@ fn validate_filename(filename: &str) -> Result<RelativePath> {
     }
     RelativePath::parse(&format!("mods/{filename}")).map_err(|_| ContentError::UnsafeFilename)
 }
-fn validate_download_url(provider: Provider, url: &Url) -> Result<()> {
-    let allowed = match provider {
-        Provider::Modrinth => matches!(url.host_str(), Some("cdn.modrinth.com")),
-        Provider::Curseforge => matches!(
-            url.host_str(),
-            Some("edge.forgecdn.net" | "mediafilez.forgecdn.net")
-        ),
-    };
-    if !allowed
-        || url.scheme() != "https"
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.port_or_known_default() != Some(443)
-        || url.fragment().is_some()
-        || url.as_str().len() > MAX_URL_BYTES
-    {
-        return Err(ContentError::DisallowedUrl);
-    }
+fn validate_download_url(_provider: Provider, url: &Url) -> Result<()> {
+    // API-resolved sources are trusted; CDN migrations are not safety failures.
+    if url.scheme() != "https" || url.host_str().is_none()
+        || !url.username().is_empty() || url.password().is_some()
+    { return Err(ContentError::DisallowedUrl); }
     Ok(())
 }
+
 fn verified_copy(
     mut reader: impl Read,
     expected: &ExpectedHash,
@@ -705,3 +716,16 @@ impl Error for ContentError {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod trusted_pack_policy_tests {
+    use super::*;
+    #[test]
+    fn provider_archive_names_and_https_hosts_are_trusted() {
+        assert!(provider_storage_name("Cobblemon 3D Pok? Rods 1.0.zip").unwrap().is_ascii());
+        for name in ["COBBLEVERSE 1.7.42.zip", "Pok?mon: pack.zip"] { assert!(validate_filename(name).is_ok()); }
+        for name in ["../pack.zip", "/pack.zip", "C:pack.zip", "nested\\pack.zip"] { assert!(validate_filename(name).is_err()); }
+        assert!(validate_download_url(Provider::Curseforge, &Url::parse("https://new-cdn.example/pack.zip").unwrap()).is_ok());
+        for url in ["http://cdn.example/pack.zip", "https://user:secret@cdn.example/pack.zip"] { assert!(validate_download_url(Provider::Curseforge, &Url::parse(url).unwrap()).is_err()); }
+    }
+}

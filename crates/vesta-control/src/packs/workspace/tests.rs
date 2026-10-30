@@ -79,6 +79,7 @@ fn server_pack_review_preserves_local_config_and_stages_the_server_override_once
             b"local"
         );
         let apply = PackInstallApply {
+                acknowledge_warnings: true,
             acknowledge_software_switch: false,
             plan_id: plan.plan_id,
             confirmation_token: plan.confirmation_token,
@@ -335,6 +336,7 @@ fn live_provider_install(provider: &str, project: &str, version: &str, mc: &str)
         replan_started.elapsed().as_secs_f64()
     );
     let input = PackInstallApply {
+                acknowledge_warnings: true,
         acknowledge_software_switch: false,
         plan_id: plan.plan_id.clone(),
         confirmation_token: plan.confirmation_token,

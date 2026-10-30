@@ -382,8 +382,7 @@ impl ProviderClient for UreqProviderClient {
         let file: CurseforgeFile = serde_json::from_value(document).map_err(|_| ContentError::InvalidMetadata)?;
         if file.id != numeric_id(version)? || file.mod_id != numeric_id(project)? { return Err(ContentError::InvalidMetadata); }
         if file.file_name.contains('/') || file.file_name.contains('\\') { return Err(ContentError::UnsafeFilename); }
-        vesta_protocol::pack::catalogue::RelativePath::parse(&file.file_name).map_err(|_| ContentError::UnsafeFilename)?;
-        Ok(file.file_name)
+        super::provider_storage_name(&file.file_name)
     }
     fn prefetch_curseforge(&self, files: &[(String, String)]) -> Result<()> {
         if files.is_empty() || self.metadata_cache.is_none() {
