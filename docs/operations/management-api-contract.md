@@ -1996,3 +1996,11 @@ exact optional-to-required promotions, never arbitrary replacement of draft pins
 ### Backup retention
 
 Profiles accept `keep_total` (zero disables the cap) and `keep_hourly`, in addition to the existing retention buckets. The total cap is applied after the bucket union, retaining the newest matches. With no buckets selected, keep the newest `keep_total` backups. The cap applies to each profile; safety snapshots retain their separate bounded policy. Host TOML uses `keep-total` and `keep-hourly`.
+
+### Content write timing
+
+Content changes apply immediately only when the agent acquires stopped-process ownership. While Minecraft runs, the implementation durably stores bytes in `server_content_changes` and writes them before the next start. Whole-pack applies always use this journal. `pending` and `staged_until_restart` therefore mean actual deferred writes, rather than installed files awaiting reload. The start barrier prevents Minecraft starting before these writes finish.
+
+### CraftBukkit and Spigot catalogue
+
+Discovery uses https://hub.spigotmc.org/versions/ and one pinned recipe per Minecraft version. This provides many Minecraft versions but one current source build per version. BuildTools (https://www.spigotmc.org/wiki/buildtools/) compiles that recipe locally. GetBukkit distributes third-party binaries without this installer's required first-party source pins and reference checksums, so they are not mixed into this catalogue. The UI labels this limitation beside build choices.
