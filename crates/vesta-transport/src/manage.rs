@@ -285,6 +285,7 @@ mod provider_error_tests {
             failure: ProviderFailure::DownloadUnavailable,
             details: ProviderFailureDetails {
                 stage: "metadata",
+                reason: "manual_download_required",
                 provider: "curseforge".into(),
                 project_id: "1691925".into(),
                 version_id: "9022781".into(),

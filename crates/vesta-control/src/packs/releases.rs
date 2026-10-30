@@ -60,6 +60,7 @@ impl ProviderFailure {
 #[serde(rename_all = "camelCase")]
 pub struct ProviderFailureDetails {
     pub stage: &'static str,
+    pub reason: &'static str,
     pub provider: String,
     pub project_id: String,
     pub version_id: String,
@@ -117,6 +118,13 @@ impl ReleaseError {
         filename: Option<&str>,
     ) -> Self {
         use crate::content::ContentError;
+        let reason = match &error {
+            ContentError::UnsafeFilename => "filename_not_portable",
+            ContentError::DisallowedUrl => "download_host_not_allowed",
+            ContentError::TooManyRedirects => "redirect_limit_exceeded",
+            ContentError::DownloadUnavailable { .. } => "manual_download_required",
+            _ => "provider_request_failed",
+        };
         let (failure, filename) = match error {
             ContentError::ProviderNotConfigured
             | ContentError::TooLarge
@@ -142,6 +150,7 @@ impl ReleaseError {
             failure,
             details: ProviderFailureDetails {
                 stage,
+                reason,
                 provider: provider.into(),
                 project_id: project.into(),
                 version_id: version.into(),
