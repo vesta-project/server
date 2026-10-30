@@ -202,6 +202,7 @@ pub(super) fn icon_mime(bytes: &[u8]) -> Result<&'static str> {
     }
 }
 
+#[derive(Clone)]
 pub struct PackWorkspace {
     db: StateDatabase,
     audit: AuditLog,
@@ -444,8 +445,16 @@ impl PackWorkspace {
         })?;
         Ok(WorkspaceView {
             install_progress: self.db.read_with(|t| {
-                let raw: Option<String> = t.connection().query_row("SELECT body FROM pack_install_progress WHERE server_id=? AND expires>?", params![self.db.server_id(), self.db.clock().millis()], |r| r.get(0)).optional()?;
-                raw.map(|raw| serde_json::from_str(&raw).map_err(|_| invalid())).transpose()
+                let raw: Option<String> = t
+                    .connection()
+                    .query_row(
+                        "SELECT body FROM pack_install_progress WHERE server_id=? AND expires>?",
+                        params![self.db.server_id(), self.db.clock().millis()],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                raw.map(|raw| serde_json::from_str(&raw).map_err(|_| invalid()))
+                    .transpose()
             })?,
             server_modpack: self.server_link(subject)?,
             client_pack: self.client_pack(subject, release.is_some())?,
@@ -713,7 +722,16 @@ pub fn validate_manifest(m: &PackManifest) -> Result<()> {
             && (matches!(
                 lower.as_str(),
                 "options.txt" | "optionsof.txt" | "optionsshaders.txt" | "servers.dat"
-            ) || (!lower.contains('/') && lower.ends_with(".png")) || ["defaultconfigs/", "kubejs/", "scripts/", "resources/", "global_packs/", "journeymap/", "fancymenu_data/"]
+            ) || (!lower.contains('/') && lower.ends_with(".png"))
+                || [
+                    "defaultconfigs/",
+                    "kubejs/",
+                    "scripts/",
+                    "resources/",
+                    "global_packs/",
+                    "journeymap/",
+                    "fancymenu_data/",
+                ]
                 .iter()
                 .any(|p| lower.starts_with(p)));
         if !text(&e.id, 128)

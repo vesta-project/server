@@ -79,6 +79,7 @@ fn server_pack_review_preserves_local_config_and_stages_the_server_override_once
             b"local"
         );
         let apply = PackInstallApply {
+            acknowledge_software_switch: false,
             plan_id: plan.plan_id,
             confirmation_token: plan.confirmation_token,
             choices: vec![InstallChoice {
@@ -105,11 +106,24 @@ fn server_pack_review_preserves_local_config_and_stages_the_server_override_once
             "unused blob copies should not be retained"
         );
         if legacy {
-            let store=crate::packs::payload::Store::open(&f.db).unwrap();
-            let bytes:Vec<Vec<u8>>=serde_json::from_value::<Vec<crate::packs::payload::Payload>>(stored["payloads"].clone()).unwrap().iter().map(|payload|{
-                use std::io::Read;
-                let mut body=Vec::new();store.verify(payload).unwrap().read_to_end(&mut body).unwrap();body
-            }).collect();
+            let store = crate::packs::payload::Store::open(&f.db).unwrap();
+            let bytes: Vec<Vec<u8>> =
+                serde_json::from_value::<Vec<crate::packs::payload::Payload>>(
+                    stored["payloads"].clone(),
+                )
+                .unwrap()
+                .iter()
+                .map(|payload| {
+                    use std::io::Read;
+                    let mut body = Vec::new();
+                    store
+                        .verify(payload)
+                        .unwrap()
+                        .read_to_end(&mut body)
+                        .unwrap();
+                    body
+                })
+                .collect();
             stored.as_object_mut().unwrap().remove("payloads");
             stored["bytes"] = serde_json::json!(bytes);
             if let Some(archive) = stored["client_archive"].as_str() {
@@ -279,13 +293,49 @@ fn live_provider_install(provider: &str, project: &str, version: &str, mc: &str)
         std::fs::read_dir(&game).unwrap().next().is_none(),
         "review modified live files"
     );
-    assert!(!plan.warnings.iter().any(|warning|warning.starts_with("unknown_or_optional_server_side:")));
-    let first_files:Vec<_>=plan.files.iter().map(|file|(file.path.clone(),file.sha256.clone())).collect();
-    let replan_started=std::time::Instant::now();
-    plan=f.workspace.install_plan(&f.subject,mc,Some("fabric"),&PackInstallRequest{source:InstallSource::Provider{provider:provider.into(),project_id:project.into(),version_id:version.into()}},&files,&releases,&crate::content::UreqProviderClient::configured()).unwrap();
-    assert_eq!(first_files,plan.files.iter().map(|file|(file.path.clone(),file.sha256.clone())).collect::<Vec<_>>());
-    eprintln!("{provider} verified cached replan: {:.3}s",replan_started.elapsed().as_secs_f64());
+    assert!(
+        !plan
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("unknown_or_optional_server_side:"))
+    );
+    let first_files: Vec<_> = plan
+        .files
+        .iter()
+        .map(|file| (file.path.clone(), file.sha256.clone()))
+        .collect();
+    let replan_started = std::time::Instant::now();
+    plan = f
+        .workspace
+        .install_plan(
+            &f.subject,
+            mc,
+            Some("fabric"),
+            &PackInstallRequest {
+                source: InstallSource::Provider {
+                    provider: provider.into(),
+                    project_id: project.into(),
+                    version_id: version.into(),
+                },
+            },
+            &files,
+            &releases,
+            &crate::content::UreqProviderClient::configured(),
+        )
+        .unwrap();
+    assert_eq!(
+        first_files,
+        plan.files
+            .iter()
+            .map(|file| (file.path.clone(), file.sha256.clone()))
+            .collect::<Vec<_>>()
+    );
+    eprintln!(
+        "{provider} verified cached replan: {:.3}s",
+        replan_started.elapsed().as_secs_f64()
+    );
     let input = PackInstallApply {
+        acknowledge_software_switch: false,
         plan_id: plan.plan_id.clone(),
         confirmation_token: plan.confirmation_token,
         choices: Vec::new(),

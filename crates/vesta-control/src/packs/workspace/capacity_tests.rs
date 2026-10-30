@@ -136,6 +136,7 @@ fn large_archive_upload_plans_and_applies_every_file_without_sql_payloads() {
             Some("vanilla"),
             "apply",
             &PackInstallApply {
+                acknowledge_software_switch: false,
                 plan_id: plan.plan_id,
                 confirmation_token: plan.confirmation_token,
                 choices: vec![],

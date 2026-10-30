@@ -204,7 +204,10 @@ impl PackWorkspace {
                 [self.db.server_id()],
             )?;
             c.execute("DELETE FROM server_modpack_files", [])?;
-            c.execute("DELETE FROM server_modpack_delivery WHERE server_id=?",[self.db.server_id()])?;
+            c.execute(
+                "DELETE FROM server_modpack_delivery WHERE server_id=?",
+                [self.db.server_id()],
+            )?;
             let raw: Option<String> = c
                 .query_row(
                     "SELECT body FROM client_pack_config WHERE server_id=?",
@@ -226,6 +229,7 @@ impl PackWorkspace {
                 }
             }
             Ok(PackInstallOutcome {
+                software_job_id: None,
                 state: "staged_until_restart".into(),
                 pending_ids,
             })

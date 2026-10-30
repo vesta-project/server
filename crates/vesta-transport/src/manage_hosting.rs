@@ -12,33 +12,35 @@ use vesta_control::{
 };
 
 pub(crate) fn implemented(path: &str) -> bool {
-    super::resource_packs::implemented(path) || matches!(
-        path,
-        "/api/v3/manage/world"
-            | "/api/v3/manage/world/new"
-            | "/api/v3/manage/world/datapacks/toggle"
-            | "/api/v3/manage/world/datapacks/offline"
-            | "/api/v3/manage/java"
-            | "/api/v3/manage/java/select"
-            | "/api/v3/manage/java/download"
-            | "/api/v3/manage/software"
-            | "/api/v3/manage/software/versions"
-            | "/api/v3/manage/software/releases"
-            | "/api/v3/manage/software/plan"
-            | "/api/v3/manage/software/apply"
-            | "/api/v3/manage/software/jobs"
-            | "/api/v3/manage/software/rollback/plan"
-            | "/api/v3/manage/software/rollback"
-            | "/api/v3/manage/software/custom-jar/plan"
-            | "/api/v3/manage/software/custom-jar/apply"
-            | "/api/v3/manage/software/restore-managed/plan"
-            | "/api/v3/manage/sftp"
-            | "/api/v3/manage/sftp/keys"
-    ) || path
-        .strip_prefix("/api/v3/manage/sftp/keys/")
-        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+    super::resource_packs::implemented(path)
+        || matches!(
+            path,
+            "/api/v3/manage/world"
+                | "/api/v3/manage/world/new"
+                | "/api/v3/manage/world/datapacks/toggle"
+                | "/api/v3/manage/world/datapacks/offline"
+                | "/api/v3/manage/java"
+                | "/api/v3/manage/java/select"
+                | "/api/v3/manage/java/download"
+                | "/api/v3/manage/software"
+                | "/api/v3/manage/software/versions"
+                | "/api/v3/manage/software/releases"
+                | "/api/v3/manage/software/plan"
+                | "/api/v3/manage/software/apply"
+                | "/api/v3/manage/software/jobs"
+                | "/api/v3/manage/software/rollback/plan"
+                | "/api/v3/manage/software/rollback"
+                | "/api/v3/manage/software/custom-jar/plan"
+                | "/api/v3/manage/software/custom-jar/apply"
+                | "/api/v3/manage/software/restore-managed/plan"
+                | "/api/v3/manage/sftp"
+                | "/api/v3/manage/sftp/keys"
+        )
+        || path
+            .strip_prefix("/api/v3/manage/sftp/keys/")
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
 }
-fn software_error(error_value: SoftwareError) -> Reply {
+pub(super) fn software_error(error_value: SoftwareError) -> Reply {
     use SoftwareError::*;
     let status = match error_value {
         Forbidden => StatusCode::FORBIDDEN,
@@ -533,7 +535,7 @@ fn sftp_result(result: vesta_control::sftp::Result<serde_json::Value>) -> Reply 
         ),
     }
 }
-fn run_async<T: Send + 'static>(
+pub(super) fn run_async<T: Send + 'static>(
     host: &NetworkHost,
     future: impl std::future::Future<Output = vesta_control::software::Result<T>> + Send + 'static,
 ) -> vesta_control::software::Result<T> {

@@ -51,10 +51,16 @@ struct PendingRollback {
 }
 enum WorkKind {
     CustomLaunch(Box<StoredLaunch>, bool),
-    Apply(Box<InstallPlan>, Option<Approval>),
+    Apply(Box<InstallPlan>, Option<Approval>, Option<Box<PackWork>>),
     Rollback,
     JavaSelect(PathBuf),
     JavaDownload(Box<crate::config::HostConfiguration>, u32),
+}
+pub struct PackWork {
+    pub workspace: crate::packs::workspace::PackWorkspace,
+    pub files: crate::files::FileBrowser,
+    pub input: crate::packs::workspace::PackInstallApply,
+    pub key: String,
 }
 struct Work {
     id: String,
@@ -487,6 +493,15 @@ impl SoftwareHandle {
     }
 
     pub fn apply(&self, subject: &Subject, request: ApplyRequest) -> Result<Job> {
+        self.apply_inner(subject, request, None, None)
+    }
+    fn apply_inner(
+        &self,
+        subject: &Subject,
+        request: ApplyRequest,
+        pack: Option<Box<PackWork>>,
+        binding: Option<String>,
+    ) -> Result<Job> {
         self.authorize(subject)?;
         valid_key(&request.idempotency_key)?;
         if request.plan_id.len() != 36 || request.confirmation_token.len() > 128 {
@@ -504,6 +519,7 @@ impl SoftwareHandle {
             .to_string()
             .as_bytes(),
         );
+        let request_hash = binding.unwrap_or(request_hash);
         // Serialize admission with worker wake publication and service shutdown.
         let mut queue = self
             .inner
@@ -581,12 +597,77 @@ impl SoftwareHandle {
         queue.work.push_back(Work {
             id: job.id.clone(),
             actor: subject.clone(),
-            kind: WorkKind::Apply(Box::new(candidate.plan), Some(approval)),
+            kind: WorkKind::Apply(Box::new(candidate.plan), Some(approval), pack),
         });
         self.inner.wake.notify_one();
         Ok(job)
     }
 
+    pub async fn apply_pack(&self, subject: &Subject, pack: PackWork) -> Result<Job> {
+        self.authorize(subject)?;
+        let binding = hash(
+            serde_json::to_string(&pack.input)
+                .map_err(|_| SoftwareError::InvalidRequest)?
+                .as_bytes(),
+        );
+        if let Some(job) = self
+            .inner
+            .db
+            .read_with(|t| store::existing(t.connection(), subject, &pack.key, &binding))?
+        {
+            return Ok(job);
+        }
+        let target = pack
+            .workspace
+            .install_switch_review(subject, &pack.input)
+            .map_err(|_| SoftwareError::ConfirmationInvalid)?;
+        let before = self.status(subject)?;
+        if let Some(switch) = &target.software_switch {
+            let current = &before.current;
+            let family = current.software.and_then(|v| {
+                serde_json::to_value(v)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_owned))
+            });
+            if family.as_deref().is_some_and(|v| v != switch.from.software)
+                || current
+                    .version
+                    .as_deref()
+                    .is_some_and(|v| v != switch.from.minecraft_version)
+                || current.loader_version != switch.from.loader_version
+            {
+                return Err(SoftwareError::RevisionConflict);
+            }
+        }
+        let prepared = self
+            .plan(
+                subject,
+                PlanRequest {
+                    software: serde_json::from_value(serde_json::json!(target.software))
+                        .map_err(|_| SoftwareError::InvalidRequest)?,
+                    version: target.minecraft_version,
+                    loader_version: target.loader_version,
+                    build: None,
+                    experimental: false,
+                },
+            )
+            .await?;
+        if prepared.expected_revision != before.revision {
+            return Err(SoftwareError::RevisionConflict);
+        }
+        self.apply_inner(
+            subject,
+            ApplyRequest {
+                plan_id: prepared.plan_id,
+                confirmation_token: prepared.confirmation_token,
+                idempotency_key: pack.key.clone(),
+                acknowledge_warnings: true,
+                acknowledge_legacy_checksum: false,
+            },
+            Some(Box::new(pack)),
+            Some(binding),
+        )
+    }
     pub fn prepare_rollback(
         &self,
         subject: &Subject,

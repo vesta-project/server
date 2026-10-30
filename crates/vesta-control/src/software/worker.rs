@@ -86,13 +86,13 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
         return Ok(());
     }
     let mut source_hold = match &work.kind {
-        WorkKind::Apply(plan, _) if plan.requires_stopped_build() => {
+        WorkKind::Apply(plan, _, _) if plan.requires_stopped_build() => {
             Some(inner.runtime.acquire_stopped()?)
         }
         _ => None,
     };
     let candidate = match &mut work.kind {
-        WorkKind::Apply(plan, approval) => {
+        WorkKind::Apply(plan, approval, _) => {
             let approval = approval.take().ok_or(SoftwareError::ConfirmationInvalid)?;
             let outcome = inner
                 .installer
@@ -224,6 +224,33 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
     // Errors from this point are ambiguous by design. Keep the durable previous
     // launch and start block; never automatically replay or reverse the effect.
     guard.activate(&candidate.document)?;
+    if let WorkKind::Apply(_, _, Some(pack)) = &work.kind {
+        // Retain recovery and stopped exclusion until pack staging succeeds.
+        inner.db.write_with(|tx| -> Result<()> {
+            tx.connection().execute(
+                "UPDATE software_state SET current_launch=? WHERE singleton=1",
+                [store::encode(&candidate)?],
+            )?;
+            Ok(())
+        })?;
+        let mc = candidate
+            .installation
+            .version
+            .as_deref()
+            .ok_or(SoftwareError::StateUnavailable)?;
+        let family = serde_json::to_value(candidate.installation.software)
+            .map_err(|_| SoftwareError::StateUnavailable)?;
+        pack.workspace
+            .install_apply(
+                &work.actor,
+                mc,
+                family.as_str(),
+                &pack.key,
+                &pack.input,
+                &pack.files,
+            )
+            .map_err(|_| SoftwareError::RecoveryRequired)?;
+    }
     inner.db.write_with(|tx| -> Result<()> {
         let c=tx.connection();
         // Authority can expire while the local activation call runs. That cannot

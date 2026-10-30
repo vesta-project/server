@@ -945,6 +945,7 @@ fn pack_install_review_stages_overrides_until_restart_and_replays() {
     assert_eq!(plan.files[0].sha256, hex::encode(Sha256::digest(b"server")));
     assert!(plan.files[0].conflict.is_some());
     let mut apply = PackInstallApply {
+        acknowledge_software_switch: false,
         plan_id: plan.plan_id,
         confirmation_token: "wrong".into(),
         choices: vec![InstallChoice {
@@ -966,6 +967,11 @@ fn pack_install_review_stages_overrides_until_restart_and_replays() {
             .is_err()
     );
     apply.confirmation_token = plan.confirmation_token;
+    assert!(workspace.install_switch_review(&f.owner, &apply).is_err());
+    apply.acknowledge_software_switch = true;
+    assert!(workspace.install_switch_review(&f.owner, &apply).is_ok());
+    apply.acknowledge_software_switch = false;
+
     assert!(
         workspace
             .install_apply(
@@ -1093,6 +1099,7 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
                 Some("vanilla"),
                 key,
                 &PackInstallApply {
+                    acknowledge_software_switch: false,
                     plan_id: plan.plan_id.clone(),
                     confirmation_token: plan.confirmation_token.clone(),
                     choices: plan
@@ -1337,6 +1344,7 @@ fn uploaded_archive_delivery_survives_upload_and_plan_removal() {
             Some("vanilla"),
             "apply-archive",
             &PackInstallApply {
+                acknowledge_software_switch: false,
                 plan_id: plan.plan_id.clone(),
                 confirmation_token: plan.confirmation_token,
                 choices: vec![],

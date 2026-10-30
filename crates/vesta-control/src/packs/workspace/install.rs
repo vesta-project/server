@@ -25,14 +25,38 @@ struct Preparation {
 }
 impl Preparation {
     fn report(&self, stage: &str, completed: usize, total: usize) -> Result<()> {
-        let body = serde_json::to_string(&PackInstallProgress { stage: stage.into(), completed, total }).map_err(|_| invalid())?;
-        self.db.write(|c| c.execute("INSERT OR REPLACE INTO pack_install_progress VALUES(?,?,?,?)", params![self.db.server_id(), self.job, body, self.db.clock().millis() + 3_600_000]).map(|_| ()).map_err(Into::into))?;
+        let body = serde_json::to_string(&PackInstallProgress {
+            stage: stage.into(),
+            completed,
+            total,
+        })
+        .map_err(|_| invalid())?;
+        self.db.write(|c| {
+            c.execute(
+                "INSERT OR REPLACE INTO pack_install_progress VALUES(?,?,?,?)",
+                params![
+                    self.db.server_id(),
+                    self.job,
+                    body,
+                    self.db.clock().millis() + 3_600_000
+                ],
+            )
+            .map(|_| ())
+            .map_err(Into::into)
+        })?;
         Ok(())
     }
 }
 impl Drop for Preparation {
     fn drop(&mut self) {
-        let _ = self.db.write(|c| c.execute("DELETE FROM pack_install_progress WHERE server_id=? AND job=?", params![self.db.server_id(), self.job]).map(|_| ()).map_err(Into::into));
+        let _ = self.db.write(|c| {
+            c.execute(
+                "DELETE FROM pack_install_progress WHERE server_id=? AND job=?",
+                params![self.db.server_id(), self.job],
+            )
+            .map(|_| ())
+            .map_err(Into::into)
+        });
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -68,7 +92,20 @@ pub struct InstallFile {
     pub operation: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SoftwareSwitchTarget {
+    pub software: String,
+    pub minecraft_version: String,
+    pub loader_version: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SoftwareSwitch {
+    pub from: SoftwareSwitchTarget,
+    pub to: SoftwareSwitchTarget,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PackInstallPlan {
+    #[serde(default)]
+    pub software_switch: Option<SoftwareSwitch>,
     pub plan_id: String,
     pub confirmation_token: String,
     pub expires_at_ms: i64,
@@ -93,6 +130,8 @@ pub struct InstallChoice {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackInstallApply {
+    #[serde(default)]
+    pub acknowledge_software_switch: bool,
     pub plan_id: String,
     pub confirmation_token: String,
     /// Exactly one replace/keep choice per conflicting destination.
@@ -103,6 +142,8 @@ pub struct PackInstallApply {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PackInstallOutcome {
+    #[serde(default)]
+    pub software_job_id: Option<String>,
     pub state: String,
     pub pending_ids: Vec<String>,
 }
@@ -226,7 +267,10 @@ impl PackWorkspace {
         };
         self.db
             .read_with(|t| self.install_authority(t.connection(), s))?;
-        let progress = Preparation { db: self.db.clone(), job: uuid::Uuid::new_v4().to_string() };
+        let progress = Preparation {
+            db: self.db.clone(),
+            job: uuid::Uuid::new_v4().to_string(),
+        };
         progress.report("archive", 0, 0)?;
         let payload_store = PayloadStore::open(&self.db).map_err(super::super::PackError::from)?;
         let _ = payload_store.collect();
@@ -764,6 +808,7 @@ impl PackWorkspace {
             }
         }
         let mut plan = PackInstallPlan {
+            software_switch: None,
             plan_id: uuid::Uuid::new_v4().to_string(),
             confirmation_token: uuid::Uuid::new_v4().to_string(),
             expires_at_ms: self.db.clock().millis() + 900_000,
@@ -783,6 +828,24 @@ impl PackWorkspace {
                 .filter(|(path, _)| !destinations.contains(&path.to_lowercase()))
                 .collect(),
         };
+        if plan.software_switch_required {
+            plan.software_switch = Some(SoftwareSwitch {
+                from: SoftwareSwitchTarget {
+                    software: actual_family
+                        .as_deref()
+                        .or(software)
+                        .unwrap_or("unknown")
+                        .into(),
+                    minecraft_version: actual_version.into(),
+                    loader_version: current.as_ref().and_then(|i| i.loader_version.clone()),
+                },
+                to: SoftwareSwitchTarget {
+                    software: plan.software.clone(),
+                    minecraft_version: plan.minecraft_version.clone(),
+                    loader_version: plan.loader_version.clone(),
+                },
+            });
+        }
         let view = self.view(s, mc, releases)?;
         #[cfg(test)]
         timing("review");
@@ -916,6 +979,24 @@ impl PackWorkspace {
         timing("stored");
         Ok(plan)
     }
+    pub fn install_switch_review(
+        &self,
+        s: &Subject,
+        input: &PackInstallApply,
+    ) -> Result<PackInstallPlan> {
+        Ok(self.db.read_with(|t| {
+            let c = t.connection(); self.install_authority(c, s)?;
+            let row: Option<(i64, String, String)> = c.query_row("SELECT expires,token_hash,body FROM pack_install_plans WHERE id=? AND principal=? AND device=?", params![input.plan_id,s.principal.as_str(),s.device.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+            let (expires, hash, body) = row.ok_or(ReleaseError::Conflict)?;
+            if expires < self.db.clock().millis() || hash != digest(input.confirmation_token.as_bytes()) { return Err(ReleaseError::Conflict); }
+            let stored: Stored = serde_json::from_str(&body).map_err(|_| invalid())?;
+            if !stored.plan.valid || !input.acknowledge_software_switch { return Err(ReleaseError::Conflict); }
+            let conflicts: BTreeSet<_> = stored.plan.files.iter().filter(|f| f.conflict.is_some()).map(|f| f.path.as_str()).collect();
+            let choices: BTreeSet<_> = input.choices.iter().map(|c| c.path.as_str()).collect();
+            if choices.len() != input.choices.len() || choices != conflicts || input.choices.iter().any(|c| c.choice != "keep" && c.choice != "replace") { return Err(invalid()); }
+            Ok(stored.plan)
+        })?)
+    }
     pub fn install_apply(
         &self,
         s: &Subject,
@@ -988,7 +1069,7 @@ impl PackWorkspace {
             // occupying both the writer and one of the eight review slots.
             c.execute("DELETE FROM pack_install_plans WHERE id=?",[&input.plan_id])?;
 
-            Ok(PackInstallOutcome{state:"staged_until_restart".into(),pending_ids})
+            Ok(PackInstallOutcome{software_job_id:None,state:"staged_until_restart".into(),pending_ids})
         })
     }
 }

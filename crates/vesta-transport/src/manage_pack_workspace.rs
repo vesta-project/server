@@ -289,6 +289,29 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         ) else {
             return error(StatusCode::BAD_REQUEST, "idempotency_key_required");
         };
+        if input.acknowledge_software_switch {
+            let Some(service) = host.software().cloned() else {
+                return error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "software_state_unavailable",
+                );
+            };
+            let pack = vesta_control::software::PackWork {
+                workspace: workspace.clone(),
+                files: host.files().clone(),
+                input,
+                key,
+            };
+            let actor = subject.clone();
+            return match super::hosting::run_async(host, async move {
+                service.apply_pack(&actor, pack).await
+            }) {
+                Ok(job) => ok(
+                    serde_json::json!({"state":"queued", "pending_ids":[], "software_job_id":job.id, "modpack_revision":null}),
+                ),
+                Err(e) => super::hosting::software_error(e),
+            };
+        }
         let outcome = match workspace.install_apply(
             &subject,
             &mc,
