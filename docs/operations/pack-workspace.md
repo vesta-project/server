@@ -43,9 +43,16 @@ metadata supplies compatibility, filename, download identity and dependencies.
 An entry unsupported on the client is excluded from the artifact. `required`
 controls required/optional client installation for included entries.
 
-CurseForge resolution requires the agent's trusted `VESTA_CURSEFORGE_API_KEY`,
-independently of the launcher's provider configuration. Missing metadata/download
-authority is reported; a caller URL is never used as a fallback.
+CurseForge resolution uses the application key embedded at build time from
+`CURSEFORGE_API_KEY` (the repository-root `.env` is supported for local builds).
+Nightly CI requires the repository secret of the same name. This matches the
+launcher: the distributed application key is recoverable from the binaries;
+obfuscation is not encryption. The `.env` file is never packaged or committed.
+Operators can override the bundled key with `VESTA_CURSEFORGE_API_KEY`, then
+`CURSEFORGE_API_KEY`, in the agent's runtime environment. An explicitly empty
+override disables CurseForge. Missing configuration has its own error; upstream
+download/verification failures are not classified as invalid user input.
+A caller URL is never used as a fallback.
 
 Resource paths live under `mods/`, `resourcepacks/`, `shaderpacks/` or `datapacks/`.
 Overrides support `config/`, `defaultconfigs/`, `kubejs/`, `scripts/`, `resources/`,
@@ -76,18 +83,22 @@ All writes carry `Idempotency-Key`. For small files `POST pack/draft/upload
 
 1. `POST pack/draft/uploads/begin {upload_id,total_size,sha256,archive}`.
 2. `POST pack/draft/uploads/chunk {upload_id,offset,content_base64}`; decoded
-   chunks are at most 32 KiB, fitting the default 64 KiB HTTP request limit.
+   chunks are at most 512 KiB. Authenticated pack requests use the existing byte
+   semaphore with a 2 MiB body maximum; anonymous request limits are unchanged.
 3. `POST pack/draft/uploads/finish {upload_id}` verifies exact length/digest.
 4. For a file, reference the resulting SHA-256 from an entry or `icon`. For an
    archive, call import with its upload ID. `POST pack/draft/uploads/cancel
    {upload_id}` discards that device's unused transfer.
 
 Keep the same intent and upload ID across retries, including chunk offsets.
-Uploads are actor/device-bound, at most eight retained transfers / 128 MiB of
-reserved bytes, with archives bounded to 68 MiB. File finish moves bytes into
-the hash store and retires its transfer; successful archive import consumes its
-transfer. Cancel abandoned transfers. Receipts are bounded to 10,000 and are not
-silently evicted; retained file blobs are not automatically garbage-collected.
+Uploads are actor/device-bound, with at most eight retained transfers. Archives
+are streamed to protected disk files and accept up to 128 GiB of compressed data;
+actual available space is checked during writes, retaining a 64 MiB reserve.
+File finish moves bytes into the client workspace hash store and retires its
+transfer; successful archive import consumes its transfer. Cancel abandoned
+transfers. Upload chunk receipts do not consume the workspace's 10,000 ordinary
+edit receipt slots. Retries retain exact offset and request-body identity.
+Retained client workspace blobs are not automatically garbage-collected.
 
 `POST pack/draft/import` accepts:
 
@@ -104,7 +115,8 @@ or unavailable Modrinth file identities become visible manual-download entries;
 imported download URLs never become download authority. CurseForge file IDs stay
 pinned, including files requiring a manual download. Unsupported override paths
 refuse rather than silently drop content. Platform archive downloads retain the
-shared provider downloader's 16 MiB verified-download cap.
+small in-memory downloader when importing a client publication. Server
+installation uses the disk-backed path described below instead.
 
 ## Suggestions, preview and publication
 
@@ -160,6 +172,56 @@ executable consent are in the launcher's `features/servers/PACK-SYNC.md`.
 
 ## Errors and verification
 
+Provider failures retain a fixed `content_pack_*` reason instead of becoming
+`invalid_request`. The error envelope may include `details` with `stage`
+(`metadata` or `download`), `provider`, `projectId`, `versionId`, and an optional
+`filename`. These are public identifiers only, never URLs, response bodies or
+credentials. The native client bounds these fields before IPC; the UI shows the
+file, a recovery message and copyable diagnostics. CDN 403/404, malformed metadata,
+failed transfers, checksum mismatches and unsafe sources have distinct reasons.
+
+CurseForge files with a missing `downloadUrl` use the launcher's CDN convention:
+`https://edge.forgecdn.net/files/{id / 1000}/{id % 1000:03}/{filename}`. The filename
+is encoded as a single URL path segment. Provider-bound project/file IDs, an
+official SHA-1, allowed HTTPS hosts and redirect checks remain mandatory. A
+missing API URL is not itself proof that the CDN file is unavailable. Publication
+and update discovery use the same resolver policy as installation. Provider
+references retain IDs, rather than embedding CurseForge mod bytes in client packs.
+
+An authenticated `POST pack/install/plan` receives a bounded 125-second processing
+window after its complete bounded body, on the separate install worker pool. The
+provider operation remains limited to 120 seconds. The client allows 150 seconds
+for that exact route. Anonymous requests and incomplete headers/bodies retain
+ordinary deadlines. Ordinary lifecycle/status calls keep their existing budgets.
+Repeated metadata reads share a job-local cache capped at 4 MiB / 256 documents;
+it expires with the operation and never stores authentication headers.
+
+Planning and uploaded-archive inspection warm that cache using the official
+CurseForge bulk endpoints. File batches contain at most 32 IDs; project batches
+contain at most eight. Returned rows are matched by both file and project IDs,
+never array position. Missing rows and unavailable bulk endpoints retain the
+ordinary individual lookup. A failed optional batch is not repeated by the next
+stage of the same job.
+
+One job owns small reusable HTTPS pools. Per-request timeouts still use the
+remaining job deadline, and redirects and credentials keep their existing rules.
+Server candidate files download two at a time, using one scoped helper thread
+alongside the install worker. Both transfers join before continuing or reporting
+failure. The existing process-wide limit remains two transfers; pack workers
+wait within their deadline instead of treating local contention as a failed
+download. Reviewed byte/file limits are checked during accumulation.
+
+Internal saved plans encode binary fields as base64 rather than numeric JSON
+arrays. Old arrays remain readable, including after reopening the workspace;
+legacy arrays stream directly into bytes without an intermediate value per byte.
+Unused duplicate archive blobs are no longer retained. Encoding occurs before
+the short write transaction, which still rechecks authorization before saving.
+Public API DTOs, checksums, actor-bound confirmations and conflict checks do not
+change.
+
+The regression report and remaining scale constraints are in
+[`../reviews/2026-10-29-pack-install-parity.md`](../reviews/2026-10-29-pack-install-parity.md).
+
 ## Stage 3 consumption transport
 
 Paired clients use `GET /api/v3/manage/pack/sync?installed=N&nonce=HEX32`.
@@ -213,3 +275,39 @@ provider downloads or production publication are used by these tests.
   the pre-existing console `HOT_SCOPE_TIME` 8 ms budget assertion failed, including
   an idle rerun. That console test passes in isolation. All six new pack checks
   and localization checks pass. No diagnostic threshold was changed or suppressed.
+
+## Large server modpack installations
+
+Server pack reviews and staged effects store SHA-256/size references, not the
+entire pack encoded in SQLite JSON. Provider files and ZIP members stream through
+64 KiB buffers into a protected, content-addressed store outside the game root.
+Two provider transfers may run at once. Native dropped archives are hashed and
+uploaded from open file handles, without a whole-archive launcher buffer.
+
+The former 128-file, 64 MiB total and 16 MiB individual-file server installation
+caps no longer apply. Metadata guardrails are 65,536 selected files and 32 MiB of
+JSON. There is no aggregate in-memory payload budget for server installation.
+The upload protocol accepts archives up to 128 GiB. These are technical bounds,
+not advertised pack-size tiers; disk availability remains the practical limit.
+Download verification and processing have a one-hour job budget. Urgent control
+and status requests retain their separate worker/body budgets.
+
+New reviews supersede previous unconsumed reviews by the same actor/device.
+Pending effects, live reviews and completed unconsumed uploads retain their
+private payloads across an agent restart. Applied, cancelled, expired and failed
+payloads are collected when no in-flight lease uses the store. Cleanup never
+removes game files. Legacy reviews and uploads remain readable.
+
+Apply drains all pending rows in bounded batches rather than stopping after 128.
+Each file still uses canonical path authorization, expected-hash preconditions,
+verified staging, the mutation journal and recoverable replacement copies.
+Pack effects have their own durable content rows and do not exhaust the
+interactive file receipt quota. Large replacement/restore copies also stream.
+The existing trash retention policy and physical free-space checks remain.
+
+Schema migration 29 preserves existing drafts/uploads and expands their metadata
+constraints. Protected-state backups must include the pack-payloads directory;
+credential-free identity recovery exports do not contain payloads or pending jobs.
+Optional custom client-pack publication still has its separate retained-byte
+budgets. Failure to capture that optional client projection produces a review
+warning and does not prevent installing the server pack.

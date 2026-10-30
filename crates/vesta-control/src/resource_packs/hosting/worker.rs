@@ -64,10 +64,7 @@ fn execute(inner: &Inner, actor: &Subject, draft: &Draft, job: &mut Job) -> Resu
     let settings = draft.settings.as_ref().ok_or(Error::Invalid)?;
     let deadline = Instant::now() + Duration::from_secs(120);
     step(inner, actor, job, "resolving")?;
-    let credential = std::env::var("VESTA_CURSEFORGE_API_KEY")
-        .ok()
-        .filter(|s| !s.is_empty() && s.len() <= 1024 && s.bytes().all(|b| b.is_ascii_graphic()));
-    let provider = UreqProviderClient::new(credential);
+    let provider = UreqProviderClient::configured();
     let http = UreqDownloadHttp::default();
     let mut inputs = Vec::new();
     for layer in &settings.layers {

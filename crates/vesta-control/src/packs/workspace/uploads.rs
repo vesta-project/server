@@ -1,4 +1,8 @@
 use super::*;
+use crate::packs::payload::{Payload, Store};
+fn storage(error: crate::files::FileError) -> ReleaseError {
+    super::super::PackError::from(error).into()
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UploadBegin {
@@ -28,12 +32,17 @@ impl PackWorkspace {
         key: &str,
         input: &UploadBegin,
     ) -> Result<UploadReceipt> {
+        let store = Store::open(&self.db).map_err(storage)?;
+        let _cleanup = store.cleanup();
+        let _lease = store.lease().map_err(storage)?;
         self.mutate(subject,key,input,|c|{
             let size=revision(&input.total_size)?;
-            if !identifier(&input.upload_id)||!valid_sha(&input.sha256)||size>super::super::MAX_ARTIFACT_BYTES as u64||(!input.archive&&size>super::super::MAX_PINNED_FILE_BYTES as u64){return Err(invalid());}
-            let (count,total):(i64,i64)=c.query_row("SELECT count(*),coalesce(sum(total_size),0) FROM pack_workspace_uploads",[],|r|Ok((r.get(0)?,r.get(1)?)))?;
-            if count>=8||total+size as i64>128*1024*1024{return Err(super::super::PackError::TooLarge.into());}
+            if !identifier(&input.upload_id)||!valid_sha(&input.sha256)||size>vesta_protocol::pack::catalogue::MAX_TOTAL_SIZE||(!input.archive&&size>super::super::MAX_PINNED_FILE_BYTES as u64){return Err(invalid());}
+            let count:i64=c.query_row("SELECT count(*) FROM pack_workspace_uploads",[],|r|r.get(0))?;
+            if count>=8{return Err(super::super::PackError::TooLarge.into());}
             c.execute("INSERT INTO pack_workspace_uploads(server_id,principal_id,device_id,upload_id,total_size,sha256,archive,body) VALUES(?,?,?,?,?,?,?,X'')",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),input.upload_id,size as i64,input.sha256,input.archive])?;
+            let name=store.upload_create().map_err(storage)?;
+            c.execute("INSERT OR REPLACE INTO pack_spooled_uploads(server_id,principal_id,device_id,upload_id,name,received,payload) VALUES(?,?,?,?,?,0,NULL)",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),input.upload_id,name])?;
             Ok(UploadReceipt{upload_id:input.upload_id.clone(),size:"0".into(),sha256:input.sha256.clone(),complete:false})
         })
     }
@@ -43,29 +52,118 @@ impl PackWorkspace {
         key: &str,
         input: &UploadChunk,
     ) -> Result<UploadReceipt> {
+        let store = Store::open(&self.db).map_err(storage)?;
+        let _lease = store.lease().map_err(storage)?;
         self.mutate(subject,key,input,|c|{
             let bytes=STANDARD.decode(&input.content_base64).map_err(|_|invalid())?;
-            if bytes.is_empty()||bytes.len()>32768{return Err(invalid());}
-            let (size,total,sha,complete):(i64,i64,String,bool)=c.query_row("SELECT length(body),total_size,sha256,complete FROM pack_workspace_uploads WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),input.upload_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+            if bytes.is_empty()||bytes.len()>512*1024{return Err(invalid());}
+            let (size,total,sha,complete,name):(i64,i64,String,bool,Option<String>)=c.query_row("SELECT coalesce(s.received,length(u.body)),u.total_size,u.sha256,u.complete,s.name FROM pack_workspace_uploads AS u LEFT JOIN pack_spooled_uploads AS s USING(server_id,principal_id,device_id,upload_id) WHERE u.server_id=? AND u.principal_id=? AND u.device_id=? AND u.upload_id=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),input.upload_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
             if complete||revision(&input.offset)?!=size as u64||size+bytes.len() as i64>total{return Err(ReleaseError::Conflict);}
-            c.execute("UPDATE pack_workspace_uploads SET body=CAST(body||? AS BLOB) WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=?",params![bytes,self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),input.upload_id])?;
+            if let Some(name)=name {
+                store.upload_append(&name,size as u64,&bytes).map_err(storage)?;
+                c.execute("UPDATE pack_spooled_uploads SET received=? WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=?",params![size+bytes.len() as i64,self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),input.upload_id])?;
+            } else {
+                c.execute("UPDATE pack_workspace_uploads SET body=CAST(body||? AS BLOB) WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=?",params![bytes,self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),input.upload_id])?;
+            }
+            c.execute("INSERT OR IGNORE INTO pack_upload_chunk_receipts VALUES(?,?,?,?)",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),key])?;
             Ok(UploadReceipt{upload_id:input.upload_id.clone(),size:(size+bytes.len() as i64).to_string(),sha256:sha,complete:false})
         })
     }
     pub fn upload_finish(&self, subject: &Subject, key: &str, id: &str) -> Result<UploadReceipt> {
+        if let Some(receipt) = self.replay(subject, key, &("finish", id))? {
+            return Ok(receipt);
+        }
+        let store = Store::open(&self.db).map_err(storage)?;
+        let _cleanup = store.cleanup();
+        let _lease = store.lease().map_err(storage)?;
+        let (total,sha,archive,legacy,spooled)=self.db.read_with(|tx| {
+            let c=tx.connection();self.authorize_in(c,subject,Capability::PackEdit)?;
+            let row:(i64,String,bool,Vec<u8>)=c.query_row("SELECT total_size,sha256,archive,body FROM pack_workspace_uploads WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+            let spool:Option<(String,i64,Option<String>)>=c.query_row("SELECT name,received,payload FROM pack_spooled_uploads WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+            Ok::<_,ReleaseError>((row.0,row.1,row.2,row.3,spool))
+        })?;
+        // Copying and hashing a large archive must never hold the database writer.
+        let payload = if let Some((name, received, existing)) = &spooled {
+            if *received != total {
+                return Err(ReleaseError::Conflict);
+            }
+            if let Some(json) = existing {
+                let payload: Payload = serde_json::from_str(json).map_err(|_| invalid())?;
+                store.verify(&payload).map_err(storage)?;
+                payload
+            } else {
+                let mut file = store.upload_open(name).map_err(storage)?;
+                if file.metadata().map_err(|_| invalid())?.len() != total as u64 {
+                    return Err(ReleaseError::Conflict);
+                }
+                store.put(&mut file).map_err(storage)?
+            }
+        } else {
+            store
+                .put(&mut std::io::Cursor::new(&legacy))
+                .map_err(storage)?
+        };
+        if payload.sha256 != sha || payload.size != total as u64 {
+            return Err(ReleaseError::Conflict);
+        }
+        let body = if !archive {
+            let mut body = Vec::new();
+            use std::io::Read;
+            store
+                .verify(&payload)
+                .map_err(storage)?
+                .take(super::super::MAX_PINNED_FILE_BYTES as u64 + 1)
+                .read_to_end(&mut body)
+                .map_err(|_| invalid())?;
+            Some(body)
+        } else {
+            None
+        };
         self.mutate(subject,key,&("finish",id),|c|{
-            let (total,sha,archive,bytes):(i64,String,bool,Vec<u8>)=c.query_row("SELECT total_size,sha256,archive,body FROM pack_workspace_uploads WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
-            if bytes.len() as i64!=total||digest(&bytes)!=sha{return Err(ReleaseError::Conflict);}
-            if !archive {self.store_blob(c,&bytes)?;}
+            let current:(i64,String)=c.query_row("SELECT total_size,sha256 FROM pack_workspace_uploads WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+            if current!=(total,sha.clone()) {return Err(ReleaseError::Conflict);}
+            if let Some((name,received,_))=&spooled {
+                let updated=c.execute("UPDATE pack_spooled_uploads SET payload=? WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=? AND name=? AND received=?",params![serde_json::to_string(&payload).map_err(|_|invalid())?,self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),id,name,received])?;
+                if updated!=1 {return Err(ReleaseError::Conflict);}
+            }
+            if let Some(body)=body {self.store_blob(c,&body)?;}
             c.execute("UPDATE pack_workspace_uploads SET complete=1 WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),id])?;
             if !archive {c.execute("DELETE FROM pack_workspace_uploads WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),id])?;}
             Ok(UploadReceipt{upload_id:id.into(),size:total.to_string(),sha256:sha,complete:true})
         })
     }
     pub fn upload_cancel(&self, subject: &Subject, key: &str, id: &str) -> Result<bool> {
-        self.mutate(subject,key,&("cancel",id),|c|Ok(c.execute("DELETE FROM pack_workspace_uploads WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),id])?>0))
+        let result=self.mutate(subject,key,&("cancel",id),|c|Ok(c.execute("DELETE FROM pack_workspace_uploads WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),id])?>0));
+        let _ = Store::open(&self.db).and_then(|store| store.collect());
+        result
+    }
+    pub(super) fn archive_payload(
+        &self,
+        subject: &Subject,
+        id: &str,
+        store: &Store,
+    ) -> Result<Payload> {
+        self.db.read_with(|s|{
+            self.authorize_in(s.connection(),subject,Capability::PackEdit)?;
+            let (payload,body):(Option<String>,Vec<u8>)=s.connection().query_row("SELECT s.payload,u.body FROM pack_workspace_uploads AS u LEFT JOIN pack_spooled_uploads AS s USING(server_id,principal_id,device_id,upload_id) WHERE u.server_id=? AND u.principal_id=? AND u.device_id=? AND u.upload_id=? AND u.archive=1 AND u.complete=1",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+            if let Some(json)=payload {serde_json::from_str(&json).map_err(|_|invalid())} else {store.put(&mut std::io::Cursor::new(body)).map_err(storage)}
+        }).map_err(Into::into)
     }
     pub(super) fn archive_upload(&self, subject: &Subject, id: &str) -> Result<Vec<u8>> {
-        Ok(self.db.read_with(|s|{self.authorize_in(s.connection(),subject,Capability::PackEdit)?;Ok(s.connection().query_row("SELECT body FROM pack_workspace_uploads WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=? AND archive=1 AND complete=1",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),id],|r|r.get(0))?)})?)
+        let store = Store::open(&self.db).map_err(storage)?;
+        let _cleanup = store.cleanup();
+        let _lease = store.lease().map_err(storage)?;
+        let payload = self.archive_payload(subject, id, &store)?;
+        if payload.size > super::super::MAX_ARTIFACT_BYTES as u64 {
+            return Err(super::super::PackError::TooLarge.into());
+        }
+        let mut bytes = Vec::new();
+        use std::io::Read;
+        store
+            .verify(&payload)
+            .map_err(storage)?
+            .read_to_end(&mut bytes)
+            .map_err(|_| invalid())?;
+        Ok(bytes)
     }
 }

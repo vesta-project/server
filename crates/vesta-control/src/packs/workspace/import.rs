@@ -1,7 +1,49 @@
 //! Bounded archive ingestion. Imported download URLs never become fetch authority.
 use super::*;
 use crate::content::{Provider, ProviderClient, UreqProviderClient};
-use std::io::{Cursor, Read};
+use crate::packs::payload::{Payload, Store};
+use std::io::{Cursor, Read, Seek};
+
+enum ArchiveBody {
+    Memory(Vec<u8>),
+    Disk(std::sync::Arc<Store>, Payload),
+}
+impl ArchiveBody {
+    fn size(&self) -> u64 {
+        match self {
+            Self::Memory(b) => b.len() as u64,
+            Self::Disk(_, p) => p.size,
+        }
+    }
+    fn hash(&self) -> String {
+        match self {
+            Self::Memory(b) => digest(b),
+            Self::Disk(_, p) => p.sha256.clone(),
+        }
+    }
+    fn bytes(&self) -> Result<Vec<u8>> {
+        match self {
+            Self::Memory(b) => Ok(b.clone()),
+            Self::Disk(store, p) => {
+                if p.size > vesta_protocol::pack::catalogue::MAX_JSON_BYTES as u64 {
+                    return Err(super::super::PackError::TooLarge.into());
+                }
+                let mut file = store.verify(p).map_err(|_| invalid())?;
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes).map_err(|_| invalid())?;
+                Ok(bytes)
+            }
+        }
+    }
+    fn payload(self, store: &Store) -> Result<Payload> {
+        match self {
+            Self::Disk(_, p) => Ok(p),
+            Self::Memory(b) => store
+                .put(&mut Cursor::new(b))
+                .map_err(|e| super::super::PackError::from(e).into()),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
@@ -43,8 +85,20 @@ impl PackWorkspace {
         input: &InspectRequest,
         providers: &UreqProviderClient,
     ) -> Result<ArchiveInspection> {
-        let bytes = self.archive_upload(subject, &input.upload_id)?;
-        let zip = zip::ZipArchive::new(Cursor::new(&bytes)).map_err(|_| invalid())?;
+        let store = Store::open(&self.db).map_err(super::super::PackError::from)?;
+        let _cleanup = store.cleanup();
+        let _lease = store.lease().map_err(super::super::PackError::from)?;
+        let payload = self.archive_payload(subject, &input.upload_id, &store)?;
+        let bounded_providers = providers
+            .with_deadline(std::time::Instant::now() + std::time::Duration::from_secs(120))
+            .map_err(ReleaseError::from)?;
+        let providers = &bounded_providers;
+        let zip = zip::ZipArchive::new(
+            store
+                .verify(&payload)
+                .map_err(super::super::PackError::from)?,
+        )
+        .map_err(|_| invalid())?;
         if zip.len() > super::super::MAX_VESTA_ENTRIES {
             return Err(super::super::PackError::TooLarge.into());
         }
@@ -58,7 +112,7 @@ impl PackWorkspace {
         } else {
             "zip"
         };
-        let (mut manifest, _) = parse_archive(&bytes, providers, |hash| {
+        let (mut manifest, _) = parse_spooled(&payload, &store, providers, |hash| {
             Ok(providers.identify_sha512(hash).ok().flatten())
         })?;
         if manifest.minecraft_version.is_empty() {
@@ -72,8 +126,20 @@ impl PackWorkspace {
             .collect();
         let provider_pack = if format == "mrpack" {
             use sha2::Sha512;
+            let mut hash = Sha512::new();
+            let mut file = store
+                .verify(&payload)
+                .map_err(super::super::PackError::from)?;
+            let mut buffer = [0u8; 65536];
+            loop {
+                let count = file.read(&mut buffer).map_err(|_| invalid())?;
+                if count == 0 {
+                    break;
+                }
+                hash.update(&buffer[..count]);
+            }
             providers
-                .identify_sha512(&hex::encode(Sha512::digest(&bytes)))
+                .identify_sha512(&hex::encode(hash.finalize()))
                 .ok()
                 .flatten()
         } else {
@@ -256,6 +322,8 @@ pub(super) fn parse_archive(
     providers: &dyn ProviderClient,
     identify: impl Fn(&str) -> Result<Option<crate::content::ContentProvider>>,
 ) -> Result<(PackManifest, Vec<Vec<u8>>)> {
+    // Archive structure failures are not invalid user-entered file paths.
+    let invalid = || ReleaseError::Pack(super::super::PackError::InvalidArchive);
     if bytes.len() > super::super::MAX_ARTIFACT_BYTES {
         return Err(super::super::PackError::TooLarge.into());
     }
@@ -292,18 +360,57 @@ pub(super) fn parse_archive(
         }
         return parse_archive(&archive, providers, identify);
     }
-    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| invalid())?;
+    let (manifest, blobs) = parse_zip(Cursor::new(bytes), providers, identify, None)?;
+    Ok((
+        manifest,
+        blobs
+            .into_iter()
+            .map(|b| b.bytes())
+            .collect::<Result<_>>()?,
+    ))
+}
+
+pub(super) fn parse_spooled(
+    payload: &Payload,
+    store: &Store,
+    providers: &dyn ProviderClient,
+    identify: impl Fn(&str) -> Result<Option<crate::content::ContentProvider>>,
+) -> Result<(PackManifest, Vec<Payload>)> {
+    let file = store
+        .verify(payload)
+        .map_err(super::super::PackError::from)?;
+    let (manifest, blobs) = parse_zip(file, providers, identify, Some(store))?;
+    Ok((
+        manifest,
+        blobs
+            .into_iter()
+            .map(|body| body.payload(store))
+            .collect::<Result<_>>()?,
+    ))
+}
+
+fn parse_zip(
+    reader: impl Read + Seek,
+    providers: &dyn ProviderClient,
+    identify: impl Fn(&str) -> Result<Option<crate::content::ContentProvider>>,
+    store: Option<&Store>,
+) -> Result<(PackManifest, Vec<ArchiveBody>)> {
+    let invalid = || ReleaseError::Pack(super::super::PackError::InvalidArchive);
+    let mut zip = zip::ZipArchive::new(reader).map_err(|_| invalid())?;
     if zip.len() > super::super::MAX_VESTA_ENTRIES {
         return Err(super::super::PackError::TooLarge.into());
     }
+    let store = store.map(|store| std::sync::Arc::new(store.clone()));
     let mut files = std::collections::BTreeMap::new();
     let mut total = 0usize;
     for i in 0..zip.len() {
-        let f = zip.by_index(i).map_err(|_| invalid())?;
+        let mut f = zip.by_index(i).map_err(|_| invalid())?;
         let name = f.name().to_string();
         vesta_protocol::pack::catalogue::RelativePath::parse(name.trim_end_matches('/'))
             .map_err(super::super::PackError::from)?;
-        if f.is_symlink() || f.encrypted() || f.size() > super::super::MAX_PINNED_FILE_BYTES as u64
+        if f.is_symlink()
+            || f.encrypted()
+            || (store.is_none() && f.size() > super::super::MAX_PINNED_FILE_BYTES as u64)
         {
             return Err(invalid());
         }
@@ -312,19 +419,32 @@ pub(super) fn parse_archive(
         }
         total = total
             .checked_add(f.size() as usize)
-            .filter(|n| *n <= MAX_BLOBS)
+            .filter(|n| store.is_some() || *n <= MAX_BLOBS)
             .ok_or(super::super::PackError::TooLarge)?;
-        let mut body = Vec::new();
-        f.take(super::super::MAX_PINNED_FILE_BYTES as u64 + 1)
-            .read_to_end(&mut body)
-            .map_err(|_| invalid())?;
-        if body.len() > super::super::MAX_PINNED_FILE_BYTES || files.insert(name, body).is_some() {
+        let body = if let Some(store) = &store {
+            let declared = f.size();
+            let payload = store.put(&mut f).map_err(super::super::PackError::from)?;
+            if payload.size != declared {
+                return Err(invalid());
+            }
+            ArchiveBody::Disk(store.clone(), payload)
+        } else {
+            let mut body = Vec::new();
+            f.take(super::super::MAX_PINNED_FILE_BYTES as u64 + 1)
+                .read_to_end(&mut body)
+                .map_err(|_| invalid())?;
+            if body.len() > super::super::MAX_PINNED_FILE_BYTES {
+                return Err(invalid());
+            }
+            ArchiveBody::Memory(body)
+        };
+        if files.insert(name, body).is_some() {
             return Err(invalid());
         }
     }
     if let Some(index) = files.remove(vesta_protocol::pack::INDEX_NAME) {
         let index: vesta_protocol::pack::model::VestaIndexV1 =
-            serde_json::from_slice(&index).map_err(|_| invalid())?;
+            serde_json::from_slice(&index.bytes()?).map_err(|_| invalid())?;
         if index.format_version != 1 || index.files.len() > MAX_ENTRIES + 1 {
             return Err(invalid());
         }
@@ -360,8 +480,8 @@ pub(super) fn parse_archive(
                     version_id: file.source.version_id.ok_or_else(invalid)?,
                 }
             } else if let Some(bytes) = files.remove(&format!("overrides/{}", file.path)) {
-                let sha = digest(&bytes);
-                if file.hashes.sha256.as_deref() != Some(&sha) || file.size != bytes.len() as i64 {
+                let sha = bytes.hash();
+                if file.hashes.sha256.as_deref() != Some(&sha) || file.size as u64 != bytes.size() {
                     return Err(invalid());
                 }
                 blobs.push(bytes);
@@ -373,14 +493,14 @@ pub(super) fn parse_archive(
             };
             if icon_path.as_deref() == Some(&file.path) {
                 if let EntrySource::Upload { sha256 } = source {
-                    icon_mime(blobs.last().ok_or_else(invalid)?)?;
+                    icon_mime(&blobs.last().ok_or_else(invalid)?.bytes()?)?;
                     manifest.icon = Some(sha256);
                     continue;
                 } else {
                     return Err(invalid());
                 }
             }
-            manifest.entries.push(entry(
+            let mut imported = entry(
                 format!("published-{i}"),
                 file.path,
                 source,
@@ -391,7 +511,13 @@ pub(super) fn parse_archive(
                     "unsupported" => Side::Unsupported,
                     _ => Side::Optional,
                 },
-            )?);
+            )?;
+            imported.environment.client = match file.env.client.as_str() {
+                "unsupported" => Side::Unsupported,
+                "optional" => Side::Optional,
+                _ => Side::Required,
+            };
+            manifest.entries.push(imported);
         }
         validate_manifest(&manifest)?;
         return Ok((manifest, blobs));
@@ -416,7 +542,7 @@ pub(super) fn parse_archive(
                 format!("import-{}", manifest.entries.len()),
                 path,
                 EntrySource::Upload {
-                    sha256: digest(&bytes),
+                    sha256: bytes.hash(),
                 },
                 true,
                 Side::Optional,
@@ -434,7 +560,7 @@ pub(super) fn parse_archive(
         return Err(invalid());
     }
     let document: serde_json::Value =
-        serde_json::from_slice(mr.as_ref().or(cf.as_ref()).ok_or_else(invalid)?)
+        serde_json::from_slice(&mr.as_ref().or(cf.as_ref()).ok_or_else(invalid)?.bytes()?)
             .map_err(|_| invalid())?;
     let mut manifest = PackManifest {
         name: string(&document, "name")?.into(),
@@ -479,9 +605,6 @@ pub(super) fn parse_archive(
             return Err(invalid());
         }
         for (i, row) in rows.iter().enumerate() {
-            if row["env"]["client"] == "unsupported" {
-                continue;
-            }
             let reference = if let Some(hash) = row["hashes"]["sha512"].as_str() {
                 identify(hash)?
             } else {
@@ -503,13 +626,19 @@ pub(super) fn parse_archive(
                 Some("unsupported") => Side::Unsupported,
                 _ => Side::Optional,
             };
-            manifest.entries.push(entry(
+            let mut imported = entry(
                 format!("import-{i}"),
                 string(row, "path")?.into(),
                 source,
                 row["env"]["client"] != "optional",
                 server,
-            )?);
+            )?;
+            imported.environment.client = match row["env"]["client"].as_str() {
+                Some("unsupported") => Side::Unsupported,
+                Some("optional") => Side::Optional,
+                _ => Side::Required,
+            };
+            manifest.entries.push(imported);
         }
     } else {
         if document["manifestType"] != "minecraftModpack" || document["manifestVersion"] != 1 {
@@ -541,14 +670,37 @@ pub(super) fn parse_archive(
         if rows.len() > MAX_ENTRIES {
             return Err(invalid());
         }
-        for (i, row) in rows.iter().enumerate() {
-            let project = row["projectID"].as_u64().ok_or_else(invalid)?.to_string();
-            let version = row["fileID"].as_u64().ok_or_else(invalid)?.to_string();
+        let references = rows
+            .iter()
+            .map(|row| {
+                Ok((
+                    row["projectID"].as_u64().ok_or_else(invalid)?.to_string(),
+                    row["fileID"].as_u64().ok_or_else(invalid)?.to_string(),
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        providers
+            .prefetch_curseforge(&references)
+            .map_err(ReleaseError::from)?;
+        for ((i, row), (project, version)) in rows.iter().enumerate().zip(references) {
             let source = providers.resolve(Provider::Curseforge, &project, &version);
-            let path = source.as_ref().map_or_else(
-                |_| format!("mods/manual-{project}-{version}.jar"),
-                |s| format!("mods/{}", s.filename),
-            );
+            let filename = match source {
+                Ok(source) => source.filename,
+                // A draft can retain a restricted file's real identity. Installing
+                // it still requires a permitted provider download in preflight.
+                Err(crate::content::ContentError::DownloadUnavailable { filename }) => filename,
+                Err(error) => {
+                    return Err(ReleaseError::provider_file(
+                        error,
+                        "curseforge",
+                        &project,
+                        &version,
+                        "metadata",
+                        None,
+                    ));
+                }
+            };
+            let path = format!("mods/{filename}");
             manifest.entries.push(entry(
                 format!("import-{i}"),
                 path,
@@ -585,7 +737,7 @@ pub(super) fn parse_archive(
             manifest.override_files.push(OverrideFile {
                 root: root.into(),
                 path: path.into(),
-                sha256: Some(digest(&bytes)),
+                sha256: Some(bytes.hash()),
                 trashed: false,
             });
             blobs.push(bytes);
@@ -616,7 +768,7 @@ mod tests {
             );
             Ok(crate::content::ResolvedSource {
                 provider,
-                filename: "example.jar".into(),
+                filename: "example's+26.3.jar".into(),
                 download_url: "https://edge.forgecdn.net/example.jar".into(),
                 expected_hash: crate::content::ExpectedHash::Sha1("a".repeat(40)),
             })
@@ -649,6 +801,44 @@ mod tests {
         assert_eq!(blobs, vec![b"foo=true".to_vec()]);
     }
     #[test]
+    fn mrpack_retains_server_only_mods_and_separates_override_roots() {
+        let document = serde_json::json!({"formatVersion":1,"game":"minecraft","name":"Sides","versionId":"1.0","dependencies":{"minecraft":"1.21.1","fabric-loader":"0.16.10"},"files":[
+            {"path":"mods/server+1.jar","hashes":{"sha512":"a".repeat(128)},"env":{"client":"unsupported","server":"required"}},
+            {"path":"mods/client+1.jar","hashes":{"sha512":"b".repeat(128)},"env":{"client":"required","server":"unsupported"}}
+        ]});
+        let (manifest, blobs) = parse_archive(
+            &archive(&[
+                (
+                    "modrinth.index.json",
+                    &serde_json::to_vec(&document).unwrap(),
+                ),
+                ("overrides/config/shared.json", b"shared"),
+                ("server-overrides/config/shared.json", b"server"),
+                ("client-overrides/config/shared.json", b"client"),
+            ]),
+            &Providers,
+            |hash| {
+                Ok(Some(crate::content::ContentProvider {
+                    provider: "modrinth".into(),
+                    project_id: if hash.starts_with('a') {
+                        "server"
+                    } else {
+                        "client"
+                    }
+                    .into(),
+                    version_id: "v1".into(),
+                }))
+            },
+        )
+        .unwrap();
+        assert_eq!(manifest.entries.len(), 2);
+        assert_eq!(manifest.entries[0].environment.client, Side::Unsupported);
+        assert_eq!(manifest.entries[0].environment.server, Side::Required);
+        assert_eq!(manifest.entries[1].environment.server, Side::Unsupported);
+        assert_eq!(manifest.override_files.len(), 3);
+        assert_eq!(blobs.len(), 3);
+    }
+    #[test]
     fn curseforge_import_pins_ids_and_uses_the_provider_filename() {
         let document=br#"{"manifestType":"minecraftModpack","manifestVersion":1,"name":"CF","version":"1.2","minecraft":{"version":"1.21.1","modLoaders":[{"id":"forge-52.0.0","primary":true}]},"files":[{"projectID":123,"fileID":456,"required":true}]}"#;
         let (m, _) = parse_archive(
@@ -660,8 +850,40 @@ mod tests {
             |_| unreachable!(),
         )
         .unwrap();
-        assert_eq!(m.entries[0].path, "mods/example.jar");
+        assert_eq!(m.entries[0].path, "mods/example's+26.3.jar");
         assert_eq!(m.loader_version.as_deref(), Some("52.0.0"));
+    }
+    #[test]
+    fn curseforge_draft_retains_restricted_file_identity_and_preserves_provider_errors() {
+        struct Restricted(bool);
+        impl ProviderClient for Restricted {
+            fn resolve(
+                &self,
+                _: Provider,
+                _: &str,
+                _: &str,
+            ) -> crate::content::Result<crate::content::ResolvedSource> {
+                Err(if self.0 {
+                    crate::content::ContentError::DownloadUnavailable {
+                        filename: "mielon's-the-sift+26.3.jar".into(),
+                    }
+                } else {
+                    crate::content::ContentError::DownloadFailed
+                })
+            }
+        }
+        let document=br#"{"manifestType":"minecraftModpack","manifestVersion":1,"name":"CF","version":"1.2","minecraft":{"version":"26.3","modLoaders":[{"id":"fabric-0.19.5","primary":true}]},"files":[{"projectID":1691925,"fileID":9022781,"required":true}]}"#;
+        let bytes = archive(&[("manifest.json", document)]);
+        let (manifest, _) = parse_archive(&bytes, &Restricted(true), |_| unreachable!()).unwrap();
+        assert_eq!(manifest.entries[0].path, "mods/mielon's-the-sift+26.3.jar");
+        assert!(
+            matches!(&manifest.entries[0].source, EntrySource::Provider { project_id, version_id, .. } if project_id == "1691925" && version_id == "9022781")
+        );
+        let error = parse_archive(&bytes, &Restricted(false), |_| unreachable!()).unwrap_err();
+        assert_eq!(error.code(), "content_pack_download_failed");
+        assert!(
+            matches!(error, ReleaseError::ProviderFile { details, .. } if details.project_id == "1691925" && details.version_id == "9022781" && details.stage == "metadata")
+        );
     }
     #[test]
     fn plain_zip_retains_bytes_and_defers_runtime_to_the_server() {

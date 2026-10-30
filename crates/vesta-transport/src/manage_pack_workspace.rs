@@ -116,9 +116,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             &subject,
             &mc,
             family.as_deref(),
-            &vesta_control::content::UreqProviderClient::new(
-                std::env::var("VESTA_CURSEFORGE_API_KEY").ok(),
-            ),
+            &vesta_control::content::UreqProviderClient::configured(),
         ));
     }
     if action == "pack/history" && request.method == Method::GET {
@@ -157,9 +155,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             Ok(v) => v,
             Err(e) => return super::files::file_error(e),
         };
-        let providers = vesta_control::content::UreqProviderClient::new(
-            std::env::var("VESTA_CURSEFORGE_API_KEY").ok(),
-        );
+        let providers = vesta_control::content::UreqProviderClient::configured();
         return value(workspace.suggestions(
             &subject,
             &mc,
@@ -207,9 +203,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             Ok(v) => v,
             Err(e) => return super::files::file_error(e),
         };
-        let providers = vesta_control::content::UreqProviderClient::new(
-            std::env::var("VESTA_CURSEFORGE_API_KEY").ok(),
-        );
+        let providers = vesta_control::content::UreqProviderClient::configured();
         let suggestions = match workspace.server_mismatches(
             &subject,
             &mc,
@@ -269,9 +263,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                 );
             }
         };
-        let providers = vesta_control::content::UreqProviderClient::new(
-            std::env::var("VESTA_CURSEFORGE_API_KEY").ok(),
-        );
+        let providers = vesta_control::content::UreqProviderClient::configured();
         if action == "pack/install/plan" {
             let Some(input) = decode::<PackInstallRequest>(request.bytes) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
@@ -325,9 +317,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         let Some(input) = decode::<InspectRequest>(request.bytes) else {
             return error(StatusCode::BAD_REQUEST, "invalid_request");
         };
-        let providers = vesta_control::content::UreqProviderClient::new(
-            std::env::var("VESTA_CURSEFORGE_API_KEY").ok(),
-        );
+        let providers = vesta_control::content::UreqProviderClient::configured();
         return value(workspace.inspect_archive(&subject, &mc, &input, &providers));
     }
     let Some(key) = super::key(
@@ -403,9 +393,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             if let Some(input) = decode::<DraftAdd>(request.bytes) {
                 value(workspace.add(&subject, &mc, &key, &input))
             } else if let Some(input) = decode::<ProviderAdd>(request.bytes) {
-                let providers = vesta_control::content::UreqProviderClient::new(
-                    std::env::var("VESTA_CURSEFORGE_API_KEY").ok(),
-                );
+                let providers = vesta_control::content::UreqProviderClient::configured();
                 value(workspace.add_provider(&subject, &mc, &key, &input, &providers))
             } else {
                 error(StatusCode::BAD_REQUEST, "invalid_request")
@@ -427,9 +415,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             let Some(input) = decode::<ImportRequest>(request.bytes) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
             };
-            let providers = vesta_control::content::UreqProviderClient::new(
-                std::env::var("VESTA_CURSEFORGE_API_KEY").ok(),
-            );
+            let providers = vesta_control::content::UreqProviderClient::configured();
             value(workspace.import(&subject, &mc, &key, &input, host.releases(), &providers))
         }
         _ => error(StatusCode::BAD_REQUEST, "invalid_request"),

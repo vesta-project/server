@@ -313,11 +313,11 @@ impl FileBrowser {
                 let c = tx.connection();
                 self.remote_authorize(c, subject, &authority)?;
                 let count: i64 = c.query_row(
-                    "SELECT count(*) FROM management_file_outcomes WHERE server_id=?",
+                    "SELECT count(*) FROM management_file_outcomes AS o WHERE server_id=? AND NOT EXISTS(SELECT 1 FROM server_content_changes AS c WHERE c.id=substr(o.request_key,9) AND o.request_key LIKE 'content-%' AND c.principal=o.principal_id AND c.device=o.device_id AND json_extract(c.change_json,'$.pack_file')=1)",
                     [self.db.server_id()],
                     |r| r.get(0),
                 )?;
-                if count >= MAX_OUTCOMES {
+                if count >= MAX_OUTCOMES && !self.pack_effect {
                     return Err(FileError::IntentsFull);
                 }
                 c.execute(

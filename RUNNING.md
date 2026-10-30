@@ -1,8 +1,9 @@
 # Running the Rust server agent
 
-For development, [`cargo dev`](docs/operations/dev-session.md) builds the CLI,
-agent, supervisor and setup tool and opens a temporary shell with them on PATH.
-`vesta-rebuild` selects a new build in that shell; it does not restart a server.
+For development, [`./dev.ps1`](docs/operations/dev-session.md) builds the tools,
+updates the existing `dev-server` agent and returns to your terminal. Minecraft's
+running/stopped state is preserved. Use `./dev.ps1 restart <name>` for another
+server or `./dev.ps1 shell` for an optional shell with the tools on PATH.
 
 Build the agent and supervisor from this repository:
 

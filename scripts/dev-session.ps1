@@ -22,7 +22,7 @@ function global:vesta-rebuild {
         $ErrorActionPreference = $savedPreference
     }
     Update-VestaDevPath
-    if ($buildExit -ne 0) { throw 'Rebuild/restart failed; see the error above. No processes were force-killed.' }
+    if ($buildExit -ne 0) { return }
     Write-Host 'Commands now use the rebuilt binaries. Only an explicitly selected --restart server is restarted.'
 }
 Update-VestaDevPath

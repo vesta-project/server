@@ -129,18 +129,14 @@ pub(super) fn validate_files(files: &[OverrideFile]) -> Result<()> {
             return Err(invalid());
         }
     }
-    for a in files.iter().filter(|f| !f.trashed) {
-        for b in files
-            .iter()
-            .filter(|f| !f.trashed && f.root == a.root && f.path != a.path)
+    for file in files.iter().filter(|f| !f.trashed && f.sha256.is_some()) {
+        let prefix = file.path.to_ascii_lowercase() + "/";
+        if names
+            .range((file.root.clone(), prefix.clone())..)
+            .next()
+            .is_some_and(|(root, path)| root == &file.root && path.starts_with(&prefix))
         {
-            if b.path
-                .to_ascii_lowercase()
-                .starts_with(&(a.path.to_ascii_lowercase() + "/"))
-                && a.sha256.is_some()
-            {
-                return Err(invalid());
-            }
+            return Err(invalid());
         }
     }
     Ok(())

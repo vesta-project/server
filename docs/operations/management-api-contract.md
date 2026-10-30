@@ -788,8 +788,9 @@ host allowlists and redirect policy, verifies provider SHA-512 (Modrinth) or SHA
 (CurseForge), then create-only journaled write/audit. Returned SHA-256 covers the
 installed bytes. Synchronous install is privileged trusted-operator code-content
 management, not caller-selected native execution; never auto-restarts.
-Production CurseForge requires trusted operator environment
-`VESTA_CURSEFORGE_API_KEY` (nonempty visible ASCII, max 1024 bytes); missing/invalid
+Production CurseForge uses the build-time application key (`CURSEFORGE_API_KEY`,
+required by nightly CI), with trusted runtime overrides `VESTA_CURSEFORGE_API_KEY`
+then `CURSEFORGE_API_KEY` (nonempty visible ASCII, max 1024 bytes). Missing/invalid
 credentials fail closed 503. Credentials never come from request fields or
 responses. Remote installs have separate two-install admission and a dedicated
 two-worker transport blocking pool, not the ordinary HTTP file/config workers.

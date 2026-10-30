@@ -4,7 +4,7 @@ use fs2::FileExt;
 use serde_json::Value;
 use std::{
     fs::{self, File, OpenOptions},
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
@@ -13,11 +13,15 @@ use vesta_control::config::{HostConfiguration, Supervision};
 use vesta_state::{StateDirectory, artifacts::ArtifactName};
 
 type Result<T> = std::result::Result<T, String>;
+#[cfg(windows)]
+type AgentChild = super::detached::Process;
+#[cfg(not(windows))]
+type AgentChild = Child;
 const WAIT: Duration = Duration::from_secs(90);
 #[cfg(test)]
 mod live_tests;
 
-fn guarded(path: &Path) -> Result<()> {
+pub(super) fn guarded(path: &Path) -> Result<()> {
     if !path.is_absolute()
         || path
             .components()
@@ -74,8 +78,10 @@ impl Agent {
             .map_err(|_| "cannot run staged management command")?;
         if !output.status.success() {
             return Err(format!(
-                "{op} refused or outcome uncertain; no automatic retry or force-kill. Check the server with vesta manage {} status",
-                self.id
+                "{op} failed{}; check vesta manage {} status --install-root \"{}\"",
+                diagnostic_suffix(&output.stderr),
+                self.id,
+                self.root.display()
             ));
         }
         // Only status emits structured data; lifecycle commands acknowledge completion.
@@ -86,6 +92,45 @@ impl Agent {
             Ok(Value::Null)
         }
     }
+}
+
+// Only fixed CLI/host diagnostic tokens are surfaced, never arbitrary log contents.
+fn diagnostic_suffix(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .rev()
+        .find_map(|line| {
+            let (prefix, code) = line.trim().split_once(": ")?;
+            if !matches!(
+                prefix,
+                "local_command_failed"
+                    | "host_open_failed"
+                    | "configuration_failed"
+                    | "listener_failed"
+                    | "supervisor_failed"
+            ) {
+                return None;
+            }
+            (code.len() <= 96
+                && !code.is_empty()
+                && code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+            .then(|| format!(" ({code})"))
+        })
+        .unwrap_or_default()
+}
+
+fn log_diagnostic(path: &Path) -> String {
+    let read = || -> std::io::Result<Vec<u8>> {
+        let mut file = File::open(path)?;
+        let length = file.metadata()?.len();
+        file.seek(SeekFrom::Start(length.saturating_sub(8192)))?;
+        let mut bytes = Vec::new();
+        file.take(8192).read_to_end(&mut bytes)?;
+        Ok(bytes)
+    };
+    read()
+        .map(|bytes| diagnostic_suffix(&bytes))
+        .unwrap_or_default()
 }
 
 fn selected_id(list: &Value, target: &str) -> Result<String> {
@@ -204,7 +249,7 @@ fn quiescent(source: &Path, config: &HostConfiguration) -> Result<bool> {
     Ok(true)
 }
 
-fn spawn(agent: &Agent, source: &Path, local_only: bool, logs: &Path) -> Result<Child> {
+fn spawn(agent: &Agent, source: &Path, local_only: bool, logs: &Path) -> Result<AgentChild> {
     let directory = StateDirectory::new(logs, None).map_err(|_| "invalid restart log directory")?;
     directory
         .prepare()
@@ -222,12 +267,24 @@ fn spawn(agent: &Agent, source: &Path, local_only: bool, logs: &Path) -> Result<
     command
         .args(["agent", "serve"])
         .arg(source)
-        .stdout(log.try_clone().map_err(|_| "cannot open restart log")?)
-        .stderr(log);
+        .env("VESTA_AGENT_STAY_STOPPED", "1");
     if local_only {
         command.arg("--local-only");
+    } else {
+        command.arg("--allow-local");
     }
-    spawn_independent(&mut command)
+    #[cfg(windows)]
+    {
+        super::detached::spawn(&command, &log)
+            .map_err(|e| format!("cannot launch updated agent: {e}"))
+    }
+    #[cfg(not(windows))]
+    {
+        command
+            .stdout(log.try_clone().map_err(|_| "cannot open restart log")?)
+            .stderr(log);
+        spawn_independent(&mut command)
+    }
 }
 
 fn spawn_independent(command: &mut Command) -> Result<Child> {
@@ -243,7 +300,7 @@ fn spawn_independent(command: &mut Command) -> Result<Child> {
             }
             Err(error) => {
                 return Err(format!(
-                    "cannot launch independent agent ({error}); Windows job containment prevents a proven independent lifetime. Exit this dev session and run scripts/dev-shell.ps1 from a standalone PowerShell terminal, then retry vesta-rebuild. Nothing was stopped or force-killed"
+                    "this terminal prevents an independent agent launch ({error}). Run .\\dev.ps1 from a standalone PowerShell terminal"
                 ));
             }
         }
@@ -302,6 +359,7 @@ pub fn run(
     root: &Path,
     target: &str,
     selected_mode: Option<bool>,
+    default_mode: Option<bool>,
 ) -> Result<()> {
     let root = if root.is_absolute() {
         root.to_owned()
@@ -324,7 +382,13 @@ pub fn run(
     let id = selected_id(
         &serde_json::from_slice(&output.stdout).map_err(|_| "invalid registry response")?,
         target,
-    )?;
+    )
+    .map_err(|error| {
+        format!(
+            "{error}: {target}. List this registry with vesta list --install-root \"{}\"",
+            root.display()
+        )
+    })?;
     let source = root.join("instances").join(&id).join("host.toml");
     let document = read_document(&source)?;
     let mut agent = Agent {
@@ -345,7 +409,7 @@ pub fn run(
             config
                 .validate_host_paths()
                 .map_err(|_| "invalid server paths")?;
-            if selected_mode.is_none() || !quiescent(&source, &config)? {
+            if selected_mode.or(default_mode).is_none() || !quiescent(&source, &config)? {
                 return Err(error);
             }
             None
@@ -356,7 +420,14 @@ pub fn run(
         .map(was_running)
         .transpose()?
         .unwrap_or(false);
-    let local_only = listener_mode(status.as_ref().unwrap_or(&Value::Null), selected_mode)?;
+    let observed_status = status.as_ref().unwrap_or(&Value::Null);
+    let selection = selected_mode.or_else(|| {
+        observed_status["localOnly"]
+            .is_null()
+            .then_some(default_mode)
+            .flatten()
+    });
+    let local_only = listener_mode(observed_status, selection)?;
     if let Some(base) = status.as_ref().and_then(|s| s["launchBase"].as_str()) {
         agent.base = base.into();
     }
@@ -375,22 +446,26 @@ pub fn run(
         .output()
         .map_err(|_| "cannot validate rebuilt agent")?;
     if !checked.status.success() {
-        return Err("rebuilt agent refused configuration; nothing was stopped".into());
+        return Err(format!(
+            "configuration check failed{}; current agent unchanged. Check {}",
+            diagnostic_suffix(&checked.stderr),
+            source.display()
+        ));
     }
     check_independent_launch(&agent)?;
     let logs = session
         .join("restarts")
         .join(uuid::Uuid::new_v4().to_string());
     println!(
-        "Restarting {}{}; waiting for graceful shutdown. Log: {}",
+        "Updating {}{}...",
         agent.id,
         if running {
             " and its running Minecraft process"
         } else {
             " (Minecraft stays stopped)"
-        },
-        logs.join("agent.log").display()
+        }
     );
+    let mut shutdown_detail = String::new();
     if !offline {
         let stopped = agent
             .command()
@@ -402,33 +477,42 @@ pub fn run(
             if String::from_utf8_lossy(&stopped.stderr)
                 .contains("local_control_unsupported_request")
             {
-                return Err("this older agent does not support shutdown requests. Stop its terminal once with Ctrl+C, then repeat --restart with --configured-listener or --local-only. Nothing was force-killed".into());
+                return Err("this agent predates graceful update support. Stop its terminal once with Ctrl+C, then run .\\dev.ps1 again".into());
             }
-            return Err(
-                "shutdown refused or uncertain; no restart or automatic retry attempted".into(),
-            );
+            // The acknowledgement can be lost after shutdown has completed. Observe
+            // all ownership fences before deciding that a failed reply means failure.
+            shutdown_detail = diagnostic_suffix(&stopped.stderr);
         }
     }
     let until = Instant::now() + WAIT;
     while !quiescent(&source, &config)? {
         if Instant::now() >= until {
-            return Err("shutdown did not finish; old processes retained, no force-kill".into());
+            return Err(format!(
+                "agent shutdown was not confirmed after 90 seconds{}; check vesta manage {} status --install-root \"{}\"",
+                shutdown_detail,
+                agent.id,
+                agent.root.display()
+            ));
         }
         std::thread::sleep(Duration::from_millis(100));
     }
     if read_document(&source)? != document || read_document(config.launch_definition())? != launch {
         return Err("configuration changed during restart; left stopped for review".into());
     }
+    println!(
+        "Starting updated agent. Log: {}",
+        logs.join("agent.log").display()
+    );
     let mut child = spawn(&agent, &source, local_only, &logs)?;
     let until = Instant::now() + WAIT;
     let ready = loop {
-        if child
+        if let Some(exit) = child
             .try_wait()
             .map_err(|_| "cannot observe rebuilt agent")?
-            .is_some()
         {
             return Err(format!(
-                "rebuilt agent exited; preserved log: {}",
+                "updated agent exited ({exit}){}. Log: {}. Fix the reported cause and run .\\dev.ps1 again",
+                log_diagnostic(&logs.join("agent.log")),
                 logs.join("agent.log").display()
             ));
         }
@@ -474,6 +558,25 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn error_details_are_fixed_tokens_not_arbitrary_log_lines() {
+        assert_eq!(
+            diagnostic_suffix(b"host_open_failed: game_invalid_launch\n"),
+            " (game_invalid_launch)"
+        );
+        assert_eq!(
+            diagnostic_suffix(b"local_command_failed: local_control_request_refused\n"),
+            " (local_control_request_refused)"
+        );
+        for line in [
+            "Authorization: bearer_secret",
+            "player: arbitrary",
+            "host_open_failed: secret with spaces",
+            "host_open_failed: value/with/path",
+        ] {
+            assert!(diagnostic_suffix(line.as_bytes()).is_empty());
+        }
+    }
     #[test]
     fn ownership_locks_and_recovery_evidence_fence_relaunch() {
         let temp = tempfile::tempdir().unwrap();

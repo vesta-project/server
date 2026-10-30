@@ -218,18 +218,24 @@ fn lists_are_bounded_sorted_and_hide_protected_or_nonportable_entries() {
 #[test]
 fn returned_entry_limit_fails_instead_of_silently_truncating() {
     let f = Fixture::open();
-    for index in 0..=MAX_DIRECTORY_ENTRIES {
+    for index in 0..=1000 {
         f.write(&format!("entry-{index:04}"), b"");
     }
-    refused(f.browser.list(&f.owner, None), "file_too_large");
+    refused(
+        f.browser.list_with_limits(&f.owner, None, 1000, 4000),
+        "file_too_large",
+    );
 }
 #[test]
 fn hidden_entries_also_consume_the_scan_budget() {
     let f = Fixture::open();
-    for index in 0..=MAX_DIRECTORY_SCAN {
+    for index in 0..=4000 {
         f.write(&format!("λ-{index:04}"), b"");
     }
-    refused(f.browser.list(&f.owner, None), "file_too_large");
+    refused(
+        f.browser.list_with_limits(&f.owner, None, 1000, 4000),
+        "file_too_large",
+    );
 }
 #[test]
 fn host_protected_paths_include_missing_secrets_and_case_variants() {
@@ -1268,35 +1274,149 @@ fn pack_owned_removal_rejects_local_edits_at_restart() {
 
 #[test]
 fn uploaded_archive_delivery_survives_upload_and_plan_removal() {
-    use crate::packs::{PackReleases,workspace::*};
-    use base64::{Engine,engine::general_purpose::STANDARD};
-    use std::io::{Cursor,Write,Read};
-    let f=Fixture::open();
-    let workspace=PackWorkspace::open(&f.db).unwrap();
-    let releases=PackReleases::open(&f.db).unwrap();
-    let mut zip=zip::ZipWriter::new(Cursor::new(Vec::new()));
-    zip.start_file("config/archive.txt",zip::write::SimpleFileOptions::default()).unwrap();
+    use crate::packs::{PackReleases, workspace::*};
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use std::io::{Cursor, Read, Write};
+    let f = Fixture::open();
+    let workspace = PackWorkspace::open(&f.db).unwrap();
+    let releases = PackReleases::open(&f.db).unwrap();
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.start_file(
+        "config/archive.txt",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
     zip.write_all(b"retained-client").unwrap();
-    let archive=zip.finish().unwrap().into_inner();
-    let upload="retained-archive";
-    workspace.upload_begin(&f.owner,"begin-archive",&UploadBegin{upload_id:upload.into(),total_size:archive.len().to_string(),sha256:digest(&archive),archive:true}).unwrap();
-    workspace.upload_chunk(&f.owner,"chunk-archive",&UploadChunk{upload_id:upload.into(),offset:"0".into(),content_base64:STANDARD.encode(&archive)}).unwrap();
-    workspace.upload_finish(&f.owner,"finish-archive",upload).unwrap();
-    let plan=workspace.install_plan(&f.owner,"1.21.1",Some("vanilla"),&PackInstallRequest{source:InstallSource::UploadedArchive{upload_id:upload.into()}},&f.browser,&releases,&crate::content::UreqProviderClient::new(None)).unwrap();
-    workspace.install_apply(&f.owner,"1.21.1",Some("vanilla"),"apply-archive",&PackInstallApply{plan_id:plan.plan_id.clone(),confirmation_token:plan.confirmation_token,choices:vec![],set_as_modpack:false},&f.browser).unwrap();
-    workspace.set_client_pack(&f.owner,"follow-archive",&ClientPackConfig{mode:ClientPackMode::ServerModpack,require_update:true}).unwrap();
+    let archive = zip.finish().unwrap().into_inner();
+    let upload = "retained-archive";
+    workspace
+        .upload_begin(
+            &f.owner,
+            "begin-archive",
+            &UploadBegin {
+                upload_id: upload.into(),
+                total_size: archive.len().to_string(),
+                sha256: digest(&archive),
+                archive: true,
+            },
+        )
+        .unwrap();
+    workspace
+        .upload_chunk(
+            &f.owner,
+            "chunk-archive",
+            &UploadChunk {
+                upload_id: upload.into(),
+                offset: "0".into(),
+                content_base64: STANDARD.encode(&archive),
+            },
+        )
+        .unwrap();
+    workspace
+        .upload_finish(&f.owner, "finish-archive", upload)
+        .unwrap();
+    let plan = workspace
+        .install_plan(
+            &f.owner,
+            "1.21.1",
+            Some("vanilla"),
+            &PackInstallRequest {
+                source: InstallSource::UploadedArchive {
+                    upload_id: upload.into(),
+                },
+            },
+            &f.browser,
+            &releases,
+            &crate::content::UreqProviderClient::new(None),
+        )
+        .unwrap();
+    workspace
+        .install_apply(
+            &f.owner,
+            "1.21.1",
+            Some("vanilla"),
+            "apply-archive",
+            &PackInstallApply {
+                plan_id: plan.plan_id.clone(),
+                confirmation_token: plan.confirmation_token,
+                choices: vec![],
+                set_as_modpack: false,
+            },
+            &f.browser,
+        )
+        .unwrap();
+    workspace
+        .set_client_pack(
+            &f.owner,
+            "follow-archive",
+            &ClientPackConfig {
+                mode: ClientPackMode::ServerModpack,
+                require_update: true,
+            },
+        )
+        .unwrap();
     assert!(releases.offered().unwrap().is_none());
-    workspace.install_finish(&f.owner,&plan.plan_id).unwrap();
-    workspace.upload_cancel(&f.owner,"cancel-archive",upload).unwrap();
+    workspace.install_finish(&f.owner, &plan.plan_id).unwrap();
+    workspace
+        .upload_cancel(&f.owner, "cancel-archive", upload)
+        .unwrap();
     f.browser.apply_pending_content().unwrap();
-    let release=releases.offered().unwrap().unwrap();
-    assert_eq!(release.minimum_revision(),release.revision());
+    let release = releases.offered().unwrap().unwrap();
+    assert_eq!(release.minimum_revision(), release.revision());
     assert!(releases.current().unwrap().is_none());
     releases.prune(&f.owner).unwrap();
-    let loaded=releases.artifacts().load(release.artifact(),crate::packs::MAX_ARTIFACT_BYTES).unwrap();
-    let mut zip=zip::ZipArchive::new(Cursor::new(loaded.bytes())).unwrap();
-    let mut body=String::new();zip.by_name("overrides/config/archive.txt").unwrap().read_to_string(&mut body).unwrap();
-    assert_eq!(body,"retained-client");
-    let reopened=PackReleases::open(&f.db).unwrap();
-    assert_eq!(reopened.offered().unwrap().unwrap().artifact().sha256(),release.artifact().sha256());
+    let loaded = releases
+        .artifacts()
+        .load(release.artifact(), crate::packs::MAX_ARTIFACT_BYTES)
+        .unwrap();
+    let mut zip = zip::ZipArchive::new(Cursor::new(loaded.bytes())).unwrap();
+    let mut body = String::new();
+    zip.by_name("overrides/config/archive.txt")
+        .unwrap()
+        .read_to_string(&mut body)
+        .unwrap();
+    assert_eq!(body, "retained-client");
+    let reopened = PackReleases::open(&f.db).unwrap();
+    assert_eq!(
+        reopened.offered().unwrap().unwrap().artifact().sha256(),
+        release.artifact().sha256()
+    );
+}
+
+#[test]
+fn staged_pack_jars_expose_their_declared_side_before_activation() {
+    use std::io::{Cursor, Write};
+    let f = Fixture::open();
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.start_file("fabric.mod.json", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(br#"{"id":"example","name":"Example","version":"1","environment":"server"}"#)
+        .unwrap();
+    let bytes = zip.finish().unwrap().into_inner();
+    let store = crate::packs::payload::Store::open(&f.db).unwrap();
+    let payload = store.put(&mut Cursor::new(bytes)).unwrap();
+    f.db.write_with(|tx| {
+        f.browser.stage_pack_payloads_in(
+            tx.connection(),
+            &f.owner,
+            "side-test",
+            &[("mods/example.jar".into(), None, payload, None)],
+        )
+    })
+    .unwrap();
+    let world = f.browser.world(&f.owner).unwrap();
+    let inventory = f
+        .browser
+        .content_inventory(&f.owner, Some("fabric".into()), "1.21.1".into(), &world)
+        .unwrap();
+    let entry = inventory
+        .items
+        .iter()
+        .find(|entry| entry.path == "mods/example.jar")
+        .unwrap();
+    assert_eq!(
+        entry.declared.as_ref().unwrap().side.as_deref(),
+        Some("server")
+    );
+    assert!(!f.game.join("mods/example.jar").exists());
 }

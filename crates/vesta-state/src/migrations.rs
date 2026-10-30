@@ -32,6 +32,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         26 => apply_v26(c),
         27 => apply_v27(c),
         28 => apply_v28(c),
+        29 => apply_v29(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -1153,6 +1154,31 @@ fn apply_v28(c: &Connection) -> crate::Result<()> {
             override_count INTEGER NOT NULL CHECK(override_count >= 0),
             provider_version TEXT, PRIMARY KEY(server_id,revision)
         ) STRICT;
+    "#)?;
+    Ok(())
+}
+
+/// Pack payloads now live in protected files, so archive sizes are metadata only.
+fn apply_v29(c:&Connection)->crate::Result<()> {
+    c.execute_batch(r#"
+        ALTER TABLE pack_workspace_uploads RENAME TO pack_workspace_uploads_v28;
+        CREATE TABLE pack_workspace_uploads (
+            server_id TEXT NOT NULL REFERENCES server_identity(server_id), principal_id TEXT NOT NULL, device_id TEXT NOT NULL,
+            upload_id TEXT NOT NULL, total_size INTEGER NOT NULL, sha256 TEXT NOT NULL,
+            archive INTEGER NOT NULL, complete INTEGER NOT NULL DEFAULT 0, body BLOB NOT NULL,
+            PRIMARY KEY(server_id,principal_id,device_id,upload_id),
+            CHECK(total_size >= 0 AND total_size <= 137438953472), CHECK(length(body) <= total_size)
+        ) STRICT;
+        INSERT INTO pack_workspace_uploads SELECT * FROM pack_workspace_uploads_v28;
+        DROP TABLE pack_workspace_uploads_v28;
+        ALTER TABLE pack_workspace RENAME TO pack_workspace_v28;
+        CREATE TABLE pack_workspace (
+            server_id TEXT PRIMARY KEY REFERENCES server_identity(server_id), revision INTEGER NOT NULL CHECK(revision > 0),
+            manifest_json TEXT NOT NULL CHECK(length(manifest_json) <= 33554432),
+            customizing_provider INTEGER NOT NULL DEFAULT 0 CHECK(customizing_provider IN (0,1))
+        ) STRICT;
+        INSERT INTO pack_workspace SELECT * FROM pack_workspace_v28;
+        DROP TABLE pack_workspace_v28;
     "#)?;
     Ok(())
 }

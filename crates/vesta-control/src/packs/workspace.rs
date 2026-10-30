@@ -32,7 +32,7 @@ use vesta_state::{
 };
 
 pub type Result<T> = std::result::Result<T, ReleaseError>;
-pub const MAX_ENTRIES: usize = 256;
+pub const MAX_ENTRIES: usize = vesta_protocol::pack::catalogue::MAX_FILES;
 pub const MAX_BLOBS: usize = 64 * 1024 * 1024;
 pub fn invalid() -> ReleaseError {
     ReleaseError::Pack(super::PackError::InvalidPath)
@@ -324,6 +324,7 @@ impl PackWorkspace {
     pub fn open(db: &StateDatabase) -> Result<Self> {
         db.write(|c| c.execute_batch("CREATE TABLE IF NOT EXISTS pack_install_plans(id TEXT PRIMARY KEY, principal TEXT NOT NULL, device TEXT NOT NULL, expires INTEGER NOT NULL, token_hash TEXT NOT NULL, body TEXT NOT NULL)").map_err(Into::into))?;
         server_link::initialize(db)?;
+        db.write(|c| c.execute_batch("CREATE TABLE IF NOT EXISTS pack_spooled_uploads(server_id TEXT NOT NULL,principal_id TEXT NOT NULL,device_id TEXT NOT NULL,upload_id TEXT NOT NULL,name TEXT NOT NULL,received INTEGER NOT NULL DEFAULT 0,payload TEXT,PRIMARY KEY(server_id,principal_id,device_id,upload_id)); CREATE TABLE IF NOT EXISTS pack_upload_chunk_receipts(server_id TEXT NOT NULL,principal_id TEXT NOT NULL,device_id TEXT NOT NULL,request_key TEXT NOT NULL,PRIMARY KEY(server_id,principal_id,device_id,request_key));").map_err(Into::into))?;
         Ok(Self {
             db: db.clone(),
             audit: AuditLog::new(db.clone())?,
@@ -635,7 +636,7 @@ impl PackWorkspace {
             let c=t.connection(); self.authorize_in(c,subject,Capability::PackEdit)?;
             let row:Option<(String,String)>=c.query_row("SELECT input_sha256,outcome_json FROM pack_workspace_receipts WHERE server_id=? AND principal_id=? AND device_id=? AND request_key=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),key],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
             if let Some((old,outcome))=row { if old!=input { return Err(ReleaseError::IdempotencyConflict); } return serde_json::from_str(&outcome).map_err(|_|invalid()); }
-            let count:i64=c.query_row("SELECT count(*) FROM pack_workspace_receipts",[],|r|r.get(0))?;
+            let count:i64=c.query_row("SELECT count(*) FROM pack_workspace_receipts AS r WHERE NOT EXISTS(SELECT 1 FROM pack_upload_chunk_receipts AS u WHERE u.server_id=r.server_id AND u.principal_id=r.principal_id AND u.device_id=r.device_id AND u.request_key=r.request_key)",[],|r|r.get(0))?;
             if count>=10_000 { return Err(super::PackError::TooLarge.into()); }
             let result=work(c)?;
             c.execute("INSERT INTO pack_workspace_receipts(server_id,principal_id,device_id,request_key,input_sha256,outcome_json) VALUES(?,?,?,?,?,?)",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),key,input,serde_json::to_string(&result).map_err(|_|invalid())?])?;
@@ -716,13 +717,16 @@ pub fn validate_manifest(m: &PackManifest) -> Result<()> {
         {
             return Err(invalid());
         }
-        for path in &paths {
-            if path != &lower
-                && (path.starts_with(&format!("{lower}/"))
-                    || lower.starts_with(&format!("{path}/")))
-            {
-                return Err(invalid());
-            }
+        let prefix = format!("{lower}/");
+        if paths
+            .range(prefix.clone()..)
+            .next()
+            .is_some_and(|path| path.starts_with(&prefix))
+            || lower
+                .match_indices('/')
+                .any(|(at, _)| paths.contains(&lower[..at]))
+        {
+            return Err(invalid());
         }
         match &e.source {
             EntrySource::Provider {
@@ -744,7 +748,9 @@ pub fn validate_manifest(m: &PackManifest) -> Result<()> {
             _ => {}
         }
     }
-    if serde_json::to_vec(m).map_err(|_| invalid())?.len() > 1_048_576 {
+    if serde_json::to_vec(m).map_err(|_| invalid())?.len()
+        > vesta_protocol::pack::catalogue::MAX_JSON_BYTES
+    {
         return Err(super::PackError::TooLarge.into());
     }
     // Use the publication catalogue's full namespace admission here as well:
@@ -799,3 +805,7 @@ impl PackWorkspace {
  })?)
     }
 }
+
+#[cfg(test)]
+#[path = "workspace/capacity_tests.rs"]
+mod capacity_tests;

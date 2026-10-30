@@ -36,8 +36,42 @@ const TARGET: &str = "pack-release";
 const PUBLISH: &str = "pack_release.publish";
 const PRUNE: &str = "pack_release.prune";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProviderFailure {
+    DownloadUnavailable,
+    InvalidMetadata,
+    DownloadFailed,
+    HashMismatch,
+    UnsafeSource,
+}
+impl ProviderFailure {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::DownloadUnavailable => "content_pack_download_unavailable",
+            Self::InvalidMetadata => "content_pack_metadata_invalid",
+            Self::DownloadFailed => "content_pack_download_failed",
+            Self::HashMismatch => "content_pack_hash_mismatch",
+            Self::UnsafeSource => "content_pack_source_unsafe",
+        }
+    }
+}
+/// Public provider identifiers only. Never retain response bodies, keys or URLs.
+#[derive(Clone, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderFailureDetails {
+    pub stage: &'static str,
+    pub provider: String,
+    pub project_id: String,
+    pub version_id: String,
+    pub filename: Option<String>,
+}
+
 #[derive(Clone, Eq, PartialEq)]
 pub enum ReleaseError {
+    ProviderFile {
+        failure: ProviderFailure,
+        details: ProviderFailureDetails,
+    },
     /// The expected current revision no longer matches.
     Conflict,
     IdempotencyConflict,
@@ -60,6 +94,7 @@ pub enum ReleaseError {
 impl ReleaseError {
     pub const fn code(&self) -> &'static str {
         match self {
+            Self::ProviderFile { failure, .. } => failure.code(),
             Self::Conflict => "pack_release_conflict",
             Self::IdempotencyConflict => "idempotency_conflict",
             Self::RevisionExhausted => "pack_release_revision_exhausted",
@@ -71,6 +106,47 @@ impl ReleaseError {
             Self::Control(error) => error.code(),
             Self::State(error) => error.code(),
             Self::Rollback { .. } => "rollback_failed",
+        }
+    }
+    pub(crate) fn provider_file(
+        error: crate::content::ContentError,
+        provider: &str,
+        project: &str,
+        version: &str,
+        stage: &'static str,
+        filename: Option<&str>,
+    ) -> Self {
+        use crate::content::ContentError;
+        let (failure, filename) = match error {
+            ContentError::ProviderNotConfigured
+            | ContentError::TooLarge
+            | ContentError::File(_) => return error.into(),
+            ContentError::DownloadUnavailable { filename } => {
+                (ProviderFailure::DownloadUnavailable, Some(filename))
+            }
+            ContentError::InvalidMetadata | ContentError::InvalidRequest => (
+                ProviderFailure::InvalidMetadata,
+                filename.map(str::to_owned),
+            ),
+            ContentError::HashMismatch => {
+                (ProviderFailure::HashMismatch, filename.map(str::to_owned))
+            }
+            ContentError::UnsafeFilename
+            | ContentError::DisallowedUrl
+            | ContentError::TooManyRedirects => {
+                (ProviderFailure::UnsafeSource, filename.map(str::to_owned))
+            }
+            _ => (ProviderFailure::DownloadFailed, filename.map(str::to_owned)),
+        };
+        Self::ProviderFile {
+            failure,
+            details: ProviderFailureDetails {
+                stage,
+                provider: provider.into(),
+                project_id: project.into(),
+                version_id: version.into(),
+                filename,
+            },
         }
     }
 }
@@ -90,6 +166,18 @@ impl std::error::Error for ReleaseError {}
 impl From<PackError> for ReleaseError {
     fn from(error: PackError) -> Self {
         Self::Pack(error)
+    }
+}
+impl From<crate::content::ContentError> for ReleaseError {
+    fn from(error: crate::content::ContentError) -> Self {
+        use crate::content::ContentError;
+        match error {
+            ContentError::ProviderNotConfigured => PackError::ProviderNotConfigured.into(),
+            ContentError::InvalidRequest => PackError::InvalidArchive.into(),
+            ContentError::TooLarge => PackError::TooLarge.into(),
+            ContentError::File(error) => PackError::from(error).into(),
+            _ => PackError::ProviderUnavailable.into(),
+        }
     }
 }
 impl From<ControlError> for ReleaseError {

@@ -20,6 +20,7 @@ pub use offline_whitelist::{OfflineWhitelistPatch, StoppedGuard};
 pub use startup_whitelist::StartupWhitelistPatch;
 mod mutation;
 pub(crate) use mutation::mutation_admission;
+pub(crate) use mutation::require_space;
 mod native;
 mod pack_root;
 mod path;
@@ -57,9 +58,9 @@ use std::{error::Error, fmt, fs, io::Read, path::Path, time::SystemTime};
 use vesta_state::{StateDatabase, StateError, TransactionError};
 
 pub const MAX_READ_BYTES: usize = 1_048_576;
-pub const MAX_DIRECTORY_ENTRIES: usize = 1_000;
+pub const MAX_DIRECTORY_ENTRIES: usize = vesta_protocol::pack::catalogue::MAX_FILES;
 /// Work bound includes hidden/unreadable entries, not just returned entries.
-pub const MAX_DIRECTORY_SCAN: usize = 4_000;
+pub const MAX_DIRECTORY_SCAN: usize = MAX_DIRECTORY_ENTRIES + 4_096;
 
 pub type Result<T> = std::result::Result<T, FileError>;
 
@@ -247,6 +248,7 @@ pub struct FileBrowser {
     trash_policy: TrashPolicy,
     upload_policy: UploadPolicy,
     remote_key: Option<String>,
+    pack_effect: bool,
     remote_outcome: Option<serde_json::Value>,
     world_write: bool,
     world_sizes: std::sync::Arc<
@@ -281,6 +283,7 @@ impl FileBrowser {
             trash_policy: TrashPolicy::default(),
             upload_policy: UploadPolicy::default(),
             remote_key: None,
+            pack_effect: false,
             remote_outcome: None,
             world_write: false,
             world_sizes: Default::default(),
@@ -367,6 +370,20 @@ impl FileBrowser {
         subject: &Subject,
         directory: Option<&RelativePath>,
     ) -> Result<DirectoryListing> {
+        self.list_with_limits(
+            subject,
+            directory,
+            MAX_DIRECTORY_ENTRIES,
+            MAX_DIRECTORY_SCAN,
+        )
+    }
+    fn list_with_limits(
+        &self,
+        subject: &Subject,
+        directory: Option<&RelativePath>,
+        entry_limit: usize,
+        scan_limit: usize,
+    ) -> Result<DirectoryListing> {
         self.db
             .read_with(|snapshot| {
                 let policy = identity::policy_in(
@@ -387,7 +404,7 @@ impl FileBrowser {
                 let mut entries = Vec::new();
                 let stream = fs::read_dir(&checked.path).map_err(io_error)?;
                 for (scanned, entry) in stream.enumerate() {
-                    if scanned >= MAX_DIRECTORY_SCAN {
+                    if scanned >= scan_limit {
                         return Err(FileError::TooLarge);
                     }
                     let entry = entry.map_err(io_error)?;
@@ -448,7 +465,7 @@ impl FileBrowser {
                             continue;
                         }
                     }
-                    if entries.len() == MAX_DIRECTORY_ENTRIES {
+                    if entries.len() == entry_limit {
                         return Err(FileError::TooLarge);
                     }
                     let actual_name = child

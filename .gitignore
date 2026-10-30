@@ -5,6 +5,11 @@ node_modules/
 /dist/
 /bin/
 
+# Local provider credentials, never release assets
+.env
+.env.*
+!.env.example
+
 # Downloaded Minecraft artifacts
 *.jar
 

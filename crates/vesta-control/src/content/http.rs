@@ -37,6 +37,13 @@ pub(super) fn agent() -> ureq::Agent {
     agent_with_timeout(Duration::from_secs(60))
 }
 pub(super) fn agent_with_timeout(timeout: Duration) -> ureq::Agent {
+    configured_agent(timeout, 0)
+}
+/// A pool belongs to one bounded job and is dropped with it, not held globally.
+pub(super) fn job_agent(timeout: Duration) -> ureq::Agent {
+    configured_agent(timeout, 2)
+}
+fn configured_agent(timeout: Duration, idle: usize) -> ureq::Agent {
     ureq::Agent::config_builder()
         .https_only(true)
         .proxy(None)
@@ -46,22 +53,29 @@ pub(super) fn agent_with_timeout(timeout: Duration) -> ureq::Agent {
         .timeout_connect(Some(Duration::from_secs(10)))
         .timeout_recv_body(Some(Duration::from_secs(10)))
         .max_response_header_size(16 * 1_024)
-        .max_idle_connections(0)
-        .max_idle_connections_per_host(0)
+        .max_idle_connections(idle)
+        .max_idle_connections_per_host(idle)
         .build()
         .into()
 }
 impl DownloadHttp for UreqDownloadHttp {
     fn get_with_deadline(&self, url: &Url, deadline: Instant) -> Result<HttpResponse> {
         super::deadline_check(deadline)?;
-        let http = Self {
-            agent: agent_with_timeout(deadline.saturating_duration_since(Instant::now())),
-        };
-        let response = http.get(url)?;
+        let response = self.request(url, deadline.saturating_duration_since(Instant::now()))?;
         super::deadline_check(deadline)?;
         Ok(response)
     }
     fn get(&self, url: &Url) -> Result<HttpResponse> {
+        self.request(url, Duration::from_secs(60))
+    }
+}
+impl UreqDownloadHttp {
+    pub(crate) fn for_job() -> Self {
+        Self {
+            agent: job_agent(Duration::from_secs(60)),
+        }
+    }
+    fn request(&self, url: &Url, timeout: Duration) -> Result<HttpResponse> {
         // Defense in depth; provider-specific host validation is before this call.
         if url.scheme() != "https" {
             return Err(ContentError::DisallowedUrl);
@@ -70,6 +84,9 @@ impl DownloadHttp for UreqDownloadHttp {
             .agent
             .get(url.as_str())
             .header("Accept-Encoding", "identity")
+            .config()
+            .timeout_global(Some(timeout))
+            .build()
             .call()
             .map_err(|_| ContentError::DownloadFailed)?;
         let status = response.status().as_u16();

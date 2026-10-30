@@ -9,6 +9,7 @@ pub struct ProviderDependency {
     pub version_id: Option<String>,
     pub incompatible: bool,
 }
+
 #[derive(Clone, Debug)]
 pub struct ProviderMetadata {
     pub client_required: bool,
@@ -64,7 +65,20 @@ fn document(
 ) -> Result<Value> {
     client
         .pack_document(provider, project, version, versions)
-        .map_err(|_| super::super::PackError::UnresolvedFile.into())
+        .map_err(|error| {
+            ReleaseError::provider_file(
+                error,
+                if provider == Provider::Curseforge {
+                    "curseforge"
+                } else {
+                    "modrinth"
+                },
+                project,
+                version.unwrap_or_default(),
+                "metadata",
+                None,
+            )
+        })
 }
 impl WorkspaceProvider for UreqProviderClient {
     fn pack_metadata(
@@ -76,7 +90,16 @@ impl WorkspaceProvider for UreqProviderClient {
         let platform = platform(provider)?;
         let v = document(self, platform, project, Some(version), false)?;
         let p = document(self, platform, project, None, false)?;
-        decode_metadata(platform, project, version, &p, &v)
+        decode_metadata(platform, project, version, &p, &v).map_err(|_| {
+            ReleaseError::provider_file(
+                crate::content::ContentError::InvalidMetadata,
+                provider,
+                project,
+                version,
+                "metadata",
+                None,
+            )
+        })
     }
     fn newer(
         &self,
@@ -237,10 +260,32 @@ fn decode_metadata(
             loaders,
             kind,
             client_supported: true,
-            downloadable: v["downloadUrl"].as_str().is_some_and(|s| !s.is_empty()),
+            downloadable: crate::content::curseforge_document_source(v, project, version).is_ok(),
             filename: v["fileName"].as_str().ok_or_else(invalid)?.into(),
             dependencies: deps,
             published: v["fileDate"].as_str().ok_or_else(invalid)?.into(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn curseforge_publication_accepts_verified_cdn_fallback_but_not_missing_hashes() {
+        let project = serde_json::json!({"id":1691925,"classId":6,"allowModDistribution":false});
+        let mut file = serde_json::json!({"id":9022781,"modId":1691925,"fileName":"mielon's-the-sift+26.3.jar","downloadUrl":null,
+            "hashes":[{"algo":1,"value":"a".repeat(40)}],"gameVersions":["26.3","Fabric"],"fileDate":"2026-10-29T00:00:00Z"});
+        assert!(
+            decode_metadata(Provider::Curseforge, "1691925", "9022781", &project, &file)
+                .unwrap()
+                .downloadable
+        );
+        file["hashes"] = serde_json::json!([]);
+        assert!(
+            !decode_metadata(Provider::Curseforge, "1691925", "9022781", &project, &file)
+                .unwrap()
+                .downloadable
+        );
     }
 }

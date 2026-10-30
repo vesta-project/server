@@ -66,6 +66,41 @@ pub(super) fn control_request(method: &Method, path: &str, query: Option<&str>) 
         )
 }
 
+pub(super) fn pack_review_request(method: &Method, path: &str) -> bool {
+    method == Method::POST
+        && matches!(
+            path,
+            "/api/v3/manage/pack/install/plan" | "/api/v3/manage/pack/install/apply" | "/api/v3/manage/pack/archive/inspect" | "/api/v3/manage/pack/draft/uploads/finish"
+        )
+}
+
+/// Inventory scans, provider lookups and archive work cannot occupy the status worker.
+/// This changes capacity only; all authentication and route guards still apply.
+pub(super) fn pack_work_request(method: &Method, path: &str) -> bool {
+    if method == Method::GET {
+        matches!(
+            path,
+            "/api/v3/manage/content"
+                | "/api/v3/manage/pack/server-link/update"
+                | "/api/v3/manage/pack/suggestions"
+        )
+    } else if method == Method::POST {
+        matches!(
+            path,
+            "/api/v3/manage/pack/install/plan"
+                | "/api/v3/manage/pack/install/apply"
+                | "/api/v3/manage/pack/preview"
+                | "/api/v3/manage/pack/draft/add"
+                | "/api/v3/manage/pack/draft/import"
+                | "/api/v3/manage/pack/archive/inspect"
+                | "/api/v3/manage/pack/draft/uploads/finish"
+                | "/api/v3/manage/pack/provider/publish"
+        )
+    } else {
+        false
+    }
+}
+
 pub(super) async fn route(
     request: Request<Incoming>,
     state: Arc<Shared>,
@@ -141,7 +176,8 @@ pub(super) async fn route(
                 | "/api/v3/manage/password"
         );
     let public_pack = super::public_resource_packs::implemented(&path);
-    let recognized = management || public_pack
+    let recognized = management
+        || public_pack
         || matches!(
             (method.as_str(), path.as_str()),
             (
@@ -243,7 +279,11 @@ pub(super) async fn route(
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
     let control = control_request(&method, &path, query.as_deref());
-    let maximum = if control {
+    let maximum = if request.extensions().get::<super::PackBodyBudget>().is_some() {
+        // Authenticated pack metadata and 512 KiB upload chunks share the existing
+        // byte semaphore. The urgent control budget remains separate.
+        state.max_body.max(2*1024*1024)
+    } else if control {
         state.max_body.min(super::CONTROL_BODY_MAXIMUM)
     } else {
         state.max_body
@@ -277,6 +317,11 @@ pub(super) async fn route(
             }
         }
     };
+    let review_clock = request
+        .extensions()
+        .get::<super::PackReviewBudget>()
+        .and_then(|_| request.extensions().get::<Arc<super::ConnectionDeadline>>())
+        .cloned();
     let mut body = request.into_body();
     let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(if body_permit.is_some() {
         maximum
@@ -305,6 +350,11 @@ pub(super) async fn route(
     {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
+    if let Some(clock) = review_clock
+        && !clock.pack_review()
+    {
+        return super::manage::error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable");
+    }
     state.jobs.reap(false).await;
     let host = state.host.clone();
     let downloads = Requester {
@@ -318,6 +368,7 @@ pub(super) async fn route(
         &state.control_jobs
     } else if (path.starts_with("/api/v3/manage/content/") && method == Method::POST)
         || super::manage::hosting::implemented(&path)
+        || pack_work_request(&method, &path)
     {
         state.install_jobs.reap(false).await;
         &state.install_jobs
@@ -333,7 +384,15 @@ pub(super) async fn route(
             return super::public_resource_packs::dispatch(&host, &method, &path, public_downloads);
         }
         if crate::pack_sync::implemented(&path) {
-            return crate::pack_sync::dispatch(&host, &method, &path, query.as_deref(), authorization.as_ref().map(|s|s.as_str()), downloads, &tls);
+            return crate::pack_sync::dispatch(
+                &host,
+                &method,
+                &path,
+                query.as_deref(),
+                authorization.as_ref().map(|s| s.as_str()),
+                downloads,
+                &tls,
+            );
         }
         if operational {
             let fingerprint = if path == "/api/v3/manage/invitations" && method == Method::POST {

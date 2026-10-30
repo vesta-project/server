@@ -62,10 +62,10 @@ use vesta_control::{
 
 mod file_body;
 mod manage;
-mod realtime;
-mod routes;
 mod pack_sync;
 mod public_resource_packs;
+mod realtime;
+mod routes;
 mod tls;
 type Reply = Response<ReplyBody>;
 const DOWNLOADS: usize = 2;
@@ -100,6 +100,11 @@ struct ConnectionDeadline {
     phase: Mutex<Phase>,
     changed: Notify,
 }
+const PACK_REVIEW_TIMEOUT: Duration = Duration::from_secs(3605);
+#[derive(Clone)]
+struct PackReviewBudget;
+#[derive(Clone)]
+struct PackBodyBudget;
 enum Phase {
     FirstHead {
         deadline: std::time::Instant,
@@ -120,6 +125,22 @@ enum Phase {
     },
 }
 impl ConnectionDeadline {
+    /// Only a known management session with a complete bounded review body may
+    /// extend processing. Never revive an expired request or relax head/body I/O.
+    fn pack_review(&self) -> bool {
+        if let Ok(mut phase) = self.phase.lock() {
+            let now = std::time::Instant::now();
+            if matches!(*phase, Phase::Request { deadline, complete: false } if now < deadline) {
+                *phase = Phase::Request {
+                    deadline: now + PACK_REVIEW_TIMEOUT,
+                    complete: false,
+                };
+                self.changed.notify_one();
+                return true;
+            }
+        }
+        false
+    }
     fn new(limit: Duration) -> Self {
         Self {
             limit,
@@ -420,7 +441,12 @@ impl ArtifactBody {
     ) -> io::Result<Self> {
         Self::from_identity(file, artifact.size(), *artifact.sha256().as_bytes(), permit)
     }
-    fn from_identity(file: File, size: u64, expected_hash: [u8;32], permit: DownloadPermit) -> io::Result<Self> {
+    fn from_identity(
+        file: File,
+        size: u64,
+        expected_hash: [u8; 32],
+        permit: DownloadPermit,
+    ) -> io::Result<Self> {
         // Hyper may never poll a zero-length body. Validate that identity now.
         if size == 0 && Sha256::digest([])[..] != expected_hash[..] {
             return Err(io::Error::other("artifact identity mismatch"));
@@ -927,12 +953,13 @@ async fn serve(
                         drop(handshake);
                         let stream = DeadlineIo { inner: stream, deadline: deadline.clone() };
                         let requests = std::sync::atomic::AtomicUsize::new(0);
-                        let service = service_fn(move |request| {
+                        let service = service_fn(move |mut request| {
                             let last = requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 >= MAX_REQUESTS;
                             let state = state.clone();
                             let deadline = deadline.clone();
                             async move {
                                 deadline.request();
+                                request.extensions_mut().insert(deadline.clone());
                                 let mut reply = handle(request, peer, state).await?;
                                 reply.body_mut().watch(deadline);
                                 // An upgrade hands ownership to the separately bounded
@@ -971,7 +998,7 @@ async fn serve(
 }
 
 async fn handle(
-    request: Request<Incoming>,
+    mut request: Request<Incoming>,
     peer: SocketAddr,
     state: Arc<Shared>,
 ) -> Result<Reply, Infallible> {
@@ -1015,6 +1042,14 @@ async fn handle(
     } else {
         None
     };
+    if reference.is_some() && request.method()==http::Method::POST && request.uri().path().starts_with("/api/v3/manage/pack/") {
+        request.extensions_mut().insert(PackBodyBudget);
+    }
+    let pack_review =
+        reference.is_some() && routes::pack_review_request(request.method(), request.uri().path());
+    if pack_review {
+        request.extensions_mut().insert(PackReviewBudget);
+    }
     let rate = if let Some(reference) = reference {
         state
             .session_limiter
@@ -1050,7 +1085,11 @@ async fn handle(
     if let Some(reply) = denial {
         return Ok(reply);
     }
-    let timeout = state.timeout;
+    let timeout = if pack_review {
+        state.timeout + PACK_REVIEW_TIMEOUT
+    } else {
+        state.timeout
+    };
     let result = tokio::time::timeout(timeout, routes::route(request, state, peer)).await;
     Ok(result.unwrap_or_else(|_| {
         if operational {

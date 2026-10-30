@@ -667,12 +667,7 @@ fn documents(
         let registry = TrustedSourceRegistry::default();
         // This optional credential is trusted operator environment, never a request
         // field; the provider adapter sends it only to its fixed metadata host.
-        let credential = std::env::var("VESTA_CURSEFORGE_API_KEY")
-            .ok()
-            .filter(|key| {
-                !key.is_empty() && key.len() <= 1024 && key.bytes().all(|b| b.is_ascii_graphic())
-            });
-        let providers = UreqProviderClient::new(credential);
+        let providers = UreqProviderClient::configured();
         let http = UreqDownloadHttp::default();
         let installer = ContentInstaller::new(host.files(), &providers, &http, &registry);
         let input = InstallRequest::Provider {

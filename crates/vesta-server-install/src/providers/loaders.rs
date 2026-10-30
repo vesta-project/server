@@ -33,6 +33,21 @@ struct Loader {
     url: String,
     stable: bool,
 }
+fn numeric_release(id: &str) -> bool {
+    let parts: Vec<_> = id.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+}
+impl Loader {
+    fn release(&self) -> bool {
+        // Fabric marks only its currently recommended loader stable. Older
+        // published numeric releases remain valid exact modpack requirements.
+        // Membership, profile, official libraries and hashes are still verified.
+        self.stable || numeric_release(&self.id)
+    }
+}
 #[derive(Deserialize)]
 struct Profile {
     #[serde(rename = "mainClass")]
@@ -176,10 +191,7 @@ async fn catalogue(
         // Numeric release IDs exclude beta/RC builds; planning still verifies
         // their membership and libraries against the official Quilt service.
         for loader in &mut group.loaders.0 {
-            loader.stable = loader
-                .id
-                .split('.')
-                .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+            loader.stable = numeric_release(&loader.id);
         }
         groups.insert(group.id, group.loaders.0);
     }
@@ -264,7 +276,7 @@ pub(super) async fn releases(
     }
     Ok(loaders
         .into_iter()
-        .filter(|l| l.stable)
+        .filter(Loader::release)
         .map(|l| releases::SoftwareRelease {
             id: l.id.clone(),
             build: None,
@@ -318,6 +330,47 @@ fn repository(s: Software, url: &str) -> Result<SourceFamily> {
         }
         _ => Err(InstallError::SourceRefused),
     }
+}
+fn classpath_order(
+    software: Software,
+    version: &str,
+    client: Vec<ClientLibrary>,
+    official: &BTreeMap<String, ServerLibrary>,
+    maximum: usize,
+) -> Result<Vec<String>> {
+    let unobfuscated = version_order(version).is_some_and(|v| v.as_slice() >= [26, 1].as_slice());
+    let mut seen = HashSet::new();
+    let mut order = Vec::new();
+    for lib in client {
+        if !lib.include_in_classpath
+            || !lib.downloadable
+            || lib.url != "https://launcher-meta.modrinth.com/maven/"
+        {
+            return Err(InstallError::InvalidMetadata);
+        }
+        let name = lib.name.replace(TOKEN, version);
+        maven_path(&name)?;
+        if !seen.insert(name.clone()) {
+            return Err(InstallError::InvalidMetadata);
+        }
+        if !official.contains_key(&name) {
+            // The generic client template still includes Intermediary after
+            // Minecraft 26.1 removed obfuscation. Only this exact template entry
+            // can be omitted, and only when the official server omits it too.
+            if software == Software::Fabric
+                && unobfuscated
+                && lib.name == format!("net.fabricmc:intermediary:{TOKEN}")
+            {
+                continue;
+            }
+            return Err(InstallError::InvalidMetadata);
+        }
+        order.push(name);
+    }
+    if order.len() != official.len() || order.len() > maximum {
+        return Err(InstallError::InvalidMetadata);
+    }
+    Ok(order)
 }
 /// Exactly one 64-hex digest, optional ASCII whitespace/filename, <=256 bytes.
 pub(crate) fn sidecar_digest(bytes: &[u8]) -> Result<PublishedDigest> {
@@ -397,8 +450,8 @@ pub(super) async fn resolve(
         loaders.iter().find(|l| l.stable)
     }
     .ok_or(InstallError::Unavailable)?;
-    // An explicitly named unstable loader still needs the experimental opt-in, as for Vanilla.
-    if !chosen.stable && !selection.experimental {
+    // Pre-release identifiers still require explicit experimental approval.
+    if !chosen.release() && !selection.experimental {
         return Err(InstallError::Unavailable);
     }
     let client: Profile = fetch(
@@ -447,26 +500,13 @@ pub(super) async fn resolve(
             return Err(InstallError::InvalidMetadata);
         }
     }
-    let mut order = Vec::new();
-    let mut names = HashSet::new();
-    for lib in client.libraries.0 {
-        // Mirror repository is never used as an artifact source.
-        if !lib.include_in_classpath
-            || !lib.downloadable
-            || lib.url != "https://launcher-meta.modrinth.com/maven/"
-        {
-            return Err(InstallError::InvalidMetadata);
-        }
-        let name = lib.name.replace(TOKEN, &version);
-        maven_path(&name)?;
-        if !names.insert(name.clone()) || !official.contains_key(&name) {
-            return Err(InstallError::InvalidMetadata);
-        }
-        order.push(name);
-    }
-    if names.len() != official.len() || order.len() > job.limits.max_entries {
-        return Err(InstallError::InvalidMetadata);
-    }
+    let order = classpath_order(
+        s,
+        &version,
+        client.libraries.0,
+        &official,
+        job.limits.max_entries,
+    )?;
     let quilt = if s == Software::Quilt {
         let info_url = server_url
             .strip_suffix("/server/json")
@@ -578,7 +618,7 @@ pub(super) async fn resolve(
     download.generated.sha256 = sha256(&args);
     bundle::validate(s, &download, job.limits)?;
     let mut warnings = vanilla.warnings;
-    if !chosen.stable && !warnings.contains(&Warning::ExperimentalBuild) {
+    if !chosen.release() && !warnings.contains(&Warning::ExperimentalBuild) {
         warnings.push(Warning::ExperimentalBuild);
     }
     Ok(Resolved {
@@ -600,4 +640,102 @@ pub(super) async fn resolve(
         warnings,
         metadata: revisions,
     })
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+    fn client(names: &[&str]) -> Vec<ClientLibrary> {
+        names
+            .iter()
+            .map(|name| ClientLibrary {
+                name: (*name).into(),
+                url: "https://launcher-meta.modrinth.com/maven/".into(),
+                include_in_classpath: true,
+                downloadable: true,
+            })
+            .collect()
+    }
+    fn server(names: &[&str]) -> BTreeMap<String, ServerLibrary> {
+        names
+            .iter()
+            .map(|name| {
+                (
+                    (*name).into(),
+                    ServerLibrary {
+                        name: (*name).into(),
+                        url: "https://maven.fabricmc.net/".into(),
+                        sha256: None,
+                        size: None,
+                    },
+                )
+            })
+            .collect()
+    }
+    #[test]
+    fn modern_fabric_omits_only_obsolete_template_mapping_when_official_server_does() {
+        let names = [
+            "net.fabricmc:intermediary:${modrinth.gameVersion}",
+            "net.fabricmc:fabric-loader:0.19.5",
+        ];
+        let official = server(&[names[1]]);
+        assert_eq!(
+            classpath_order(Software::Fabric, "26.3", client(&names), &official, 128).unwrap(),
+            [names[1]]
+        );
+        for version in ["1.21.11", "26.0", "invalid"] {
+            assert!(
+                classpath_order(Software::Fabric, version, client(&names), &official, 128).is_err()
+            );
+        }
+        assert!(classpath_order(Software::Quilt, "26.3", client(&names), &official, 128).is_err());
+        let required = server(&["net.fabricmc:intermediary:26.3", names[1]]);
+        assert_eq!(
+            classpath_order(Software::Fabric, "26.3", client(&names), &required, 128)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+    #[test]
+    fn modern_exception_cannot_hide_other_missing_duplicate_or_unsafe_libraries() {
+        let loader = "net.fabricmc:fabric-loader:0.19.5";
+        let official = server(&[loader]);
+        for extra in ["net.fabricmc:other:26.3", "net.fabricmc:intermediary:26.3"] {
+            assert!(
+                classpath_order(
+                    Software::Fabric,
+                    "26.3",
+                    client(&[extra, loader]),
+                    &official,
+                    128
+                )
+                .is_err()
+            );
+        }
+        let intermediary = "net.fabricmc:intermediary:${modrinth.gameVersion}";
+        assert!(
+            classpath_order(
+                Software::Fabric,
+                "26.3",
+                client(&[intermediary, intermediary, loader]),
+                &official,
+                128
+            )
+            .is_err()
+        );
+        let mut unsafe_url = client(&[intermediary, loader]);
+        unsafe_url[0].url = "https://untrusted.invalid/".into();
+        assert!(classpath_order(Software::Fabric, "26.3", unsafe_url, &official, 128).is_err());
+        assert!(
+            classpath_order(
+                Software::Fabric,
+                "26.3",
+                client(&[intermediary, loader]),
+                &server(&[loader, "net.fabricmc:required:1"]),
+                128
+            )
+            .is_err()
+        );
+    }
 }

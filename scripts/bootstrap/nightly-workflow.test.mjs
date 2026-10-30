@@ -8,6 +8,13 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const ci = await readFile(path.join(root, '.github/workflows/ci.yml'), 'utf8');
 const nightly = await readFile(path.join(root, '.github/workflows/nightly.yml'), 'utf8');
 
+test('nightly binaries require the provider integration key without exposing it to PR validation', () => {
+  const build = nightly.split('\n  build:')[1].split('\n  sign:')[0];
+  assert.match(build, /CURSEFORGE_API_KEY: \$\{\{ secrets\.CURSEFORGE_API_KEY \}\}/);
+  assert.match(build, /VESTA_REQUIRE_PROVIDER_KEYS: '1'/);
+  assert.doesNotMatch(ci, /secrets\.CURSEFORGE_API_KEY/);
+});
+
 test('CI checks pushes, pull requests, and manual validation with read-only contents access', () => {
   assert.match(ci, /on:\s*\n\s+push:\s*\n\s+branches:\s*\['\*\*'\]/);
   assert.match(ci, /pull_request:\s*\n\s+branches:\s*\['\*\*'\]/);

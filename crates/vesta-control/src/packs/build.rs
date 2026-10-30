@@ -3,6 +3,7 @@
 //! This is not publication, installation authority, a provider resolver or a route.
 //! Every byte comes from the retained snapshot; paths are never reopened. Provider
 //! descriptions undergo admission here because the protocol projection is data-only.
+use super::MAX_SNAPSHOT_FILES as MAX_FILES;
 use super::{MAX_PINNED_BYTES, MAX_PINNED_FILE_BYTES, PreparedSnapshot, PrivateFileEntry};
 use crate::config::{LoaderKind, PackMetadata};
 use sha1::Sha1;
@@ -15,7 +16,7 @@ use std::{
 use url::Url;
 use vesta_protocol::pack::{
     FORMAT, INDEX_NAME,
-    catalogue::{FileSource, MAX_FILES, PackContent, Platform, Sha256, SourceKind},
+    catalogue::{FileSource, PackContent, Platform, Sha256, SourceKind},
     model::{BuilderFile, BuilderFileSource, BuilderManifest, BuilderModloader},
     project_index,
 };
@@ -23,7 +24,7 @@ use zip::{CompressionMethod, DateTime, System, ZipWriter, write::SimpleFileOptio
 
 pub const MAX_VESTA_INDEX_BYTES: usize = 1_048_576;
 pub const MAX_VESTA_ARCHIVE_BYTES: usize = 68 * 1_024 * 1_024;
-pub const MAX_VESTA_ENTRIES: usize = 4_097;
+pub const MAX_VESTA_ENTRIES: usize = vesta_protocol::pack::catalogue::MAX_FILES + 1;
 
 /// Output budgets, inclusive. Entries count actual ZIP members, including the
 /// root index; provider references do not consume a ZIP member. Snapshot work is

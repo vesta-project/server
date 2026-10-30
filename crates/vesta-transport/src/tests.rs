@@ -3,6 +3,77 @@ use http::Method;
 use std::time::Instant;
 
 #[test]
+fn provider_pack_work_cannot_starve_status_dispatch() {
+    for path in [
+        "/api/v3/manage/content",
+        "/api/v3/manage/pack/server-link/update",
+        "/api/v3/manage/pack/suggestions",
+    ] {
+        assert!(routes::pack_work_request(&Method::GET, path));
+        assert!(!routes::pack_work_request(&Method::DELETE, path));
+    }
+    for path in [
+        "/api/v3/manage/pack/install/plan",
+        "/api/v3/manage/pack/install/apply",
+        "/api/v3/manage/pack/preview",
+        "/api/v3/manage/pack/draft/import",
+        "/api/v3/manage/pack/draft/add",
+        "/api/v3/manage/pack/archive/inspect",
+        "/api/v3/manage/pack/provider/publish",
+    ] {
+        assert!(routes::pack_work_request(&Method::POST, path));
+        assert!(!routes::pack_work_request(&Method::GET, path));
+    }
+    for path in [
+        "/api/v3/manage/server/status",
+        "/api/v3/manage/pack/draft",
+        "/api/v3/manage/pack/history",
+        "/api/v3/manage/pack/preview/extra",
+        "/api/v3/manage/pack/install/plan/extra",
+    ] {
+        assert!(!routes::pack_work_request(&Method::GET, path));
+        assert!(!routes::pack_work_request(&Method::POST, path));
+    }
+}
+
+#[test]
+fn pack_review_budget_requires_a_live_request_and_cannot_extend_headers_or_expiry() {
+    let clock = ConnectionDeadline::new(Duration::from_secs(1));
+    assert!(!clock.pack_review());
+    clock.request();
+    assert!(clock.pack_review());
+    assert!(
+        matches!(*clock.phase.lock().unwrap(), Phase::Request { deadline, complete: false }
+        if deadline > Instant::now() + Duration::from_secs(120))
+    );
+    *clock.phase.lock().unwrap() = Phase::Request {
+        deadline: Instant::now() - Duration::from_secs(1),
+        complete: false,
+    };
+    assert!(!clock.pack_review());
+    assert!(routes::pack_review_request(
+        &Method::POST,
+        "/api/v3/manage/pack/install/plan"
+    ));
+    assert!(routes::pack_review_request(
+        &Method::POST,
+        "/api/v3/manage/pack/install/apply"
+    ));
+    assert!(!routes::pack_review_request(
+        &Method::GET,
+        "/api/v3/manage/pack/install/apply"
+    ));
+    assert!(!routes::pack_review_request(
+        &Method::GET,
+        "/api/v3/manage/pack/install/plan"
+    ));
+    assert!(!routes::pack_review_request(
+        &Method::POST,
+        "/api/v3/manage/lifecycle/start"
+    ));
+}
+
+#[test]
 fn reserved_control_worker_survives_slow_cancelled_ordinary_io() {
     let ordinary_runtime = tokio::runtime::Builder::new_current_thread()
         .max_blocking_threads(1)

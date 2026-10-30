@@ -135,6 +135,8 @@ jobs:
       - name: Build all four release executables
         env:
           CARGO_INCREMENTAL: '0'
+          CURSEFORGE_API_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
+          VESTA_REQUIRE_PROVIDER_KEYS: '1'
         run: |
           rustup run 1.96.0 cargo build --locked --release --target '${{ matrix.rust_target }}' \
             -p vesta-setup -p vesta-agent -p vesta-supervisor \

@@ -1,2 +1,4 @@
 [alias]
+# Interactive Windows sessions use ./dev.ps1; Cargo 1.96 contains cargo-run children.
+# This alias remains useful on Linux and for noninteractive `cargo dev build`.
 dev = "run --locked -p vesta-dev --"

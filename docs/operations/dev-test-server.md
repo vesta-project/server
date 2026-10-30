@@ -5,13 +5,22 @@
 From `V:\server-connections-mvp` after the initial installation:
 
 ```powershell
-.\scripts\dev.ps1 start   # rebuild/stage agent, recover if provably safe, leave Minecraft STOPPED
-.\scripts\dev.ps1 status  # local agent/game status
-.\scripts\dev.ps1 stop    # stop Minecraft, then gracefully shut down the agent
+.\dev.ps1                # build and update dev-server, then return
+.\dev.ps1 restart        # same update operation
+.\dev.ps1 shell          # optional tools shell
+# Inside the optional shell:
+vesta manage dev-server status
+vesta manage dev-server agent stop
 ```
 
-These are the existing dev-shell equivalents of the deferred D6 `vesta dev`
-wrapper. Use `dev.ps1 recover` for recovery without starting the agent. Recovery
+Normal updates preserve Minecraft's running/stopped state. See the
+[development guide](dev-session.md). Use the initial-installation script below
+only when creating the disposable fixture; it is not the daily update command.
+
+### Legacy scratch recovery
+
+The older `scripts/dev.ps1` remains available for explicit scratch recovery.
+Use `.\scripts\dev.ps1 recover` for recovery without starting the agent. Recovery
 is restricted to a marked scratch registry, takes registry/instance locks, refuses
 linked paths and unknown marker contents, and requires successful OS process
 enumeration showing **no JVM, agent, supervisor or setup host anywhere on the host**. The protected

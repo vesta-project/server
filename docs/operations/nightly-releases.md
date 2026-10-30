@@ -35,6 +35,12 @@ The `commands.txt` entries pin the setup executable SHA-256, exact manifest SHA-
 
 ## Operations and recovery
 
+Configure the repository secret `CURSEFORGE_API_KEY` for the native build job.
+Release builds refuse a missing key using `VESTA_REQUIRE_PROVIDER_KEYS=1`.
+The application key is embedded in agent binaries, as in the launcher, and can
+be recovered from them. Raw env files are not part of the release assets.
+Pull-request validation receives no provider secret and works without a key.
+
 Use **Actions → Nightly signed releases → Run workflow** on `main` or `feat/launcher-compat` for an intentional publishing run. The run still executes full validation and all three target builds before signing. Use the CI workflow's manual dispatch for validation without publishing.
 
 The publisher copies only the verified staging files and rebuilds the convenience archives from those files. It compares bootstrap commands against the canonical generator for the verified release pins and restores Linux executable permissions lost during artifact transport. It uploads all targets into a draft prerelease, then publishes it after successful upload. It does not mark a nightly as the latest stable release. Enable GitHub's immutable-release setting where available to add repository-enforced protection; refusal to overwrite in the workflow does not restrict an administrator's separate actions.

@@ -131,6 +131,30 @@ fn response(bytes: &[u8]) -> HttpResponse {
         body: Box::new(Cursor::new(bytes.to_vec())),
     }
 }
+
+#[test]
+fn curseforge_cdn_refusal_names_the_file_and_checksum_failures_still_refuse() {
+    let source = source(Provider::Curseforge, b"verified");
+    for status in [403, 404] {
+        let http = FakeHttp::new(vec![HttpResponse {
+            status,
+            ..response(b"provider error page")
+        }]);
+        let error = fetch_verified_source(&source, &http, Instant::now() + Duration::from_secs(1))
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ContentError::DownloadUnavailable {
+                filename: source.filename.clone()
+            }
+        );
+    }
+    let http = FakeHttp::new(vec![response(b"tampered")]);
+    assert_eq!(
+        fetch_verified_source(&source, &http, Instant::now() + Duration::from_secs(1)).unwrap_err(),
+        ContentError::HashMismatch
+    );
+}
 fn redirect(location: &str) -> HttpResponse {
     HttpResponse {
         status: 302,
@@ -853,6 +877,34 @@ fn separate_install_admission_is_bounded_and_released() {
 }
 
 #[test]
+fn queued_transfer_admission_wakes_on_release_and_never_revives_an_expired_job() {
+    let gate = InstallGate::new(1);
+    let held = gate.acquire(None).unwrap();
+    assert!(
+        gate.acquire(Some(Instant::now() - Duration::from_secs(1)))
+            .is_err()
+    );
+    assert!(
+        gate.acquire(Some(Instant::now() + Duration::from_millis(10)))
+            .is_err()
+    );
+    std::thread::scope(|scope| {
+        let (ready, waiting) = std::sync::mpsc::channel();
+        let gate = &gate;
+        let worker = scope.spawn(move || {
+            ready.send(()).unwrap();
+            let _permit = gate
+                .acquire(Some(Instant::now() + Duration::from_secs(3)))
+                .unwrap();
+        });
+        waiting.recv_timeout(Duration::from_secs(1)).unwrap();
+        drop(held);
+        worker.join().unwrap();
+    });
+    assert!(gate.acquire(None).is_ok());
+}
+
+#[test]
 fn content_inert() {
     use std::io::{BufRead, Write};
     if fs::read("content-inert").ok().as_deref() != Some(b"owned-content-fixture") {
@@ -948,9 +1000,17 @@ fn content_stages_while_running_applies_before_restart_and_cancels() {
             )
             .is_err()
     );
-    let cancelled=f.files.content_cancel_remote(&f.owner,&change.id,"cancel-first").unwrap();
-    assert_eq!(cancelled["state"],"cancelled");
-    assert_eq!(f.files.content_cancel_remote(&f.owner,&change.id,"cancel-first").unwrap(),cancelled);
+    let cancelled = f
+        .files
+        .content_cancel_remote(&f.owner, &change.id, "cancel-first")
+        .unwrap();
+    assert_eq!(cancelled["state"], "cancelled");
+    assert_eq!(
+        f.files
+            .content_cancel_remote(&f.owner, &change.id, "cancel-first")
+            .unwrap(),
+        cancelled
+    );
     assert!(!f.db.directory().path().join("content-pending").exists());
     let change = f
         .files
@@ -1070,8 +1130,12 @@ fn datapack_destination_uses_configured_main_world_for_vanilla_and_plugin_forks(
     }
     let world = f.files.world(&f.owner).unwrap();
     assert_eq!(world.name, "survival");
-    for software in ["vanilla", "fabric", "bukkit", "spigot", "paper", "purpur", "folia"] {
-        let destination = ContentKind::Datapack.directory(Some(software), &world.name).unwrap();
+    for software in [
+        "vanilla", "fabric", "bukkit", "spigot", "paper", "purpur", "folia",
+    ] {
+        let destination = ContentKind::Datapack
+            .directory(Some(software), &world.name)
+            .unwrap();
         assert_eq!(destination, "survival/datapacks");
         assert!(!destination.contains("_nether"));
         assert!(!destination.contains("_the_end"));

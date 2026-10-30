@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{collections::BTreeMap, io::Seek};
 
-const MAX_PENDING: i64 = 128;
+const MAX_PENDING: i64 = vesta_protocol::pack::catalogue::MAX_FILES as i64;
 static CONTENT_ADMISSION: std::sync::Mutex<()> = std::sync::Mutex::new(());
 const MAX_STAGED: i64 = 128 * 1024 * 1024;
 pub(super) fn initialize(db: &StateDatabase) -> Result<()> {
@@ -26,6 +26,8 @@ pub(super) fn initialize(db: &StateDatabase) -> Result<()> {
 struct Change {
     #[serde(default)]
     pack_file: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    payload: Option<crate::packs::payload::Payload>,
     #[serde(default)]
     folder: bool,
     kind: ContentKind,
@@ -54,11 +56,10 @@ impl Change {
     }
 }
 impl FileBrowser {
-    pub(crate) fn pack_jar_side(bytes: &[u8]) -> Option<String> {
-        jar_metadata(std::io::Cursor::new(bytes))
-            .ok()
-            .flatten()
-            .and_then(|m| m.side)
+    pub(crate) fn pack_jar_side_reader(
+        reader: impl std::io::Read + std::io::Seek,
+    ) -> Option<String> {
+        jar_metadata(reader).ok().flatten().and_then(|m| m.side)
     }
 
     pub(crate) fn pack_admission(&self) -> Result<std::sync::MutexGuard<'static, ()>> {
@@ -73,14 +74,38 @@ impl FileBrowser {
         key: &str,
         files: &[(String, Option<String>, Vec<u8>, Option<ContentProvider>)],
     ) -> Result<Vec<String>> {
+        self.stage_pack_bytes_in(c, subject, key, files, None)
+    }
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn stage_pack_payloads_in(
+        &self,
+        c: &rusqlite::Connection,
+        subject: &Subject,
+        key: &str,
+        files: &[(
+            String,
+            Option<String>,
+            crate::packs::payload::Payload,
+            Option<ContentProvider>,
+        )],
+    ) -> Result<Vec<String>> {
+        let rows: Vec<_> = files
+            .iter()
+            .map(|(p, e, _, r)| (p.clone(), e.clone(), Vec::new(), r.clone()))
+            .collect();
+        let payloads: Vec<_> = files.iter().map(|(_, _, b, _)| b.clone()).collect();
+        self.stage_pack_bytes_in(c, subject, key, &rows, Some(&payloads))
+    }
+    #[allow(clippy::type_complexity)]
+    fn stage_pack_bytes_in(
+        &self,
+        c: &rusqlite::Connection,
+        subject: &Subject,
+        key: &str,
+        files: &[(String, Option<String>, Vec<u8>, Option<ContentProvider>)],
+        payloads: Option<&[crate::packs::payload::Payload]>,
+    ) -> Result<Vec<String>> {
         let (count, size): (i64, i64) = c.query_row("SELECT count(*),coalesce(sum(length(bytes)),0) FROM server_content_changes WHERE state='pending'", [], |r| Ok((r.get(0)?,r.get(1)?)))?;
-        let retained: i64 =
-            c.query_row("SELECT count(*) FROM server_content_changes", [], |r| {
-                r.get(0)
-            })?;
-        if retained + files.len() as i64 > 10_000 {
-            return Err(FileError::IntentsFull);
-        }
         if count + files.len() as i64 > MAX_PENDING
             || size + files.iter().map(|f| f.2.len() as i64).sum::<i64>() > MAX_STAGED
         {
@@ -89,6 +114,7 @@ impl FileBrowser {
         let mut ids = Vec::new();
         for (index, (path, expected, bytes, provider)) in files.iter().enumerate() {
             let change = Change {
+                payload: payloads.map(|values| values[index].clone()),
                 folder: false,
                 pack_file: true,
                 kind: ContentKind::Mod,
@@ -144,6 +170,7 @@ impl FileBrowser {
         let mut ids = Vec::new();
         for (index, (path, hash)) in removals.iter().enumerate() {
             let change = Change {
+                payload: None,
                 pack_file: true,
                 folder: false,
                 kind: ContentKind::Mod,
@@ -289,7 +316,7 @@ impl FileBrowser {
                 if entry.kind != EntryKind::File || !is_jar(&entry.name) {
                     continue;
                 }
-                if items.len() >= 1000 {
+                if items.len() >= vesta_protocol::pack::catalogue::MAX_FILES {
                     truncated = true;
                     break;
                 }
@@ -312,11 +339,9 @@ impl FileBrowser {
                     .map(|hash| self.content_provider(&path, hash))
                     .transpose()?
                     .flatten();
-                let declared = if hash.is_some() {
-                    self.content_metadata(subject, &relative).ok().flatten()
-                } else {
-                    None
-                };
+                // Declared side/name come from a bounded ZIP metadata read, independently
+                // of the full-file hash budget used for provider provenance.
+                let declared = self.content_metadata(subject, &relative).ok().flatten();
                 items.push(ContentEntry {
                     modpack_owned: false,
                     kind,
@@ -377,27 +402,41 @@ impl FileBrowser {
             });
         }
         let changes = self.db.read_with(|tx| {
-            let mut q = tx.connection().prepare("SELECT id,change_json,error FROM server_content_changes WHERE state='pending' ORDER BY rowid LIMIT 128")?;
+            let mut q = tx.connection().prepare("SELECT id,change_json,error FROM server_content_changes WHERE state='pending' ORDER BY rowid LIMIT 65536")?;
             q.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?)))?.collect::<std::result::Result<Vec<_>,_>>().map_err(FileError::from)
         }).map_err(FileError::from)?;
+        let mut positions: BTreeMap<_, _> = items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (item.path.clone(), index))
+            .collect();
         for (id, raw, error) in changes {
             let change: Change = serde_json::from_str(&raw).map_err(|_| FileError::Unavailable)?;
             // Pending paths and provider IDs obey the same scopes as live files.
-            self.authorized_parent(
-                subject,
-                &RelativePath::parse(&change.path)?,
-                Capability::FilesRead,
-            )?;
-            let index = items.iter().position(|item| item.path == change.path);
+            self.validate_content_change(&change)?;
+            self.db
+                .read_with(|tx| {
+                    self.remote_authorize(
+                        tx.connection(),
+                        subject,
+                        &[(Capability::FilesRead.id().into(), change.path.clone())],
+                    )
+                })
+                .map_err(FileError::from)?;
+            let index = positions.get(&change.path).copied();
             let item = if let Some(index) = index {
                 &mut items[index]
             } else {
+                positions.insert(change.path.clone(), items.len());
                 items.push(ContentEntry {
                     modpack_owned: false,
                     kind: change.kind,
                     filename: change.path.rsplit('/').next().unwrap_or_default().into(),
                     path: change.path.clone(),
-                    size: "0".into(),
+                    size: change
+                        .payload
+                        .as_ref()
+                        .map_or_else(|| "0".into(), |p| p.size.to_string()),
                     enabled: None,
                     sha256: None,
                     provider: change.provider.clone(),
@@ -408,6 +447,16 @@ impl FileBrowser {
                 });
                 items.last_mut().ok_or(FileError::Unavailable)?
             };
+            if is_jar(&change.path)
+                && let Some(payload) = &change.payload
+            {
+                let store = crate::packs::payload::Store::open(&self.db)?;
+                let _lease = store.lease()?;
+                item.declared = store
+                    .open_file(payload)
+                    .ok()
+                    .and_then(|file| jar_metadata(file).ok().flatten());
+            }
             item.pending = Some(change.action);
             item.pending_id = Some(id);
             item.pending_error = error;
@@ -462,7 +511,11 @@ impl FileBrowser {
             software,
         })
     }
-    fn content_provider(&self, path: &str, hash: &str) -> Result<Option<ContentProvider>> {
+    pub(crate) fn content_provider(
+        &self,
+        path: &str,
+        hash: &str,
+    ) -> Result<Option<ContentProvider>> {
         let raw = self.db.read(|c| {
             c.query_row(
                 "SELECT provider_json FROM server_content_provenance WHERE path=? AND sha256=?",
@@ -560,6 +613,7 @@ impl FileBrowser {
             subject,
             key,
             Change {
+                payload: None,
                 pack_file: false,
                 folder,
                 kind,
@@ -589,6 +643,7 @@ impl FileBrowser {
             subject,
             key,
             Change {
+                payload: None,
                 pack_file: false,
                 folder: false,
                 kind,
@@ -607,6 +662,11 @@ impl FileBrowser {
         )
     }
     fn validate_content_change(&self, change: &Change) -> Result<()> {
+        if change.payload.is_some()
+            && (!change.pack_file || !matches!(change.action.as_str(), "install" | "update"))
+        {
+            return Err(FileError::InvalidPath);
+        }
         RelativePath::parse(&change.path)?;
         if change.pack_file {
             crate::packs::workspace::validate_install_path(&change.path)
@@ -664,7 +724,7 @@ impl FileBrowser {
                 return if hash == stored { Ok(id) } else { Err(FileError::IdempotencyConflict) };
             }
             let (count,size): (i64,i64) = c.query_row("SELECT count(*),COALESCE(sum(length(bytes)),0) FROM server_content_changes WHERE state='pending'",[],|r| Ok((r.get(0)?,r.get(1)?)))?;
-            let retained:i64=c.query_row("SELECT count(*) FROM server_content_changes",[],|r|r.get(0))?;
+            let retained:i64=c.query_row("SELECT count(*) FROM server_content_changes WHERE coalesce(json_extract(change_json,'$.pack_file'),0)=0",[],|r|r.get(0))?;
             if retained>=10000{return Err(FileError::IntentsFull);}
             if count >= MAX_PENDING || size + bytes.len() as i64 > MAX_STAGED { return Err(FileError::IntentsFull); }
             let busy: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM server_content_changes WHERE state='pending' AND (json_extract(change_json,'$.path') IN (?,?) OR json_extract(change_json,'$.target') IN (?,?)))",params![change.path,change.target,change.path,change.target],|r|r.get(0))?;
@@ -751,6 +811,7 @@ impl FileBrowser {
             })
             .map_err(FileError::from)?;
         self.reconcile_content_barrier()?;
+        let _ = crate::packs::payload::Store::open(&self.db).and_then(|store| store.collect());
         self.content_change(id)
     }
     pub fn content_cancel_remote(
@@ -823,10 +884,16 @@ impl FileBrowser {
         let _admission = CONTENT_ADMISSION
             .lock()
             .map_err(|_| FileError::Unavailable)?;
-        let ids = self.db.read(|c| { let mut q=c.prepare("SELECT id FROM server_content_changes WHERE state='pending' ORDER BY rowid LIMIT 128")?; q.query_map([],|r|r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>().map_err(Into::into) })?;
-        for id in ids {
-            self.apply_content_id(&id)?;
+        loop {
+            let ids = self.db.read(|c| { let mut q=c.prepare("SELECT id FROM server_content_changes WHERE state='pending' ORDER BY rowid LIMIT 64")?; q.query_map([],|r|r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>().map_err(Into::into) })?;
+            if ids.is_empty() {
+                break;
+            }
+            for id in ids {
+                self.apply_content_id(&id)?;
+            }
         }
+        let _ = crate::packs::payload::Store::open(&self.db).and_then(|store| store.collect());
         self.reconcile_content_barrier()
     }
     fn apply_content_id(&self, id: &str) -> Result<()> {
@@ -841,7 +908,8 @@ impl FileBrowser {
         };
         let change: Change = serde_json::from_str(&raw).map_err(|_| FileError::Unavailable)?;
         self.validate_content_change(&change)?;
-        let files = self.for_remote();
+        let mut files = self.for_remote();
+        files.pack_effect = change.pack_file;
         let path = RelativePath::parse(&change.path)?;
         let key = format!("content-{id}");
         if change.folder {
@@ -865,7 +933,7 @@ impl FileBrowser {
             let outcome = match change.action.as_str() {
                 "install" | "update" => {
                     let condition=change.expected.clone().map_or(WritePrecondition::Absent,WritePrecondition::Matches);
-                    let value=files.write(&subject,&path,&condition,&bytes)?;
+                    let value=if let Some(payload)=&change.payload { files.write_pack_payload(&subject,&path,&condition,payload)? } else { files.write(&subject,&path,&condition,&bytes)? };
                     json!({"sha256":value.sha256,"size":value.size.to_string(),"trash_id":value.trash})
                 }
                 "remove" if change.folder => {
@@ -888,7 +956,7 @@ impl FileBrowser {
                 let c=tx.connection();
                 c.execute("DELETE FROM server_content_provenance WHERE path=?",[&change.path])?;
                 if let Some(provider)=change.provider.as_ref().or(if change.pack_file {None}else{old.as_ref()}) && change.action!="remove" {
-                    let hash=if bytes.is_empty(){change.expected.clone().unwrap_or_default()}else{hex::encode(Sha256::digest(&bytes))};
+                    let hash=if let Some(payload)=&change.payload {payload.sha256.clone()} else if bytes.is_empty(){change.expected.clone().unwrap_or_default()}else{hex::encode(Sha256::digest(&bytes))};
                     c.execute("INSERT OR REPLACE INTO server_content_provenance VALUES(?,?,?)",params![change.target.as_ref().unwrap_or(&change.path),hash,serde_json::to_string(provider).map_err(|_|FileError::Unavailable)?])?;
                 }
                 c.execute("UPDATE server_content_changes SET state='applied',bytes=X'',error=NULL WHERE id=?",[id])?;
@@ -985,6 +1053,11 @@ fn jar_metadata(reader: impl Read + Seek) -> Result<Option<DeclaredMetadata>> {
                 .as_str()
                 .or(value["minecraft"]["environment"].as_str())
                 .map(str::to_owned);
+            // Fabric defines an omitted environment as all physical environments.
+            // https://docs.fabricmc.net/develop/loader/fabric-mod-json#environment
+            if loader == "fabric" && value.get("environment").is_none() {
+                result.side = Some("*".into());
+            }
             if let Some(deps) = data["depends"].as_object() {
                 result.dependencies = deps.keys().take(256).cloned().collect();
             }
@@ -1068,6 +1141,25 @@ mod tests {
             .unwrap();
         zip.write_all(text.as_bytes()).unwrap();
         zip.finish().unwrap().into_inner()
+    }
+    #[test]
+    fn fabric_environment_defaults_to_both_without_overriding_explicit_client_side() {
+        for (document, side) in [
+            (r#"{"id":"example","version":"1"}"#, "*"),
+            (
+                r#"{"id":"example","version":"1","environment":"client"}"#,
+                "client",
+            ),
+        ] {
+            assert_eq!(
+                jar_metadata(Cursor::new(jar("fabric.mod.json", document)))
+                    .unwrap()
+                    .unwrap()
+                    .side
+                    .as_deref(),
+                Some(side)
+            );
+        }
     }
     #[test]
     fn jar_metadata_reads_fabric_quilt_forge_and_plugin_declarations() {

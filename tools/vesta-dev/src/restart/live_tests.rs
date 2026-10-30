@@ -39,7 +39,7 @@ fn real_restart_preserves_running_and_stopped_games() {
             serde_json::to_string(&path.to_string_lossy().replace('\\', "/")).unwrap()
         };
         let document = format!(
-            "schema-version=1\n[paths]\nstate={}\ngame={}\nscan-roots=[{}]\nlaunch-definition={}\n[pack]\nname='Owned inert fixture'\nversion='1'\nrevision=1\nminimum-revision=1\nminecraft-version='1.21.1'\n[pack-access]\nmode='minecraft'\n[listener]\nmode='disabled'\n[process]\nsupervision='{}'\n",
+            "schema-version=1\n[paths]\nstate={}\ngame={}\nscan-roots=[{}]\nlaunch-definition={}\n[pack]\nname='Owned inert fixture'\nversion='1'\nrevision=1\nminimum-revision=1\nminecraft-version='1.21.1'\n[pack-access]\nmode='minecraft'\n[listener]\nmode='disabled'\n[process]\nsupervision='{}'\non-agent-start='start'\n",
             literal(&directory.join("state")),
             literal(&directory.join("game")),
             literal(&directory.join("game/config")),
@@ -87,7 +87,7 @@ fn real_restart_preserves_running_and_stopped_games() {
                 }
                 let before = agent.manage("status")?;
                 assert_eq!(was_running(&before)?, running);
-                run(&bin, temp.path(), &root, ID, None)?;
+                run(&bin, temp.path(), &root, ID, None, None)?;
                 let after = agent.manage("status")?;
                 assert_ne!(before["agentPid"], after["agentPid"]);
                 assert_eq!(after["localOnly"], true);
@@ -112,8 +112,8 @@ fn real_restart_preserves_running_and_stopped_games() {
             }
             // One-time legacy migration: after a manual graceful stop, an
             // explicit listener choice can bring back only the agent.
-            assert!(run(&bin, temp.path(), &root, ID, None).is_err());
-            run(&bin, temp.path(), &root, ID, Some(true))?;
+            assert!(run(&bin, temp.path(), &root, ID, None, None).is_err());
+            run(&bin, temp.path(), &root, ID, None, Some(false))?;
             assert!(!was_running(&agent.manage("status")?)?);
             let stopped = agent
                 .command()

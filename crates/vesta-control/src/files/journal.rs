@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 pub(super) struct Intent {
     #[serde(default)]
     pub(super) directory: bool,
+    /// Private disk payloads are admitted against actual free space rather than RAM quotas.
+    #[serde(default)]
+    pub(super) disk_backed: bool,
     pub(super) to: Option<String>,
     pub(super) previous: Option<String>,
     pub(super) effect: Option<String>,
@@ -204,10 +207,11 @@ impl FileBrowser {
             }
         });
         if count >= MAX_FILE_INTENTS as i64
-            || u64::try_from(bytes)
-                .map_err(|_| FileError::Unavailable)?
-                .saturating_add(incoming)
-                > MAX_INTENT_STAGED_BYTES
+            || !intent.disk_backed
+                && u64::try_from(bytes)
+                    .map_err(|_| FileError::Unavailable)?
+                    .saturating_add(incoming)
+                    > MAX_INTENT_STAGED_BYTES
         {
             return Err(FileError::IntentsFull);
         }
@@ -241,7 +245,7 @@ impl FileBrowser {
                 let target = self.parent(&path).map(|p| p.join(leaf(&path)));
                 let valid_target = self.checked_existing_path(&path, kind == "mkdir" || intent.directory).is_ok();
                 let copy_valid = if let Some(trash) = &intent.trash {
-                    if let Some(entry) = load_entry(c, self.db.server_id(), trash)? { read_trash(&self.trash_dir()?, &trash_name(trash)?, &entry).is_ok() } else { false }
+                    if let Some(entry) = load_entry(c, self.db.server_id(), trash)? { open_trash(&self.trash_dir()?, &trash_name(trash)?, &entry).and_then(hash_file).is_ok_and(|hash|hash==entry.sha256) } else { false }
                 } else { true };
                 // A replacement consumes its stage in one rename. If identical
                 // old/new hashes cannot distinguish the target, an intact private

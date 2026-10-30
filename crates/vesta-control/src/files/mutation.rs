@@ -32,7 +32,7 @@ use vesta_state::{
 
 pub const MAX_WRITE_BYTES: usize = 16 * 1_024 * 1_024;
 /// Larger existing files cannot be made recoverable, so overwriting/deleting them refuses.
-pub const MAX_TRASH_FILE_BYTES: u64 = 256 * 1_024 * 1_024;
+pub const MAX_TRASH_FILE_BYTES: u64 = vesta_protocol::pack::catalogue::MAX_FILE_SIZE;
 /// Free space a write must leave on the target volume.
 pub const SPACE_RESERVE_BYTES: u64 = 64 * 1_024 * 1_024;
 /// Per-server durable reservations, including cleanup-blocked terminal intents.
@@ -292,6 +292,54 @@ impl FileBrowser {
         if bytes.len() > MAX_WRITE_BYTES {
             return Err(FileError::TooLarge);
         }
+        self.write_reader_locked(
+            subject,
+            path,
+            precondition,
+            &mut std::io::Cursor::new(bytes),
+            bytes.len() as u64,
+            hex::encode(Sha256::digest(bytes)),
+            upload,
+            false,
+        )
+    }
+
+    pub(crate) fn write_pack_payload(
+        &self,
+        subject: &Subject,
+        path: &RelativePath,
+        precondition: &WritePrecondition,
+        payload: &crate::packs::payload::Payload,
+    ) -> Result<FileChange> {
+        let admission = mutation_admission(self.db.directory().path())?;
+        let _guard = self.mutation_guard(&admission)?;
+        let store = crate::packs::payload::Store::open(&self.db)?;
+        let _lease = store.lease()?;
+        let mut file = store.open_file(payload)?;
+        self.write_reader_locked(
+            subject,
+            path,
+            precondition,
+            &mut file,
+            payload.size,
+            payload.sha256.clone(),
+            None,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_reader_locked(
+        &self,
+        subject: &Subject,
+        path: &RelativePath,
+        precondition: &WritePrecondition,
+        reader: &mut dyn Read,
+        size: u64,
+        sha256: String,
+        upload: Option<&str>,
+        disk_backed: bool,
+    ) -> Result<FileChange> {
         if let WritePrecondition::Matches(expected) = precondition {
             check_hex(expected)?;
         }
@@ -299,14 +347,13 @@ impl FileBrowser {
             WritePrecondition::Absent => Capability::FilesCreate,
             WritePrecondition::Matches(_) => Capability::FilesOverwrite,
         };
-        let sha256 = hex::encode(Sha256::digest(bytes));
         let parent = self.authorized_parent(subject, path, capability)?;
         let target = parent.join(leaf(path));
         let incoming = match precondition {
             WritePrecondition::Absent => 0,
             WritePrecondition::Matches(_) => fs::metadata(&target).map_err(io_error)?.len(),
         };
-        self.require_mutation_space(&parent, bytes.len() as u64, incoming)?;
+        self.require_mutation_space(&parent, size, incoming)?;
         let stage = Stage::planned(&parent)?;
         let trash = match precondition {
             WritePrecondition::Absent => None,
@@ -326,8 +373,9 @@ impl FileBrowser {
                 stage: Some(stage.leaf()?),
                 trash: trash.clone(),
                 upload: upload.map(str::to_owned),
-                size: bytes.len() as u64,
-                staged_bytes: Some((bytes.len() as u64).max(incoming)),
+                size,
+                staged_bytes: Some(size.max(incoming)),
+                disk_backed,
                 ..Intent::default()
             },
         )?;
@@ -342,7 +390,7 @@ impl FileBrowser {
                     id,
                 )?;
             }
-            stage.create(bytes)
+            stage.create_reader(reader, size, &sha256)
         })();
         if let Err(error) = &prepared {
             // Creation owns even a partially written stage. Drop its private
@@ -400,7 +448,7 @@ impl FileBrowser {
             }
             Ok(FileChange {
                 sha256: sha256.clone(),
-                size: bytes.len() as u64,
+                size,
                 trash: trash.clone(),
             })
         });
@@ -523,7 +571,7 @@ impl FileBrowser {
         let parent = self.authorized_parent(subject, &entry.path, Capability::FilesCreate)?;
         require_space(&parent, entry.size)?;
         let trash = self.trash_dir()?;
-        let bytes = read_trash(&trash, &name, &entry)?;
+        let mut source = open_trash(&trash, &name, &entry)?;
         let stage = Stage::planned(&parent)?;
         let permissions = self
             .db
@@ -552,12 +600,14 @@ impl FileBrowser {
                 stage: Some(stage.leaf()?),
                 trash: Some(id.into()),
                 size: entry.size,
+                disk_backed: true,
                 ..Intent::default()
             },
         )?;
         let prepared = stage
-            .create(&bytes)
+            .create_reader(&mut source, entry.size, &entry.sha256)
             .and_then(|()| stage.permissions(&permissions));
+        drop(source);
         if let Err(error) = &prepared {
             drop(stage);
             self.failed_intent(&intent, &prepared)?;
@@ -711,7 +761,7 @@ impl FileBrowser {
             for (id, text, effect, principal, device, reason) in &rows {
                 let path = RelativePath::parse(text)?;
                 let entry = load_entry(connection, self.db.server_id(), id)?.ok_or(FileError::Unavailable)?;
-                let copy_valid = read_trash(&self.trash_dir()?, &trash_name(id)?, &entry).is_ok();
+                let copy_valid = open_trash(&self.trash_dir()?, &trash_name(id)?, &entry).and_then(hash_file).is_ok_and(|hash|hash==entry.sha256);
                 let target = self.parent(&path).map(|parent| parent.join(leaf(&path)));
                 let known = copy_valid && target.as_ref().is_ok_and(|target| {
                     effect.as_ref() != Some(&entry.sha256) && require_hash(target, effect.as_deref()).is_ok()
@@ -1088,14 +1138,14 @@ impl FileBrowser {
                         ))
                     })
                     .map_err(FileError::from)?;
-                let bytes = read_trash(&trash, &name, &entry)?;
+                let mut source = open_trash(&trash, &name, &entry)?;
                 let parent = target.parent().ok_or(FileError::Unavailable)?;
                 let stage = Stage::planned(parent)?;
                 if let Some(intent) = intent {
                     self.record_compensation_stage(intent, &stage.leaf()?, entry.size)?;
                     stage.retained.set(true);
                 }
-                stage.create(&bytes)?;
+                stage.create_reader(&mut source, entry.size, &entry.sha256)?;
                 stage.permissions(&permissions)?;
                 crash_point("compensation")?;
                 #[cfg(test)]
@@ -1154,7 +1204,15 @@ impl Stage {
         stage.create(bytes)?;
         Ok(stage)
     }
+    #[cfg(test)]
     fn create(&self, bytes: &[u8]) -> Result<()> {
+        self.create_reader(
+            &mut std::io::Cursor::new(bytes),
+            bytes.len() as u64,
+            &hex::encode(Sha256::digest(bytes)),
+        )
+    }
+    fn create_reader(&self, reader: &mut dyn Read, size: u64, expected: &str) -> Result<()> {
         let mut options = fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -1164,7 +1222,24 @@ impl Stage {
         }
         let mut file = options.open(&self.path).map_err(io_error)?;
         self.created.set(true);
-        file.write_all(bytes).map_err(io_error)?;
+        let mut count = 0u64;
+        let mut hash = Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let n = reader.read(&mut buffer).map_err(io_error)?;
+            if n == 0 {
+                break;
+            }
+            count = count.checked_add(n as u64).ok_or(FileError::TooLarge)?;
+            if count > size {
+                return Err(FileError::Corrupt);
+            }
+            file.write_all(&buffer[..n]).map_err(io_error)?;
+            hash.update(&buffer[..n]);
+        }
+        if count != size || hex::encode(hash.finalize()) != expected {
+            return Err(FileError::Corrupt);
+        }
         file.sync_all().map_err(io_error)?;
         Ok(())
     }
@@ -1255,7 +1330,7 @@ fn require_absent(target: &Path) -> Result<()> {
     }
 }
 
-pub(super) fn require_space(parent: &Path, incoming: u64) -> Result<()> {
+pub(crate) fn require_space(parent: &Path, incoming: u64) -> Result<()> {
     let (available, _) = native::volume_space(parent)?;
     require_available(available, incoming)
 }
@@ -1274,20 +1349,27 @@ fn require_available(available: u64, incoming: u64) -> Result<()> {
     Ok(())
 }
 
+fn open_trash(trash: &ArtifactDirectory, name: &ArtifactName, entry: &TrashEntry) -> Result<File> {
+    let file = trash
+        .open(name)
+        .map_err(state_io)?
+        .ok_or(FileError::NotFound)?;
+    if file.metadata().map_err(io_error)?.len() != entry.size {
+        return Err(FileError::Conflict(None));
+    }
+    // Stage::create_reader verifies both length and digest before any replacement.
+    Ok(file)
+}
+#[cfg(test)]
 fn read_trash(
     trash: &ArtifactDirectory,
     name: &ArtifactName,
     entry: &TrashEntry,
 ) -> Result<Vec<u8>> {
-    let file = trash
-        .open(name)
-        .map_err(state_io)?
-        .ok_or(FileError::NotFound)?;
+    let mut file = open_trash(trash, name, entry)?;
     let mut bytes = Vec::new();
-    file.take(entry.size + 1)
-        .read_to_end(&mut bytes)
-        .map_err(io_error)?;
-    if bytes.len() as u64 != entry.size || hex::encode(Sha256::digest(&bytes)) != entry.sha256 {
+    file.read_to_end(&mut bytes).map_err(io_error)?;
+    if hex::encode(Sha256::digest(&bytes)) != entry.sha256 {
         return Err(FileError::Conflict(None));
     }
     Ok(bytes)

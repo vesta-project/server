@@ -136,8 +136,12 @@ pub async fn run(source: &Path, base: &Path, local_only: bool, allow_local: bool
         let network = host.network_handle();
         match tokio::task::spawn_blocking(move || Transport::start(network, &listener)).await {
             Ok(Ok(t)) => Some(t),
-            _ => {
-                eprintln!("transport_start_failed");
+            failed => {
+                let code = match failed {
+                    Ok(Err(error)) => error.code(),
+                    _ => "transport_unavailable",
+                };
+                eprintln!("listener_failed: {code}");
                 sftp.shutdown().await;
                 shutdown_host(host, sessions);
                 return ExitCode::FAILURE;

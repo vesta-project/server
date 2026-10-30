@@ -92,6 +92,11 @@ impl StateDirectory {
         self.flat_directory(SPOOL_DIR)
     }
 
+    /// Verified pack payloads retained by durable reviews and pending file effects.
+    pub fn pack_payloads(&self) -> Result<ArtifactDirectory> {
+        self.flat_directory("pack-payloads")
+    }
+
     /// Owner-only supervisor records (process generation, lock). Never game-readable.
     pub fn supervisor(&self) -> Result<ArtifactDirectory> {
         self.flat_directory(SUPERVISOR_DIR)

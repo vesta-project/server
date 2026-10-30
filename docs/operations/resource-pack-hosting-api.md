@@ -13,8 +13,9 @@ claims accepted from a client. Revocation is checked again by build workers and
 the native writer. Requesters never supply a trusted download URL or provider
 digest. Provider inputs use server-side Modrinth/CurseForge identity, content-kind,
 version compatibility, CDN and hash validation.
-CurseForge uses the same trusted `VESTA_CURSEFORGE_API_KEY` environment setting
-as the existing content/client-pack adapters; it is never a management body field.
+CurseForge uses the same bundled application key and trusted runtime overrides
+as the content/client-pack adapters (see `pack-workspace.md`); it is never a
+management body field.
 
 All management responses use the existing `{data: ...}` / `{error: {code: ...}}`
 envelope. Management changes use `POST`, `Content-Type: application/json` and the

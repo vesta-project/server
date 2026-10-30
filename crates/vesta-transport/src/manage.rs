@@ -25,8 +25,6 @@ pub(super) mod content;
 pub(super) mod files;
 #[path = "manage_hosting.rs"]
 pub(super) mod hosting;
-#[path = "manage_resource_packs.rs"]
-pub(super) mod resource_packs;
 #[path = "manage_metrics.rs"]
 mod metrics;
 #[path = "manage_moderation.rs"]
@@ -37,6 +35,8 @@ pub(super) mod pack_workspace;
 mod permissions;
 #[path = "manage_presentation.rs"]
 pub(super) mod presentation;
+#[path = "manage_resource_packs.rs"]
+pub(super) mod resource_packs;
 #[path = "manage_status.rs"]
 pub(super) mod status;
 
@@ -54,7 +54,8 @@ pub(super) fn automation_endpoint(path: &str) -> bool {
     automation::implemented(path)
 }
 pub(super) fn implemented(path: &str) -> bool {
-    crate::pack_sync::implemented(path) || pack_workspace::implemented(path)
+    crate::pack_sync::implemented(path)
+        || pack_workspace::implemented(path)
         || hosting::implemented(path)
         || automation::implemented(path)
         || presentation::implemented(path)
@@ -216,6 +217,17 @@ fn pack_error(error_value: vesta_control::packs::ReleaseError) -> Reply {
         return error(StatusCode::FORBIDDEN, "management_forbidden");
     }
     match error_value {
+        vesta_control::packs::ReleaseError::ProviderFile { failure, details } => {
+            let status = if failure == vesta_control::packs::ProviderFailure::DownloadUnavailable {
+                StatusCode::UNPROCESSABLE_ENTITY
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            envelope(
+                status,
+                json!({"error":{"code":failure.code(),"details":details}}),
+            )
+        }
         vesta_control::packs::ReleaseError::Conflict => {
             error(StatusCode::PRECONDITION_FAILED, "precondition_failed")
         }
@@ -235,6 +247,13 @@ fn pack_error(error_value: vesta_control::packs::ReleaseError) -> Reply {
             error(StatusCode::BAD_REQUEST, "pack_release_version_invalid")
         }
         vesta_control::packs::ReleaseError::Pack(e) => match e {
+              vesta_control::packs::PackError::InsufficientSpace => {
+                  error(StatusCode::INSUFFICIENT_STORAGE,e.code())
+              }
+            vesta_control::packs::PackError::ProviderNotConfigured
+            | vesta_control::packs::PackError::ProviderUnavailable => {
+                error(StatusCode::SERVICE_UNAVAILABLE, e.code())
+            }
             vesta_control::packs::PackError::TooLarge => {
                 error(StatusCode::PAYLOAD_TOO_LARGE, "pack_too_large")
             }
@@ -255,6 +274,52 @@ fn pack_outcome(value: vesta_control::packs::PackOutcome) -> Reply {
     ok(
         json!({"outcome":"succeeded","hosted_revision":value.hosted_revision.to_string(),"minimum_revision":value.minimum_revision.to_string()}),
     )
+}
+#[cfg(test)]
+mod provider_error_tests {
+    use super::*;
+    #[test]
+    fn unavailable_file_error_exposes_public_identity_without_urls() {
+        use vesta_control::packs::{ProviderFailure, ProviderFailureDetails, ReleaseError};
+        let reply = pack_error(ReleaseError::ProviderFile {
+            failure: ProviderFailure::DownloadUnavailable,
+            details: ProviderFailureDetails {
+                stage: "metadata",
+                provider: "curseforge".into(),
+                project_id: "1691925".into(),
+                version_id: "9022781".into(),
+                filename: Some("mielon's-the-sift+26.3.jar".into()),
+            },
+        });
+        assert_eq!(reply.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let crate::ReplyBody::Bytes(bytes) = reply.body() else {
+            panic!("expected JSON");
+        };
+        let value: Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(value["error"]["code"], "content_pack_download_unavailable");
+        assert_eq!(
+            value["error"]["details"]["filename"],
+            "mielon's-the-sift+26.3.jar"
+        );
+        assert_eq!(value["error"]["details"]["projectId"], "1691925");
+        assert!(value["error"]["details"].get("downloadUrl").is_none());
+    }
+    #[test]
+    fn provider_errors_keep_configuration_and_download_reasons_on_the_wire() {
+        for error_value in [
+            vesta_control::packs::PackError::ProviderNotConfigured,
+            vesta_control::packs::PackError::ProviderUnavailable,
+        ] {
+            let expected = error_value.code();
+            let reply = pack_error(error_value.into());
+            assert_eq!(reply.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let crate::ReplyBody::Bytes(bytes) = reply.body() else {
+                panic!("expected bounded JSON");
+            };
+            let body: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+            assert_eq!(body["error"]["code"], expected);
+        }
+    }
 }
 /// Replace only exact known configured absolute paths and retained agent-issued credentials.
 pub(super) fn redact_console(host: &NetworkHost, text: &str) -> Result<String, ManagementError> {

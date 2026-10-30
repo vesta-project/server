@@ -342,11 +342,12 @@ fn independent_mixed_index_and_zip_structure_are_exact_and_repeatable() {
 
 #[test]
 fn nonportable_names_cannot_become_descriptors_for_owned_byte_building() {
-    // Catalogue and filesystem authorization remain deliberately ASCII-only.
-    // Do not widen their admission to make a ZIP filename fixture pass.
+    // Portable ASCII names admit ordinary mod/config filenames, while aliases,
+    // reserved Windows devices and traversal remain forbidden.
     for path in [
         "config/café.txt",
-        "config/config file.txt",
+        "config/config file.txt ",
+        "config/CON .txt",
         "config/CON.txt",
         "../escaped.txt",
         "/root.txt",
@@ -357,6 +358,15 @@ fn nonportable_names_cannot_become_descriptors_for_owned_byte_building() {
             Some(vesta_protocol::pack::catalogue::CatalogueError::InvalidPath)
         );
     }
+    assert!(
+        PackFile::new(
+            "config/config file.txt",
+            ABC_SHA256,
+            3,
+            FileSource::embedded()
+        )
+        .is_ok()
+    );
 }
 
 #[test]

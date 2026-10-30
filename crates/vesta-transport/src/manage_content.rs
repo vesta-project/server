@@ -189,10 +189,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             }
             Err(_) => return error(StatusCode::BAD_REQUEST, "invalid_request"),
         };
-        let credential = std::env::var("VESTA_CURSEFORGE_API_KEY").ok().filter(|s| {
-            !s.is_empty() && s.len() <= 1024 && s.bytes().all(|b| b.is_ascii_graphic())
-        });
-        let providers = UreqProviderClient::new(credential);
+        let providers = UreqProviderClient::configured();
         let http = UreqDownloadHttp::default();
         let registry = TrustedSourceRegistry::default();
         let installer = ContentInstaller::new(host.files(), &providers, &http, &registry);
@@ -211,12 +208,31 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             replace,
         ) {
             Ok(change) => value(Ok(change)),
+            Err(ContentError::ProviderNotConfigured) => error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "content_provider_not_configured",
+            ),
             Err(ContentError::File(e)) => super::files::file_error(e),
+            Err(ContentError::TooLarge) => error(StatusCode::PAYLOAD_TOO_LARGE, "pack_too_large"),
+            Err(ContentError::DownloadUnavailable { .. }) => error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "content_pack_download_unavailable",
+            ),
+            Err(ContentError::HashMismatch) => {
+                error(StatusCode::BAD_GATEWAY, "content_pack_hash_mismatch")
+            }
+            Err(ContentError::InvalidMetadata) => {
+                error(StatusCode::BAD_GATEWAY, "content_pack_metadata_invalid")
+            }
             Err(
-                ContentError::InvalidRequest
-                | ContentError::UnsafeFilename
-                | ContentError::InvalidMetadata,
-            ) => error(StatusCode::BAD_REQUEST, "invalid_request"),
+                ContentError::UnsafeFilename
+                | ContentError::DisallowedUrl
+                | ContentError::TooManyRedirects,
+            ) => error(StatusCode::BAD_GATEWAY, "content_pack_source_unsafe"),
+            Err(ContentError::DownloadFailed) => {
+                error(StatusCode::BAD_GATEWAY, "content_pack_download_failed")
+            }
+            Err(ContentError::InvalidRequest) => error(StatusCode::BAD_REQUEST, "invalid_request"),
             Err(_) => error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
         };
     }

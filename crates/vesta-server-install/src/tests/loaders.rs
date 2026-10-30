@@ -25,12 +25,14 @@ async fn managed_fabric_and_quilt_use_absolute_classpaths_for_preserved_game_dir
             dunce::canonicalize(game.path()).unwrap()
         );
         assert_eq!(launch.args.len(), 5);
-        assert!(launch.args[0].ends_with(
-            &p.destination()
-                .join("software/vanilla.jar")
-                .to_string_lossy()
-                .to_string()
-        ));
+        assert!(
+            launch.args[0].ends_with(
+                &p.destination()
+                    .join("software/vanilla.jar")
+                    .to_string_lossy()
+                    .to_string()
+            )
+        );
         assert_eq!(launch.args[1], "-cp");
         assert_eq!(launch.args[3], bundle::server_main(software).unwrap());
         assert_eq!(launch.args[4], "nogui");
@@ -51,9 +53,11 @@ async fn managed_fabric_and_quilt_use_absolute_classpaths_for_preserved_game_dir
         // The original fresh-install receipt/relative argfile remains verifiable.
         f.installer.verify(&p).await.unwrap();
         std::fs::write(&launch.required_files[1], b"tampered loader").unwrap();
-        assert!(crate::verify_managed_artifacts(&launch.artifacts)
-            .await
-            .is_err());
+        assert!(
+            crate::verify_managed_artifacts(&launch.artifacts)
+                .await
+                .is_err()
+        );
     }
 }
 
@@ -1139,13 +1143,14 @@ async fn loader_library_count_is_capped_before_official_metadata_is_requested() 
         assert_eq!(result.is_ok(), accepted, "{count}");
         if !accepted {
             assert_eq!(result.unwrap_err(), InstallError::InvalidMetadata);
-            assert!(!f
-                .server
-                .received_requests()
-                .await
-                .unwrap()
-                .iter()
-                .any(|r| r.url.path().ends_with("/server/json")));
+            assert!(
+                !f.server
+                    .received_requests()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|r| r.url.path().ends_with("/server/json"))
+            );
         }
     }
 }
@@ -1330,6 +1335,32 @@ async fn explicitly_named_unstable_loader_requires_experimental_opt_in() {
 }
 
 #[tokio::test]
+async fn pinned_fabric_release_remains_selectable_after_recommendation_moves_on() {
+    let libs = fabric_libs();
+    let f = Fixture::new(Software::Vanilla).await;
+    f.artifact().await;
+    let mut d = docs(Software::Fabric, &libs);
+    d.manifest["gameVersions"][2]["loaders"][1]["stable"] = json!(false);
+    mount_docs(&f, Software::Fabric, &libs, &d).await;
+    let choices = f
+        .installer
+        .releases(Software::Fabric, GAME, &SilentProgressReporter)
+        .await
+        .unwrap();
+    assert!(choices.iter().any(|v| v.id == loader_of(Software::Fabric)));
+    assert!(!choices.iter().any(|v| v.id.contains("beta")));
+    let selected = Selection {
+        loader_version: Some(loader_of(Software::Fabric).into()),
+        ..selection()
+    };
+    let plan = plan_with(&f, Software::Fabric, &selected).await.unwrap();
+    assert_eq!(plan.loader_version(), Some(loader_of(Software::Fabric)));
+    assert!(!plan.warnings().contains(&Warning::ExperimentalBuild));
+    install(&f, &plan).await.unwrap();
+    f.installer.verify(&plan).await.unwrap();
+}
+
+#[tokio::test]
 async fn schema_two_plans_hash_in_their_own_domain() {
     let libs = fabric_libs();
     let f = loader_fixture(Software::Fabric, &libs).await;
@@ -1472,9 +1503,11 @@ async fn loader_releases_are_stable_choices_without_artifact_downloads() {
             .await
             .unwrap();
         assert!(!choices.is_empty());
-        assert!(choices
-            .iter()
-            .all(|v| v.build.is_none() && v.loader_version.as_deref() == Some(v.id.as_str())));
+        assert!(
+            choices
+                .iter()
+                .all(|v| v.build.is_none() && v.loader_version.as_deref() == Some(v.id.as_str()))
+        );
         assert_eq!(artifact_gets(&f, &libs).await, 0);
         assert!(entries(f.root.path()).is_empty());
     }

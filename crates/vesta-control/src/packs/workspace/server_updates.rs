@@ -125,7 +125,7 @@ fn newer(
             (
                 &v["gameVersions"],
                 &v["gameVersions"],
-                v["downloadUrl"].as_str().is_some_and(|s| !s.is_empty())
+                crate::content::curseforge_document_source(v, project, &id).is_ok()
                     && v["isAvailable"] != false,
             )
         };
@@ -152,6 +152,24 @@ mod tests {
     use super::*;
     use serde_json::json;
     #[test]
+    fn curseforge_updates_can_use_the_same_verified_cdn_fallback_as_installation() {
+        let current = json!({"modId":1,"id":10,"fileDate":"2026-01-01T00:00:00Z"});
+        let candidate = json!({"modId":1,"id":11,"fileDate":"2026-02-01T00:00:00Z","fileName":"pack.zip","hashes":[{"algo":1,"value":"a".repeat(40)}],"gameVersions":["1.21.1","Fabric"],"downloadUrl":null,"isAvailable":true});
+        assert_eq!(
+            newer(
+                Provider::Curseforge,
+                "1",
+                "10",
+                "1.21.1",
+                Some("fabric"),
+                &current,
+                &json!([candidate])
+            )
+            .unwrap(),
+            Some("11".into())
+        );
+    }
+    #[test]
     fn discovery_pins_project_and_filters_game_loader_download_and_age() {
         for provider in [Provider::Modrinth, Provider::Curseforge] {
             let version = |project: &str,
@@ -163,7 +181,7 @@ mod tests {
                 if provider == Provider::Modrinth {
                     json!({"project_id":project,"id":id.to_string(),"date_published":date,"game_versions":[game],"loaders":[loader],"files":if available {json!([{"url":"https://cdn.modrinth.com/test"}])} else {json!([])}})
                 } else {
-                    json!({"modId":project.parse::<u64>().unwrap(),"id":id,"fileDate":date,"gameVersions":[game,loader],"downloadUrl":if available {json!("https://edge.forgecdn.net/test")} else {Value::Null},"isAvailable":available})
+                    json!({"modId":project.parse::<u64>().unwrap(),"id":id,"fileName":"pack.zip","hashes":[{"algo":1,"value":"a".repeat(40)}],"fileDate":date,"gameVersions":[game,loader],"downloadUrl":if available {json!("https://edge.forgecdn.net/test")} else {Value::Null},"isAvailable":available})
                 }
             };
             let current = version("1", 10, "2026-01-01T00:00:00Z", "1.21.1", "Fabric", true);

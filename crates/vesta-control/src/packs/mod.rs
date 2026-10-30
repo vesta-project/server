@@ -6,6 +6,7 @@ mod configured;
 pub use configured::PreparedPack;
 mod delivery;
 mod publish;
+pub(crate) mod payload;
 mod releases;
 pub mod workspace;
 pub use build::{
@@ -17,8 +18,8 @@ pub use publish::{
     PruneReport, PublishedArtifact,
 };
 pub use releases::{
-    PackMutation, PackOutcome, PackRelease, PackReleases, ReleaseError, ReleasePlan, UpdatePolicy,
-    UpdateStatus,
+    PackMutation, PackOutcome, PackRelease, PackReleases, ProviderFailure, ProviderFailureDetails,
+    ReleaseError, ReleasePlan, UpdatePolicy, UpdateStatus,
 };
 
 use crate::config::UnresolvedDisposition;
@@ -128,12 +129,15 @@ impl SnapshotLimits {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PackError {
+    ProviderNotConfigured,
+    ProviderUnavailable,
     InvalidLimit,
     InvalidPath,
     ProtectedPath,
     LinkedPath,
     Unavailable,
     TooLarge,
+    InsufficientSpace,
     InvalidArchive,
     UnresolvedFile,
     /// A published name or bytes disagree with the expected content identity.
@@ -144,12 +148,15 @@ pub enum PackError {
 impl PackError {
     pub const fn code(&self) -> &'static str {
         match self {
+            Self::ProviderNotConfigured => "content_provider_not_configured",
+            Self::ProviderUnavailable => "content_provider_unavailable",
             Self::InvalidLimit => "pack_limit_invalid",
             Self::InvalidPath => "pack_path_invalid",
             Self::ProtectedPath => "pack_path_protected",
             Self::LinkedPath => "pack_path_linked",
             Self::Unavailable => "pack_unavailable",
             Self::TooLarge => "pack_too_large",
+            Self::InsufficientSpace => "pack_storage_low",
             Self::InvalidArchive => "pack_archive_invalid",
             Self::UnresolvedFile => "pack_unresolved_file",
             Self::Conflict => "pack_artifact_conflict",
@@ -176,6 +183,7 @@ impl From<FileError> for PackError {
             FileError::ProtectedPath => Self::ProtectedPath,
             FileError::LinkedPath => Self::LinkedPath,
             FileError::TooLarge => Self::TooLarge,
+            FileError::InsufficientSpace => Self::InsufficientSpace,
             _ => Self::Unavailable,
         }
     }

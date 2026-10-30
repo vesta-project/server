@@ -19,15 +19,15 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 pub const SCHEMA_VERSION: u16 = 1;
-pub const MAX_JSON_BYTES: usize = 1_048_576;
-pub const MAX_FILES: usize = 4_096;
+pub const MAX_JSON_BYTES: usize = 32 * 1_048_576;
+pub const MAX_FILES: usize = 65_536;
 pub const MAX_PATH_BYTES: usize = 1_024;
 pub const MAX_COMPONENT_BYTES: usize = 128;
 pub const MAX_PATH_COMPONENTS: usize = 32;
 pub const MAX_TEXT_BYTES: usize = 256;
 pub const MAX_SOURCE_ID_BYTES: usize = 128;
 pub const MAX_SOURCE_URL_BYTES: usize = 2_048;
-pub const MAX_TOTAL_TEXT_BYTES: usize = 1_048_576;
+pub const MAX_TOTAL_TEXT_BYTES: usize = 32 * 1_048_576;
 pub const MAX_FILE_SIZE: u64 = 8 * 1_024 * 1_024 * 1_024;
 pub const MAX_TOTAL_SIZE: u64 = 128 * 1_024 * 1_024 * 1_024;
 /// Largest integer exactly representable by common JSON number consumers.
@@ -75,7 +75,7 @@ impl std::error::Error for CatalogueError {}
 pub struct RelativePath(String);
 
 impl RelativePath {
-    /// Rejects rather than repairs backslashes, whitespace, dot components and aliases.
+    /// Rejects rather than repairs backslashes, edge spaces, dot components and aliases.
     pub fn parse(path: &str) -> Result<Self, CatalogueError> {
         if path.is_empty() || path.len() > MAX_PATH_BYTES {
             return Err(CatalogueError::InvalidPath);
@@ -89,14 +89,20 @@ impl RelativePath {
                 || component == "."
                 || component == ".."
                 || component.ends_with('.')
-                || !component
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+                || component.starts_with(' ')
+                || component.ends_with(' ')
+                || !component.bytes().all(|c| {
+                    c.is_ascii_alphanumeric()
+                        || matches!(
+                            c,
+                            b'.' | b'_' | b'-' | b'+' | b'\'' | b' ' | b'(' | b')' | b'[' | b']'
+                        )
+                })
             {
                 return Err(CatalogueError::InvalidPath);
             }
             let stem = component.split('.').next().unwrap_or_default();
-            let upper = stem.to_ascii_uppercase();
+            let upper = stem.trim_end_matches(' ').to_ascii_uppercase();
             if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
                 || (upper.len() == 4
                     && (upper.starts_with("COM") || upper.starts_with("LPT"))

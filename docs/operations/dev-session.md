@@ -1,26 +1,53 @@
-# Build and test from a temporary development shell
+# Build and update a development agent
 
 On Windows, open a standalone PowerShell terminal in this repository and run:
 
 ```powershell
-./scripts/dev-shell.ps1
+./dev.ps1
 ```
 
-Exit the management prompt with `exit`, then exit the old development shell
-with `exit` before running this command.
-It builds the helper with Cargo, then starts it after Cargo exits. This avoids
-Cargo versions whose kill-on-close Windows job prevents independent agent
-restarts. Exit any existing `cargo dev` shell before using this entry point.
-Arguments such as `--release` and `--server-root` are forwarded unchanged.
+This builds all four tools, updates the existing `dev-server` agent, verifies its
+new PID over local management, and returns to your terminal. Minecraft is started
+again only if it was running before the update. A stopped server stays stopped,
+even if its normal agent startup policy is Start or Sleep. No shell setup,
+listener flag or second command is needed for the normal development server.
+
+```powershell
+./dev.ps1 restart                    # Same build/update operation
+./dev.ps1 restart another-server     # Select one server by name or ID
+./dev.ps1 build                      # Build only
+./dev.ps1 shell                      # Optional interactive tools shell
+./dev.ps1 --release                  # Update with optimized tools
+./dev.ps1 --server-root 'D:\Vesta test\servers'
+```
+
+The default registry is `VESTA_SERVER_ROOT` when set, otherwise
+`%TEMP%\vesta-dev-server\servers`. The command does not create a missing server
+or update other installations. Build/update staging is reused per checkout;
+byte-identical binaries reuse the staged build instead of copying it again.
+Concurrent updates for the same checkout wait for each other. Existing build
+directories and server data are not deleted.
+
+The script builds the helper with Cargo, then runs a temporary copy after Cargo
+exits. This avoids Cargo's Windows job inheritance and executable locking.
+Run it directly from a normal PowerShell terminal. An old terminal opened by
+`cargo dev` can still inherit Cargo's job restrictions; exit that shell once.
+Arguments are forwarded as literal values, including paths with spaces.
+The bootstrap and helper use the same Cargo package/profile set, avoiding a
+second compilation of the backend with a different set of dependency features.
 The script runs a temporary copy of the helper so the session does not keep
 the build output executable locked. That copy is removed when the session exits.
-The helper checks independent process launch before opening a session or doing
+The helper checks independent process launch before opening a shell or doing
 a rebuild with restart. A blocked terminal fails before building; build-only
 commands remain available. This does not stop any running agent.
 
 On Linux:
 
 ```sh
+cargo dev update
+# Select a different server:
+cargo dev update another-server
+# Optional tools shell:
 cargo dev
 # Equivalent long form:
 cargo run -p vesta-dev --
@@ -28,7 +55,10 @@ cargo run -p vesta-dev --
 cargo dev --release
 ```
 
-This builds `vesta`, `vesta-agent`, `vesta-supervisor`, and `vesta-setup`, copies
+## Optional tools shell
+
+`./dev.ps1 shell` (Windows) or `cargo dev` (Linux) builds
+`vesta`, `vesta-agent`, `vesta-supervisor`, and `vesta-setup`, copies
 them into a fresh temporary build directory, and opens a child PowerShell session
 on Windows or Bash session on Linux. Its PATH and `VESTA_SERVER_ROOT` are local
 to that session. `exit` returns to the original terminal with its environment
@@ -87,6 +117,12 @@ the agent is brought online and Minecraft stays stopped. The command verifies th
 PID over the protected local endpoint before restoring the game. Reporting
 "started" confirms a native generation, not Minecraft readiness.
 
+The one-command update preserves a live agent's reported listener mode. An offline
+agent, or an older agent without this metadata, uses its configured listener by
+default. `--local-only` is available when explicitly choosing local management.
+The legacy `vesta-rebuild --restart` interface below retains its explicit listener
+requirement for an offline or older agent.
+
 Current agents report their listener mode so it can be preserved. When updating
 an older agent that lacks this metadata, the command refuses before shutdown and
 asks for a one-time explicit selection:
@@ -100,8 +136,9 @@ vesta-rebuild --restart dev-server --local-only
 
 For current agents, a contradictory listener override is refused. Restart logs
 are stored in a private directory under the session's `restarts` folder; the
-command prints the exact path. A failed or uncertain shutdown/start is never
-automatically retried or force-killed. If activation fails after shutdown, the
+command prints the exact path. A lost shutdown acknowledgement is reconciled by
+waiting for the existing agent, runtime and supervisor ownership locks to release.
+The update never blindly sends shutdown a second time. If activation fails after shutdown, the
 server can remain stopped or the replacement agent can remain running: inspect
 the printed log/status before taking another action. The newly built commands
 remain selected in the dev shell so recovery uses the new build.
@@ -115,7 +152,7 @@ uncertain delivery, and checks independent process launch before stopping a host
 This is development tooling, not installation or signed release activation.
 Already-open dev shells need to be replaced with a fresh development session
 once to load the updated tool and shell function. On Windows, use
-`./scripts/dev-shell.ps1` instead of `cargo dev`.
+`./dev.ps1 shell` instead of `cargo dev` for the optional Windows shell.
 
 ## Select server data
 

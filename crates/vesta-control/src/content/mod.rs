@@ -12,6 +12,7 @@ pub use model::*;
 
 pub use http::{DownloadHttp, HttpResponse, UreqDownloadHttp};
 pub use provider::UreqProviderClient;
+pub(crate) use provider::curseforge_document_source;
 
 use crate::{
     files::{FileBrowser, FileChange, FileError, MAX_WRITE_BYTES, RelativePath, WritePrecondition},
@@ -24,7 +25,7 @@ use std::{
     error::Error,
     fmt,
     io::Read,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{Condvar, Mutex},
     time::{Duration, Instant},
 };
 use url::Url;
@@ -33,21 +34,56 @@ pub type Result<T> = std::result::Result<T, ContentError>;
 const MAX_REDIRECTS: usize = 5;
 const MAX_URL_BYTES: usize = 8_192;
 pub const REMOTE_INSTALL_TIMEOUT: Duration = Duration::from_secs(120);
-static INSTALLS: AtomicUsize = AtomicUsize::new(0);
-struct InstallPermit;
-impl InstallPermit {
-    fn acquire() -> Result<Self> {
-        INSTALLS
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < 2).then_some(n + 1)
-            })
+static INSTALLS: InstallGate = InstallGate::new(2);
+struct InstallGate {
+    count: Mutex<usize>,
+    available: Condvar,
+    limit: usize,
+}
+impl InstallGate {
+    const fn new(limit: usize) -> Self {
+        Self {
+            count: Mutex::new(0),
+            available: Condvar::new(),
+            limit,
+        }
+    }
+    fn acquire(&self, deadline: Option<Instant>) -> Result<InstallPermit<'_>> {
+        let mut count = self
+            .count
+            .lock()
             .map_err(|_| ContentError::DownloadFailed)?;
-        Ok(Self)
+        loop {
+            if let Some(deadline) = deadline {
+                deadline_check(deadline)?;
+            }
+            if *count < self.limit {
+                *count += 1;
+                return Ok(InstallPermit { gate: self });
+            }
+            let deadline = deadline.ok_or(ContentError::DownloadFailed)?;
+            count = self
+                .available
+                .wait_timeout(count, deadline.saturating_duration_since(Instant::now()))
+                .map_err(|_| ContentError::DownloadFailed)?
+                .0;
+        }
     }
 }
-impl Drop for InstallPermit {
+struct InstallPermit<'a> {
+    gate: &'a InstallGate,
+}
+impl InstallPermit<'static> {
+    fn acquire() -> Result<Self> {
+        INSTALLS.acquire(None)
+    }
+}
+impl Drop for InstallPermit<'_> {
     fn drop(&mut self) {
-        INSTALLS.fetch_sub(1, Ordering::AcqRel);
+        if let Ok(mut count) = self.gate.count.lock() {
+            *count -= 1;
+            self.gate.available.notify_one();
+        }
     }
 }
 pub(super) fn deadline_check(deadline: Instant) -> Result<()> {
@@ -132,6 +168,10 @@ impl fmt::Debug for ResolvedSource {
 }
 
 pub trait ProviderClient {
+    /// Optional bounded warm-up; individual resolution remains authoritative.
+    fn prefetch_curseforge(&self, _files: &[(String, String)]) -> Result<()> {
+        Ok(())
+    }
     /// Must bind the returned file to both identifiers and obtain its expected digest
     /// from authoritative provider metadata. Implementations are trusted composition.
     fn resolve(
@@ -404,6 +444,13 @@ pub fn fetch_verified_source(
     deadline: Instant,
 ) -> Result<Vec<u8>> {
     let _permit = InstallPermit::acquire()?;
+    fetch_after_admission(source, http, deadline)
+}
+fn fetch_after_admission(
+    source: &ResolvedSource,
+    http: &dyn DownloadHttp,
+    deadline: Instant,
+) -> Result<Vec<u8>> {
     let (_, mut url) = validate_source(source)?;
     download_verified(source, http, &mut url, Some(deadline))
 }
@@ -413,6 +460,42 @@ fn download_verified(
     url: &mut Url,
     deadline: Option<Instant>,
 ) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    download_verified_into(
+        source,
+        http,
+        url,
+        deadline,
+        &mut bytes,
+        Some(MAX_WRITE_BYTES as u64),
+    )?;
+    Ok(bytes)
+}
+/// Pack workers wait within the same process-wide two-transfer budget.
+pub(crate) fn fetch_verified_source_into(
+    source: &ResolvedSource,
+    http: &dyn DownloadHttp,
+    deadline: Instant,
+    output: &mut dyn std::io::Write,
+) -> Result<()> {
+    let _permit = INSTALLS.acquire(Some(deadline))?;
+    let (_, mut url) = validate_source(source)?;
+    download_verified_into(source, http, &mut url, Some(deadline), output, None)
+}
+
+pub(crate) fn verify_source_reader(source: &ResolvedSource, reader: impl Read) -> Result<()> {
+    source.expected_hash.validate()?;
+    verified_copy(reader, &source.expected_hash, &mut std::io::sink(), None).map(|_| ())
+}
+
+fn download_verified_into(
+    source: &ResolvedSource,
+    http: &dyn DownloadHttp,
+    url: &mut Url,
+    deadline: Option<Instant>,
+    output: &mut dyn std::io::Write,
+    maximum: Option<u64>,
+) -> Result<()> {
     for redirects in 0..=MAX_REDIRECTS {
         // Never let the HTTP adapter follow redirects implicitly.
         validate_download_url(source.provider, url)?;
@@ -434,6 +517,11 @@ fn download_verified(
             validate_download_url(source.provider, url)?;
             continue;
         }
+        if source.provider == Provider::Curseforge && matches!(response.status, 403 | 404) {
+            return Err(ContentError::DownloadUnavailable {
+                filename: source.filename.clone(),
+            });
+        }
         if response.status != 200
             || response
                 .content_encoding
@@ -444,7 +532,7 @@ fn download_verified(
         }
         if response
             .content_length
-            .is_some_and(|length| length > MAX_WRITE_BYTES as u64)
+            .is_some_and(|length| maximum.is_some_and(|maximum| length > maximum))
         {
             return Err(ContentError::TooLarge);
         }
@@ -455,11 +543,17 @@ fn download_verified(
             }),
             None => response.body,
         };
-        let bytes = verified_bytes(body, &source.expected_hash)?;
+        let count = verified_copy(body, &source.expected_hash, output, maximum)?;
+        if response
+            .content_length
+            .is_some_and(|length| length != count)
+        {
+            return Err(ContentError::DownloadFailed);
+        }
         if let Some(deadline) = deadline {
             deadline_check(deadline)?;
         }
-        return Ok(bytes);
+        return Ok(());
     }
     Err(ContentError::TooManyRedirects)
 }
@@ -477,23 +571,25 @@ fn validate_id(text: &str) -> Result<()> {
 }
 fn validate_source(source: &ResolvedSource) -> Result<(RelativePath, Url)> {
     source.expected_hash.validate()?;
-    // A provider filename is a leaf, not a provider-controlled relative path.
-    if source.filename.contains('/')
-        || source.filename.contains('\\')
-        || !(source.filename.to_ascii_lowercase().ends_with(".jar")
-            || source.filename.to_ascii_lowercase().ends_with(".zip")
-            || source.filename.to_ascii_lowercase().ends_with(".mrpack"))
-    {
-        return Err(ContentError::UnsafeFilename);
-    }
-    let path = RelativePath::parse(&format!("mods/{}", source.filename))
-        .map_err(|_| ContentError::UnsafeFilename)?;
+    let path = validate_filename(&source.filename)?;
     if source.download_url.len() > MAX_URL_BYTES {
         return Err(ContentError::DisallowedUrl);
     }
     let url = Url::parse(&source.download_url).map_err(|_| ContentError::DisallowedUrl)?;
     validate_download_url(source.provider, &url)?;
     Ok((path, url))
+}
+fn validate_filename(filename: &str) -> Result<RelativePath> {
+    // A provider filename is a leaf, not a provider-controlled relative path.
+    if filename.contains('/')
+        || filename.contains('\\')
+        || !(filename.to_ascii_lowercase().ends_with(".jar")
+            || filename.to_ascii_lowercase().ends_with(".zip")
+            || filename.to_ascii_lowercase().ends_with(".mrpack"))
+    {
+        return Err(ContentError::UnsafeFilename);
+    }
+    RelativePath::parse(&format!("mods/{filename}")).map_err(|_| ContentError::UnsafeFilename)
 }
 fn validate_download_url(provider: Provider, url: &Url) -> Result<()> {
     let allowed = match provider {
@@ -515,14 +611,24 @@ fn validate_download_url(provider: Provider, url: &Url) -> Result<()> {
     }
     Ok(())
 }
-fn verified_bytes(mut reader: Box<dyn Read>, expected: &ExpectedHash) -> Result<Vec<u8>> {
+fn verified_copy(
+    mut reader: impl Read,
+    expected: &ExpectedHash,
+    output: &mut dyn std::io::Write,
+    maximum: Option<u64>,
+) -> Result<u64> {
     let mut sha512 = Sha512::new();
     let mut sha1 = Sha1::new();
-    let mut bytes = Vec::new();
+    let mut total = 0u64;
     let mut buffer = [0_u8; 64 * 1_024];
     loop {
         // Probe no more than one byte beyond the cap, even for an infinite peer.
-        let remaining = (MAX_WRITE_BYTES + 1 - bytes.len()).min(buffer.len());
+        let remaining = maximum.map_or(buffer.len(), |maximum| {
+            maximum
+                .saturating_add(1)
+                .saturating_sub(total)
+                .min(buffer.len() as u64) as usize
+        });
         let count = match reader.read(&mut buffer[..remaining]) {
             Ok(count) => count,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -531,14 +637,23 @@ fn verified_bytes(mut reader: Box<dyn Read>, expected: &ExpectedHash) -> Result<
         if count == 0 {
             break;
         }
-        if bytes.len() + count > MAX_WRITE_BYTES {
+        total = total
+            .checked_add(count as u64)
+            .ok_or(ContentError::TooLarge)?;
+        if maximum.is_some_and(|maximum| total > maximum) {
             return Err(ContentError::TooLarge);
         }
         match expected {
             ExpectedHash::Sha512(_) => sha512.update(&buffer[..count]),
             ExpectedHash::Sha1(_) => sha1.update(&buffer[..count]),
         }
-        bytes.extend_from_slice(&buffer[..count]);
+        output.write_all(&buffer[..count]).map_err(|error| {
+            ContentError::File(if error.kind() == std::io::ErrorKind::StorageFull {
+                FileError::InsufficientSpace
+            } else {
+                FileError::Unavailable
+            })
+        })?;
     }
     let (actual, expected) = match expected {
         ExpectedHash::Sha512(expected) => (hex::encode(sha512.finalize()), expected),
@@ -547,11 +662,16 @@ fn verified_bytes(mut reader: Box<dyn Read>, expected: &ExpectedHash) -> Result<
     if !actual.eq_ignore_ascii_case(expected) {
         return Err(ContentError::HashMismatch);
     }
-    Ok(bytes)
+    Ok(total)
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum ContentError {
+    ProviderNotConfigured,
+    /// The provider's CDN refused or no longer serves this file.
+    DownloadUnavailable {
+        filename: String,
+    },
     ModsUnsupported,
     PluginsUnsupported,
     InvalidRequest,

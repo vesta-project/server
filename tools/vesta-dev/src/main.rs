@@ -1,4 +1,4 @@
-//! Development-only build staging and optional selected-server graceful restart.
+//! Development builds, one-command agent updates and an optional tools shell.
 use std::{
     collections::BTreeMap,
     ffi::OsString,
@@ -11,12 +11,16 @@ use std::{
 const BINARIES: [&str; 4] = ["vesta", "vesta-agent", "vesta-supervisor", "vesta-setup"];
 #[cfg(windows)]
 mod console;
+#[cfg(windows)]
+mod detached;
 mod restart;
-const HELP: &str = "Vesta development shell\n\n  Windows: ./scripts/dev-shell.ps1 [--release] [--server-root <registry>]\n  Linux:   cargo dev [--release] [--server-root <registry>]\n  Build only: cargo dev build [--release]\n\nBuilds and stages all four commands. The default opens a child terminal session\nwith temporary PATH and VESTA_SERVER_ROOT. Use vesta-rebuild there; exit returns\nto the original terminal. Default builds never install, start or stop a server.\nUse vesta-rebuild --restart <id|name> to gracefully restart one dev server.\n";
+mod session;
+const HELP: &str = "Vesta development\n\n  ./dev.ps1                         Build and update dev-server, then return\n  ./dev.ps1 restart [server]        Build and update a selected server\n  ./dev.ps1 build                   Build tools without restarting\n  ./dev.ps1 shell                   Open the optional development shell\n\nOptions: --release, --server-root <registry>, --local-only, --configured-listener.\nListener overrides apply to updates. The current listener and running/stopped\nMinecraft state are preserved. An offline agent starts with its configured listener.\n\nLinux: cargo dev update [server], cargo dev build, or cargo dev for a shell.\nBuild failures leave the running agent alone. Updates reuse a checkout-local\nstaging session; unrelated servers are not restarted.\n";
 
 #[derive(Default)]
 struct Options {
     build_only: bool,
+    update: bool,
     release: bool,
     session: Option<PathBuf>,
     server_root: Option<PathBuf>,
@@ -27,9 +31,22 @@ struct Options {
 fn options(args: impl IntoIterator<Item = OsString>) -> Result<Options, String> {
     let mut result = Options::default();
     let mut args = args.into_iter().peekable();
-    if args.peek().is_some_and(|v| v == "build") {
-        result.build_only = true;
-        args.next();
+    if let Some(command) = args.peek().and_then(|v| v.to_str()) {
+        match command {
+            "build" => {
+                result.build_only = true;
+                args.next();
+            }
+            "update" | "restart" => {
+                result.build_only = true;
+                result.update = true;
+                args.next();
+            }
+            "shell" => {
+                args.next();
+            }
+            _ => {}
+        }
     }
     while let Some(arg) = args.next() {
         match arg.to_str() {
@@ -52,6 +69,14 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Options, String> 
             Some("--configured-listener") if result.local_only.is_none() => {
                 result.local_only = Some(false)
             }
+            Some(target)
+                if result.update
+                    && result.restart.is_none()
+                    && !target.starts_with('-')
+                    && !target.is_empty() =>
+            {
+                result.restart = Some(target.to_owned());
+            }
             _ => {
                 return Err(format!(
                     "invalid development option: {}",
@@ -60,7 +85,13 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Options, String> 
             }
         }
     }
-    if result.restart.is_some() && (!result.build_only || result.session.is_none()) {
+    if result.update && result.restart.is_none() {
+        result.restart = Some("dev-server".into());
+    }
+    if result.restart.is_some()
+        && !result.update
+        && (!result.build_only || result.session.is_none())
+    {
         return Err(
             "--restart is only available through vesta-rebuild inside a development session".into(),
         );
@@ -91,6 +122,8 @@ fn build(repo: &Path, release: bool) -> Result<BTreeMap<String, PathBuf>, String
     command.current_dir(repo).args([
         "build",
         "--locked",
+        "-p",
+        "vesta-dev",
         "-p",
         "vesta-agent",
         "-p",
@@ -139,6 +172,9 @@ fn executable(name: &str) -> String {
 }
 
 fn stage(session: &Path, artifacts: &BTreeMap<String, PathBuf>) -> Result<PathBuf, String> {
+    if let Some(bin) = session::unchanged_build(session, artifacts) {
+        return Ok(bin);
+    }
     // New directories avoid replacing executables held open by a Windows agent/supervisor.
     // Publish only after the entire set has copied successfully.
     let bin = session
@@ -170,7 +206,11 @@ fn run(options: Options) -> Result<i32, String> {
     // forbids breakaway. Refuse before expensive builds or session files, rather
     // than opening a shell whose agents cannot later be started/replaced.
     #[cfg(windows)]
-    if !options.build_only || options.restart.is_some() {
+    if !options.build_only {
+        restart::check_shell_lifetime().map_err(|error| format!(
+            "Windows development shell could not open. Run .\\dev.ps1 directly from your normal PowerShell terminal instead of cargo dev.\nDetails: {error}"
+        ))?;
+    } else if options.restart.is_some() {
         restart::check_shell_lifetime()?;
     }
     // Cargo supplies an absolute manifest directory. Taking parents avoids
@@ -180,27 +220,11 @@ fn run(options: Options) -> Result<i32, String> {
         .and_then(Path::parent)
         .ok_or("development tool is outside its workspace")?
         .to_owned();
-    let session = match options.session {
-        Some(session) => {
-            if fs::read(session.join(".vesta-dev-session")).map_err(|e| e.to_string())?
-                != repo.as_os_str().as_encoded_bytes()
-            {
-                return Err("session belongs to another checkout".into());
-            }
-            session
-        }
-        None => {
-            let session = std::env::temp_dir()
-                .join("vesta-dev-builds")
-                .join(uuid::Uuid::new_v4().to_string());
-            fs::create_dir_all(&session).map_err(|e| e.to_string())?;
-            fs::write(
-                session.join(".vesta-dev-session"),
-                repo.as_os_str().as_encoded_bytes(),
-            )
-            .map_err(|e| e.to_string())?;
-            session
-        }
+    let session = session::open(&repo, options.session, options.build_only)?;
+    let _update_lock = if options.update {
+        Some(session::update_lock(&session)?)
+    } else {
+        None
     };
     let bin = stage(&session, &build(&repo, options.release)?)?;
     println!("Build ready: {}", bin.display());
@@ -210,8 +234,20 @@ fn run(options: Options) -> Result<i32, String> {
             .as_ref()
             .cloned()
             .or_else(|| std::env::var_os("VESTA_SERVER_ROOT").map(PathBuf::from))
+            .or_else(|| {
+                options
+                    .update
+                    .then(|| std::env::temp_dir().join("vesta-dev-server/servers"))
+            })
             .ok_or("restart requires VESTA_SERVER_ROOT or --server-root")?;
-        restart::run(&bin, &session, &root, target, options.local_only)?;
+        restart::run(
+            &bin,
+            &session,
+            &root,
+            target,
+            options.local_only,
+            options.update.then_some(false),
+        )?;
     }
     if options.build_only {
         return Ok(0);
@@ -261,7 +297,7 @@ fn run(options: Options) -> Result<i32, String> {
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if args == ["--help"] || args == ["-h"] {
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!("{HELP}");
         return ExitCode::SUCCESS;
     }
@@ -312,6 +348,29 @@ mod tests {
     }
 
     #[test]
+    fn single_command_updates_default_or_selected_server_without_an_interactive_session() {
+        let parse = |args: &[&str]| options(args.iter().map(OsString::from));
+        for command in ["update", "restart"] {
+            let options = parse(&[command]).unwrap();
+            assert!(options.update && options.build_only && options.session.is_none());
+            assert_eq!(options.restart.as_deref(), Some("dev-server"));
+            let options = parse(&[
+                command,
+                "another-server",
+                "--server-root",
+                "registry",
+                "--release",
+            ])
+            .unwrap();
+            assert_eq!(options.restart.as_deref(), Some("another-server"));
+            assert!(options.release);
+        }
+        assert!(parse(&["update", "one", "two"]).is_err());
+        assert!(parse(&["shell"]).is_ok_and(|o| !o.build_only && !o.update));
+        assert!(parse(&["update", "--local-only", "--configured-listener"]).is_err());
+    }
+
+    #[test]
     fn only_executable_binary_artifacts_are_selected() {
         let value = serde_json::json!({"reason":"compiler-artifact", "target":{"name":"vesta", "kind":["bin"]}, "executable":"C:/path with spaces/vesta.exe"});
         assert_eq!(
@@ -356,6 +415,7 @@ mod tests {
             fs::read_to_string(new.join(executable("vesta-agent"))).unwrap(),
             "second"
         );
+        assert_eq!(stage(root.path(), &artifacts).unwrap(), new);
         assert_eq!(
             fs::read_to_string(old.join(executable("vesta-agent"))).unwrap(),
             "first"

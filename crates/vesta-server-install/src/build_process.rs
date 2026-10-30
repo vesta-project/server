@@ -240,8 +240,14 @@ mod tests {
             ("incomplete", false),
         ] {
             let root = tempfile::tempdir().unwrap();
+            // The monitor-error case tests StorageLow, not child startup speed.
+            // Keep the separate hang/deadline case at its short deadline.
             let until = tokio::time::Instant::now()
-                + Duration::from_millis(if mode == "hang" { 150 } else { 3000 });
+                + Duration::from_millis(if mode == "hang" && !monitor_failure {
+                    150
+                } else {
+                    3000
+                });
             let result = run(
                 child_command(mode),
                 root.path().join("log"),

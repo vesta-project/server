@@ -29,8 +29,12 @@ See the [requirements](docs/SERVER_SOFTWARE_REQUIREMENTS.md),
 Install Rust through rustup and Node 22 or later. The rust-toolchain.toml file selects
 Rust 1.96.0, matching CI, including rustfmt and Clippy.
 
-Run cargo dev to build the tools and open a temporary shell with them on PATH.
-Use vesta-rebuild inside that shell, and exit to return. Use cargo dev --release
+On Windows, run `./dev.ps1` from PowerShell to build and update `dev-server`.
+The command returns once its updated agent is online and preserves whether
+Minecraft was running. Use `./dev.ps1 restart <name>` for another server,
+`./dev.ps1 build` to build only, or `./dev.ps1 shell` for an optional shell
+with the tools on PATH. On Linux, use `cargo dev update [name]`.
+Add `--release`
 when measuring performance. See the [development guide](docs/operations/dev-session.md)
 and [test/merge checks](TESTING.md).
 
@@ -41,7 +45,7 @@ and [test/merge checks](TESTING.md).
 | apps/vesta-agent | Agent executable and server-scoped CLI |
 | apps/vesta-setup | Guided installation and local update staging |
 | crates/ | State, protocol, control, transport, game runtime, installer, supervisor and update libraries |
-| tools/vesta-dev | Temporary development shell |
+| tools/vesta-dev | Development builds, agent updates and optional shell |
 | protocol/ | Canonical compatibility schemas and fixtures |
 | scripts/ | Release/bootstrap, development and validation tools |
 | docs/ | [Documentation index](docs/README.md), requirements and verification evidence |

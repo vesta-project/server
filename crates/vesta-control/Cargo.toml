@@ -43,6 +43,9 @@ ipnet = { version = "=2.12.0", features = ["serde"] }
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+[build-dependencies]
+dotenvy = "=0.15.7"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
 

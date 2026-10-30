@@ -125,8 +125,7 @@ fn intent_count_cap_refuses_every_mutation_before_any_staging() {
 #[test]
 fn recovery_required_legacy_stages_remain_reserved_against_byte_cap() {
     let f = Fixture::open();
-    seed_intents(&f, 4, "recovery-required", MAX_TRASH_FILE_BYTES);
-    assert_eq!(MAX_INTENT_STAGED_BYTES, 4 * MAX_TRASH_FILE_BYTES);
+    seed_intents(&f, 4, "recovery-required", MAX_INTENT_STAGED_BYTES / 4);
     refused(
         f.files.write(
             &f.owner,

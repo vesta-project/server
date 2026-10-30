@@ -5,7 +5,7 @@ use std::error::Error;
 use vesta_protocol::pack::catalogue::{
     ArchiveFormat, ArchivePack, CatalogueError, FileSource, MAX_COMPONENT_BYTES, MAX_FILE_SIZE,
     MAX_FILES, MAX_JSON_BYTES, MAX_PATH_BYTES, MAX_PATH_COMPONENTS, MAX_REVISION,
-    MAX_SOURCE_ID_BYTES, MAX_SOURCE_URL_BYTES, MAX_TEXT_BYTES, MAX_TOTAL_SIZE, Manifest,
+    MAX_SOURCE_ID_BYTES, MAX_SOURCE_URL_BYTES, MAX_TEXT_BYTES, MAX_TOTAL_SIZE, MAX_TOTAL_TEXT_BYTES, Manifest,
     ManifestMetadata, PackContent, PackFile, Platform, PlatformPack, RelativePath, Sha256,
     SourceKind,
 };
@@ -363,7 +363,8 @@ fn paths_reject_unsafe_or_ambiguous_spellings_without_normalization() {
         "a\tb",
         "a ",
         " a",
-        "a b",
+        "mods/CON .jar",
+        "mods/COM9 .jar",
         "a.",
         "a?/b",
         "a*/b",
@@ -401,6 +402,10 @@ fn paths_reject_unsafe_or_ambiguous_spellings_without_normalization() {
     }
     for path in [
         "mods/Good-1_2.jar",
+        "mods/fabric-api-0.161.0+26.3.jar",
+        "mods/mielon's-the-sift-1.1.1-mc26.3-fabric.jar",
+        "mods/[Fabric] Mod Name (1.21.1).jar",
+        "config/a b.json",
         "config/.hidden",
         "a/b/c",
         "COM10.txt",
@@ -643,7 +648,7 @@ fn file_sizes_total_size_and_file_count_are_bounded() {
 #[test]
 fn aggregate_text_budgets_cannot_be_bypassed_by_individually_valid_objects() {
     let source = FileSource::server(Some(&"u".repeat(MAX_SOURCE_URL_BYTES))).unwrap();
-    let files = (0..600)
+    let files = (0..=MAX_TOTAL_TEXT_BYTES/MAX_SOURCE_URL_BYTES)
         .map(|n| PackFile::new(&format!("{n}.bin"), A, 0, source.clone()).unwrap())
         .collect();
     assert_eq!(
@@ -651,7 +656,7 @@ fn aggregate_text_budgets_cannot_be_bypassed_by_individually_valid_objects() {
         Err(CatalogueError::BudgetExceeded)
     );
     let long_directory = vec!["d".repeat(120); 7].join("/");
-    let files = (0..1200)
+    let files = (0..=MAX_TOTAL_TEXT_BYTES/long_directory.len())
         .map(|n| InstalledFile::new(&format!("{long_directory}/{n}.bin"), A).unwrap())
         .collect();
     assert_eq!(

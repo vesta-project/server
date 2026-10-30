@@ -483,3 +483,67 @@ fn server_follow_delivery_uses_installed_provider_and_monotonic_mode_switches_ov
     );
     assert_eq!(index["name"], "Archive");
 }
+
+#[test]
+fn authenticated_pack_chunks_exceed_default_body_cap_without_relaxing_anonymous_requests() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use sha2::{Digest, Sha256};
+    let f = Fixture::new("minecraft", 8, 65536, 5);
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    let bytes = vec![b'x'; 512 * 1024];
+    let sha = hex::encode(Sha256::digest(&bytes));
+    let begin = management_mutation(
+        &f,
+        &token,
+        "pack/draft/uploads/begin",
+        "capacity-begin-0001",
+        &json!({"upload_id":"large-chunk","total_size":bytes.len().to_string(),"sha256":sha,"archive":true}),
+    );
+    assert_eq!(
+        begin.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&begin.body)
+    );
+    let chunk =
+        json!({"upload_id":"large-chunk","offset":"0","content_base64":STANDARD.encode(&bytes)});
+    // Send only the oversized declaration: the server rejects it before body I/O.
+    // Writing the rejected body itself can race the intentional socket close on Windows.
+    let mut anonymous=f.stream();
+    write!(anonymous,"POST /api/v3/manage/pack/draft/uploads/chunk HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",serde_json::to_vec(&chunk).unwrap().len()).unwrap();
+    anonymous.flush().unwrap();
+    assert_eq!(read_reply(anonymous).unwrap().status,401);
+    let uploaded = management_mutation(
+        &f,
+        &token,
+        "pack/draft/uploads/chunk",
+        "capacity-chunk-0001",
+        &chunk,
+    );
+    assert_eq!(
+        uploaded.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&uploaded.body)
+    );
+    assert_eq!(uploaded.json()["data"]["size"], bytes.len().to_string());
+    let finished = management_mutation(
+        &f,
+        &token,
+        "pack/draft/uploads/finish",
+        "capacity-finish-0001",
+        &json!({"upload_id":"large-chunk"}),
+    );
+    assert_eq!(
+        finished.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&finished.body)
+    );
+    assert_eq!(
+        f.request("GET", "/api/v3/manage/server/status", b"", Some(&token))
+            .status,
+        200
+    );
+}
