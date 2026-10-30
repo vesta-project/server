@@ -298,7 +298,7 @@ fn live_provider_install(provider: &str, project: &str, version: &str, mc: &str)
         !plan
             .warnings
             .iter()
-            .any(|warning| warning.starts_with("unknown_or_optional_server_side:"))
+            .any(|warning| warning.detail.starts_with("unknown_or_optional_server_side:"))
     );
     let first_files: Vec<_> = plan
         .files

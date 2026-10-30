@@ -588,14 +588,12 @@ pub(crate) fn provider_storage_name(filename: &str) -> Result<String> {
         || filename.as_bytes().get(1) == Some(&b':') || filename.is_empty() {
         return Err(ContentError::UnsafeFilename);
     }
-    if RelativePath::parse(&format!("mods/{filename}")).is_ok() { return Ok(filename.into()); }
-    // Preserve the provider display name separately. Encode names the server OS cannot store.
-    let mut name = String::from("provider-");
-    for b in filename.bytes() {
-        if b.is_ascii_alphanumeric() || b"._-".contains(&b) { name.push(b as char); }
-        else { name.push_str(&format!("%{b:02X}")); }
-    }
-    RelativePath::parse(&format!("mods/{name}")).map_err(|_| ContentError::UnsafeFilename)?;
+    if RelativePath::parse(&format!("mods/{filename}")).is_ok() && vesta_protocol::pack::catalogue::RelativePath::parse(&format!("mods/{filename}")).is_ok() { return Ok(filename.into()); }
+    // The alias must pass both OS storage and catalogue validators. Percent escapes
+    // are forbidden by the catalogue, even when the OS accepts them.
+    let extension = filename.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase()).filter(|ext| matches!(ext.as_str(), "jar" | "zip" | "mrpack")).ok_or(ContentError::UnsafeFilename)?;
+    let name = format!("provider-{}.{}", hex::encode(sha2::Sha256::digest(filename.as_bytes())), extension);
+    vesta_protocol::pack::catalogue::RelativePath::parse(&format!("mods/{name}")).map_err(|_| ContentError::UnsafeFilename)?;
     Ok(name)
 }
 fn validate_filename(filename: &str) -> Result<RelativePath> {
@@ -616,7 +614,7 @@ fn validate_filename(filename: &str) -> Result<RelativePath> {
     {
         return Err(ContentError::UnsafeFilename);
     }
-    RelativePath::parse(&format!("mods/{filename}")).map_err(|_| ContentError::UnsafeFilename)
+    RelativePath::parse(&format!("mods/{}", provider_storage_name(filename)?)).map_err(|_| ContentError::UnsafeFilename)
 }
 fn validate_download_url(_provider: Provider, url: &Url) -> Result<()> {
     // API-resolved sources are trusted; CDN migrations are not safety failures.
@@ -722,7 +720,11 @@ mod trusted_pack_policy_tests {
     use super::*;
     #[test]
     fn provider_archive_names_and_https_hosts_are_trusted() {
-        assert!(provider_storage_name("Cobblemon 3D Pok? Rods 1.0.zip").unwrap().is_ascii());
+        for name in ["Cobblemon 3D Pok\u{00e9} Rods 1.0.zip", "Cobblemon 3D Pok? Rods 1.0.zip"] {
+            let stored = provider_storage_name(name).unwrap();
+            assert!(RelativePath::parse(&format!("mods/{stored}")).is_ok());
+            assert!(vesta_protocol::pack::catalogue::RelativePath::parse(&format!("mods/{stored}")).is_ok());
+        }
         for name in ["COBBLEVERSE 1.7.42.zip", "Pok?mon: pack.zip"] { assert!(validate_filename(name).is_ok()); }
         for name in ["../pack.zip", "/pack.zip", "C:pack.zip", "nested\\pack.zip"] { assert!(validate_filename(name).is_err()); }
         assert!(validate_download_url(Provider::Curseforge, &Url::parse("https://new-cdn.example/pack.zip").unwrap()).is_ok());

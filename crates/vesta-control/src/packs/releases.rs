@@ -69,6 +69,7 @@ pub struct ProviderFailureDetails {
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum ReleaseError {
+    Refusal { code: &'static str, rule: &'static str, item: String },
     ProviderFile {
         failure: ProviderFailure,
         details: Box<ProviderFailureDetails>,
@@ -95,6 +96,7 @@ pub enum ReleaseError {
 impl ReleaseError {
     pub const fn code(&self) -> &'static str {
         match self {
+            Self::Refusal { code, .. } => code,
             Self::ProviderFile { failure, .. } => failure.code(),
             Self::Conflict => "pack_release_conflict",
             Self::IdempotencyConflict => "idempotency_conflict",

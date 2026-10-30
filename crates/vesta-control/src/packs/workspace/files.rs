@@ -393,7 +393,9 @@ mod tests {
     fn invalid_names_aliases_and_file_directory_collisions_refuse() {
         assert!(path("other", "config/a").is_err());
         assert!(path("overrides", "../secret").is_err());
-        assert!(path("overrides", "server.properties").is_err());
+        assert!(path("overrides", "server.properties").is_ok());
+        assert!(path("overrides", "licenses/notice.pdf").is_ok());
+        assert!(path("overrides", ".vesta/identity").is_err());
         let file = OverrideFile {
             root: "overrides".into(),
             path: "config/a".into(),

@@ -709,7 +709,7 @@ pub fn validate_manifest(m: &PackManifest) -> Result<()> {
     let mut projects = BTreeSet::new();
     for e in &m.entries {
         vesta_protocol::pack::catalogue::RelativePath::parse(&e.path)
-            .map_err(super::PackError::from)?;
+            .map_err(|_| ReleaseError::Refusal { code: "pack_path_invalid", rule: "safe_relative_path", item: e.path.clone() })?;
         let lower = e.path.to_ascii_lowercase();
         let prefix = match e.kind {
             EntryKind::Mod => "mods/",
@@ -718,22 +718,11 @@ pub fn validate_manifest(m: &PackManifest) -> Result<()> {
             EntryKind::Datapack => "datapacks/",
             EntryKind::ConfigOverride => "config/",
         };
-        let config_override = e.kind == EntryKind::ConfigOverride
-            && (matches!(
-                lower.as_str(),
-                "options.txt" | "optionsof.txt" | "optionsshaders.txt" | "servers.dat"
-            ) || (!lower.contains('/') && lower.ends_with(".png"))
-                || [
-                    "defaultconfigs/",
-                    "kubejs/",
-                    "scripts/",
-                    "resources/",
-                    "global_packs/",
-                    "journeymap/",
-                    "fancymenu_data/",
-                ]
-                .iter()
-                .any(|p| lower.starts_with(p)));
+        install::validate_game_path(&e.path)?;
+        let config_override = e.kind == EntryKind::ConfigOverride;
+        if !(lower.starts_with(prefix) || config_override) {
+            return Err(ReleaseError::Refusal { code: "pack_path_invalid", rule: "game_content_directory", item: e.path.clone() });
+        }
         if !text(&e.id, 128)
             || !ids.insert(&e.id)
             || !(lower.starts_with(prefix) || config_override)

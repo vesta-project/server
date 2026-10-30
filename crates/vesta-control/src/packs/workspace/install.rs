@@ -103,6 +103,20 @@ pub struct SoftwareSwitch {
     pub to: SoftwareSwitchTarget,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InstallWarning { pub code: String, pub rule: String, pub item: String, pub detail: String }
+fn read_install_warnings<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Vec<InstallWarning>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Wire { Structured(InstallWarning), Legacy(String) }
+    Ok(Vec::<Wire>::deserialize(deserializer)?.into_iter().map(|warning| match warning { Wire::Structured(value) => value, Wire::Legacy(value) => value.into() }).collect())
+}
+impl From<String> for InstallWarning {
+    fn from(detail: String) -> Self {
+        let (code, item) = detail.split_once(':').unwrap_or((&detail, "pack"));
+        Self { code: code.into(), rule: code.into(), item: item.into(), detail }
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PackInstallPlan {
     #[serde(default)]
     pub software_switch: Option<SoftwareSwitch>,
@@ -116,7 +130,8 @@ pub struct PackInstallPlan {
     pub valid: bool,
     pub files: Vec<InstallFile>,
     pub skipped: Vec<String>,
-    pub warnings: Vec<String>,
+    #[serde(deserialize_with = "read_install_warnings")]
+    pub warnings: Vec<InstallWarning>,
     pub backup_recommended: bool,
     #[serde(default)]
     pub removed: Vec<(String, String)>,
@@ -206,27 +221,26 @@ fn insert_selected(
     *used = total;
     Ok(())
 }
-pub(crate) fn validate_install_path(path: &str) -> Result<()> {
-    vesta_protocol::pack::catalogue::RelativePath::parse(path).map_err(|_| invalid())?;
+/// Executable destinations and protected server control files remain hard safety rules.
+pub(crate) fn validate_game_path(path: &str) -> Result<()> {
+    vesta_protocol::pack::catalogue::RelativePath::parse(path).map_err(|_| ReleaseError::Refusal { code: "pack_path_invalid", rule: "safe_relative_path", item: path.into() })?;
     let lower = path.to_ascii_lowercase();
-    let allowed = [
-        "mods/",
-        "config/",
-        "defaultconfigs/",
-        "kubejs/",
-        "scripts/",
-        "resources/",
-    ]
-    .iter()
-    .any(|p| lower.starts_with(p))
-        || (lower.contains("/datapacks/")
-            && lower.ends_with(".zip")
-            && lower.matches('/').count() == 2);
-    if !allowed {
-        return Err(invalid());
+    if lower.split('/').any(|part| matches!(part, ".vesta" | "wrapper-config.toml" | "vesta-wrapper")) {
+        return Err(ReleaseError::Refusal { code: "pack_path_protected", rule: "protected_server_control_file", item: path.into() });
+    }
+    let executable = [".jar", ".exe", ".dll", ".bat", ".cmd", ".ps1", ".sh"].iter().any(|suffix| lower.ends_with(suffix));
+    if executable && !["mods/", "plugins/", "scripts/", "kubejs/"].iter().any(|prefix| lower.starts_with(prefix)) {
+        return Err(ReleaseError::Refusal { code: "pack_path_invalid", rule: "executable_directory", item: path.into() });
     }
     Ok(())
 }
+fn expected_install_directory(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    ["mods/", "config/", "defaultconfigs/", "kubejs/", "scripts/", "resources/"].iter().any(|p| lower.starts_with(p))
+        || lower.contains("/datapacks/")
+}
+pub(crate) fn validate_install_path(path: &str) -> Result<()> { validate_game_path(path) }
+
 impl PackWorkspace {
     pub fn install_finish(&self, s: &Subject, id: &str) -> Result<()> {
         Ok(self.db.write_with(|t| {
@@ -709,6 +723,9 @@ impl PackWorkspace {
                 conflict = Some("project_version".into());
             }
             validate_install_path(&path)?;
+            if !matches!(linked_source, InstallSource::Provider { .. }) && !expected_install_directory(&path) {
+                warnings.push(format!("unusual_content_directory:{path}"));
+            }
             if !destinations.insert(path.to_lowercase()) {
                 return Err(ReleaseError::Conflict);
             }
@@ -824,7 +841,7 @@ impl PackWorkspace {
                 || actual_family.as_deref().or(software) != Some(software_required),
             files: review,
             skipped,
-            warnings,
+            warnings: warnings.into_iter().map(InstallWarning::from).collect(),
             backup_recommended: true,
             removed: owned
                 .into_iter()
@@ -903,7 +920,7 @@ impl PackWorkspace {
                 Ok(bytes) => Some(bytes),
                 Err(error) => {
                     plan.warnings
-                        .push(format!("client_delivery_unavailable:{}", error.code()));
+                        .push(format!("client_delivery_unavailable:{}", error.code()).into());
                     None
                 }
             }
@@ -1075,5 +1092,50 @@ impl PackWorkspace {
 
             Ok(PackInstallOutcome{software_job_id:None,state:"staged_until_restart".into(),pending_ids})
         })
+    }
+}
+
+#[cfg(test)]
+mod triage_live {
+    use super::*;
+    #[test]
+    #[ignore = "real CurseForge metadata and pack download; configured application key required"]
+    fn cobbleverse_1_7_42_review() {
+        let f = super::super::tests::Fixture::new();
+        let game = f.temp.path().join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        let files = FileBrowser::open(f.db.clone(), &game, &[]).unwrap();
+        let releases = super::super::super::PackReleases::open(&f.db).unwrap();
+        let result = f.workspace.install_plan(&f.subject, "1.21.1", Some("fabric"),
+            &PackInstallRequest { source: InstallSource::Provider { provider: "curseforge".into(), project_id: "1210677".into(), version_id: "8488030".into() } },
+            &files, &releases, &content::UreqProviderClient::configured());
+        match &result {
+            Ok(plan) => eprintln!("COBBLEVERSE review: valid={}, files={}, warnings={:?}", plan.valid, plan.files.len(), plan.warnings),
+            Err(ReleaseError::Refusal {code, rule, item}) => eprintln!("COBBLEVERSE refusal: {code}, {rule}, {item}"),
+            Err(ReleaseError::ProviderFile {failure, details}) => eprintln!("COBBLEVERSE provider refusal: {}, stage={}, reason={}, file={:?}", failure.code(), details.stage, details.reason, details.filename),
+            Err(error) => eprintln!("COBBLEVERSE refusal: {}", error.code()),
+        }
+        result.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod safety_review_tests {
+    use super::*;
+    #[test]
+    fn unusual_data_is_reviewable_but_executable_and_escape_rules_are_hard() {
+        assert!(validate_game_path("licenses/notice.pdf").is_ok());
+        assert!(validate_game_path("mods/mod.jar").is_ok());
+        for (path, expected) in [("../outside.jar", "safe_relative_path"), ("config/run.exe", "executable_directory"), (".vesta/identity", "protected_server_control_file")] {
+            match validate_game_path(path).unwrap_err() {
+                ReleaseError::Refusal { rule, item, .. } => { assert_eq!(rule, expected); assert_eq!(item, path); },
+                other => panic!("missing issue: {other:?}"),
+            }
+        }
+        let warning: InstallWarning = "unusual_content_directory:licenses/notice.pdf".to_string().into();
+        assert_eq!(warning.item, "licenses/notice.pdf");
+        let json = serde_json::to_value(warning).unwrap();
+        assert_eq!(json["code"], "unusual_content_directory");
+        assert_eq!(json["rule"], "unusual_content_directory");
     }
 }

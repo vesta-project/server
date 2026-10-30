@@ -407,9 +407,9 @@ fn parse_zip(
         let mut f = zip.by_index(i).map_err(|_| invalid())?;
         let name = f.name().to_string();
         vesta_protocol::pack::catalogue::RelativePath::parse(name.trim_end_matches('/'))
-            .map_err(super::super::PackError::from)?;
-        if f.is_symlink()
-            || f.encrypted()
+            .map_err(|_| ReleaseError::Refusal { code: "pack_path_invalid", rule: "safe_relative_path", item: name.clone() })?;
+        if f.is_symlink() { return Err(ReleaseError::Refusal { code: "pack_path_invalid", rule: "no_symbolic_links", item: name }); }
+        if f.encrypted()
             || (store.is_none() && f.size() > super::super::MAX_PINNED_FILE_BYTES as u64)
         {
             return Err(invalid());
@@ -939,13 +939,13 @@ mod tests {
                 &Providers,
                 |_| unreachable!()
             )
-            .is_err()
+            .is_ok()
         );
     }
     #[test]
-    fn archive_traversal_and_non_pack_archives_refuse() {
+    fn archive_traversal_refuses_but_unusual_non_executable_content_can_be_reviewed() {
         assert!(parse_archive(&archive(&[("../secret", b"x")]), &Providers, |_| Ok(None)).is_err());
-        assert!(parse_archive(&archive(&[("hello.txt", b"x")]), &Providers, |_| Ok(None)).is_err());
+        assert!(parse_archive(&archive(&[("hello.txt", b"x")]), &Providers, |_| Ok(None)).is_ok());
     }
 }
 

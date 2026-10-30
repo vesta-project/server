@@ -217,6 +217,7 @@ fn pack_error(error_value: vesta_control::packs::ReleaseError) -> Reply {
         return error(StatusCode::FORBIDDEN, "management_forbidden");
     }
     match error_value {
+        vesta_control::packs::ReleaseError::Refusal { code, rule, item } => envelope(StatusCode::BAD_REQUEST, json!({"error":{"code":code,"issue":{"code":code,"rule":rule,"item":item}}})),
         vesta_control::packs::ReleaseError::ProviderFile { failure, details } => {
             let status = if failure == vesta_control::packs::ProviderFailure::DownloadUnavailable {
                 StatusCode::UNPROCESSABLE_ENTITY
@@ -225,7 +226,7 @@ fn pack_error(error_value: vesta_control::packs::ReleaseError) -> Reply {
             };
             envelope(
                 status,
-                json!({"error":{"code":failure.code(),"details":details}}),
+                json!({"error":{"code":failure.code(),"issue":{"code":failure.code(),"rule":details.reason,"item":details.filename.clone().unwrap_or_else(|| format!("{}/{}/{}", details.provider, details.project_id, details.version_id))},"details":details}}),
             )
         }
         vesta_control::packs::ReleaseError::Conflict => {
@@ -265,9 +266,9 @@ fn pack_error(error_value: vesta_control::packs::ReleaseError) -> Reply {
             | vesta_control::packs::PackError::InvalidArchive => {
                 error(StatusCode::BAD_REQUEST, e.code())
             }
-            _ => error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
+            other => error(StatusCode::SERVICE_UNAVAILABLE, other.code()),
         },
-        _ => error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
+        other => error(StatusCode::SERVICE_UNAVAILABLE, other.code()),
     }
 }
 fn pack_outcome(value: vesta_control::packs::PackOutcome) -> Reply {

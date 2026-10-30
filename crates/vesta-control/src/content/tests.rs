@@ -382,11 +382,8 @@ fn unsafe_provider_filenames_never_reach_http() {
         "nested\\mod.jar",
         "/absolute.jar",
         "C:mod.jar",
-        "CON.jar",
         "demo.jar ",
         "demo.jar.",
-        "résumé.jar",
-        "mod\n.jar",
         "mod.exe",
     ] {
         let f = Fixture::new();
@@ -1179,4 +1176,12 @@ fn content_folder_datapack_removal_preserves_tree_in_trash() {
     );
     assert!(!f.game.join("world/datapacks/custom").exists());
     runtime.shutdown(Duration::from_secs(5)).unwrap();
+}
+
+#[test]
+fn provider_display_names_use_catalogue_safe_storage_aliases() {
+    for name in ["CON.jar", "r\u{00e9}sum\u{00e9}.jar", "mod\n.jar"] {
+        let path = validate_filename(name).unwrap();
+        assert!(vesta_protocol::pack::catalogue::RelativePath::parse(path.as_str()).is_ok());
+    }
 }
