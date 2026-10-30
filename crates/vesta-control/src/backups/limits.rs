@@ -77,6 +77,8 @@ impl Inner {
         let limits = &policy.limits;
         if profile.max_snapshots.is_some() || limits.max_snapshots.is_some() {
             let retention = Retention {
+                keep_total: profile.keep_total,
+                keep_hourly: profile.keep_hourly,
                 keep_last: profile.keep_last,
                 keep_daily: profile.keep_daily,
                 keep_weekly: profile.keep_weekly,

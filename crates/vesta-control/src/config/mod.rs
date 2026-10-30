@@ -187,6 +187,8 @@ impl<'de> Deserialize<'de> for MutationPolicy {
 pub struct BackupProfile {
     pub name: String,
     pub mode: BackupMode,
+    pub keep_total: u32,
+    pub keep_hourly: u32,
     pub keep_last: u32,
     pub keep_daily: u32,
     pub keep_weekly: u32,
@@ -310,7 +312,7 @@ pub fn validate_backup_policy(profiles: &[BackupProfile], limits: &BackupLimits)
         if !crate::backups::ignore::valid_selection(&p.include, &p.exclude)
             || !valid_profile_name(&p.name)
             || profiles[..index].iter().any(|q| q.name == p.name)
-            || [p.keep_last, p.keep_daily, p.keep_weekly, p.keep_monthly]
+            || [p.keep_total, p.keep_hourly, p.keep_last, p.keep_daily, p.keep_weekly, p.keep_monthly]
                 .iter()
                 .any(|&k| k > MAX_RETENTION)
             || p.warn_seconds > MAX_WARN_SECONDS
@@ -800,6 +802,8 @@ impl HostConfiguration {
                     .map(|Table(p)| BackupProfile {
                         name: p.name,
                         mode: p.mode,
+                        keep_total: p.keep_total,
+                        keep_hourly: p.keep_hourly,
                         keep_last: p.keep_last,
                         keep_daily: p.keep_daily,
                         keep_weekly: p.keep_weekly,
@@ -1291,6 +1295,10 @@ struct WireS3 {
 struct WireBackupProfile {
     name: String,
     mode: BackupMode,
+    #[serde(default)]
+    keep_total: u32,
+    #[serde(default)]
+    keep_hourly: u32,
     #[serde(default)]
     keep_last: u32,
     #[serde(default)]

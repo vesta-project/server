@@ -62,6 +62,8 @@ fn a_manual_workflow_runs_a_backup_and_revocation_suspends_it() {
         profiles: vec![BackupProfile {
             name: "nightly".into(),
             mode: BackupMode::Stopped,
+            keep_total: 0,
+            keep_hourly: 0,
             keep_last: 0,
             keep_daily: 0,
             keep_weekly: 0,

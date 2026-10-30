@@ -225,6 +225,8 @@ fn tags_retention_and_prune_keep_only_what_is_referenced() {
         .forget(
             "profile=p",
             Retention {
+                keep_total: 0,
+                keep_hourly: 0,
                 keep_last: 2,
                 ..Retention::default()
             },
@@ -328,6 +330,8 @@ fn retention_buckets_and_dates() {
     let keep = keep_set(
         &snapshots,
         Retention {
+            keep_total: 0,
+            keep_hourly: 0,
             keep_last: 1,
             keep_weekly: 2,
             ..Retention::default()
@@ -593,6 +597,8 @@ fn budgets_usage_and_retention_projection() {
         3
     );
     let keep_two = Retention {
+        keep_total: 0,
+        keep_hourly: 0,
         keep_last: 2,
         ..Retention::default()
     };
@@ -831,4 +837,15 @@ fn inspection_restore_publishes_only_complete_output_and_cleans_failed_stage() {
         Err(EngineError::TargetUnsafe)
     );
     assert_eq!(tree(&published), tree(source.path()));
+}
+
+#[test]
+fn total_cap_bounds_bucket_union_and_works_without_thinning() {
+    let snapshots: Vec<_> = (0..20).map(|i| (format!("{i:032x}"), i * 3_600_000)).collect();
+    for retention in [Retention { keep_total: 4, ..Retention::default() }, Retention { keep_total: 4, keep_hourly: 10, keep_daily: 10, ..Retention::default() }] {
+        let keep = keep_set(&snapshots, retention);
+        assert_eq!(keep.len(), 4);
+        assert!(keep.contains(&format!("{:032x}", 19)));
+        assert!(!keep.contains(&format!("{:032x}", 0)));
+    }
 }

@@ -60,6 +60,10 @@ pub struct ProfileDocument {
     /// `online` or `stopped`.
     pub mode: String,
     #[serde(default)]
+    pub keep_total: u32,
+    #[serde(default)]
+    pub keep_hourly: u32,
+    #[serde(default)]
     pub keep_last: u32,
     #[serde(default)]
     pub keep_daily: u32,
@@ -111,6 +115,8 @@ impl PolicyDocument {
             profiles.push(BackupProfile {
                 name: p.name.clone(),
                 mode,
+                keep_total: p.keep_total,
+                keep_hourly: p.keep_hourly,
                 keep_last: p.keep_last,
                 keep_daily: p.keep_daily,
                 keep_weekly: p.keep_weekly,
@@ -142,6 +148,8 @@ impl PolicyDocument {
                         BackupMode::Stopped => "stopped",
                     }
                     .into(),
+                    keep_total: p.keep_total,
+                    keep_hourly: p.keep_hourly,
                     keep_last: p.keep_last,
                     keep_daily: p.keep_daily,
                     keep_weekly: p.keep_weekly,

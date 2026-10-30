@@ -781,6 +781,10 @@ fn policy_document(profiles: &[(&str, &str, u32)], max_snapshots: Option<u32>) -
             .map(|(name, mode, keep_last)| ProfileDocument {
                 name: (*name).into(),
                 mode: (*mode).into(),
+                keep_total: 0,
+
+                keep_hourly: 0,
+
                 keep_last: *keep_last,
                 keep_daily: 0,
                 keep_weekly: 0,

@@ -480,6 +480,8 @@ impl Inner {
             let _ = self.engine.forget(
                 &safety_tag(&profile.name),
                 Retention {
+                    keep_total: 0,
+                    keep_hourly: 0,
                     keep_last: SAFETY_KEEP,
                     ..Retention::default()
                 },

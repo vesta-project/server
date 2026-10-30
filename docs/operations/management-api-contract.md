@@ -1992,3 +1992,7 @@ camelCase. Provider identities contain only Modrinth/CurseForge IDs. Successful
 workspace publication atomically records the release, published manifest, audit
 and exact-body receipt. `resolved_entries` are ephemeral dependency additions or
 exact optional-to-required promotions, never arbitrary replacement of draft pins.
+
+### Backup retention
+
+Profiles accept `keep_total` (zero disables the cap) and `keep_hourly`, in addition to the existing retention buckets. The total cap is applied after the bucket union, retaining the newest matches. With no buckets selected, keep the newest `keep_total` backups. The cap applies to each profile; safety snapshots retain their separate bounded policy. Host TOML uses `keep-total` and `keep-hourly`.

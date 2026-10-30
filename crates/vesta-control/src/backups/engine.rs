@@ -100,6 +100,8 @@ pub type Result<T> = std::result::Result<T, EngineError>;
 /// Retention for one profile; zero means "not used".
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Retention {
+    pub keep_total: u32,
+    pub keep_hourly: u32,
     pub keep_last: u32,
     pub keep_daily: u32,
     pub keep_weekly: u32,
@@ -107,7 +109,9 @@ pub struct Retention {
 }
 impl Retention {
     pub fn is_empty(&self) -> bool {
-        self.keep_last == 0
+        self.keep_total == 0
+            && self.keep_hourly == 0
+            && self.keep_last == 0
             && self.keep_daily == 0
             && self.keep_weekly == 0
             && self.keep_monthly == 0
@@ -906,6 +910,7 @@ fn keep_set(snapshots: &[(String, i64)], retention: Retention) -> BTreeSet<Strin
         }
     };
     let day = |ms: i64| ms.div_euclid(86_400_000);
+    bucketed(retention.keep_hourly, &|ms| ms.div_euclid(3_600_000));
     bucketed(retention.keep_daily, &day);
     // ISO weeks start on Monday; 1970-01-01 was a Thursday.
     bucketed(retention.keep_weekly, &|ms| (day(ms) + 3).div_euclid(7));
@@ -913,6 +918,12 @@ fn keep_set(snapshots: &[(String, i64)], retention: Retention) -> BTreeSet<Strin
         let (y, m, _) = civil(day(ms));
         y * 12 + i64::from(m)
     });
+    if retention.keep_total > 0 {
+        if retention.keep_last == 0 && retention.keep_hourly == 0 && retention.keep_daily == 0 && retention.keep_weekly == 0 && retention.keep_monthly == 0 {
+            keep.extend(newest_first.iter().map(|(id, _)| id.clone()));
+        }
+        keep = newest_first.into_iter().filter(|(id, _)| keep.contains(id)).take(retention.keep_total as usize).map(|(id, _)| id.clone()).collect();
+    }
     keep
 }
 

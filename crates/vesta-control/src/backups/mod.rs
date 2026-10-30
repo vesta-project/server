@@ -1068,6 +1068,8 @@ impl Inner {
         let promoted = !fail && tagging.is_ok();
         let mut retention_error = None;
         let retention = Retention {
+            keep_total: profile.keep_total,
+            keep_hourly: profile.keep_hourly,
             keep_last: profile.keep_last,
             keep_daily: profile.keep_daily,
             keep_weekly: profile.keep_weekly,
