@@ -707,7 +707,7 @@ pub fn validate_manifest(m: &PackManifest) -> Result<()> {
             && (matches!(
                 lower.as_str(),
                 "options.txt" | "optionsof.txt" | "optionsshaders.txt" | "servers.dat"
-            ) || ["defaultconfigs/", "kubejs/", "scripts/", "resources/"]
+            ) || (!lower.contains('/') && lower.ends_with(".png")) || ["defaultconfigs/", "kubejs/", "scripts/", "resources/", "global_packs/", "journeymap/", "fancymenu_data/"]
                 .iter()
                 .any(|p| lower.starts_with(p)));
         if !text(&e.id, 128)

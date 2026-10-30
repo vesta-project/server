@@ -91,11 +91,11 @@ impl RelativePath {
                 || component.ends_with('.')
                 || component.starts_with(' ')
                 || component.ends_with(' ')
-                || !component.bytes().all(|c| {
+                || !component.replace('?', "").bytes().all(|c| {
                     c.is_ascii_alphanumeric()
                         || matches!(
                             c,
-                            b'.' | b'_' | b'-' | b'+' | b'\'' | b' ' | b'(' | b')' | b'[' | b']'
+                            b'~' | b',' | b'.' | b'_' | b'-' | b'+' | b'\'' | b' ' | b'(' | b')' | b'[' | b']'
                         )
                 })
             {

@@ -168,6 +168,10 @@ impl fmt::Debug for ResolvedSource {
 }
 
 pub trait ProviderClient {
+    /// Identity for archive ingestion only; does not grant download or filesystem authority.
+    fn archive_filename(&self, provider: Provider, project: &str, version: &str) -> Result<String> {
+        self.resolve(provider, project, version).map(|source| source.filename)
+    }
     /// Optional bounded warm-up; individual resolution remains authoritative.
     fn prefetch_curseforge(&self, _files: &[(String, String)]) -> Result<()> {
         Ok(())

@@ -683,9 +683,9 @@ fn parse_zip(
             .prefetch_curseforge(&references)
             .map_err(ReleaseError::from)?;
         for ((i, row), (project, version)) in rows.iter().enumerate().zip(references) {
-            let source = providers.resolve(Provider::Curseforge, &project, &version);
+            let source = providers.archive_filename(Provider::Curseforge, &project, &version);
             let filename = match source {
-                Ok(source) => source.filename,
+                Ok(filename) => filename,
                 // A draft can retain a restricted file's real identity. Installing
                 // it still requires a permitted provider download in preflight.
                 Err(crate::content::ContentError::DownloadUnavailable { filename }) => filename,
@@ -735,7 +735,7 @@ fn parse_zip(
             });
         if let Some((root, path)) = scoped {
             manifest.override_files.push(OverrideFile {
-                root: root.into(),
+                root: if root == "overrides" && (path.starts_with("global_packs/") || path.starts_with("journeymap/") || path.starts_with("fancymenu_data/") || path.to_ascii_lowercase().ends_with(".png")) { "client-overrides" } else { root }.into(),
                 path: path.into(),
                 sha256: Some(bytes.hash()),
                 trashed: false,
@@ -854,6 +854,19 @@ mod tests {
         assert_eq!(m.loader_version.as_deref(), Some("52.0.0"));
     }
     #[test]
+    fn curseforge_client_assets_retain_colour_codes_and_stay_client_only() {
+        let document = br#"{"manifestType":"minecraftModpack","manifestVersion":1,"name":"CF","version":"3.4","minecraft":{"version":"26.3","modLoaders":[{"id":"fabric-0.19.5","primary":true}]},"files":[]}"#;
+        let (m, _) = parse_archive(&archive(&[
+            ("manifest.json", document),
+            ("overrides/global_packs/required_resources/3 ?lGUI Experience+?0.zip", b"asset"),
+            ("overrides/journeymap/server/minecraft~overworld.config", b"{}"),
+            ("overrides/fancymenu_data/menu.json", b"{}"),
+            ("overrides/Evon's ModPack Logo Fabric.png", b"image"),
+        ]), &Providers, |_| unreachable!()).unwrap();
+        assert_eq!(m.override_files.len(), 4);
+        assert!(m.override_files.iter().all(|f| f.root == "client-overrides"));
+    }
+    #[test]
     fn curseforge_draft_retains_restricted_file_identity_and_preserves_provider_errors() {
         struct Restricted(bool);
         impl ProviderClient for Restricted {
@@ -925,5 +938,20 @@ mod tests {
     fn archive_traversal_and_non_pack_archives_refuse() {
         assert!(parse_archive(&archive(&[("../secret", b"x")]), &Providers, |_| Ok(None)).is_err());
         assert!(parse_archive(&archive(&[("hello.txt", b"x")]), &Providers, |_| Ok(None)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod live_triage {
+    use super::*;
+    #[test]
+    #[ignore = "requires downloaded provider archive and live CurseForge credentials"]
+    fn evon_provider_archive_ingests() {
+        let bytes = std::fs::read(std::env::var("VESTA_TRIAGE_ARCHIVE").unwrap()).unwrap();
+        let providers = UreqProviderClient::new(Some(std::env::var("CURSEFORGE_API_KEY").unwrap()));
+        let (manifest, _) = parse_archive(&bytes, &providers, |_| Ok(None)).unwrap();
+        assert_eq!(manifest.loader, ClientLoader::Fabric);
+        assert_eq!(manifest.minecraft_version, "26.3");
+        assert!(manifest.override_files.iter().any(|f| f.root == "client-overrides" && f.path.starts_with("global_packs/")));
     }
 }
