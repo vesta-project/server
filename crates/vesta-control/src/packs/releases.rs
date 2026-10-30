@@ -71,7 +71,7 @@ pub struct ProviderFailureDetails {
 pub enum ReleaseError {
     ProviderFile {
         failure: ProviderFailure,
-        details: ProviderFailureDetails,
+        details: Box<ProviderFailureDetails>,
     },
     /// The expected current revision no longer matches.
     Conflict,
@@ -148,14 +148,14 @@ impl ReleaseError {
         };
         Self::ProviderFile {
             failure,
-            details: ProviderFailureDetails {
+            details: Box::new(ProviderFailureDetails {
                 stage,
                 reason,
                 provider: provider.into(),
                 project_id: project.into(),
                 version_id: version.into(),
                 filename,
-            },
+            }),
         }
     }
 }

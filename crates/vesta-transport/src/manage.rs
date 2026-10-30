@@ -283,14 +283,14 @@ mod provider_error_tests {
         use vesta_control::packs::{ProviderFailure, ProviderFailureDetails, ReleaseError};
         let reply = pack_error(ReleaseError::ProviderFile {
             failure: ProviderFailure::DownloadUnavailable,
-            details: ProviderFailureDetails {
+            details: Box::new(ProviderFailureDetails {
                 stage: "metadata",
                 reason: "manual_download_required",
                 provider: "curseforge".into(),
                 project_id: "1691925".into(),
                 version_id: "9022781".into(),
                 filename: Some("mielon's-the-sift+26.3.jar".into()),
-            },
+            }),
         });
         assert_eq!(reply.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let crate::ReplyBody::Bytes(bytes) = reply.body() else {
