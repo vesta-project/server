@@ -788,6 +788,8 @@ impl Inner {
     }
 
     fn work(self: Arc<Self>) {
+        let mut checked_at = std::time::Instant::now();
+        let mut cursor = 0usize;
         while !self.stopping.load(Ordering::Acquire) {
             match self.claim() {
                 Ok(Some(job)) => {
@@ -800,6 +802,23 @@ impl Inner {
                     }
                 }
                 Ok(None) | Err(_) => {
+                    if checked_at.elapsed() >= Duration::from_secs(3600) {
+                        checked_at = std::time::Instant::now();
+                        let profiles = self.policy().profiles.clone();
+                        let candidates: Vec<_> = profiles.iter().flat_map(|p| self.engine.snapshots(&profile_tag(&p.name)).unwrap_or_default().into_iter().map(|s| (p.name.clone(), s.id))).collect();
+                        if let Some((profile, snapshot)) = candidates.get(cursor % candidates.len().max(1)) {
+                            if let Err(error) = self.engine.verify_snapshot(snapshot) {
+                                let id = uuid::Uuid::new_v4().to_string();
+                                let now = self.db.clock().millis();
+                                let _ = self.db.write(|c| {
+                                    c.execute("INSERT INTO backup_jobs (id,profile,kind,state,requested_by,requested_device,idempotency_key,created_at,finished_at,error_code) VALUES (?,?,'verify','failed','automatic','automatic',?,?,?,?)", params![id, profile, id, now, now, error.code()])?;
+                                    c.execute("DELETE FROM backup_jobs WHERE id IN (SELECT id FROM backup_jobs WHERE state IN ('succeeded','failed','uncertain') ORDER BY finished_at DESC,id DESC LIMIT -1 OFFSET ?)", [MAX_FINISHED_JOBS])?;
+                                    Ok(())
+                                });
+                            }
+                            cursor = cursor.wrapping_add(1);
+                        }
+                    }
                     let (lock, condvar) = &self.wake;
                     let mut woken = lock.lock().unwrap_or_else(|p| p.into_inner());
                     if !*woken {
@@ -1036,6 +1055,10 @@ impl Inner {
             Err(EngineError::LimitReached) => return Outcome::failed(budget.exceeded()),
             Err(error) => return Outcome::failed(error.code()),
         };
+        // Read every chunk of the new snapshot before promotion or retention.
+        if let Err(error) = self.engine.verify_snapshot(&summary.snapshot_id) {
+            return Outcome::failed(error.code());
+        }
         let complete = before.complete && after.complete;
         let changes = compare(&before.files, &after.files);
         let world_changed = changes.iter().any(|c| c.world) || !kept || !complete;

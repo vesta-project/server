@@ -849,3 +849,15 @@ fn total_cap_bounds_bucket_union_and_works_without_thinning() {
         assert!(!keep.contains(&format!("{:032x}", 0)));
     }
 }
+
+#[test]
+fn snapshot_verification_detects_corrupt_chunks() {
+    let source = game();
+    let store = MemStore::default();
+    let engine = Engine::new(Box::new(store.clone()));
+    engine.init().unwrap();
+    let backup = engine.backup(source.path(), &Ignore::default(), &tags("p"), Some("profile=p")).unwrap();
+    engine.verify_snapshot(&backup.snapshot_id).unwrap();
+    store.corrupt_one_chunk();
+    assert_eq!(engine.verify_snapshot(&backup.snapshot_id), Err(EngineError::Corrupt));
+}
