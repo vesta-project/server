@@ -105,6 +105,9 @@ pub struct ContentCapabilities {
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ContentInventory {
+    /// Actual journaled writes waiting for stopped-process ownership, not loaded files.
+    pub deferred_writes: usize,
+    pub needs_restart: bool,
     pub items: Vec<ContentEntry>,
     pub capabilities: ContentCapabilities,
     pub minecraft_version: String,

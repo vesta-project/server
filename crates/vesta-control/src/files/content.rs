@@ -485,6 +485,8 @@ impl FileBrowser {
         let content = policy.check(Capability::ContentInstall, None).allowed();
         let has = |cap| policy.check(cap, None).allowed();
         Ok(ContentInventory {
+            deferred_writes: items.iter().filter(|item| item.pending.is_some()).count(),
+            needs_restart: items.iter().any(|item| item.pending.is_some()),
             items,
             minecraft_version,
             truncated,
