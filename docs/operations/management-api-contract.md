@@ -2011,7 +2011,7 @@ The launcher refreshes expired pack and software plans during Apply and compares
 
 ### Automatic backup verification
 
-Each new backup's manifest and every referenced chunk are read and verified before promotion or retention. The idle backup worker also rotates through retained snapshots, verifying at most one snapshot per hour. Successful periodic checks do not create activity rows; failures create failed verify jobs. The manual verify endpoint remains available for automation.
+Each new backup's manifest and every referenced chunk are read and verified before promotion or retention. The idle backup worker rotates through retained snapshots, checking one manifest and at most 64 chunks (64 MiB uncompressed) per hour. Each revisit advances the chunk window. Successful periodic checks do not create activity rows; failures create failed verify jobs. The manual verify endpoint remains available for automation.
 
 ### CraftBukkit and Spigot catalogue
 

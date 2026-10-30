@@ -700,15 +700,20 @@ impl Engine {
     /// Verify every listed snapshot: its manifest parses and every chunk exists. With
     /// `read_data_percent`, that share of chunks is also read back and re-hashed.
     pub(super) fn verify_snapshot(&self, id: &str) -> Result<()> {
+        self.verify_snapshot_range(id, 0, usize::MAX)
+    }
+    pub(super) fn verify_snapshot_range(&self, id: &str, offset: usize, limit: usize) -> Result<()> {
         let mut seen = BTreeSet::new();
         for file in self.manifest(id)?.files {
             for hash in file.chunks {
                 if !valid_hash(&hash) { return Err(EngineError::Corrupt); }
-                if seen.insert(hash.clone()) {
-                    let bytes = decompress(&self.store.get(&chunk_key(&hash))?, CHUNK_SIZE)?;
-                    if hash_hex(&bytes) != hash { return Err(EngineError::Corrupt); }
-                }
+                seen.insert(hash);
             }
+        }
+        let start = offset % seen.len().max(1);
+        for hash in seen.iter().skip(start).chain(seen.iter().take(start)).take(limit) {
+            let bytes = decompress(&self.store.get(&chunk_key(hash))?, CHUNK_SIZE)?;
+            if hash_hex(&bytes) != *hash { return Err(EngineError::Corrupt); }
         }
         Ok(())
     }
