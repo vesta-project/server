@@ -858,7 +858,7 @@ mod tests {
         let document = br#"{"manifestType":"minecraftModpack","manifestVersion":1,"name":"CF","version":"3.4","minecraft":{"version":"26.3","modLoaders":[{"id":"fabric-0.19.5","primary":true}]},"files":[]}"#;
         let (m, _) = parse_archive(&archive(&[
             ("manifest.json", document),
-            ("overrides/global_packs/required_resources/3 ?lGUI Experience+?0.zip", b"asset"),
+            ("overrides/global_packs/required_resources/3 \u{00a7}lGUI Experience+\u{00a7}0.zip", b"asset"),
             ("overrides/journeymap/server/minecraft~overworld.config", b"{}"),
             ("overrides/fancymenu_data/menu.json", b"{}"),
             ("overrides/Evon's ModPack Logo Fabric.png", b"image"),
@@ -949,7 +949,9 @@ mod live_triage {
     fn evon_provider_archive_ingests() {
         let bytes = std::fs::read(std::env::var("VESTA_TRIAGE_ARCHIVE").unwrap()).unwrap();
         let providers = UreqProviderClient::new(Some(std::env::var("CURSEFORGE_API_KEY").unwrap()));
-        let (manifest, _) = parse_archive(&bytes, &providers, |_| Ok(None)).unwrap();
+        let fixture = super::super::tests::Fixture::new();
+        let store = Store::open(&fixture.db).unwrap();
+        let (manifest, _) = parse_zip(Cursor::new(bytes), &providers, |_| Ok(None), Some(&store)).unwrap();
         assert_eq!(manifest.loader, ClientLoader::Fabric);
         assert_eq!(manifest.minecraft_version, "26.3");
         assert!(manifest.override_files.iter().any(|f| f.root == "client-overrides" && f.path.starts_with("global_packs/")));
