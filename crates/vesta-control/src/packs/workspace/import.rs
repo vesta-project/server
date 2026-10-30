@@ -722,6 +722,13 @@ fn parse_zip(
         if cf.is_some() && name == "modlist.html" {
             continue;
         }
+        // CurseForge exports may include profile artwork beside the manifest.
+        // It is metadata, never a game override or a server install destination.
+        if cf.is_some() && name.starts_with("profileImage/")
+            && matches!(name.rsplit('.').next(), Some("png" | "jpg" | "jpeg"))
+        {
+            continue;
+        }
         let scoped = name
             .strip_prefix("client-overrides/")
             .map(|p| ("client-overrides", p))
@@ -862,6 +869,7 @@ mod tests {
             ("overrides/journeymap/server/minecraft~overworld.config", b"{}"),
             ("overrides/fancymenu_data/menu.json", b"{}"),
             ("overrides/Evon's ModPack Logo Fabric.png", b"image"),
+            ("profileImage/Evon's ModPack Logo Fabric.png", b"image"),
         ]), &Providers, |_| unreachable!()).unwrap();
         assert_eq!(m.override_files.len(), 4);
         assert!(m.override_files.iter().all(|f| f.root == "client-overrides"));
@@ -948,7 +956,8 @@ mod live_triage {
     #[ignore = "requires downloaded provider archive and live CurseForge credentials"]
     fn evon_provider_archive_ingests() {
         let bytes = std::fs::read(std::env::var("VESTA_TRIAGE_ARCHIVE").unwrap()).unwrap();
-        let providers = UreqProviderClient::new(Some(std::env::var("CURSEFORGE_API_KEY").unwrap()));
+        let providers = UreqProviderClient::new(Some(std::env::var("CURSEFORGE_API_KEY").unwrap()))
+            .with_deadline(std::time::Instant::now() + std::time::Duration::from_secs(180)).unwrap();
         let fixture = super::super::tests::Fixture::new();
         let store = Store::open(&fixture.db).unwrap();
         let (manifest, _) = parse_zip(Cursor::new(bytes), &providers, |_| Ok(None), Some(&store)).unwrap();
