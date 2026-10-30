@@ -14,6 +14,28 @@ mod downloads;
 #[path = "install_bytes.rs"]
 mod stored_bytes;
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PackInstallProgress {
+    pub stage: String,
+    pub completed: usize,
+    pub total: usize,
+}
+struct Preparation {
+    db: StateDatabase,
+    job: String,
+}
+impl Preparation {
+    fn report(&self, stage: &str, completed: usize, total: usize) -> Result<()> {
+        let body = serde_json::to_string(&PackInstallProgress { stage: stage.into(), completed, total }).map_err(|_| invalid())?;
+        self.db.write(|c| c.execute("INSERT OR REPLACE INTO pack_install_progress VALUES(?,?,?,?)", params![self.db.server_id(), self.job, body, self.db.clock().millis() + 3_600_000]).map(|_| ()).map_err(Into::into))?;
+        Ok(())
+    }
+}
+impl Drop for Preparation {
+    fn drop(&mut self) {
+        let _ = self.db.write(|c| c.execute("DELETE FROM pack_install_progress WHERE server_id=? AND job=?", params![self.db.server_id(), self.job]).map(|_| ()).map_err(Into::into));
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InstallSource {
     Provider {
@@ -204,6 +226,8 @@ impl PackWorkspace {
         };
         self.db
             .read_with(|t| self.install_authority(t.connection(), s))?;
+        let progress = Preparation { db: self.db.clone(), job: uuid::Uuid::new_v4().to_string() };
+        progress.report("archive", 0, 0)?;
         let payload_store = PayloadStore::open(&self.db).map_err(super::super::PackError::from)?;
         let _ = payload_store.collect();
         let _cleanup = payload_store.cleanup();
@@ -327,6 +351,7 @@ impl PackWorkspace {
         // Resolve every server candidate before downloading any mod. A restricted
         // or malformed file must not waste the rest of the review's download budget.
         let mut sources = BTreeMap::new();
+        progress.report("metadata", 0, manifest.entries.len())?;
         for e in &manifest.entries {
             if e.environment.server == Side::Unsupported
                 || matches!(e.kind, EntryKind::ResourcePack | EntryKind::Shader)
@@ -394,7 +419,8 @@ impl PackWorkspace {
                 }
             }
         }
-        for chunk in manifest.entries.chunks(2) {
+        for (index, chunk) in manifest.entries.chunks(2).enumerate() {
+            progress.report("download_verify", index * 2, manifest.entries.len())?;
             let candidates: Vec<_> = chunk
                 .iter()
                 .filter_map(|entry| sources.get(&entry.id).map(|(_, source)| (entry, source)))
@@ -510,6 +536,7 @@ impl PackWorkspace {
                 )?;
             }
         }
+        progress.report("review", sources.len(), sources.len())?;
         for root in ["overrides", "server-overrides"] {
             for f in manifest
                 .override_files

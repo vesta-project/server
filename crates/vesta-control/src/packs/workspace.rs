@@ -136,6 +136,7 @@ pub struct PackDraft {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct WorkspaceView {
+    pub install_progress: Option<PackInstallProgress>,
     pub server_modpack: Option<ServerModpackLink>,
     pub client_pack: ClientPackConfig,
     pub customizing_provider: bool,
@@ -322,6 +323,7 @@ impl PackWorkspace {
         .0)
     }
     pub fn open(db: &StateDatabase) -> Result<Self> {
+        db.write(|c| c.execute_batch("CREATE TABLE IF NOT EXISTS pack_install_progress(server_id TEXT PRIMARY KEY, job TEXT NOT NULL, body TEXT NOT NULL, expires INTEGER NOT NULL)").map_err(Into::into))?;
         db.write(|c| c.execute_batch("CREATE TABLE IF NOT EXISTS pack_install_plans(id TEXT PRIMARY KEY, principal TEXT NOT NULL, device TEXT NOT NULL, expires INTEGER NOT NULL, token_hash TEXT NOT NULL, body TEXT NOT NULL)").map_err(Into::into))?;
         server_link::initialize(db)?;
         db.write(|c| c.execute_batch("CREATE TABLE IF NOT EXISTS pack_spooled_uploads(server_id TEXT NOT NULL,principal_id TEXT NOT NULL,device_id TEXT NOT NULL,upload_id TEXT NOT NULL,name TEXT NOT NULL,received INTEGER NOT NULL DEFAULT 0,payload TEXT,PRIMARY KEY(server_id,principal_id,device_id,upload_id)); CREATE TABLE IF NOT EXISTS pack_upload_chunk_receipts(server_id TEXT NOT NULL,principal_id TEXT NOT NULL,device_id TEXT NOT NULL,request_key TEXT NOT NULL,PRIMARY KEY(server_id,principal_id,device_id,request_key));").map_err(Into::into))?;
@@ -441,6 +443,10 @@ impl PackWorkspace {
             .unwrap_or(false))
         })?;
         Ok(WorkspaceView {
+            install_progress: self.db.read_with(|t| {
+                let raw: Option<String> = t.connection().query_row("SELECT body FROM pack_install_progress WHERE server_id=? AND expires>?", params![self.db.server_id(), self.db.clock().millis()], |r| r.get(0)).optional()?;
+                raw.map(|raw| serde_json::from_str(&raw).map_err(|_| invalid())).transpose()
+            })?,
             server_modpack: self.server_link(subject)?,
             client_pack: self.client_pack(subject, release.is_some())?,
             customizing_provider,
