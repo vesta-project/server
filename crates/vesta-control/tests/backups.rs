@@ -46,6 +46,8 @@ fn profile(name: &str, mode: BackupMode, keep_last: u32) -> BackupProfile {
     BackupProfile {
         name: name.into(),
         mode,
+        keep_total: 0,
+        keep_hourly: 0,
         keep_last,
         keep_daily: 0,
         keep_weekly: 0,
