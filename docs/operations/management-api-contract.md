@@ -2001,6 +2001,18 @@ Profiles accept `keep_total` (zero disables the cap) and `keep_hourly`, in addit
 
 Content changes apply immediately only when the agent acquires stopped-process ownership. While Minecraft runs, the implementation durably stores bytes in `server_content_changes` and writes them before the next start. Whole-pack applies always use this journal. `pending` and `staged_until_restart` therefore mean actual deferred writes, rather than installed files awaiting reload. The start barrier prevents Minecraft starting before these writes finish.
 
+Inventory exposes `deferred_writes` and `needs_restart` for one server-level notice. Counts cover the visible inventory and may be incomplete when `truncated` is true.
+
+### Pack preparation and review
+
+Workspace reads expose nullable `install_progress`: `stage` is `archive`, `metadata`, `download_verify`, or `review`, with `completed` and `total` entry counts. Zero total means indeterminate progress. The job clears this record on completion or failure; a crashed worker's record expires. These fields are advisory, never installation authority.
+
+The launcher refreshes expired pack and software plans during Apply and compares reviewed effects before carrying consent forward. Credential changes alone do not require another review. Changed files, runtime requirements or warnings do. Server token expiry, authenticated-subject binding and file preconditions remain enforced.
+
+### Automatic backup verification
+
+Each new backup's manifest and every referenced chunk are read and verified before promotion or retention. The idle backup worker also rotates through retained snapshots, verifying at most one snapshot per hour. Successful periodic checks do not create activity rows; failures create failed verify jobs. The manual verify endpoint remains available for automation.
+
 ### CraftBukkit and Spigot catalogue
 
 Discovery uses https://hub.spigotmc.org/versions/ and one pinned recipe per Minecraft version. This provides many Minecraft versions but one current source build per version. BuildTools (https://www.spigotmc.org/wiki/buildtools/) compiles that recipe locally. GetBukkit distributes third-party binaries without this installer's required first-party source pins and reference checksums, so they are not mixed into this catalogue. The UI labels this limitation beside build choices.
