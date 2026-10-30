@@ -1074,7 +1074,7 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
     );
     let result=match query {
         Query::Jobs(before,limit)=>backups.jobs(before.as_ref().map(|(timestamp,id)|(*timestamp,id.as_str())),limit).map(|jobs| {
-            let profiles=backups.policy().profiles.iter().map(|p|json!({"name":p.name,"mode":match p.mode {BackupMode::Online=>"online",BackupMode::Stopped=>"stopped"},"keep_last":p.keep_last,"keep_daily":p.keep_daily,"keep_weekly":p.keep_weekly,"keep_monthly":p.keep_monthly,"on_mutation":match p.on_mutation {MutationPolicy::Warn=>"warn",MutationPolicy::FailWorld=>"fail-world",MutationPolicy::FailAny=>"fail-any"},"warn_seconds":p.warn_seconds,"max_snapshots":p.max_snapshots})).collect::<Vec<_>>();
+            let profiles=backups.policy().profiles.iter().map(|p|json!({"name":p.name,"mode":match p.mode {BackupMode::Online=>"online",BackupMode::Stopped=>"stopped"},"keep_total":p.keep_total,"keep_hourly":p.keep_hourly,"keep_last":p.keep_last,"keep_daily":p.keep_daily,"keep_weekly":p.keep_weekly,"keep_monthly":p.keep_monthly,"on_mutation":match p.on_mutation {MutationPolicy::Warn=>"warn",MutationPolicy::FailWorld=>"fail-world",MutationPolicy::FailAny=>"fail-any"},"warn_seconds":p.warn_seconds,"max_snapshots":p.max_snapshots})).collect::<Vec<_>>();
             json!({"profiles":profiles,"jobs":jobs.iter().map(|v|backup_job(host,token,v)).collect::<Vec<_>>(),"next_before":if jobs.len()==limit {jobs.last().map(|v|backup_cursor(v.created_at,&v.id))} else {None},"restore_mode":"inspection_only","recovery_required":backups.recovery_required()})
         }),
         Query::Job(id)=>match backups.job(id) {Ok(Some(job))=> {
