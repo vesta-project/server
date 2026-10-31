@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position=0)][ValidateSet('start','stop','status','recover')][string]$Action = 'status',
-    [string]$Root = (Join-Path ([IO.Path]::GetTempPath()) 'vesta-dev-server')
+    [string]$Root = (Join-Path (Split-Path -Parent $PSScriptRoot) '.dev\fixture')
 )
 $ErrorActionPreference = 'Stop'
 $Root = [IO.Path]::GetFullPath($Root).TrimEnd('\','/')

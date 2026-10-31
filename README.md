@@ -29,7 +29,9 @@ See the [requirements](docs/SERVER_SOFTWARE_REQUIREMENTS.md),
 Install Rust through rustup and Node 22 or later. The rust-toolchain.toml file selects
 Rust 1.96.0, matching CI, including rustfmt and Clippy.
 
-On Windows, run `./dev.ps1` from PowerShell to build and update `dev-server`.
+On Windows, run `./dev.ps1` from PowerShell to create or update `dev-server`.
+Its persistent data lives in `.dev/servers` in this checkout, excluded from Git.
+First-run setup leaves Minecraft stopped and the EULA unaccepted.
 The command returns once its updated agent is online and preserves whether
 Minecraft was running. Use `./dev.ps1 restart <name>` for another server,
 `./dev.ps1 build` to build only, or `./dev.ps1 shell` for an optional shell

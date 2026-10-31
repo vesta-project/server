@@ -2,7 +2,7 @@
 
 ## Daily Windows development commands
 
-From `V:\server-connections-mvp` after the initial installation:
+From `V:\server-connections-mvp`:
 
 ```powershell
 .\dev.ps1                # build and update dev-server, then return
@@ -15,7 +15,9 @@ vesta manage dev-server agent stop
 
 Normal updates preserve Minecraft's running/stopped state. See the
 [development guide](dev-session.md). Use the initial-installation script below
-only when creating the disposable fixture; it is not the daily update command.
+only when creating a separate disposable fixture at `.dev/fixture`. Its registry
+is `.dev/fixture/servers`; pass that with `--server-root` when updating that fixture.
+The daily command uses `.dev/servers` and creates it if missing.
 
 ### Legacy scratch recovery
 
@@ -91,7 +93,8 @@ identity, TLS certificate and trust; use a different root or reset to reinstall.
 Parameters (PowerShell / Linux):
 
 - `-Root PATH` / `--root PATH`: dedicated scratch directory; defaults to
-  `%TEMP%\vesta-dev-server` / `${TMPDIR:-/tmp}/vesta-dev-server`.
+  `<checkout>/.dev/fixture` on Windows and Linux. This is separate from the
+  main `./dev.ps1` registry at `<checkout>/.dev/servers`.
 - `-Port 8443` / `--port 8443`: agent HTTPS port. The bind is always `127.0.0.1`,
   and `public-endpoint` is `https://127.0.0.1:<port>/`.
 - `-GamePort 25565` / `--game-port 25565`: Minecraft's loopback port at initial
@@ -120,16 +123,16 @@ Never commit it or share pairing output/log captures. A pairing invitation is
 short-lived; obtain a fresh one with the printed executable and install root:
 
 ```powershell
-& "$env:TEMP\vesta-dev-server\bin\vesta-agent.exe" pair dev-server --install-root "$env:TEMP\vesta-dev-server\servers" --role owner
-& "$env:TEMP\vesta-dev-server\bin\vesta-agent.exe" stop dev-server --install-root "$env:TEMP\vesta-dev-server\servers"
+& "$PWD\.dev\fixture\bin\vesta-agent.exe" pair dev-server --install-root "$PWD\.dev\fixture\servers" --role owner
+& "$PWD\.dev\fixture\bin\vesta-agent.exe" stop dev-server --install-root "$PWD\.dev\fixture\servers"
 # Only after the game stopped, use the exact agent PID printed by the script:
 Stop-Process -Id <agent-pid>
 .\scripts\dev-test-server.ps1 -Reset
 ```
 
 ```sh
-/tmp/vesta-dev-server/bin/vesta-agent pair dev-server --install-root /tmp/vesta-dev-server/servers --role owner
-/tmp/vesta-dev-server/bin/vesta-agent stop dev-server --install-root /tmp/vesta-dev-server/servers
+./.dev/fixture/bin/vesta-agent pair dev-server --install-root ./.dev/fixture/servers --role owner
+./.dev/fixture/bin/vesta-agent stop dev-server --install-root ./.dev/fixture/servers
 kill -INT <agent-pid>
 ./scripts/dev-test-server.sh --reset
 ```

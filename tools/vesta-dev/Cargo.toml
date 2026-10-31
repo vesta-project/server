@@ -13,6 +13,7 @@ vesta-state.workspace = true
 vesta-supervisor.workspace = true
 fs2.workspace = true
 sha2.workspace = true
+rcgen = { version = "=0.14.10", default-features = false, features = ["ring", "pem"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_System_Pipes"] }

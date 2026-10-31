@@ -2,7 +2,7 @@
 # Linux development fixture. Dependencies: Rust/Cargo, curl, Python 3; Java for Minecraft.
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-root="${TMPDIR:-/tmp}/vesta-dev-server"
+root="$repo/.dev/fixture"
 port=8443 game_port=25565 version=latest java_bin="" loader=vanilla loader_version=""
 accept_eula=0 inert=0 background=0 reset=0 force=0 build_profile=debug
 build_args=()

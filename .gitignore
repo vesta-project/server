@@ -18,6 +18,7 @@ node_modules/
 /run-server/
 /demo-server/
 /software-installations/
+/.dev/
 *.log
 
 # Editor-local settings

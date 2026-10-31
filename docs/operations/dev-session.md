@@ -6,7 +6,7 @@ On Windows, open a standalone PowerShell terminal in this repository and run:
 ./dev.ps1
 ```
 
-This builds all four tools, updates the existing `dev-server` agent, verifies its
+This builds all four tools, creates a missing default `dev-server` or updates its agent, verifies its
 new PID over local management, and returns to your terminal. Minecraft is started
 again only if it was running before the update. A stopped server stays stopped,
 even if its normal agent startup policy is Start or Sleep. No shell setup,
@@ -17,13 +17,27 @@ listener flag or second command is needed for the normal development server.
 ./dev.ps1 restart another-server     # Select one server by name or ID
 ./dev.ps1 build                      # Build only
 ./dev.ps1 shell                      # Optional interactive tools shell
+./dev.ps1 pair                       # Print a fresh owner pairing link (no restart)
 ./dev.ps1 --release                  # Update with optimized tools
 ./dev.ps1 --server-root 'D:\Vesta test\servers'
 ```
 
 The default registry is `VESTA_SERVER_ROOT` when set, otherwise
-`%TEMP%\vesta-dev-server\servers`. The command does not create a missing server
-or update other installations. Build/update staging is reused per checkout;
+`<checkout>/.dev/servers` on Windows and Linux. This Git-ignored directory holds
+worlds, mods, identity, settings and local TLS keys. Only disposable build staging
+lives in Temp. Custom registries and other server names are update-only.
+
+On first run, the default server is installed as vanilla Minecraft 1.21.1, using
+`VESTA_DEV_JAVA`, `JAVA_HOME`, or Java on PATH. Set `VESTA_DEV_MINECRAFT_VERSION`
+to choose another initial version with compatible Java. The agent listens at
+`https://127.0.0.1:8443/` and prints an owner pairing link. Minecraft stays stopped,
+and `eula.txt` remains unaccepted. Repeated runs preserve its installation, world,
+TLS certificate and identity. A missing registration with leftover instances is
+reported for recovery rather than overwritten. After deleting the entire `.dev`
+directory, rerunning the command creates a new server and pairing identity.
+Old Temp data is not moved or deleted automatically.
+
+The command does not update other installations. Build/update staging is reused per checkout;
 byte-identical binaries reuse the staged build instead of copying it again.
 Concurrent updates for the same checkout wait for each other. Existing build
 directories and server data are not deleted.
@@ -156,9 +170,7 @@ once to load the updated tool and shell function. On Windows, use
 
 ## Select server data
 
-The registry defaults to `VESTA_SERVER_ROOT` if already set, otherwise the existing
-test-server registry `%TEMP%\vesta-dev-server\servers` on Windows or
-`${TMPDIR:-/tmp}/vesta-dev-server/servers` on Linux. Set it explicitly when needed:
+The registry defaults to `VESTA_SERVER_ROOT` if already set, otherwise `<checkout>/.dev/servers` on Windows and Linux. Set it explicitly when needed:
 
 ```powershell
 ./scripts/dev-shell.ps1 --server-root 'D:\Vesta test\servers'

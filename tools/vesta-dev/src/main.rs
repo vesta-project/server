@@ -9,13 +9,14 @@ use std::{
 };
 
 const BINARIES: [&str; 4] = ["vesta", "vesta-agent", "vesta-supervisor", "vesta-setup"];
+mod bootstrap;
 #[cfg(windows)]
 mod console;
 #[cfg(windows)]
 mod detached;
 mod restart;
 mod session;
-const HELP: &str = "Vesta development\n\n  ./dev.ps1                         Build and update dev-server, then return\n  ./dev.ps1 restart [server]        Build and update a selected server\n  ./dev.ps1 build                   Build tools without restarting\n  ./dev.ps1 shell                   Open the optional development shell\n\nOptions: --release, --server-root <registry>, --local-only, --configured-listener.\nListener overrides apply to updates. The current listener and running/stopped\nMinecraft state are preserved. An offline agent starts with its configured listener.\n\nLinux: cargo dev update [server], cargo dev build, or cargo dev for a shell.\nBuild failures leave the running agent alone. Updates reuse a checkout-local\nstaging session; unrelated servers are not restarted.\n";
+const HELP: &str = "Vesta development\n\n  ./dev.ps1                         Build and update dev-server (create if missing), then return\n  ./dev.ps1 restart [server]        Build and update a selected server\n  ./dev.ps1 build                   Build tools without restarting\n  ./dev.ps1 shell                   Open the optional development shell\n  ./dev.ps1 pair                    Print a new owner pairing link\n\nOptions: --release, --server-root <registry>, --local-only, --configured-listener.\nDefault server data: <checkout>/.dev/servers (never Temp).\nFirst-run setup uses Minecraft 1.21.1 and JAVA_HOME or VESTA_DEV_JAVA.\nVESTA_DEV_MINECRAFT_VERSION overrides the first-run version.\nListener overrides apply to updates. The current listener and running/stopped\nMinecraft state are preserved. An offline agent starts with its configured listener.\n\nLinux: cargo dev update [server], cargo dev build, or cargo dev for a shell.\nBuild failures leave the running agent alone. Updates reuse a checkout-local\nstaging session; unrelated servers are not restarted.\n";
 
 #[derive(Default)]
 struct Options {
@@ -26,6 +27,7 @@ struct Options {
     server_root: Option<PathBuf>,
     restart: Option<String>,
     local_only: Option<bool>,
+    pair: bool,
 }
 
 fn options(args: impl IntoIterator<Item = OsString>) -> Result<Options, String> {
@@ -43,6 +45,11 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Options, String> 
                 args.next();
             }
             "shell" => {
+                args.next();
+            }
+            "pair" => {
+                result.build_only = true;
+                result.pair = true;
                 args.next();
             }
             _ => {}
@@ -98,6 +105,9 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Options, String> 
     }
     if result.local_only.is_some() && result.restart.is_none() {
         return Err("listener overrides require --restart <server>".into());
+    }
+    if result.pair && (result.restart.is_some() || result.session.is_some()) {
+        return Err("pair does not restart a server or select a build session".into());
     }
     Ok(result)
 }
@@ -228,26 +238,63 @@ fn run(options: Options) -> Result<i32, String> {
     };
     let bin = stage(&session, &build(&repo, options.release)?)?;
     println!("Build ready: {}", bin.display());
+    if options.pair {
+        let root = options
+            .server_root
+            .as_ref()
+            .cloned()
+            .or_else(|| std::env::var_os("VESTA_SERVER_ROOT").map(PathBuf::from))
+            .unwrap_or_else(|| default_server_root(&repo));
+        let status = Command::new(bin.join(executable("vesta")))
+            .args(["pair", "dev-server", "--install-root"])
+            .arg(root)
+            .args(["--role", "owner"])
+            .status()
+            .map_err(|e| e.to_string())?;
+        return Ok(status.code().unwrap_or(1));
+    }
     if let Some(target) = options.restart.as_deref() {
         let root = options
             .server_root
             .as_ref()
             .cloned()
             .or_else(|| std::env::var_os("VESTA_SERVER_ROOT").map(PathBuf::from))
-            .or_else(|| {
-                options
-                    .update
-                    .then(|| std::env::temp_dir().join("vesta-dev-server/servers"))
-            })
+            .or_else(|| options.update.then(|| default_server_root(&repo)))
             .ok_or("restart requires VESTA_SERVER_ROOT or --server-root")?;
-        restart::run(
-            &bin,
-            &session,
-            &root,
-            target,
-            options.local_only,
-            options.update.then_some(false),
-        )?;
+        let create_default = options.update
+            && target == "dev-server"
+            && options.server_root.is_none()
+            && std::env::var_os("VESTA_SERVER_ROOT").is_none();
+        let created = if create_default {
+            bootstrap::ensure(&bin, &root)?
+        } else {
+            false
+        };
+        println!("Server data: {}", root.display());
+        if created {
+            restart::start_new(&bin, &session, &root, options.local_only)?;
+            bootstrap::finish(&root)?;
+        } else {
+            restart::run(
+                &bin,
+                &session,
+                &root,
+                target,
+                options.local_only,
+                options.update.then_some(false),
+            )?;
+        }
+        if created && options.local_only != Some(true) {
+            let status = Command::new(bin.join(executable("vesta")))
+                .args(["pair", "dev-server", "--install-root"])
+                .arg(&root)
+                .args(["--role", "owner"])
+                .status()
+                .map_err(|e| e.to_string())?;
+            if !status.success() {
+                return Err("dev server is online; pairing failed. Run ./dev.ps1 shell, then vesta pair dev-server --role owner".into());
+            }
+        }
     }
     if options.build_only {
         return Ok(0);
@@ -255,7 +302,7 @@ fn run(options: Options) -> Result<i32, String> {
     let server_root = options
         .server_root
         .or_else(|| std::env::var_os("VESTA_SERVER_ROOT").map(PathBuf::from))
-        .unwrap_or_else(|| std::env::temp_dir().join("vesta-dev-server/servers"));
+        .unwrap_or_else(|| default_server_root(&repo));
     let server_root = if server_root.is_absolute() {
         server_root
     } else {
@@ -295,6 +342,10 @@ fn run(options: Options) -> Result<i32, String> {
     Ok(status.code().unwrap_or(1))
 }
 
+fn default_server_root(repo: &Path) -> PathBuf {
+    repo.join(".dev").join("servers")
+}
+
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
@@ -313,6 +364,12 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_server_data_is_checkout_local_and_distinct_from_build_staging() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert_eq!(default_server_root(repo), repo.join(".dev/servers"));
+    }
 
     #[test]
     fn restart_is_explicit_and_requires_a_development_session() {
@@ -367,6 +424,7 @@ mod tests {
         }
         assert!(parse(&["update", "one", "two"]).is_err());
         assert!(parse(&["shell"]).is_ok_and(|o| !o.build_only && !o.update));
+        assert!(parse(&["pair"]).is_ok_and(|o| o.build_only && o.pair && !o.update));
         assert!(parse(&["update", "--local-only", "--configured-listener"]).is_err());
     }
 

@@ -18,7 +18,7 @@ test('Windows dev entry forwards literal arguments and script failures', { skip:
     const result = run();
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout.trim()), ['update', ...args]);
-    for (const arguments_ of [[], ['restart', 'another server'], ['build'], ['shell']]) {
+    for (const arguments_ of [[], ['restart', 'another server'], ['build'], ['shell'], ['pair']]) {
       const result = run(arguments_);
       assert.equal(result.status, 0, result.stderr);
       const value = JSON.parse(result.stdout.trim());

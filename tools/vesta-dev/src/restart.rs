@@ -499,11 +499,66 @@ pub fn run(
     if read_document(&source)? != document || read_document(config.launch_definition())? != launch {
         return Err("configuration changed during restart; left stopped for review".into());
     }
-    println!(
-        "Starting updated agent. Log: {}",
-        logs.join("agent.log").display()
-    );
-    let mut child = spawn(&agent, &source, local_only, &logs)?;
+    launch_ready(&agent, &source, &logs, local_only, running)
+}
+
+/// A just-created instance has no previous runtime/lease files to inspect.
+/// Serve itself acquires all ownership fences before opening its listener.
+pub fn start_new(bin: &Path, session: &Path, root: &Path, local_only: Option<bool>) -> Result<()> {
+    let record = root.join("names/dev-server.json");
+    let row: Value = serde_json::from_slice(&read_document(&record)?)
+        .map_err(|_| "invalid new dev-server record")?;
+    let id = row["instance"]
+        .as_str()
+        .filter(|id| {
+            id.len() == 36
+                && id.starts_with("srv_")
+                && id[4..]
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+        .ok_or("invalid new dev-server identity")?;
+    let base = root.join("instances").join(id);
+    guarded(&base)?;
+    let source = base.join("host.toml");
+    let agent = Agent {
+        binary: bin.join(executable("vesta")),
+        root: root.into(),
+        id: id.into(),
+        base,
+    };
+    // A previous first-run waiter may have lost the ready response.
+    if agent.manage("status").is_ok() {
+        return run(bin, session, root, "dev-server", local_only, Some(false));
+    }
+    let checked = agent
+        .command()
+        .args(["agent", "check-config"])
+        .arg(&source)
+        .output()
+        .map_err(|_| "cannot validate new dev-server")?;
+    if !checked.status.success() {
+        return Err(format!(
+            "new dev-server configuration failed{}",
+            diagnostic_suffix(&checked.stderr)
+        ));
+    }
+    check_independent_launch(&agent)?;
+    let logs = session
+        .join("restarts")
+        .join(uuid::Uuid::new_v4().to_string());
+    launch_ready(&agent, &source, &logs, local_only.unwrap_or(false), false)
+}
+
+fn launch_ready(
+    agent: &Agent,
+    source: &Path,
+    logs: &Path,
+    local_only: bool,
+    running: bool,
+) -> Result<()> {
+    println!("Starting agent. Log: {}", logs.join("agent.log").display());
+    let mut child = spawn(agent, source, local_only, logs)?;
     let until = Instant::now() + WAIT;
     let ready = loop {
         if let Some(exit) = child

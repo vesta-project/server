@@ -1,7 +1,7 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$Root = (Join-Path ([IO.Path]::GetTempPath()) 'vesta-dev-server'),
+    [string]$Root = (Join-Path (Split-Path -Parent $PSScriptRoot) '.dev\fixture'),
     [ValidateRange(1,65535)][int]$Port = 8443,
     [ValidateRange(1,65535)][int]$GamePort = 25565,
     [string]$Version = 'latest',

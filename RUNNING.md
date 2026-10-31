@@ -1,7 +1,9 @@
 # Running the Rust server agent
 
 For development, [`./dev.ps1`](docs/operations/dev-session.md) builds the tools,
-updates the existing `dev-server` agent and returns to your terminal. Minecraft's
+creates a missing default `dev-server` or updates its agent, then returns to your terminal.
+Server data lives in the Git-ignored `.dev/servers` directory in this checkout;
+only build staging uses Temp. Minecraft's
 running/stopped state is preserved. Use `./dev.ps1 restart <name>` for another
 server or `./dev.ps1 shell` for an optional shell with the tools on PATH.
 
