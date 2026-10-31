@@ -584,9 +584,6 @@ impl PackWorkspace {
         })
     }
     fn store_blob(&self, c: &Connection, bytes: &[u8]) -> Result<String> {
-        if bytes.len() > super::MAX_PINNED_FILE_BYTES {
-            return Err(super::PackError::TooLarge.into());
-        }
         let sha = digest(bytes);
         let exists: bool = c.query_row(
             "SELECT EXISTS(SELECT 1 FROM pack_workspace_blobs WHERE server_id=? AND sha256=?)",
@@ -594,14 +591,6 @@ impl PackWorkspace {
             |r| r.get(0),
         )?;
         if !exists {
-            let total: i64 = c.query_row(
-                "SELECT coalesce(sum(length(body)),0) FROM pack_workspace_blobs WHERE server_id=?",
-                [self.db.server_id()],
-                |r| r.get(0),
-            )?;
-            if total as usize + bytes.len() > MAX_BLOBS {
-                return Err(super::PackError::TooLarge.into());
-            }
             c.execute(
                 "INSERT INTO pack_workspace_blobs(server_id,sha256,body) VALUES(?,?,?)",
                 params![self.db.server_id(), sha, bytes],
@@ -691,7 +680,6 @@ pub fn validate_manifest(m: &PackManifest) -> Result<()> {
             .display_version
             .split('.')
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-        || m.entries.len() > MAX_ENTRIES
     {
         return Err(invalid());
     }
@@ -761,27 +749,11 @@ pub fn validate_manifest(m: &PackManifest) -> Result<()> {
             _ => {}
         }
     }
-    if serde_json::to_vec(m).map_err(|_| invalid())?.len()
-        > vesta_protocol::pack::catalogue::MAX_JSON_BYTES
-    {
-        return Err(super::PackError::TooLarge.into());
-    }
-    // Use the publication catalogue's full namespace admission here as well:
-    // disjoint leaves with directory-case aliases must fail during preview.
-    use vesta_protocol::pack::catalogue::{
-        FileSource, Manifest, ManifestMetadata, PackContent, PackFile,
-    };
-    let files = m
-        .entries
-        .iter()
-        .map(|e| PackFile::new(&e.path, &"0".repeat(64), 0, FileSource::embedded()))
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(super::PackError::from)?;
-    Manifest::new(
-        ManifestMetadata::new("Draft", "1", 1, 1).map_err(super::PackError::from)?,
-        PackContent::Custom(files),
-    )
-    .map_err(super::PackError::from)?;
+    // Count and aggregate text budgets are review warnings; namespace integrity
+    // remains mandatory even when an imported archive exceeds those thresholds.
+    let paths = m.entries.iter().map(|e| vesta_protocol::pack::catalogue::RelativePath::parse(&e.path))
+        .collect::<std::result::Result<Vec<_>, _>>().map_err(super::PackError::from)?;
+    vesta_protocol::pack::catalogue::validate_namespace(paths.iter(), false).map_err(super::PackError::from)?;
     Ok(())
 }
 pub fn identifier(s: &str) -> bool {

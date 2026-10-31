@@ -37,7 +37,7 @@ impl PackWorkspace {
         let _lease = store.lease().map_err(storage)?;
         self.mutate(subject,key,input,|c|{
             let size=revision(&input.total_size)?;
-            if !identifier(&input.upload_id)||!valid_sha(&input.sha256)||size>vesta_protocol::pack::catalogue::MAX_TOTAL_SIZE||(!input.archive&&size>super::super::MAX_PINNED_FILE_BYTES as u64){return Err(invalid());}
+            if !identifier(&input.upload_id)||!valid_sha(&input.sha256)||size>i64::MAX as u64||(!input.archive&&size>super::super::MAX_PINNED_FILE_BYTES as u64){return Err(invalid());}
             let count:i64=c.query_row("SELECT count(*) FROM pack_workspace_uploads",[],|r|r.get(0))?;
             if count>=8{return Err(super::super::PackError::TooLarge.into());}
             c.execute("INSERT INTO pack_workspace_uploads(server_id,principal_id,device_id,upload_id,total_size,sha256,archive,body) VALUES(?,?,?,?,?,?,?,X'')",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),input.upload_id,size as i64,input.sha256,input.archive])?;
@@ -154,9 +154,6 @@ impl PackWorkspace {
         let _cleanup = store.cleanup();
         let _lease = store.lease().map_err(storage)?;
         let payload = self.archive_payload(subject, id, &store)?;
-        if payload.size > super::super::MAX_ARTIFACT_BYTES as u64 {
-            return Err(super::super::PackError::TooLarge.into());
-        }
         let mut bytes = Vec::new();
         use std::io::Read;
         store

@@ -33,6 +33,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         27 => apply_v27(c),
         28 => apply_v28(c),
         29 => apply_v29(c),
+        30 => apply_v30(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -1179,6 +1180,41 @@ fn apply_v29(c:&Connection)->crate::Result<()> {
         ) STRICT;
         INSERT INTO pack_workspace SELECT * FROM pack_workspace_v28;
         DROP TABLE pack_workspace_v28;
+    "#)?;
+    Ok(())
+}
+
+/// Legacy import budgets are review warnings; SQLite and disk failures still fail closed.
+fn apply_v30(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(r#"
+        CREATE TABLE pack_import_warnings (
+            server_id TEXT PRIMARY KEY REFERENCES server_identity(server_id),
+            revision TEXT NOT NULL, warnings_json TEXT NOT NULL
+        ) STRICT;
+        ALTER TABLE pack_workspace RENAME TO pack_workspace_v29;
+        CREATE TABLE pack_workspace (
+            server_id TEXT PRIMARY KEY REFERENCES server_identity(server_id), revision INTEGER NOT NULL CHECK(revision > 0),
+            manifest_json TEXT NOT NULL,
+            customizing_provider INTEGER NOT NULL DEFAULT 0 CHECK(customizing_provider IN (0,1))
+        ) STRICT;
+        INSERT INTO pack_workspace SELECT * FROM pack_workspace_v29;
+        DROP TABLE pack_workspace_v29;
+        ALTER TABLE pack_workspace_blobs RENAME TO pack_workspace_blobs_v29;
+        CREATE TABLE pack_workspace_blobs (
+            server_id TEXT NOT NULL REFERENCES server_identity(server_id), sha256 TEXT NOT NULL, body BLOB NOT NULL,
+            PRIMARY KEY(server_id,sha256)
+        ) STRICT;
+        INSERT INTO pack_workspace_blobs SELECT * FROM pack_workspace_blobs_v29;
+        DROP TABLE pack_workspace_blobs_v29;
+        ALTER TABLE pack_workspace_uploads RENAME TO pack_workspace_uploads_v29;
+        CREATE TABLE pack_workspace_uploads (
+            server_id TEXT NOT NULL REFERENCES server_identity(server_id), principal_id TEXT NOT NULL, device_id TEXT NOT NULL,
+            upload_id TEXT NOT NULL, total_size INTEGER NOT NULL CHECK(total_size >= 0), sha256 TEXT NOT NULL,
+            archive INTEGER NOT NULL, complete INTEGER NOT NULL DEFAULT 0, body BLOB NOT NULL,
+            PRIMARY KEY(server_id,principal_id,device_id,upload_id), CHECK(length(body) <= total_size)
+        ) STRICT;
+        INSERT INTO pack_workspace_uploads SELECT * FROM pack_workspace_uploads_v29;
+        DROP TABLE pack_workspace_uploads_v29;
     "#)?;
     Ok(())
 }

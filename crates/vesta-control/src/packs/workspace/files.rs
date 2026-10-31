@@ -92,9 +92,6 @@ fn path(root: &str, name: &str) -> Result<()> {
     validate_manifest(&manifest)
 }
 pub(super) fn validate_files(files: &[OverrideFile]) -> Result<()> {
-    if files.len() > MAX_ENTRIES {
-        return Err(super::super::PackError::TooLarge.into());
-    }
     let mut names = BTreeSet::new();
     let mut components = std::collections::BTreeMap::new();
     for file in files {

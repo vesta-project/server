@@ -736,6 +736,7 @@ mod trusted_pack_policy_tests {
 /// Retain useful download provenance without credentials, signed query strings or fragments.
 pub(crate) fn sanitized_download_url(value: &str) -> String {
     let Ok(mut url) = Url::parse(value) else { return "invalid download address".into(); };
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() { return "invalid download address".into(); }
     let _ = url.set_username("");
     let _ = url.set_password(None);
     url.set_query(None);

@@ -106,8 +106,10 @@ impl FileBrowser {
         payloads: Option<&[crate::packs::payload::Payload]>,
     ) -> Result<Vec<String>> {
         let (count, size): (i64, i64) = c.query_row("SELECT count(*),coalesce(sum(length(bytes)),0) FROM server_content_changes WHERE state='pending'", [], |r| Ok((r.get(0)?,r.get(1)?)))?;
-        if count + files.len() as i64 > MAX_PENDING
-            || size + files.iter().map(|f| f.2.len() as i64).sum::<i64>() > MAX_STAGED
+        // Spooled pack plans already carry acknowledged count/size warnings.
+        // Keep the interactive in-memory staging limits for other callers.
+        if payloads.is_none() && (count + files.len() as i64 > MAX_PENDING
+            || size + files.iter().map(|f| f.2.len() as i64).sum::<i64>() > MAX_STAGED)
         {
             return Err(FileError::IntentsFull);
         }

@@ -680,3 +680,38 @@ fn unsafe_paths_collisions_and_invalid_loader_metadata_refuse_without_advancing(
         "0"
     );
 }
+#[test]
+fn legacy_oversized_archive_member_can_be_reviewed_and_requires_acknowledgement() {
+    use std::io::{Cursor, Write};
+    let f = Fixture::new();
+    let game = f.temp.path().join("game");
+    std::fs::create_dir_all(&game).unwrap();
+    let files = crate::files::FileBrowser::open(f.db.clone(), &game, &[]).unwrap();
+    let releases = super::super::PackReleases::open(&f.db).unwrap();
+    let providers = crate::content::UreqProviderClient::new(None);
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.start_file("config/large.dat", zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated)).unwrap();
+    zip.write_all(&vec![0; super::super::MAX_PINNED_FILE_BYTES + 1]).unwrap();
+    let bytes = zip.finish().unwrap().into_inner();
+    let draft = f.workspace.import(&f.subject, "1.21.1", "import-large", &ImportRequest::Archive {
+        expected_revision: "0".into(), content_base64: STANDARD.encode(bytes),
+    }, &releases, &providers).unwrap();
+    let plan = f.workspace.install_plan(&f.subject, "1.21.1", Some("vanilla"), &PackInstallRequest {
+        source: InstallSource::Draft { revision: draft.revision },
+    }, &files, &releases, &providers).unwrap();
+    assert!(plan.valid);
+    assert!(plan.warnings.iter().any(|warning| warning.rule == "legacy_member_bytes" && warning.item == "imported archive / config/large.dat"));
+    assert!(plan.warnings.iter().any(|warning| warning.code == "archive_limit_warning" && warning.rule == "legacy_member_bytes" && warning.item == "config/large.dat"));
+    let mut apply = PackInstallApply {
+        acknowledge_warnings: false, acknowledge_software_switch: true,
+        plan_id: plan.plan_id, confirmation_token: plan.confirmation_token,
+        choices: Vec::new(), set_as_modpack: false,
+    };
+    assert!(f.workspace.install_apply(&f.subject, "1.21.1", Some("vanilla"), "apply-large", &apply, &files).is_err());
+    let pending: i64 = f.db.read(|c| c.query_row("SELECT count(*) FROM server_content_changes", [], |r| r.get(0)).map_err(Into::into)).unwrap();
+    assert_eq!(pending, 0);
+    apply.acknowledge_warnings = true;
+    let outcome = f.workspace.install_apply(&f.subject, "1.21.1", Some("vanilla"), "apply-large", &apply, &files).unwrap();
+    assert_eq!(outcome.pending_ids.len(), 1);
+    assert!(!game.join("config/large.dat").exists());
+}

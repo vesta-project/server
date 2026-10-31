@@ -634,7 +634,7 @@ pub(crate) fn add_text_budget(total: &mut usize, extra: usize) -> Result<(), Cat
 
 /// Also validates intermediate directory spellings, not just complete file names.
 /// The union of desired and installed namespaces may repeat an *identical* file.
-pub(crate) fn validate_namespace<'a>(
+pub fn validate_namespace<'a>(
     paths: impl IntoIterator<Item = &'a RelativePath>,
     allow_identical_files: bool,
 ) -> Result<(), CatalogueError> {

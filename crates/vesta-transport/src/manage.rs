@@ -239,7 +239,7 @@ fn pack_error(error_value: vesta_control::packs::ReleaseError) -> Reply {
             };
             envelope(
                 status,
-                json!({"error":{"code":failure.code(),"issue":{"code":failure.code(),"rule":details.reason,"item":details.filename.clone().unwrap_or_else(|| format!("{}/{}/{}", details.provider, details.project_id, details.version_id))},"details":details}}),
+                json!({"error":{"code":failure.code(),"issue":{"code":failure.code(),"rule":details.reason,"item":details.issue_url.clone().or_else(|| details.filename.clone()).unwrap_or_else(|| format!("{}/{}/{}", details.provider, details.project_id, details.version_id))},"details":details}}),
             )
         }
         vesta_control::packs::ReleaseError::Conflict => {
@@ -298,6 +298,7 @@ mod provider_error_tests {
         let reply = pack_error(ReleaseError::ProviderFile {
             failure: ProviderFailure::DownloadUnavailable,
             details: Box::new(ProviderFailureDetails {
+                issue_url: None,
                 stage: "metadata",
                 reason: "manual_download_required",
                 provider: "curseforge".into(),

@@ -85,6 +85,7 @@ const MUST_BE_EMPTY: &[&str] = &[
     "workflow_runs",
     "run_steps",
     "pack_releases",
+    "pack_import_warnings",
     "pack_workspace",
     "pack_workspace_blobs",
     "pack_workspace_receipts",

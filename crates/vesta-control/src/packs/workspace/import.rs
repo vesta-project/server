@@ -25,9 +25,6 @@ impl ArchiveBody {
         match self {
             Self::Memory(b) => Ok(b.clone()),
             Self::Disk(store, p) => {
-                if p.size > vesta_protocol::pack::catalogue::MAX_JSON_BYTES as u64 {
-                    return Err(super::super::PackError::TooLarge.into());
-                }
                 let mut file = store.verify(p).map_err(|_| invalid())?;
                 let mut bytes = Vec::new();
                 file.read_to_end(&mut bytes).map_err(|_| invalid())?;
@@ -99,9 +96,6 @@ impl PackWorkspace {
                 .map_err(super::super::PackError::from)?,
         )
         .map_err(|_| invalid())?;
-        if zip.len() > super::super::MAX_VESTA_ENTRIES {
-            return Err(super::super::PackError::TooLarge.into());
-        }
         let names: Vec<_> = zip.file_names().map(str::to_owned).collect();
         let format = if names.iter().any(|n| n == "modrinth.index.json") {
             "mrpack"
@@ -218,17 +212,18 @@ impl PackWorkspace {
             return Err(ReleaseError::Conflict);
         }
         let mut release_revision = None;
+        let mut import_warnings = Vec::new();
         let (mut manifest, blobs) = match input {
-            ImportRequest::UploadedArchive { upload_id, .. } => parse_archive(
-                &self.archive_upload(subject, upload_id)?,
-                providers,
-                |hash| Ok(providers.identify_sha512(hash).ok().flatten()),
-            )?,
-            ImportRequest::Archive { content_base64, .. } => parse_archive(
-                &STANDARD.decode(content_base64).map_err(|_| invalid())?,
-                providers,
-                |hash| Ok(providers.identify_sha512(hash).ok().flatten()),
-            )?,
+            ImportRequest::UploadedArchive { upload_id, .. } => {
+                let bytes = self.archive_upload(subject, upload_id)?;
+                import_warnings = archive_review_warnings(&bytes)?;
+                parse_archive(&bytes, providers, |hash| Ok(providers.identify_sha512(hash).ok().flatten()))?
+            },
+            ImportRequest::Archive { content_base64, .. } => {
+                let bytes = STANDARD.decode(content_base64).map_err(|_| invalid())?;
+                import_warnings = archive_review_warnings(&bytes)?;
+                parse_archive(&bytes, providers, |hash| Ok(providers.identify_sha512(hash).ok().flatten()))?
+            },
             ImportRequest::Published {
                 expected_published_revision,
                 ..
@@ -274,6 +269,7 @@ impl PackWorkspace {
                 c.execute("DELETE FROM pack_workspace_uploads WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),upload_id])?;
             }
             let draft = self.write_in(c, subject, mc, expected, manifest)?;
+            c.execute("INSERT OR REPLACE INTO pack_import_warnings VALUES(?,?,?)", params![self.db.server_id(), draft.revision, serde_json::to_string(&import_warnings).map_err(|_| invalid())?])?;
             if matches!(input, ImportRequest::Published { .. }) {
                 c.execute("UPDATE pack_workspace SET customizing_provider=1 WHERE server_id=?", [self.db.server_id()])?;
             }
@@ -324,9 +320,6 @@ pub(super) fn parse_archive(
 ) -> Result<(PackManifest, Vec<Vec<u8>>)> {
     // Archive structure failures are not invalid user-entered file paths.
     let invalid = || ReleaseError::Pack(super::super::PackError::InvalidArchive);
-    if bytes.len() > super::super::MAX_ARTIFACT_BYTES {
-        return Err(super::super::PackError::TooLarge.into());
-    }
     if bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'{') {
         let manifest = vesta_protocol::pack::catalogue::Manifest::decode(bytes)
             .map_err(super::super::PackError::from)?;
@@ -348,7 +341,7 @@ pub(super) fn parse_archive(
                 reference.version_id().ok_or_else(invalid)?,
                 deadline,
             )
-            .map_err(|_| super::super::PackError::UnresolvedFile)?;
+            .map_err(ReleaseError::from)?;
         let archive = crate::content::fetch_verified_source(
             &source,
             &crate::content::UreqDownloadHttp::default(),
@@ -397,29 +390,23 @@ fn parse_zip(
 ) -> Result<(PackManifest, Vec<ArchiveBody>)> {
     let invalid = || ReleaseError::Pack(super::super::PackError::InvalidArchive);
     let mut zip = zip::ZipArchive::new(reader).map_err(|_| invalid())?;
-    if zip.len() > super::super::MAX_VESTA_ENTRIES {
-        return Err(super::super::PackError::TooLarge.into());
-    }
     let store = store.map(|store| std::sync::Arc::new(store.clone()));
     let mut files = std::collections::BTreeMap::new();
-    let mut total = 0usize;
+    let mut total = 0u64;
     for i in 0..zip.len() {
         let mut f = zip.by_index(i).map_err(|_| invalid())?;
         let name = f.name().to_string();
         vesta_protocol::pack::catalogue::RelativePath::parse(name.trim_end_matches('/'))
             .map_err(|_| ReleaseError::Refusal { code: "pack_path_invalid", rule: "safe_relative_path", item: name.clone() })?;
         if f.is_symlink() { return Err(ReleaseError::Refusal { code: "pack_path_invalid", rule: "no_symbolic_links", item: name }); }
-        if f.encrypted()
-            || (store.is_none() && f.size() > super::super::MAX_PINNED_FILE_BYTES as u64)
-        {
+        if f.encrypted() {
             return Err(invalid());
         }
         if f.is_dir() {
             continue;
         }
         total = total
-            .checked_add(f.size() as usize)
-            .filter(|n| store.is_some() || *n <= MAX_BLOBS)
+            .checked_add(f.size())
             .ok_or(super::super::PackError::TooLarge)?;
         let body = if let Some(store) = &store {
             let declared = f.size();
@@ -430,12 +417,8 @@ fn parse_zip(
             ArchiveBody::Disk(store.clone(), payload)
         } else {
             let mut body = Vec::new();
-            f.take(super::super::MAX_PINNED_FILE_BYTES as u64 + 1)
-                .read_to_end(&mut body)
+            f.read_to_end(&mut body)
                 .map_err(|_| invalid())?;
-            if body.len() > super::super::MAX_PINNED_FILE_BYTES {
-                return Err(invalid());
-            }
             ArchiveBody::Memory(body)
         };
         if files.insert(name, body).is_some() {
@@ -445,7 +428,7 @@ fn parse_zip(
     if let Some(index) = files.remove(vesta_protocol::pack::INDEX_NAME) {
         let index: vesta_protocol::pack::model::VestaIndexV1 =
             serde_json::from_slice(&index.bytes()?).map_err(|_| invalid())?;
-        if index.format_version != 1 || index.files.len() > MAX_ENTRIES + 1 {
+        if index.format_version != 1 {
             return Err(invalid());
         }
         let loader = match index.modloader_type.as_deref() {
@@ -601,9 +584,6 @@ fn parse_zip(
             }
         }
         let rows = document["files"].as_array().ok_or_else(invalid)?;
-        if rows.len() > MAX_ENTRIES {
-            return Err(invalid());
-        }
         for (i, row) in rows.iter().enumerate() {
             let reference = if let Some(hash) = row["hashes"]["sha512"].as_str() {
                 identify(hash)?
@@ -667,9 +647,6 @@ fn parse_zip(
             manifest.loader_version = Some(version.into());
         }
         let rows = document["files"].as_array().ok_or_else(invalid)?;
-        if rows.len() > MAX_ENTRIES {
-            return Err(invalid());
-        }
         let references = rows
             .iter()
             .map(|row| {
@@ -965,4 +942,9 @@ mod live_triage {
         assert_eq!(manifest.minecraft_version, "26.3");
         assert!(manifest.override_files.iter().any(|f| f.root == "client-overrides" && f.path.starts_with("global_packs/")));
     }
+}
+
+fn archive_review_warnings(bytes: &[u8]) -> Result<Vec<InstallWarning>> {
+    if bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'{') { return Ok(Vec::new()); }
+    super::install::archive_policy::inspect(Cursor::new(bytes), bytes.len() as u64, "imported archive")
 }

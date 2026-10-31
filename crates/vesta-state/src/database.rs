@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 29;
+pub const CURRENT_SCHEMA_VERSION: u32 = 30;
 pub const BUSY_TIMEOUT_MS: u64 = 5_000;
 
 /// A callback-borrowed, already-established query-only snapshot.

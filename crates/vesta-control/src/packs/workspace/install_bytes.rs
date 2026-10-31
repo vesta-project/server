@@ -16,15 +16,9 @@ impl<'de> Deserialize<'de> for Blob {
                 f.write_str("base64 or legacy plan bytes")
             }
             fn visit_str<E: de::Error>(self, text: &str) -> Result<Blob, E> {
-                if text.len() > crate::packs::MAX_ARTIFACT_BYTES.div_ceil(3) * 4 {
-                    return Err(E::custom("plan byte limit"));
-                }
                 Ok(Blob::Encoded(text.to_owned()))
             }
             fn visit_string<E: de::Error>(self, text: String) -> Result<Blob, E> {
-                if text.len() > crate::packs::MAX_ARTIFACT_BYTES.div_ceil(3) * 4 {
-                    return Err(E::custom("plan byte limit"));
-                }
                 Ok(Blob::Encoded(text))
             }
             fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Blob, A::Error> {
@@ -32,9 +26,6 @@ impl<'de> Deserialize<'de> for Blob {
                 // first allocate one generic serde value for every byte.
                 let mut bytes = Vec::new();
                 while let Some(byte) = seq.next_element::<u8>()? {
-                    if bytes.len() >= crate::packs::MAX_ARTIFACT_BYTES {
-                        return Err(de::Error::custom("plan byte limit"));
-                    }
                     bytes.push(byte);
                 }
                 Ok(Blob::Legacy(bytes))
@@ -85,13 +76,10 @@ pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Vec
         }
         fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
             let mut result = Vec::new();
-            let mut remaining = super::super::MAX_BLOBS;
+            let mut remaining = usize::MAX / 4 * 3;
             while let Some(blob) = seq.next_element::<Blob>()? {
-                if result.len() >= crate::packs::MAX_VESTA_ENTRIES {
-                    return Err(de::Error::custom("plan file limit"));
-                }
                 let bytes =
-                    blob.decode::<A::Error>(remaining.min(crate::packs::MAX_PINNED_FILE_BYTES))?;
+                    blob.decode::<A::Error>(remaining)?;
                 remaining -= bytes.len();
                 result.push(bytes);
             }
@@ -115,7 +103,7 @@ pub mod optional {
         deserializer: D,
     ) -> Result<Option<Vec<u8>>, D::Error> {
         Option::<Blob>::deserialize(deserializer)?
-            .map(|blob| blob.decode(crate::packs::MAX_ARTIFACT_BYTES))
+            .map(|blob| blob.decode(usize::MAX / 4 * 3))
             .transpose()
     }
 }

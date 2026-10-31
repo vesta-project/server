@@ -55,10 +55,13 @@ impl ProviderFailure {
         }
     }
 }
-/// Public provider identifiers only. Never retain response bodies, keys or URLs.
+/// Public provider identifiers and separately sanitized issue provenance; never response bodies or keys.
 #[derive(Clone, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderFailureDetails {
+    /// Render only through the structured issue, never as provider metadata.
+    #[serde(skip)]
+    pub issue_url: Option<String>,
     pub stage: &'static str,
     pub reason: &'static str,
     pub provider: String,
@@ -111,6 +114,12 @@ impl ReleaseError {
             Self::Rollback { .. } => "rollback_failed",
         }
     }
+    pub(crate) fn with_download_url(mut self, url: &str) -> Self {
+        if let Self::ProviderFile { details, .. } = &mut self {
+            details.issue_url = Some(crate::content::sanitized_download_url(url));
+        }
+        self
+    }
     pub(crate) fn provider_file(
         error: crate::content::ContentError,
         provider: &str,
@@ -154,6 +163,7 @@ impl ReleaseError {
         Self::ProviderFile {
             failure,
             details: Box::new(ProviderFailureDetails {
+                issue_url: None,
                 stage,
                 reason,
                 provider: provider.into(),
@@ -954,6 +964,18 @@ fn notification_sender(directory: &Path) -> Result<Arc<watch::Sender<u64>>, Rele
 #[cfg(test)]
 mod url_provenance_tests {
     use super::*;
+    #[test]
+    fn download_failure_keeps_sanitized_provenance_out_of_provider_metadata() {
+        let error = ReleaseError::provider_file(crate::content::ContentError::HashMismatch, "modrinth", "project", "version", "download", Some("pack.zip"))
+            .with_download_url("https://user:secret@example.com/pack.zip?token=secret#fragment");
+        let ReleaseError::ProviderFile { failure, details } = error else { panic!("expected provider failure"); };
+        assert_eq!(failure, ProviderFailure::HashMismatch);
+        assert_eq!(details.issue_url.as_deref(), Some("https://example.com/pack.zip"));
+        let metadata = serde_json::to_string(&details).unwrap();
+        assert!(!metadata.contains("example.com"));
+        assert!(!metadata.contains("secret"));
+        assert_eq!(crate::content::sanitized_download_url("mailto:user:secret@example.com?token=secret"), "invalid download address");
+    }
     #[test]
     fn unsafe_download_issue_keeps_url_without_secrets() {
         let url = "http://user:password@example.com/pack.zip?token=secret#fragment";

@@ -9,6 +9,8 @@ use std::{
     collections::BTreeMap,
     time::{Duration, Instant},
 };
+#[path = "archive_policy.rs"]
+pub(super) mod archive_policy;
 #[path = "install_downloads.rs"]
 mod downloads;
 #[path = "install_bytes.rs"]
@@ -212,11 +214,6 @@ fn insert_selected(
         .checked_sub(old)
         .and_then(|n| n.checked_add(bytes.size))
         .ok_or(super::super::PackError::TooLarge)?;
-    if selected.len() + usize::from(!selected.contains_key(&path))
-        > vesta_protocol::pack::catalogue::MAX_FILES
-    {
-        return Err(super::super::PackError::TooLarge.into());
-    }
     selected.insert(path, (bytes, provider));
     *used = total;
     Ok(())
@@ -306,7 +303,10 @@ impl PackWorkspace {
             .map_err(ReleaseError::from)?;
         let providers = &bounded_providers;
         let http = content::UreqDownloadHttp::for_job();
-        let parse = |b: &Payload| {
+        let archive_warnings = std::cell::RefCell::new(Vec::new());
+        let parse = |b: &Payload, item: &str| {
+            archive_warnings.borrow_mut().extend(archive_policy::inspect(
+                payload_store.verify(b).map_err(super::super::PackError::from)?, b.size, item)?);
             super::import::parse_spooled(b, &payload_store, providers, |h| {
                 Ok(providers.identify_sha512(h).ok().flatten())
             })
@@ -329,11 +329,11 @@ impl PackWorkspace {
                         version,
                         "download",
                         Some(&source.filename),
-                    )
+                    ).with_download_url(&source.download_url)
                 },
             )?;
             let bytes = stage.finish().map_err(super::super::PackError::from)?;
-            parse(&bytes)
+            parse(&bytes, &content::sanitized_download_url(&source.download_url))
         };
         let mut linked_source = request.source.clone();
         let (mut manifest, blobs) = match &request.source {
@@ -343,13 +343,19 @@ impl PackWorkspace {
                 version_id,
             } => provider_archive(provider, project_id, version_id)?,
             InstallSource::UploadedArchive { upload_id } => {
-                parse(&self.archive_payload(s, upload_id, &payload_store)?)?
+                parse(&self.archive_payload(s, upload_id, &payload_store)?, "imported archive")?
             }
             InstallSource::Draft { revision } => {
                 let d = self.read(s, mc)?;
                 if d.revision != *revision {
                     return Err(ReleaseError::Conflict);
                 };
+                let retained: Option<String> = self.db.read(|c| c.query_row(
+                    "SELECT warnings_json FROM pack_import_warnings WHERE server_id=? AND revision=?",
+                    params![self.db.server_id(), revision], |r| r.get(0)).optional().map_err(Into::into))?;
+                if let Some(retained) = retained {
+                    archive_warnings.borrow_mut().extend(serde_json::from_str::<Vec<InstallWarning>>(&retained).map_err(|_| invalid())?);
+                }
                 (d.manifest, Vec::new())
             }
             InstallSource::Published { revision: r } => {
@@ -377,6 +383,7 @@ impl PackWorkspace {
                         &payload_store
                             .put(&mut std::io::Cursor::new(a.bytes()))
                             .map_err(super::super::PackError::from)?,
+                        "published archive",
                     )?
                 }
             }
@@ -514,7 +521,7 @@ impl PackWorkspace {
                             version_id,
                             "download",
                             Some(&source.filename),
-                        )
+                        ).with_download_url(&source.download_url)
                     },
                 )?;
                 stage
@@ -689,6 +696,10 @@ impl PackWorkspace {
             })
             .collect();
         let owned = self.server_link(s)?.map(|l| l.files).unwrap_or_default();
+        let source_urls: BTreeMap<_, _> = manifest.entries.iter().filter_map(|e| {
+            let EntrySource::Provider { provider, project_id, version_id } = &e.source else { return None; };
+            sources.get(&e.id).map(|(_, source)| ((provider.as_str(), project_id.as_str(), version_id.as_str()), content::sanitized_download_url(&source.download_url)))
+        }).collect();
         let mut review = Vec::new();
         let mut bytes = Vec::new();
         let mut refs = Vec::new();
@@ -723,6 +734,8 @@ impl PackWorkspace {
                 conflict = Some("project_version".into());
             }
             validate_install_path(&path)?;
+            let item = provider.as_ref().and_then(|p| source_urls.get(&(p.provider.as_str(), p.project_id.as_str(), p.version_id.as_str()))).map(String::as_str).unwrap_or(&path);
+            archive_warnings.borrow_mut().extend(archive_policy::payload_warnings(&body, item));
             if !matches!(linked_source, InstallSource::Provider { .. }) && !expected_install_directory(&path) {
                 warnings.push(format!("unusual_content_directory:{path}"));
             }
@@ -841,13 +854,14 @@ impl PackWorkspace {
                 || actual_family.as_deref().or(software) != Some(software_required),
             files: review,
             skipped,
-            warnings: warnings.into_iter().map(InstallWarning::from).collect(),
+            warnings: warnings.into_iter().map(InstallWarning::from).chain(archive_warnings.into_inner()).collect(),
             backup_recommended: true,
             removed: owned
                 .into_iter()
                 .filter(|(path, _)| !destinations.contains(&path.to_lowercase()))
                 .collect(),
         };
+        plan.warnings.extend(archive_policy::manifest_warnings(&manifest, selected_bytes, &blob_map));
         if plan.software_switch_required {
             plan.software_switch = Some(SoftwareSwitch {
                 from: SoftwareSwitchTarget {

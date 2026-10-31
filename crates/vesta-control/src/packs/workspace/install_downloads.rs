@@ -72,7 +72,7 @@ mod tests {
     fn collection_accepts_large_pack_without_retaining_payload_bytes() {
         let mut files = Selected::new();
         let mut used = 0;
-        for i in 0..1024 {
+        for i in 0..=vesta_protocol::pack::catalogue::MAX_FILES {
             insert_selected(
                 &mut files,
                 &mut used,
@@ -85,8 +85,8 @@ mod tests {
             )
             .unwrap();
         }
-        assert_eq!(files.len(), 1024);
-        assert_eq!(used, 1024 * 1024 * 1024);
+        assert_eq!(files.len(), vesta_protocol::pack::catalogue::MAX_FILES + 1);
+        assert_eq!(used, (vesta_protocol::pack::catalogue::MAX_FILES as u64 + 1) * 1024 * 1024);
         insert_selected(
             &mut files,
             &mut used,
@@ -98,6 +98,6 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(used, 1023 * 1024 * 1024);
+        assert_eq!(used, vesta_protocol::pack::catalogue::MAX_FILES as u64 * 1024 * 1024);
     }
 }
