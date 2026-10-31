@@ -95,7 +95,7 @@ impl RelativePath {
                     c.is_ascii_alphanumeric()
                         || matches!(
                             c,
-                            b'~' | b',' | b'.' | b'_' | b'-' | b'+' | b'\'' | b' ' | b'(' | b')' | b'[' | b']'
+                            b'~' | b',' | b'.' | b'_' | b'-' | b'+' | b'\'' | b' ' | b'(' | b')' | b'[' | b']' | b'$' | b'!'
                         )
                 })
             {
@@ -103,7 +103,7 @@ impl RelativePath {
             }
             let stem = component.split('.').next().unwrap_or_default();
             let upper = stem.trim_end_matches(' ').to_ascii_uppercase();
-            if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+            if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$")
                 || (upper.len() == 4
                     && (upper.starts_with("COM") || upper.starts_with("LPT"))
                     && upper.as_bytes()[3].is_ascii_digit())
