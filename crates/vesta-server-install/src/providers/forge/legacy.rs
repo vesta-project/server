@@ -59,6 +59,11 @@ struct V2Profile {
     data: BTreeMap<String, Sided>,
 }
 
+#[derive(Deserialize)]
+struct VersionLibraries {
+    libraries: List<Library>,
+}
+
 /// Read only the main manifest section; signed per-entry sections can be huge.
 fn manifest(bytes: &[u8]) -> Result<BTreeMap<String, String>> {
     let mut jar =
@@ -206,14 +211,25 @@ pub(super) async fn resolve(
     ];
     let mut contained = BTreeMap::new();
     let (main, processors, mut data) = if shape.get("spec").is_some() {
-        let profile: V2Profile = parse(bytes)?;
-        if profile.spec != 1
+        let mut profile: V2Profile = parse(bytes)?;
+        if !matches!(profile.spec, 0 | 1)
             || profile.minecraft != version
             || profile.libraries.0.len() > MAX_FILES
             || profile.processors.len() > MAX_PROCESSORS
             || profile.data.len() > 128
         {
             return Err(InstallError::InvalidMetadata);
+        }
+        // Forge 1.12.2 build 2860 uses spec 0: install_profile lists the
+        // embedded Forge JAR and MCP metadata, while version.json holds the
+        // launch libraries. No processors are needed for this profile.
+        if profile.spec == 0 {
+            if !profile.processors.is_empty() || !profile.data.is_empty() {
+                return Err(InstallError::InvalidMetadata);
+            }
+            let version: VersionLibraries = parse(embedded.get("version.json").ok_or(InstallError::InvalidMetadata)?)?;
+            if version.libraries.0.len() > MAX_FILES { return Err(InstallError::LimitExceeded); }
+            profile.libraries = version.libraries;
         }
         let universal = format!("net.minecraftforge:forge:{coordinate}:universal");
         let bare = format!("net.minecraftforge:forge:{coordinate}");
@@ -222,8 +238,14 @@ pub(super) async fn resolve(
         } else {
             bare
         };
+        let required = if profile.spec == 0 {
+            let path = format!("maven/{}", maven(&main)?);
+            let fields = manifest(embedded.get(&path).ok_or(InstallError::InvalidMetadata)?)?;
+            Some(fields.get("Class-Path").ok_or(InstallError::InvalidMetadata)?.split_whitespace().map(str::to_owned).collect::<HashSet<_>>())
+        } else { None };
         for library in profile.libraries.0 {
             let path = maven(&library.name)?;
+            if required.as_ref().is_some_and(|required| library.name != main && !required.contains(&format!("libraries/{path}"))) { continue; }
             let item = library
                 .downloads
                 .artifact
@@ -249,6 +271,12 @@ pub(super) async fn resolve(
                         size: Some(item.size),
                     },
                 });
+            }
+        }
+        if let Some(required) = required {
+            let alias = format!("minecraft_server.{version}.jar");
+            if required.iter().any(|path| path != &alias && !contained.contains_key(path) && !artifacts.iter().any(|artifact| &artifact.destination == path)) {
+                return Err(InstallError::InvalidMetadata);
             }
         }
         (

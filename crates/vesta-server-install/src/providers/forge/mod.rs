@@ -176,6 +176,7 @@ fn zip_entries(bytes: &[u8], cap: u64, legacy: bool) -> Result<BTreeMap<String, 
             continue;
         }
         if name == "install_profile.json"
+            || legacy && name == "version.json"
             || name.starts_with("data/")
             || name.starts_with("maven/") && name.ends_with("-shim.jar")
             || legacy
