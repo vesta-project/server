@@ -1,4 +1,4 @@
-//! Legacy archive budgets are review thresholds, never authority to bypass safety.
+//! Format constraints remain reviewable; historical buffer sizes are not install limits.
 use super::*;
 use std::io::{Read, Seek};
 
@@ -11,6 +11,9 @@ fn warning(rule: &str, item: &str, actual: u64, limit: u64) -> InstallWarning {
     }
 }
 fn exceeded(warnings: &mut Vec<InstallWarning>, rule: &str, item: &str, actual: u64, limit: u64) {
+    // These were in-memory ingestion budgets. Streaming payloads no longer have
+    // those limits, so they are neither refusals nor user-facing warnings.
+    if rule.starts_with("legacy_") { return; }
     if actual > limit {
         warnings.push(warning(rule, item, actual, limit));
     }
@@ -162,11 +165,11 @@ mod tests {
     #[test]
     fn thresholds_are_inclusive_and_have_reviewable_identity() {
         let mut warnings = Vec::new();
-        exceeded(&mut warnings, "legacy_member_bytes", "config/data", 16, 16);
+        exceeded(&mut warnings, "catalogue_file_bytes", "config/data", 16, 16);
         assert!(warnings.is_empty());
-        exceeded(&mut warnings, "legacy_member_bytes", "config/data", 17, 16);
+        exceeded(&mut warnings, "catalogue_file_bytes", "config/data", 17, 16);
         assert_eq!(warnings[0].code, "archive_limit_warning");
-        assert_eq!(warnings[0].rule, "legacy_member_bytes");
+        assert_eq!(warnings[0].rule, "catalogue_file_bytes");
         assert_eq!(warnings[0].item, "config/data");
     }
     #[test]
@@ -190,7 +193,6 @@ mod tests {
             "https://example.com/pack.zip",
         )
         .unwrap();
-        assert!(warnings.iter().any(|w| w.rule == "legacy_member_bytes"
-            && w.item == "https://example.com/pack.zip / config/large.dat"));
+        assert!(warnings.is_empty(), "a 16 MiB file is ordinary streamed content");
     }
 }

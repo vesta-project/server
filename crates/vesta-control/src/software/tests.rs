@@ -14,6 +14,29 @@ const DEVICE2: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const VIEWER: &str = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const VIEWER_DEVICE: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 
+#[test]
+fn http_management_keys_are_accepted_without_changing_replay_identity() {
+    assert!(valid_key(&format!("http:{}", "a".repeat(64))).is_ok());
+    assert!(valid_key("operator-key-123").is_ok());
+    for key in ["http:short".to_owned(), format!("http:{}", "z".repeat(64)), "../key-name".into(), "a key name".into()] {
+        assert!(valid_key(&key).is_err(), "{key}");
+    }
+}
+
+#[test]
+fn pack_software_checksum_consent_is_bound_to_a_visible_review_note() {
+    let mut input = crate::packs::workspace::PackInstallApply { acknowledge_warnings: true, acknowledge_software_switch: true,
+        plan_id: "plan".into(), confirmation_token: "token".into(), choices: vec![], set_as_modpack: false };
+    let warnings = vec!["software_legacy_checksum_review".to_string().into()];
+    assert!(pack_checksum_acknowledged(&warnings, &input));
+    assert!(!pack_checksum_acknowledged(&[], &input));
+    input.acknowledge_warnings = false;
+    assert!(!pack_checksum_acknowledged(&warnings, &input));
+    input.acknowledge_warnings = true;
+    input.acknowledge_software_switch = false;
+    assert!(!pack_checksum_acknowledged(&warnings, &input));
+}
+
 #[derive(Default)]
 struct NativeState {
     running: AtomicBool,

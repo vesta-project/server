@@ -681,7 +681,7 @@ fn unsafe_paths_collisions_and_invalid_loader_metadata_refuse_without_advancing(
     );
 }
 #[test]
-fn legacy_oversized_archive_member_can_be_reviewed_and_requires_acknowledgement() {
+fn streamed_archive_member_does_not_require_consent_for_former_buffer_limit() {
     use std::io::{Cursor, Write};
     let f = Fixture::new();
     let game = f.temp.path().join("game");
@@ -700,17 +700,15 @@ fn legacy_oversized_archive_member_can_be_reviewed_and_requires_acknowledgement(
         source: InstallSource::Draft { revision: draft.revision },
     }, &files, &releases, &providers).unwrap();
     assert!(plan.valid);
-    assert!(plan.warnings.iter().any(|warning| warning.rule == "legacy_member_bytes" && warning.item == "imported archive / config/large.dat"));
-    assert!(plan.warnings.iter().any(|warning| warning.code == "archive_limit_warning" && warning.rule == "legacy_member_bytes" && warning.item == "config/large.dat"));
-    let mut apply = PackInstallApply {
-        acknowledge_warnings: false, acknowledge_software_switch: true,
+    assert!(!plan.warnings.iter().any(|warning| warning.rule.starts_with("legacy_")));
+    let apply = PackInstallApply {
+        // Unknown file side and unavailable client delivery still need review.
+        acknowledge_warnings: true, acknowledge_software_switch: true,
         plan_id: plan.plan_id, confirmation_token: plan.confirmation_token,
         choices: Vec::new(), set_as_modpack: false,
     };
-    assert!(f.workspace.install_apply(&f.subject, "1.21.1", Some("vanilla"), "apply-large", &apply, &files).is_err());
     let pending: i64 = f.db.read(|c| c.query_row("SELECT count(*) FROM server_content_changes", [], |r| r.get(0)).map_err(Into::into)).unwrap();
     assert_eq!(pending, 0);
-    apply.acknowledge_warnings = true;
     let outcome = f.workspace.install_apply(&f.subject, "1.21.1", Some("vanilla"), "apply-large", &apply, &files).unwrap();
     assert_eq!(outcome.pending_ids.len(), 1);
     assert!(!game.join("config/large.dat").exists());

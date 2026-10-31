@@ -639,6 +639,7 @@ impl SoftwareHandle {
                 return Err(SoftwareError::RevisionConflict);
             }
         }
+        let legacy_checksum = pack_checksum_acknowledged(&target.warnings, &pack.input);
         let prepared = self
             .plan(
                 subject,
@@ -662,7 +663,7 @@ impl SoftwareHandle {
                 confirmation_token: prepared.confirmation_token,
                 idempotency_key: pack.key.clone(),
                 acknowledge_warnings: true,
-                acknowledge_legacy_checksum: false,
+                acknowledge_legacy_checksum: legacy_checksum,
             },
             Some(Box::new(pack)),
             Some(binding),
@@ -847,7 +848,17 @@ fn validate_request(r: &PlanRequest) -> Result<()> {
         Ok(())
     }
 }
+fn pack_checksum_acknowledged(warnings: &[crate::packs::workspace::InstallWarning], input: &crate::packs::workspace::PackInstallApply) -> bool {
+    input.acknowledge_software_switch && input.acknowledge_warnings
+        && warnings.iter().any(|warning| warning.code == "software_legacy_checksum_review")
+}
 fn valid_key(key: &str) -> Result<()> {
+    // HTTP management binds actor/server/route into this namespaced digest.
+    // It is a database key, not a filesystem name.
+    if key.strip_prefix("http:").is_some_and(|digest| digest.len() == 64
+        && digest.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))) {
+        return Ok(());
+    }
     if !(8..=128).contains(&key.len())
         || !key
             .bytes()

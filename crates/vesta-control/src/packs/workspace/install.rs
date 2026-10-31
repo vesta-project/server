@@ -106,6 +106,12 @@ pub struct SoftwareSwitch {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InstallWarning { pub code: String, pub rule: String, pub item: String, pub detail: String }
+fn warnings_require_acknowledgement(warnings: &[InstallWarning]) -> bool {
+    warnings.iter().any(|warning| {
+        !(matches!(warning.code.as_str(), "pack_size_warning" | "version_from_pack_manifest" | "curseforge_server_pack" | "server_pack_managed_file_skipped" | "missing_required_dependency")
+            || (warning.code == "archive_limit_warning" && warning.rule.starts_with("legacy_")))
+    })
+}
 fn read_install_warnings<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Vec<InstallWarning>, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
@@ -670,27 +676,11 @@ impl PackWorkspace {
                 }
             }
         }
-        let selected_projects: BTreeSet<_> = selected
-            .values()
-            .filter_map(|(_, p)| {
-                p.as_ref()
-                    .map(|p| (p.provider.as_str(), p.project_id.as_str()))
-            })
-            .collect();
-        for (path, (_, provider)) in &selected {
-            let Some(provider) = provider else {
-                continue;
-            };
-            if let Some((meta,_))=manifest.entries.iter().find(|e|matches!(&e.source,EntrySource::Provider{provider:p,project_id,version_id} if p==&provider.provider&&project_id==&provider.project_id&&version_id==&provider.version_id)).and_then(|e|sources.get(&e.id)) {
-                for dependency in &meta.dependencies {
-                    if !dependency.incompatible && !dependency.project_id.is_empty()
-                        && !selected_projects.contains(&(provider.provider.as_str(),dependency.project_id.as_str()))
-                        && !manifest.entries.iter().any(|e|matches!(&e.source,EntrySource::Provider{provider:p,project_id,..} if p==&provider.provider && project_id==&dependency.project_id)) {
-                        warnings.push(format!("missing_required_dependency:{path} ({}/{})",provider.provider,dependency.project_id));
-                    }
-                }
-            }
-        }
+        // Install the pack author's pinned set instead of re-resolving provider
+        // dependency edges. Projects can move or split by loader: FancyMenu's
+        // Konkrete edge names 410295 while this Fabric pack pins 416797, which
+        // supplies the same `konkrete` mod. Project-ID comparisons are not a
+        // reliable way to diagnose a prebuilt pack's runtime dependencies.
         #[cfg(test)]
         timing("downloads");
         let world = files.world(s).map_err(file_error)?;
@@ -904,6 +894,7 @@ impl PackWorkspace {
         };
         plan.warnings.extend(archive_policy::manifest_warnings(&manifest, selected_bytes, &blob_map));
         if plan.software_switch_required {
+            plan.warnings.push("software_legacy_checksum_review".to_string().into());
             plan.software_switch = Some(SoftwareSwitch {
                 from: SoftwareSwitchTarget {
                     software: actual_family
@@ -1065,7 +1056,7 @@ impl PackWorkspace {
             let (expires, hash, body) = row.ok_or(ReleaseError::Conflict)?;
             if expires < self.db.clock().millis() || hash != digest(input.confirmation_token.as_bytes()) { return Err(ReleaseError::Conflict); }
             let stored: Stored = serde_json::from_str(&body).map_err(|_| invalid())?;
-            if (!stored.plan.warnings.is_empty() && !input.acknowledge_warnings) || !stored.plan.valid || !input.acknowledge_software_switch { return Err(ReleaseError::Conflict); }
+            if (warnings_require_acknowledgement(&stored.plan.warnings) && !input.acknowledge_warnings) || !stored.plan.valid || !input.acknowledge_software_switch { return Err(ReleaseError::Conflict); }
             let conflicts: BTreeSet<_> = stored.plan.files.iter().filter(|f| f.conflict.is_some()).map(|f| f.path.as_str()).collect();
             let choices: BTreeSet<_> = input.choices.iter().map(|c| c.path.as_str()).collect();
             if choices.len() != input.choices.len() || choices != conflicts || input.choices.iter().any(|c| c.choice != "keep" && c.choice != "replace") { return Err(invalid()); }
@@ -1104,7 +1095,7 @@ impl PackWorkspace {
             if stored.payloads.len()!=stored.plan.files.len() || stored.providers.len()!=stored.plan.files.len() {return Err(invalid());}
             if stored.payloads.iter().zip(&stored.plan.files).any(|(p,f)|p.sha256!=f.sha256) {return Err(ReleaseError::Conflict);}
             if !stored.plan.valid{return Err(ReleaseError::Conflict)}
-            if !stored.plan.warnings.is_empty() && !input.acknowledge_warnings {return Err(invalid());}
+            if warnings_require_acknowledgement(&stored.plan.warnings) && !input.acknowledge_warnings {return Err(invalid());}
             if serde_json::to_value(self.server_link_in(c)?).map_err(|_|invalid())? != serde_json::to_value(&stored.expected_link).map_err(|_|invalid())? {return Err(ReleaseError::Conflict)}
             if stored.expected_publication.is_some() || matches!(stored.source,InstallSource::Published{..}) {
                 let published:i64=c.query_row("SELECT coalesce(max(revision),0) FROM pack_releases WHERE server_id=?",[self.db.server_id()],|r|r.get(0))?;
