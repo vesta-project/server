@@ -311,7 +311,7 @@ impl PackWorkspace {
                 Ok(providers.identify_sha512(h).ok().flatten())
             })
         };
-        let provider_archive = |p: &str, project: &str, version: &str| -> Result<_> {
+        let download_archive = |p: &str, project: &str, version: &str| -> Result<_> {
             let source = providers
                 .resolve_with_deadline(platform(p)?, project, version, deadline)
                 .map_err(|e| {
@@ -333,7 +333,48 @@ impl PackWorkspace {
                 },
             )?;
             let bytes = stage.finish().map_err(super::super::PackError::from)?;
-            parse(&bytes, &content::sanitized_download_url(&source.download_url))
+            Ok((bytes, content::sanitized_download_url(&source.download_url)))
+        };
+        let provider_archive = |p: &str, project: &str, version: &str| -> Result<_> {
+            let (bytes, item) = download_archive(p, project, version)?;
+            let (client, client_blobs) = parse(&bytes, &item)?;
+            if p != "curseforge" { return Ok((client, client_blobs)); }
+            let document = providers.pack_document(Provider::Curseforge, project, Some(version), false)
+                .map_err(|e| ReleaseError::provider_file(e, p, project, version, "metadata", None))?;
+            let tags = document["gameVersions"].as_array();
+            let has_game = tags.is_some_and(|tags| tags.iter().any(|tag| tag.as_str() == Some(&client.minecraft_version)));
+            let has_loader = tags.is_some_and(|tags| tags.iter().any(|tag| tag.as_str().is_some_and(|tag| tag.eq_ignore_ascii_case(client.loader.id()))));
+            if !has_game || !has_loader {
+                archive_warnings.borrow_mut().push(InstallWarning { code: "version_from_pack_manifest".into(),
+                    rule: "pack_manifest_runtime".into(), item: version.into(), detail: "Version from pack manifest".into() });
+            }
+            let Some(server_id) = document["serverPackFileId"].as_u64().filter(|id| *id > 0) else {
+                return Ok((client, client_blobs));
+            };
+            let server_id = server_id.to_string();
+            if server_id == version { return Err(invalid()); }
+            let server_document = providers.pack_document(Provider::Curseforge, project, Some(&server_id), false)
+                .map_err(|e| ReleaseError::provider_file(e, p, project, &server_id, "metadata", None))?;
+            if server_document["isServerPack"] != true { return Err(invalid()); }
+            let (server_bytes, server_item) = download_archive(p, project, &server_id)?;
+            archive_warnings.borrow_mut().extend(archive_policy::inspect(
+                payload_store.verify(&server_bytes).map_err(super::super::PackError::from)?, server_bytes.size, &server_item)?);
+            let (mut server, blobs, skipped) = super::import::parse_server_spooled(&server_bytes, &payload_store, providers)?;
+            for path in skipped {
+                archive_warnings.borrow_mut().push(InstallWarning { code: "server_pack_managed_file_skipped".into(),
+                    rule: "managed_server_configuration_or_runtime".into(), item: path,
+                    detail: "Kept server-managed configuration and software; configure these through server settings".into() });
+            }
+            // Ready server folders have no manifest. The client archive remains the
+            // authority for runtime and the catalogue keeps the original client ID.
+            server.name = client.name;
+            server.display_version = client.display_version;
+            server.minecraft_version = client.minecraft_version;
+            server.loader = client.loader;
+            server.loader_version = client.loader_version;
+            archive_warnings.borrow_mut().push(InstallWarning { code: "curseforge_server_pack".into(),
+                rule: "provider_server_pack".into(), item: server_id, detail: "Using the provider's server pack; client installs retain the client pack reference".into() });
+            Ok((server, blobs))
         };
         let mut linked_source = request.source.clone();
         let (mut manifest, blobs) = match &request.source {
@@ -1112,6 +1153,29 @@ impl PackWorkspace {
 #[cfg(test)]
 mod triage_live {
     use super::*;
+    #[test]
+    #[ignore = "live CurseForge RLCraft review; requires configured application key"]
+    fn rlcraft_4612979_review() {
+        let f = super::super::tests::Fixture::new();
+        let game = f.temp.path().join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        let files = FileBrowser::open(f.db.clone(), &game, &[]).unwrap();
+        let releases = super::super::super::PackReleases::open(&f.db).unwrap();
+        let plan = f.workspace.install_plan(&f.subject, "1.21.1", Some("fabric"),
+            &PackInstallRequest { source: InstallSource::Provider { provider: "curseforge".into(), project_id: "285109".into(), version_id: "4612979".into() } },
+            &files, &releases, &content::UreqProviderClient::configured()).unwrap_or_else(|error| {
+                if let ReleaseError::Refusal { code, rule, item } = &error { panic!("{code}: {rule}: {item}"); }
+                panic!("{error:?}")
+            });
+        assert!(plan.valid);
+        assert_eq!(plan.minecraft_version, "1.12.2");
+        assert_eq!(plan.software, "forge");
+        assert_eq!(plan.loader_version.as_deref(), Some("14.23.5.2860"));
+        assert!(plan.warnings.iter().any(|w| w.code == "version_from_pack_manifest"));
+        assert!(plan.warnings.iter().any(|w| w.code == "curseforge_server_pack" && w.item == "4612990"));
+        assert!(plan.files.iter().any(|f| f.path.starts_with("mods/")));
+        eprintln!("RLCRAFT plan: valid={}, runtime={}/{}/{:?}, files={}", plan.valid, plan.minecraft_version, plan.software, plan.loader_version, plan.files.len());
+    }
     #[test]
     #[ignore = "real CurseForge metadata and pack download; configured application key required"]
     fn cobbleverse_1_7_42_review() {

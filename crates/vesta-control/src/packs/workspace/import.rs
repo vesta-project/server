@@ -374,7 +374,7 @@ pub(super) fn parse_archive(
         }
         return parse_archive(&archive, providers, identify);
     }
-    let (manifest, blobs) = parse_zip(Cursor::new(bytes), providers, identify, None)?;
+    let (manifest, blobs) = parse_zip(Cursor::new(bytes), providers, identify, None, None)?;
     Ok((
         manifest,
         blobs
@@ -393,7 +393,7 @@ pub(super) fn parse_spooled(
     let file = store
         .verify(payload)
         .map_err(super::super::PackError::from)?;
-    let (manifest, blobs) = parse_zip(file, providers, identify, Some(store))?;
+    let (manifest, blobs) = parse_zip(file, providers, identify, Some(store), None)?;
     Ok((
         manifest,
         blobs
@@ -403,11 +403,26 @@ pub(super) fn parse_spooled(
     ))
 }
 
+pub(super) fn parse_server_spooled(payload: &Payload, store: &Store, providers: &dyn ProviderClient) -> Result<(PackManifest, Vec<Payload>, Vec<String>)> {
+    let file = store.verify(payload).map_err(super::super::PackError::from)?;
+    let mut skipped = Vec::new();
+    let (manifest, blobs) = parse_zip(file, providers, |_| Ok(None), Some(store), Some(&mut skipped))?;
+    Ok((manifest, blobs.into_iter().map(|body| body.payload(store)).collect::<Result<_>>()?, skipped))
+}
+
+fn managed_server_file(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("libraries/") || (!lower.contains('/') &&
+        (matches!(lower.as_str(), "server.properties" | "eula.txt" | "ops.json" | "whitelist.json" | "banned-ips.json" | "banned-players.json" | "usercache.json") ||
+        [".jar", ".bat", ".cmd", ".sh", ".ps1", ".exe"].iter().any(|suffix| lower.ends_with(suffix))))
+}
+
 fn parse_zip(
     reader: impl Read + Seek,
     providers: &dyn ProviderClient,
     identify: impl Fn(&str) -> Result<Option<crate::content::ContentProvider>>,
     store: Option<&Store>,
+    mut managed_skips: Option<&mut Vec<String>>,
 ) -> Result<(PackManifest, Vec<ArchiveBody>)> {
     let invalid = || ReleaseError::Pack(super::super::PackError::InvalidArchive);
     let mut zip = zip::ZipArchive::new(reader).map_err(|_| invalid())?;
@@ -425,6 +440,9 @@ fn parse_zip(
         }
         if f.is_dir() {
             continue;
+        }
+        if let Some(skipped) = managed_skips.as_mut() {
+            if managed_server_file(&name) { skipped.push(name); continue; }
         }
         total = total
             .checked_add(f.size())
@@ -861,6 +879,31 @@ mod tests {
         assert_eq!(m.entries[0].path, "mods/example's+26.3.jar");
         assert_eq!(m.loader_version.as_deref(), Some("52.0.0"));
     }
+
+    #[test]
+    fn legacy_curseforge_manifest_runtime_does_not_need_api_version_tags() {
+        let document = br#"{"manifestType":"minecraftModpack","manifestVersion":1,"name":"RLCraft","version":"2.9.3","minecraft":{"version":"1.12.2","modLoaders":[{"id":"forge-14.23.5.2860","primary":true}]},"files":[],"overrides":"overrides"}"#;
+        let (manifest, blobs) = parse_archive(&archive(&[("manifest.json", document), ("overrides/config/forgeendertech/Biomes/minecraft$mutated_ice_flats.cfg", b"legacy=true")]), &Providers, |_| unreachable!()).unwrap();
+        assert_eq!(manifest.minecraft_version, "1.12.2");
+        assert_eq!(manifest.loader, ClientLoader::Forge);
+        assert_eq!(manifest.loader_version.as_deref(), Some("14.23.5.2860"));
+        assert_eq!(manifest.override_files[0].path, "config/forgeendertech/Biomes/minecraft$mutated_ice_flats.cfg");
+        assert_eq!(blobs, vec![b"legacy=true".to_vec()]);
+    }
+    #[test]
+    fn dedicated_server_folder_preserves_managed_files_and_installs_game_data() {
+        let bytes = archive(&[("server.properties", b"server-port=1234"), ("start.bat", b"untrusted"),
+            ("forge.jar", b"software"), ("libraries/example.jar", b"software"),
+            ("mods/Level Up! 2.jar", b"mod"), ("config/biome$variant.cfg", b"data")]);
+        let mut skipped = Vec::new();
+        let (manifest, _) = parse_zip(Cursor::new(bytes), &Providers, |_| Ok(None), None, Some(&mut skipped)).unwrap();
+        assert_eq!(skipped.len(), 4);
+        assert_eq!(manifest.entries.len(), 2);
+        assert!(manifest.entries.iter().any(|entry| entry.path == "mods/Level Up! 2.jar"));
+        assert!(manifest.entries.iter().any(|entry| entry.path == "config/biome$variant.cfg"));
+        assert!(!managed_server_file("mods/forge.jar"));
+        assert!(!managed_server_file(".vesta/control.json"));
+    }
     #[test]
     fn curseforge_client_assets_retain_colour_codes_and_stay_client_only() {
         let document = br#"{"manifestType":"minecraftModpack","manifestVersion":1,"name":"CF","version":"3.4","minecraft":{"version":"26.3","modLoaders":[{"id":"fabric-0.19.5","primary":true}]},"files":[]}"#;
@@ -961,7 +1004,7 @@ mod live_triage {
             .with_deadline(std::time::Instant::now() + std::time::Duration::from_secs(180)).unwrap();
         let fixture = super::super::tests::Fixture::new();
         let store = Store::open(&fixture.db).unwrap();
-        let (manifest, _) = parse_zip(Cursor::new(bytes), &providers, |_| Ok(None), Some(&store)).unwrap();
+        let (manifest, _) = parse_zip(Cursor::new(bytes), &providers, |_| Ok(None), Some(&store), None).unwrap();
         assert_eq!(manifest.loader, ClientLoader::Fabric);
         assert_eq!(manifest.minecraft_version, "26.3");
         assert!(manifest.override_files.iter().any(|f| f.root == "client-overrides" && f.path.starts_with("global_packs/")));
