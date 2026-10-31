@@ -79,6 +79,7 @@ fn path(root: &str, name: &str) -> Result<()> {
         },
     };
     let manifest = PackManifest {
+        modpack_link: None,
         name: "Validation".into(),
         summary: String::new(),
         icon: None,

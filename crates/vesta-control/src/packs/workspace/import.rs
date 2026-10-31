@@ -45,6 +45,8 @@ impl ArchiveBody {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ImportRequest {
+    Provider { expected_revision: String, provider: String, project_id: String, version_id: String },
+    Unlink { expected_revision: String, choice: String },
     UploadedArchive {
         expected_revision: String,
         upload_id: String,
@@ -197,7 +199,15 @@ impl PackWorkspace {
         if let Some(outcome) = self.replay(subject, key, input)? {
             return Ok(outcome);
         }
+        if let ImportRequest::Unlink { expected_revision, choice } = input {
+            return self.mutate(subject, key, input, |c| {
+                let mut manifest = self.read_in(c, mc)?.manifest;
+                client_link::unlink(&mut manifest, choice)?;
+                self.write_link_in(c, subject, mc, expected_revision, manifest)
+            });
+        }
         let expected = match input {
+            ImportRequest::Provider { expected_revision, .. } | ImportRequest::Unlink { expected_revision, .. } => expected_revision,
             ImportRequest::UploadedArchive {
                 expected_revision, ..
             }
@@ -214,6 +224,17 @@ impl PackWorkspace {
         let mut release_revision = None;
         let mut import_warnings = Vec::new();
         let (mut manifest, blobs) = match input {
+            ImportRequest::Unlink { .. } => unreachable!(),
+            ImportRequest::Provider { provider, project_id, version_id, .. } => {
+                let platform = match provider.as_str() { "modrinth" => Provider::Modrinth, "curseforge" => Provider::Curseforge, _ => return Err(invalid()) };
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+                let source = providers.resolve_with_deadline(platform, project_id, version_id, deadline).map_err(ReleaseError::from)?;
+                let archive = crate::content::fetch_verified_source(&source, &crate::content::UreqDownloadHttp::default(), deadline).map_err(ReleaseError::from)?;
+                let (base, blobs) = parse_archive(&archive, providers, |hash| Ok(providers.identify_sha512(hash).ok().flatten()))?;
+                let mut custom = self.read(subject, mc)?.manifest;
+                client_link::link(&mut custom, base, crate::content::ContentProvider { provider: provider.clone(), project_id: project_id.clone(), version_id: version_id.clone() }, mc)?;
+                (custom, blobs)
+            },
             ImportRequest::UploadedArchive { upload_id, .. } => {
                 let bytes = self.archive_upload(subject, upload_id)?;
                 import_warnings = archive_review_warnings(&bytes)?;
@@ -268,7 +289,7 @@ impl PackWorkspace {
             if let ImportRequest::UploadedArchive{upload_id,..}=input {
                 c.execute("DELETE FROM pack_workspace_uploads WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),upload_id])?;
             }
-            let draft = self.write_in(c, subject, mc, expected, manifest)?;
+            let draft = self.write_link_in(c, subject, mc, expected, manifest)?;
             c.execute("INSERT OR REPLACE INTO pack_import_warnings VALUES(?,?,?)", params![self.db.server_id(), draft.revision, serde_json::to_string(&import_warnings).map_err(|_| invalid())?])?;
             if matches!(input, ImportRequest::Published { .. }) {
                 c.execute("UPDATE pack_workspace SET customizing_provider=1 WHERE server_id=?", [self.db.server_id()])?;
@@ -441,6 +462,7 @@ fn parse_zip(
         };
         let icon_path = index.icon.clone();
         let mut manifest = PackManifest {
+            modpack_link: None,
             name: index.name.unwrap_or_else(|| "Client pack".into()),
             summary: index.summary.unwrap_or_default(),
             icon: None,
@@ -509,6 +531,7 @@ fn parse_zip(
     let cf = files.remove("manifest.json");
     if mr.is_none() && cf.is_none() {
         let mut manifest = PackManifest {
+            modpack_link: None,
             name: "Imported pack".into(),
             summary: String::new(),
             icon: None,
@@ -546,6 +569,7 @@ fn parse_zip(
         serde_json::from_slice(&mr.as_ref().or(cf.as_ref()).ok_or_else(invalid)?.bytes()?)
             .map_err(|_| invalid())?;
     let mut manifest = PackManifest {
+            modpack_link: None,
         name: string(&document, "name")?.into(),
         summary: document["summary"].as_str().unwrap_or_default().into(),
         icon: None,

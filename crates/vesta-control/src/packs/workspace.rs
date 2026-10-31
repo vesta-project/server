@@ -6,6 +6,8 @@ pub use server_updates::*;
 mod install;
 pub use install::*;
 mod files;
+mod client_link;
+pub use client_link::ClientModpackLink;
 mod provider_pack;
 pub use provider_pack::ProviderPackPublish;
 mod import;
@@ -118,6 +120,8 @@ pub struct PackEntry {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PackManifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modpack_link: Option<ClientModpackLink>,
     pub name: String,
     pub summary: String,
     pub icon: Option<String>,
@@ -372,6 +376,7 @@ impl PackWorkspace {
             None => Ok(PackDraft {
                 revision: "0".into(),
                 manifest: PackManifest {
+                    modpack_link: None,
                     name: "Client pack".into(),
                     summary: String::new(),
                     icon: None,
@@ -535,6 +540,18 @@ impl PackWorkspace {
         })
     }
     fn write_in(
+        &self,
+        c: &Connection,
+        subject: &Subject,
+        mc: &str,
+        expected: &str,
+        manifest: PackManifest,
+    ) -> Result<PackDraft> {
+        let old = self.read_in(c, mc)?.manifest;
+        client_link::check_edit(&old, &manifest)?;
+        self.write_link_in(c, subject, mc, expected, manifest)
+    }
+    fn write_link_in(
         &self,
         c: &Connection,
         subject: &Subject,
