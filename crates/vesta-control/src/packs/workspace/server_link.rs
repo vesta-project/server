@@ -188,7 +188,7 @@ impl PackWorkspace {
         files: &crate::files::FileBrowser,
     ) -> Result<PackInstallOutcome> {
         let _guard = files.pack_admission().map_err(|_| ReleaseError::Conflict)?;
-        self.mutate(s, key, input, |c| {
+        let mut outcome = self.mutate(s, key, input, |c| {
             self.install_authority(c, s)?;
             let link = self.server_link_in(c)?.ok_or(ReleaseError::Conflict)?;
             // Do not orphan staged writes or discard their installation receipt.
@@ -237,7 +237,10 @@ impl PackWorkspace {
                 state: "staged_until_restart".into(),
                 pending_ids,
             })
-        })
+        })?;
+        files.apply_pack_ids(&outcome.pending_ids).map_err(|_| ReleaseError::Conflict)?;
+        outcome.state = "installed".into();
+        Ok(outcome)
     }
 }
 

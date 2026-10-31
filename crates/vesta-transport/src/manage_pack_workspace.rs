@@ -93,6 +93,13 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         .path
         .strip_prefix("/api/v3/manage/")
         .unwrap_or_default();
+    // Exclude local and supervised starts for the whole modpack request.
+    let _modpack_hold = if matches!(action, "pack/install/plan" | "pack/install/apply" | "pack/server-link/unlink") {
+        match vesta_control::files::StoppedGuard::acquire(host.runtime(), host.database().directory()) {
+            Ok(hold) => Some(hold),
+            Err(_) => return error(StatusCode::CONFLICT, "modpack_requires_stopped"),
+        }
+    } else { None };
     if action == "pack/server-link" && request.method == Method::GET {
         if !request.bytes.is_empty() {
             return error(StatusCode::BAD_REQUEST, "invalid_request");
@@ -290,6 +297,8 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             return error(StatusCode::BAD_REQUEST, "idempotency_key_required");
         };
         if input.acknowledge_software_switch {
+            // The asynchronous worker owns its own stopped hold through activation.
+            drop(_modpack_hold);
             let Some(service) = host.software().cloned() else {
                 return error(
                     StatusCode::SERVICE_UNAVAILABLE,

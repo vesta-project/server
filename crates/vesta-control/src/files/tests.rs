@@ -890,7 +890,7 @@ fn protected_raw_edits_bind_receipt_payload_actor_and_validator() {
     );
 }
 #[test]
-fn pack_install_review_stages_overrides_until_restart_and_replays() {
+fn pack_install_applies_overrides_immediately_and_replays() {
     use crate::packs::{PackReleases, workspace::*};
     let f = Fixture::open();
     f.write("config/shared.txt", b"old");
@@ -998,7 +998,7 @@ fn pack_install_review_stages_overrides_until_restart_and_replays() {
     assert_eq!(result.pending_ids.len(), 1);
     assert_eq!(
         std::fs::read(f.game.join("config/shared.txt")).unwrap(),
-        b"old"
+        b"server"
     );
     assert_eq!(
         workspace
@@ -1122,37 +1122,9 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
     };
     install(draft.revision.clone(), "owned-install");
     let link = workspace.server_link(&f.owner).unwrap().unwrap();
-    assert!(link.installed.is_none());
-    assert!(link.pending.is_some());
-    assert!(
-        workspace
-            .install_plan(
-                &f.owner,
-                "1.21.1",
-                Some("vanilla"),
-                &PackInstallRequest {
-                    source: InstallSource::Draft {
-                        revision: draft.revision.clone()
-                    }
-                },
-                &f.browser,
-                &releases,
-                &crate::content::UreqProviderClient::new(None),
-            )
-            .is_err()
-    );
-    assert!(
-        workspace
-            .unlink_server_modpack(
-                &f.owner,
-                "pending-unlink",
-                &ServerModpackUnlink {
-                    remove_owned_files: false
-                },
-                &f.browser,
-            )
-            .is_err()
-    );
+    assert!(link.installed.is_some());
+    assert!(link.pending.is_none());
+    assert_eq!(std::fs::read(f.game.join("config/owned.txt")).unwrap(), b"owned");
     workspace
         .set_client_pack(
             &f.owner,
@@ -1174,7 +1146,7 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
     assert!(releases.current().unwrap().is_none());
     assert_eq!(
         workspace.server_link(&f.owner).unwrap().unwrap().state,
-        "staged_until_restart"
+        "installed"
     );
     f.browser.apply_pending_content().unwrap();
     assert_eq!(
@@ -1203,31 +1175,15 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
             },
         )
         .unwrap();
-    let old_installed = workspace
-        .server_link(&f.owner)
-        .unwrap()
-        .unwrap()
-        .installed
-        .unwrap();
     let target_revision = draft.revision.clone();
     let (plan, outcome) = install(draft.revision, "owned-update");
-    // Reading through a reopened workspace cannot promote a staged target.
+    // Completion is already durable when the request returns, including on reopen.
     let reopened = PackWorkspace::open(&f.db).unwrap();
-    let staged = reopened.server_link(&f.owner).unwrap().unwrap();
-    assert_eq!(
-        serde_json::to_value(&staged.installed).unwrap(),
-        serde_json::to_value(&old_installed).unwrap()
-    );
-    assert!(
-        matches!(staged.pending.unwrap().source, InstallSource::Draft { revision } if revision == target_revision)
-    );
-    assert_eq!(
-        releases.offered().unwrap().unwrap().revision(),
-        first_revision
-    );
+    assert!(reopened.server_link(&f.owner).unwrap().unwrap().pending.is_none());
+    assert_eq!(outcome.state, "installed");
     assert_eq!(plan.removed.len(), 1);
     assert_eq!(outcome.pending_ids.len(), 1);
-    assert!(f.game.join("config/owned.txt").exists());
+    assert!(!f.game.join("config/owned.txt").exists());
     f.browser.apply_pending_content().unwrap();
     assert!(!f.game.join("config/owned.txt").exists());
     assert!(releases.offered().unwrap().unwrap().revision() > first_revision);
@@ -1368,7 +1324,7 @@ fn uploaded_archive_delivery_survives_upload_and_plan_removal() {
             },
         )
         .unwrap();
-    assert!(releases.offered().unwrap().is_none());
+    assert!(releases.offered().unwrap().is_some());
     workspace.install_finish(&f.owner, &plan.plan_id).unwrap();
     workspace
         .upload_cancel(&f.owner, "cancel-archive", upload)

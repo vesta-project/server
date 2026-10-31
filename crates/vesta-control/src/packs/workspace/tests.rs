@@ -3,7 +3,7 @@ use std::sync::Arc;
 use vesta_state::{Clock, StateDirectory};
 struct TestClock;
 #[test]
-fn server_pack_review_preserves_local_config_and_stages_the_server_override_once() {
+fn server_pack_install_applies_the_selected_override_once() {
     for legacy in [false, true] {
         let f = Fixture::new();
         let game = f.temp.path().join("game");
@@ -151,7 +151,7 @@ fn server_pack_review_preserves_local_config_and_stages_the_server_override_once
                 &files,
             )
             .unwrap();
-        assert_eq!(result.state, "staged_until_restart");
+        assert_eq!(result.state, "installed");
         assert_eq!(result.pending_ids.len(), 1);
         let replay = f
             .workspace
@@ -187,10 +187,10 @@ fn server_pack_review_preserves_local_config_and_stages_the_server_override_once
                 .is_err(),
             "consumed token was accepted under a new key"
         );
-        // Only a confirmed runtime activation may touch live files.
+        // A confirmed stopped-server install has already applied the chosen override.
         assert_eq!(
             std::fs::read(game.join("config/setting file.json")).unwrap(),
-            b"local"
+            b"server"
         );
     }
 }

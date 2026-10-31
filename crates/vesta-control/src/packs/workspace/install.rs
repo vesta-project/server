@@ -228,7 +228,7 @@ fn insert_selected(
 pub(crate) fn validate_game_path(path: &str) -> Result<()> {
     vesta_protocol::pack::catalogue::RelativePath::parse(path).map_err(|_| ReleaseError::Refusal { code: "pack_path_invalid", rule: "safe_relative_path", item: path.into() })?;
     let lower = path.to_ascii_lowercase();
-    if lower.split('/').any(|part| matches!(part, ".vesta" | "wrapper-config.toml" | "vesta-wrapper")) {
+    if crate::files::protected_minecraft_file(&lower) || lower == "eula.txt" || lower.split('/').any(|part| matches!(part, ".vesta" | "wrapper-config.toml" | "vesta-wrapper")) {
         return Err(ReleaseError::Refusal { code: "pack_path_protected", rule: "protected_server_control_file", item: path.into() });
     }
     let executable = [".jar", ".exe", ".dll", ".bat", ".cmd", ".ps1", ".sh"].iter().any(|suffix| lower.ends_with(suffix));
@@ -1081,7 +1081,7 @@ impl PackWorkspace {
             .lease()
             .map_err(super::super::PackError::from)?;
         let _guard = files.pack_admission().map_err(file_error)?;
-        self.mutate(s,key,input,|c|{
+        let mut outcome = self.mutate(s,key,input,|c|{
             self.install_authority(c,s)?;
             let row:Option<(i64,String,String)>=c.query_row("SELECT expires,token_hash,body FROM pack_install_plans WHERE id=? AND principal=? AND device=?",params![input.plan_id,s.principal.as_str(),s.device.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
             let (expires,hash,body)=row.ok_or(ReleaseError::Conflict)?;
@@ -1137,7 +1137,10 @@ impl PackWorkspace {
             c.execute("DELETE FROM pack_install_plans WHERE id=?",[&input.plan_id])?;
 
             Ok(PackInstallOutcome{software_job_id:None,state:"staged_until_restart".into(),pending_ids})
-        })
+        })?;
+        files.apply_pack_ids(&outcome.pending_ids).map_err(file_error)?;
+        outcome.state = "installed".into();
+        Ok(outcome)
     }
 }
 
@@ -1165,6 +1168,13 @@ mod triage_live {
         assert!(plan.warnings.iter().any(|w| w.code == "version_from_pack_manifest"));
         assert!(plan.warnings.iter().any(|w| w.code == "curseforge_server_pack" && w.item == "4612990"));
         assert!(plan.files.iter().any(|f| f.path.starts_with("mods/")));
+        let outcome = f.workspace.install_apply(&f.subject, &plan.minecraft_version, Some(&plan.software), "live-rlcraft", &PackInstallApply {
+            acknowledge_warnings: true, acknowledge_software_switch: false,
+            plan_id: plan.plan_id.clone(), confirmation_token: plan.confirmation_token.clone(),
+            choices: plan.files.iter().filter(|file| file.conflict.is_some()).map(|file| InstallChoice {path:file.path.clone(),choice:"keep".into()}).collect(), set_as_modpack:false,
+        }, &files).unwrap();
+        assert_eq!(outcome.state, "installed");
+        assert!(f.workspace.server_link(&f.subject).unwrap().unwrap().pending.is_none());
         eprintln!("RLCRAFT plan: valid={}, runtime={}/{}/{:?}, files={}", plan.valid, plan.minecraft_version, plan.software, plan.loader_version, plan.files.len());
     }
     #[test]
@@ -1176,15 +1186,25 @@ mod triage_live {
         let files = FileBrowser::open(f.db.clone(), &game, &[]).unwrap();
         let releases = super::super::super::PackReleases::open(&f.db).unwrap();
         let result = f.workspace.install_plan(&f.subject, "1.21.1", Some("fabric"),
-            &PackInstallRequest { source: InstallSource::Provider { provider: "curseforge".into(), project_id: "1210677".into(), version_id: "8488030".into() } },
+            &PackInstallRequest { source: InstallSource::Provider { provider: "curseforge".into(), project_id: "1173260".into(), version_id: "6060565".into() } },
             &files, &releases, &content::UreqProviderClient::configured());
         match &result {
-            Ok(plan) => eprintln!("COBBLEVERSE review: valid={}, files={}, warnings={:?}", plan.valid, plan.files.len(), plan.warnings),
+            Ok(plan) => eprintln!("requested 1173260/6060565: valid={}, files={}", plan.valid, plan.files.len()),
             Err(ReleaseError::Refusal {code, rule, item}) => eprintln!("COBBLEVERSE refusal: {code}, {rule}, {item}"),
             Err(ReleaseError::ProviderFile {failure, details}) => eprintln!("COBBLEVERSE provider refusal: {}, stage={}, reason={}, file={:?}", failure.code(), details.stage, details.reason, details.filename),
             Err(error) => eprintln!("COBBLEVERSE refusal: {}", error.code()),
         }
-        result.unwrap();
+        let plan = result.unwrap();
+        assert!(plan.valid);
+        let count = plan.files.len();
+        let outcome = f.workspace.install_apply(&f.subject, &plan.minecraft_version, Some(&plan.software), "live-cobbleverse", &PackInstallApply {
+            acknowledge_warnings: true, acknowledge_software_switch: false,
+            plan_id: plan.plan_id, confirmation_token: plan.confirmation_token,
+            choices: plan.files.iter().filter(|file| file.conflict.is_some()).map(|file| InstallChoice {path:file.path.clone(),choice:"keep".into()}).collect(), set_as_modpack:false,
+        }, &files).unwrap();
+        assert_eq!(outcome.state, "installed");
+        assert!(count > 0);
+        assert!(f.workspace.server_link(&f.subject).unwrap().unwrap().pending.is_none());
     }
 }
 

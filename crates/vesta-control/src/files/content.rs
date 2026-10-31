@@ -919,6 +919,11 @@ impl FileBrowser {
         let _ = crate::packs::payload::Store::open(&self.db).and_then(|store| store.collect());
         self.reconcile_content_barrier()
     }
+    /// Apply only this install's journal entries while stopped ownership is held.
+    pub(crate) fn apply_pack_ids(&self, ids: &[String]) -> Result<()> {
+        for id in ids { self.apply_content_id(id)?; }
+        self.reconcile_content_barrier()
+    }
     fn apply_content_id(&self, id: &str) -> Result<()> {
         let row = self.db.read(|c|c.query_row("SELECT principal,device,change_json,bytes FROM server_content_changes WHERE id=? AND state='pending'",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Vec<u8>>(3)?))).optional().map_err(Into::into))?;
         let Some((principal, device, raw, bytes)) = row else {
