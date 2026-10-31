@@ -780,6 +780,24 @@ mod tests {
         );
     }
     #[test]
+    fn cobbleverse_unicode_resource_archive_resolves_without_source_refusal() {
+        // Real resource-pack dependency from COBBLEVERSE 1.7.42. Its Unicode
+        // display name was rejected by the old game-root filename policy.
+        let document = serde_json::json!({
+            "id": 6060565,
+            "modId": 1173260,
+            "fileName": "Cobblemon 3D Poké Rods 1.0.zip",
+            "downloadUrl": "https://edge.forgecdn.net/files/6060/565/Cobblemon%203D%20Pok%c3%a9%20Rods%201.0.zip",
+            "hashes": [{ "algo": 1, "value": "c5a92bf0d82abba72eb3a93f6e8bd40560d1c247" }]
+        });
+        let source = curseforge_document_source(&document, "1173260", "6060565").unwrap();
+        let (storage, url) = super::super::validate_source(&source).unwrap();
+        assert_eq!(storage.as_str(), "mods/provider-archive.zip");
+        assert_eq!(url.host_str(), Some("edge.forgecdn.net"));
+        assert_eq!(source.filename, "Cobblemon 3D Poké Rods 1.0.zip");
+    }
+
+    #[test]
     fn curseforge_requires_bound_ids_download_and_sha1() {
         let json = format!(
             r#"{{"id":2,"modId":1,"fileName":"mod.jar","downloadUrl":"https://edge.forgecdn.net/mod.jar","hashes":[{{"algo":1,"value":"{}"}}]}}"#,
