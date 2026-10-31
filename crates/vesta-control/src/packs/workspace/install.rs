@@ -1099,7 +1099,7 @@ impl PackWorkspace {
         input: &PackInstallApply,
         files: &FileBrowser,
     ) -> Result<PackInstallOutcome> {
-        if let Some(mut outcome) = self.replay::<PackInstallOutcome>(s,key,input)? {
+        if let Some(mut outcome) = self.replay::<_, PackInstallOutcome>(s,key,input)? {
             let _guard=files.pack_admission().map_err(file_error)?;
             files.apply_pack_ids(&outcome.pending_ids).map_err(file_error)?;
             outcome.state="installed".into();
