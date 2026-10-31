@@ -212,6 +212,8 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "content_provider_not_configured",
             ),
+            Err(ContentError::UrlRefusal { rule, item }) => super::pack_error(
+                vesta_control::packs::ReleaseError::Refusal { code: "content_pack_source_unsafe", rule, item }),
             Err(ContentError::File(e)) => super::files::file_error(e),
             Err(ContentError::TooLarge) => error(StatusCode::PAYLOAD_TOO_LARGE, "pack_too_large"),
             Err(ContentError::DownloadUnavailable { .. }) => error(

@@ -134,6 +134,8 @@ fn invalid() -> Reply {
     error(StatusCode::BAD_REQUEST, "invalid_request")
 }
 fn control_failure(value: ControlError, precondition: bool) -> Reply {
+    let reason = super::control_reason(&value);
+    let error = |status, code| super::error_with_reason(status, code, reason);
     match value {
         ControlError::Rejected {
             code: IdentityErrorCode::Forbidden,
@@ -142,7 +144,7 @@ fn control_failure(value: ControlError, precondition: bool) -> Reply {
         ControlError::Rejected {
             code: IdentityErrorCode::InvalidRequest,
             ..
-        } => invalid(),
+        } => error(StatusCode::BAD_REQUEST, "invalid_request"),
         ControlError::Rejected {
             code: IdentityErrorCode::NotFound,
             ..
@@ -159,6 +161,8 @@ fn control_failure(value: ControlError, precondition: bool) -> Reply {
     }
 }
 fn mutation_failure(value: MutationError, precondition: bool) -> Reply {
+    let reason = value.code();
+    let error = |status, code| super::error_with_reason(status, code, reason);
     match value {
         MutationError::Control(e) => control_failure(e, precondition),
         MutationError::IdempotencyConflict => error(StatusCode::CONFLICT, "idempotency_conflict"),

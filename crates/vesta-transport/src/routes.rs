@@ -677,6 +677,7 @@ fn dispatch(
     }
 }
 fn minecraft_error(code: &'static str) -> Reply {
+    let error = |status, category| super::manage::error_with_reason(status, category, code);
     match code {
         // Production challenge issuance/completion refill one token per second.
         "minecraft_rate_limited" => rate_limited("minecraft_rate_limited", Duration::from_secs(1)),

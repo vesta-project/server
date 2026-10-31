@@ -102,10 +102,19 @@ fn envelope(status: StatusCode, payload: Value) -> Reply {
 pub(super) fn error(status: StatusCode, code: &'static str) -> Reply {
     envelope(status, json!({"error":{"code":code}}))
 }
+/// Keep compatibility categories while carrying the fixed domain cause to clients.
+pub(super) fn error_with_reason(status: StatusCode, code: &'static str, reason: &'static str) -> Reply {
+    envelope(status, json!({"error":{"code":code,"reason":reason}}))
+}
+fn control_reason(error: &vesta_control::ControlError) -> &'static str {
+    error.reason().map(|reason| reason.code()).unwrap_or(error.code())
+}
 pub(super) fn ok(data: Value) -> Reply {
     envelope(StatusCode::OK, json!({"data": data}))
 }
 pub(super) fn management_error(e: ManagementError) -> Reply {
+    let reason = e.code();
+    let error = |status, code| error_with_reason(status, code, reason);
     match e {
         ManagementError::Forbidden => error(StatusCode::FORBIDDEN, "management_forbidden"),
         ManagementError::SessionInvalid | ManagementError::PairInvalid => {
@@ -116,6 +125,8 @@ pub(super) fn management_error(e: ManagementError) -> Reply {
     }
 }
 fn operation_error(e: OperationError) -> Reply {
+    let reason = e.reason().map(|reason| reason.code()).unwrap_or(e.code());
+    let error = |status, code| error_with_reason(status, code, reason);
     match e {
         OperationError::Rejected {
             code: OperationErrorCode::Forbidden,
@@ -213,6 +224,8 @@ fn revision(value: &str) -> Option<u64> {
     (value <= 9_007_199_254_740_991).then_some(value)
 }
 fn pack_error(error_value: vesta_control::packs::ReleaseError) -> Reply {
+    let reason = match &error_value { vesta_control::packs::ReleaseError::Control(e) => control_reason(e), _ => error_value.code() };
+    let error = |status, code| error_with_reason(status, code, reason);
     if error_value.code() == "forbidden" {
         return error(StatusCode::FORBIDDEN, "management_forbidden");
     }
@@ -968,5 +981,29 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                 Err(e) => operation_error(e),
             }
         }
+    }
+}
+#[cfg(test)]
+mod reason_transport_tests {
+    use super::*;
+    fn payload(reply: Reply) -> Value {
+        let crate::ReplyBody::Bytes(bytes) = reply.body() else { panic!("expected JSON"); };
+        serde_json::from_slice(bytes).unwrap()
+    }
+    #[test]
+    fn typed_causes_survive_compatibility_categories() {
+        let operation = operation_error(OperationError::Rejected { code: OperationErrorCode::ActorMismatch, reason: None });
+        let body: Value = payload(operation);
+        assert_eq!(body["error"]["code"], "operation_conflict");
+        assert_eq!(body["error"]["reason"], "actor_mismatch");
+        let file = files::file_error(vesta_control::files::FileError::ProtectedPath);
+        let body: Value = payload(file);
+        assert_eq!(body["error"]["code"], "invalid_request");
+        assert_eq!(body["error"]["reason"], "file_path_protected");
+        let denied = pack_error(vesta_control::packs::ReleaseError::Control(vesta_control::ControlError::Rejected {
+            code: vesta_control::IdentityErrorCode::Forbidden, reason: Some(vesta_control::identity::DenyReason::AdminReserved),
+        }));
+        let body: Value = payload(denied);
+        assert_eq!(body["error"]["reason"], "admin_reserved");
     }
 }

@@ -52,6 +52,8 @@ fn restore_route(path: &str) -> Option<&str> {
     (!id.is_empty() && !id.contains('/')).then_some(id)
 }
 pub(crate) fn file_error(value: FileError) -> Reply {
+    let reason = match &value { FileError::Control(e) => super::control_reason(e), _ => value.code() };
+    let error = |status, code| super::error_with_reason(status, code, reason);
     match value {
         FileError::Control(_) => error(StatusCode::FORBIDDEN, "management_forbidden"),
         FileError::InvalidPath
@@ -63,7 +65,7 @@ pub(crate) fn file_error(value: FileError) -> Reply {
         FileError::NotFound => error(StatusCode::NOT_FOUND, "resource_not_found"),
         FileError::Conflict(current) => envelope(
             StatusCode::PRECONDITION_FAILED,
-            json!({"error":{"code":"precondition_failed","current_sha256":current}}),
+            json!({"error":{"code":"precondition_failed","reason":reason,"current_sha256":current}}),
         ),
         FileError::ConfirmationRequired => error(StatusCode::BAD_REQUEST, "confirmation_required"),
         FileError::ConfirmationInvalid => error(StatusCode::CONFLICT, "confirmation_invalid"),

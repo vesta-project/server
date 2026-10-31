@@ -509,15 +509,15 @@ fn download_verified_into(
         };
         if matches!(response.status, 301 | 302 | 303 | 307 | 308) {
             if redirects == MAX_REDIRECTS {
-                return Err(ContentError::TooManyRedirects);
+                return Err(url_refusal("download_redirect_limit", url.as_str()));
             }
             let location = response.location.ok_or(ContentError::DownloadFailed)?;
             if location.len() > MAX_URL_BYTES {
-                return Err(ContentError::DisallowedUrl);
+                return Err(url_refusal("download_url_length", &location));
             }
             *url = url
                 .join(&location)
-                .map_err(|_| ContentError::DisallowedUrl)?;
+                .map_err(|_| url_refusal("download_url_valid", &location))?;
             validate_download_url(source.provider, url)?;
             continue;
         }
@@ -577,9 +577,9 @@ fn validate_source(source: &ResolvedSource) -> Result<(RelativePath, Url)> {
     source.expected_hash.validate()?;
     let path = validate_filename(&source.filename)?;
     if source.download_url.len() > MAX_URL_BYTES {
-        return Err(ContentError::DisallowedUrl);
+        return Err(url_refusal("download_url_length", &source.download_url));
     }
-    let url = Url::parse(&source.download_url).map_err(|_| ContentError::DisallowedUrl)?;
+    let url = Url::parse(&source.download_url).map_err(|_| url_refusal("download_url_valid", &source.download_url))?;
     validate_download_url(source.provider, &url)?;
     Ok((path, url))
 }
@@ -620,7 +620,7 @@ fn validate_download_url(_provider: Provider, url: &Url) -> Result<()> {
     // API-resolved sources are trusted; CDN migrations are not safety failures.
     if url.scheme() != "https" || url.host_str().is_none()
         || !url.username().is_empty() || url.password().is_some()
-    { return Err(ContentError::DisallowedUrl); }
+    { return Err(url_refusal("download_https_without_credentials", url.as_str())); }
     Ok(())
 }
 
@@ -692,6 +692,7 @@ pub enum ContentError {
     UnknownSource,
     UnsafeFilename,
     DisallowedUrl,
+    UrlRefusal { rule: &'static str, item: String },
     TooManyRedirects,
     TooLarge,
     HashMismatch,
@@ -730,4 +731,17 @@ mod trusted_pack_policy_tests {
         assert!(validate_download_url(Provider::Curseforge, &Url::parse("https://new-cdn.example/pack.zip").unwrap()).is_ok());
         for url in ["http://cdn.example/pack.zip", "https://user:secret@cdn.example/pack.zip"] { assert!(validate_download_url(Provider::Curseforge, &Url::parse(url).unwrap()).is_err()); }
     }
+}
+
+/// Retain useful download provenance without credentials, signed query strings or fragments.
+pub(crate) fn sanitized_download_url(value: &str) -> String {
+    let Ok(mut url) = Url::parse(value) else { return "invalid download address".into(); };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    url.as_str().chars().take(4096).collect()
+}
+fn url_refusal(rule: &'static str, value: &str) -> ContentError {
+    ContentError::UrlRefusal { rule, item: sanitized_download_url(value) }
 }

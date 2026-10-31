@@ -254,7 +254,7 @@ fn disallowed_urls_are_rejected_before_http() {
         let http = FakeHttp::new(vec![]);
         assert_eq!(
             install(&f, s, &http, &WritePrecondition::Absent),
-            Err(ContentError::DisallowedUrl)
+            Err(ContentError::UrlRefusal { rule: "download_https_without_credentials", item: sanitized_download_url(url) })
         );
         assert!(http.urls.borrow().is_empty());
         f.no_effect();
@@ -274,7 +274,7 @@ fn redirects_are_rechecked_and_bounded() {
                 &http,
                 &WritePrecondition::Absent
             ),
-            Err(ContentError::DisallowedUrl)
+            Err(ContentError::UrlRefusal { rule: "download_https_without_credentials", item: sanitized_download_url(location) })
         );
         assert_eq!(http.urls.borrow().len(), 1);
         f.no_effect();
@@ -288,7 +288,7 @@ fn redirects_are_rechecked_and_bounded() {
             &http,
             &WritePrecondition::Absent
         ),
-        Err(ContentError::TooManyRedirects)
+        Err(ContentError::UrlRefusal { rule: "download_redirect_limit", item: "https://cdn.modrinth.com/again".into() })
     );
     assert_eq!(http.urls.borrow().len(), MAX_REDIRECTS + 1);
     f.no_effect();

@@ -120,6 +120,9 @@ impl ReleaseError {
         filename: Option<&str>,
     ) -> Self {
         use crate::content::ContentError;
+        if let ContentError::UrlRefusal { rule, item } = error {
+            return Self::Refusal { code: "content_pack_source_unsafe", rule, item };
+        }
         let reason = match &error {
             ContentError::UnsafeFilename => "filename_not_portable",
             ContentError::DisallowedUrl => "download_host_not_allowed",
@@ -183,6 +186,7 @@ impl From<crate::content::ContentError> for ReleaseError {
     fn from(error: crate::content::ContentError) -> Self {
         use crate::content::ContentError;
         match error {
+            ContentError::UrlRefusal { rule, item } => Self::Refusal { code: "content_pack_source_unsafe", rule, item },
             ContentError::ProviderNotConfigured => PackError::ProviderNotConfigured.into(),
             ContentError::InvalidRequest => PackError::InvalidArchive.into(),
             ContentError::TooLarge => PackError::TooLarge.into(),
@@ -946,4 +950,19 @@ fn notification_sender(directory: &Path) -> Result<Arc<watch::Sender<u64>>, Rele
     let sender = Arc::new(sender);
     registry.insert(key, Arc::downgrade(&sender));
     Ok(sender)
+}
+#[cfg(test)]
+mod url_provenance_tests {
+    use super::*;
+    #[test]
+    fn unsafe_download_issue_keeps_url_without_secrets() {
+        let url = "http://user:password@example.com/pack.zip?token=secret#fragment";
+        let source = crate::content::ResolvedSource {
+            provider: crate::content::Provider::Modrinth, filename: "pack.zip".into(), download_url: url.into(),
+            expected_hash: crate::content::ExpectedHash::Sha512("a".repeat(128)),
+        };
+        let error = crate::content::fetch_verified_source(&source, &crate::content::UreqDownloadHttp::default(), std::time::Instant::now() + std::time::Duration::from_secs(1)).unwrap_err();
+        let error = ReleaseError::provider_file(error, "modrinth", "project", "version", "download", Some("pack.zip"));
+        assert_eq!(error, ReleaseError::Refusal { code: "content_pack_source_unsafe", rule: "download_https_without_credentials", item: "http://example.com/pack.zip".into() });
+    }
 }
