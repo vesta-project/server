@@ -296,7 +296,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         ) else {
             return error(StatusCode::BAD_REQUEST, "idempotency_key_required");
         };
-        if input.acknowledge_software_switch {
+        {
             // The asynchronous worker owns its own stopped hold through activation.
             drop(_modpack_hold);
             let Some(service) = host.software().cloned() else {
@@ -315,30 +315,17 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             return match super::hosting::run_async(host, async move {
                 service.apply_pack(&actor, pack).await
             }) {
-                Ok(job) => ok(
+                Ok(job) => {
+                    if let Err(error)=workspace.track_install_job(&subject,&job.id) { return pack_error(error); }
+                    ok(
                     serde_json::json!({"state":"queued", "pending_ids":[], "software_job_id":job.id, "modpack_revision":null}),
-                ),
+                )
+                }
                 Err(e) => super::hosting::software_error(e),
             };
         }
-        let outcome = match workspace.install_apply(
-            &subject,
-            &mc,
-            family.as_deref(),
-            &key,
-            &input,
-            host.files(),
-        ) {
-            Ok(o) => o,
-            Err(e) => return pack_error(e),
-        };
-        if let Err(e) = workspace.install_finish(&subject, &input.plan_id) {
-            return pack_error(e);
-        }
-        return ok(
-            serde_json::json!({"state":outcome.state,"pending_ids":outcome.pending_ids,"modpack_revision":null,"server_modpack":workspace.server_link(&subject).ok().flatten()}),
-        );
     }
+
     if action == "pack/files/read" {
         let Some(input) = decode::<FileRead>(request.bytes) else {
             return error(StatusCode::BAD_REQUEST, "invalid_request");

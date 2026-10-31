@@ -17,6 +17,8 @@ mod downloads;
 mod stored_bytes;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PackInstallProgress {
+    #[serde(default)]
+    pub bytes_completed: u64,
     pub stage: String,
     pub completed: usize,
     pub total: usize,
@@ -27,7 +29,11 @@ struct Preparation {
 }
 impl Preparation {
     fn report(&self, stage: &str, completed: usize, total: usize) -> Result<()> {
+        self.report_bytes(stage,completed,total,0)
+    }
+    fn report_bytes(&self, stage: &str, completed: usize, total: usize, bytes_completed: u64) -> Result<()> {
         let body = serde_json::to_string(&PackInstallProgress {
+            bytes_completed,
             stage: stage.into(),
             completed,
             total,
@@ -48,6 +54,18 @@ impl Preparation {
         })?;
         Ok(())
     }
+}
+struct TransferProgress<'a, W> { writer: W, progress: &'a Preparation, file: usize, total: usize, bytes: u64, reported: u64 }
+impl<W: std::io::Write> std::io::Write for TransferProgress<'_, W> {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        let count=self.writer.write(data)?; self.bytes+=count as u64;
+        if self.bytes-self.reported>=1024*1024 {
+            self.progress.report_bytes("download_verify",self.file,self.total,self.bytes).map_err(|_|std::io::Error::other("progress unavailable"))?;
+            self.reported=self.bytes;
+        }
+        Ok(count)
+    }
+    fn flush(&mut self) -> std::io::Result<()> { self.writer.flush() }
 }
 impl Drop for Preparation {
     fn drop(&mut self) {
@@ -1005,12 +1023,25 @@ impl PackWorkspace {
             let (expires, hash, body) = row.ok_or(ReleaseError::Conflict)?;
             if expires < self.db.clock().millis() || hash != digest(input.confirmation_token.as_bytes()) { return Err(ReleaseError::Conflict); }
             let stored: Stored = serde_json::from_str(&body).map_err(|_| invalid())?;
-            if (warnings_require_acknowledgement(&stored.plan.warnings) && !input.acknowledge_warnings) || !stored.plan.valid || !input.acknowledge_software_switch { return Err(ReleaseError::Conflict); }
+            if (warnings_require_acknowledgement(&stored.plan.warnings) && !input.acknowledge_warnings) || !stored.plan.valid || (stored.plan.software_switch_required && !input.acknowledge_software_switch) { return Err(ReleaseError::Conflict); }
             let conflicts: BTreeSet<_> = stored.plan.files.iter().filter(|f| f.conflict.is_some()).map(|f| f.path.as_str()).collect();
             let choices: BTreeSet<_> = input.choices.iter().map(|c| c.path.as_str()).collect();
             if choices.len() != input.choices.len() || choices != conflicts || input.choices.iter().any(|c| c.choice != "keep" && c.choice != "replace") { return Err(invalid()); }
             Ok(stored.plan)
         })?)
+    }
+    pub fn prepare_install_payloads(&self, s: &Subject, input: &PackInstallApply) -> Result<()> {
+        let store=PayloadStore::open(&self.db).map_err(super::super::PackError::from)?;
+        let _lease=store.lease().map_err(super::super::PackError::from)?;
+        self.hydrate_install(s,input,&store)
+    }
+    pub fn track_install_job(&self, s: &Subject, id: &str) -> Result<()> {
+        self.db.write_with(|t| {
+            self.install_authority(t.connection(),s)?;
+            t.connection().execute("INSERT OR REPLACE INTO pack_install_job VALUES(?,?)",params![self.db.server_id(),id])?;
+            Ok(())
+        })?;
+        Ok(())
     }
     fn hydrate_install(&self, s: &Subject, input: &PackInstallApply, store: &PayloadStore) -> Result<()> {
         let original: String = self.db.read_with(|t| {
@@ -1032,7 +1063,10 @@ impl PackWorkspace {
             let source=providers.resolve_with_deadline(platform(&reference.provider)?,&reference.project_id,&reference.version_id,deadline)?;
             if stored.deferred_hashes.get(&source.filename)!=Some(&format!("{:?}",source.expected_hash)) { return Err(ReleaseError::Conflict); }
             let mut stage=store.stage().map_err(super::super::PackError::from)?;
-            content::fetch_verified_source_into(&source,&http,deadline,&mut stage)?;
+            let mut transfer=TransferProgress {writer:&mut stage,progress:&progress,file:index,total:stored.payloads.len(),bytes:0,reported:0};
+            content::fetch_verified_source_into(&source,&http,deadline,&mut transfer)?;
+            progress.report_bytes("download_verify",index+1,stored.payloads.len(),transfer.bytes)?;
+            drop(transfer);
             let payload=stage.finish().map_err(super::super::PackError::from)?;
             stored.plan.files[index].sha256=payload.sha256.clone();
             stored.payloads[index]=payload;
@@ -1051,7 +1085,7 @@ impl PackWorkspace {
         let body=serde_json::to_string(&stored).map_err(|_|invalid())?;
         self.db.write_with(|t| {
             let c=t.connection(); self.install_authority(c,s)?;
-            if c.execute("UPDATE pack_install_plans SET body=? WHERE id=? AND body=?",params![body,input.plan_id,original])?!=1 { return Err(ReleaseError::Conflict); }
+            if c.execute("UPDATE pack_install_plans SET body=?,expires=expires+3600000 WHERE id=? AND body=?",params![body,input.plan_id,original])?!=1 { return Err(ReleaseError::Conflict); }
             Ok(())
         })?;
         Ok(())
@@ -1065,6 +1099,12 @@ impl PackWorkspace {
         input: &PackInstallApply,
         files: &FileBrowser,
     ) -> Result<PackInstallOutcome> {
+        if let Some(mut outcome) = self.replay::<PackInstallOutcome>(s,key,input)? {
+            let _guard=files.pack_admission().map_err(file_error)?;
+            files.apply_pack_ids(&outcome.pending_ids).map_err(file_error)?;
+            outcome.state="installed".into();
+            return Ok(outcome);
+        }
         self.db
             .read_with(|t| self.install_authority(t.connection(), s))?;
         let payload_store = PayloadStore::open(&self.db).map_err(super::super::PackError::from)?;
@@ -1132,7 +1172,11 @@ impl PackWorkspace {
 
             Ok(PackInstallOutcome{software_job_id:None,state:"staged_until_restart".into(),pending_ids})
         })?;
-        files.apply_pack_ids(&outcome.pending_ids).map_err(file_error)?;
+        let progress=Preparation {db:self.db.clone(), job:input.plan_id.clone()};
+        for (index,id) in outcome.pending_ids.iter().enumerate() {
+            progress.report("writing",index,outcome.pending_ids.len())?;
+            files.apply_pack_ids(std::slice::from_ref(id)).map_err(file_error)?;
+        }
         outcome.state = "installed".into();
         Ok(outcome)
     }

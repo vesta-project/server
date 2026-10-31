@@ -141,6 +141,7 @@ pub struct PackDraft {
 #[derive(Clone, Debug, Serialize)]
 pub struct WorkspaceView {
     pub install_progress: Option<PackInstallProgress>,
+    pub install_job: Option<serde_json::Value>,
     pub server_modpack: Option<ServerModpackLink>,
     pub client_pack: ClientPackConfig,
     pub customizing_provider: bool,
@@ -328,7 +329,7 @@ impl PackWorkspace {
         .0)
     }
     pub fn open(db: &StateDatabase) -> Result<Self> {
-        db.write(|c| c.execute_batch("CREATE TABLE IF NOT EXISTS pack_install_progress(server_id TEXT PRIMARY KEY, job TEXT NOT NULL, body TEXT NOT NULL, expires INTEGER NOT NULL)").map_err(Into::into))?;
+        db.write(|c| c.execute_batch("CREATE TABLE IF NOT EXISTS pack_install_job(server_id TEXT PRIMARY KEY, job TEXT NOT NULL); CREATE TABLE IF NOT EXISTS pack_install_progress(server_id TEXT PRIMARY KEY, job TEXT NOT NULL, body TEXT NOT NULL, expires INTEGER NOT NULL)").map_err(Into::into))?;
         db.write(|c| c.execute_batch("CREATE TABLE IF NOT EXISTS pack_install_plans(id TEXT PRIMARY KEY, principal TEXT NOT NULL, device TEXT NOT NULL, expires INTEGER NOT NULL, token_hash TEXT NOT NULL, body TEXT NOT NULL)").map_err(Into::into))?;
         server_link::initialize(db)?;
         db.write(|c| c.execute_batch("CREATE TABLE IF NOT EXISTS pack_spooled_uploads(server_id TEXT NOT NULL,principal_id TEXT NOT NULL,device_id TEXT NOT NULL,upload_id TEXT NOT NULL,name TEXT NOT NULL,received INTEGER NOT NULL DEFAULT 0,payload TEXT,PRIMARY KEY(server_id,principal_id,device_id,upload_id)); CREATE TABLE IF NOT EXISTS pack_upload_chunk_receipts(server_id TEXT NOT NULL,principal_id TEXT NOT NULL,device_id TEXT NOT NULL,request_key TEXT NOT NULL,PRIMARY KEY(server_id,principal_id,device_id,request_key));").map_err(Into::into))?;
@@ -449,6 +450,10 @@ impl PackWorkspace {
             .unwrap_or(false))
         })?;
         Ok(WorkspaceView {
+            install_job: self.db.read(|c| {
+                if !c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='software_jobs')",[],|r|r.get::<_,bool>(0))? { return Ok(None); }
+                Ok(c.query_row("SELECT j.id,j.state,j.error FROM pack_install_job p JOIN software_jobs j ON j.id=p.job WHERE p.server_id=?",[self.db.server_id()],|r|Ok(serde_json::json!({"id":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"error":r.get::<_,Option<String>>(2)?}))).optional()?)
+            })?,
             install_progress: self.db.read_with(|t| {
                 let raw: Option<String> = t
                     .connection()
