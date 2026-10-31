@@ -2731,6 +2731,14 @@ fn management_tls_inert_lifecycle_command_console_and_known_players() {
     let generation = management_start_inert(&f, &token);
     let players = f.request("GET", "/api/v3/manage/players", b"", Some(&token));
     assert_eq!(players.json()["data"]["player_count"], 2);
+    let first = f.request("GET", "/api/v3/manage/players?limit=1", b"", Some(&token));
+    assert_eq!(first.status, 200);
+    assert_eq!(first.json()["data"]["items"].as_array().unwrap().len(), 1);
+    let next = first.json()["data"]["next_cursor"].as_str().unwrap().to_owned();
+    let second = f.request("GET", &format!("/api/v3/manage/players?limit=1&cursor={next}"), b"", Some(&token));
+    assert_eq!(second.status, 200);
+    assert_eq!(second.json()["data"]["items"].as_array().unwrap().len(), 1);
+    assert!(second.json()["data"]["next_cursor"].is_null());
     let status = f.request("GET", "/api/v3/manage/server/status", b"", Some(&token));
     assert_eq!(status.json()["data"]["player_count"], 2);
     assert!(

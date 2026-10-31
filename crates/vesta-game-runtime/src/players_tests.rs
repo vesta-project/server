@@ -623,6 +623,8 @@ fn the_input_bound_is_inclusive_and_refuses_one_byte_more() {
     }
     // The last entry absorbs the remaining bytes so the whole line lands exactly on
     // the bound; the padding is checked rather than assumed.
+    // Whitespace belongs to the grammar and does not inflate any individual name.
+    names.insert_str(0, &" ".repeat(MAX_INPUT_BYTES - 8192));
     let pad = MAX_INPUT_BYTES - head.len() - names.len();
     assert_eq!(pad, 3, "the chosen entry count must leave a small pad");
     names.push_str("xxx");
@@ -679,11 +681,11 @@ fn a_list_longer_than_the_player_bound_is_refused() {
 fn dropped_bare_uuid_still_consumes_a_bounded_token_slot() {
     const UUID: &str = "00000000-0000-0000-0000-000000000002";
     let names = "S, ".repeat(MAX_PLAYERS - 1);
-    let line = format!("There are 1024/2000 players online: {names}{UUID}");
+    let line = format!("There are {MAX_PLAYERS}/20000 players online: {names}{UUID}");
     assert!(line.len() < MAX_INPUT_BYTES);
     let list = parse_player_list_line(&line).unwrap();
     assert_eq!(list.players().len(), MAX_PLAYERS - 1);
-    assert_eq!(list.online(), 1024);
+    assert_eq!(list.online(), MAX_PLAYERS as u32);
     let names = "S, ".repeat(MAX_PLAYERS);
     let over = format!("There are 1024/2000 players online: {names}{UUID}");
     assert!(over.len() < MAX_INPUT_BYTES);

@@ -933,9 +933,6 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             }
         }
         "players" => {
-            if query.is_some() {
-                return error(StatusCode::BAD_REQUEST, "invalid_request");
-            }
             let snapshot = match runtime.game_snapshot() {
                 Ok(v) => v,
                 Err(e) => return operation_error(e),
@@ -944,9 +941,24 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                 return ok(json!({"known":false,"player_count":null,"items":null}));
             };
             match runtime.management_roster(&subject, generation, Duration::from_secs(1)) {
-                Ok(v) => ok(
-                    json!({"known":true,"generation":v.generation.to_hex(),"player_count":v.players.len(),"items":v.players.iter().filter(|p| p.len() <= 16 && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')).map(|p| json!({"name":p})).collect::<Vec<_>>()}),
-                ),
+                Ok(v) => {
+                    // Bind pages to the exact roster. A join/leave invalidates
+                    // the cursor rather than stitching together different views.
+                    let scope = format!("players-{}-{}", v.generation.to_hex(), v.response_cursor());
+                    let (offset, limit) = if query.is_some() {
+                        let Some(value) = page(query, &scope, host.management().server_id(), 200) else {
+                            return error(StatusCode::BAD_REQUEST, "invalid_request");
+                        };
+                        value
+                    } else { (0, usize::MAX) }; // Legacy clients retain their full snapshot contract.
+                    let Ok(offset) = usize::try_from(offset) else { return error(StatusCode::BAD_REQUEST, "invalid_request"); };
+                    if offset > v.players.len() { return error(StatusCode::BAD_REQUEST, "invalid_request"); }
+                    let visible: Vec<_> = v.players.iter().filter(|p| p.len() <= 16 && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')).collect();
+                    let items: Vec<_> = visible.iter().skip(offset).take(limit).map(|p| json!({"name":p})).collect();
+                    let end = offset.saturating_add(items.len());
+                    let next = (end < visible.len()).then(|| cursor(host.management().server_id(), &scope, end));
+                    ok(json!({"known":true,"generation":v.generation.to_hex(),"revision":v.response_cursor().to_string(),"player_count":v.players.len(),"items":items,"next_cursor":next}))
+                }
                 Err(_) => ok(json!({"known":false,"player_count":null,"items":null})),
             }
         }

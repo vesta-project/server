@@ -10,10 +10,11 @@ use std::{
     time::SystemTime,
 };
 
-pub const MAX_LINE_BYTES: usize = 16_384;
+pub const MAX_LINE_BYTES: usize = 256 * 1024;
 pub const MAX_RETAINED_LINES: usize = 10_000;
 pub const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_PAGE_LINES: usize = 200;
+pub const MAX_PAGE_BYTES: usize = 256 * 1024;
 const READ_BYTES: usize = 8_192;
 // Complete a UTF-8 scalar crossing the publication boundary before truncating it.
 const RAW_LINE_BYTES: usize = MAX_LINE_BYTES + 3;
@@ -217,11 +218,17 @@ impl ConsoleCapture {
         if after > inner.latest {
             return Err(ConsoleError::InvalidPage);
         }
+        let mut page_bytes = 0;
+        let first = inner.lines.partition_point(|line| line.cursor <= after);
         let lines: Vec<_> = inner
             .lines
             .iter()
-            .filter(|line| line.cursor > after)
+            .skip(first)
             .take(limit)
+            .take_while(|line| {
+                page_bytes += line.text.len();
+                page_bytes <= MAX_PAGE_BYTES
+            })
             .cloned()
             .collect();
         // Evicted prefix, or a cursor skipped by `mark_gap`, before the first line.

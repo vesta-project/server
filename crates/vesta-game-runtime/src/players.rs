@@ -16,7 +16,7 @@ use std::fmt;
 use std::iter::Peekable;
 
 /// Largest accepted input, in UTF-8 bytes, measured before any other work.
-pub const MAX_INPUT_BYTES: usize = 8_192;
+pub const MAX_INPUT_BYTES: usize = 256 * 1024;
 /// Largest accepted number of comma-separated tokens in the names tail.
 ///
 /// This bounds how much work one line can cause, not how large a server may be. It
@@ -25,7 +25,7 @@ pub const MAX_INPUT_BYTES: usize = 8_192;
 /// length of one console line, and operator-set overflow slots can make an announced
 /// capacity exceed any sane entry count. Counts are descriptions, not proof that a
 /// server is up, configured, or who is entitled to read them.
-pub const MAX_PLAYERS: usize = 1_024;
+pub const MAX_PLAYERS: usize = 16_384;
 /// Largest accepted single player name, in UTF-8 bytes.
 pub const MAX_NAME_BYTES: usize = 64;
 
