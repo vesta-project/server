@@ -1564,6 +1564,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "modpack-engine"
+version = "0.1.0"
+
+[[package]]
 name = "module-lattice"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3335,6 +3339,7 @@ dependencies = [
  "ipnet",
  "libc",
  "md-5",
+ "modpack-engine",
  "rand 0.10.1",
  "ring",
  "rusqlite",

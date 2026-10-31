@@ -651,7 +651,7 @@ impl PackWorkspace {
             }
         }
         progress.report("review", sources.len(), sources.len())?;
-        for root in ["overrides", "server-overrides"] {
+        for root in modpack_engine::override_roots(true) {
             for f in manifest
                 .override_files
                 .iter()
@@ -804,7 +804,7 @@ impl PackWorkspace {
             }
             if expected
                 .as_ref()
-                .is_some_and(|hash| owned.get(&path) == Some(hash))
+                .is_some_and(|hash| modpack_engine::recorded_hash_matches(owned.get(&path).map(String::as_str), Some(hash)))
             {
                 conflict = None;
             }

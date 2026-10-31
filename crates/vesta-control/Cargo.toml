@@ -7,6 +7,7 @@ rust-version = "1.89"
 publish.workspace = true
 
 [dependencies]
+modpack-engine = { path = "../modpack-engine" }
 vesta-state.workspace = true
 vesta-protocol.workspace = true
 vesta-game-runtime.workspace = true
