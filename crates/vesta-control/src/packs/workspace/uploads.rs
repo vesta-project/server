@@ -52,18 +52,30 @@ impl PackWorkspace {
         key: &str,
         input: &UploadChunk,
     ) -> Result<UploadReceipt> {
-        let store = Store::open(&self.db).map_err(storage)?;
-        let _lease = store.lease().map_err(storage)?;
-        self.mutate(subject,key,input,|c|{
-            let bytes=STANDARD.decode(&input.content_base64).map_err(|_|invalid())?;
-            if bytes.is_empty()||bytes.len()>512*1024{return Err(invalid());}
-            let (size,total,sha,complete,name):(i64,i64,String,bool,Option<String>)=c.query_row("SELECT coalesce(s.received,length(u.body)),u.total_size,u.sha256,u.complete,s.name FROM pack_workspace_uploads AS u LEFT JOIN pack_spooled_uploads AS s USING(server_id,principal_id,device_id,upload_id) WHERE u.server_id=? AND u.principal_id=? AND u.device_id=? AND u.upload_id=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),input.upload_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
-            if complete||revision(&input.offset)?!=size as u64||size+bytes.len() as i64>total{return Err(ReleaseError::Conflict);}
-            if let Some(name)=name {
-                store.upload_append(&name,size as u64,&bytes).map_err(storage)?;
-                c.execute("UPDATE pack_spooled_uploads SET received=? WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=?",params![size+bytes.len() as i64,self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),input.upload_id])?;
+        self.upload_chunk_with(subject,key,input,|store,name,offset,bytes| store.upload_append(name,offset,bytes).map_err(storage))
+    }
+    fn upload_chunk_with(&self, subject: &Subject, key: &str, input: &UploadChunk, append: impl FnOnce(&Store,&str,u64,&[u8])->Result<()>) -> Result<UploadReceipt> {
+        // Serialize spool offset changes, independently of the database writer.
+        static APPEND: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _append=APPEND.lock().map_err(|_|invalid())?;
+        if let Some(receipt)=self.replay(subject,key,input)? { return Ok(receipt); }
+        let bytes=STANDARD.decode(&input.content_base64).map_err(|_|invalid())?;
+        if bytes.is_empty() || bytes.len()>512*1024 { return Err(invalid()); }
+        let store=Store::open(&self.db).map_err(storage)?;
+        let _lease=store.lease().map_err(storage)?;
+        let (size,total,sha,complete,name):(i64,i64,String,bool,Option<String>)=self.db.read_with(|t| {
+            let c=t.connection(); self.authorize_in(c,subject,Capability::PackEdit)?;
+            Ok::<_,ReleaseError>(c.query_row("SELECT coalesce(s.received,length(u.body)),u.total_size,u.sha256,u.complete,s.name FROM pack_workspace_uploads u LEFT JOIN pack_spooled_uploads s USING(server_id,principal_id,device_id,upload_id) WHERE u.server_id=? AND u.principal_id=? AND u.device_id=? AND u.upload_id=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),input.upload_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?)
+        })?;
+        if complete || revision(&input.offset)?!=size as u64 || size+bytes.len() as i64>total { return Err(ReleaseError::Conflict); }
+        if let Some(name)=&name { append(&store,name,size as u64,&bytes)?; }
+        self.mutate(subject,key,input,|c| {
+            if let Some(name)=&name {
+                let count=c.execute("UPDATE pack_spooled_uploads SET received=? WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=? AND name=? AND received=? AND EXISTS(SELECT 1 FROM pack_workspace_uploads WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=? AND complete=0)",params![size+bytes.len() as i64,self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),input.upload_id,name,size,self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),input.upload_id])?;
+                if count!=1 { return Err(ReleaseError::Conflict); }
             } else {
-                c.execute("UPDATE pack_workspace_uploads SET body=CAST(body||? AS BLOB) WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=?",params![bytes,self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),input.upload_id])?;
+                let count=c.execute("UPDATE pack_workspace_uploads SET body=CAST(body||? AS BLOB) WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=? AND length(body)=? AND complete=0",params![bytes,self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),input.upload_id,size])?;
+                if count!=1 { return Err(ReleaseError::Conflict); }
             }
             c.execute("INSERT OR IGNORE INTO pack_upload_chunk_receipts VALUES(?,?,?,?)",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),key])?;
             Ok(UploadReceipt{upload_id:input.upload_id.clone(),size:(size+bytes.len() as i64).to_string(),sha256:sha,complete:false})
@@ -162,5 +174,25 @@ impl PackWorkspace {
             .read_to_end(&mut bytes)
             .map_err(|_| invalid())?;
         Ok(bytes)
+    }
+}
+
+#[cfg(test)]
+mod writer_regression {
+    use super::*;
+    #[test]
+    fn spool_sync_does_not_own_database_writer_and_replay_does_not_append() {
+        let f=super::super::tests::Fixture::new();
+        f.workspace.upload_begin(&f.subject,"begin",&UploadBegin {upload_id:"spool-test".into(),total_size:"3".into(),sha256:digest(b"abc"),archive:true}).unwrap();
+        let input=UploadChunk {upload_id:"spool-test".into(),offset:"0".into(),content_base64:STANDARD.encode(b"abc")};
+        let receipt=f.workspace.upload_chunk_with(&f.subject,"chunk",&input,|store,name,offset,bytes| {
+            // A nested writer acquisition would fail (or deadlock) if append held it.
+            f.db.write(|c| {c.execute_batch("CREATE TABLE upload_writer_probe(value INTEGER)")?; Ok(())}).unwrap();
+            store.upload_append(name,offset,bytes).map_err(storage)
+        }).unwrap();
+        assert_eq!(receipt.size,"3");
+        let replay=f.workspace.upload_chunk_with(&f.subject,"chunk",&input,|_,_,_,_|panic!("replay appended twice")).unwrap();
+        assert_eq!(replay.size,"3");
+        assert!(f.workspace.upload_finish(&f.subject,"finish","spool-test").unwrap().complete);
     }
 }

@@ -101,6 +101,26 @@ pub(super) fn pack_work_request(method: &Method, path: &str) -> bool {
     }
 }
 
+fn body_reservation(headers: &http::HeaderMap, maximum: usize) -> usize {
+    headers.get(http::header::CONTENT_LENGTH).and_then(|h|h.to_str().ok()).and_then(|h|h.parse::<usize>().ok()).map_or(maximum,|length|length.min(maximum))
+}
+#[cfg(test)]
+mod upload_budget_regression {
+    use super::*;
+    #[test]
+    fn concurrent_chunks_fit_without_claiming_two_megabytes_each() {
+        let mut headers=http::HeaderMap::new();
+        headers.insert(http::header::CONTENT_LENGTH,"699200".parse().unwrap());
+        let bytes=body_reservation(&headers,2*1024*1024);
+        let budget=tokio::sync::Semaphore::new(super::super::REQUEST_BODY_BUDGET-super::super::CONTROL_BODY_BUDGET);
+        let a=budget.try_acquire_many(bytes as u32).unwrap();
+        let b=budget.try_acquire_many(bytes as u32).unwrap();
+        let c=budget.try_acquire_many(bytes as u32).unwrap();
+        assert_eq!(body_reservation(&http::HeaderMap::new(),2048),2048);
+        drop((a,b,c));
+    }
+}
+
 pub(super) async fn route(
     request: Request<Incoming>,
     state: Arc<Shared>,
@@ -297,7 +317,7 @@ pub(super) async fn route(
     {
         return error(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large");
     }
-    // Reserve the per-request maximum before buffering anything. Empty reads do
+    // Known lengths reserve actual bytes; chunked bodies reserve the full maximum. Empty reads do
     // not compete with uploads; unknown/chunked bodies cannot bypass admission.
     let body_permit = if request.body().is_end_stream() {
         None
@@ -307,7 +327,7 @@ pub(super) async fn route(
         } else {
             &state.bodies
         };
-        match budget.clone().try_acquire_many_owned(maximum as u32) {
+        match budget.clone().try_acquire_many_owned(body_reservation(request.headers(), maximum) as u32) {
             Ok(permit) => Some(permit),
             Err(_) => {
                 return super::with_retry_after(
