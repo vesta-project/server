@@ -10,7 +10,7 @@
 //! Unix replacement/restore preserves permission mode bits (not ownership, ACLs, xattrs or
 //! timestamps). Windows preserves the read-only attribute and refuses read-only replacement
 //! or deletion; it does not copy custom ACLs or other attributes. Stages start private on Unix.
-mod content;
+pub(crate) mod content;
 mod custom_jar;
 mod ignore;
 mod local_document;

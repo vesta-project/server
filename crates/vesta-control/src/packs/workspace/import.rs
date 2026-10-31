@@ -302,15 +302,16 @@ fn string<'a>(v: &'a serde_json::Value, key: &str) -> Result<&'a str> {
     v.get(key).and_then(|v| v.as_str()).ok_or_else(invalid)
 }
 pub(super) fn kind(path: &str) -> Result<EntryKind> {
-    match path.split('/').next().unwrap_or_default() {
-        "mods" => Ok(EntryKind::Mod),
-        "resourcepacks" => Ok(EntryKind::ResourcePack),
-        "shaderpacks" => Ok(EntryKind::Shader),
-        "datapacks" => Ok(EntryKind::Datapack),
-        "config" => Ok(EntryKind::ConfigOverride),
-        _ => Ok(EntryKind::ConfigOverride),
-    }
+    use crate::content::ContentKind;
+    Ok(match crate::files::content::content_path_kind(path) {
+        Some(ContentKind::Mod) => EntryKind::Mod,
+        Some(ContentKind::ResourcePack) => EntryKind::ResourcePack,
+        Some(ContentKind::Shader) => EntryKind::Shader,
+        Some(ContentKind::Datapack) => EntryKind::Datapack,
+        _ => EntryKind::ConfigOverride,
+    })
 }
+
 fn entry(
     id: String,
     path: String,
@@ -1014,4 +1015,21 @@ mod live_triage {
 fn archive_review_warnings(bytes: &[u8]) -> Result<Vec<InstallWarning>> {
     if bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'{') { return Ok(Vec::new()); }
     super::install::archive_policy::inspect(Cursor::new(bytes), bytes.len() as u64, "imported archive")
+}
+
+#[cfg(test)]
+mod content_kind_tests {
+    use super::*;
+    #[test]
+    fn sidecars_are_overrides_even_inside_content_folders() {
+        for ext in ["md", "pdf", "cfg", "json5"] {
+            for folder in ["mods", "resourcepacks", "shaderpacks", "datapacks"] {
+                assert_eq!(kind(&format!("{folder}/file.{ext}")).unwrap(), EntryKind::ConfigOverride);
+            }
+        }
+        assert_eq!(kind("mods/example.jar").unwrap(), EntryKind::Mod);
+        assert_eq!(kind("resourcepacks/example.zip").unwrap(), EntryKind::ResourcePack);
+        assert_eq!(kind("shaderpacks/example.zip").unwrap(), EntryKind::Shader);
+        assert_eq!(kind("datapacks/example.zip").unwrap(), EntryKind::Datapack);
+    }
 }

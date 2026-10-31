@@ -151,16 +151,14 @@ fn large_archive_upload_plans_and_applies_every_file_without_sql_payloads() {
     let inventory = files
         .content_inventory(&f.subject, Some("vanilla".into()), "1.21.1".into(), &world)
         .unwrap();
-    assert_eq!(inventory.items.len(), 301);
-    assert_eq!(
-        inventory
+    assert_eq!(inventory.items.len(), 0);
+    assert!(
+        !inventory
             .items
             .iter()
-            .find(|i| i.path == "config/large.bin")
-            .unwrap()
-            .size,
-        (70 * 1024 * 1024).to_string()
+            .any(|item| item.path == "config/large.bin")
     );
+    assert_eq!(inventory.deferred_writes, 301);
     f.workspace
         .upload_cancel(&f.subject, "cancel", "large")
         .unwrap();

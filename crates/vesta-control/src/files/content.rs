@@ -108,8 +108,9 @@ impl FileBrowser {
         let (count, size): (i64, i64) = c.query_row("SELECT count(*),coalesce(sum(length(bytes)),0) FROM server_content_changes WHERE state='pending'", [], |r| Ok((r.get(0)?,r.get(1)?)))?;
         // Spooled pack plans already carry acknowledged count/size warnings.
         // Keep the interactive in-memory staging limits for other callers.
-        if payloads.is_none() && (count + files.len() as i64 > MAX_PENDING
-            || size + files.iter().map(|f| f.2.len() as i64).sum::<i64>() > MAX_STAGED)
+        if payloads.is_none()
+            && (count + files.len() as i64 > MAX_PENDING
+                || size + files.iter().map(|f| f.2.len() as i64).sum::<i64>() > MAX_STAGED)
         {
             return Err(FileError::IntentsFull);
         }
@@ -308,14 +309,21 @@ impl FileBrowser {
         let mut items = Vec::new();
         let mut truncated = false;
         let mut hash_budget = 64 * 1024 * 1024u64;
-        for (kind, dir) in [(ContentKind::Mod, "mods"), (ContentKind::Plugin, "plugins")] {
+        for (kind, dir) in [
+            (ContentKind::Mod, "mods"),
+            (ContentKind::Plugin, "plugins"),
+            (ContentKind::ResourcePack, "resourcepacks"),
+            (ContentKind::Shader, "shaderpacks"),
+        ] {
             let listing = match self.list(subject, Some(&RelativePath::parse(dir)?)) {
                 Ok(value) => value,
                 Err(FileError::NotFound) => continue,
                 Err(error) => return Err(error),
             };
             for entry in listing.entries {
-                if entry.kind != EntryKind::File || !is_jar(&entry.name) {
+                if entry.kind != EntryKind::File
+                    || content_path_kind(&format!("{dir}/{}", entry.name)) != Some(kind)
+                {
                     continue;
                 }
                 if items.len() >= vesta_protocol::pack::catalogue::MAX_FILES {
@@ -412,8 +420,16 @@ impl FileBrowser {
             .enumerate()
             .map(|(index, item)| (item.path.clone(), index))
             .collect();
+        let deferred_writes = changes.len();
         for (id, raw, error) in changes {
-            let change: Change = serde_json::from_str(&raw).map_err(|_| FileError::Unavailable)?;
+            let mut change: Change =
+                serde_json::from_str(&raw).map_err(|_| FileError::Unavailable)?;
+            if change.pack_file {
+                let Some(kind) = content_path_kind(&change.path) else {
+                    continue;
+                };
+                change.kind = kind;
+            }
             // Pending paths and provider IDs obey the same scopes as live files.
             self.validate_content_change(&change)?;
             self.db
@@ -487,8 +503,8 @@ impl FileBrowser {
         let content = policy.check(Capability::ContentInstall, None).allowed();
         let has = |cap| policy.check(cap, None).allowed();
         Ok(ContentInventory {
-            deferred_writes: items.iter().filter(|item| item.pending.is_some()).count(),
-            needs_restart: items.iter().any(|item| item.pending.is_some()),
+            deferred_writes,
+            needs_restart: deferred_writes > 0,
             items,
             minecraft_version,
             truncated,
@@ -687,6 +703,9 @@ impl FileBrowser {
                 change.path.starts_with("plugins/")
                     && change.path.matches('/').count() == 1
                     && is_jar(&change.path)
+            }
+            ContentKind::ResourcePack | ContentKind::Shader => {
+                content_path_kind(&change.path) == Some(change.kind)
             }
             ContentKind::Datapack => {
                 change.path.matches('/').count() == 2
@@ -1208,5 +1227,62 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+}
+
+/// Content archives use the instance browser's folder and extension rules.
+pub(crate) fn content_path_kind(path: &str) -> Option<ContentKind> {
+    let path = path.to_ascii_lowercase();
+    let path = path.strip_suffix(".disabled").unwrap_or(&path);
+    let (folder, name) = path.rsplit_once('/')?;
+    match folder {
+        "mods" if name.ends_with(".jar") => Some(ContentKind::Mod),
+        "plugins" if name.ends_with(".jar") => Some(ContentKind::Plugin),
+        "resourcepacks" if name.ends_with(".zip") => Some(ContentKind::ResourcePack),
+        "shaderpacks" if name.ends_with(".zip") => Some(ContentKind::Shader),
+        _ if (folder == "datapacks" || folder.ends_with("/datapacks"))
+            && name.ends_with(".zip") =>
+        {
+            Some(ContentKind::Datapack)
+        }
+        _ => None,
+    }
+}
+#[cfg(test)]
+mod content_path_tests {
+    use super::*;
+    #[test]
+    fn content_kinds_exclude_documents_and_configuration() {
+        for extension in ["md", "pdf", "cfg", "json5"] {
+            for folder in [
+                "mods",
+                "plugins",
+                "resourcepacks",
+                "shaderpacks",
+                "world/datapacks",
+            ] {
+                assert_eq!(
+                    content_path_kind(&format!("{folder}/License.{extension}")),
+                    None
+                );
+            }
+        }
+        assert_eq!(
+            content_path_kind("mods/MOD.JAR.disabled"),
+            Some(ContentKind::Mod)
+        );
+        assert_eq!(
+            content_path_kind("resourcepacks/pack.zip"),
+            Some(ContentKind::ResourcePack)
+        );
+        assert_eq!(
+            content_path_kind("shaderpacks/pack.zip"),
+            Some(ContentKind::Shader)
+        );
+        assert_eq!(
+            content_path_kind("world/datapacks/pack.zip"),
+            Some(ContentKind::Datapack)
+        );
+        assert_eq!(content_path_kind("config/archive.zip"), None);
     }
 }

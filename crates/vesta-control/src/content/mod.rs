@@ -256,7 +256,7 @@ impl<'a> ContentInstaller<'a> {
                 subject,
                 &condition,
                 directory,
-                if kind == ContentKind::Datapack {
+                if matches!(kind, ContentKind::Datapack | ContentKind::ResourcePack | ContentKind::Shader) {
                     ".zip"
                 } else {
                     ".jar"

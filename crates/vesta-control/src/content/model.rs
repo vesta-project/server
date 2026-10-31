@@ -6,6 +6,8 @@ pub enum ContentKind {
     #[default]
     Mod,
     Plugin,
+    ResourcePack,
+    Shader,
     Datapack,
 }
 impl ContentKind {
@@ -22,6 +24,8 @@ impl ContentKind {
             {
                 Ok("plugins".into())
             }
+            Self::ResourcePack => Ok("resourcepacks".into()),
+            Self::Shader => Ok("shaderpacks".into()),
             Self::Datapack => {
                 crate::files::RelativePath::parse(world).map_err(super::ContentError::File)?;
                 Ok(format!("{world}/datapacks"))
