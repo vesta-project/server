@@ -11,6 +11,7 @@
 //! timestamps). Windows preserves the read-only attribute and refuses read-only replacement
 //! or deletion; it does not copy custom ACLs or other attributes. Stages start private on Unix.
 pub(crate) mod content;
+mod eula;
 mod custom_jar;
 mod ignore;
 mod local_document;

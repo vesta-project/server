@@ -945,7 +945,7 @@ fn pack_install_review_stages_overrides_until_restart_and_replays() {
     assert_eq!(plan.files[0].sha256, hex::encode(Sha256::digest(b"server")));
     assert!(plan.files[0].conflict.is_some());
     let mut apply = PackInstallApply {
-                acknowledge_warnings: true,
+        acknowledge_warnings: true,
         acknowledge_software_switch: false,
         plan_id: plan.plan_id,
         confirmation_token: "wrong".into(),
@@ -1100,7 +1100,7 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
                 Some("vanilla"),
                 key,
                 &PackInstallApply {
-                acknowledge_warnings: true,
+                    acknowledge_warnings: true,
                     acknowledge_software_switch: false,
                     plan_id: plan.plan_id.clone(),
                     confirmation_token: plan.confirmation_token.clone(),
@@ -1432,4 +1432,50 @@ fn staged_pack_jars_expose_their_declared_side_before_activation() {
         Some("server")
     );
     assert!(!f.game.join("mods/example.jar").exists());
+}
+
+#[test]
+fn staged_pack_sidecars_remain_files_and_eula_consent_is_durable() {
+    let f = Fixture::open();
+    assert!(!f.browser.eula(&f.owner).unwrap());
+    f.browser.set_eula(&f.owner, "consent", true).unwrap();
+    assert!(f.browser.eula(&f.owner).unwrap());
+    assert!(
+        fs::read_to_string(f.game.join("eula.txt"))
+            .unwrap()
+            .contains("eula=true")
+    );
+    f.browser.set_eula(&f.owner, "consent", true).unwrap();
+    f.browser.set_eula(&f.owner, "revoke", false).unwrap();
+    assert!(!f.browser.eula(&f.owner).unwrap());
+    let entries: Vec<_> = [
+        "mods/License.md",
+        "mods/Third-Party Licenses.pdf",
+        "mods/MouseTweaks.cfg",
+        "mods/settings.json5",
+        "mods/actual.jar",
+        "resourcepacks/actual.zip",
+        "shaderpacks/actual.zip",
+    ]
+    .iter()
+    .map(|path| (path.to_string(), None, b"fixture".to_vec(), None))
+    .collect();
+    f.db.write_with(|tx| {
+        f.browser
+            .stage_pack_in(tx.connection(), &f.owner, "sidecars", &entries)
+    })
+    .unwrap();
+    let world = f.browser.world(&f.owner).unwrap();
+    let inventory = f
+        .browser
+        .content_inventory(&f.owner, Some("fabric".into()), "1.21.1".into(), &world)
+        .unwrap();
+    assert_eq!(inventory.items.len(), 3);
+    assert_eq!(inventory.deferred_writes, 7);
+    assert!(
+        inventory
+            .items
+            .iter()
+            .all(|entry| entry.path.ends_with(".jar") || entry.path.ends_with(".zip"))
+    );
 }

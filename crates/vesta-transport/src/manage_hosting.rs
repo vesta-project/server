@@ -15,7 +15,8 @@ pub(crate) fn implemented(path: &str) -> bool {
     super::resource_packs::implemented(path)
         || matches!(
             path,
-            "/api/v3/manage/world"
+            "/api/v3/manage/eula"
+                | "/api/v3/manage/world"
                 | "/api/v3/manage/world/new"
                 | "/api/v3/manage/world/datapacks/toggle"
                 | "/api/v3/manage/world/datapacks/offline"
@@ -89,6 +90,37 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     }
     if super::resource_packs::implemented(request.path) {
         return super::resource_packs::dispatch(host, &subject, request);
+    }
+    if action == "eula" {
+        if request.method == Method::GET && request.bytes.is_empty() {
+            return match host.files().eula(&subject) {
+                Ok(accepted) => ok(json!({"accepted": accepted})),
+                Err(e) => super::files::file_error(e),
+            };
+        }
+        if request.method == Method::POST {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Consent {
+                accepted: bool,
+            }
+            let Some(input) = decode::<Consent>(request.bytes) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            let Some(key) = super::key(
+                request.idempotency,
+                host.database().server_id(),
+                subject.device.as_str(),
+                request.path,
+            ) else {
+                return error(StatusCode::BAD_REQUEST, "idempotency_key_required");
+            };
+            return match host.files().set_eula(&subject, &key, input.accepted) {
+                Ok(value) => ok(value),
+                Err(e) => super::files::file_error(e),
+            };
+        }
+        return error(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
     }
     if action == "world" && request.method == Method::GET {
         return match host.files().world(&subject) {

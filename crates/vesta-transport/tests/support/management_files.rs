@@ -1175,3 +1175,54 @@ fn owner_and_admin_raw_documents_require_confirmation_and_preserve_private_hidin
         );
     }
 }
+
+#[test]
+fn eula_route_reads_writes_and_replays_explicit_consent() {
+    let f = Fixture::new("minecraft", 8, 65536, 5);
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    let get = || {
+        send(
+            &f,
+            "GET",
+            "/api/v3/manage/eula",
+            b"",
+            Some(&token),
+            None,
+            None,
+        )
+    };
+    assert_eq!(get().json()["data"]["accepted"], false);
+    for _ in 0..2 {
+        let reply = send(
+            &f,
+            "POST",
+            "/api/v3/manage/eula",
+            br#"{"accepted":true}"#,
+            Some(&token),
+            Some("accept-eula-explicit"),
+            None,
+        );
+        assert_eq!(reply.status, 200);
+        assert_eq!(reply.json()["data"]["accepted"], true);
+    }
+    assert_eq!(get().json()["data"]["accepted"], true);
+    assert!(
+        std::fs::read_to_string(f.temp.path().join("game/eula.txt"))
+            .unwrap()
+            .contains("eula=true")
+    );
+    assert_eq!(
+        send(
+            &f,
+            "POST",
+            "/api/v3/manage/eula",
+            br#"{"accepted":false,"extra":true}"#,
+            Some(&token),
+            Some("bad-eula-explicit"),
+            None
+        )
+        .status,
+        400
+    );
+}
