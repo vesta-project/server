@@ -1136,7 +1136,7 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
             },
         )
         .unwrap();
-    assert!(releases.offered().unwrap().is_none());
+    assert!(releases.offered().unwrap().is_some());
     // Remove the review plan: delivery must no longer depend on it.
     f.db.write(|c| {
         c.execute("DELETE FROM pack_install_plans", [])?;
