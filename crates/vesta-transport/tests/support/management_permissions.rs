@@ -186,8 +186,8 @@ fn permission_tls_rank_self_top_role_and_versioned_idempotent_user_changes() {
             Some(&as_),
             Some("tls-stale-role-0001"),
         ),
-        412,
-        "precondition_failed",
+        409,
+        "conflict",
     );
     let v = user(&f, &os, &lower);
     management_reply_error(
@@ -728,8 +728,8 @@ fn branding_revision_png_conditions_and_idempotency_over_tls() {
             Some(&token),
             Some("branding-patch-stale-01"),
         ),
-        412,
-        "precondition_failed",
+        409,
+        "conflict",
     );
     management_reply_error(
         &send(

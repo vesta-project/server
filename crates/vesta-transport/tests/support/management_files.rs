@@ -688,8 +688,8 @@ fn properties_redaction_preservation_preconditions_and_confirmation_receipts() {
         Some("properties-stale-key1"),
         None,
     );
-    management_reply_error(&stale, 412, "precondition_failed");
-    assert_eq!(stale.json()["error"]["current_sha256"], digest(&current));
+    management_reply_error(&stale, 409, "conflict");
+    assert_eq!(stale.json()["error"]["current"]["sha256"], digest(&current));
     for changes in [
         serde_json::json!({"unknown":true}),
         serde_json::json!({"online-mode":"false"}),

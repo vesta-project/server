@@ -341,6 +341,14 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             )
         };
     };
+    let current_software_error = |e| {
+        if matches!(e, SoftwareError::RevisionConflict) {
+            match service.status(&subject) {
+                Ok(current) => envelope(StatusCode::CONFLICT, json!({"error":{"code":"conflict","reason":"software_revision_conflict","current":current}})),
+                Err(e) => software_error(e),
+            }
+        } else { software_error(e) }
+    };
     if matches!(
         action,
         "software/custom-jar/plan" | "software/restore-managed/plan"
@@ -360,7 +368,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         }
         return match service.prepare_custom_jar(&subject, input.path, input.expected_revision) {
             Ok(value) => json_value(value),
-            Err(e) => software_error(e),
+            Err(e) => current_software_error(e),
         };
     }
     if action == "software/custom-jar/apply" && request.method == Method::POST {
@@ -385,7 +393,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         };
         return match service.apply_custom_jar(&subject, input) {
             Ok(value) => json_value(value),
-            Err(e) => software_error(e),
+            Err(e) => current_software_error(e),
         };
     }
     if action.starts_with("java") {
@@ -402,7 +410,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                 vesta_control::java::inventory(&config, &selected).await
             }) {
                 Ok(value) => json_value(value),
-                Err(e) => software_error(e),
+                Err(e) => current_software_error(e),
             };
         }
         if request.method != Method::POST || request.query.is_some() {
@@ -461,17 +469,17 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         };
         return match result {
             Ok(job) => envelope(StatusCode::ACCEPTED, json!({"data":job})),
-            Err(e) => software_error(e),
+            Err(e) => current_software_error(e),
         };
     }
     match (action, request.method) {
         ("software", &Method::GET) => match service.status(&subject) {
             Ok(value) => json_value(value),
-            Err(e) => software_error(e),
+            Err(e) => current_software_error(e),
         },
         ("software/jobs", &Method::GET) => match service.jobs(&subject) {
             Ok(value) => ok(json!({"jobs":value})),
-            Err(e) => software_error(e),
+            Err(e) => current_software_error(e),
         },
         ("software/versions", &Method::GET) => {
             let Some(software) = request
@@ -491,7 +499,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                 async move { service.versions(&actor, software).await },
             ) {
                 Ok(value) => ok(json!({"software":software,"versions":value})),
-                Err(e) => software_error(e),
+                Err(e) => current_software_error(e),
             }
         }
         ("software/releases", &Method::GET) => {
@@ -505,7 +513,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                 service.releases(&actor, software, &query_version).await
             }) {
                 Ok(value) => ok(json!({"software":software,"version":version,"releases":value})),
-                Err(e) => software_error(e),
+                Err(e) => current_software_error(e),
             }
         }
         ("software/plan", &Method::POST) => {
@@ -516,7 +524,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             let actor = subject.clone();
             match run_async(host, async move { service.plan(&actor, input).await }) {
                 Ok(value) => json_value(value),
-                Err(e) => software_error(e),
+                Err(e) => current_software_error(e),
             }
         }
         ("software/apply", &Method::POST) => {
@@ -525,7 +533,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             };
             match service.apply(&subject, input) {
                 Ok(value) => envelope(StatusCode::ACCEPTED, json!({"data":value})),
-                Err(e) => software_error(e),
+                Err(e) => current_software_error(e),
             }
         }
         ("software/rollback/plan", &Method::POST) => {
@@ -539,7 +547,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             };
             match service.prepare_rollback(&subject, input.expected_revision) {
                 Ok(value) => json_value(value),
-                Err(e) => software_error(e),
+                Err(e) => current_software_error(e),
             }
         }
         ("software/rollback", &Method::POST) => {
@@ -548,7 +556,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             };
             match service.rollback(&subject, input) {
                 Ok(value) => envelope(StatusCode::ACCEPTED, json!({"data":value})),
-                Err(e) => software_error(e),
+                Err(e) => current_software_error(e),
             }
         }
         _ => error(StatusCode::BAD_REQUEST, "invalid_request"),

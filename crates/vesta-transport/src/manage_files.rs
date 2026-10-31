@@ -650,6 +650,12 @@ fn documents(
                 envelope(StatusCode::ACCEPTED, json!({"data":value}))
             }
             Ok(value) => ok(value),
+            Err(FileError::Conflict(_)) => {
+                match vesta_control::config::ServerPropertiesEditor::new(host.files()).read(subject) {
+                    Ok(current) => envelope(StatusCode::CONFLICT, json!({"error":{"code":"conflict","reason":"file_revision_conflict","current":current}})),
+                    Err(e) => file_error(e),
+                }
+            }
             Err(e) => file_error(e),
         };
     }

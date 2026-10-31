@@ -1,5 +1,5 @@
 //! Strict wire adapter for transactional permission administration.
-use super::{Request, decode, error, ok};
+use super::{Request, decode, envelope, error, ok};
 use crate::Reply;
 use http::{Method, StatusCode};
 use serde::Deserialize;
@@ -224,6 +224,18 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             } else {
                 v
             })
+        }
+        Err(e) if matches!(e, PermissionError::PreconditionFailed | PermissionError::Conflict) => {
+            // Read again through authorization: never attach a projection the
+            // losing editor no longer has permission to see.
+            let query = if action == "server" { Some(PermissionQuery::Server) }
+                else if action == "access-sources" { Some(PermissionQuery::Access) }
+                else if action.starts_with("roles/") { Some(PermissionQuery::Roles) }
+                else { user_child(action, "roles").map(|id| PermissionQuery::User(id.into())) };
+            match query.map(|q| host.management().permission_query(token, q)) {
+                Some(Ok(current)) => envelope(StatusCode::CONFLICT, serde_json::json!({"error":{"code":"conflict","reason":"permission_revision_conflict","current":current}})),
+                _ => failure(e),
+            }
         }
         Err(e) => failure(e),
     }

@@ -95,7 +95,7 @@ fn sleep_policy_defaults_off_uses_optimistic_revision_and_needs_configuration_pe
     management_reply_error(
         &f.request("PUT", path, &bytes, Some(&token)),
         409,
-        "sleep_policy_conflict",
+        "conflict",
     );
     let (device, key) = enroll_management(&f, BuiltinRole::Viewer);
     let viewer = management_session(&f, &device, &key);

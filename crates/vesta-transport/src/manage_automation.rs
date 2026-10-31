@@ -728,6 +728,10 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             &key,
         ) {
             Ok(revision) => ok(json!({"revision":revision})),
+            Err(BackupError::PolicyConflict) => {
+                let current = policy_json(&backups.policy());
+                envelope(StatusCode::CONFLICT, json!({"error":{"code":"conflict","reason":"backup_policy_revision_conflict","current":current}}))
+            }
             Err(e) => backup_failure(e),
         };
     }
