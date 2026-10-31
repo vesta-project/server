@@ -12,19 +12,30 @@ use std::{
 
 pub fn open(repo: &Path, selected: Option<PathBuf>, persistent: bool) -> Result<PathBuf, String> {
     let explicit = selected.is_some();
-    let directory = selected.unwrap_or_else(|| {
-        let name = if persistent {
-            format!(
-                "checkout-{:x}",
-                Sha256::digest(repo.as_os_str().as_encoded_bytes())
-            )
-        } else {
-            uuid::Uuid::new_v4().to_string()
-        };
-        std::env::temp_dir().join("vesta-dev-builds").join(name)
-    });
+    let directory =
+        selected.unwrap_or_else(|| default_directory(repo, &std::env::temp_dir(), persistent));
+    open_directory(repo, directory, explicit)
+}
+
+fn default_directory(repo: &Path, temporary: &Path, persistent: bool) -> PathBuf {
+    let name = if persistent {
+        // The original checkout-* directories predate ownership markers. They
+        // can contain running executables; neither adopt nor delete them.
+        format!(
+            "checkout-v2-{:x}",
+            Sha256::digest(repo.as_os_str().as_encoded_bytes())
+        )
+    } else {
+        uuid::Uuid::new_v4().to_string()
+    };
+    temporary.join("vesta-dev-builds").join(name)
+}
+
+fn open_directory(repo: &Path, directory: PathBuf, explicit: bool) -> Result<PathBuf, String> {
     let marker = directory.join(".vesta-dev-session");
     if directory.exists() {
+        super::restart::guarded(&directory)?;
+        fs::symlink_metadata(&marker).map_err(|_| "development session marker is unavailable; run ./dev.ps1 without --session to use managed staging")?;
         super::restart::guarded(&marker)?;
         if fs::read(&marker).map_err(|_| "development session marker is unavailable")?
             != repo.as_os_str().as_encoded_bytes()
@@ -134,6 +145,46 @@ pub fn unchanged_build(session: &Path, artifacts: &BTreeMap<String, PathBuf>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn default_staging_leaves_unmarked_legacy_builds_and_reuses_managed_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("checkout");
+        fs::create_dir(&repo).unwrap();
+        let legacy = temp.path().join("vesta-dev-builds").join(format!(
+            "checkout-{:x}",
+            Sha256::digest(repo.as_os_str().as_encoded_bytes())
+        ));
+        fs::create_dir_all(legacy.join("builds")).unwrap();
+        fs::write(legacy.join("builds/running.exe"), b"old running build").unwrap();
+        let directory = default_directory(&repo, temp.path(), true);
+        assert_ne!(directory, legacy);
+        assert_eq!(
+            open_directory(&repo, directory.clone(), false).unwrap(),
+            directory
+        );
+        assert_eq!(
+            open_directory(&repo, directory.clone(), false).unwrap(),
+            directory
+        );
+        assert_eq!(
+            fs::read(legacy.join("builds/running.exe")).unwrap(),
+            b"old running build"
+        );
+        assert!(!legacy.join(".vesta-dev-session").exists());
+        assert!(
+            open(&repo, Some(legacy), true)
+                .unwrap_err()
+                .contains("marker is unavailable")
+        );
+        let other_repo = temp.path().join("other-checkout");
+        assert_ne!(default_directory(&other_repo, temp.path(), true), directory);
+        assert!(
+            open(&other_repo, Some(directory), true)
+                .unwrap_err()
+                .contains("another checkout")
+        );
+    }
+
     #[test]
     fn selected_sessions_are_checkout_bound_and_missing_sessions_are_not_created() {
         let temp = tempfile::tempdir().unwrap();
