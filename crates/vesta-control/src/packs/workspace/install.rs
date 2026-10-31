@@ -176,6 +176,10 @@ pub struct PackInstallOutcome {
 struct Stored {
     #[serde(default)]
     applied_key: Option<String>,
+    #[serde(default)]
+    deferred_hashes: BTreeMap<String, String>,
+    #[serde(default)]
+    client_blobs: BTreeMap<String, Payload>,
     #[serde(default, with = "stored_bytes::optional")]
     client_archive: Option<Vec<u8>>,
     #[serde(default)]
@@ -516,65 +520,15 @@ impl PackWorkspace {
             "pack_plan metadata requests [GET, POST]: {:?}",
             providers.metadata_requests()
         );
-        // Replanning after a software change reuses already verified files. Metadata
-        // is still resolved and its authoritative provider digest checked afresh.
-        let cached=self.db.read(|c| {
-            let row:Option<(String,String)>=c.query_row("SELECT json_extract(body,'$.providers'),coalesce(json_extract(body,'$.payloads'),'[]') FROM pack_install_plans WHERE principal=? AND device=? AND expires>=? ORDER BY expires DESC LIMIT 1",params![s.principal.as_str(),s.device.as_str(),self.db.clock().millis()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-            Ok(row)
-        })?;
-        let mut cached_files = BTreeMap::new();
-        if let Some((providers, payloads)) = cached {
-            let providers: Vec<Option<ContentProvider>> =
-                serde_json::from_str(&providers).map_err(|_| invalid())?;
-            let payloads: Vec<Payload> = serde_json::from_str(&payloads).map_err(|_| invalid())?;
-            for (provider, payload) in providers.into_iter().zip(payloads) {
-                if let Some(p) = provider {
-                    cached_files.insert((p.provider, p.project_id, p.version_id), payload);
-                }
-            }
-        }
         for (index, chunk) in manifest.entries.chunks(2).enumerate() {
             progress.report("download_verify", index * 2, manifest.entries.len())?;
             let candidates: Vec<_> = chunk
                 .iter()
                 .filter_map(|entry| sources.get(&entry.id).map(|(_, source)| (entry, source)))
                 .collect();
-            let bodies = downloads::pair_map(&candidates, &|(entry, source)| {
-                let EntrySource::Provider {
-                    provider,
-                    project_id,
-                    version_id,
-                } = &entry.source
-                else {
-                    return Err(invalid());
-                };
-                if let Some(payload) =
-                    cached_files.get(&(provider.clone(), project_id.clone(), version_id.clone()))
-                    && payload_store
-                        .verify(payload)
-                        .is_ok_and(|file| content::verify_source_reader(source, file).is_ok())
-                {
-                    return Ok(payload.clone());
-                }
-                let mut stage = payload_store
-                    .stage()
-                    .map_err(super::super::PackError::from)?;
-                content::fetch_verified_source_into(source, &http, deadline, &mut stage).map_err(
-                    |error| {
-                        ReleaseError::provider_file(
-                            error,
-                            provider,
-                            project_id,
-                            version_id,
-                            "download",
-                            Some(&source.filename),
-                        ).with_download_url(&source.download_url)
-                    },
-                )?;
-                stage
-                    .finish()
-                    .map_err(|e| super::super::PackError::from(e).into())
-            })?;
+            // Planning retains trusted provider identities and digest bindings only.
+            // Empty hashes are an internal unresolved marker, never a verified payload.
+            let bodies: Vec<Payload> = candidates.iter().map(|_| Payload { sha256: String::new(), size: 0 }).collect();
             let mut downloaded: BTreeMap<_, _> = candidates
                 .into_iter()
                 .zip(bodies)
@@ -629,7 +583,7 @@ impl PackWorkspace {
                         )
                     }
                 };
-                if e.kind == EntryKind::Mod
+                if !bytes.sha256.is_empty() && e.kind == EntryKind::Mod
                     && FileBrowser::pack_jar_side_reader(
                         payload_store
                             .open_file(&bytes)
@@ -766,7 +720,7 @@ impl PackWorkspace {
             }
             validate_install_path(&path)?;
             let item = provider.as_ref().and_then(|p| source_urls.get(&(p.provider.as_str(), p.project_id.as_str(), p.version_id.as_str()))).map(String::as_str).unwrap_or(&path);
-            archive_warnings.borrow_mut().extend(archive_policy::payload_warnings(&body, item));
+            if !body.sha256.is_empty() { archive_warnings.borrow_mut().extend(archive_policy::payload_warnings(&body, item)); }
             if !matches!(linked_source, InstallSource::Provider { .. }) && !expected_install_directory(&path) {
                 warnings.push(format!("unusual_content_directory:{path}"));
             }
@@ -916,65 +870,16 @@ impl PackWorkspace {
         #[cfg(test)]
         timing("review");
         // Pin the client projection beyond upload/plan expiry. Provider links keep IDs only.
-        let client_archive = if matches!(linked_source, InstallSource::Provider { .. }) {
+        let deferred_hashes: BTreeMap<String, String> = sources.values().map(|(_, source)| (source.filename.clone(), format!("{:?}", source.expected_hash))).collect();
+        let client_archive = if matches!(linked_source, InstallSource::Provider { .. }) || !deferred_hashes.is_empty() {
             None
-        } else {
-            let captured = (|| -> Result<Vec<u8>> {
-                let client = self.client_manifest(&manifest)?;
-                let metadata = crate::config::PackMetadata::linked(&client, 1, 1, None);
-                let mut memory_blobs = BTreeMap::new();
-                let mut memory_size = 0u64;
-                for (hash, payload) in &blob_map {
-                    memory_size = memory_size.saturating_add(payload.size);
-                    if memory_size > MAX_BLOBS as u64 {
-                        return Err(super::super::PackError::TooLarge.into());
-                    }
-                    let mut file = payload_store
-                        .verify(payload)
-                        .map_err(super::super::PackError::from)?;
-                    let mut body = Vec::new();
-                    std::io::Read::read_to_end(&mut file, &mut body).map_err(|_| invalid())?;
-                    memory_blobs.insert(hash.clone(), body);
-                }
-                let snapshot =
-                    self.snapshot(&client, &metadata, providers, &http, &memory_blobs)?;
-                let env = client
-                    .entries
-                    .iter()
-                    .map(|e| {
-                        (
-                            e.path.clone(),
-                            (
-                                if e.required { "required" } else { "optional" }.into(),
-                                "unsupported".into(),
-                            ),
-                        )
-                    })
-                    .collect();
-                Ok(super::super::build::build_vesta_with_environments(
-                    &snapshot,
-                    &metadata,
-                    super::super::VestaBuildLimits::default(),
-                    &env,
-                    None,
-                )
-                .map_err(|_| invalid())?
-                .bytes()
-                .to_vec())
-            })();
-            match captured {
-                Ok(bytes) => Some(bytes),
-                Err(error) => {
-                    plan.warnings
-                        .push(format!("client_delivery_unavailable:{}", error.code()).into());
-                    None
-                }
-            }
-        };
+        } else { Some(self.capture_install_client(&manifest, &blob_map, &payload_store, providers)?) };
         let mut stored_plan = plan.clone();
         stored_plan.confirmation_token.clear();
         let stored = Stored {
             applied_key: None,
+            deferred_hashes,
+            client_blobs: blob_map,
             client_archive,
             expected_publication: if let InstallSource::Published { revision } = &request.source {
                 Some(revision.clone())
@@ -1045,6 +950,50 @@ impl PackWorkspace {
         timing("stored");
         Ok(plan)
     }
+    fn capture_install_client(&self, manifest: &PackManifest, blob_map: &BTreeMap<String, Payload>, payload_store: &PayloadStore, providers: &content::UreqProviderClient) -> Result<Vec<u8>> {
+        let http = content::UreqDownloadHttp::for_job();
+                let client = self.client_manifest(manifest)?;
+                let metadata = crate::config::PackMetadata::linked(&client, 1, 1, None);
+                let mut memory_blobs = BTreeMap::new();
+                let mut memory_size = 0u64;
+                for (hash, payload) in blob_map {
+                    memory_size = memory_size.saturating_add(payload.size);
+                    if memory_size > MAX_BLOBS as u64 {
+                        return Err(super::super::PackError::TooLarge.into());
+                    }
+                    let mut file = payload_store
+                        .verify(payload)
+                        .map_err(super::super::PackError::from)?;
+                    let mut body = Vec::new();
+                    std::io::Read::read_to_end(&mut file, &mut body).map_err(|_| invalid())?;
+                    memory_blobs.insert(hash.clone(), body);
+                }
+                let snapshot =
+                    self.snapshot(&client, &metadata, providers, &http, &memory_blobs)?;
+                let env = client
+                    .entries
+                    .iter()
+                    .map(|e| {
+                        (
+                            e.path.clone(),
+                            (
+                                if e.required { "required" } else { "optional" }.into(),
+                                "unsupported".into(),
+                            ),
+                        )
+                    })
+                    .collect();
+                Ok(super::super::build::build_vesta_with_environments(
+                    &snapshot,
+                    &metadata,
+                    super::super::VestaBuildLimits::default(),
+                    &env,
+                    None,
+                )
+                .map_err(|_| invalid())?
+                .bytes()
+                .to_vec())
+    }
     pub fn install_switch_review(
         &self,
         s: &Subject,
@@ -1063,6 +1012,50 @@ impl PackWorkspace {
             Ok(stored.plan)
         })?)
     }
+    fn hydrate_install(&self, s: &Subject, input: &PackInstallApply, store: &PayloadStore) -> Result<()> {
+        let original: String = self.db.read_with(|t| {
+            let c=t.connection(); self.install_authority(c,s)?;
+            let (expires,hash,body):(i64,String,String)=c.query_row("SELECT expires,token_hash,body FROM pack_install_plans WHERE id=? AND principal=? AND device=?",params![input.plan_id,s.principal.as_str(),s.device.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+            if expires<self.db.clock().millis() || hash!=digest(input.confirmation_token.as_bytes()) { return Err(ReleaseError::Conflict); }
+            Ok(body)
+        })?;
+        let mut stored: Stored=serde_json::from_str(&original).map_err(|_|invalid())?;
+        if stored.deferred_hashes.is_empty() { return Ok(()); }
+        let deadline=Instant::now()+Duration::from_secs(3600);
+        let providers=content::UreqProviderClient::configured().with_deadline(deadline)?;
+        let http=content::UreqDownloadHttp::for_job();
+        let progress=Preparation { db:self.db.clone(),job:input.plan_id.clone() };
+        for index in 0..stored.payloads.len() {
+            if !stored.payloads[index].sha256.is_empty() { continue; }
+            progress.report("download_verify",index,stored.payloads.len())?;
+            let reference=stored.providers[index].as_ref().ok_or_else(invalid)?;
+            let source=providers.resolve_with_deadline(platform(&reference.provider)?,&reference.project_id,&reference.version_id,deadline)?;
+            if stored.deferred_hashes.get(&source.filename)!=Some(&format!("{:?}",source.expected_hash)) { return Err(ReleaseError::Conflict); }
+            let mut stage=store.stage().map_err(super::super::PackError::from)?;
+            content::fetch_verified_source_into(&source,&http,deadline,&mut stage)?;
+            let payload=stage.finish().map_err(super::super::PackError::from)?;
+            stored.plan.files[index].sha256=payload.sha256.clone();
+            stored.payloads[index]=payload;
+        }
+        // Byte inspection can only happen after download, never in metadata planning.
+        for index in (0..stored.payloads.len()).rev() {
+            if stored.providers[index].is_some() && stored.plan.files[index].path.starts_with("mods/") && FileBrowser::pack_jar_side_reader(store.open_file(&stored.payloads[index]).map_err(super::super::PackError::from)?).as_deref()==Some("client") {
+                stored.plan.skipped.push(stored.plan.files.remove(index).path);
+                stored.providers.remove(index); stored.payloads.remove(index);
+            }
+        }
+        if !matches!(stored.source,InstallSource::Provider { .. }) {
+            stored.client_archive=Some(self.capture_install_client(&stored.manifest,&stored.client_blobs,store,&providers)?);
+        }
+        stored.deferred_hashes.clear();
+        let body=serde_json::to_string(&stored).map_err(|_|invalid())?;
+        self.db.write_with(|t| {
+            let c=t.connection(); self.install_authority(c,s)?;
+            if c.execute("UPDATE pack_install_plans SET body=? WHERE id=? AND body=?",params![body,input.plan_id,original])?!=1 { return Err(ReleaseError::Conflict); }
+            Ok(())
+        })?;
+        Ok(())
+    }
     pub fn install_apply(
         &self,
         s: &Subject,
@@ -1080,6 +1073,7 @@ impl PackWorkspace {
         let _payload_lease = payload_store
             .lease()
             .map_err(super::super::PackError::from)?;
+        self.hydrate_install(s, input, &payload_store)?;
         let _guard = files.pack_admission().map_err(file_error)?;
         let mut outcome = self.mutate(s,key,input,|c|{
             self.install_authority(c,s)?;
