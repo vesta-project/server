@@ -1,6 +1,6 @@
 use vesta_protocol::pack::{
     catalogue::{
-        CatalogueError, FileSource, MAX_FILES, MAX_JSON_BYTES, Platform, RelativePath, Sha256,
+        CatalogueError, FileSource, MAX_FILES, MAX_JSON_BYTES, MAX_TOTAL_TEXT_BYTES, Platform, RelativePath, Sha256,
     },
     sources::{KnownSource, SourceRegistry},
 };
@@ -145,7 +145,10 @@ fn aggregate_registry_provenance_text_is_bounded_not_just_record_count() {
         Some(&format!("https://example.invalid/{}", "a".repeat(2000))),
     )
     .unwrap();
-    let entries = (0..600)
+    // Exceed the current aggregate text budget without reaching the file-count limit.
+    let count = MAX_TOTAL_TEXT_BYTES / 2000 + 1;
+    assert!(count < MAX_FILES);
+    let entries = (0..count)
         .map(|i| KnownSource::new(&format!("mods/{i}.jar"), HASH, source.clone()).unwrap())
         .collect();
     assert_eq!(
