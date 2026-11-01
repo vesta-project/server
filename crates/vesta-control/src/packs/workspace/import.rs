@@ -443,7 +443,8 @@ fn parse_zip(
             continue;
         }
         if let Some(skipped) = managed_skips.as_mut() {
-            if managed_server_file(&name) { skipped.push(name); continue; }
+            let destination = name.strip_prefix("overrides/").or_else(|| name.strip_prefix("server-overrides/")).unwrap_or(&name);
+            if managed_server_file(destination) { skipped.push(name); continue; }
         }
         total = total
             .checked_add(f.size())
@@ -904,6 +905,16 @@ mod tests {
         assert!(manifest.entries.iter().any(|entry| entry.path == "config/biome$variant.cfg"));
         assert!(!managed_server_file("mods/forge.jar"));
         assert!(!managed_server_file(".vesta/control.json"));
+    }
+    #[test]
+    fn dedicated_client_overrides_skip_managed_files_before_validation() {
+        let document = br#"{"name":"Legacy","version":"1","minecraft":{"version":"1.12.2","modLoaders":[{"id":"forge-14.23.5.2860"}]},"files":[]}"#;
+        let bytes = archive(&[("manifest.json", document), ("overrides/server.properties", b"unsafe"), ("overrides/start.bat", b"unsafe"), ("overrides/config/test.cfg", b"data")]);
+        assert!(parse_archive(&bytes, &Providers, |_| Ok(None)).is_err());
+        let mut skipped = Vec::new();
+        let (manifest, _) = parse_zip(Cursor::new(bytes), &Providers, |_| Ok(None), None, Some(&mut skipped)).unwrap();
+        assert_eq!(skipped.len(), 2);
+        assert_eq!(manifest.override_files.len(), 1);
     }
     #[test]
     fn curseforge_client_assets_retain_colour_codes_and_stay_client_only() {

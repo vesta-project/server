@@ -367,10 +367,21 @@ impl PackWorkspace {
         };
         let provider_archive = |p: &str, project: &str, version: &str| -> Result<_> {
             let (bytes, item) = download_archive(p, project, version)?;
-            let (client, client_blobs) = parse(&bytes, &item)?;
-            if p != "curseforge" { return Ok((client, client_blobs)); }
+            if p != "curseforge" { return parse(&bytes, &item); }
             let document = providers.pack_document(Provider::Curseforge, project, Some(version), false)
                 .map_err(|e| ReleaseError::provider_file(e, p, project, version, "metadata", None))?;
+            // Dedicated packs may repeat managed files in the client overrides.
+            // Select server parsing policy before validating either archive.
+            let (client, client_blobs) = if document["serverPackFileId"].as_u64().is_some_and(|id| id > 0) {
+                let (manifest, blobs, skipped) = super::import::parse_server_spooled(&bytes, &payload_store, providers)?;
+                for path in skipped {
+                    archive_warnings.borrow_mut().push(InstallWarning { code: "server_pack_managed_file_skipped".into(),
+                        rule: "managed_server_configuration_or_runtime".into(), item: path,
+                        detail: "Kept server-managed configuration and software".into() });
+                }
+                (manifest, blobs)
+            } else { parse(&bytes, &item)? };
+            #[cfg(test)] timing("client_archive");
             let tags = document["gameVersions"].as_array();
             let has_game = tags.is_some_and(|tags| tags.iter().any(|tag| tag.as_str() == Some(&client.minecraft_version)));
             let has_loader = tags.is_some_and(|tags| tags.iter().any(|tag| tag.as_str().is_some_and(|tag| tag.eq_ignore_ascii_case(client.loader.id()))));
@@ -387,6 +398,7 @@ impl PackWorkspace {
                 .map_err(|e| ReleaseError::provider_file(e, p, project, &server_id, "metadata", None))?;
             if server_document["isServerPack"] != true { return Err(invalid()); }
             let (server_bytes, server_item) = download_archive(p, project, &server_id)?;
+            #[cfg(test)] timing("server_archive_download");
             archive_warnings.borrow_mut().extend(archive_policy::inspect(
                 payload_store.verify(&server_bytes).map_err(super::super::PackError::from)?, server_bytes.size, &server_item)?);
             let (mut server, blobs, skipped) = super::import::parse_server_spooled(&server_bytes, &payload_store, providers)?;
