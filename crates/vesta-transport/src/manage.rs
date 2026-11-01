@@ -251,6 +251,9 @@ fn pack_error(error_value: vesta_control::packs::ReleaseError) -> Reply {
         vesta_control::packs::ReleaseError::Control(_) => {
             error(StatusCode::FORBIDDEN, "management_forbidden")
         }
+        vesta_control::packs::ReleaseError::State(_) => {
+            error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable")
+        }
         vesta_control::packs::ReleaseError::RevisionMismatch => {
             error(StatusCode::CONFLICT, "pack_release_revision_mismatch")
         }
