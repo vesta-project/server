@@ -350,7 +350,11 @@ pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) 
         };
         let config = WebSocketConfig {
             write_buffer_size: 0,
-            max_write_buffer_size: if management {
+            // A captured console line can expand sixfold when JSON escapes controls.
+            // Keep the output bounded while admitting every supported line.
+            max_write_buffer_size: if console {
+                vesta_control::operations::MAX_CONSOLE_LINE_BYTES * 6 + 4096
+            } else if management {
                 128 * 1024
             } else {
                 FRAME_BYTES * 2

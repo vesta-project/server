@@ -2532,7 +2532,7 @@ fn management_inert_child() {
                 }
                 for offset in [1, 7, 21, 42] {
                     let marker = format!(" boundary-{offset}: ");
-                    let fill = ".".repeat(16_384 - marker.len() - offset);
+                    let fill = ".".repeat(vesta_control::operations::MAX_CONSOLE_LINE_BYTES - marker.len() - offset);
                     println!("{marker}{fill}{token} :discarded-after-boundary");
                     println!(" split-{offset}: {}", &token[..offset]);
                     println!("{} :split-end-{offset} ", &token[offset..]);
@@ -2637,7 +2637,7 @@ fn assert_credential_boundary_lines(lines: &[serde_json::Value]) {
         assert_eq!(line["truncated"], true);
         let expected = format!(
             "{marker}{}[redacted]",
-            ".".repeat(16_384 - marker.len() - offset)
+            ".".repeat(vesta_control::operations::MAX_CONSOLE_LINE_BYTES - marker.len() - offset)
         );
         assert_eq!(line["text"].as_str().unwrap(), expected);
         assert!(
@@ -2673,11 +2673,16 @@ fn management_console_redacts_truncated_and_split_live_credentials_over_tls_and_
         command.json()["data"]["operation_id"].as_str().unwrap(),
     );
     let until = Instant::now() + Duration::from_secs(10);
-    let lines = loop {
-        let reply = f.request("GET", "/api/v3/manage/console?limit=200", b"", Some(&token));
+    let mut after = String::new();
+    let mut lines = Vec::new();
+    loop {
+        let path = if after.is_empty() { "/api/v3/manage/console?limit=200".to_owned() } else { format!("/api/v3/manage/console?cursor={after}&limit=200") };
+        let reply = f.request("GET", &path, b"", Some(&token));
         assert_eq!(reply.status, 200);
         reply.hides(&token);
-        let lines = reply.json()["data"]["items"].as_array().unwrap().clone();
+        let value=reply.json();
+        after=value["data"]["next_cursor"].as_str().unwrap().to_owned();
+        lines.extend(value["data"]["items"].as_array().unwrap().iter().cloned());
         if lines
             .iter()
             .filter(|line| {
@@ -2688,11 +2693,11 @@ fn management_console_redacts_truncated_and_split_live_credentials_over_tls_and_
             .count()
             == 12
         {
-            break lines;
+            break;
         }
         assert!(Instant::now() < until, "boundary capture timeout");
         std::thread::sleep(Duration::from_millis(50));
-    };
+    }
     assert_credential_boundary_lines(&lines);
     let mut peer = realtime::console_websocket(&f, &token).unwrap();
     let mut streamed = Vec::new();

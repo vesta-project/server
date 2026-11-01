@@ -8,7 +8,7 @@ mod audit_view;
 pub use audit_view::AuditNotice;
 mod activity;
 pub use activity::{ActivityActor, ActivitySummary, OperationActivity, valid_activity_kind};
-pub use vesta_game_runtime::console::ConsoleStream;
+pub use vesta_game_runtime::console::{ConsoleStream, MAX_LINE_BYTES as MAX_CONSOLE_LINE_BYTES};
 pub use vesta_game_runtime::process::{GenerationId, ProcessPhase};
 mod bindings;
 mod confirmation;
