@@ -118,6 +118,11 @@ mod upload_budget_regression {
         let c=budget.try_acquire_many(bytes as u32).unwrap();
         assert_eq!(body_reservation(&http::HeaderMap::new(),2048),2048);
         drop((a,b,c));
+        assert_eq!(budget.available_permits(), super::super::REQUEST_BODY_BUDGET-super::super::CONTROL_BODY_BUDGET);
+        headers.insert(http::header::CONTENT_LENGTH,"999999999".parse().unwrap());
+        assert_eq!(body_reservation(&headers,2048),2048);
+        headers.insert(http::header::CONTENT_LENGTH,"0".parse().unwrap());
+        assert_eq!(body_reservation(&headers,2048),0);
     }
 }
 
@@ -344,7 +349,7 @@ pub(super) async fn route(
         .cloned();
     let mut body = request.into_body();
     let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(if body_permit.is_some() {
-        maximum
+        body_permit.as_ref().map_or(0, |permit| permit.num_permits())
     } else {
         0
     }));

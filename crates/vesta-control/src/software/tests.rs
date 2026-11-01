@@ -636,7 +636,9 @@ async fn pack_without_software_switch_runs_as_a_durable_job_and_replays_after_re
         Ok(())
     }).unwrap();
     let workspace = PackWorkspace::open(&f.db).unwrap();
-    let files = crate::files::FileBrowser::open(f.db.clone(), &f.game, &[]).unwrap();
+    let pack_game = f._temp.path().join("pack-game");
+    std::fs::create_dir(&pack_game).unwrap();
+    let files = crate::files::FileBrowser::open(f.db.clone(), &pack_game, &[]).unwrap();
     let releases = crate::packs::PackReleases::open(&f.db).unwrap();
     let draft = workspace.file_mutate(&owner(), "1.21.1", "pack-file", &FileMutation {
         expected_revision: "0".into(), change: FileOperation::Write { root: "overrides".into(), path: "config/test.properties".into(), content_base64: STANDARD.encode(b"value=pack\n") },
@@ -649,7 +651,7 @@ async fn pack_without_software_switch_runs_as_a_durable_job_and_replays_after_re
     let job = service.handle().apply_pack(&owner(), work.clone()).await.unwrap();
     workspace.track_install_job(&owner(), &job.id).unwrap();
     assert_eq!(finished(&service.handle(), &job.id).state, "succeeded");
-    assert_eq!(std::fs::read(f.game.join("config/test.properties")).unwrap(), b"value=pack\n");
+    assert_eq!(std::fs::read(pack_game.join("config/test.properties")).unwrap(), b"value=pack\n");
     drop(service);
     let reopened = f.open();
     let replay = reopened.handle().apply_pack(&owner(), work).await.unwrap();
