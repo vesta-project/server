@@ -984,7 +984,7 @@ mod tests {
                 &Providers,
                 |_| unreachable!()
             )
-            .is_ok()
+            .is_err()
         );
     }
     #[test]
