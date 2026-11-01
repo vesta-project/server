@@ -84,6 +84,7 @@ pub struct AccessPatch {
     pub new_user: Option<String>,
     pub whitelist: Option<String>,
     pub whitelist_enabled: Option<bool>,
+    pub sync_whitelist: Option<bool>,
     pub password: Option<String>,
 }
 #[derive(Clone, Deserialize, Serialize)]
@@ -91,6 +92,10 @@ pub struct AccessPatch {
 pub struct Invitation {
     pub role: String,
     pub expires_minutes: u16,
+    #[serde(default)]
+    pub multi_use: bool,
+    #[serde(default)]
+    pub max_uses: Option<u32>,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -599,6 +604,12 @@ impl ManagementAccess {
                 }
                 let principal = principal_id(id)?;
                 lower(policy, &principal, repo.rank(&principal)?)?;
+                let owner_grant = policy.roles().iter().any(|r| r.as_str() == "owner")
+                    && repo.connection().query_row(
+                        "SELECT EXISTS(SELECT 1 FROM user_minecraft_accounts WHERE principal_id=?)",
+                        [principal.as_str()],
+                        |r| r.get::<_, bool>(0),
+                    )?;
                 let mut seen = std::collections::HashSet::new();
                 for id in input.add.iter().chain(&input.remove) {
                     if !seen.insert(id) {
@@ -606,8 +617,10 @@ impl ManagementAccess {
                     }
                     let r = role(repo, id)?;
                     if input.add.contains(id) {
-                        lower_role(policy, &r)?;
-                        delegated(policy, &r.grants)?;
+                        if !(owner_grant && matches!(id.as_str(), "owner" | "administrator")) {
+                            lower_role(policy, &r)?;
+                            delegated(policy, &r.grants)?;
+                        }
                     } else if r.rank >= policy.rank() || r.builtin == Some(BuiltinRole::Owner) {
                         // Removal follows rank; only the top role is console-only to remove.
                         return Err(PermissionError::Forbidden);
@@ -630,7 +643,14 @@ impl ManagementAccess {
                 if resulting.len() > 64 {
                     return Err(PermissionError::InvalidRequest);
                 }
-                delegated_user(repo, policy, &principal, &resulting, None)?;
+                if !owner_grant
+                    || !input
+                        .add
+                        .iter()
+                        .any(|r| matches!(r.as_str(), "owner" | "administrator"))
+                {
+                    delegated_user(repo, policy, &principal, &resulting, None)?;
+                }
                 for id in &input.remove {
                     repo.connection().execute("UPDATE role_assignments SET revoked_at=?,revoked_by=? WHERE principal_id=? AND role_id=? AND revoked_at IS NULL",params![repo.now,by,principal.as_str(),id])?;
                 }
@@ -759,6 +779,7 @@ impl ManagementAccess {
                     && input.new_user.is_none()
                     && input.whitelist.is_none()
                     && input.whitelist_enabled.is_none()
+                    && input.sync_whitelist.is_none()
                     && input.password.is_none()
                 {
                     return Err(PermissionError::InvalidRequest);
@@ -771,6 +792,11 @@ impl ManagementAccess {
                 }
                 if let Some(v) = &input.whitelist {
                     settings.whitelist = v.clone();
+                }
+                if let Some(v) = input.sync_whitelist {
+                    require(policy, Capability::PlayersModerate)?;
+                    settings.sync_whitelist = v;
+                    repo.connection().execute("INSERT INTO whitelist_sync_actor VALUES(1,?,?) ON CONFLICT(singleton) DO UPDATE SET principal_id=excluded.principal_id,device_id=excluded.device_id",params![subject.principal.as_str(),subject.device.as_str()])?;
                 }
                 if let Some(v) = input.whitelist_enabled {
                     settings.whitelist_enabled = v;
@@ -799,7 +825,10 @@ impl ManagementAccess {
                 Ok(with_version(json!({"settings":settings})))
             }
             PermissionMutation::Invitation(input) => {
-                if !(1..=MAX_PAIR_MINUTES).contains(&input.expires_minutes) {
+                if !(1..=MAX_PAIR_MINUTES).contains(&input.expires_minutes)
+                    || input.max_uses == Some(0)
+                    || (!input.multi_use && input.max_uses.is_some())
+                {
                     return Err(PermissionError::InvalidRequest);
                 }
                 let r = role(repo, &input.role)?;
@@ -830,6 +859,12 @@ impl ManagementAccess {
                         expires
                     ],
                 )?;
+                if input.multi_use {
+                    repo.connection().execute(
+                        "INSERT INTO management_invitation_uses(code_hash,max_uses) VALUES(?,?)",
+                        params![hash.as_slice(), input.max_uses],
+                    )?;
+                }
                 let id = random_secret()?;
                 repo.connection().execute(
                     "INSERT INTO management_invitation_ids(id,code_hash) VALUES(?,?)",

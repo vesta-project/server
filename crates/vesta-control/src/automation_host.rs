@@ -227,6 +227,119 @@ impl HostActions {
         Ok(())
     }
 
+    /// Reconcile only entries this opt-in service added; manual entries stay operator-owned.
+    pub(crate) fn sync_whitelist(&self, directory: &std::path::Path) -> Result<(), ()> {
+        use crate::identity::minecraft::MinecraftUuid;
+        let runtime = self.runtime().map_err(|_| ())?;
+        let properties = crate::minecraft_admission::ServerProperties::load(
+            &directory.join("server.properties"),
+        )
+        .map_err(|_| ())?;
+        if !properties.online_mode() || !properties.whitelist_enabled() {
+            return Ok(());
+        }
+        let bans =
+            crate::minecraft_admission::BanList::load(&directory.join("banned-players.json"))
+                .map_err(|_| ())?;
+        let current = crate::moderation::whitelist(directory).map_err(|_| ())?;
+        let now = self.db.clock().millis();
+        let (actor, desired, managed) = self.db.read(|c| {
+            let settings: String = c.query_row("SELECT settings_json FROM access_role_sources WHERE singleton=1",[],|r|r.get(0))?;
+            let enabled = serde_json::from_str::<serde_json::Value>(&settings).ok().is_some_and(|v|v["sync_whitelist"]==true);
+            let actor: Option<(String,String)> = c.query_row("SELECT principal_id,device_id FROM whitelist_sync_actor WHERE singleton=1",[],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            let mut q = c.prepare("SELECT m.minecraft_uuid,n.name,d.id,m.principal_id FROM user_minecraft_accounts m JOIN user_minecraft_names n ON n.principal_id=m.principal_id JOIN devices d ON d.principal_id=m.principal_id WHERE d.revoked_at IS NULL GROUP BY m.minecraft_uuid")?;
+            let rows=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let desired=rows.into_iter().filter(|(_,_,d,p)| {
+                let Ok(subject) = (|| -> Result<Subject,()> {Ok(Subject{principal:PrincipalId::parse(p).map_err(|_| ())?,device:DeviceId::parse(d).map_err(|_| ())?})})() else {return false};
+                enabled && crate::identity::policy_in(c,self.db.server_id(),now,Some(&subject)).is_ok_and(|p| p.check(Capability::PackDownload,None).allowed() || p.check(Capability::PackAccess,None).allowed())
+            }).map(|(u,n,_,_)|(u,n)).collect::<Vec<_>>();
+            let mut q=c.prepare("SELECT uuid,name FROM whitelist_sync_members")?;
+            let managed=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((actor,desired,managed))
+        }).map_err(|_| ())?;
+        let Some((p, d)) = actor else { return Ok(()) };
+        let subject = Subject {
+            principal: PrincipalId::parse(&p).map_err(|_| ())?,
+            device: DeviceId::parse(&d).map_err(|_| ())?,
+        };
+        let desired = desired
+            .into_iter()
+            .filter(|(u, _)| MinecraftUuid::parse(u).is_ok_and(|u| !bans.contains(u)))
+            .collect::<Vec<_>>();
+        let snapshot = runtime.game_snapshot().map_err(|_| ())?;
+        for (uuid, name) in desired.iter().chain(managed.iter()) {
+            let add = desired.iter().any(|(u, _)| u == uuid);
+            let owns = managed.iter().any(|(u, _)| u == uuid);
+            let present = current.iter().any(|e| e.uuid == *uuid);
+            if !add && !owns {
+                continue;
+            }
+            if add == present {
+                if !add {
+                    self.db
+                        .write(|c| {
+                            c.execute("DELETE FROM whitelist_sync_members WHERE uuid=?", [uuid])?;
+                            Ok(())
+                        })
+                        .map_err(|_| ())?;
+                }
+                continue;
+            }
+            let key = format!("whitelist-sync:{}:{}:{}", uuid, add, now / 30000);
+            if let Some(generation) = snapshot.generation {
+                if snapshot.phase != crate::operations::ProcessPhase::Running {
+                    continue;
+                }
+                let action = if add {
+                    crate::moderation::ModerationAction::WhitelistAdd {
+                        player: name.clone(),
+                    }
+                } else {
+                    crate::moderation::ModerationAction::WhitelistRemove {
+                        player: name.clone(),
+                    }
+                };
+                runtime
+                    .submit_game(
+                        &subject,
+                        GameCommand::Moderate {
+                            expected_generation: generation,
+                            action,
+                        },
+                        &key,
+                    )
+                    .map_err(|_| ())?;
+            } else {
+                let value = self.files.offline_whitelist(&subject).map_err(|_| ())?;
+                let hash = value["sha256"].as_str().map(str::to_owned);
+                self.files
+                    .patch_offline_whitelist(
+                        runtime,
+                        &subject,
+                        &key,
+                        crate::files::OfflineWhitelistPatch {
+                            player: name.clone(),
+                            add,
+                            expected_sha256: hash,
+                        },
+                    )
+                    .map_err(|_| ())?;
+            }
+            if add {
+                self.db
+                    .write(|c| {
+                        c.execute(
+                            "INSERT OR IGNORE INTO whitelist_sync_members VALUES(?,?)",
+                            params![uuid, name],
+                        )?;
+                        Ok(())
+                    })
+                    .map_err(|_| ())?;
+            }
+            break; // Bound work and let the game's file observation confirm before the next change.
+        }
+        Ok(())
+    }
     fn required(action: &Action) -> Result<Option<Capability>, ActionError> {
         Ok(Some(match action {
             Action::Delay { .. } | Action::Notify { .. } => return Ok(None),

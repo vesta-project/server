@@ -19,6 +19,8 @@ pub struct AccessSettings {
     pub new_user: String,
     pub whitelist: String,
     pub whitelist_enabled: bool,
+    #[serde(default)]
+    pub sync_whitelist: bool,
     pub password: String,
 }
 impl Default for AccessSettings {
@@ -28,6 +30,7 @@ impl Default for AccessSettings {
             new_user: "public".into(),
             whitelist: "player".into(),
             whitelist_enabled: true,
+            sync_whitelist: false,
             password: "player".into(),
         }
     }
