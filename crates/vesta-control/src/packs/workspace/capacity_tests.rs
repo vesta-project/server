@@ -158,7 +158,8 @@ fn large_archive_upload_plans_and_applies_every_file_without_sql_payloads() {
             .iter()
             .any(|item| item.path == "config/large.bin")
     );
-    assert_eq!(inventory.deferred_writes, 301);
+    assert_eq!(outcome.state, "installed");
+    assert_eq!(inventory.deferred_writes, 0);
     f.workspace
         .upload_cancel(&f.subject, "cancel", "large")
         .unwrap();

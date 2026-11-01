@@ -193,6 +193,8 @@ pub struct PackInstallOutcome {
 #[derive(Serialize, Deserialize)]
 struct Stored {
     #[serde(default)]
+    client_prepared: bool,
+    #[serde(default)]
     applied_key: Option<String>,
     #[serde(default)]
     deferred_hashes: BTreeMap<String, String>,
@@ -781,14 +783,8 @@ impl PackWorkspace {
                 conflict = None;
             }
             let sha256 = body.sha256.clone();
-            let operation = if expected.is_none() {
-                "added"
-            } else if expected.as_deref() == Some(sha256.as_str()) {
-                "unchanged"
-            } else {
-                "updated"
-            }
-            .into();
+            let decision=modpack_engine::decide(false,owned.contains_key(&path),true,owned.get(&path).map(String::as_str),expected.as_deref(),Some(&sha256));
+            let operation=match decision {modpack_engine::Decision::Add if expected.is_none()=>"added",modpack_engine::Decision::Current=>"unchanged",_=>"updated"}.into();
             review.push(InstallFile {
                 operation,
                 path,
@@ -861,7 +857,7 @@ impl PackWorkspace {
             backup_recommended: true,
             removed: owned
                 .into_iter()
-                .filter(|(path, _)| !destinations.contains(&path.to_lowercase()))
+                .filter(|(path, _)| !destinations.contains(&path.to_lowercase()) && modpack_engine::classifier::classify(path) != modpack_engine::classifier::FileClass::Text)
                 .collect(),
         };
         plan.warnings.extend(archive_policy::manifest_warnings(&manifest, selected_bytes, &blob_map));
@@ -889,12 +885,12 @@ impl PackWorkspace {
         timing("review");
         // Pin the client projection beyond upload/plan expiry. Provider links keep IDs only.
         let deferred_hashes: BTreeMap<String, String> = sources.values().map(|(_, source)| (source.filename.clone(), format!("{:?}", source.expected_hash))).collect();
-        let client_archive = if matches!(linked_source, InstallSource::Provider { .. }) || !deferred_hashes.is_empty() {
-            None
-        } else { Some(self.capture_install_client(&manifest, &blob_map, &payload_store, providers)?) };
+        // Client-only provider payloads must also wait for the install worker.
+        let client_archive = None;
         let mut stored_plan = plan.clone();
         stored_plan.confirmation_token.clear();
         let stored = Stored {
+            client_prepared: false,
             applied_key: None,
             deferred_hashes,
             client_blobs: blob_map,
@@ -1051,21 +1047,23 @@ impl PackWorkspace {
             Ok(body)
         })?;
         let mut stored: Stored=serde_json::from_str(&original).map_err(|_|invalid())?;
-        if stored.deferred_hashes.is_empty() { return Ok(()); }
+        if stored.deferred_hashes.is_empty() && (stored.client_prepared || stored.client_archive.is_some() || matches!(stored.source, InstallSource::Provider { .. })) { return Ok(()); }
         let deadline=Instant::now()+Duration::from_secs(3600);
         let providers=content::UreqProviderClient::configured().with_deadline(deadline)?;
         let http=content::UreqDownloadHttp::for_job();
         let progress=Preparation { db:self.db.clone(),job:input.plan_id.clone() };
+        let mut transferred = 0;
         for index in 0..stored.payloads.len() {
             if !stored.payloads[index].sha256.is_empty() { continue; }
-            progress.report("download_verify",index,stored.payloads.len())?;
+            progress.report_bytes("download_verify",index,stored.payloads.len(),transferred)?;
             let reference=stored.providers[index].as_ref().ok_or_else(invalid)?;
             let source=providers.resolve_with_deadline(platform(&reference.provider)?,&reference.project_id,&reference.version_id,deadline)?;
             if stored.deferred_hashes.get(&source.filename)!=Some(&format!("{:?}",source.expected_hash)) { return Err(ReleaseError::Conflict); }
             let mut stage=store.stage().map_err(super::super::PackError::from)?;
-            let mut transfer=TransferProgress {writer:&mut stage,progress:&progress,file:index,total:stored.payloads.len(),bytes:0,reported:0};
+            let mut transfer=TransferProgress {writer:&mut stage,progress:&progress,file:index,total:stored.payloads.len(),bytes:transferred,reported:transferred};
             content::fetch_verified_source_into(&source,&http,deadline,&mut transfer)?;
             progress.report_bytes("download_verify",index+1,stored.payloads.len(),transfer.bytes)?;
+            transferred = transfer.bytes;
             drop(transfer);
             let payload=stage.finish().map_err(super::super::PackError::from)?;
             stored.plan.files[index].sha256=payload.sha256.clone();
@@ -1079,9 +1077,13 @@ impl PackWorkspace {
             }
         }
         if !matches!(stored.source,InstallSource::Provider { .. }) {
-            stored.client_archive=Some(self.capture_install_client(&stored.manifest,&stored.client_blobs,store,&providers)?);
+            match self.capture_install_client(&stored.manifest,&stored.client_blobs,store,&providers) {
+                Ok(bytes) => stored.client_archive = Some(bytes),
+                Err(error) => stored.plan.warnings.push(format!("client_delivery_unavailable:{}",error.code()).into()),
+            }
         }
         stored.deferred_hashes.clear();
+        stored.client_prepared = true;
         let body=serde_json::to_string(&stored).map_err(|_|invalid())?;
         self.db.write_with(|t| {
             let c=t.connection(); self.install_authority(c,s)?;
@@ -1186,6 +1188,22 @@ impl PackWorkspace {
 mod triage_live {
     use super::*;
     #[test]
+    #[ignore = "live provider archives and metadata; no external mod payloads"]
+    fn provider_metadata_only_plans() {
+        for (project,version) in [("285109","4612979"),("1210677","8488030")] {
+            let f=super::super::tests::Fixture::new();
+            let game=f.temp.path().join("game"); std::fs::create_dir_all(&game).unwrap();
+            let files=FileBrowser::open(f.db.clone(),&game,&[]).unwrap();
+            let releases=super::super::super::PackReleases::open(&f.db).unwrap();
+            let plan=f.workspace.install_plan(&f.subject,"1.21.1",Some("fabric"),&PackInstallRequest {source:InstallSource::Provider {provider:"curseforge".into(),project_id:project.into(),version_id:version.into()}},&files,&releases,&content::UreqProviderClient::configured()).unwrap();
+            assert!(plan.valid); assert!(!plan.files.is_empty());
+            let body:String=f.db.read(|c|Ok(c.query_row("SELECT body FROM pack_install_plans WHERE id=?",[&plan.plan_id],|r|r.get(0))?)).unwrap();
+            let stored:Stored=serde_json::from_str(&body).unwrap();
+            for (payload,reference) in stored.payloads.iter().zip(&stored.providers) { if reference.is_some() { assert!(payload.sha256.is_empty(),"planning fetched an external mod payload"); } }
+            eprintln!("metadata-only plan {project}/{version}: {} files, runtime {}/{}",plan.files.len(),plan.minecraft_version,plan.software);
+        }
+    }
+    #[test]
     #[ignore = "live CurseForge RLCraft review; requires configured application key"]
     fn rlcraft_4612979_review() {
         let f = super::super::tests::Fixture::new();
@@ -1224,7 +1242,7 @@ mod triage_live {
         let files = FileBrowser::open(f.db.clone(), &game, &[]).unwrap();
         let releases = super::super::super::PackReleases::open(&f.db).unwrap();
         let result = f.workspace.install_plan(&f.subject, "1.21.1", Some("fabric"),
-            &PackInstallRequest { source: InstallSource::Provider { provider: "curseforge".into(), project_id: "1173260".into(), version_id: "6060565".into() } },
+            &PackInstallRequest { source: InstallSource::Provider { provider: "curseforge".into(), project_id: "1210677".into(), version_id: "8488030".into() } },
             &files, &releases, &content::UreqProviderClient::configured());
         match &result {
             Ok(plan) => eprintln!("requested 1173260/6060565: valid={}, files={}", plan.valid, plan.files.len()),
@@ -1249,6 +1267,46 @@ mod triage_live {
 #[cfg(test)]
 mod safety_review_tests {
     use super::*;
+    #[test]
+    fn transfer_progress_is_cumulative_and_readable_after_workspace_reopen() {
+        use std::io::Write;
+        let f = super::super::tests::Fixture::new();
+        let progress = Preparation { db: f.db.clone(), job: "transfer-plan".into() };
+        let block = vec![0; 1024 * 1024];
+        let mut first = TransferProgress { writer: std::io::sink(), progress: &progress, file: 0, total: 2, bytes: 0, reported: 0 };
+        first.write_all(&block).unwrap();
+        let mut second = TransferProgress { writer: std::io::sink(), progress: &progress, file: 1, total: 2, bytes: first.bytes, reported: first.bytes };
+        second.write_all(&block).unwrap();
+        let _reconnected = PackWorkspace::open(&f.db).unwrap();
+        let raw: String = f.db.read(|c| Ok(c.query_row("SELECT body FROM pack_install_progress WHERE server_id=?", [f.db.server_id()], |r| r.get(0))?)).unwrap();
+        let saved: PackInstallProgress = serde_json::from_str(&raw).unwrap();
+        assert_eq!(saved.bytes_completed, 2 * 1024 * 1024);
+        assert_eq!((saved.stage.as_str(), saved.completed, saved.total), ("download_verify", 1, 2));
+    }
+    #[test]
+    fn metadata_review_defers_even_client_only_provider_payloads() {
+        let f = super::super::tests::Fixture::new();
+        let game = f.temp.path().join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        let files = FileBrowser::open(f.db.clone(), &game, &[]).unwrap();
+        let releases = super::super::super::PackReleases::open(&f.db).unwrap();
+        let mut manifest = f.manifest();
+        manifest.loader = ClientLoader::Fabric;
+        manifest.loader_version = Some("0.16.10".into());
+        manifest.entries.push(PackEntry {
+            id: "client-only".into(), kind: EntryKind::Mod, path: "mods/client.jar".into(), required: true,
+            environment: Environment { client: Side::Required, server: Side::Unsupported },
+            source: EntrySource::Provider { provider: "modrinth".into(), project_id: "not-a-real-project".into(), version_id: "not-a-real-version".into() },
+        });
+        let draft = f.workspace.write(&f.subject, "1.21.1", "client-only-draft", &DraftWrite { expected_revision: "0".into(), manifest }).unwrap();
+        let plan = f.workspace.install_plan(&f.subject, "1.21.1", Some("fabric"), &PackInstallRequest { source: InstallSource::Draft { revision: draft.revision } }, &files, &releases, &content::UreqProviderClient::new(None)).unwrap();
+        assert!(plan.valid);
+        assert!(plan.files.is_empty());
+        assert!(!plan.warnings.iter().any(|warning| warning.code == "client_delivery_unavailable"));
+        let body: String = f.db.read(|c| Ok(c.query_row("SELECT body FROM pack_install_plans WHERE id=?", [&plan.plan_id], |r| r.get(0))?)).unwrap();
+        let stored: Stored = serde_json::from_str(&body).unwrap();
+        assert!(stored.client_archive.is_none(), "review must never capture client payloads");
+    }
     #[test]
     fn unusual_data_is_reviewable_but_executable_and_escape_rules_are_hard() {
         assert!(validate_game_path("licenses/notice.pdf").is_ok());

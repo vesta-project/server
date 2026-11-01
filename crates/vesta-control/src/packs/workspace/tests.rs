@@ -711,5 +711,6 @@ fn streamed_archive_member_does_not_require_consent_for_former_buffer_limit() {
     assert_eq!(pending, 0);
     let outcome = f.workspace.install_apply(&f.subject, "1.21.1", Some("vanilla"), "apply-large", &apply, &files).unwrap();
     assert_eq!(outcome.pending_ids.len(), 1);
-    assert!(!game.join("config/large.dat").exists());
+    assert_eq!(outcome.state, "installed");
+    assert_eq!(std::fs::metadata(game.join("config/large.dat")).unwrap().len(), (super::super::MAX_PINNED_FILE_BYTES + 1) as u64);
 }
