@@ -99,7 +99,7 @@ fn large_archive_upload_plans_and_applies_every_file_without_sql_payloads() {
             &f.subject,
             "1.21.1",
             Some("vanilla"),
-            &PackInstallRequest {
+            &PackInstallRequest { analyze: false,
                 source: InstallSource::UploadedArchive {
                     upload_id: "large".into(),
                 },

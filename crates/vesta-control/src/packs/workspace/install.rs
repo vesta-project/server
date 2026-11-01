@@ -100,6 +100,8 @@ pub enum InstallSource {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackInstallRequest {
+    #[serde(default)]
+    pub analyze: bool,
     pub source: InstallSource,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -145,6 +147,8 @@ impl From<String> for InstallWarning {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PackInstallPlan {
     #[serde(default)]
+    pub deferred: bool,
+    #[serde(default)]
     pub software_switch: Option<SoftwareSwitch>,
     pub plan_id: String,
     pub confirmation_token: String,
@@ -186,12 +190,18 @@ pub struct PackInstallApply {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PackInstallOutcome {
     #[serde(default)]
+    pub decisions: Vec<String>,
+    #[serde(default)]
     pub software_job_id: Option<String>,
     pub state: String,
     pub pending_ids: Vec<String>,
 }
 #[derive(Serialize, Deserialize)]
 struct Stored {
+    #[serde(default)]
+    deferred_archive: bool,
+    #[serde(default)]
+    automatic: bool,
     #[serde(default)]
     bases: BTreeMap<String, Payload>,
     #[serde(default)]
@@ -294,8 +304,41 @@ impl PackWorkspace {
         }
         self.authorize_in(c, s, Capability::ContentInstall)
     }
+    /// The default provider review reads only runtime identity, never server payloads.
+    pub fn install_plan(&self, s: &Subject, mc: &str, software: Option<&str>, request: &PackInstallRequest, files: &FileBrowser, releases: &super::super::PackReleases, providers: &content::UreqProviderClient) -> Result<PackInstallPlan> {
+        if request.analyze {return self.install_plan_detailed(s,mc,software,request,files,releases,providers);}
+        let InstallSource::Provider {provider,project_id,version_id}=&request.source else {return self.install_plan_detailed(s,mc,software,request,files,releases,providers);};
+        let platform=platform(provider)?;
+        let providers=providers.with_deadline(Instant::now()+Duration::from_secs(30))?;
+        let providers=&providers;
+        self.db.read_with(|t|self.install_authority(t.connection(),s))?;
+        let link=self.server_link(s)?;
+        if link.as_ref().is_some_and(|l|l.pending.is_some()) {return Err(ReleaseError::Conflict);}
+        let document=providers.pack_document(platform,project_id,Some(version_id),false).map_err(|e|ReleaseError::provider_file(e,provider,project_id,version_id,"metadata",None))?;
+        let source=providers.resolve(platform,project_id,version_id).map_err(|e|ReleaseError::provider_file(e,provider,project_id,version_id,"metadata",None))?;
+        let remote=content::RemoteZip::open(&source).map_err(|e|ReleaseError::provider_file(e,provider,project_id,version_id,"manifest_range",Some(&source.filename)))?;
+        let manifest=if provider=="curseforge" {super::import::parse_curseforge_runtime_reader(remote)?} else {super::import::parse_modrinth_runtime_reader(remote)?};
+        let current=self.db.read_with(|t|crate::software::SoftwareHandle::pack_install_target_in(t.connection()))?;
+        let family=current.as_ref().and_then(|c|c.software).and_then(|f|serde_json::to_value(f).ok()).and_then(|v|v.as_str().map(str::to_owned));
+        let from=SoftwareSwitchTarget {software:family.as_deref().or(software).unwrap_or("unknown").into(),minecraft_version:current.as_ref().and_then(|c|c.version.as_deref()).unwrap_or(mc).into(),loader_version:current.as_ref().and_then(|c|c.loader_version.clone())};
+        let to=SoftwareSwitchTarget {software:manifest.loader.id().into(),minecraft_version:manifest.minecraft_version.clone(),loader_version:manifest.loader_version.clone()};
+        let changed=from.software!=to.software || from.minecraft_version!=to.minecraft_version || from.loader_version!=to.loader_version;
+        let mut size=document["fileLength"].as_u64().unwrap_or_else(||document["files"].as_array().map(|files|files.iter().filter_map(|file|file["size"].as_u64()).sum()).unwrap_or(0));
+        if let Some(id)=document["serverPackFileId"].as_u64().filter(|id|*id>0) {
+            let server=providers.pack_document(Provider::Curseforge,project_id,Some(&id.to_string()),false)?;
+            size=server["fileLength"].as_u64().unwrap_or(size);
+        }
+        let mut plan=PackInstallPlan {deferred:true,software_switch:changed.then_some(SoftwareSwitch {from,to:to.clone()}),plan_id:uuid::Uuid::new_v4().to_string(),confirmation_token:uuid::Uuid::new_v4().to_string(),expires_at_ms:self.db.clock().millis()+900_000,minecraft_version:to.minecraft_version,software:to.software,loader_version:to.loader_version,software_switch_required:changed,valid:true,files:Vec::new(),skipped:Vec::new(),warnings:vec![format!("pack_size_warning:{size}").into()],backup_recommended:true,removed:Vec::new()};
+        if changed {plan.warnings.push("software_legacy_checksum_review".to_string().into());}
+        let view=self.view(s,mc,releases)?;
+        let mut stored=Stored {deferred_archive:true,automatic:true,bases:BTreeMap::new(),rotations:Vec::new(),client_prepared:false,applied_key:None,deferred_hashes:BTreeMap::new(),client_blobs:BTreeMap::new(),client_archive:None,expected_publication:None,expected_link:link,manifest,source:request.source.clone(),draft_revision:view.draft.revision,published_revision:view.published_revision,plan:plan.clone(),bytes:Vec::new(),payloads:Vec::new(),providers:Vec::new()};
+        stored.plan.confirmation_token.clear();
+        let body=serde_json::to_string(&stored).map_err(|_|invalid())?;
+        self.db.write_with(|t| {self.install_authority(t.connection(),s)?;t.connection().execute("DELETE FROM pack_install_plans WHERE expires<?",[self.db.clock().millis()])?;if t.connection().query_row("SELECT count(*) FROM pack_install_plans",[],|r|r.get::<_,i64>(0))?>=64 {return Err(super::super::PackError::TooLarge.into());} t.connection().execute("INSERT INTO pack_install_plans VALUES(?,?,?,?,?,?)",params![plan.plan_id,s.principal.as_str(),s.device.as_str(),plan.expires_at_ms,digest(plan.confirmation_token.as_bytes()),body])?;Ok(())})?;
+        Ok(plan)
+    }
     #[allow(clippy::too_many_arguments)]
-    pub fn install_plan(
+    fn install_plan_detailed(
         &self,
         s: &Subject,
         mc: &str,
@@ -345,6 +388,7 @@ impl PackWorkspace {
                 Ok(providers.identify_sha512(h).ok().flatten())
             })
         };
+        let transferred=std::cell::Cell::new(0u64);
         let download_archive = |p: &str, project: &str, version: &str| -> Result<_> {
             let source = providers
                 .resolve_with_deadline(platform(p)?, project, version, deadline)
@@ -354,7 +398,8 @@ impl PackWorkspace {
             let mut stage = payload_store
                 .stage()
                 .map_err(super::super::PackError::from)?;
-            content::fetch_verified_source_into(&source, &http, deadline, &mut stage).map_err(
+            let mut transfer=TransferProgress {writer:&mut stage,progress:&progress,file:0,total:0,bytes:transferred.get(),reported:transferred.get()};
+            content::fetch_verified_source_into(&source, &http, deadline, &mut transfer).map_err(
                 |e| {
                     ReleaseError::provider_file(
                         e,
@@ -366,6 +411,7 @@ impl PackWorkspace {
                     ).with_download_url(&source.download_url)
                 },
             )?;
+            transferred.set(transfer.bytes); progress.report_bytes("download_verify",0,0,transfer.bytes)?; drop(transfer);
             let bytes = stage.finish().map_err(super::super::PackError::from)?;
             Ok((bytes, content::sanitized_download_url(&source.download_url)))
         };
@@ -399,7 +445,7 @@ impl PackWorkspace {
             #[cfg(test)] timing("server_archive_download");
             archive_warnings.borrow_mut().extend(archive_policy::inspect(
                 payload_store.verify(&server_bytes).map_err(super::super::PackError::from)?, server_bytes.size, &server_item)?);
-            let (mut server, blobs, skipped) = super::import::parse_server_spooled(&server_bytes, &payload_store, providers)?;
+            let (mut server, blobs, skipped) = super::import::parse_server_spooled(&server_bytes, &payload_store, providers, &|index,total,bytes|progress.report_bytes("extract_hash",index,total,bytes))?;
             for path in skipped {
                 archive_warnings.borrow_mut().push(InstallWarning { code: "server_pack_managed_file_skipped".into(),
                     rule: "managed_server_configuration_or_runtime".into(), item: path,
@@ -667,6 +713,7 @@ impl PackWorkspace {
         // reliable way to diagnose a prebuilt pack's runtime dependencies.
         #[cfg(test)]
         timing("downloads");
+        progress.report("review",0,selected.len())?;
         let world = files.world(s).map_err(file_error)?;
         let mut inventory = files
             .content_inventory(s, software.map(str::to_owned), mc.into(), &world)
@@ -727,7 +774,9 @@ impl PackWorkspace {
         let mut bytes = Vec::new();
         let mut refs = Vec::new();
         let mut destinations = BTreeSet::new();
-        for (mut path, (mut body, provider)) in selected {
+        let review_total=selected.len();
+        for (review_index,(mut path, (mut body, provider))) in selected.into_iter().enumerate() {
+            if review_index%64==0 {progress.report("review",review_index,review_total)?;}
             let lower = path.to_ascii_lowercase();
             if lower.starts_with("resourcepacks/")
                 || lower.starts_with("shaderpacks/")
@@ -883,6 +932,7 @@ impl PackWorkspace {
             }
         }
         let mut plan = PackInstallPlan {
+            deferred: false,
             software_switch: None,
             plan_id: uuid::Uuid::new_v4().to_string(),
             confirmation_token: uuid::Uuid::new_v4().to_string(),
@@ -930,6 +980,7 @@ impl PackWorkspace {
         let mut stored_plan = plan.clone();
         stored_plan.confirmation_token.clear();
         let stored = Stored {
+            deferred_archive: false, automatic: matches!(request.source,InstallSource::Provider {..}),
             bases,
             rotations,
             client_prepared: false,
@@ -962,12 +1013,8 @@ impl PackWorkspace {
             let c = t.connection();
             self.install_authority(c, s)?;
             c.execute(
-                "DELETE FROM pack_install_plans WHERE expires<? OR (principal=? AND device=?)",
-                params![
-                    self.db.clock().millis(),
-                    s.principal.as_str(),
-                    s.device.as_str()
-                ],
+                "DELETE FROM pack_install_plans WHERE expires<?",
+                params![self.db.clock().millis()],
             )?;
             let count: i64 =
                 c.query_row("SELECT count(*) FROM pack_install_plans", [], |r| r.get(0))?;
@@ -1062,16 +1109,17 @@ impl PackWorkspace {
             if expires < self.db.clock().millis() || hash != digest(input.confirmation_token.as_bytes()) { return Err(ReleaseError::Conflict); }
             let stored: Stored = serde_json::from_str(&body).map_err(|_| invalid())?;
             if (warnings_require_acknowledgement(&stored.plan.warnings) && !input.acknowledge_warnings) || !stored.plan.valid || (stored.plan.software_switch_required && !input.acknowledge_software_switch) { return Err(ReleaseError::Conflict); }
+            if stored.automatic {return Ok(stored.plan);}
             let conflicts: BTreeSet<_> = stored.plan.files.iter().filter(|f| f.conflict.is_some()).map(|f| f.path.as_str()).collect();
             let choices: BTreeSet<_> = input.choices.iter().map(|c| c.path.as_str()).collect();
             if choices.len() != input.choices.len() || choices != conflicts || input.choices.iter().any(|c| c.choice != "keep" && c.choice != "replace") { return Err(invalid()); }
             Ok(stored.plan)
         })?)
     }
-    pub fn prepare_install_payloads(&self, s: &Subject, input: &PackInstallApply) -> Result<()> {
+    pub fn prepare_install_payloads(&self, s: &Subject, input: &PackInstallApply, files: &FileBrowser) -> Result<()> {
         let store=PayloadStore::open(&self.db).map_err(super::super::PackError::from)?;
         let _lease=store.lease().map_err(super::super::PackError::from)?;
-        self.hydrate_install(s,input,&store)
+        self.hydrate_install(s,input,&store,files)
     }
     pub fn track_install_job(&self, s: &Subject, id: &str) -> Result<()> {
         self.db.write_with(|t| {
@@ -1081,7 +1129,7 @@ impl PackWorkspace {
         })?;
         Ok(())
     }
-    fn hydrate_install(&self, s: &Subject, input: &PackInstallApply, store: &PayloadStore) -> Result<()> {
+    fn hydrate_install(&self, s: &Subject, input: &PackInstallApply, store: &PayloadStore, files: &FileBrowser) -> Result<()> {
         let original: String = self.db.read_with(|t| {
             let c=t.connection(); self.install_authority(c,s)?;
             let (expires,hash,body):(i64,String,String)=c.query_row("SELECT expires,token_hash,body FROM pack_install_plans WHERE id=? AND principal=? AND device=?",params![input.plan_id,s.principal.as_str(),s.device.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
@@ -1089,6 +1137,19 @@ impl PackWorkspace {
             Ok(body)
         })?;
         let mut stored: Stored=serde_json::from_str(&original).map_err(|_|invalid())?;
+        if stored.deferred_archive {
+            let releases=super::super::PackReleases::open(&self.db)?;
+            let providers=content::UreqProviderClient::configured();
+            let detailed=self.install_plan_detailed(s,&stored.plan.minecraft_version,Some(&stored.plan.software),&PackInstallRequest { analyze: false,source:stored.source.clone()},files,&releases,&providers)?;
+            if detailed.minecraft_version!=stored.plan.minecraft_version || detailed.software!=stored.plan.software || detailed.loader_version!=stored.plan.loader_version {return Err(ReleaseError::Conflict);}
+            let raw:String=self.db.read(|c|Ok(c.query_row("SELECT body FROM pack_install_plans WHERE id=?",[&detailed.plan_id],|r|r.get(0))?))?;
+            let mut prepared:Stored=serde_json::from_str(&raw).map_err(|_|invalid())?;
+            if serde_json::to_value(&prepared.expected_link).map_err(|_|invalid())?!=serde_json::to_value(&stored.expected_link).map_err(|_|invalid())? {return Err(ReleaseError::Conflict);}
+            prepared.plan.plan_id=input.plan_id.clone(); prepared.automatic=true;
+            let body=serde_json::to_string(&prepared).map_err(|_|invalid())?;
+            self.db.write_with(|t| {self.install_authority(t.connection(),s)?; if t.connection().execute("UPDATE pack_install_plans SET body=?,expires=expires+3600000 WHERE id=? AND body=?",params![body,input.plan_id,original])?!=1 {return Err(ReleaseError::Conflict);} t.connection().execute("DELETE FROM pack_install_plans WHERE id=?",[detailed.plan_id])?;Ok(())})?;
+            return self.hydrate_install(s,input,store,files);
+        }
         if stored.deferred_hashes.is_empty() && (stored.client_prepared || stored.client_archive.is_some() || matches!(stored.source, InstallSource::Provider { .. })) { return Ok(()); }
         let deadline=Instant::now()+Duration::from_secs(3600);
         let providers=content::UreqProviderClient::configured().with_deadline(deadline)?;
@@ -1157,7 +1218,7 @@ impl PackWorkspace {
         let _payload_lease = payload_store
             .lease()
             .map_err(super::super::PackError::from)?;
-        self.hydrate_install(s, input, &payload_store)?;
+        self.hydrate_install(s, input, &payload_store, files)?;
         let _guard = files.pack_admission().map_err(file_error)?;
         let mut outcome = self.mutate(s,key,input,|c|{
             self.install_authority(c,s)?;
@@ -1173,7 +1234,7 @@ impl PackWorkspace {
             if stored.payloads.len()!=stored.plan.files.len() || stored.providers.len()!=stored.plan.files.len() {return Err(invalid());}
             if stored.payloads.iter().zip(&stored.plan.files).any(|(p,f)|p.sha256!=f.sha256) {return Err(ReleaseError::Conflict);}
             if !stored.plan.valid{return Err(ReleaseError::Conflict)}
-            if warnings_require_acknowledgement(&stored.plan.warnings) && !input.acknowledge_warnings {return Err(invalid());}
+            if !stored.automatic && warnings_require_acknowledgement(&stored.plan.warnings) && !input.acknowledge_warnings {return Err(invalid());}
             if serde_json::to_value(self.server_link_in(c)?).map_err(|_|invalid())? != serde_json::to_value(&stored.expected_link).map_err(|_|invalid())? {return Err(ReleaseError::Conflict)}
             if stored.expected_publication.is_some() || matches!(stored.source,InstallSource::Published{..}) {
                 let published:i64=c.query_row("SELECT coalesce(max(revision),0) FROM pack_releases WHERE server_id=?",[self.db.server_id()],|r|r.get(0))?;
@@ -1188,8 +1249,9 @@ impl PackWorkspace {
             if mc!=stored.plan.minecraft_version||software!=Some(stored.plan.software.as_str()){return Err(ReleaseError::Conflict)}
             if stored.applied_key.as_deref().is_some_and(|k|k!=key){return Err(ReleaseError::Conflict)}
             let conflicts:BTreeSet<_>=stored.plan.files.iter().filter(|f|f.conflict.is_some()).map(|f|f.path.clone()).collect();
-            let choices:BTreeMap<_,_>=input.choices.iter().map(|c|(c.path.clone(),c.choice.clone())).collect();
-            if choices.len()!=input.choices.len()||conflicts!=choices.keys().cloned().collect()||choices.values().any(|v|v!="replace"&&v!="keep"){return Err(invalid())}
+            let mut choices:BTreeMap<_,_>=input.choices.iter().map(|c|(c.path.clone(),c.choice.clone())).collect();
+            if stored.automatic { choices=conflicts.iter().map(|path|(path.clone(),"keep".into())).collect(); }
+            else if choices.len()!=input.choices.len()||conflicts!=choices.keys().cloned().collect()||choices.values().any(|v|v!="replace"&&v!="keep"){return Err(invalid())}
             let bases = stored.bases.clone();
             let mut link_files: BTreeMap<String,String> = stored.plan.files.iter().filter(|f| choices.get(&f.path).is_none_or(|v|v!="keep")).map(|f|(f.path.clone(), bases.get(&f.path).map(|p|p.sha256.clone()).unwrap_or_else(||f.sha256.clone()))).collect();
             for (path,payload) in &bases { if choices.get(path).is_none_or(|choice|choice!="keep") { link_files.entry(path.clone()).or_insert_with(||payload.sha256.clone()); } }
@@ -1219,7 +1281,9 @@ impl PackWorkspace {
             // occupying both the writer and one of the eight review slots.
             c.execute("DELETE FROM pack_install_plans WHERE id=?",[&input.plan_id])?;
 
-            Ok(PackInstallOutcome{software_job_id:None,state:"staged_until_restart".into(),pending_ids})
+            let decisions:Vec<String>=choices.iter().map(|(path,choice)|format!("{choice}:{path}")).chain(stored.plan.skipped.iter().map(|path|format!("preserved_or_skipped:{path}"))).collect();
+            c.execute("INSERT OR REPLACE INTO pack_install_result VALUES(?,?)",params![self.db.server_id(),serde_json::to_string(&decisions).map_err(|_|invalid())?])?;
+            Ok(PackInstallOutcome{decisions,software_job_id:None,state:"staged_until_restart".into(),pending_ids})
         })?;
         let progress=Preparation {db:self.db.clone(), job:input.plan_id.clone()};
         files.apply_pack_ids_with_progress(&outcome.pending_ids, |index, total| {
@@ -1241,8 +1305,8 @@ mod triage_live {
             let game=f.temp.path().join("game"); std::fs::create_dir_all(&game).unwrap();
             let files=FileBrowser::open(f.db.clone(),&game,&[]).unwrap();
             let releases=super::super::super::PackReleases::open(&f.db).unwrap();
-            let plan=f.workspace.install_plan(&f.subject,"1.21.1",Some("fabric"),&PackInstallRequest {source:InstallSource::Provider {provider:"curseforge".into(),project_id:project.into(),version_id:version.into()}},&files,&releases,&content::UreqProviderClient::configured()).unwrap();
-            assert!(plan.valid); assert!(!plan.files.is_empty());
+            let plan=f.workspace.install_plan(&f.subject,"1.21.1",Some("fabric"),&PackInstallRequest { analyze: false,source:InstallSource::Provider {provider:"curseforge".into(),project_id:project.into(),version_id:version.into()}},&files,&releases,&content::UreqProviderClient::configured()).unwrap();
+            assert!(plan.valid); assert!(plan.deferred && plan.files.is_empty());
             let body:String=f.db.read(|c|Ok(c.query_row("SELECT body FROM pack_install_plans WHERE id=?",[&plan.plan_id],|r|r.get(0))?)).unwrap();
             let stored:Stored=serde_json::from_str(&body).unwrap();
             for (payload,reference) in stored.payloads.iter().zip(&stored.providers) { if reference.is_some() { assert!(payload.sha256.is_empty(),"planning fetched an external mod payload"); } }
@@ -1257,27 +1321,30 @@ mod triage_live {
         std::fs::create_dir_all(&game).unwrap();
         let files = FileBrowser::open(f.db.clone(), &game, &[]).unwrap();
         let releases = super::super::super::PackReleases::open(&f.db).unwrap();
+        let started=Instant::now();
         let plan = f.workspace.install_plan(&f.subject, "1.21.1", Some("fabric"),
-            &PackInstallRequest { source: InstallSource::Provider { provider: "curseforge".into(), project_id: "285109".into(), version_id: "4612979".into() } },
+            &PackInstallRequest { analyze: false, source: InstallSource::Provider { provider: "curseforge".into(), project_id: "285109".into(), version_id: "4612979".into() } },
             &files, &releases, &content::UreqProviderClient::configured()).unwrap_or_else(|error| {
                 if let ReleaseError::Refusal { code, rule, item } = &error { panic!("{code}: {rule}: {item}"); }
+                if let ReleaseError::ProviderFile {details,..}=&error {panic!("{}: {}",error.code(),details.stage);}
                 panic!("{error:?}")
             });
         assert!(plan.valid);
         assert_eq!(plan.minecraft_version, "1.12.2");
         assert_eq!(plan.software, "forge");
         assert_eq!(plan.loader_version.as_deref(), Some("14.23.5.2860"));
-        assert!(plan.warnings.iter().any(|w| w.code == "version_from_pack_manifest"));
-        assert!(plan.warnings.iter().any(|w| w.code == "curseforge_server_pack" && w.item == "4612990"));
-        assert!(plan.files.iter().any(|f| f.path.starts_with("mods/")));
+        eprintln!("RLCRAFT pre-install {:.3}s",started.elapsed().as_secs_f64());
+        assert!(plan.deferred && plan.files.is_empty());
+        let installing=Instant::now();
         let outcome = f.workspace.install_apply(&f.subject, &plan.minecraft_version, Some(&plan.software), "live-rlcraft", &PackInstallApply {
             acknowledge_warnings: true, acknowledge_software_switch: false,
             plan_id: plan.plan_id.clone(), confirmation_token: plan.confirmation_token.clone(),
             choices: plan.files.iter().filter(|file| file.conflict.is_some()).map(|file| InstallChoice {path:file.path.clone(),choice:"keep".into()}).collect(), set_as_modpack:false,
         }, &files).unwrap();
+        eprintln!("RLCRAFT install {:.3}s; total {:.3}s",installing.elapsed().as_secs_f64(),started.elapsed().as_secs_f64());
         assert_eq!(outcome.state, "installed");
         assert!(f.workspace.server_link(&f.subject).unwrap().unwrap().pending.is_none());
-        eprintln!("RLCRAFT plan: valid={}, runtime={}/{}/{:?}, files={}", plan.valid, plan.minecraft_version, plan.software, plan.loader_version, plan.files.len());
+        eprintln!("RLCRAFT plan: valid={}, runtime={}/{}/{:?}, files={}", plan.valid, plan.minecraft_version, plan.software, plan.loader_version, outcome.pending_ids.len());
     }
     #[test]
     #[ignore = "real CurseForge metadata and pack download; configured application key required"]
@@ -1288,7 +1355,7 @@ mod triage_live {
         let files = FileBrowser::open(f.db.clone(), &game, &[]).unwrap();
         let releases = super::super::super::PackReleases::open(&f.db).unwrap();
         let result = f.workspace.install_plan(&f.subject, "1.21.1", Some("fabric"),
-            &PackInstallRequest { source: InstallSource::Provider { provider: "curseforge".into(), project_id: "1210677".into(), version_id: "8488030".into() } },
+            &PackInstallRequest { analyze: false, source: InstallSource::Provider { provider: "curseforge".into(), project_id: "1210677".into(), version_id: "8488030".into() } },
             &files, &releases, &content::UreqProviderClient::configured());
         match &result {
             Ok(plan) => eprintln!("requested 1173260/6060565: valid={}, files={}", plan.valid, plan.files.len()),
@@ -1298,14 +1365,14 @@ mod triage_live {
         }
         let plan = result.unwrap();
         assert!(plan.valid);
-        let count = plan.files.len();
+        assert!(plan.deferred && plan.files.is_empty());
         let outcome = f.workspace.install_apply(&f.subject, &plan.minecraft_version, Some(&plan.software), "live-cobbleverse", &PackInstallApply {
             acknowledge_warnings: true, acknowledge_software_switch: false,
             plan_id: plan.plan_id, confirmation_token: plan.confirmation_token,
             choices: plan.files.iter().filter(|file| file.conflict.is_some()).map(|file| InstallChoice {path:file.path.clone(),choice:"keep".into()}).collect(), set_as_modpack:false,
         }, &files).unwrap();
         assert_eq!(outcome.state, "installed");
-        assert!(count > 0);
+        assert!(!outcome.pending_ids.is_empty());
         assert!(f.workspace.server_link(&f.subject).unwrap().unwrap().pending.is_none());
     }
 }
@@ -1345,13 +1412,33 @@ mod safety_review_tests {
             source: EntrySource::Provider { provider: "modrinth".into(), project_id: "not-a-real-project".into(), version_id: "not-a-real-version".into() },
         });
         let draft = f.workspace.write(&f.subject, "1.21.1", "client-only-draft", &DraftWrite { expected_revision: "0".into(), manifest }).unwrap();
-        let plan = f.workspace.install_plan(&f.subject, "1.21.1", Some("fabric"), &PackInstallRequest { source: InstallSource::Draft { revision: draft.revision } }, &files, &releases, &content::UreqProviderClient::new(None)).unwrap();
+        let plan = f.workspace.install_plan(&f.subject, "1.21.1", Some("fabric"), &PackInstallRequest { analyze: false, source: InstallSource::Draft { revision: draft.revision } }, &files, &releases, &content::UreqProviderClient::new(None)).unwrap();
         assert!(plan.valid);
         assert!(plan.files.is_empty());
         assert!(!plan.warnings.iter().any(|warning| warning.code == "client_delivery_unavailable"));
         let body: String = f.db.read(|c| Ok(c.query_row("SELECT body FROM pack_install_plans WHERE id=?", [&plan.plan_id], |r| r.get(0))?)).unwrap();
         let stored: Stored = serde_json::from_str(&body).unwrap();
         assert!(stored.client_archive.is_none(), "review must never capture client payloads");
+    }
+    #[test]
+    fn automatic_install_keeps_conflicts_without_choices_and_persists_decisions() {
+        let f=super::super::tests::Fixture::new();
+        let game=f.temp.path().join("game"); std::fs::create_dir_all(game.join("config")).unwrap();
+        std::fs::write(game.join("config/user.json"),b"local").unwrap();
+        let draft=f.workspace.write(&f.subject,"1.21.1","draft",&DraftWrite {expected_revision:"0".into(),manifest:f.manifest()}).unwrap();
+        let draft=f.workspace.file_mutate(&f.subject,"1.21.1","override",&FileMutation {expected_revision:draft.revision,change:FileOperation::Write {root:"overrides".into(),path:"config/user.json".into(),content_base64:STANDARD.encode(b"incoming")}}).unwrap();
+        let files=FileBrowser::open(f.db.clone(),&game,&[]).unwrap();
+        let releases=super::super::super::PackReleases::open(&f.db).unwrap();
+        let plan=f.workspace.install_plan(&f.subject,"1.21.1",Some("vanilla"),&PackInstallRequest {analyze:false,source:InstallSource::Draft {revision:draft.revision}},&files,&releases,&content::UreqProviderClient::new(None)).unwrap();
+        assert!(plan.files[0].conflict.is_some());
+        // This is the mode retained by a provider manifest plan and by its worker analysis.
+        f.db.write(|c| {let raw:String=c.query_row("SELECT body FROM pack_install_plans WHERE id=?",[&plan.plan_id],|r|r.get(0))?; let mut stored:Stored=serde_json::from_str(&raw).unwrap(); stored.automatic=true; c.execute("UPDATE pack_install_plans SET body=? WHERE id=?",params![serde_json::to_string(&stored).unwrap(),plan.plan_id])?;Ok(())}).unwrap();
+        let input=PackInstallApply {acknowledge_warnings:false,acknowledge_software_switch:false,plan_id:plan.plan_id,confirmation_token:plan.confirmation_token,choices:Vec::new(),set_as_modpack:false};
+        let result=f.workspace.install_apply(&f.subject,"1.21.1",Some("vanilla"),"install",&input,&files).unwrap();
+        assert_eq!(std::fs::read(game.join("config/user.json")).unwrap(),b"local");
+        assert!(result.decisions.iter().any(|d|d=="keep:config/user.json"));
+        let replay=PackWorkspace::open(&f.db).unwrap().install_apply(&f.subject,"1.21.1",Some("vanilla"),"install",&input,&files).unwrap();
+        assert_eq!(replay.decisions,result.decisions);
     }
     #[test]
     fn unusual_data_is_reviewable_but_executable_and_escape_rules_are_hard() {

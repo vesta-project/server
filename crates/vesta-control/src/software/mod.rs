@@ -596,6 +596,7 @@ impl SoftwareHandle {
                 s.revision,
             )?;
             if pack.is_some() {
+                c.execute("DELETE FROM pack_install_result WHERE server_id=?",[self.inner.db.server_id()])?;
                 c.execute("INSERT OR REPLACE INTO pack_install_job VALUES(?,?)", rusqlite::params![self.inner.db.server_id(), job.id])?;
             }
             Ok(job)
@@ -635,6 +636,7 @@ impl SoftwareHandle {
                 let state=store::state(c)?;
                 if state.recovery { return Err(SoftwareError::RecoveryRequired); }
                 let job = store::admit(c,&self.inner.db,&self.inner.audit,subject,"apply",&pack.key,&binding,state.revision)?;
+                c.execute("DELETE FROM pack_install_result WHERE server_id=?",[self.inner.db.server_id()])?;
                 c.execute("INSERT OR REPLACE INTO pack_install_job VALUES(?,?)", rusqlite::params![self.inner.db.server_id(), job.id])?;
                 Ok(job)
             })?;

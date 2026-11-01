@@ -564,7 +564,7 @@ fn curseforge_source(file: CurseforgeFile, project: u64, id: u64) -> Result<Reso
     // Match the launcher's fallback for files whose API downloadUrl is absent.
     // Only the provider-bound file ID/name choose this fixed CDN path; the digest
     // still comes from authoritative metadata and is verified before use.
-    let download_url = file
+    let mut download_url = file
         .download_url
         .filter(|url| !url.is_empty())
         .unwrap_or_else(|| {
@@ -577,6 +577,14 @@ fn curseforge_source(file: CurseforgeFile, project: u64, id: u64) -> Result<Reso
             ]);
             url.into()
         });
+    // The legacy edge alias can return 404 for available archives. Use the
+    // provider's current file CDN for that alias, keeping path and digest binding.
+    if let Ok(mut url)=url::Url::parse(&download_url) {
+        if url.host_str()==Some("edge.forgecdn.net") {
+            url.set_host(Some("mediafilez.forgecdn.net")).map_err(|_|ContentError::InvalidMetadata)?;
+            download_url=url.into();
+        }
+    }
     let source = ResolvedSource {
         provider: Provider::Curseforge,
         filename: file.file_name,
@@ -793,7 +801,7 @@ mod tests {
         let source = curseforge_document_source(&document, "1173260", "6060565").unwrap();
         let (storage, url) = super::super::validate_source(&source).unwrap();
         assert_eq!(storage.as_str(), "mods/provider-archive.zip");
-        assert_eq!(url.host_str(), Some("edge.forgecdn.net"));
+        assert_eq!(url.host_str(), Some("mediafilez.forgecdn.net"));
         assert_eq!(source.filename, "Cobblemon 3D Poké Rods 1.0.zip");
     }
 
@@ -821,7 +829,7 @@ mod tests {
             )
             .unwrap()
             .download_url,
-            "https://edge.forgecdn.net/files/0/002/mod.jar"
+            "https://mediafilez.forgecdn.net/files/0/002/mod.jar"
         );
         let unavailable = json.replace("\"https://edge.forgecdn.net/mod.jar\"", "null");
         assert_eq!(
@@ -832,7 +840,7 @@ mod tests {
             )
             .unwrap()
             .download_url,
-            "https://edge.forgecdn.net/files/0/002/mielon's-the-sift+26.3.jar"
+            "https://mediafilez.forgecdn.net/files/0/002/mielon's-the-sift+26.3.jar"
         );
         // A missing URL must not mask invalid identity or paths.
         assert_eq!(

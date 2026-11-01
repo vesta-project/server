@@ -10,6 +10,7 @@ mod model;
 mod provider;
 pub use model::*;
 
+pub(crate) use http::RemoteZip;
 pub use http::{DownloadHttp, HttpResponse, UreqDownloadHttp};
 pub use provider::UreqProviderClient;
 pub(crate) use provider::curseforge_document_source;

@@ -375,7 +375,7 @@ pub(super) fn parse_archive(
         }
         return parse_archive(&archive, providers, identify);
     }
-    let (manifest, blobs) = parse_zip(Cursor::new(bytes), providers, identify, None, None)?;
+    let (manifest, blobs) = parse_zip(Cursor::new(bytes), providers, identify, None, None, None)?;
     Ok((
         manifest,
         blobs
@@ -394,7 +394,7 @@ pub(super) fn parse_spooled(
     let file = store
         .verify(payload)
         .map_err(super::super::PackError::from)?;
-    let (manifest, blobs) = parse_zip(file, providers, identify, Some(store), None)?;
+    let (manifest, blobs) = parse_zip(file, providers, identify, Some(store), None, None)?;
     Ok((
         manifest,
         blobs
@@ -408,6 +408,9 @@ pub(super) fn parse_spooled(
 /// Do not validate or materialize client override destinations for a server install.
 pub(super) fn parse_curseforge_runtime(payload: &Payload, store: &Store) -> Result<PackManifest> {
     let file=store.verify(payload).map_err(super::super::PackError::from)?;
+    parse_curseforge_runtime_reader(file)
+}
+pub(super) fn parse_curseforge_runtime_reader(file: impl Read + std::io::Seek) -> Result<PackManifest> {
     let mut zip=zip::ZipArchive::new(file).map_err(|_|invalid())?;
     let mut manifest=zip.by_name("manifest.json").map_err(|_|invalid())?;
     if manifest.size()>1024*1024 {return Err(invalid());}
@@ -419,10 +422,19 @@ pub(super) fn parse_curseforge_runtime(payload: &Payload, store: &Store) -> Resu
     let result=PackManifest {modpack_link:None,name:string(&document,"name")?.into(),summary:String::new(),icon:None,display_version:document["version"].as_str().filter(|v|v.split('.').all(|part|!part.is_empty()&&part.bytes().all(|b|b.is_ascii_digit()))).unwrap_or("1.0").into(),minecraft_version:string(&document["minecraft"],"version")?.into(),loader,loader_version:Some(version.into()),override_files:Vec::new(),entries:Vec::new()};
     validate_manifest(&result)?; Ok(result)
 }
-pub(super) fn parse_server_spooled(payload: &Payload, store: &Store, providers: &dyn ProviderClient) -> Result<(PackManifest, Vec<Payload>, Vec<String>)> {
+pub(super) fn parse_modrinth_runtime_reader(file: impl Read + Seek) -> Result<PackManifest> {
+    let mut zip=zip::ZipArchive::new(file).map_err(|_|invalid())?;
+    let manifest=zip.by_name("modrinth.index.json").map_err(|_|invalid())?;
+    if manifest.size()>1024*1024 {return Err(invalid());}
+    let document:serde_json::Value=serde_json::from_reader(manifest).map_err(|_|invalid())?;
+    let deps=&document["dependencies"];
+    let (loader,version)=[("forge",ClientLoader::Forge),("fabric-loader",ClientLoader::Fabric),("quilt-loader",ClientLoader::Quilt),("neoforge",ClientLoader::Neoforge)].into_iter().find_map(|(key,loader)|deps[key].as_str().map(|version|(loader,Some(version.to_string())))).unwrap_or((ClientLoader::None,None));
+    let result=PackManifest {modpack_link:None,name:string(&document,"name")?.into(),summary:String::new(),icon:None,display_version:"1.0".into(),minecraft_version:string(deps,"minecraft")?.into(),loader,loader_version:version,override_files:Vec::new(),entries:Vec::new()}; validate_manifest(&result)?; Ok(result)
+}
+pub(super) fn parse_server_spooled(payload: &Payload, store: &Store, providers: &dyn ProviderClient, progress: &dyn Fn(usize,usize,u64)->Result<()>) -> Result<(PackManifest, Vec<Payload>, Vec<String>)> {
     let file = store.verify(payload).map_err(super::super::PackError::from)?;
     let mut skipped = Vec::new();
-    let (manifest, blobs) = parse_zip(file, providers, |_| Ok(None), Some(store), Some(&mut skipped))?;
+    let (manifest, blobs) = parse_zip(file, providers, |_| Ok(None), Some(store), Some(&mut skipped), Some(progress))?;
     Ok((manifest, blobs.into_iter().map(|body| body.payload(store)).collect::<Result<_>>()?, skipped))
 }
 
@@ -439,6 +451,7 @@ fn parse_zip(
     identify: impl Fn(&str) -> Result<Option<crate::content::ContentProvider>>,
     store: Option<&Store>,
     mut managed_skips: Option<&mut Vec<String>>,
+    progress: Option<&dyn Fn(usize,usize,u64)->Result<()>>,
 ) -> Result<(PackManifest, Vec<ArchiveBody>)> {
     let invalid = || ReleaseError::Pack(super::super::PackError::InvalidArchive);
     let mut zip = zip::ZipArchive::new(reader).map_err(|_| invalid())?;
@@ -446,6 +459,7 @@ fn parse_zip(
     let mut files = std::collections::BTreeMap::new();
     let mut total = 0u64;
     for i in 0..zip.len() {
+        if i%32==0 {if let Some(progress)=progress {progress(i,zip.len(),total)?;}}
         let mut f = zip.by_index(i).map_err(|_| invalid())?;
         let name = f.name().to_string();
         vesta_protocol::pack::catalogue::RelativePath::parse(name.trim_end_matches('/'))
@@ -481,6 +495,7 @@ fn parse_zip(
             return Err(invalid());
         }
     }
+    if let Some(progress)=progress {progress(zip.len(),zip.len(),total)?;}
     if let Some(index) = files.remove(vesta_protocol::pack::INDEX_NAME) {
         let index: vesta_protocol::pack::model::VestaIndexV1 =
             serde_json::from_slice(&index.bytes()?).map_err(|_| invalid())?;
@@ -913,7 +928,7 @@ mod tests {
             ("forge.jar", b"software"), ("libraries/example.jar", b"software"),
             ("mods/Level Up! 2.jar", b"mod"), ("config/biome$variant.cfg", b"data")]);
         let mut skipped = Vec::new();
-        let (manifest, _) = parse_zip(Cursor::new(bytes), &Providers, |_| Ok(None), None, Some(&mut skipped)).unwrap();
+        let (manifest, _) = parse_zip(Cursor::new(bytes), &Providers, |_| Ok(None), None, Some(&mut skipped), None).unwrap();
         assert_eq!(skipped.len(), 4);
         assert_eq!(manifest.entries.len(), 2);
         assert!(manifest.entries.iter().any(|entry| entry.path == "mods/Level Up! 2.jar"));
@@ -938,7 +953,7 @@ mod tests {
         let bytes = archive(&[("manifest.json", document), ("overrides/server.properties", b"unsafe"), ("overrides/start.bat", b"unsafe"), ("overrides/config/test.cfg", b"data")]);
         assert!(parse_archive(&bytes, &Providers, |_| Ok(None)).is_err());
         let mut skipped = Vec::new();
-        let (manifest, _) = parse_zip(Cursor::new(bytes), &Providers, |_| Ok(None), None, Some(&mut skipped)).unwrap();
+        let (manifest, _) = parse_zip(Cursor::new(bytes), &Providers, |_| Ok(None), None, Some(&mut skipped), None).unwrap();
         assert_eq!(skipped.len(), 2);
         assert_eq!(manifest.override_files.len(), 1);
     }
@@ -1042,7 +1057,7 @@ mod live_triage {
             .with_deadline(std::time::Instant::now() + std::time::Duration::from_secs(180)).unwrap();
         let fixture = super::super::tests::Fixture::new();
         let store = Store::open(&fixture.db).unwrap();
-        let (manifest, _) = parse_zip(Cursor::new(bytes), &providers, |_| Ok(None), Some(&store), None).unwrap();
+        let (manifest, _) = parse_zip(Cursor::new(bytes), &providers, |_| Ok(None), Some(&store), None, None).unwrap();
         assert_eq!(manifest.loader, ClientLoader::Fabric);
         assert_eq!(manifest.minecraft_version, "26.3");
         assert!(manifest.override_files.iter().any(|f| f.root == "client-overrides" && f.path.starts_with("global_packs/")));

@@ -234,7 +234,7 @@ impl PackWorkspace {
                     )?;
                 }
             }
-            Ok(PackInstallOutcome {
+            Ok(PackInstallOutcome { decisions: Vec::new(),
                 software_job_id: None,
                 state: "staged_until_restart".into(),
                 pending_ids,

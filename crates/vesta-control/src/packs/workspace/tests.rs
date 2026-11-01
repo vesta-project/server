@@ -55,7 +55,7 @@ fn server_pack_install_applies_the_selected_override_once() {
                 &f.subject,
                 "1.21.1",
                 Some("fabric"),
-                &PackInstallRequest {
+                &PackInstallRequest { analyze: false,
                     source: InstallSource::Draft {
                         revision: "4".into(),
                     },
@@ -208,7 +208,7 @@ fn live_echoes_of_the_sift_review_does_not_stage_files() {
             &f.subject,
             "26.3",
             Some("paper"),
-            &PackInstallRequest {
+            &PackInstallRequest { analyze: false,
                 source: InstallSource::Provider {
                     provider: "curseforge".into(),
                     project_id: "1714524".into(),
@@ -270,7 +270,7 @@ fn live_provider_install(provider: &str, project: &str, version: &str, mc: &str)
             &f.subject,
             mc,
             Some("fabric"),
-            &PackInstallRequest {
+            &PackInstallRequest { analyze: false,
                 source: InstallSource::Provider {
                     provider: provider.into(),
                     project_id: project.into(),
@@ -312,7 +312,7 @@ fn live_provider_install(provider: &str, project: &str, version: &str, mc: &str)
             &f.subject,
             mc,
             Some("fabric"),
-            &PackInstallRequest {
+            &PackInstallRequest { analyze: false,
                 source: InstallSource::Provider {
                     provider: provider.into(),
                     project_id: project.into(),
@@ -422,7 +422,7 @@ fn curseforge_plan_requires_server_configuration_without_staging() {
         &f.subject,
         "26.3",
         Some("paper"),
-        &PackInstallRequest {
+        &PackInstallRequest { analyze: false,
             source: InstallSource::Provider {
                 provider: "curseforge".into(),
                 project_id: "1".into(),
@@ -696,7 +696,7 @@ fn streamed_archive_member_does_not_require_consent_for_former_buffer_limit() {
     let draft = f.workspace.import(&f.subject, "1.21.1", "import-large", &ImportRequest::Archive {
         expected_revision: "0".into(), content_base64: STANDARD.encode(bytes),
     }, &releases, &providers).unwrap();
-    let plan = f.workspace.install_plan(&f.subject, "1.21.1", Some("vanilla"), &PackInstallRequest {
+    let plan = f.workspace.install_plan(&f.subject, "1.21.1", Some("vanilla"), &PackInstallRequest { analyze: false,
         source: InstallSource::Draft { revision: draft.revision },
     }, &files, &releases, &providers).unwrap();
     assert!(plan.valid);
@@ -729,7 +729,7 @@ fn shared_engine_config_merge_and_world_rotation_survive_reopen() {
         }
         let draft=f.workspace.read(&f.subject,"1.21.1").unwrap();
         let reopened=PackWorkspace::open(&f.db).unwrap();
-        let plan=reopened.install_plan(&f.subject,"1.21.1",Some("fabric"),&PackInstallRequest{source:InstallSource::Draft{revision:draft.revision}},&files,&releases,&crate::content::UreqProviderClient::new(None)).unwrap();
+        let plan=reopened.install_plan(&f.subject,"1.21.1",Some("fabric"),&PackInstallRequest{analyze:false,source:InstallSource::Draft{revision:draft.revision}},&files,&releases,&crate::content::UreqProviderClient::new(None)).unwrap();
         if round==1 {assert!(plan.files.iter().all(|file|file.conflict.is_none()));}
         let apply=PackInstallApply{acknowledge_warnings:true,acknowledge_software_switch:false,plan_id:plan.plan_id,confirmation_token:plan.confirmation_token,choices:vec![],set_as_modpack:false};
         reopened.install_apply(&f.subject,"1.21.1",Some("fabric"),&format!("parity-apply-{round}"),&apply,&files).unwrap();
@@ -756,6 +756,6 @@ fn shared_engine_removals_preserve_modified_owned_binaries() {
     let link=ServerModpackLink{source:source.clone(),display_version:"1".into(),files:[("mods/changed.jar".into(),digest(b"base")),("mods/removed.jar".into(),digest(b"base"))].into(),state:"installed".into(),pending_ids:vec![],installed:Some(ServerModpackVersion{source,display_version:"1".into()}),pending:None};
     f.db.write(|c|{c.execute("INSERT INTO server_modpack_link VALUES(?,?)",params![f.db.server_id(),serde_json::to_string(&link).unwrap()])?;Ok(())}).unwrap();
     let releases=super::super::PackReleases::open(&f.db).unwrap();
-    let plan=f.workspace.install_plan(&f.subject,"1.21.1",Some("vanilla"),&PackInstallRequest{source:InstallSource::Draft{revision:"0".into()}},&files,&releases,&crate::content::UreqProviderClient::new(None)).unwrap();
+    let plan=f.workspace.install_plan(&f.subject,"1.21.1",Some("vanilla"),&PackInstallRequest{analyze:false,source:InstallSource::Draft{revision:"0".into()}},&files,&releases,&crate::content::UreqProviderClient::new(None)).unwrap();
     assert_eq!(plan.removed,vec![("mods/removed.jar".into(),digest(b"base"))]);assert!(plan.skipped.contains(&"mods/changed.jar".into()));
 }
