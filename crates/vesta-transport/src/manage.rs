@@ -460,6 +460,40 @@ pub(super) struct Request<'a> {
     pub if_range: Option<&'a str>,
 }
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
+    let resource = match request.path.strip_prefix("/api/v3/manage/").unwrap_or("") {
+        "server" => Some("branding"), "config/server-properties" => Some("properties"),
+        "sleep/policy" => Some("sleep-policy"), "motd/policy" => Some("motd-policy"),
+        "backups/config" => Some("backup-config"), "access-sources" => Some("access-sources"),
+        "roles" => Some("roles"), "software" => Some("software"),
+        path if path.starts_with("software/") => Some("software"),
+        path if path.starts_with("roles/") => Some("roles"),
+        path if path.starts_with("users/") && path.ends_with("/roles") => Some("users"),
+        _ => None,
+    };
+    let token = request.authorization;
+    let mut reply = dispatch_inner(host, request);
+    if let (Some(resource), Some(token)) = (resource, token) {
+        if let Ok(changes) = host.management().resource_changes(token) {
+            if let crate::ReplyBody::Bytes(bytes) = reply.body_mut() {
+                if let Ok(mut value) = serde_json::from_slice::<Value>(bytes) {
+                    if !changes[resource].is_null() {
+                        if value["error"]["code"] == "conflict" {
+                            value["error"]["current"]["editor"] = changes[resource].clone();
+                        } else if value["data"].is_object() { value["data"]["editor"] = changes[resource].clone(); }
+                        *bytes = serde_json::to_vec(&value).expect("JSON").into();
+                    }
+                }
+            }
+        }
+    }
+    // The resource annotation changes the serialized representation length.
+    if let crate::ReplyBody::Bytes(bytes) = reply.body() {
+        let length = bytes.len();
+        reply.headers_mut().insert(http::header::CONTENT_LENGTH, length.into());
+    }
+    reply
+}
+fn dispatch_inner(host: &NetworkHost, request: Request<'_>) -> Reply {
     if request.path == "/api/v3/manage/pack/publish"
         && serde_json::from_slice::<Value>(request.bytes)
             .is_ok_and(|v| v.get("draft_revision").is_some())
@@ -957,7 +991,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                     let items: Vec<_> = visible.iter().skip(offset).take(limit).map(|p| json!({"name":p})).collect();
                     let end = offset.saturating_add(items.len());
                     let next = (end < visible.len()).then(|| cursor(host.management().server_id(), &scope, end));
-                    ok(json!({"known":true,"generation":v.generation.to_hex(),"revision":v.response_cursor().to_string(),"player_count":v.players.len(),"items":items,"next_cursor":next}))
+                    ok(json!({"known":true,"generation":v.generation.to_hex(),"revision":v.activity_revision().to_string(),"player_count":v.players.len(),"items":items,"next_cursor":next}))
                 }
                 Err(_) => ok(json!({"known":false,"player_count":null,"items":null})),
             }

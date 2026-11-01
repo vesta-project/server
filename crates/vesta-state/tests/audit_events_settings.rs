@@ -506,3 +506,26 @@ fn event_timestamp_uses_the_shared_test_clock() {
         .unwrap();
     assert_eq!(events.read(0, 1).unwrap().events[0].at_ms, 42);
 }
+
+#[test]
+fn configuration_editor_label_and_time_survive_account_rename_and_reopen() {
+    let fixture = fixture_at_fixed_time();
+    fixture.db.write(|c| {
+        c.execute("INSERT INTO principals(id,server_id,display_name,status,created_at,updated_at) VALUES('owner',?,'First editor','active',0,0)", [fixture.db.server_id()])?;
+        Ok(())
+    }).unwrap();
+    let audit = AuditLog::new(fixture.db.clone()).unwrap();
+    audit.append_record(&AuditRecord::of(actor(), "management.permissions.mutate".into(), "server".into(), "success".into(), None).unwrap()).unwrap();
+    fixture.db.write(|c| {
+        c.execute("UPDATE principals SET display_name='Renamed editor' WHERE id='owner'", [])?;
+        Ok(())
+    }).unwrap();
+    drop(audit);
+    let db = reopen(&fixture);
+    let audit = AuditLog::new(db).unwrap();
+    let rows = audit.page(0, 10).unwrap();
+    let row = rows.iter().find(|row|row.action=="management.permissions.mutate").unwrap();
+    assert_eq!(row.at_ms,FIXED_TIME_MS);
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&row.metadata_json).unwrap()["editor_display_name"],"First editor");
+    assert!(audit.verify_chain().unwrap().valid);
+}

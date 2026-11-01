@@ -2499,7 +2499,21 @@ fn management_inert_child() {
         match receiver.recv_timeout(Duration::from_millis(10)) {
             Ok(line) if line == "stop" => std::process::exit(0),
             Ok(line) if line == "list" => {
-                println!("There are 2 of a max of 20 players online: OwnedAlpha, OwnedBeta");
+                if let Ok(names) = std::fs::read_to_string("tls-inert-roster") {
+                    println!("There are {} of a max of 20000 players online: {names}", names.split(", ").count());
+                } else { println!("There are 2 of a max of 20 players online: OwnedAlpha, OwnedBeta"); }
+                std::io::stdout().flush().unwrap();
+            }
+            Ok(line) if line == "owned-roster-flood" => {
+                for i in 0..120 {
+                    let action = if i % 2 == 0 {"joined"} else {"left"};
+                    println!("[12:00:03] [Server thread/INFO]: ChurnGuest {action} the game");
+                    std::io::stdout().flush().unwrap();
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            Ok(line) if line.starts_with("owned-roster-event ") => {
+                println!("[12:00:02] [Server thread/INFO]: {}", line.strip_prefix("owned-roster-event ").unwrap());
                 std::io::stdout().flush().unwrap();
             }
             Ok(line) if line.starts_with("owned-credential-boundaries ") => {

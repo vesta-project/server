@@ -168,9 +168,39 @@ pub struct ManagementAccess {
     session_limit: usize,
     session_ttl_ms: i64,
     audit: AuditLog,
+    change_cache: Arc<Mutex<(i64, serde_json::Value)>>,
     stores: Arc<Mutex<Stores>>,
 }
 impl ManagementAccess {
+    /// Domain audit records commit with mutations; replays and losing writes
+    /// cannot publish a newer editor or invalidation hint.
+    pub fn resource_changes(&self, token: &str) -> Result<serde_json::Value> {
+        self.authorize(token, super::Capability::StatusView, None)?;
+        self.read(|repo| {
+            let latest:i64=repo.connection().query_row("SELECT coalesce(max(seq),0) FROM audit_events",[],|r|r.get(0))?;
+            let mut cache=self.change_cache.lock().map_err(|_|ManagementError::Unavailable)?;
+            if cache.0==latest {return Ok(cache.1.clone());}
+            let sql="WITH resources AS (SELECT *, CASE
+                WHEN action='management.permissions.mutate' AND target='server' THEN 'branding'
+                WHEN action='management.permissions.mutate' AND target='access-sources' THEN 'access-sources'
+                WHEN action='management.permissions.mutate' AND (target='roles' OR target LIKE 'roles/%') THEN 'roles'
+                WHEN action='management.permissions.mutate' AND target LIKE 'users/%/roles' THEN 'users'
+                WHEN action='files.write' AND json_valid(metadata_json) AND json_extract(metadata_json,'$.path')='server.properties' THEN 'properties'
+                WHEN action='sleep.policy.configure' THEN 'sleep-policy'
+                WHEN action='motd.policy.update' THEN 'motd-policy'
+                WHEN action IN ('backups.repository.configure','backups.config.update','backups.policy.update','backups.policy.reset') THEN 'backup-config'
+                WHEN action LIKE 'software.%' AND outcome IN ('ok','accepted','succeeded') THEN 'software'
+                END AS resource FROM audit_events WHERE server_id=? AND outcome IN ('success','accepted','succeeded','ok')),
+                heads AS (SELECT resource,max(seq) AS seq FROM resources WHERE resource IS NOT NULL GROUP BY resource)
+                SELECT r.resource,r.seq,r.at,coalesce(json_extract(r.metadata_json,'$.editor_display_name'),n.name,p.display_name,'Server operator') FROM resources r JOIN heads h ON h.seq=r.seq LEFT JOIN principals p ON p.id=r.principal_id LEFT JOIN user_minecraft_names n ON n.principal_id=p.id";
+            let mut changes=serde_json::json!({});
+            let mut statement=repo.connection().prepare(sql)?;
+            let rows=statement.query_map([self.server_id()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,String>(3)?)))?;
+            for row in rows {let (resource,seq,at,name)=row?;changes[resource]=serde_json::json!({"revision":seq.to_string(),"display_name":name,"at_ms":at});}
+            *cache=(latest,changes.clone());
+            Ok(changes)
+        })
+    }
     pub fn new(db: StateDatabase) -> Result<Self> {
         Self::with_limits(db, MAX_SESSIONS, SESSION_TTL_MS)
     }
@@ -182,6 +212,7 @@ impl ManagementAccess {
             session_limit: capacity,
             session_ttl_ms: ttl_ms,
             audit: AuditLog::new(db.clone())?,
+            change_cache: Arc::new(Mutex::new((-1,serde_json::json!({})))),
             db,
             stores: Arc::new(Mutex::new(Stores::new()?)),
         })

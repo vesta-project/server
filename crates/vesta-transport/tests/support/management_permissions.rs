@@ -1,7 +1,7 @@
 //! Real loopback TLS, owned temporary state, and exact permission wire shapes.
 use super::*;
 use vesta_control::identity::BuiltinRole;
-fn send(
+pub(super) fn send(
     f: &Fixture,
     method: &str,
     path: &str,

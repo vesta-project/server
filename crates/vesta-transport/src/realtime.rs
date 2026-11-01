@@ -876,6 +876,8 @@ async fn connected_metrics(
         let notice=serde_json::json!({"type":"metrics.snapshot","api_version":"3","cursor":revision,"columns":initial.current.columns,"status":initial.current.status});
         if send(&mut socket,Message::Text(notice.to_string())).await.is_err() {return CloseCode::Away;}
         let mut status_tag=None;
+        let mut resource_tag=None;
+        let mut roster_base: Option<(String,u64)>=None;
         if let Err(e)=push_status(&mut socket,&state,secret.as_str(),&mut status_tag).await {return e.close_code();}
         // Status changes independently of telemetry (including disabled sampling).
         // A single latest projection is retained; slow consumers never queue updates.
@@ -889,6 +891,47 @@ async fn connected_metrics(
                 _=stop.changed()=>return CloseCode::Away,
                 _=tokio::time::sleep_until((activity+IDLE).into())=>return CloseCode::Policy,
                 _=status_tick.tick()=>{
+                    // The same admitted worker budget as status/metrics; never block
+                    // the async reactor on SQLite or console capture locks.
+                    let updates = admitted(&state.realtime_jobs,&state.stop,SEND_TIMEOUT.min(state.timeout),|| {
+                        let host=state.host.clone(); let token=zeroize::Zeroizing::new(secret.to_string());
+                        let base=roster_base.clone();
+                        move || {
+                            use vesta_control::identity::Capability;
+                            let changes=host.management().resource_changes(token.as_str()).ok();
+                            let roster=host.management().authorize(token.as_str(),Capability::PlayersView,None).ok().and_then(|subject| {
+                                let runtime=host.runtime();
+                                let generation=runtime.game_snapshot().ok()?.generation?;
+                                let revision=runtime.player_roster_revision(Some(generation))?;
+                                let generation_text=generation.to_hex();
+                                let delta=base.filter(|(g,_)|g==&generation_text).and_then(|(_,after)| {
+                                    if after==revision {None} else {Some(runtime.roster_delta(&subject,generation,after).unwrap_or_else(|_|serde_json::json!({"resync":true})))}
+                                });
+                                // Console capture may advance during projection. The next
+                                // frame must start after what this frame actually contains.
+                                let revision=delta.as_ref().and_then(|v|v["revision"].as_str()).and_then(|s|s.parse().ok()).unwrap_or(revision);
+                                Some((generation_text,revision,delta))
+                            });
+                            Ok::<_,Refusal>((changes,roster))
+                        }
+                    }).await;
+                    if let Ok((changes,roster))=updates {
+                        if let Some(changes)=changes {
+                            let tag=changes.to_string();
+                            if resource_tag.as_ref()!=Some(&tag) {
+                                let notice=serde_json::json!({"type":"resources.changed","resources":changes});
+                                if send(&mut socket,Message::Text(notice.to_string())).await.is_err(){return CloseCode::Away;}
+                                resource_tag=Some(tag);
+                            }
+                        }
+                        if let Some((generation,revision,delta))=roster {
+                            if let Some(delta)=delta {
+                                let notice=serde_json::json!({"type":"players.delta","data":delta});
+                                if send(&mut socket,Message::Text(notice.to_string())).await.is_err(){return CloseCode::Away;}
+                            }
+                            roster_base=Some((generation,revision));
+                        } else {roster_base=None;}
+                    }
                     if let Err(e)=push_status(&mut socket,&state,secret.as_str(),&mut status_tag).await {return e.close_code();}
                 }
                 changed=notifications.changed()=>{

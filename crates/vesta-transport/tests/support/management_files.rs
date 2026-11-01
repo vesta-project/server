@@ -690,6 +690,8 @@ fn properties_redaction_preservation_preconditions_and_confirmation_receipts() {
     );
     management_reply_error(&stale, 409, "conflict");
     assert_eq!(stale.json()["error"]["current"]["sha256"], digest(&current));
+    assert!(stale.json()["error"]["current"]["editor"]["display_name"].is_string());
+    assert!(stale.json()["error"]["current"]["editor"]["at_ms"].as_i64().unwrap() > 0);
     for changes in [
         serde_json::json!({"unknown":true}),
         serde_json::json!({"online-mode":"false"}),
