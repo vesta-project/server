@@ -195,6 +195,7 @@ impl AutomationDriver {
                     joins.tick(&runtime, &automation);
                     let _ = automation.tick(now);
                     let _ = actions.expire_bans(&game_directory);
+                    let _ = actions.sync_whitelist(&game_directory);
                     if let Ok(failed) = actions.tick_startup_whitelist(&runtime) {
                         for player in failed {
                             let _ = automation.notify(Severity::Warning,"Whitelist change needs attention",&format!("Could not verify the queued whitelist change for {player}. Review the whitelist and retry."),"players");

@@ -252,6 +252,7 @@ fn automatic_sources_refuse_management_and_edits_of_captured_defaults() {
         new_user: None,
         whitelist: None,
         whitelist_enabled: None,
+        sync_whitelist: None,
         password: None,
     };
     assert_eq!(
@@ -305,6 +306,7 @@ fn safe_access_patch_is_versioned_audited_and_idempotent() {
         new_user: None,
         whitelist: None,
         whitelist_enabled: Some(false),
+        sync_whitelist: None,
         password: None,
     });
     let first = run(&f, &s, "safe-access-patch-0001", c.clone()).unwrap();
@@ -329,6 +331,8 @@ fn invitation_ceiling_secret_once_and_idempotent_receipt() {
             &s,
             "invite-owner-refusal-0001",
             PermissionMutation::Invitation(Invitation {
+                multi_use: false,
+                max_uses: None,
                 role: "owner".into(),
                 expires_minutes: 10
             })
@@ -336,6 +340,8 @@ fn invitation_ceiling_secret_once_and_idempotent_receipt() {
         Err(PermissionError::Forbidden)
     );
     let c = PermissionMutation::Invitation(Invitation {
+        multi_use: false,
+        max_uses: None,
         role: "viewer".into(),
         expires_minutes: 10,
     });
@@ -385,6 +391,8 @@ fn invitation_rechecks_issuer_rank_and_capabilities_at_redemption() {
         &s,
         "invite-live-ceiling-0001",
         PermissionMutation::Invitation(Invitation {
+            multi_use: false,
+            max_uses: None,
             role: invited["id"].as_str().unwrap().into(),
             expires_minutes: 10,
         }),
@@ -421,6 +429,8 @@ fn invitation_cannot_attach_to_issuer_or_equal_rank_user() {
             &token,
             "invite-attach-check-0001",
             PermissionMutation::Invitation(Invitation {
+                multi_use: false,
+                max_uses: None,
                 role: "viewer".into(),
                 expires_minutes: 10,
             }),
@@ -669,6 +679,8 @@ fn invitations_are_bounded() {
                 &s,
                 &format!("bounded-invitation-{i:04}"),
                 PermissionMutation::Invitation(Invitation {
+                    multi_use: false,
+                    max_uses: None,
                     role: "viewer".into(),
                     expires_minutes: 10
                 })
@@ -682,6 +694,8 @@ fn invitations_are_bounded() {
             &s,
             "bounded-invitation-full",
             PermissionMutation::Invitation(Invitation {
+                multi_use: false,
+                max_uses: None,
                 role: "viewer".into(),
                 expires_minutes: 10
             })
@@ -823,6 +837,8 @@ fn invitation_redemption_checks_active_allow_overrides_and_rolls_back() {
             &issuer_session,
             "override-invitation-0001",
             PermissionMutation::Invitation(Invitation {
+                multi_use: false,
+                max_uses: None,
                 role: high["id"].as_str().unwrap().into(),
                 expires_minutes: 10,
             }),
@@ -942,6 +958,8 @@ fn invitation_creator_exception_current_capability_expiry_and_device_rank_filter
     let _viewer = actor(&f, BuiltinRole::Viewer);
     let invite = || {
         PermissionMutation::Invitation(Invitation {
+            multi_use: false,
+            max_uses: None,
             role: "viewer".into(),
             expires_minutes: 10,
         })
@@ -1087,4 +1105,99 @@ fn own_revoked_device_labels_can_be_renamed_without_reactivating_them() {
         Ok(())
     })
     .unwrap();
+}
+
+#[test]
+fn bulk_invitation_caps_redemptions_atomically() {
+    let f = Fixture::new();
+    let (_, owner) = actor(&f, BuiltinRole::Owner);
+    let issued = run(
+        &f,
+        &owner,
+        "bulk-invite-test-0001",
+        PermissionMutation::Invitation(Invitation {
+            role: "player".into(),
+            expires_minutes: 30,
+            multi_use: true,
+            max_uses: Some(2),
+        }),
+    )
+    .unwrap();
+    let code = issued["code"].as_str().unwrap();
+    for _ in 0..2 {
+        let k = key();
+        f.service
+            .enroll(
+                code,
+                "Bulk device",
+                &URL_SAFE_NO_PAD.encode(k.public_key().as_ref()),
+            )
+            .unwrap();
+    }
+    let k = key();
+    assert!(matches!(
+        f.service.enroll(
+            code,
+            "Too late",
+            &URL_SAFE_NO_PAD.encode(k.public_key().as_ref())
+        ),
+        Err(ManagementError::PairInvalid)
+    ));
+}
+#[test]
+fn owner_grants_top_tiers_to_microsoft_identity() {
+    let f = Fixture::new();
+    let (_, owner) = actor(&f, BuiltinRole::Owner);
+    let (target, _) = actor(&f, BuiltinRole::Viewer);
+    f.db.write(|c| {c.execute("INSERT INTO user_minecraft_accounts(server_id,minecraft_uuid,principal_id) VALUES(?,?,?)",rusqlite::params![f.service.server_id(),"00112233-4455-6677-8899-aabbccddeeff",target.principal_id])?;Ok(())}).unwrap();
+    let value = get(&f, &owner, &target.principal_id);
+    run(
+        &f,
+        &owner,
+        "grant-ms-admin-0001",
+        PermissionMutation::UserRoles(
+            target.principal_id.clone(),
+            roles(&["administrator"], &[], &value),
+        ),
+    )
+    .unwrap();
+    let value = get(&f, &owner, &target.principal_id);
+    run(
+        &f,
+        &owner,
+        "grant-ms-owner-0001",
+        PermissionMutation::UserRoles(target.principal_id.clone(), roles(&["owner"], &[], &value)),
+    )
+    .unwrap();
+}
+
+#[test]
+fn whitelist_sync_toggle_persists_authority_and_requires_current_version() {
+    let f = Fixture::new();
+    let (owner, s) = actor(&f, BuiltinRole::Owner);
+    let value = f
+        .service
+        .permission_query(s.secret.expose(), PermissionQuery::Access)
+        .unwrap();
+    let patch: AccessPatch =
+        serde_json::from_value(json!({"expected_version":value["version"],"sync_whitelist":true}))
+            .unwrap();
+    run(
+        &f,
+        &s,
+        "enable-sync-test-0001",
+        PermissionMutation::Access(patch),
+    )
+    .unwrap();
+    assert!(f.service.access_local().unwrap().sync_whitelist);
+    let actor: String =
+        f.db.read(|c| {
+            Ok(
+                c.query_row("SELECT principal_id FROM whitelist_sync_actor", [], |r| {
+                    r.get(0)
+                })?,
+            )
+        })
+        .unwrap();
+    assert_eq!(actor, owner.principal_id);
 }

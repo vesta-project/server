@@ -333,7 +333,12 @@ impl ManagementAccess {
             // BEGIN IMMEDIATE owns redemption. Removal, policy, enrollment and
             // audit commit together; failed transactions leave the code usable.
             let issuer = self.invitation_issuer(repo, &hash)?;
-            c.execute("DELETE FROM management_pairing_codes WHERE code_hash = ?", [hash.as_slice()])?;
+            let usage: Option<(Option<u32>,u32)> = c.query_row("SELECT max_uses,uses FROM management_invitation_uses WHERE code_hash=?",[hash.as_slice()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            if let Some((limit,uses)) = usage {
+                if limit.is_some_and(|n| uses>=n) { return Err(invalid); }
+                c.execute("UPDATE management_invitation_uses SET uses=uses+1 WHERE code_hash=?",[hash.as_slice()])?;
+                if limit == Some(uses+1) { c.execute("DELETE FROM management_pairing_codes WHERE code_hash=?",[hash.as_slice()])?; }
+            } else { c.execute("DELETE FROM management_pairing_codes WHERE code_hash = ?", [hash.as_slice()])?; }
             repo.role(&role)?;
             if let Some(subject)=&authenticated {self.subject_in(repo,&subject.device)?;}
             let existing:Option<(String,String)>=c.query_row("SELECT principal_id,id FROM devices WHERE server_id=? AND public_key_sha256=? AND revoked_at IS NULL",params![self.server_id(),fingerprint.as_str()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;

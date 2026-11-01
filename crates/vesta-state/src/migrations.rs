@@ -34,6 +34,7 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         28 => apply_v28(c),
         29 => apply_v29(c),
         30 => apply_v30(c),
+        31 => apply_v31(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }
@@ -1217,4 +1218,9 @@ fn apply_v30(c: &Connection) -> crate::Result<()> {
         DROP TABLE pack_workspace_uploads_v29;
     "#)?;
     Ok(())
+}
+
+fn apply_v31(c: &Connection) -> crate::Result<()> {
+ c.execute_batch("CREATE TABLE management_invitation_uses (code_hash BLOB PRIMARY KEY REFERENCES management_pairing_codes(code_hash) ON DELETE CASCADE, max_uses INTEGER CHECK(max_uses>0), uses INTEGER NOT NULL DEFAULT 0) STRICT; CREATE TABLE whitelist_sync_actor(singleton INTEGER PRIMARY KEY CHECK(singleton=1), principal_id TEXT NOT NULL, device_id TEXT NOT NULL) STRICT; CREATE TABLE whitelist_sync_members(uuid TEXT PRIMARY KEY,name TEXT NOT NULL) STRICT;")?;
+ Ok(())
 }
