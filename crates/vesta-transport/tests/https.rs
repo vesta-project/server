@@ -955,9 +955,12 @@ fn chunked_body_is_stopped_at_limit_without_waiting_for_terminator() {
 fn aggregate_body_budget_refuses_before_buffering_and_preserves_empty_reads() {
     let f = Fixture::new("minecraft", 16, 1024 * 1024, 10);
     let mut held = Vec::new();
+    // Four declared bodies exactly fill the ordinary 4 MiB minus 16 KiB
+    // reserved control budget. Admission accounts for Content-Length rather
+    // than charging every small request the configured 1 MiB maximum.
     for _ in 0..4 {
         let mut stream = f.stream();
-        stream.write_all(b"POST /api/v2/auth/password HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 1048576\r\n\r\n{").unwrap();
+        stream.write_all(b"POST /api/v2/auth/password HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 1044480\r\n\r\n{").unwrap();
         stream.flush().unwrap();
         held.push(stream);
     }
