@@ -41,7 +41,7 @@ impl Change {
     fn authority(&self) -> Vec<(String, String)> {
         let cap = match self.action.as_str() {
             "remove" => Capability::FilesDelete,
-            "enable" | "disable" => Capability::FilesRename,
+            "enable" | "disable" | "rotate" => Capability::FilesRename,
             "update" => Capability::FilesOverwrite,
             _ => Capability::FilesCreate,
         };
@@ -163,6 +163,18 @@ impl FileBrowser {
         }
         Ok(ids)
     }
+    pub(crate) fn stage_pack_rotations_in(&self, c: &rusqlite::Connection, subject: &Subject, key: &str, rotations: &[(String,String,String)]) -> Result<Vec<String>> {
+        let mut ids=Vec::new();
+        for (index,(path,target,hash)) in rotations.iter().enumerate() {
+            let staged=self.stage_pack_in(c,subject,&format!("{key}-world-{index}"),&[(path.clone(),Some(hash.clone()),Vec::new(),None)])?;
+            let change=Change {payload:None,pack_file:true,folder:true,kind:ContentKind::Mod,action:"rotate".into(),path:path.clone(),target:Some(target.clone()),expected:Some(hash.clone()),provider:None};
+            RelativePath::parse(target)?;
+            self.remote_authorize(c,subject,&change.authority())?;
+            for id in &staged { c.execute("UPDATE server_content_changes SET change_json=? WHERE id=?",params![serde_json::to_string(&change).map_err(|_|FileError::Unavailable)?,id])?; }
+            ids.extend(staged);
+        }
+        Ok(ids)
+    }
     pub(crate) fn stage_pack_removals_in(
         &self,
         c: &rusqlite::Connection,
@@ -199,7 +211,7 @@ impl FileBrowser {
         }
         Ok(ids)
     }
-    pub(super) fn content_tree(&self, subject: &Subject, path: &str) -> Result<(String, u64)> {
+    pub(crate) fn content_tree(&self, subject: &Subject, path: &str) -> Result<(String, u64)> {
         let mut work = vec![path.to_owned()];
         let mut entries = Vec::new();
         let mut total = 0u64;
@@ -971,7 +983,7 @@ impl FileBrowser {
                     let value=if let Some(payload)=&change.payload { files.write_pack_payload(&subject,&path,&condition,payload)? } else { files.write(&subject,&path,&condition,&bytes)? };
                     json!({"sha256":value.sha256,"size":value.size.to_string(),"trash_id":value.trash})
                 }
-                "remove" if change.folder => {
+                "remove" | "rotate" if change.folder => {
                     let target=RelativePath::parse(change.target.as_deref().ok_or(FileError::InvalidPath)?)?;
                     files.rename_content_directory(&subject,&path,&target,change.expected.as_deref().ok_or(FileError::InvalidPath)?)?;
                     json!({"trash_path":target.as_str()})

@@ -193,9 +193,12 @@ fn large_archive_upload_plans_and_applies_every_file_without_sql_payloads() {
         std::fs::read_dir(f.db.directory().path().join("pack-payloads"))
             .unwrap()
             .count(),
-        0,
-        "applied/expired payloads leaked"
+        2,
+        "only the two distinct config baselines should be retained"
     );
+    f.workspace.unlink_server_modpack(&f.subject,"unlink-capacity",&ServerModpackUnlink{remove_owned_files:false},&files).unwrap();
+    Store::open(&f.db).unwrap().collect().unwrap();
+    assert_eq!(std::fs::read_dir(f.db.directory().path().join("pack-payloads")).unwrap().count(),0,"unlink releases config baselines");
 }
 
 #[test]

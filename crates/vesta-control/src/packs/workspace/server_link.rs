@@ -45,6 +45,7 @@ pub struct ServerModpackUnlink {
 pub(super) fn initialize(db: &StateDatabase) -> Result<()> {
     db.write(|c| c.execute_batch("CREATE TABLE IF NOT EXISTS server_modpack_link(server_id TEXT PRIMARY KEY, body TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS server_modpack_files(path TEXT PRIMARY KEY, sha256 TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS server_modpack_bases(path TEXT PRIMARY KEY, payload TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS server_modpack_delivery(server_id TEXT NOT NULL, source TEXT NOT NULL, archive BLOB NOT NULL, PRIMARY KEY(server_id,source));
         CREATE TABLE IF NOT EXISTS client_pack_config(server_id TEXT PRIMARY KEY, body TEXT NOT NULL);").map_err(Into::into))?;
     db.write(|c| {
@@ -208,6 +209,7 @@ impl PackWorkspace {
                 [self.db.server_id()],
             )?;
             c.execute("DELETE FROM server_modpack_files", [])?;
+            c.execute("DELETE FROM server_modpack_bases", [])?;
             c.execute(
                 "DELETE FROM server_modpack_delivery WHERE server_id=?",
                 [self.db.server_id()],

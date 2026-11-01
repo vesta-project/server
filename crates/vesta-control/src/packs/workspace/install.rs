@@ -193,6 +193,10 @@ pub struct PackInstallOutcome {
 #[derive(Serialize, Deserialize)]
 struct Stored {
     #[serde(default)]
+    bases: BTreeMap<String, Payload>,
+    #[serde(default)]
+    rotations: Vec<(String,String,String)>,
+    #[serde(default)]
     client_prepared: bool,
     #[serde(default)]
     applied_key: Option<String>,
@@ -547,7 +551,7 @@ impl PackWorkspace {
             providers.metadata_requests()
         );
         for (index, chunk) in manifest.entries.chunks(2).enumerate() {
-            progress.report("download_verify", index * 2, manifest.entries.len())?;
+            if index % 32 == 0 { progress.report("metadata", index * 2, manifest.entries.len())?; }
             let candidates: Vec<_> = chunk
                 .iter()
                 .filter_map(|entry| sources.get(&entry.id).map(|(_, source)| (entry, source)))
@@ -711,11 +715,28 @@ impl PackWorkspace {
             let EntrySource::Provider { provider, project_id, version_id } = &e.source else { return None; };
             sources.get(&e.id).map(|(_, source)| ((provider.as_str(), project_id.as_str(), version_id.as_str()), content::sanitized_download_url(&source.download_url)))
         }).collect();
+        let mut rotations = Vec::new();
+        for path in selected.keys().filter(|path| modpack_engine::classifier::is_world_save(path) || path.eq_ignore_ascii_case(&format!("{}/level.dat",world.name))) {
+            let expected=owned.get(path).map(String::as_str);
+            let relative=RelativePath::parse(path).map_err(file_error)?;
+            let current=match files.open_stream(s,&relative) {
+                Ok(mut stream)=>Some(hex::encode(stream.snapshot_digest(0,stream.size()).map_err(file_error)?)),
+                Err(FileError::NotFound)=>None,
+                Err(e)=>return Err(file_error(e)),
+            };
+            if modpack_engine::world::needs_rotation(expected,current.as_deref()) {
+                let folder=path.rsplit_once('/').ok_or_else(invalid)?.0.to_owned();
+                let target=modpack_engine::world::quarantine_path(&folder,&uuid::Uuid::new_v4().simple().to_string());
+                let (hash,_)=files.content_tree(s,&folder).map_err(file_error)?;
+                rotations.push((folder,target,hash));
+            }
+        }
+        let mut bases: BTreeMap<String, Payload> = BTreeMap::new();
         let mut review = Vec::new();
         let mut bytes = Vec::new();
         let mut refs = Vec::new();
         let mut destinations = BTreeSet::new();
-        for (mut path, (body, provider)) in selected {
+        for (mut path, (mut body, provider)) in selected {
             let lower = path.to_ascii_lowercase();
             if lower.starts_with("resourcepacks/")
                 || lower.starts_with("shaderpacks/")
@@ -753,7 +774,7 @@ impl PackWorkspace {
             if !destinations.insert(path.to_lowercase()) {
                 return Err(ReleaseError::Conflict);
             }
-            let expected = if let Some(hash) = by_path
+            let mut expected = if let Some(hash) = by_path
                 .get(path.as_str())
                 .and_then(|item| item.sha256.as_ref())
             {
@@ -787,6 +808,30 @@ impl PackWorkspace {
                 .is_some_and(|hash| modpack_engine::recorded_hash_matches(owned.get(&path).map(String::as_str), Some(hash)))
             {
                 conflict = None;
+            }
+            if rotations.iter().any(|(folder,_,_)|path.starts_with(&format!("{folder}/"))) { expected=None; conflict=None; }
+            let text = modpack_engine::classifier::classify(&path) == modpack_engine::classifier::FileClass::Text;
+            if text { bases.insert(path.clone(), body.clone()); }
+            if text && !rotations.iter().any(|(folder,_,_)| path.starts_with(&format!("{folder}/"))) && modpack_engine::decide(true, owned.contains_key(&path), true, owned.get(&path).map(String::as_str), expected.as_deref(), Some(&body.sha256)) == modpack_engine::Decision::Merge {
+                use std::io::Read;
+                let old: Option<String> = self.db.read(|c| Ok(c.query_row("SELECT payload FROM server_modpack_bases WHERE path=?",[&path],|r|r.get(0)).optional()?))?;
+                let read = |payload: &Payload| -> Option<String> {
+                    if payload.size > modpack_engine::merger::MAX_CONFIG_BYTES as u64 { return None; }
+                    let mut content=String::new(); payload_store.verify(payload).ok()?.read_to_string(&mut content).ok()?; Some(content)
+                };
+                let old = old.and_then(|raw| serde_json::from_str::<Payload>(&raw).ok()).and_then(|payload|read(&payload));
+                let current = files.open_stream(s,&RelativePath::parse(&path).map_err(file_error)?).ok().and_then(|mut stream| {
+                    if stream.size()>modpack_engine::merger::MAX_CONFIG_BYTES as u64 {return None;}
+                    let mut bytes=Vec::new(); while (bytes.len() as u64)<stream.size() { let chunk=stream.read_chunk(bytes.len() as u64,64*1024).ok()?; if chunk.is_empty() {return None;} bytes.extend(chunk); } String::from_utf8(bytes).ok()
+                });
+                let incoming=read(&body);
+                match modpack_engine::merger::merge_config(&path,old.as_deref(),current.as_deref(),incoming.as_deref()) {
+                    modpack_engine::merger::MergeResult::Merged(content) => {
+                        body=payload_store.put(&mut std::io::Cursor::new(content)).map_err(super::super::PackError::from)?;
+                        conflict=None;
+                    }
+                    _ => { skipped.push(path); continue; }
+                }
             }
             let sha256 = body.sha256.clone();
             let decision=modpack_engine::decide(false,owned.contains_key(&path),true,owned.get(&path).map(String::as_str),expected.as_deref(),Some(&sha256));
@@ -845,6 +890,19 @@ impl PackWorkspace {
             }
         }
         if selected_bytes > 64 * 1024 * 1024 { warnings.push(format!("pack_size_warning:{selected_bytes}")); }
+        let mut removed=Vec::new();
+        for (path,recorded) in &owned {
+            if destinations.contains(&path.to_lowercase()) || rotations.iter().any(|(folder,_,_)|path.starts_with(&format!("{folder}/"))) {continue;}
+            let current=match files.open_stream(s,&RelativePath::parse(path).map_err(file_error)?) {
+                Ok(mut stream)=>Some(hex::encode(stream.snapshot_digest(0,stream.size()).map_err(file_error)?)),
+                Err(FileError::NotFound)=>None, Err(error)=>return Err(file_error(error)),
+            };
+            let text=modpack_engine::classifier::classify(path)==modpack_engine::classifier::FileClass::Text;
+            match modpack_engine::decide(text,true,false,Some(recorded),current.as_deref(),None) {
+                modpack_engine::Decision::Remove if current.is_some()=>removed.push((path.clone(),recorded.clone())),
+                _=>skipped.push(path.clone()),
+            }
+        }
         let mut plan = PackInstallPlan {
             software_switch: None,
             plan_id: uuid::Uuid::new_v4().to_string(),
@@ -861,10 +919,7 @@ impl PackWorkspace {
             skipped,
             warnings: warnings.into_iter().map(InstallWarning::from).chain(archive_warnings.into_inner()).collect(),
             backup_recommended: true,
-            removed: owned
-                .into_iter()
-                .filter(|(path, _)| !destinations.contains(&path.to_lowercase()) && modpack_engine::classifier::classify(path) != modpack_engine::classifier::FileClass::Text)
-                .collect(),
+            removed,
         };
         plan.warnings.extend(archive_policy::manifest_warnings(&manifest, selected_bytes, &blob_map));
         if plan.software_switch_required {
@@ -896,6 +951,8 @@ impl PackWorkspace {
         let mut stored_plan = plan.clone();
         stored_plan.confirmation_token.clear();
         let stored = Stored {
+            bases,
+            rotations,
             client_prepared: false,
             applied_key: None,
             deferred_hashes,
@@ -1154,9 +1211,12 @@ impl PackWorkspace {
             let conflicts:BTreeSet<_>=stored.plan.files.iter().filter(|f|f.conflict.is_some()).map(|f|f.path.clone()).collect();
             let choices:BTreeMap<_,_>=input.choices.iter().map(|c|(c.path.clone(),c.choice.clone())).collect();
             if choices.len()!=input.choices.len()||conflicts!=choices.keys().cloned().collect()||choices.values().any(|v|v!="replace"&&v!="keep"){return Err(invalid())}
-            let link_files = stored.plan.files.iter().filter(|f| choices.get(&f.path).is_none_or(|v|v!="keep")).map(|f|(f.path.clone(), f.sha256.clone())).collect();
+            let bases = stored.bases.clone();
+            let mut link_files: BTreeMap<String,String> = stored.plan.files.iter().filter(|f| choices.get(&f.path).is_none_or(|v|v!="keep")).map(|f|(f.path.clone(), bases.get(&f.path).map(|p|p.sha256.clone()).unwrap_or_else(||f.sha256.clone()))).collect();
+            for (path,payload) in &bases { if choices.get(path).is_none_or(|choice|choice!="keep") { link_files.entry(path.clone()).or_insert_with(||payload.sha256.clone()); } }
             let selected:Vec<_>=stored.plan.files.clone().into_iter().zip(stored.payloads).zip(stored.providers).filter_map(|((f,b),p)|{if choices.get(&f.path).is_some_and(|v|v=="keep"){None}else{Some((f.path,f.expected_sha256,b,p))}}).collect();
-            let mut pending_ids=files.stage_pack_payloads_in(c,s,key,&selected).map_err(file_error)?;
+            let mut pending_ids=files.stage_pack_rotations_in(c,s,key,&stored.rotations).map_err(file_error)?;
+            pending_ids.extend(files.stage_pack_payloads_in(c,s,key,&selected).map_err(file_error)?);
             pending_ids.extend(files.stage_pack_removals_in(c,s,&format!("{key}-remove"),&stored.plan.removed).map_err(file_error)?);
             if let Some(archive) = &stored.client_archive {
                 c.execute("INSERT OR REPLACE INTO server_modpack_delivery VALUES(?,?,?)", params![self.db.server_id(), serde_json::to_string(&stored.source).map_err(|_|invalid())?, archive])?;
@@ -1170,6 +1230,8 @@ impl PackWorkspace {
             let link=ServerModpackLink{source:stored.source,display_version:stored.manifest.display_version,files:link_files,state:"staged_until_restart".into(),pending_ids:pending_ids.clone(),installed,pending};
             c.execute("INSERT OR REPLACE INTO server_modpack_link VALUES(?,?)",params![self.db.server_id(),serde_json::to_string(&link).map_err(|_|invalid())?])?;
             c.execute("DELETE FROM server_modpack_files",[])?;
+            c.execute("DELETE FROM server_modpack_bases",[])?;
+            for (path,payload) in &bases { c.execute("INSERT INTO server_modpack_bases VALUES(?,?)",params![path,serde_json::to_string(payload).map_err(|_|invalid())?])?; }
             for (path,hash) in &link.files {c.execute("INSERT INTO server_modpack_files VALUES(?,?)",params![path,hash])?;}
 
             // The durable mutation receipt owns replay after this transaction.
@@ -1182,7 +1244,7 @@ impl PackWorkspace {
         })?;
         let progress=Preparation {db:self.db.clone(), job:input.plan_id.clone()};
         files.apply_pack_ids_with_progress(&outcome.pending_ids, |index, total| {
-            progress.report("writing", index, total).map_err(|_| FileError::Unavailable)
+            if index % 16 == 0 || index == total { progress.report("writing", index, total).map_err(|_| FileError::Unavailable) } else { Ok(()) }
         }).map_err(file_error)?;
         outcome.state = "installed".into();
         Ok(outcome)

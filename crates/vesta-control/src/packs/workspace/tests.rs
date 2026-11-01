@@ -714,3 +714,48 @@ fn streamed_archive_member_does_not_require_consent_for_former_buffer_limit() {
     assert_eq!(outcome.state, "installed");
     assert_eq!(std::fs::metadata(game.join("config/large.dat")).unwrap().len(), (super::super::MAX_PINNED_FILE_BYTES + 1) as u64);
 }
+
+#[test]
+fn shared_engine_config_merge_and_world_rotation_survive_reopen() {
+    let f=Fixture::new(); let game=f.temp.path().join("game"); std::fs::create_dir_all(&game).unwrap();
+    let files=crate::files::FileBrowser::open(f.db.clone(),&game,&[]).unwrap();
+    let releases=super::super::PackReleases::open(&f.db).unwrap();
+    let mut manifest=f.manifest(); manifest.loader=ClientLoader::Fabric; manifest.loader_version=Some("0.16.10".into());
+    f.workspace.write(&f.subject,"1.21.1","runtime-parity",&DraftWrite{expected_revision:"0".into(),manifest}).unwrap();
+    for (round,config,world) in [(0,r#"{"user":1,"author":1}"#,b"base".as_slice()),(1,r#"{"user":1,"author":2}"#,b"new".as_slice())] {
+        for (index,(path,body)) in [("config/parity.json",config.as_bytes()),("saves/parity/level.dat",world)].iter().enumerate() {
+            let draft=f.workspace.read(&f.subject,"1.21.1").unwrap();
+            f.workspace.file_mutate(&f.subject,"1.21.1",&format!("parity-{round}-{index}"),&FileMutation{expected_revision:draft.revision,change:FileOperation::Write{root:"overrides".into(),path:(*path).into(),content_base64:STANDARD.encode(body)}}).unwrap();
+        }
+        let draft=f.workspace.read(&f.subject,"1.21.1").unwrap();
+        let reopened=PackWorkspace::open(&f.db).unwrap();
+        let plan=reopened.install_plan(&f.subject,"1.21.1",Some("fabric"),&PackInstallRequest{source:InstallSource::Draft{revision:draft.revision}},&files,&releases,&crate::content::UreqProviderClient::new(None)).unwrap();
+        if round==1 {assert!(plan.files.iter().all(|file|file.conflict.is_none()));}
+        let apply=PackInstallApply{acknowledge_warnings:true,acknowledge_software_switch:false,plan_id:plan.plan_id,confirmation_token:plan.confirmation_token,choices:vec![],set_as_modpack:false};
+        reopened.install_apply(&f.subject,"1.21.1",Some("fabric"),&format!("parity-apply-{round}"),&apply,&files).unwrap();
+        if round==0 {
+            std::fs::write(game.join("config/parity.json"),br#"{"user":9,"author":1}"#).unwrap();
+            std::fs::write(game.join("saves/parity/level.dat"),b"played").unwrap();
+            std::fs::write(game.join("saves/parity/user-region.mca"),b"region").unwrap();
+        }
+    }
+    let merged:serde_json::Value=serde_json::from_slice(&std::fs::read(game.join("config/parity.json")).unwrap()).unwrap();
+    assert_eq!(merged,serde_json::json!({"user":9,"author":2}));
+    assert_eq!(std::fs::read(game.join("saves/parity/level.dat")).unwrap(),b"new");
+    let backup=std::fs::read_dir(game.join("saves")).unwrap().map(|e|e.unwrap().path()).find(|p|p.file_name().unwrap().to_string_lossy().starts_with("parity_")).unwrap();
+    assert_eq!(std::fs::read(backup.join("level.dat")).unwrap(),b"played");
+    assert_eq!(std::fs::read(backup.join("user-region.mca")).unwrap(),b"region");
+}
+
+#[test]
+fn shared_engine_removals_preserve_modified_owned_binaries() {
+    let f=Fixture::new();let game=f.temp.path().join("game");std::fs::create_dir_all(game.join("mods")).unwrap();
+    std::fs::write(game.join("mods/changed.jar"),b"user").unwrap();std::fs::write(game.join("mods/removed.jar"),b"base").unwrap();
+    let files=crate::files::FileBrowser::open(f.db.clone(),&game,&[]).unwrap();
+    let source=InstallSource::Draft{revision:"0".into()};
+    let link=ServerModpackLink{source:source.clone(),display_version:"1".into(),files:[("mods/changed.jar".into(),digest(b"base")),("mods/removed.jar".into(),digest(b"base"))].into(),state:"installed".into(),pending_ids:vec![],installed:Some(ServerModpackVersion{source,display_version:"1".into()}),pending:None};
+    f.db.write(|c|{c.execute("INSERT INTO server_modpack_link VALUES(?,?)",params![f.db.server_id(),serde_json::to_string(&link).unwrap()])?;Ok(())}).unwrap();
+    let releases=super::super::PackReleases::open(&f.db).unwrap();
+    let plan=f.workspace.install_plan(&f.subject,"1.21.1",Some("vanilla"),&PackInstallRequest{source:InstallSource::Draft{revision:"0".into()}},&files,&releases,&crate::content::UreqProviderClient::new(None)).unwrap();
+    assert_eq!(plan.removed,vec![("mods/removed.jar".into(),digest(b"base"))]);assert!(plan.skipped.contains(&"mods/changed.jar".into()));
+}

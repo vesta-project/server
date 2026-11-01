@@ -157,6 +157,16 @@ impl Store {
                 let mut q = c.prepare("SELECT json_extract(value,'$.sha256') FROM pack_install_plans,json_each(body,'$.payloads') WHERE expires>=?")?;
                 for row in q.query_map([self.db.clock().millis()], |r| r.get::<_, String>(0))? { keep.insert(format!("blob-{}", row?)); }
             }
+            if exists("pack_install_plans")? {
+                for field in ["bases", "client_blobs"] {
+                    let mut q=c.prepare(&format!("SELECT json_extract(value,'$.sha256') FROM pack_install_plans,json_each(body,'$.{field}') WHERE expires>=?"))?;
+                    for row in q.query_map([self.db.clock().millis()], |r|r.get::<_,String>(0))? {keep.insert(format!("blob-{}",row?));}
+                }
+            }
+            if exists("server_modpack_bases")? {
+                let mut q = c.prepare("SELECT json_extract(payload,'$.sha256') FROM server_modpack_bases")?;
+                for row in q.query_map([], |r| r.get::<_, String>(0))? { keep.insert(format!("blob-{}", row?)); }
+            }
             if exists("server_content_changes")? {
                 let mut q = c.prepare("SELECT json_extract(change_json,'$.payload.sha256') FROM server_content_changes WHERE state='pending' AND json_extract(change_json,'$.payload.sha256') IS NOT NULL")?;
                 for row in q.query_map([], |r| r.get::<_, String>(0))? { keep.insert(format!("blob-{}", row?)); }
