@@ -1175,10 +1175,9 @@ impl PackWorkspace {
             Ok(PackInstallOutcome{software_job_id:None,state:"staged_until_restart".into(),pending_ids})
         })?;
         let progress=Preparation {db:self.db.clone(), job:input.plan_id.clone()};
-        for (index,id) in outcome.pending_ids.iter().enumerate() {
-            progress.report("writing",index,outcome.pending_ids.len())?;
-            files.apply_pack_ids(std::slice::from_ref(id)).map_err(file_error)?;
-        }
+        files.apply_pack_ids_with_progress(&outcome.pending_ids, |index, total| {
+            progress.report("writing", index, total).map_err(|_| FileError::Unavailable)
+        }).map_err(file_error)?;
         outcome.state = "installed".into();
         Ok(outcome)
     }

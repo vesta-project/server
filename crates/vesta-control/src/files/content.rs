@@ -921,7 +921,14 @@ impl FileBrowser {
     }
     /// Apply only this install's journal entries while stopped ownership is held.
     pub(crate) fn apply_pack_ids(&self, ids: &[String]) -> Result<()> {
-        for id in ids { self.apply_content_id(id)?; }
+        self.apply_pack_ids_with_progress(ids, |_, _| Ok(()))
+    }
+    pub(crate) fn apply_pack_ids_with_progress(&self, ids: &[String], mut progress: impl FnMut(usize, usize) -> Result<()>) -> Result<()> {
+        for (index, id) in ids.iter().enumerate() {
+            progress(index, ids.len())?;
+            self.apply_content_id(id)?;
+        }
+        progress(ids.len(), ids.len())?;
         self.reconcile_content_barrier()
     }
     fn apply_content_id(&self, id: &str) -> Result<()> {
