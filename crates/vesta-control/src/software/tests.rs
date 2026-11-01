@@ -620,6 +620,44 @@ fn successful_job_warnings_survive_reopen_and_idempotent_reads() {
     );
 }
 
+#[tokio::test]
+async fn pack_without_software_switch_runs_as_a_durable_job_and_replays_after_reconnect() {
+    use crate::packs::workspace::*;
+    use super::Result;
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let f = Fixture::new();
+    let service = f.open();
+    f.db.write_with(|tx| -> Result<()> {
+        let c = tx.connection();
+        let mut launch = store::state(c)?.current;
+        launch.installation.software = Some(Software::Vanilla);
+        launch.installation.version = Some("1.21.1".into());
+        c.execute("UPDATE software_state SET current_launch=? WHERE singleton=1", [store::encode(&launch)?])?;
+        Ok(())
+    }).unwrap();
+    let workspace = PackWorkspace::open(&f.db).unwrap();
+    let files = crate::files::FileBrowser::open(f.db.clone(), &f.game, &[]).unwrap();
+    let releases = crate::packs::PackReleases::open(&f.db).unwrap();
+    let draft = workspace.file_mutate(&owner(), "1.21.1", "pack-file", &FileMutation {
+        expected_revision: "0".into(), change: FileOperation::Write { root: "overrides".into(), path: "config/test.properties".into(), content_base64: STANDARD.encode(b"value=pack\n") },
+    }).unwrap();
+    let plan = workspace.install_plan(&owner(), "1.21.1", Some("vanilla"), &PackInstallRequest { source: InstallSource::Draft { revision: draft.revision } }, &files, &releases, &crate::content::UreqProviderClient::new(None)).unwrap();
+    assert!(!plan.software_switch_required);
+    let work = PackWork { workspace: workspace.clone(), files, key: "pack-install-job".into(), input: PackInstallApply {
+        acknowledge_warnings: true, acknowledge_software_switch: false, plan_id: plan.plan_id, confirmation_token: plan.confirmation_token, choices: vec![], set_as_modpack: false,
+    }};
+    let job = service.handle().apply_pack(&owner(), work.clone()).await.unwrap();
+    workspace.track_install_job(&owner(), &job.id).unwrap();
+    assert_eq!(finished(&service.handle(), &job.id).state, "succeeded");
+    assert_eq!(std::fs::read(f.game.join("config/test.properties")).unwrap(), b"value=pack\n");
+    drop(service);
+    let reopened = f.open();
+    let replay = reopened.handle().apply_pack(&owner(), work).await.unwrap();
+    assert_eq!(replay.id, job.id);
+    assert_eq!(replay.state, "succeeded");
+    assert_eq!(f.native.calls.load(Ordering::SeqCst), 0, "pack install must not reinstall unchanged software");
+}
+
 #[test]
 fn interrupted_staging_is_never_replayed_and_unknown_launch_blocks_start() {
     let f = Fixture::new();

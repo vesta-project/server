@@ -85,6 +85,16 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
         })?;
         return Ok(());
     }
+    if let WorkKind::Pack(pack,target)=&work.kind {
+        let _hold=inner.runtime.acquire_stopped()?;
+        pack.workspace.prepare_install_payloads(&work.actor,&pack.input).map_err(|_|SoftwareError::StateUnavailable)?;
+        pack.workspace.install_apply(&work.actor,&target.minecraft_version,Some(&target.software),&pack.key,&pack.input,&pack.files).map_err(|_|SoftwareError::StateUnavailable)?;
+        inner.db.write_with(|tx| -> Result<()> {
+            tx.connection().execute("UPDATE software_jobs SET state='succeeded',updated_at_ms=? WHERE id=?",params![inner.db.clock().millis(),work.id])?;
+            Ok(())
+        })?;
+        return Ok(());
+    }
     if let WorkKind::Apply(_, _, Some(pack)) = &work.kind {
         let target=pack.workspace.install_switch_review(&work.actor,&pack.input).map_err(|_|SoftwareError::ConfirmationInvalid)?;
         let _hold=inner.runtime.acquire_stopped()?;
@@ -145,7 +155,7 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
                 artifacts: launch.artifacts,
             }
         }
-        WorkKind::JavaDownload(..) => unreachable!(),
+        WorkKind::JavaDownload(..) | WorkKind::Pack(..) => unreachable!(),
         WorkKind::CustomLaunch(candidate, _) => {
             vesta_server_install::verify_managed_artifacts(&candidate.artifacts).await?;
             if let Some(custom) = &candidate.installation.custom_jar {

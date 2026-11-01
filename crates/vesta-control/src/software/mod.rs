@@ -50,12 +50,14 @@ struct PendingRollback {
     revision: u64,
 }
 enum WorkKind {
+    Pack(Box<PackWork>, Box<crate::packs::workspace::PackInstallPlan>),
     CustomLaunch(Box<StoredLaunch>, bool),
     Apply(Box<InstallPlan>, Option<Approval>, Option<Box<PackWork>>),
     Rollback,
     JavaSelect(PathBuf),
     JavaDownload(Box<crate::config::HostConfiguration>, u32),
 }
+#[derive(Clone)]
 pub struct PackWork {
     pub workspace: crate::packs::workspace::PackWorkspace,
     pub files: crate::files::FileBrowser,
@@ -583,7 +585,7 @@ impl SoftwareHandle {
             if s.revision != candidate.revision {
                 return Err(SoftwareError::RevisionConflict);
             }
-            store::admit(
+            let job = store::admit(
                 c,
                 &self.inner.db,
                 &self.inner.audit,
@@ -592,7 +594,11 @@ impl SoftwareHandle {
                 &request.idempotency_key,
                 &request_hash,
                 s.revision,
-            )
+            )?;
+            if pack.is_some() {
+                c.execute("INSERT OR REPLACE INTO pack_install_job VALUES(?,?)", rusqlite::params![self.inner.db.server_id(), job.id])?;
+            }
+            Ok(job)
         })?;
         queue.work.push_back(Work {
             id: job.id.clone(),
@@ -621,6 +627,21 @@ impl SoftwareHandle {
             .workspace
             .install_switch_review(subject, &pack.input)
             .map_err(|_| SoftwareError::ConfirmationInvalid)?;
+        if !target.software_switch_required {
+            let mut queue=self.inner.queue.lock().map_err(|_|SoftwareError::StateUnavailable)?;
+            if queue.stop { return Err(SoftwareError::RuntimeUnavailable); }
+            let job=self.inner.db.write_with(|tx| -> Result<Job> {
+                let c=tx.connection(); store::authorize(c,&self.inner.db,subject)?;
+                let state=store::state(c)?;
+                if state.recovery { return Err(SoftwareError::RecoveryRequired); }
+                let job = store::admit(c,&self.inner.db,&self.inner.audit,subject,"apply",&pack.key,&binding,state.revision)?;
+                c.execute("INSERT OR REPLACE INTO pack_install_job VALUES(?,?)", rusqlite::params![self.inner.db.server_id(), job.id])?;
+                Ok(job)
+            })?;
+            queue.work.push_back(Work {id:job.id.clone(),actor:subject.clone(),kind:WorkKind::Pack(Box::new(pack),Box::new(target))});
+            self.inner.wake.notify_one();
+            return Ok(job);
+        }
         let before = self.status(subject)?;
         if let Some(switch) = &target.software_switch {
             let current = &before.current;
