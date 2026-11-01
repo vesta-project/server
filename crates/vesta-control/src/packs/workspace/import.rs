@@ -404,6 +404,21 @@ pub(super) fn parse_spooled(
     ))
 }
 
+/// Dedicated server packs only need runtime identity from the client archive.
+/// Do not validate or materialize client override destinations for a server install.
+pub(super) fn parse_curseforge_runtime(payload: &Payload, store: &Store) -> Result<PackManifest> {
+    let file=store.verify(payload).map_err(super::super::PackError::from)?;
+    let mut zip=zip::ZipArchive::new(file).map_err(|_|invalid())?;
+    let mut manifest=zip.by_name("manifest.json").map_err(|_|invalid())?;
+    if manifest.size()>1024*1024 {return Err(invalid());}
+    let mut bytes=Vec::new(); manifest.read_to_end(&mut bytes).map_err(|_|invalid())?;
+    let document:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|invalid())?;
+    let loader=document["minecraft"]["modLoaders"].as_array().and_then(|loaders|loaders.iter().find(|loader|loader["primary"]==true).or_else(||loaders.first())).and_then(|loader|loader["id"].as_str()).ok_or_else(invalid)?;
+    let (family,version)=loader.split_once('-').ok_or_else(invalid)?;
+    let loader=match family {"forge"=>ClientLoader::Forge,"fabric"=>ClientLoader::Fabric,"neoforge"=>ClientLoader::Neoforge,"quilt"=>ClientLoader::Quilt,_=>return Err(invalid())};
+    let result=PackManifest {modpack_link:None,name:string(&document,"name")?.into(),summary:String::new(),icon:None,display_version:document["version"].as_str().filter(|v|v.split('.').all(|part|!part.is_empty()&&part.bytes().all(|b|b.is_ascii_digit()))).unwrap_or("1.0").into(),minecraft_version:string(&document["minecraft"],"version")?.into(),loader,loader_version:Some(version.into()),override_files:Vec::new(),entries:Vec::new()};
+    validate_manifest(&result)?; Ok(result)
+}
 pub(super) fn parse_server_spooled(payload: &Payload, store: &Store, providers: &dyn ProviderClient) -> Result<(PackManifest, Vec<Payload>, Vec<String>)> {
     let file = store.verify(payload).map_err(super::super::PackError::from)?;
     let mut skipped = Vec::new();
@@ -907,8 +922,19 @@ mod tests {
         assert!(!managed_server_file(".vesta/control.json"));
     }
     #[test]
+    fn dedicated_runtime_review_does_not_materialize_client_contents() {
+        let f=super::super::tests::Fixture::new();
+        let store=Store::open(&f.db).unwrap();
+        let document=br#"{"name":"Legacy","version":"2.9.3","minecraft":{"version":"1.12.2","modLoaders":[{"id":"forge-14.23.5.2860","primary":true}]},"files":[{"projectID":123,"fileID":456}]}"#;
+        let bytes=archive(&[("manifest.json",document),("overrides/server.properties",b"managed"),("overrides/client.exe",b"client-only")]);
+        let payload=store.put(&mut Cursor::new(bytes)).unwrap();
+        let manifest=parse_curseforge_runtime(&payload,&store).unwrap();
+        assert_eq!(manifest.minecraft_version,"1.12.2"); assert_eq!(manifest.loader_version.as_deref(),Some("14.23.5.2860"));
+        assert!(manifest.entries.is_empty()); assert!(manifest.override_files.is_empty());
+    }
+    #[test]
     fn dedicated_client_overrides_skip_managed_files_before_validation() {
-        let document = br#"{"name":"Legacy","version":"1","minecraft":{"version":"1.12.2","modLoaders":[{"id":"forge-14.23.5.2860"}]},"files":[]}"#;
+        let document = br#"{"manifestType":"minecraftModpack","manifestVersion":1,"name":"Legacy","version":"1","minecraft":{"version":"1.12.2","modLoaders":[{"id":"forge-14.23.5.2860"}]},"files":[]}"#;
         let bytes = archive(&[("manifest.json", document), ("overrides/server.properties", b"unsafe"), ("overrides/start.bat", b"unsafe"), ("overrides/config/test.cfg", b"data")]);
         assert!(parse_archive(&bytes, &Providers, |_| Ok(None)).is_err());
         let mut skipped = Vec::new();

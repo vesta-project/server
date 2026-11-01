@@ -373,13 +373,7 @@ impl PackWorkspace {
             // Dedicated packs may repeat managed files in the client overrides.
             // Select server parsing policy before validating either archive.
             let (client, client_blobs) = if document["serverPackFileId"].as_u64().is_some_and(|id| id > 0) {
-                let (manifest, blobs, skipped) = super::import::parse_server_spooled(&bytes, &payload_store, providers)?;
-                for path in skipped {
-                    archive_warnings.borrow_mut().push(InstallWarning { code: "server_pack_managed_file_skipped".into(),
-                        rule: "managed_server_configuration_or_runtime".into(), item: path,
-                        detail: "Kept server-managed configuration and software".into() });
-                }
-                (manifest, blobs)
+                (super::import::parse_curseforge_runtime(&bytes, &payload_store)?, Vec::new())
             } else { parse(&bytes, &item)? };
             #[cfg(test)] timing("client_archive");
             let tags = document["gameVersions"].as_array();
