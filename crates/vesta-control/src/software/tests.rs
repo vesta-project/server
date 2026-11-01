@@ -643,7 +643,7 @@ async fn pack_without_software_switch_runs_as_a_durable_job_and_replays_after_re
     let draft = workspace.file_mutate(&owner(), "1.21.1", "pack-file", &FileMutation {
         expected_revision: "0".into(), change: FileOperation::Write { root: "overrides".into(), path: "config/test.properties".into(), content_base64: STANDARD.encode(b"value=pack\n") },
     }).unwrap();
-    let plan = workspace.install_plan(&owner(), "1.21.1", Some("vanilla"), &PackInstallRequest { source: InstallSource::Draft { revision: draft.revision } }, &files, &releases, &crate::content::UreqProviderClient::new(None)).unwrap();
+    let plan = workspace.install_plan(&owner(), "1.21.1", Some("vanilla"), &PackInstallRequest { analyze: false, source: InstallSource::Draft { revision: draft.revision } }, &files, &releases, &crate::content::UreqProviderClient::new(None)).unwrap();
     assert!(!plan.software_switch_required);
     let work = PackWork { workspace: workspace.clone(), files, key: "pack-install-job".into(), input: PackInstallApply {
         acknowledge_warnings: true, acknowledge_software_switch: false, plan_id: plan.plan_id, confirmation_token: plan.confirmation_token, choices: vec![], set_as_modpack: false,

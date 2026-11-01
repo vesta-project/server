@@ -931,7 +931,7 @@ fn pack_install_applies_overrides_immediately_and_replays() {
             &f.owner,
             "1.21.1",
             Some("vanilla"),
-            &PackInstallRequest {
+            &PackInstallRequest { analyze: false,
                 source: InstallSource::Draft {
                     revision: draft.revision,
                 },
@@ -1085,7 +1085,7 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
                 &f.owner,
                 "1.21.1",
                 Some("vanilla"),
-                &PackInstallRequest {
+                &PackInstallRequest { analyze: false,
                     source: InstallSource::Draft { revision },
                 },
                 &f.browser,
@@ -1287,7 +1287,7 @@ fn uploaded_archive_delivery_survives_upload_and_plan_removal() {
             &f.owner,
             "1.21.1",
             Some("vanilla"),
-            &PackInstallRequest {
+            &PackInstallRequest { analyze: false,
                 source: InstallSource::UploadedArchive {
                     upload_id: upload.into(),
                 },
