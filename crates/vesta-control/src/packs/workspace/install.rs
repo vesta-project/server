@@ -701,15 +701,6 @@ impl PackWorkspace {
             .iter()
             .map(|item| (item.path.as_str(), item))
             .collect();
-        let by_project: BTreeMap<_, _> = inventory
-            .items
-            .iter()
-            .filter_map(|item| {
-                item.provider
-                    .as_ref()
-                    .map(|p| ((p.provider.as_str(), p.project_id.as_str()), item))
-            })
-            .collect();
         let owned = self.server_link(s)?.map(|l| l.files).unwrap_or_default();
         let source_urls: BTreeMap<_, _> = manifest.entries.iter().filter_map(|e| {
             let EntrySource::Provider { provider, project_id, version_id } = &e.source else { return None; };
@@ -753,18 +744,6 @@ impl PackWorkspace {
                 path = format!("{}/datapacks/{relative}", world.name);
             }
             let mut conflict = None;
-            if let Some(p) = &provider
-                && let Some(old) = by_project
-                    .get(&(p.provider.as_str(), p.project_id.as_str()))
-                    .filter(|item| {
-                        item.provider
-                            .as_ref()
-                            .is_some_and(|old| old.version_id != p.version_id)
-                    })
-            {
-                path = old.path.clone();
-                conflict = Some("project_version".into());
-            }
             validate_install_path(&path)?;
             let item = provider.as_ref().and_then(|p| source_urls.get(&(p.provider.as_str(), p.project_id.as_str(), p.version_id.as_str()))).map(String::as_str).unwrap_or(&path);
             if !body.sha256.is_empty() { archive_warnings.borrow_mut().extend(archive_policy::payload_warnings(&body, item)); }

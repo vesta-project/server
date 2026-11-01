@@ -1181,11 +1181,12 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
     let reopened = PackWorkspace::open(&f.db).unwrap();
     assert!(reopened.server_link(&f.owner).unwrap().unwrap().pending.is_none());
     assert_eq!(outcome.state, "installed");
-    assert_eq!(plan.removed.len(), 1);
-    assert_eq!(outcome.pending_ids.len(), 1);
-    assert!(!f.game.join("config/owned.txt").exists());
+    // Shared launcher policy preserves config files dropped by the author.
+    assert_eq!(plan.removed.len(), 0);
+    assert_eq!(outcome.pending_ids.len(), 0);
+    assert_eq!(std::fs::read(f.game.join("config/owned.txt")).unwrap(), b"owned");
     f.browser.apply_pending_content().unwrap();
-    assert!(!f.game.join("config/owned.txt").exists());
+    assert_eq!(std::fs::read(f.game.join("config/owned.txt")).unwrap(), b"owned");
     assert!(releases.offered().unwrap().unwrap().revision() > first_revision);
     let installed = reopened.server_link(&f.owner).unwrap().unwrap();
     assert!(installed.pending.is_none());
