@@ -32,11 +32,26 @@ impl CpuDelta {
         let elapsed = now.checked_duration_since(old.3)?.as_secs_f64();
         let delta = value.cpu_seconds - old.2;
         (elapsed > 0.0 && delta >= 0.0)
-            .then_some(delta / elapsed * 100.0)
+            .then(|| {
+                total_cpu_percent(
+                    delta,
+                    elapsed,
+                    std::thread::available_parallelism().ok()?.get(),
+                )
+            })
+            .flatten()
             .filter(|v| v.is_finite())
     }
 }
 
+// Match the host CPU scale: all available logical processors together are 100%.
+fn total_cpu_percent(seconds: f64, elapsed: f64, processors: usize) -> Option<f64> {
+    if processors == 0 || elapsed <= 0.0 || seconds < 0.0 {
+        return None;
+    }
+    let percent = seconds / elapsed / processors as f64 * 100.0;
+    percent.is_finite().then(|| percent.clamp(0.0, 100.0))
+}
 #[cfg(windows)]
 #[allow(unsafe_code)]
 pub(super) fn process(pid: u32, expected_start: Option<u64>) -> Option<Process> {
@@ -236,6 +251,13 @@ pub(super) fn host() -> Host {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn process_cpu_uses_total_capacity() {
+        assert_eq!(total_cpu_percent(5.0, 1.0, 10), Some(50.0));
+        assert_eq!(total_cpu_percent(10.0, 1.0, 10), Some(100.0));
+        assert_eq!(total_cpu_percent(12.0, 1.0, 10), Some(100.0));
+        assert_eq!(total_cpu_percent(1.0, 1.0, 0), None);
+    }
     #[test]
     fn metrics_native_identity_and_first_cpu_sample_are_honest() {
         let pid = std::process::id();
