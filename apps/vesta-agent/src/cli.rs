@@ -29,7 +29,7 @@ pub enum Command {
         args: Vec<OsString>,
     },
     Version,
-    Update,
+    Update(Vec<String>),
     Check(PathBuf),
     Status(PathBuf),
     Serve {
@@ -211,7 +211,18 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
             return parse(args.into_iter().skip(1));
         }
         "version" if args.len() == 1 => return Ok(Command::Version),
-        "update" if args.len() == 1 => return Ok(Command::Update),
+        "update" => {
+            if args.len() > 1
+                && !matches!(args[1].to_str(), Some("init" | "status" | "check" | "stage" | "verify" | "configure" | "--help" | "-h"))
+            {
+                return Err(());
+            }
+            return Ok(Command::Update(
+                args.iter().skip(1)
+                    .map(|a| a.to_str().map(str::to_owned).ok_or(()))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ));
+        }
         "status" | "check-config" | "serve" | "shutdown" => {
             let mut at = 0;
             let source = PathBuf::from(value(&args, &mut at)?);
@@ -380,6 +391,11 @@ mod tests {
         for command in ["version", "update", "--help"] {
             assert!(p(&[command]).is_ok());
         }
+        for action in ["init","status","check","stage","verify","configure","--help"] {
+            assert!(matches!(p(&["update",action]),Ok(Command::Update(args)) if args==[action]));
+            assert!(matches!(p(&["agent","update",action]),Ok(Command::Update(args)) if args==[action]));
+        }
+        assert!(p(&["update","apply"]).is_err());
     }
     #[test]
     fn create_flags_never_accept_eula_or_public_bind() {

@@ -114,6 +114,13 @@ This observation is point-in-time diagnostics, not a portable activation authori
 
 ## Opt-in startup discovery
 
+The public `vesta update <action> ...` entry point now calls the exact same local
+implementation as `vesta-setup update <action> ...`, including receipt validation,
+installation lock and all trust checks. `vesta-agent` remains an executable alias
+because existing startup records and signed artifact inventories still name it.
+No shell, implicit root selection or activation bypass is introduced. Bare
+`vesta update` continues to refuse activation and points to the supported commands.
+
 After exact-installed-release trust bootstrap, an OS-local operator can configure
 the installed setup host's next-start check:
 

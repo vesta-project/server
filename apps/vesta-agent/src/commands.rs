@@ -64,7 +64,16 @@ pub async fn run_with_format(command: Command, base: &Path, format: Format) -> E
             );
             return ExitCode::SUCCESS;
         }
-        Command::Update => {
+        Command::Update(args) => {
+            if !args.is_empty() {
+                return match vesta_setup::updates::run(&args) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(code) => {
+                        eprintln!("{code}");
+                        ExitCode::FAILURE
+                    }
+                };
+            }
             println!(
                 "current_version={}; available_version=unknown; signed_update_catalogue_not_implemented",
                 env!("CARGO_PKG_VERSION")
@@ -72,7 +81,7 @@ pub async fn run_with_format(command: Command, base: &Path, format: Format) -> E
             eprintln!(
                 "update_refused: self_update_activation_not_implemented; no_binary_replacement"
             );
-            eprintln!("Signed update trust/check/stage foundations: vesta-setup update --help");
+            eprintln!("Signed update check/stage/verify and startup policy: vesta update --help");
             return ExitCode::FAILURE;
         }
         Command::Check(source) => {
