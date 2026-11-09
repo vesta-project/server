@@ -36,6 +36,7 @@ fn value(result: vesta_control::files::Result<impl serde::Serialize>) -> Reply {
     }
 }
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
+    #[cfg(feature = "latency-probe")] vesta_control::latency_probe::begin();
     let Some(token) = request.authorization else {
         return error(StatusCode::UNAUTHORIZED, "management_session_invalid");
     };
@@ -43,7 +44,9 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         Ok(subject) => subject,
         Err(e) => return management_error(e),
     };
-    if request.query.is_some()
+    let summary = request.method == Method::GET
+        && request.path == "/api/v3/manage/content" && request.query == Some("view=summary");
+    if (request.query.is_some() && !summary)
         || request.if_match.is_some()
         || request.if_none_match.is_some()
         || request.range.is_some()
@@ -73,12 +76,22 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             Ok(world) => world,
             Err(e) => return super::files::file_error(e),
         };
-        return value(host.files().content_inventory(
+        #[cfg(feature = "latency-probe")] let inventory_start = std::time::Instant::now();
+        let result = host.files().content_inventory_view(
             &subject,
             family,
             version.unwrap_or_else(|| host.configuration().pack().minecraft_version().into()),
             &world,
-        ));
+            summary,
+        );
+        #[cfg(feature = "latency-probe")] let inventory_ns = inventory_start.elapsed().as_nanos();
+        #[allow(unused_mut)] let mut reply = value(result);
+        #[cfg(feature = "latency-probe")] {
+            let metrics = vesta_control::latency_probe::finish();
+            let data = serde_json::json!({"inventory_ns":inventory_ns,"metrics":metrics});
+            reply.headers_mut().insert("x-vesta-latency-probe", http::HeaderValue::from_str(&data.to_string()).unwrap());
+        }
+        return reply;
     }
     if request.method != Method::POST {
         return error(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");

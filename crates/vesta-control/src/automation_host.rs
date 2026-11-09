@@ -235,7 +235,9 @@ impl HostActions {
             &directory.join("server.properties"),
         )
         .map_err(|_| ())?;
-        if !properties.online_mode() || !properties.whitelist_enabled() {
+        // Synchronize the list even while whitelist enforcement is disabled,
+        // so enabling Minecraft's whitelist does not start with an empty list.
+        if !properties.online_mode() {
             return Ok(());
         }
         let bans =

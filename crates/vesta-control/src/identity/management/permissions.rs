@@ -409,7 +409,7 @@ fn delegated_user(
     }
     Ok(())
 }
-fn insert_assignment(
+pub(super) fn insert_assignment(
     repo: &Repository<'_>,
     principal: &PrincipalId,
     role: &RoleId,
@@ -1033,6 +1033,8 @@ impl ManagementAccess {
         id: &RoleId,
     ) -> Result<()> {
         let work = || -> AdminResult<()> {
+            let (current_issuer, _) = self.subject_in(repo, &issuer.device)?;
+            if current_issuer != *issuer { return Err(PermissionError::Forbidden); }
             let policy = repo.policy(Some(issuer))?;
             require(&policy, Capability::InvitationsCreate)?;
             lower(&policy, target, repo.rank(target)?)?;

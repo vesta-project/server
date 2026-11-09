@@ -83,6 +83,23 @@ fn bind_curseforge_batch(
     Ok(result)
 }
 impl UreqProviderClient {
+    pub(crate) fn resolve_artifact(&self, provider: Provider, project: &str, version: &str, sha512: Option<&str>, deadline: Instant) -> Result<ResolvedSource> {
+        let client = self.with_deadline(deadline)?;
+        let Some(hash) = sha512 else { return client.resolve(provider, project, version); };
+        if provider != Provider::Modrinth { return Err(ContentError::InvalidMetadata); }
+        let mut document = client.pack_document(provider, project, Some(version), false)?;
+        Self::select_modrinth_artifact(&mut document, hash)?;
+        let metadata: ModrinthVersion = serde_json::from_value(document).map_err(|_| ContentError::InvalidMetadata)?;
+        modrinth_source(metadata, project, version)
+    }
+    pub(crate) fn select_modrinth_artifact(document: &mut serde_json::Value, hash: &str) -> Result<()> {
+        ExpectedHash::Sha512(hash.into()).validate()?;
+        let files = document["files"].as_array().ok_or(ContentError::InvalidMetadata)?;
+        let matching: Vec<_> = files.iter().filter(|file| file["hashes"]["sha512"].as_str().is_some_and(|value|value.eq_ignore_ascii_case(hash))).cloned().collect();
+        if matching.len() != 1 { return Err(ContentError::InvalidMetadata); }
+        document["files"] = serde_json::Value::Array(matching);
+        Ok(())
+    }
     fn prefetch_once(&self, url: String) -> bool {
         let Some(cache) = &self.metadata_cache else {
             return false;
@@ -376,6 +393,15 @@ impl UreqProviderClient {
     }
 }
 impl ProviderClient for UreqProviderClient {
+    fn archive_directory(&self, provider: Provider, project: &str) -> Result<&'static str> {
+        if provider != Provider::Curseforge { return Ok("mods"); }
+        let document=self.pack_document(provider,project,None,false)?;
+        match document["classId"].as_u64() {
+            Some(6) => Ok("mods"), Some(12) => Ok("resourcepacks"),
+            Some(6552) => Ok("shaderpacks"), Some(6945) => Ok("datapacks"),
+            _ => Err(ContentError::InvalidMetadata),
+        }
+    }
     fn archive_filename(&self, provider: Provider, project: &str, version: &str) -> Result<String> {
         if provider != Provider::Curseforge { return self.resolve(provider, project, version).map(|s| s.filename); }
         let document = self.pack_document(provider, project, Some(version), false)?;
@@ -526,7 +552,7 @@ fn modrinth_source(version: ModrinthVersion, project: &str, id: &str) -> Result<
         provider: Provider::Modrinth,
         filename: file.filename,
         download_url: file.url,
-        expected_hash: ExpectedHash::Sha512(file.hashes.sha512),
+        expected_hash: ExpectedHash::Sha512(file.hashes.sha512.to_ascii_lowercase()),
     };
     super::validate_source(&source)?;
     Ok(source)
@@ -864,5 +890,26 @@ mod tests {
             )
             .is_ok()
         );
+    }
+}
+
+#[cfg(test)]
+mod artifact_binding_tests {
+    use super::*;
+    #[test]
+    fn pinned_file_selection_does_not_substitute_primary_or_other_project() {
+        let file=|name:&str,hash:String,primary:bool|serde_json::json!({"filename":name,"url":format!("https://cdn.modrinth.com/data/project/versions/version/{name}"),"primary":primary,"hashes":{"sha512":hash}});
+        let document=serde_json::json!({"id":"version","project_id":"project","files":[file("primary.jar","a".repeat(128),true),file("secondary.jar","b".repeat(128),false)]});
+        let mut selected=document.clone();
+        UreqProviderClient::select_modrinth_artifact(&mut selected,&"b".repeat(128)).unwrap();
+        let source=modrinth_source(serde_json::from_value(selected.clone()).unwrap(),"project","version").unwrap();
+        assert_eq!(source.filename,"secondary.jar");
+        assert!(matches!(source.expected_hash,ExpectedHash::Sha512(hash) if hash=="b".repeat(128)));
+        assert!(modrinth_source(serde_json::from_value(selected.clone()).unwrap(),"another-project","version").is_err());
+        assert!(modrinth_source(serde_json::from_value(selected).unwrap(),"project","another-version").is_err());
+        assert!(UreqProviderClient::select_modrinth_artifact(&mut document.clone(),&"c".repeat(128)).is_err());
+        assert!(UreqProviderClient::select_modrinth_artifact(&mut document.clone(),"invalid").is_err());
+        let mut ambiguous=document.clone();ambiguous["files"][0]["hashes"]["sha512"]=("b".repeat(128)).into();
+        assert!(UreqProviderClient::select_modrinth_artifact(&mut ambiguous,&"b".repeat(128)).is_err());
     }
 }

@@ -12,6 +12,10 @@ use std::{collections::BTreeMap, io::Seek};
 const MAX_PENDING: i64 = vesta_protocol::pack::catalogue::MAX_FILES as i64;
 static CONTENT_ADMISSION: std::sync::Mutex<()> = std::sync::Mutex::new(());
 const MAX_STAGED: i64 = 128 * 1024 * 1024;
+#[cfg(test)]
+thread_local! {
+    pub(super) static METADATA_AFTER_ADMISSION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
 pub(super) fn initialize(db: &StateDatabase) -> Result<()> {
     db.write(|c| c.execute_batch("CREATE TABLE IF NOT EXISTS server_content_changes (
         id TEXT PRIMARY KEY, principal TEXT NOT NULL, device TEXT NOT NULL, request_key TEXT NOT NULL,
@@ -64,6 +68,18 @@ impl FileBrowser {
 
     pub(crate) fn pack_admission(&self) -> Result<std::sync::MutexGuard<'static, ()>> {
         CONTENT_ADMISSION.lock().map_err(|_| FileError::Unavailable)
+    }
+    // Parent admission needs the directory itself, not a listing of every sibling
+    // for every file in a pack. Resolve and authorize afresh; never cache path trust.
+    pub(super) fn pack_parent(&self, subject: &Subject, path: &RelativePath) -> Result<()> {
+        self.db.read_with(|snapshot| {
+            let policy = identity::policy_in(snapshot.connection(), self.db.server_id(), self.db.clock().millis(), Some(subject))?;
+            authorize(&policy, Capability::FilesList, &path.resource())?;
+            let checked = self.root.resolve(Some(path))?;
+            authorize(&policy, Capability::FilesList, &checked.resource)?;
+            if !checked.metadata.is_dir() { return Err(FileError::NotDirectory); }
+            Ok(())
+        }).map_err(FileError::from)
     }
     /// Insert a reviewed pack atomically with its receipt; always wait for restart.
     #[allow(clippy::type_complexity)]
@@ -317,6 +333,13 @@ impl FileBrowser {
         minecraft_version: String,
         world: &crate::world::WorldStatus,
     ) -> Result<ContentInventory> {
+        self.content_inventory_view(subject, software, minecraft_version, world, false)
+    }
+    /// Display-only listing: omit byte verification and JAR parsing on first paint.
+    pub fn content_inventory_view(
+        &self, subject: &Subject, software: Option<String>, minecraft_version: String,
+        world: &crate::world::WorldStatus, summary: bool,
+    ) -> Result<ContentInventory> {
         self.check_remote_surface(subject, &[Capability::FilesList, Capability::FilesRead])?;
         let mut items = Vec::new();
         let mut truncated = false;
@@ -344,26 +367,22 @@ impl FileBrowser {
                 }
                 let path = format!("{dir}/{}", entry.name);
                 let relative = RelativePath::parse(&path)?;
-                let mut stream = self.open_stream(subject, &relative)?;
                 // Hash only a bounded amount per inventory; provenance is never attached
                 // to bytes which have not been verified in this observation.
-                let hash = if entry.size <= MAX_WRITE_BYTES as u64
+                let hash = if !summary && entry.size <= MAX_WRITE_BYTES as u64
                     && entry.size <= hash_budget
                     && items.len() < 128
                 {
                     hash_budget -= entry.size;
+                    let mut stream = self.open_stream(subject, &relative)?;
                     Some(hex::encode(stream.snapshot_digest(0, stream.size())?))
                 } else {
                     None
                 };
-                let provider = hash
-                    .as_deref()
-                    .map(|hash| self.content_provider(&path, hash))
-                    .transpose()?
-                    .flatten();
+                let provider = None;
                 // Declared side/name come from a bounded ZIP metadata read, independently
                 // of the full-file hash budget used for provider provenance.
-                let declared = self.content_metadata(subject, &relative).ok().flatten();
+                let declared = if summary { None } else { self.content_metadata(subject, &relative).ok().flatten() };
                 items.push(ContentEntry {
                     modpack_owned: false,
                     kind,
@@ -373,6 +392,7 @@ impl FileBrowser {
                     enabled: Some(!entry.name.ends_with(".disabled")),
                     sha256: hash,
                     provider,
+                    display_provider: None,
                     declared,
                     pending: None,
                     pending_id: None,
@@ -387,7 +407,7 @@ impl FileBrowser {
             let relative = RelativePath::parse(path)?;
             let checked = self.root.resolve(Some(&relative))?;
             let mut size = checked.metadata.len();
-            let hash = if checked.metadata.is_dir() {
+            let hash = if summary { None } else if checked.metadata.is_dir() {
                 match self.content_tree(subject, path) {
                     Ok((hash, bytes)) => {
                         size = bytes;
@@ -403,11 +423,7 @@ impl FileBrowser {
             } else {
                 None
             };
-            let provider = hash
-                .as_deref()
-                .map(|hash| self.content_provider(path, hash))
-                .transpose()?
-                .flatten();
+            let provider = None;
             items.push(ContentEntry {
                 modpack_owned: false,
                 kind: ContentKind::Datapack,
@@ -417,11 +433,30 @@ impl FileBrowser {
                 enabled: pack.enabled,
                 sha256: hash,
                 provider,
+                display_provider: None,
                 declared: None,
                 pending: None,
                 pending_id: None,
                 pending_error: None,
             });
+        }
+        // Reuse one read transaction and prepared statement for all verified
+        // files. Never hold the database read while hashing or reading ZIPs.
+        let provenance = self.db.read(|c| {
+            let mut query = c.prepare("SELECT sha256, provider_json FROM server_content_provenance WHERE path=?")?;
+            let mut rows = Vec::new();
+            for (index, item) in items.iter().enumerate() {
+                let recorded = query.query_row(params![item.path], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).optional()?;
+                if let Some((hash, raw)) = recorded {
+                    if item.sha256.as_ref().is_none_or(|current| current == &hash) { rows.push((index, raw)); }
+                }
+            }
+            Ok(rows)
+        })?;
+        for (index, raw) in provenance {
+            let provider = serde_json::from_str(&raw).map_err(|_| FileError::Unavailable)?;
+            if items[index].sha256.is_some() { items[index].provider = Some(provider); }
+            else { items[index].display_provider = Some(provider); }
         }
         let changes = self.db.read_with(|tx| {
             let mut q = tx.connection().prepare("SELECT id,change_json,error FROM server_content_changes WHERE state='pending' ORDER BY rowid LIMIT 65536")?;
@@ -470,6 +505,7 @@ impl FileBrowser {
                     enabled: None,
                     sha256: None,
                     provider: change.provider.clone(),
+                    display_provider: None,
                     declared: None,
                     pending: None,
                     pending_id: None,
@@ -477,7 +513,7 @@ impl FileBrowser {
                 });
                 items.last_mut().ok_or(FileError::Unavailable)?
             };
-            if is_jar(&change.path)
+            if !summary && is_jar(&change.path)
                 && let Some(payload) = &change.payload
             {
                 let store = crate::packs::payload::Store::open(&self.db)?;
@@ -565,14 +601,21 @@ impl FileBrowser {
         subject: &Subject,
         path: &RelativePath,
     ) -> Result<Option<DeclaredMetadata>> {
+        #[cfg(test)] let audit_start=std::time::Instant::now();
         // Admission checks all submitted/canonical/handle scopes before ZIP parsing.
-        let _stream = self.open_stream(subject, path)?;
-        let checked = self.root.resolve(Some(path))?;
-        if checked.metadata.len() > 256 * 1024 * 1024 {
+        let stream = self.open_stream(subject, path)?;
+        #[cfg(test)] METADATA_AFTER_ADMISSION.with(|hook| {
+            if let Some(action) = hook.borrow_mut().take() { action(); }
+        });
+        if stream.size() > 256 * 1024 * 1024 {
             return Err(FileError::TooLarge);
         }
-        let file = native::open_regular(&checked.path)?;
-        jar_metadata(file)
+        let file = stream.into_metadata_reader();
+        #[cfg(test)] let audit_parse=std::time::Instant::now();
+        #[cfg(feature = "latency-probe")] let _zip_span = vesta_state::latency_probe::Span::new("metadata_zip");
+        let metadata=jar_metadata(file);
+        #[cfg(test)] if std::env::var_os("VESTA_AUDIT_TIMING").is_some() { eprintln!("AUDIT_METADATA admission_ms={:.3} zip_ms={:.3}",audit_parse.duration_since(audit_start).as_secs_f64()*1000.0,audit_parse.elapsed().as_secs_f64()*1000.0); }
+        metadata
     }
     pub fn content_mutate(
         &self,
@@ -944,6 +987,7 @@ impl FileBrowser {
         self.reconcile_content_barrier()
     }
     fn apply_content_id(&self, id: &str) -> Result<()> {
+        #[cfg(test)] let audit_clock = std::time::Instant::now();
         let row = self.db.read(|c|c.query_row("SELECT principal,device,change_json,bytes FROM server_content_changes WHERE id=? AND state='pending'",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Vec<u8>>(3)?))).optional().map_err(Into::into))?;
         let Some((principal, device, raw, bytes)) = row else {
             return Ok(());
@@ -969,13 +1013,14 @@ impl FileBrowser {
             let parts: Vec<_> = change.path.split('/').collect();
             for n in 1..parts.len() {
                 let parent = RelativePath::parse(&parts[..n].join("/"))?;
-                if matches!(self.list(&subject, Some(&parent)), Err(FileError::NotFound)) {
+                if matches!(self.pack_parent(&subject, &parent), Err(FileError::NotFound)) {
                     self.mkdir(&subject, &parent)?;
                 }
             }
         }
         let old =
             self.content_provider(&change.path, change.expected.as_deref().unwrap_or_default())?;
+        #[cfg(test)] let audit_effect = std::time::Instant::now();
         let result = files.execute_remote(&subject,&key,json!(["content",id]),||Ok(change.authority()),|files| {
             let outcome = match change.action.as_str() {
                 "install" | "update" => {
@@ -998,6 +1043,7 @@ impl FileBrowser {
             // Mutations complete their file receipt in the same journal transaction.
             Ok(outcome)
         });
+        #[cfg(test)] let audit_commit = std::time::Instant::now();
         match result {
             Ok(_) => self.db.write_with(|tx| {
                 let c=tx.connection();
@@ -1014,6 +1060,7 @@ impl FileBrowser {
                 return Err(error);
             }
         }
+        #[cfg(test)] if std::env::var_os("VESTA_AUDIT_TIMING").is_some() { eprintln!("AUDIT_FILE parent_ms={:.3} effect_ms={:.3} commit_ms={:.3}", audit_effect.duration_since(audit_clock).as_secs_f64()*1000.0, audit_commit.duration_since(audit_effect).as_secs_f64()*1000.0, audit_commit.elapsed().as_secs_f64()*1000.0); }
         self.reconcile_content_barrier()
     }
 }
@@ -1046,8 +1093,85 @@ fn is_jar(name: &str) -> bool {
     name.ends_with(".jar") || name.ends_with(".jar.disabled")
 }
 
+fn manifest_implementation_version(zip: &mut zip::ZipArchive<impl Read + Seek>) -> Option<String> {
+    let mut file=zip.by_name("META-INF/MANIFEST.MF").ok()?;
+    if file.size()>65536 {return None;}
+    let mut text=String::new();file.by_ref().take(65537).read_to_string(&mut text).ok()?;
+    if text.len()>65536 {return None;}
+    let mut version:Option<String>=None;let mut selected=false;
+    for line in text.lines() {
+        if line.is_empty() {break;} // Named-entry sections do not define the JAR version.
+        if let Some(continuation)=line.strip_prefix(' ') {
+            if selected {version.as_mut()?.push_str(continuation);}
+            continue;
+        }
+        selected=false;
+        if let Some((key,value))=line.split_once(':') && key.eq_ignore_ascii_case("Implementation-Version") {
+            if version.is_some() {return None;}
+            version=Some(value.strip_prefix(' ').unwrap_or(value).to_owned());selected=true;
+        }
+    }
+    version.filter(|v|!v.is_empty()&&v.len()<=256&&!v.contains("${")&&!v.chars().any(char::is_control))
+}
+
+/// Keep nearby ZIP header seeks inside the read buffer. BufReader's ordinary
+/// Seek implementation discards its buffer even for nearby absolute seeks.
+struct MetadataReader<R> {
+    buffered: std::io::BufReader<R>,
+    position: u64,
+}
+impl<R: Read + Seek> MetadataReader<R> {
+    fn new(mut reader: R) -> std::io::Result<Self> {
+        let position = reader.stream_position()?;
+        Ok(Self {
+            buffered: std::io::BufReader::new(reader),
+            position,
+        })
+    }
+}
+impl<R: Read + Seek> Read for MetadataReader<R> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.buffered.read(bytes)?;
+        self.position = self
+            .position
+            .checked_add(count as u64)
+            .ok_or_else(|| std::io::Error::other("metadata position overflow"))?;
+        Ok(count)
+    }
+}
+impl<R: Read + Seek> Seek for MetadataReader<R> {
+    fn seek(&mut self, from: std::io::SeekFrom) -> std::io::Result<u64> {
+        use std::io::SeekFrom;
+        let target = match from {
+            SeekFrom::Start(target) => target,
+            SeekFrom::Current(offset) => {
+                self.position.checked_add_signed(offset).ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid metadata seek")
+                })?
+            }
+            SeekFrom::End(offset) => {
+                self.position = self.buffered.seek(SeekFrom::End(offset))?;
+                return Ok(self.position);
+            }
+        };
+        if let Ok(offset) = i64::try_from(target as i128 - self.position as i128) {
+            self.buffered.seek_relative(offset)?;
+        } else {
+            self.buffered.seek(SeekFrom::Start(target))?;
+        }
+        self.position = target;
+        Ok(target)
+    }
+    fn stream_position(&mut self) -> std::io::Result<u64> {
+        Ok(self.position)
+    }
+}
+
 fn jar_metadata(reader: impl Read + Seek) -> Result<Option<DeclaredMetadata>> {
-    let mut zip = zip::ZipArchive::new(reader).map_err(|_| FileError::Corrupt)?;
+    // ZIP central-directory parsing issues many small reads. Buffer the already
+    // admitted handle; never reopen its pathname or cache authority/metadata.
+    let mut zip = zip::ZipArchive::new(MetadataReader::new(reader).map_err(|_| FileError::Corrupt)?)
+        .map_err(|_| FileError::Corrupt)?;
     if zip.len() > 4096 {
         return Err(FileError::TooLarge);
     }
@@ -1056,6 +1180,7 @@ fn jar_metadata(reader: impl Read + Seek) -> Result<Option<DeclaredMetadata>> {
         ("quilt.mod.json", "quilt"),
         ("META-INF/mods.toml", "forge"),
         ("META-INF/neoforge.mods.toml", "neoforge"),
+        ("mcmod.info", "forge"),
         ("paper-plugin.yml", "paper"),
         ("plugin.yml", "bukkit"),
     ] {
@@ -1074,14 +1199,17 @@ fn jar_metadata(reader: impl Read + Seek) -> Result<Option<DeclaredMetadata>> {
         if text.len() > 65536 {
             continue;
         }
+        drop(file);
         let mut result = DeclaredMetadata {
             loader: Some(loader.into()),
             ..Default::default()
         };
-        if name.ends_with(".json") {
+        if name.ends_with(".json") || name=="mcmod.info" {
             let value: serde_json::Value =
                 serde_json::from_str(&text).map_err(|_| FileError::Corrupt)?;
-            let data = if loader == "quilt" {
+            let data = if name=="mcmod.info" {
+                value.as_array().or_else(||value["modList"].as_array()).and_then(|rows|rows.first()).ok_or(FileError::Corrupt)?
+            } else if loader == "quilt" {
                 &value["quilt_loader"]
             } else {
                 &value
@@ -1094,6 +1222,7 @@ fn jar_metadata(reader: impl Read + Seek) -> Result<Option<DeclaredMetadata>> {
             result.name = meta["name"]
                 .as_str()
                 .or(data["id"].as_str())
+                .or(data["modid"].as_str())
                 .map(str::to_owned);
             result.version = data["version"].as_str().map(str::to_owned);
             result.side = value["environment"]
@@ -1114,6 +1243,9 @@ fn jar_metadata(reader: impl Read + Seek) -> Result<Option<DeclaredMetadata>> {
                     .filter_map(|d| d["id"].as_str().map(str::to_owned))
                     .take(256)
                     .collect();
+            }
+            if name=="mcmod.info" && let Some(deps)=data["dependencies"].as_array() {
+                result.dependencies=deps.iter().filter_map(|v|v.as_str().map(str::to_owned)).take(256).collect();
             }
         } else if name.ends_with(".toml") {
             let value: toml::Value = toml::from_str(&text).map_err(|_| FileError::Corrupt)?;
@@ -1169,7 +1301,10 @@ fn jar_metadata(reader: impl Read + Seek) -> Result<Option<DeclaredMetadata>> {
             }
         }
         result.name = result.name.filter(|v| v.len() <= 256);
-        result.version = result.version.filter(|v| v.len() <= 256);
+        if matches!(loader,"forge"|"neoforge") && result.version.as_deref()==Some("${file.jarVersion}") {
+            result.version=manifest_implementation_version(&mut zip);
+        }
+        result.version = result.version.filter(|v| !v.is_empty()&&v.len() <= 256&&!v.contains("${")&&!v.chars().any(char::is_control));
         result.side = result.side.filter(|v| v.len() <= 64);
         result.dependencies.retain(|v| v.len() <= 256);
         result.dependencies.truncate(128);
@@ -1182,6 +1317,106 @@ fn jar_metadata(reader: impl Read + Seek) -> Result<Option<DeclaredMetadata>> {
 mod tests {
     use super::*;
     use std::io::{Cursor, Write};
+    #[test]
+    fn metadata_reader_seeks_match_the_underlying_stream() {
+        use std::io::SeekFrom;
+        let bytes = (0..20000).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+        let mut plain = Cursor::new(bytes.clone());
+        plain.set_position(19);
+        let mut buffered = MetadataReader::new(plain.clone()).unwrap();
+        for seek in [
+            SeekFrom::Current(0),
+            SeekFrom::Start(4),
+            SeekFrom::Current(15),
+            SeekFrom::Current(-12),
+            SeekFrom::Start(19000),
+            SeekFrom::End(-50),
+            SeekFrom::Start(30),
+            SeekFrom::Start(19980),
+        ] {
+            assert_eq!(buffered.seek(seek).unwrap(), plain.seek(seek).unwrap());
+            let mut a = [0; 13];
+            let mut b = [0; 13];
+            assert_eq!(buffered.read(&mut a).unwrap(), plain.read(&mut b).unwrap());
+            assert_eq!(a, b);
+            assert_eq!(
+                buffered.stream_position().unwrap(),
+                plain.stream_position().unwrap()
+            );
+        }
+        let position = buffered.stream_position().unwrap();
+        assert_eq!(
+            buffered
+                .seek(SeekFrom::Current(i64::MIN))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(buffered.stream_position().unwrap(), position);
+    }
+    #[test]
+    fn jar_declaration_read_amplification_is_bounded() {
+        use std::cell::Cell;
+        struct Observed<'a> {
+            file: std::fs::File,
+            reads: &'a Cell<usize>,
+            bytes: &'a Cell<usize>,
+        }
+        impl Read for Observed<'_> {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.reads.set(self.reads.get() + 1);
+                let n = self.file.read(buffer)?;
+                self.bytes.set(self.bytes.get() + n);
+                Ok(n)
+            }
+        }
+        impl Seek for Observed<'_> {
+            fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+                self.file.seek(position)
+            }
+        }
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut archive = zip::ZipWriter::new(file.reopen().unwrap());
+        for i in 0..1000 {
+            archive
+                .start_file(
+                    format!("classes/Class{i}.class"),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+            archive.write_all(b"fixture class payload").unwrap();
+        }
+        archive
+            .start_file("fabric.mod.json", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        archive
+            .write_all(br#"{"id":"example","name":"Example","version":"1"}"#)
+            .unwrap();
+        archive.finish().unwrap();
+        let reads = Cell::new(0);
+        let bytes = Cell::new(0);
+        let result = jar_metadata(Observed {
+            file: file.reopen().unwrap(),
+            reads: &reads,
+            bytes: &bytes,
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(result.name.as_deref(), Some("Example"));
+        println!("JAR_READS calls={} bytes={}", reads.get(), bytes.get());
+        // A declaration-only scan must not translate each central-directory field
+        // into a separate underlying read. This is an I/O-work assertion, not time.
+        assert!(
+            reads.get() < 512,
+            "excessive underlying declaration reads: {}",
+            reads.get()
+        );
+        assert!(
+            bytes.get() < 512 * 1024,
+            "bounded fixture scan must not read whole payload repeatedly"
+        );
+    }
+
     fn jar(name: &str, text: &str) -> Vec<u8> {
         let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
         zip.start_file(name, zip::write::SimpleFileOptions::default())
@@ -1237,6 +1472,24 @@ mod tests {
             assert_eq!(metadata.loader.as_deref(), Some(loader));
             assert_eq!(metadata.name.as_deref(), Some("Test"));
             assert_eq!(metadata.version.as_deref(), Some("1"));
+        }
+    }
+    #[test]
+    fn legacy_forge_metadata_and_manifest_version_are_reported_as_actual_values() {
+        for document in [r#"[{"modid":"legacy","name":"Legacy","version":"2.9.3"}]"#,r#"{"modList":[{"modid":"legacy","name":"Legacy","version":"2.9.3"}]}"#] {
+            let metadata=jar_metadata(Cursor::new(jar("mcmod.info",document))).unwrap().unwrap();
+            assert_eq!(metadata.loader.as_deref(),Some("forge"));assert_eq!(metadata.name.as_deref(),Some("Legacy"));assert_eq!(metadata.version.as_deref(),Some("2.9.3"));
+        }
+        let mut zip=zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file("META-INF/mods.toml",zip::write::SimpleFileOptions::default()).unwrap();zip.write_all(b"[[mods]]\nmodId='example'\nversion='${file.jarVersion}'\n").unwrap();
+        zip.start_file("META-INF/MANIFEST.MF",zip::write::SimpleFileOptions::default()).unwrap();zip.write_all(b"Manifest-Version: 1.0\r\nImplementation-Version: 1.2.\r\n 3\r\n\r\nName: ignored/entry\r\nImplementation-Version: wrong\r\n").unwrap();
+        let metadata=jar_metadata(Cursor::new(zip.finish().unwrap().into_inner())).unwrap().unwrap();assert_eq!(metadata.version.as_deref(),Some("1.2.3"));
+        let metadata=jar_metadata(Cursor::new(jar("META-INF/mods.toml","[[mods]]\nmodId='example'\nversion='${file.jarVersion}'\n"))).unwrap().unwrap();assert!(metadata.version.is_none(),"an unresolved build placeholder is not an actual version");
+    }
+    #[test]
+    fn manifest_version_fallback_is_bounded_and_main_section_only() {
+        for document in ["Manifest-Version: 1.0\n\nName: entry\nImplementation-Version: wrong\n".to_owned(),"Implementation-Version: first\nImplementation-Version: second\n".into(),"Implementation-Version: ${project.version}\n".into(),format!("Implementation-Version: {}\n","a".repeat(257)),"a".repeat(65537)] {
+            let mut zip=zip::ZipArchive::new(Cursor::new(jar("META-INF/MANIFEST.MF",&document))).unwrap();assert!(manifest_implementation_version(&mut zip).is_none());
         }
     }
     #[test]

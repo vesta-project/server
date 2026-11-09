@@ -385,6 +385,7 @@ impl FileBrowser {
         entry_limit: usize,
         scan_limit: usize,
     ) -> Result<DirectoryListing> {
+        #[cfg(feature = "latency-probe")] let _span = vesta_state::latency_probe::Span::new("directory_listing");
         self.db
             .read_with(|snapshot| {
                 let policy = identity::policy_in(
@@ -403,6 +404,7 @@ impl FileBrowser {
                     return Err(FileError::NotDirectory);
                 }
                 let mut entries = Vec::new();
+                #[cfg(feature = "latency-probe")] vesta_state::latency_probe::count("directory_query",0);
                 let stream = fs::read_dir(&checked.path).map_err(io_error)?;
                 for (scanned, entry) in stream.enumerate() {
                     if scanned >= scan_limit {

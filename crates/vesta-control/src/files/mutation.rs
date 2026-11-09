@@ -354,6 +354,8 @@ impl FileBrowser {
             WritePrecondition::Matches(_) => fs::metadata(&target).map_err(io_error)?.len(),
         };
         self.require_mutation_space(&parent, size, incoming)?;
+        #[cfg(test)]
+        journal::storage_fault("pre_stage")?;
         let stage = Stage::planned(&parent)?;
         let trash = match precondition {
             WritePrecondition::Absent => None,
@@ -1234,6 +1236,8 @@ impl Stage {
             if count > size {
                 return Err(FileError::Corrupt);
             }
+            #[cfg(test)]
+            journal::storage_fault("stage_write")?;
             file.write_all(&buffer[..n]).map_err(io_error)?;
             hash.update(&buffer[..n]);
         }

@@ -110,6 +110,9 @@ pub enum EntrySource {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PackEntry {
+    /// Exact file selected by an imported mrpack, independent of its local name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_sha512: Option<String>,
     pub id: String,
     pub kind: EntryKind,
     pub path: String,
@@ -211,8 +214,12 @@ pub(super) fn icon_mime(bytes: &[u8]) -> Result<&'static str> {
 pub struct PackWorkspace {
     db: StateDatabase,
     audit: AuditLog,
+    download_settings: crate::config::DownloadSettings,
 }
 impl PackWorkspace {
+    pub fn with_download_settings(mut self, settings: crate::config::DownloadSettings) -> Self {
+        self.download_settings = settings; self
+    }
     pub fn icon(&self, subject: &Subject, mc: &str) -> Result<Option<PackIcon>> {
         let draft = self.read(subject, mc)?;
         draft
@@ -280,6 +287,7 @@ impl PackWorkspace {
                 return Err(invalid());
             }
             entries.push(PackEntry {
+            artifact_sha512: None,
                 id: format!("{}-{}", selection.provider, selection.project_id),
                 kind: meta.kind,
                 path: format!("{prefix}/{}", meta.filename),
@@ -336,6 +344,7 @@ impl PackWorkspace {
         Ok(Self {
             db: db.clone(),
             audit: AuditLog::new(db.clone())?,
+            download_settings: Default::default(),
         })
     }
     pub fn authorize_in(
@@ -452,7 +461,7 @@ impl PackWorkspace {
         Ok(WorkspaceView {
             install_job: self.db.read(|c| {
                 if !c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='software_jobs')",[],|r|r.get::<_,bool>(0))? { return Ok(None); }
-                Ok(c.query_row("SELECT j.id,j.state,j.error FROM pack_install_job p JOIN software_jobs j ON j.id=p.job WHERE p.server_id=?",[self.db.server_id()],|r|Ok(serde_json::json!({"id":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"error":r.get::<_,Option<String>>(2)?,"decisions":c.query_row("SELECT body FROM pack_install_result WHERE server_id=?",[self.db.server_id()],|r|r.get::<_,String>(0)).optional()?.and_then(|raw|serde_json::from_str::<serde_json::Value>(&raw).ok())}))).optional()?)
+                Ok(c.query_row("SELECT j.id,j.state,j.error FROM pack_install_job p JOIN software_jobs j ON j.id=p.job WHERE p.server_id=?",[self.db.server_id()],|r|Ok(serde_json::json!({"id":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"error":r.get::<_,Option<String>>(2)?,"error_context":c.query_row("SELECT context_json FROM software_job_failures WHERE job_id=?",[r.get::<_,String>(0)?],|r|r.get::<_,String>(0)).optional()?.and_then(|raw|serde_json::from_str::<serde_json::Value>(&raw).ok()),"decisions":c.query_row("SELECT body FROM pack_install_result WHERE server_id=?",[self.db.server_id()],|r|r.get::<_,String>(0)).optional()?.and_then(|raw|serde_json::from_str::<serde_json::Value>(&raw).ok())}))).optional()?)
             })?,
             install_progress: self.db.read_with(|t| {
                 let raw: Option<String> = t
@@ -718,6 +727,10 @@ pub fn validate_manifest(m: &PackManifest) -> Result<()> {
     let mut paths = BTreeSet::new();
     let mut projects = BTreeSet::new();
     for e in &m.entries {
+        if let Some(hash) = &e.artifact_sha512 {
+            crate::content::ExpectedHash::Sha512(hash.clone()).validate()?;
+            if !matches!(&e.source, EntrySource::Provider { provider, .. } if provider == "modrinth") { return Err(invalid()); }
+        }
         vesta_protocol::pack::catalogue::RelativePath::parse(&e.path)
             .map_err(|_| ReleaseError::Refusal { code: "pack_path_invalid", rule: "safe_relative_path", item: e.path.clone() })?;
         let lower = e.path.to_ascii_lowercase();
@@ -760,7 +773,7 @@ pub fn validate_manifest(m: &PackManifest) -> Result<()> {
                 if !matches!(provider.as_str(), "modrinth" | "curseforge")
                     || !identifier(project_id)
                     || !identifier(version_id)
-                    || !projects.insert((provider, project_id))
+                    || (!e.path.ends_with(".disabled") && !projects.insert((provider, project_id)))
                     || e.kind == EntryKind::ConfigOverride
                 {
                     return Err(invalid());

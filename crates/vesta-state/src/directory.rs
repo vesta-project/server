@@ -90,6 +90,7 @@ impl StateDirectory {
     /// after inspection. NOFOLLOW protects the leaf on supported opens, not the complete path.
     /// Permissions, re-checks, and an idle WAL anchor reduce accidental churn, not hostile races.
     pub fn verify_database_files(&self) -> Result<()> {
+        #[cfg(feature = "latency-probe")] let _latency_state_files_verify = crate::latency_probe::Span::new("state_files_verify");
         self.verify_root_spelling()?;
         require_directory(&self.path)?;
         require_directory(&self.backups)?;

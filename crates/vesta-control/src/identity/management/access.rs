@@ -257,6 +257,7 @@ impl ManagementAccess {
             public_key,
             session,
             MinecraftPurpose::ManagementEnrollment,
+            None,
         )
     }
     pub fn enroll_pack_profile(
@@ -272,7 +273,21 @@ impl ManagementAccess {
             public_key,
             session,
             MinecraftPurpose::Pack,
+            None,
         )
+    }
+    pub fn enroll_minecraft_with_invitation(
+        &self, profile: VerifiedMinecraftProfile, device_name: &str,
+        public_key: &str, invitation_code: Option<&str>,
+    ) -> Result<Enrolled> {
+        self.enroll_profile(profile, device_name, public_key, None, MinecraftPurpose::ManagementEnrollment, invitation_code)
+    }
+    /// Verified account enrollment and optional invitation redemption are atomic.
+    pub fn enroll_pack_profile_with_invitation(
+        &self, profile: VerifiedMinecraftProfile, device_name: &str,
+        public_key: &str, invitation_code: Option<&str>,
+    ) -> Result<Enrolled> {
+        self.enroll_profile(profile, device_name, public_key, None, MinecraftPurpose::Pack, invitation_code)
     }
     fn enroll_profile(
         &self,
@@ -281,6 +296,7 @@ impl ManagementAccess {
         public_key: &str,
         token: Option<&str>,
         purpose: MinecraftPurpose,
+        invitation_code: Option<&str>,
     ) -> Result<Enrolled> {
         if profile.purpose() != purpose
             || profile.server_uuid().as_uuid().to_string() != self.server_id()
@@ -294,10 +310,11 @@ impl ManagementAccess {
         let fingerprint = Fingerprint::parse(&hex::encode(digest::digest(&digest::SHA256, &key)))?;
         let uuid = profile.uuid().as_uuid().to_string();
         self.write(|repo| {
+            let invitation = invitation_code.map(|code| self.consume_invitation(repo, code)).transpose()?;
             let c = repo.connection();
             if let Some(subject) = &authenticated && !repo.policy(Some(subject))?.has_current_identity() { return Err(ManagementError::SessionInvalid); }
             let mapped: Option<String> = c.query_row("SELECT principal_id FROM user_minecraft_accounts WHERE server_id = ? AND minecraft_uuid = ?", params![self.server_id(),uuid], |r|r.get(0)).optional()?;
-            let existing: Option<(String,String)> = c.query_row("SELECT principal_id,id FROM devices WHERE server_id = ? AND public_key_sha256 = ? AND revoked_at IS NULL", params![self.server_id(),fingerprint.as_str()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            let existing: Option<(String,String,Option<String>)> = c.query_row("SELECT d.principal_id,d.id,k.linked_minecraft_uuid FROM devices d JOIN management_device_keys k ON k.device_id=d.id WHERE d.server_id = ? AND d.public_key_sha256 = ? AND d.revoked_at IS NULL", params![self.server_id(),fingerprint.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
             let principal = if let Some(id) = mapped {
                 if authenticated.as_ref().is_some_and(|a|a.principal.as_str()!=id) { return Err(ManagementError::SessionInvalid); }
                 PrincipalId::parse(&id)?
@@ -310,10 +327,20 @@ impl ManagementAccess {
             if previously.as_ref().is_some_and(|old|old != &uuid) { return Err(ManagementError::SessionInvalid); }
             c.execute("INSERT INTO user_minecraft_accounts VALUES (?,?,?) ON CONFLICT(server_id,minecraft_uuid) DO NOTHING",params![self.server_id(),uuid,principal.as_str()])?;
             c.execute("INSERT INTO user_minecraft_names VALUES (?,?) ON CONFLICT(principal_id) DO UPDATE SET name=excluded.name",params![principal.as_str(),profile.name().as_str()])?;
-            let role: Option<String> = c.query_row("SELECT role_id FROM management_owner_links WHERE server_id = ? AND minecraft_uuid = ?",params![self.server_id(),uuid],|r|r.get(0)).optional()?;
-            let device = if let Some((owner,id))=existing { if owner != principal.as_str() { return Err(ManagementError::SessionInvalid); } DeviceId::parse(&id)? }
-                else { self.check_device_capacity(repo,role.is_some())?; let device=repo.insert_device(&principal,&label,&fingerprint)?; c.execute("INSERT INTO management_device_keys VALUES (?,?,?,?)",params![device.as_str(),self.server_id(),key.as_slice(),uuid])?; device };
+            let mut role: Option<String> = c.query_row("SELECT role_id FROM management_owner_links WHERE server_id = ? AND minecraft_uuid = ?",params![self.server_id(),uuid],|r|r.get(0)).optional()?;
+            let device = if let Some((owner,id,linked_uuid))=existing { if owner != principal.as_str() || linked_uuid.as_deref() != Some(uuid.as_str()) { return Err(ManagementError::SessionInvalid); } DeviceId::parse(&id)? }
+                else { self.check_device_capacity(repo,role.is_some() || invitation.is_some())?; let device=repo.insert_device(&principal,&label,&fingerprint)?; c.execute("INSERT INTO management_device_keys VALUES (?,?,?,?)",params![device.as_str(),self.server_id(),key.as_slice(),uuid])?; device };
             if let Some(role)=&role { repo.replace_role(&principal,&RoleId::parse(role)?,None,"local-owner-minecraft-link")?; }
+            if let Some((invited_role, issuer)) = invitation {
+                if let Some(issuer) = issuer {
+                    self.redeem_invitation(repo, &issuer, &principal, &invited_role)?;
+                } else {
+                    super::permissions::insert_assignment(repo, &principal, &invited_role, "local-os-owner").map_err(|_| ManagementError::Unavailable)?;
+                }
+            }
+            // Report the user's current highest explicit role, including roles
+            // retained from previous enrollments and invitation assignments.
+            role = c.query_row("SELECT a.role_id FROM role_assignments a JOIN roles r ON r.id=a.role_id WHERE a.principal_id=? AND a.revoked_at IS NULL AND (a.expires_at IS NULL OR a.expires_at>?) ORDER BY r.rank DESC,a.role_id LIMIT 1",params![principal.as_str(),repo.now],|r|r.get(0)).optional()?;
             let subject=Subject { principal:principal.clone(),device:device.clone() };
             self.audit(repo,device_actor(&subject)?,"management.minecraft.enroll",device.as_str())?;
             Ok(Enrolled {server_id:self.server_id().into(),principal_id:principal.to_string(),device_id:device.to_string(),role:role.unwrap_or_default()})
@@ -589,7 +616,7 @@ impl ManagementAccess {
                 &public,
             )?
         } else {
-            self.enroll_device("Fixture", &public)?
+            self.enroll_minecraft(VerifiedMinecraftProfile::for_test_enrollment(server, MinecraftUuid::parse(&uuid::Uuid::new_v4().to_string()).unwrap()), "Fixture", &public)?
         };
         let nonce = self.challenge(&device.device_id)?;
         let signature = URL_SAFE_NO_PAD.encode(

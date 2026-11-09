@@ -41,6 +41,10 @@ pub(super) fn run(inner: Arc<Inner>) {
         if let Err(error) = result {
             let _ = fail(&inner, &work, error);
         }
+        #[cfg(test)]
+        if let Some(probe) = inner.completion_probe.lock().unwrap().take() {
+            let _ = probe.send(());
+        }
     }
 }
 
@@ -87,8 +91,10 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
     }
     if let WorkKind::Pack(pack,target)=&work.kind {
         let _hold=inner.runtime.acquire_stopped()?;
-        pack.workspace.prepare_install_payloads(&work.actor,&pack.input,&pack.files).map_err(|_|SoftwareError::StateUnavailable)?;
-        pack.workspace.install_apply(&work.actor,&target.minecraft_version,Some(&target.software),&pack.key,&pack.input,&pack.files).map_err(|_|SoftwareError::StateUnavailable)?;
+        if inner.cancel.load(std::sync::atomic::Ordering::Acquire) { return Err(SoftwareError::RuntimeUnavailable); }
+        pack.workspace.prepare_install_payloads(&work.actor,&pack.input,&pack.files).map_err(|error|pack_failure(inner,work,"preparation",error))?;
+        if inner.cancel.load(std::sync::atomic::Ordering::Acquire) { return Err(SoftwareError::RuntimeUnavailable); }
+        pack.workspace.install_apply(&work.actor,&target.minecraft_version,Some(&target.software),&pack.key,&pack.input,&pack.files).map_err(|error|pack_failure(inner,work,"application",error))?;
         inner.db.write_with(|tx| -> Result<()> {
             tx.connection().execute("UPDATE software_jobs SET state='succeeded',updated_at_ms=? WHERE id=?",params![inner.db.clock().millis(),work.id])?;
             Ok(())
@@ -98,9 +104,11 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
     if let WorkKind::Apply(_, _, Some(pack)) = &work.kind {
         let target=pack.workspace.install_switch_review(&work.actor,&pack.input).map_err(|_|SoftwareError::ConfirmationInvalid)?;
         let _hold=inner.runtime.acquire_stopped()?;
-        pack.workspace.prepare_install_payloads(&work.actor,&pack.input,&pack.files).map_err(|_|SoftwareError::StateUnavailable)?;
+        if inner.cancel.load(std::sync::atomic::Ordering::Acquire) { return Err(SoftwareError::RuntimeUnavailable); }
+        pack.workspace.prepare_install_payloads(&work.actor,&pack.input,&pack.files).map_err(|error|pack_failure(inner,work,"preparation",error))?;
+        if inner.cancel.load(std::sync::atomic::Ordering::Acquire) { return Err(SoftwareError::RuntimeUnavailable); }
         if !target.software_switch_required {
-            pack.workspace.install_apply(&work.actor,&target.minecraft_version,Some(&target.software),&pack.key,&pack.input,&pack.files).map_err(|_|SoftwareError::StateUnavailable)?;
+            pack.workspace.install_apply(&work.actor,&target.minecraft_version,Some(&target.software),&pack.key,&pack.input,&pack.files).map_err(|error|pack_failure(inner,work,"application",error))?;
             inner.db.write_with(|tx| -> Result<()> {
                 tx.connection().execute("UPDATE software_jobs SET state='succeeded',updated_at_ms=? WHERE id=?",params![inner.db.clock().millis(),work.id])?;
                 Ok(())
@@ -219,6 +227,7 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
         Some(guard) => guard,
         None => inner.runtime.acquire_stopped()?,
     };
+    if inner.cancel.load(std::sync::atomic::Ordering::Acquire) { return Err(SoftwareError::RuntimeUnavailable); }
     inner.db.write_with(|tx| -> Result<()> {
         let c=tx.connection();
         store::authorize(c,&inner.db,&work.actor)?;
@@ -272,7 +281,7 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
                 &pack.input,
                 &pack.files,
             )
-            .map_err(|_| SoftwareError::RecoveryRequired)?;
+            .map_err(|error|{ let _ = pack_failure(inner,work,"application",error); SoftwareError::RecoveryRequired })?;
     }
     inner.db.write_with(|tx| -> Result<()> {
         let c=tx.connection();
@@ -298,7 +307,7 @@ async fn execute(inner: &Inner, work: &mut Work) -> Result<()> {
     Ok(())
 }
 
-fn fail(inner: &Inner, work: &Work, error: SoftwareError) -> Result<()> {
+pub(super) fn fail(inner: &Inner, work: &Work, error: SoftwareError) -> Result<()> {
     let ambiguous = inner.db.write_with(|tx| -> Result<bool> {
         let c = tx.connection();
         let job = store::job(c, &work.id)?;
@@ -332,4 +341,35 @@ fn fail(inner: &Inner, work: &Work, error: SoftwareError) -> Result<()> {
         inner.runtime.recovery_block(true)?;
     }
     Ok(())
+}
+
+pub(super) fn pack_failure(inner: &Inner, work: &Work, phase: &str, error: crate::packs::ReleaseError) -> SoftwareError {
+    // Only bounded public identifiers/codes. Never persist a URL, body, header or key.
+    let mut context = serde_json::json!({"code":error.code(),"phase":phase});
+    match &error {
+        crate::packs::ReleaseError::ProviderFile { details, .. } => {
+            for (key,value) in [("provider",Some(details.provider.as_str())),("project_id",Some(details.project_id.as_str())),("version_id",Some(details.version_id.as_str())),("filename",details.filename.as_deref()),("stage",Some(details.stage)),("reason",Some(details.reason))] {
+                if let Some(value)=value { context[key]=value.chars().take(1024).collect::<String>().into(); }
+            }
+        }
+        crate::packs::ReleaseError::Refusal {rule,item,..} => {
+            context["reason"]=(*rule).into();
+            // Archive entry paths are useful diagnostics. URL-like descriptions
+            // and control characters are excluded rather than logged verbatim.
+            if !item.contains("://") && !item.chars().any(char::is_control) {
+                context["path"]=item.chars().take(1024).collect::<String>().into();
+            }
+        },
+        _ => {}
+    }
+    let pack=match &work.kind {WorkKind::Pack(pack,_)|WorkKind::Apply(_,_,Some(pack))=>Some(pack),_=>None};
+    if let Some(pack)=pack {
+        let source:std::result::Result<String,_>=inner.db.read(|c|c.query_row("SELECT json_extract(body,'$.source') FROM pack_install_plans WHERE id=?",[&pack.input.plan_id],|r|r.get(0)).map_err(Into::into));
+        if let Ok(source)=source && let Ok(crate::packs::workspace::InstallSource::Provider{provider,project_id,version_id})=serde_json::from_str(&source) {
+            for (name,value) in [("pack_provider",provider),("pack_project_id",project_id),("pack_version_id",version_id)] {context[name]=value.chars().take(128).collect::<String>().into();}
+        }
+    }
+    let stored=inner.db.write(|c|c.execute("INSERT OR REPLACE INTO software_job_failures VALUES(?,?)",params![work.id,context.to_string()]).map(|_|()).map_err(Into::into));
+    if stored.is_err() { return SoftwareError::StateUnavailable; }
+    error.into()
 }

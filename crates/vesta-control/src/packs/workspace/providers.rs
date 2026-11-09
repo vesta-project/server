@@ -24,6 +24,10 @@ pub struct ProviderMetadata {
     pub published: String,
 }
 pub trait WorkspaceProvider: ProviderClient {
+    fn pack_metadata_for_artifact(&self, provider: &str, project: &str, version: &str, sha512: Option<&str>) -> Result<ProviderMetadata> {
+        if sha512.is_some() { return Err(invalid()); }
+        self.pack_metadata(provider, project, version)
+    }
     fn pack_metadata(
         &self,
         provider: &str,
@@ -81,6 +85,14 @@ fn document(
         })
 }
 impl WorkspaceProvider for UreqProviderClient {
+    fn pack_metadata_for_artifact(&self, provider: &str, project: &str, version: &str, sha512: Option<&str>) -> Result<ProviderMetadata> {
+        let Some(hash) = sha512 else { return self.pack_metadata(provider, project, version); };
+        if provider != "modrinth" { return Err(invalid()); }
+        let mut v = document(self, Provider::Modrinth, project, Some(version), false)?;
+        UreqProviderClient::select_modrinth_artifact(&mut v, hash).map_err(|error|ReleaseError::provider_file(error,provider,project,version,"artifact_binding",None))?;
+        let p = document(self, Provider::Modrinth, project, None, false)?;
+        decode_metadata(Provider::Modrinth, project, version, &p, &v).map_err(|_|ReleaseError::provider_file(crate::content::ContentError::InvalidMetadata,provider,project,version,"metadata",v["files"][0]["filename"].as_str()))
+    }
     fn pack_metadata(
         &self,
         provider: &str,
@@ -271,6 +283,19 @@ fn decode_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "small real CurseForge metadata check; explicit repo dotenv runtime configuration required"]
+    fn audit_pinned_curseforge_server_associations() {
+        let client=UreqProviderClient::configured();
+        for (project,version,server) in [("285109","4612979",4612990u64),("925200","9431424",9431427u64)] {
+            let file=client.pack_document(Provider::Curseforge,project,Some(version),false).unwrap();
+            assert_eq!(file["serverPackFileId"],server);assert_eq!(file["modId"].as_u64().unwrap().to_string(),project);
+            let target=client.pack_document(Provider::Curseforge,project,Some(&server.to_string()),false).unwrap();
+            assert_eq!(target["id"],server);assert_eq!(target["modId"].as_u64().unwrap().to_string(),project);assert_eq!(target["isServerPack"],true);
+            let resolved=client.resolve(Provider::Curseforge,project,&server.to_string()).unwrap();
+            eprintln!("AUDIT_PROVIDER project={project} client={version} client_name={} server={server} server_name={} server_bytes={} hash={:?}",file["fileName"],target["fileName"],target["fileLength"],resolved.expected_hash);
+        }
+    }
     #[test]
     fn curseforge_publication_accepts_verified_cdn_fallback_but_not_missing_hashes() {
         let project = serde_json::json!({"id":1691925,"classId":6,"allowModDistribution":false});

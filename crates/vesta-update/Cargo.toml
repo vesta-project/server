@@ -16,7 +16,6 @@ serde_json.workspace = true
 sha2.workspace = true
 ureq.workspace = true
 url.workspace = true
-uuid.workspace = true
 vesta-state.workspace = true
 
 [dev-dependencies]

@@ -154,10 +154,17 @@ impl Transport {
         &self,
         logical: &Url,
         head: bool,
+        role: Role,
         limits: Limits,
         reporter: &dyn ProgressReporter,
         deadline: Instant,
     ) -> Result<reqwest::Response> {
+        // A forwarding proxy cannot attest the final socket's destination. Fail
+        // closed for artifacts instead of delegating untrusted DNS to it.
+        if matches!(role, Role::Artifact) && self.proxy.is_some() {
+            return Err(InstallError::SourceRefused);
+        }
+        let mut pinned = Vec::new();
         let mut builder = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
@@ -201,11 +208,12 @@ impl Transport {
                     reporter,
                 )
                 .await?;
+                pinned = addresses.clone();
                 builder = builder.resolve_to_addrs(host, &addresses);
             }
         }
         let client = builder.build().map_err(|_| InstallError::TransportFailed)?;
-        controlled(
+        let response = controlled(
             async {
                 tokio::time::timeout(
                     Duration::from_millis(limits.idle_ms),
@@ -228,7 +236,13 @@ impl Transport {
             deadline,
             reporter,
         )
-        .await
+        .await?;
+        if !fixture && self.proxy.is_none()
+            && !response.remote_addr().is_some_and(|peer| pinned.iter().any(|selected| crate::public_address::peer_matches(*selected, peer)))
+        {
+            return Err(InstallError::SourceRefused);
+        }
+        Ok(response)
     }
 
     pub async fn receive(
@@ -437,7 +451,7 @@ impl Transport {
         for hop in 0..=job.limits.redirects {
             job.ready(reporter).await?;
             let r = self
-                .request(&url, head, job.limits, reporter, job.deadline)
+                .request(&url, head, role, job.limits, reporter, job.deadline)
                 .await?;
             if matches!(r.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
                 if hop == job.limits.redirects {
@@ -647,32 +661,7 @@ pub(crate) fn validate_url(raw: &str, software: Software, role: Role) -> Result<
     Ok(u)
 }
 
-pub(crate) fn public_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v) => {
-            let [a, b, c, _] = v.octets();
-            !v.is_private()
-                && !v.is_loopback()
-                && !v.is_link_local()
-                && !v.is_multicast()
-                && !v.is_broadcast()
-                && !v.is_documentation()
-                && a != 0
-                && a < 224
-                && !(a == 100 && (64..=127).contains(&b))
-                && !(a == 192 && b == 0 && c == 0)
-                && !(a == 192 && b == 88 && c == 99)
-                && !(a == 198 && (18..=19).contains(&b))
-        }
-        IpAddr::V6(v) => {
-            let s = v.segments();
-            s[0] & 0xe000 == 0x2000
-                && !(s[0] == 0x2001 && (s[1] < 0x200 || s[1] == 0xdb8))
-                && s[0] != 0x2002
-                && !(s[0] == 0x3fff && s[1] < 0x1000)
-        }
-    }
-}
+pub(crate) fn public_ip(ip: IpAddr) -> bool { crate::public_address::is_public_ip(ip) }
 
 /// Validate the raw spelling before URL normalization, then the compiled family.
 pub(crate) fn validate_family_url(
@@ -875,3 +864,18 @@ pub(crate) fn validate_family_url(
     }
     Ok(u)
 }
+
+#[cfg(test)]
+mod public_artifact_policy_tests {
+    use super::*;
+    #[tokio::test]
+    async fn artifact_proxy_refused_before_dns_or_network() {
+        let transport=Transport::new(TransportConfig::proxy("http://FAKE_USER:FAKE_SECRET@proxy.invalid:8080".into()).unwrap());
+        let result=transport.request(&Url::parse("https://piston-data.mojang.com/server.jar").unwrap(),false,Role::Artifact,Limits::default(),&crate::progress::SilentProgressReporter,Instant::now()+Duration::from_secs(1)).await;
+        assert!(matches!(result,Err(InstallError::SourceRefused)));
+    }
+}
+
+#[cfg(test)]
+#[path = "public_compat.rs"]
+mod public_compat;

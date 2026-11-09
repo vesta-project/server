@@ -74,7 +74,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
-    let workspace = match PackWorkspace::open(host.database()) {
+    let workspace = match PackWorkspace::open(host.database()).map(|workspace| workspace.with_download_settings(host.configuration().downloads())) {
         Ok(w) => w,
         Err(e) => return pack_error(e),
     };

@@ -709,6 +709,7 @@ mode = 'disabled'
     }
     fn provider_entry(project: &str) -> PackEntry {
         PackEntry {
+            artifact_sha512: None,
             id: project.into(),
             kind: EntryKind::Mod,
             path: format!("mods/{project}.jar"),
@@ -908,6 +909,7 @@ mode = 'disabled'
                 .unwrap(),
         );
         m.entries.push(PackEntry {
+            artifact_sha512: None,
             id: "config".into(),
             kind: EntryKind::ConfigOverride,
             path: "config/client.toml".into(),

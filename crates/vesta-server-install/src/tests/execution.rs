@@ -77,6 +77,8 @@ fn child_fixture() {
                 "JDK_JAVA_OPTIONS",
                 "OPENJ9_JAVA_OPTIONS",
                 "IBM_JAVA_OPTIONS",
+                "CURSEFORGE_API_KEY",
+                "VESTA_CURSEFORGE_API_KEY",
             ] {
                 assert!(std::env::var_os(key).is_none());
             }
@@ -91,6 +93,8 @@ fn child_fixture() {
                 "JDK_JAVA_OPTIONS",
                 "OPENJ9_JAVA_OPTIONS",
                 "IBM_JAVA_OPTIONS",
+                "CURSEFORGE_API_KEY",
+                "VESTA_CURSEFORGE_API_KEY",
             ];
             for key in keys {
                 // SAFETY: this exact-selector fixture mutates the environment only in its isolated child process.

@@ -190,18 +190,17 @@ fn permission_tls_rank_self_top_role_and_versioned_idempotent_user_changes() {
         "conflict",
     );
     let v = user(&f, &os, &lower);
-    management_reply_error(
-        &send(
+    // Owners can grant the top role to another verified Minecraft account.
+    let promoted = send(
             &f,
             "PUT",
             &path,
             &serde_json::json!({"add":["owner"],"remove":[],"expected_version":v["version"]}),
             Some(&os),
             Some("tls-owner-role-0001"),
-        ),
-        403,
-        "management_forbidden",
-    );
+        );
+    assert_eq!(promoted.status, 200);
+    assert_eq!(promoted.json()["data"]["rank"], 100);
 }
 #[test]
 fn permission_tls_roles_create_patch_delete_and_capability_ceiling() {

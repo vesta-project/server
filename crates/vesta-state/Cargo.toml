@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+latency-probe = []
+
 [dependencies]
 rusqlite.workspace = true
 fs2.workspace = true

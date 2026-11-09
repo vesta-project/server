@@ -44,6 +44,7 @@ pub(super) fn open_writable_regular(path: &Path) -> Result<File> {
 
 #[cfg(windows)]
 pub(super) fn open_regular(path: &Path) -> Result<File> {
+    #[cfg(feature = "latency-probe")] let _span = vesta_state::latency_probe::Span::new("native_open_regular");
     use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ};
     let file = OpenOptions::new()
@@ -79,6 +80,7 @@ pub(super) fn open_regular(_path: &Path) -> Result<File> {
 
 #[cfg(windows)]
 pub(super) fn open_growing(path: &Path) -> Result<File> {
+    #[cfg(feature = "latency-probe")] let _span = vesta_state::latency_probe::Span::new("native_open_growing");
     use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -113,6 +115,7 @@ pub(super) fn file_identity(_file: &File) -> Result<String> {
 
 #[cfg(windows)]
 pub(super) fn actual_path(file: &File, _path: &Path) -> Result<PathBuf> {
+    #[cfg(feature = "latency-probe")] let _span = vesta_state::latency_probe::Span::new("native_actual_path");
     windows::path(file)
 }
 #[cfg(unix)]

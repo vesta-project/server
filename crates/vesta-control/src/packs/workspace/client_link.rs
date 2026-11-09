@@ -116,6 +116,7 @@ mod tests {
     fn base(f: &Fixture, id: &str) -> PackManifest {
         let mut m = f.manifest();
         m.entries.push(PackEntry {
+            artifact_sha512: None,
             id: id.into(),
             path: format!("mods/{id}.jar"),
             kind: EntryKind::Mod,

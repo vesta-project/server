@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version = "1.89"
 publish.workspace = true
 
+[features]
+latency-probe = ["vesta-state/latency-probe"]
+
 [dependencies]
 modpack-engine = { path = "../modpack-engine" }
 vesta-state.workspace = true

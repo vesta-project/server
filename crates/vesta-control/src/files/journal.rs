@@ -423,8 +423,25 @@ fn intent_record(
 thread_local! {
     static CRASH_AT: Cell<Option<&'static str>> = const { Cell::new(None) };
     static CRASHED: Cell<bool> = const { Cell::new(false) };
+    static STORAGE_FAULT: Cell<Option<&'static str>> = const { Cell::new(None) };
     static AFTER_WRITE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
     static BEFORE_COMPENSATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(super) fn fail_storage_at(point: &'static str) {
+    STORAGE_FAULT.with(|slot| slot.set(Some(point)));
+}
+#[cfg(test)]
+pub(super) fn storage_fault_consumed() -> bool {
+    STORAGE_FAULT.with(|slot| slot.get().is_none())
+}
+#[cfg(test)]
+pub(super) fn storage_fault(point: &str) -> Result<()> {
+    if STORAGE_FAULT.with(|slot| slot.get()==Some(point)) {
+        STORAGE_FAULT.with(|slot| slot.set(None));
+        return Err(io_error(std::io::Error::new(std::io::ErrorKind::StorageFull,"injected_owned_fixture_storage")));
+    }
+    Ok(())
 }
 pub(super) fn crash_point(point: &str) -> Result<()> {
     #[cfg(test)]

@@ -376,6 +376,10 @@ fn inbox_tls_moderator_scope_shared_principal_and_viewer_refusal() {
             "UPDATE devices SET principal_id=? WHERE id=?",
             rusqlite::params![principal, device],
         )?;
+        c.execute(
+            "UPDATE management_device_keys SET linked_minecraft_uuid=(SELECT minecraft_uuid FROM user_minecraft_accounts WHERE principal_id=?) WHERE device_id=?",
+            rusqlite::params![principal, device],
+        )?;
         Ok(())
     });
     changed.unwrap();

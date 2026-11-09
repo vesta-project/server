@@ -564,6 +564,7 @@ fn uploads_are_hashed_and_reference_checked_and_drift_is_visible() {
     assert_eq!(sha, digest(b"client config"));
     let mut m = f.manifest();
     m.entries.push(PackEntry {
+            artifact_sha512: None,
         id: "config".into(),
         kind: EntryKind::ConfigOverride,
         path: "config/example.toml".into(),
@@ -656,6 +657,7 @@ fn unsafe_paths_collisions_and_invalid_loader_metadata_refuse_without_advancing(
     );
     let mut m = f.manifest();
     m.entries.push(PackEntry {
+            artifact_sha512: None,
         id: "escape".into(),
         kind: EntryKind::Mod,
         path: "mods/../server.jar".into(),

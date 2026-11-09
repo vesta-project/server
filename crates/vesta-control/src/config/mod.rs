@@ -607,6 +607,7 @@ pub struct HostConfiguration {
     restart: Option<RestartSettings>,
     backups: Option<BackupSettings>,
     metrics: MetricsSettings,
+    downloads: DownloadSettings,
     on_agent_start: OnAgentStart,
     java_allowlist: Vec<PathBuf>,
 }
@@ -914,6 +915,7 @@ impl HostConfiguration {
             supervision,
             restart,
             backups,
+            downloads: document.downloads.map(|v| v.0).unwrap_or_default(),
             metrics: document
                 .metrics
                 .map(|v| v.0)
@@ -1006,6 +1008,7 @@ impl HostConfiguration {
     pub fn start_on_agent_start(&self) -> bool {
         self.on_agent_start == OnAgentStart::Start
     }
+    pub fn downloads(&self) -> DownloadSettings { self.downloads }
     pub fn metrics(&self) -> MetricsSettings {
         self.metrics
     }
@@ -1257,6 +1260,7 @@ struct Document {
     java: Option<Table<WireJava>>,
     backups: Option<Table<WireBackups>>,
     metrics: Option<Table<MetricsSettings>>,
+    downloads: Option<Table<DownloadSettings>>,
 }
 
 #[derive(Deserialize)]
@@ -1581,4 +1585,17 @@ pub enum OnAgentStart {
     StayStopped,
     Sleep,
     Start,
+}
+
+/// Omitted concurrency adapts to available CPU capacity and observed transfer rates.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct DownloadSettings {
+    #[serde(default, deserialize_with = "download_concurrency")]
+    pub max_concurrent: Option<u8>,
+}
+fn download_concurrency<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<u8>, D::Error> {
+    let value = u8::deserialize(d)?;
+    if !(1..=16).contains(&value) { return Err(de::Error::custom("download concurrency must be 1 through 16")); }
+    Ok(Some(value))
 }

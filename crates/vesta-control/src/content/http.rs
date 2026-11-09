@@ -30,7 +30,7 @@ pub struct UreqDownloadHttp {
 }
 impl Default for UreqDownloadHttp {
     fn default() -> Self {
-        Self { agent: agent() }
+        Self { agent: artifact_agent(Duration::from_secs(60),0) }
     }
 }
 pub(super) fn agent() -> ureq::Agent {
@@ -44,6 +44,9 @@ pub(super) fn job_agent(timeout: Duration) -> ureq::Agent {
     configured_agent(timeout, 2)
 }
 fn configured_agent(timeout: Duration, idle: usize) -> ureq::Agent {
+    configuration(timeout,idle).into()
+}
+fn configuration(timeout: Duration,idle:usize)->ureq::config::Config {
     ureq::Agent::config_builder()
         .https_only(true)
         .proxy(None)
@@ -56,7 +59,10 @@ fn configured_agent(timeout: Duration, idle: usize) -> ureq::Agent {
         .max_idle_connections(idle)
         .max_idle_connections_per_host(idle)
         .build()
-        .into()
+}
+fn artifact_agent(timeout:Duration,idle:usize)->ureq::Agent {
+    use ureq::unversioned::transport::{Connector,RustlsConnector};
+    ureq::Agent::with_parts(configuration(timeout,idle),super::public_transport::PublicConnector.chain(RustlsConnector::default()),super::public_transport::PublicResolver::<ureq::unversioned::resolver::DefaultResolver>::default())
 }
 impl DownloadHttp for UreqDownloadHttp {
     fn get_with_deadline(&self, url: &Url, deadline: Instant) -> Result<HttpResponse> {
@@ -72,14 +78,12 @@ impl DownloadHttp for UreqDownloadHttp {
 impl UreqDownloadHttp {
     pub(crate) fn for_job() -> Self {
         Self {
-            agent: job_agent(Duration::from_secs(60)),
+            agent: artifact_agent(Duration::from_secs(60),2),
         }
     }
     fn request(&self, url: &Url, timeout: Duration) -> Result<HttpResponse> {
-        // Defense in depth; provider-specific host validation is before this call.
-        if url.scheme() != "https" {
-            return Err(ContentError::DisallowedUrl);
-        }
+        // The artifact resolver/connector independently enforce public destinations.
+        super::validate_download_url(super::Provider::Modrinth, url)?;
         let response = self
             .agent
             .get(url.as_str())
@@ -122,16 +126,27 @@ impl RemoteZip {
     pub(crate) fn open(source: &super::ResolvedSource) -> Result<Self> {
         let url=Url::parse(&source.download_url).map_err(|_|ContentError::DisallowedUrl)?;
         super::validate_download_url(source.provider,&url)?;
-        let agent=agent_with_timeout(Duration::from_secs(8));
-        let response=agent.get(url.as_str()).header("Range","bytes=-65536").header("Accept-Encoding","identity").call().map_err(|_|ContentError::DownloadFailed)?;
-        if response.status().as_u16()!=206 {return Err(ContentError::DownloadFailed);}
+        let agent=artifact_agent(Duration::from_secs(8),0);
+        // Some provider CDNs advertise ranges but reject suffix ranges (501).
+        // Discover the size with a one-byte explicit range, never a full GET.
+        let probe=agent.get(url.as_str()).header("Range","bytes=0-0").header("Accept-Encoding","identity").call().map_err(|_|ContentError::DownloadFailed)?;
+        let range=probe.headers().get("content-range").and_then(|v|v.to_str().ok()).ok_or(ContentError::DownloadFailed)?;
+        let size=range_size(probe.status().as_u16(),range,0,0)?;
+        let mut byte=Vec::new(); probe.into_body().into_reader().take(2).read_to_end(&mut byte).map_err(|_|ContentError::DownloadFailed)?;
+        if byte.len()!=1 {return Err(ContentError::DownloadFailed);}
+        let start=size.saturating_sub(65536);
+        let response=agent.get(url.as_str()).header("Range",&format!("bytes={}-{}",start,size-1)).header("Accept-Encoding","identity").call().map_err(|_|ContentError::DownloadFailed)?;
         let range=response.headers().get("content-range").and_then(|v|v.to_str().ok()).ok_or(ContentError::DownloadFailed)?;
-        let size=range.split('/').next_back().and_then(|v|v.parse::<u64>().ok()).filter(|v|*v>0).ok_or(ContentError::DownloadFailed)?;
-        if range!=format!("bytes {}-{}/{}",size.saturating_sub(65536),size-1,size) {return Err(ContentError::DownloadFailed);}
+        if range_size(response.status().as_u16(),range,start,size-1)?!=size {return Err(ContentError::DownloadFailed);}
         let mut cache=Vec::new(); response.into_body().into_reader().take(65537).read_to_end(&mut cache).map_err(|_|ContentError::DownloadFailed)?;
         if cache.len() as u64!=size.min(65536) {return Err(ContentError::DownloadFailed);}
-        Ok(Self {agent,url,size,position:0,start:size-cache.len() as u64,cache,requests:1})
+        Ok(Self {agent,url,size,position:0,start:size-cache.len() as u64,cache,requests:2})
     }
+}
+fn range_size(status:u16, header:&str, start:u64, end:u64) -> Result<u64> {
+    let size=header.split('/').next_back().and_then(|v|v.parse::<u64>().ok()).filter(|v|*v>0 && *v<=i64::MAX as u64).ok_or(ContentError::DownloadFailed)?;
+    if status!=206 || end>=size || start>end || header!=format!("bytes {start}-{end}/{size}") {return Err(ContentError::DownloadFailed);}
+    Ok(size)
 }
 impl std::io::Seek for RemoteZip {
     fn seek(&mut self, from: std::io::SeekFrom)->std::io::Result<u64> {
@@ -159,6 +174,30 @@ mod range_tests {
     use super::*;
     use std::io::{Cursor, Seek, SeekFrom, Write};
     #[test]
+    fn explicit_range_metadata_requires_exact_bounds_and_partial_response() {
+        assert_eq!(range_size(206,"bytes 0-0/104086874",0,0).unwrap(),104086874);
+        assert_eq!(range_size(206,"bytes 104021338-104086873/104086874",104021338,104086873).unwrap(),104086874);
+        assert!(range_size(200,"bytes 0-0/10",0,0).is_err());
+        assert!(range_size(206,"bytes 1-1/10",0,0).is_err());
+        assert!(range_size(206,"bytes 0-0/0",0,0).is_err());
+        assert!(range_size(206,"bytes 0-0/18446744073709551615",0,0).is_err());
+        assert!(range_size(206,"bytes 0-10/10",0,10).is_err());
+    }
+    #[test]
+    #[ignore = "real Modrinth CDN range requests; no full archive download"]
+    fn homestead_cdn_runtime_manifest_uses_explicit_ranges() {
+        let source=super::super::ResolvedSource {
+            provider:super::super::Provider::Modrinth,filename:"Homestead 2.0.1.mrpack".into(),
+            download_url:"https://cdn.modrinth.com/data/6HvKwSky/versions/WjiUurYs/Homestead%202.0.1.mrpack".into(),
+            expected_hash:super::super::ExpectedHash::Sha1("554468613c025e1e7148c5fe7c0e802f7ada9aaa".into()),
+        };
+        let remote=RemoteZip::open(&source).unwrap();
+        let mut zip=zip::ZipArchive::new(remote).unwrap();
+        let manifest:serde_json::Value=serde_json::from_reader(zip.by_name("modrinth.index.json").unwrap()).unwrap();
+        assert_eq!(manifest["game"],"minecraft");
+        assert!(manifest["dependencies"]["minecraft"].as_str().is_some_and(|version| !version.is_empty()));
+    }
+    #[test]
     fn manifest_inspection_reads_only_the_cached_tail_of_a_large_zip() {
         let mut archive=zip::ZipWriter::new(Cursor::new(Vec::new()));
         let options=zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
@@ -177,3 +216,7 @@ mod range_tests {
         if let Ok(mut file)=zip.by_name("overrides/large.bin") {assert!(file.read(&mut [0;1]).is_err());}
     }
 }
+
+#[cfg(test)]
+#[path = "public_compat.rs"]
+mod public_compat;

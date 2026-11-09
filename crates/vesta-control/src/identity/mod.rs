@@ -52,6 +52,7 @@ pub(crate) fn policy_in(
     now_ms: EpochMillis,
     subject: Option<&Subject>,
 ) -> crate::Result<PolicySnapshot> {
+        #[cfg(feature = "latency-probe")] let _latency_authority_policy = vesta_state::latency_probe::Span::new("authority_policy");
     repository::Repository::new(connection, server_id, now_ms).policy(subject)
 }
 

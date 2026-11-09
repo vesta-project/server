@@ -199,6 +199,7 @@ mod tests {
         let f = super::super::tests::Fixture::new();
         let mut manifest = f.manifest();
         manifest.entries.push(PackEntry {
+            artifact_sha512: None,
             id: "both".into(),
             kind: EntryKind::Mod,
             path: "mods/both.jar".into(),
@@ -218,6 +219,7 @@ mod tests {
             manifest,
         };
         let server = ContentEntry {
+            display_provider: None,
             modpack_owned: false,
             kind: ContentKind::Mod,
             path: "mods/needed.jar".into(),

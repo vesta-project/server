@@ -182,6 +182,12 @@ and query credentials are refused. Use `Content-Type: application/json` and one
 `Authorization: Bearer <token>` field when authenticated. Public POST sign-in/
 enrollment paths do not require an existing session; password attachment does.
 
+`POST /api/v3/manage/pair` redeems an invitation into an already authenticated,
+account-linked principal. It requires that principal's current bearer and reuses
+its existing device when the public key matches. Anonymous code-only sign-in is
+rejected. Invitation consumption, current identity checks and role changes commit
+together; invalid, foreign-key or revoked-session attempts do not consume a code.
+
 | Endpoint | Request | HTTP 200 response |
 | --- | --- | --- |
 | `/api/v3/auth/device/enroll` | `{"device_name":"…","public_key":"…"}` | `{"device_id":"…"}` |
@@ -2005,7 +2011,7 @@ Inventory exposes `deferred_writes` and `needs_restart` for one server-level not
 
 ### Pack preparation and review
 
-Workspace reads expose nullable `install_progress`: `stage` is `archive`, `metadata`, `download_verify`, or `review`, with `completed` and `total` entry counts. Zero total means indeterminate progress. The job clears this record on completion or failure; a crashed worker's record expires. These fields are advisory, never installation authority.
+Workspace reads expose nullable `install_progress`: stages include `archive`, `extract_hash`, `metadata`, `download_verify`, `review` and `writing`, with `completed` and `total` entry counts. Zero total means indeterminate progress. Extraction/parsing does not retain a completed archive's `download_verify` label. The job clears this record on completion or failure; a crashed worker's record expires. These fields are advisory, never installation authority.
 
 The launcher refreshes expired pack and software plans during Apply and compares reviewed effects before carrying consent forward. Credential changes alone do not require another review. Changed files, runtime requirements or warnings do. Server token expiry, authenticated-subject binding and file preconditions remain enforced.
 
@@ -2016,3 +2022,20 @@ Each new backup's manifest and every referenced chunk are read and verified befo
 ### CraftBukkit and Spigot catalogue
 
 Discovery uses https://hub.spigotmc.org/versions/ and one pinned recipe per Minecraft version. This provides many Minecraft versions but one current source build per version. BuildTools (https://www.spigotmc.org/wiki/buildtools/) compiles that recipe locally. GetBukkit distributes third-party binaries without this installer's required first-party source pins and reference checksums, so they are not mixed into this catalogue. The UI labels this limitation beside build choices.
+
+### Installation job failure context
+
+`GET /api/v3/manage/software/jobs` and the workspace's `install_job` expose optional
+`error_context` alongside the stable error code. It preserves the worker `phase`,
+provider `stage`, provider/project/version identifiers, filename and reason when
+available. Archive refusals also retain a bounded path when it contains no URL
+or control characters. The reviewed provider pack's identity is retained as
+`pack_provider`, `pack_project_id` and `pack_version_id` when available, independently
+of the failing resource's identity. This context is persisted across agent restarts. It never
+contains a request header, credential, response body, or download URL. Normal
+management authorization still applies to these reads.
+
+There is no accepted-software-job cancellation endpoint. Upload cancellation,
+dropping an HTTP waiter, and agent-shutdown cancellation are separate contracts.
+An uncertain HTTP response must be retried with the same intent key; it must not
+be interpreted as permission to submit a second installation.

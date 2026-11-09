@@ -8,6 +8,7 @@
 mod http;
 mod model;
 mod provider;
+mod public_transport;
 pub use model::*;
 
 pub(crate) use http::RemoteZip;
@@ -36,6 +37,9 @@ const MAX_REDIRECTS: usize = 5;
 const MAX_URL_BYTES: usize = 8_192;
 pub const REMOTE_INSTALL_TIMEOUT: Duration = Duration::from_secs(120);
 static INSTALLS: InstallGate = InstallGate::new(2);
+// Pack jobs have their own configurable bounded pool. Keep interactive installs
+// isolated so they cannot silently cap every pack at two transfers.
+static PACK_DOWNLOADS: InstallGate = InstallGate::new(16);
 struct InstallGate {
     count: Mutex<usize>,
     available: Condvar,
@@ -141,7 +145,7 @@ pub enum ExpectedHash {
     Sha1(String),
 }
 impl ExpectedHash {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         let (text, length) = match self {
             Self::Sha512(text) => (text, 128),
             Self::Sha1(text) => (text, 40),
@@ -169,6 +173,8 @@ impl fmt::Debug for ResolvedSource {
 }
 
 pub trait ProviderClient {
+    /// Catalogue destination for an imported entry. This is metadata, not a write grant.
+    fn archive_directory(&self, _provider: Provider, _project: &str) -> Result<&'static str> { Ok("mods") }
     /// Identity for archive ingestion only; does not grant download or filesystem authority.
     fn archive_filename(&self, provider: Provider, project: &str, version: &str) -> Result<String> {
         self.resolve(provider, project, version).map(|source| source.filename)
@@ -483,7 +489,7 @@ pub(crate) fn fetch_verified_source_into(
     deadline: Instant,
     output: &mut dyn std::io::Write,
 ) -> Result<()> {
-    let _permit = INSTALLS.acquire(Some(deadline))?;
+    let _permit = PACK_DOWNLOADS.acquire(Some(deadline))?;
     let (_, mut url) = validate_source(source)?;
     download_verified_into(source, http, &mut url, Some(deadline), output, None)
 }
@@ -618,10 +624,12 @@ fn validate_filename(filename: &str) -> Result<RelativePath> {
     RelativePath::parse(&format!("mods/{}", provider_storage_name(filename)?)).map_err(|_| ContentError::UnsafeFilename)
 }
 fn validate_download_url(_provider: Provider, url: &Url) -> Result<()> {
-    // API-resolved sources are trusted; CDN migrations are not safety failures.
+    // Provider identity authorizes the artifact, never access to private networks.
     if url.scheme() != "https" || url.host_str().is_none()
         || !url.username().is_empty() || url.password().is_some()
     { return Err(url_refusal("download_https_without_credentials", url.as_str())); }
+    let literal=match url.host(){Some(url::Host::Ipv4(v))=>Some(std::net::IpAddr::V4(v)),Some(url::Host::Ipv6(v))=>Some(std::net::IpAddr::V6(v)),_=>None};
+    if literal.is_some_and(|ip|!vesta_server_install::public_address::is_public_ip(ip)) {return Err(url_refusal("download_public_destination",url.as_str()));}
     Ok(())
 }
 
@@ -716,6 +724,8 @@ impl Error for ContentError {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod transition_inventory;
 
 #[cfg(test)]
 mod trusted_pack_policy_tests {

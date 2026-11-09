@@ -14,6 +14,7 @@ pub enum SoftwareError {
     PreviousUnavailable,
     RecoveryRequired,
     StateUnavailable,
+    PackFailure(&'static str),
     RuntimeUnavailable,
     Install(vesta_server_install::InstallError),
 }
@@ -31,6 +32,7 @@ impl SoftwareError {
             Self::PreviousUnavailable => "software_previous_unavailable",
             Self::RecoveryRequired => "software_recovery_required",
             Self::StateUnavailable => "software_state_unavailable",
+            Self::PackFailure(code) => code,
             Self::RuntimeUnavailable => "software_runtime_unavailable",
             Self::Install(e) => match e {
                 vesta_server_install::InstallError::InvalidInput => "server_install.invalid_input",
@@ -204,6 +206,8 @@ pub struct Status {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Job {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_context: Option<serde_json::Value>,
     pub id: String,
     pub kind: String,
     pub state: String,
@@ -223,4 +227,8 @@ pub(super) struct StoredLaunch {
     pub document: String,
     #[serde(default)]
     pub artifacts: Vec<vesta_server_install::ManagedArtifact>,
+}
+
+impl From<crate::packs::ReleaseError> for SoftwareError {
+    fn from(error: crate::packs::ReleaseError) -> Self { Self::PackFailure(error.code()) }
 }

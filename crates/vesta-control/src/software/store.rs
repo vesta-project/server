@@ -93,6 +93,7 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
         })?
         .unwrap_or_default();
     Ok(Job {
+        error_context: r.get::<_, Option<String>>(7)?.map(|raw| serde_json::from_str(&raw).map_err(|error|rusqlite::Error::FromSqlConversionFailure(7,rusqlite::types::Type::Text,Box::new(error)))).transpose()?,
         id: r.get(0)?,
         kind: r.get(1)?,
         state: r.get(2)?,
@@ -102,7 +103,7 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
         warnings,
     })
 }
-const COLUMNS: &str = "SELECT id,kind,state,created_at_ms,updated_at_ms,error,(SELECT warnings_json FROM software_job_results WHERE job_id=software_jobs.id) FROM software_jobs";
+const COLUMNS: &str = "SELECT id,kind,state,created_at_ms,updated_at_ms,error,(SELECT warnings_json FROM software_job_results WHERE job_id=software_jobs.id),(SELECT context_json FROM software_job_failures WHERE job_id=software_jobs.id) FROM software_jobs";
 pub(super) fn job(c: &Connection, id: &str) -> Result<Job> {
     c.query_row(&format!("{COLUMNS} WHERE id=?"), [id], row)
         .map_err(Into::into)

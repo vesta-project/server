@@ -352,3 +352,211 @@ fn pack_effects_do_not_consume_the_interactive_file_receipt_quota() {
     files.apply_pending_content().unwrap();
     assert_eq!(std::fs::read(game.join("config/a")).unwrap(), b"pack");
 }
+
+#[test]
+#[ignore = "bounded local performance measurement; no provider calls"]
+fn audit_pack_400_local_stage_baseline() {
+    let count: usize = std::env::var("VESTA_AUDIT_FILES").ok().and_then(|v|v.parse().ok()).unwrap_or(400); assert!(count >= 2 && count <= 400);
+    let f = Fixture::new();
+    let clock=std::time::Instant::now();
+    let archive_path = f.temp.path().join("large.zip");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive_path).unwrap());
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let block = vec![0x5a; 1024 * 1024];
+    zip.start_file("config/large.bin", options).unwrap();
+    for _ in 0..1 {
+        zip.write_all(&block).unwrap();
+    }
+    for i in 0..count-1 {
+        zip.start_file(format!("config/part-{i}.json"), options)
+            .unwrap();
+        zip.write_all(b"{}\n").unwrap();
+    }
+    zip.finish().unwrap();
+    let mut source = std::fs::File::open(&archive_path).unwrap();
+    let mut hash = Sha256::new();
+    let mut buffer = vec![0; 512 * 1024];
+    loop {
+        let n = source.read(&mut buffer).unwrap();
+        if n == 0 {
+            break;
+        }
+        hash.update(&buffer[..n]);
+    }
+    let size = source.metadata().unwrap().len();
+    assert!(size > 1024 * 1024);
+    f.workspace
+        .upload_begin(
+            &f.subject,
+            "begin",
+            &UploadBegin {
+                upload_id: "large".into(),
+                total_size: size.to_string(),
+                sha256: hex::encode(hash.finalize()),
+                archive: true,
+            },
+        )
+        .unwrap();
+    source.seek(SeekFrom::Start(0)).unwrap();
+    let mut offset = 0;
+    loop {
+        let n = source.read(&mut buffer).unwrap();
+        if n == 0 {
+            break;
+        }
+        f.workspace
+            .upload_chunk(
+                &f.subject,
+                &format!("chunk-{offset}"),
+                &UploadChunk {
+                    upload_id: "large".into(),
+                    offset: offset.to_string(),
+                    content_base64: STANDARD.encode(&buffer[..n]),
+                },
+            )
+            .unwrap();
+        offset += n as u64;
+    }
+    f.workspace
+        .upload_finish(&f.subject, "finish", "large")
+        .unwrap();
+    assert_eq!(
+        f.db.read(|c| c
+            .query_row("SELECT length(body) FROM pack_workspace_uploads", [], |r| r
+                .get::<_, i64>(0))
+            .map_err(Into::into))
+            .unwrap(),
+        0
+    );
+    let game = f.temp.path().join("game");
+    std::fs::create_dir(&game).unwrap();
+    let files = crate::files::FileBrowser::open(f.db.clone(), &game, &[]).unwrap();
+    let releases = super::super::PackReleases::open(&f.db).unwrap();
+    let providers = crate::content::UreqProviderClient::new(None);
+    println!("AUDIT_STAGE upload_ms={}",clock.elapsed().as_secs_f64()*1000.0);
+    let clock=std::time::Instant::now();
+    let inspection = f
+        .workspace
+        .inspect_archive(
+            &f.subject,
+            "1.21.1",
+            &InspectRequest {
+                upload_id: "large".into(),
+            },
+            &providers,
+        )
+        .unwrap();
+    assert_eq!(inspection.entry_count, count);
+    println!("AUDIT_STAGE inspect_extract_ms={}",clock.elapsed().as_secs_f64()*1000.0);
+    let clock=std::time::Instant::now();
+    let plan = f
+        .workspace
+        .install_plan(
+            &f.subject,
+            "1.21.1",
+            Some("vanilla"),
+            &PackInstallRequest { analyze: false,
+                source: InstallSource::UploadedArchive {
+                    upload_id: "large".into(),
+                },
+            },
+            &files,
+            &releases,
+            &providers,
+        )
+        .unwrap();
+    assert_eq!(plan.files.len(), count);
+    assert!(plan.valid);
+    let stored =
+        f.db.read(|c| {
+            c.query_row(
+                "SELECT body FROM pack_install_plans WHERE id=?",
+                [&plan.plan_id],
+                |r| r.get::<_, String>(0),
+            )
+            .map_err(Into::into)
+        })
+        .unwrap();
+    assert!(stored.len() < 1024 * 1024, "review retained payload bytes");
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&stored)
+            .unwrap()
+            .get("bytes")
+            .is_none()
+    );
+    println!("AUDIT_STAGE plan_ms={}",clock.elapsed().as_secs_f64()*1000.0);
+    let clock=std::time::Instant::now();
+    let outcome = f
+        .workspace
+        .install_apply(
+            &f.subject,
+            "1.21.1",
+            Some("vanilla"),
+            "apply",
+            &PackInstallApply {
+                acknowledge_warnings: true,
+                acknowledge_software_switch: false,
+                plan_id: plan.plan_id,
+                confirmation_token: plan.confirmation_token,
+                choices: vec![],
+                set_as_modpack: false,
+            },
+            &files,
+        )
+        .unwrap();
+    println!("AUDIT_STAGE hydrate_stage_apply_ms={}",clock.elapsed().as_secs_f64()*1000.0);
+    assert_eq!(outcome.pending_ids.len(), count);
+    let world = files.world(&f.subject).unwrap();
+    let inventory = files
+        .content_inventory(&f.subject, Some("vanilla".into()), "1.21.1".into(), &world)
+        .unwrap();
+    assert_eq!(inventory.items.len(), 0);
+    assert!(
+        !inventory
+            .items
+            .iter()
+            .any(|item| item.path == "config/large.bin")
+    );
+    assert_eq!(outcome.state, "installed");
+    assert_eq!(inventory.deferred_writes, 0);
+    f.workspace
+        .upload_cancel(&f.subject, "cancel", "large")
+        .unwrap();
+    let reopened = PackWorkspace::open(&f.db).unwrap();
+    assert!(reopened.server_link(&f.subject).unwrap().is_some());
+    files.apply_pending_content().unwrap();
+    assert_eq!(
+        std::fs::metadata(game.join("config/large.bin"))
+            .unwrap()
+            .len(),
+        1024 * 1024
+    );
+    for i in 0..count-1 {
+        assert_eq!(
+            std::fs::read(game.join(format!("config/part-{i}.json"))).unwrap(),
+            b"{}\n"
+        );
+    }
+    assert_eq!(
+        f.db.read(|c| c
+            .query_row(
+                "SELECT count(*) FROM server_content_changes WHERE state='pending'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .map_err(Into::into))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        std::fs::read_dir(f.db.directory().path().join("pack-payloads"))
+            .unwrap()
+            .count(),
+        2,
+        "only the two distinct config baselines should be retained"
+    );
+    f.workspace.unlink_server_modpack(&f.subject,"unlink-capacity",&ServerModpackUnlink{remove_owned_files:false},&files).unwrap();
+    Store::open(&f.db).unwrap().collect().unwrap();
+    assert_eq!(std::fs::read_dir(f.db.directory().path().join("pack-payloads")).unwrap().count(),0,"unlink releases config baselines");
+}

@@ -31,3 +31,6 @@ pub use directory::{RunnerLock, StateDirectory};
 pub use error::{StateError, TransactionError};
 
 pub type Result<T> = std::result::Result<T, StateError>;
+
+#[cfg(feature = "latency-probe")]
+pub mod latency_probe;

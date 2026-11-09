@@ -38,8 +38,14 @@ Each entry has `id`, `kind`, portable game-relative `path`, `required`,
 datapack|config_override`; side values are `required|optional|unsupported`.
 Sources are `{type:"provider",provider,project_id,version_id}`,
 `{type:"upload",sha256}` or an imported `{type:"manual",reason}` blocker.
-Provider requests contain no download URL or digest. Authoritative provider
-metadata supplies compatibility, filename, download identity and dependencies.
+Provider source references contain no caller download URL. Imported mrpack entries
+also retain `artifact_sha512`, selecting one exact file within the authoritative
+provider project/version metadata. The pin never grants URL authority. It allows a
+safe local rename (including a `.disabled` suffix) without substituting the primary
+file of a multi-file release. The worker rechecks provider/project/version, filename
+and digest against the saved per-file pin before deferred download and verification.
+Entries without this pin still require the canonical provider filename.
+Authoritative provider metadata supplies compatibility and dependencies.
 An entry unsupported on the client is excluded from the artifact. `required`
 controls required/optional client installation for included entries.
 
@@ -92,8 +98,11 @@ All writes carry `Idempotency-Key`. For small files `POST pack/draft/upload
 
 Keep the same intent and upload ID across retries, including chunk offsets.
 Uploads are actor/device-bound, with at most eight retained transfers. Archives
-are streamed to protected disk files and accept up to 128 GiB of compressed data;
-actual available space is checked during writes, retaining a 64 MiB reserve.
+are streamed to protected disk files. The earlier claim of a 128 GiB upload or
+staging cap was incorrect: archive declarations are checked against `i64::MAX`,
+and payload staging has no separate cumulative byte ceiling. Available space is
+checked during writes, retaining a 64 MiB reserve; this is not a hard resource
+budget or a guarantee against exhaustion. Finite limits remain proposed policy.
 File finish moves bytes into the client workspace hash store and retires its
 transfer; successful archive import consumes its transfer. Cancel abandoned
 transfers. Upload chunk receipts do not consume the workspace's 10,000 ordinary
@@ -285,10 +294,14 @@ Two provider transfers may run at once. Native dropped archives are hashed and
 uploaded from open file handles, without a whole-archive launcher buffer.
 
 The former 128-file, 64 MiB total and 16 MiB individual-file server installation
-caps no longer apply. Metadata guardrails are 65,536 selected files and 32 MiB of
-JSON. There is no aggregate in-memory payload budget for server installation.
-The upload protocol accepts archives up to 128 GiB. These are technical bounds,
-not advertised pack-size tiers; disk availability remains the practical limit.
+caps no longer apply. The native published catalogue decoder has 65,536-file and
+32 MiB JSON limits, but these do not bound every workspace import or metadata
+read. General metadata still has unbounded `read_to_end` paths; some workspace
+archive/count/byte thresholds are advisory or suppressed. There is no cumulative
+upload/staging byte cap or comprehensive expanded-archive/work budget. The
+protocol catalogue's 128 GiB constant is not an enforced upload limit. Hard finite
+budget defaults require owner approval and implementation; warning acknowledgement
+must not bypass those future backstops.
 Download verification and processing have a one-hour job budget. Urgent control
 and status requests retain their separate worker/body budgets.
 

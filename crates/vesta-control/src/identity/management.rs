@@ -327,19 +327,7 @@ impl ManagementAccess {
         let fingerprint = Fingerprint::parse(&hex::encode(digest::digest(&digest::SHA256, &key)))?;
         self.write(|repo| {
             let c = repo.connection();
-            let hash = bound_hash(b"pair", self.server_id(), code);
-            let role: Option<String> = c.query_row("SELECT role_id FROM management_pairing_codes WHERE code_hash = ? AND server_id = ? AND expires_at > ?", params![hash.as_slice(), self.server_id(), repo.now], |r| r.get(0)).optional()?;
-            let role = RoleId::parse(&role.ok_or(invalid)?)?;
-            // BEGIN IMMEDIATE owns redemption. Removal, policy, enrollment and
-            // audit commit together; failed transactions leave the code usable.
-            let issuer = self.invitation_issuer(repo, &hash)?;
-            let usage: Option<(Option<u32>,u32)> = c.query_row("SELECT max_uses,uses FROM management_invitation_uses WHERE code_hash=?",[hash.as_slice()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-            if let Some((limit,uses)) = usage {
-                if limit.is_some_and(|n| uses>=n) { return Err(invalid); }
-                c.execute("UPDATE management_invitation_uses SET uses=uses+1 WHERE code_hash=?",[hash.as_slice()])?;
-                if limit == Some(uses+1) { c.execute("DELETE FROM management_pairing_codes WHERE code_hash=?",[hash.as_slice()])?; }
-            } else { c.execute("DELETE FROM management_pairing_codes WHERE code_hash = ?", [hash.as_slice()])?; }
-            repo.role(&role)?;
+            let (role, issuer) = self.consume_invitation(repo, code)?;
             if let Some(subject)=&authenticated {self.subject_in(repo,&subject.device)?;}
             let existing:Option<(String,String)>=c.query_row("SELECT principal_id,id FROM devices WHERE server_id=? AND public_key_sha256=? AND revoked_at IS NULL",params![self.server_id(),fingerprint.as_str()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
             let principal=if let Some(subject)=&authenticated {subject.principal.clone()} else {if existing.is_some() {return Err(ManagementError::SessionInvalid);}self.create_user(repo,&name)?};
@@ -358,6 +346,29 @@ impl ManagementAccess {
             self.audit(repo, device_actor(&subject)?, "management.pair.enroll", device.as_str())?;
             Ok(Enrolled { server_id: self.server_id().to_owned(), principal_id: principal.to_string(), device_id: device.to_string(), role: role.to_string() })
         })
+    }
+
+    // This runs inside enrollment's transaction: failed identity, policy or
+    // audit checks leave the invitation and its usage counter unchanged.
+    pub(super) fn consume_invitation(&self, repo: &Repository<'_>, code: &str) -> Result<(RoleId, Option<Subject>)> {
+        let invalid = ManagementError::PairInvalid;
+        decode::<32>(code).map_err(|_| invalid)?;
+        let c = repo.connection();
+        let hash = bound_hash(b"pair", self.server_id(), code);
+        let role: Option<String> = c.query_row("SELECT role_id FROM management_pairing_codes WHERE code_hash = ? AND server_id = ? AND expires_at > ?", params![hash.as_slice(), self.server_id(), repo.now], |r| r.get(0)).optional()?;
+        let role = RoleId::parse(&role.ok_or(invalid)?)?;
+        // BEGIN IMMEDIATE owns redemption. Removal, policy, enrollment and
+        // audit commit together; failed transactions leave the code usable.
+        let issuer = self.invitation_issuer(repo, &hash)?;
+        let usage: Option<(Option<u32>,u32)> = c.query_row("SELECT max_uses,uses FROM management_invitation_uses WHERE code_hash=?",[hash.as_slice()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        if let Some((limit,uses)) = usage {
+            if limit.is_some_and(|n| uses>=n) { return Err(invalid); }
+            c.execute("UPDATE management_invitation_uses SET uses=uses+1 WHERE code_hash=?",[hash.as_slice()])?;
+            if limit == Some(uses+1) { c.execute("DELETE FROM management_pairing_codes WHERE code_hash=?",[hash.as_slice()])?; }
+        } else { c.execute("DELETE FROM management_pairing_codes WHERE code_hash = ?", [hash.as_slice()])?; }
+        repo.role(&role)?;
+        Ok((role, issuer))
+
     }
 
     /// A fresh enrollment-purpose proof identifies the device owner. It grants
@@ -443,7 +454,7 @@ impl ManagementAccess {
     }
     fn subject_in(&self, repo: &Repository<'_>, device: &DeviceId) -> Result<(Subject, Vec<u8>)> {
         let row: Option<(String, Vec<u8>, String)> = repo.connection().query_row(
-            "SELECT d.principal_id, k.public_key, d.public_key_sha256 FROM devices d JOIN management_device_keys k ON k.device_id = d.id WHERE d.id = ? AND d.server_id = ? AND k.server_id = ? AND d.revoked_at IS NULL",
+            "SELECT d.principal_id, k.public_key, d.public_key_sha256 FROM devices d JOIN management_device_keys k ON k.device_id = d.id JOIN user_minecraft_accounts a ON a.server_id = d.server_id AND a.principal_id = d.principal_id AND k.linked_minecraft_uuid = a.minecraft_uuid WHERE d.id = ? AND d.server_id = ? AND k.server_id = ? AND d.revoked_at IS NULL",
             params![device.as_str(), self.server_id(), self.server_id()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
         let (principal, key, fingerprint) = row.ok_or(ManagementError::SessionInvalid)?;
         if key.len() != 32

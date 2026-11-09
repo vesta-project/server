@@ -4,6 +4,7 @@ use super::{FileError, Result, io_error, native};
 use std::{io::Read, path::Path};
 const MAX_BYTES: u64 = 16 * 1024;
 pub(super) fn hidden(root: &Path, path: &str) -> Result<bool> {
+        #[cfg(feature = "latency-probe")] let _latency_ignore_policy = vesta_state::latency_probe::Span::new("ignore_policy");
     // Ignore configuration remains visible/editable; it cannot override protected
     // names, which Root checks first. A linked/oversized policy fails closed.
     if path == ".vesta-fileignore" {

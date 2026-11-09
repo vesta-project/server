@@ -69,6 +69,7 @@ impl Root {
         self
     }
     pub(super) fn resolve(&self, relative: Option<&RelativePath>) -> Result<CheckedPath> {
+        #[cfg(feature = "latency-probe")] let _latency = vesta_state::latency_probe::Span::new("root_resolve");
         let requested = relative
             .map(|path| self.canonical.join(path.as_str()))
             .unwrap_or_else(|| self.canonical.clone());
@@ -108,6 +109,7 @@ impl Root {
         })
     }
     pub(super) fn resource(&self, path: &Path) -> Result<Resource> {
+        #[cfg(feature = "latency-probe")] let _latency = vesta_state::latency_probe::Span::new("root_resource");
         if !within(path, &self.canonical) {
             return Err(FileError::LinkedPath);
         }

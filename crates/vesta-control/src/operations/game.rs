@@ -385,6 +385,13 @@ impl GameLifecycle {
         if self.offline_uncertain {
             return Err(RuntimeError::ObserveFailed.into());
         }
+        // Test-only observation of the real start barrier. Never spawn an owned
+        // fixture executable just to prove that pending content blocks start.
+        #[cfg(test)]
+        if RECOVERY_START_PROBE.with(|slot| slot.get().is_some()) {
+            RECOVERY_START_PROBE.with(|slot| slot.set(Some(slot.get().unwrap()+1)));
+            return Err(RuntimeError::ObserveFailed.into());
+        }
         if let Some(mut responder) = self.offline.take()
             && responder.close().is_err()
         {
@@ -617,4 +624,17 @@ mod metrics_tests {
         vesta_supervisor::record::clear(&directory).unwrap();
         assert!(view.native_identity().is_none());
     }
+}
+
+#[cfg(test)]
+thread_local! {static RECOVERY_START_PROBE:std::cell::Cell<Option<usize>>=const{std::cell::Cell::new(None)};}
+#[cfg(test)]
+pub(crate) fn recovery_start_probe(files:crate::files::FileBrowser,root:&std::path::Path)->usize {
+    struct Reset;impl Drop for Reset{fn drop(&mut self){RECOVERY_START_PROBE.with(|slot|slot.set(None));}}
+    let _reset=Reset;RECOVERY_START_PROBE.with(|slot|{assert!(slot.get().is_none());slot.set(Some(0));});
+    let inert=root.join(".recovery-never-executable.fixture");std::fs::write(&inert,b"inert fixture, not executable").unwrap();
+    let launch=LaunchSpec::new(inert,Vec::<String>::new(),root.to_path_buf(),vesta_game_runtime::process::GracefulStop::MinecraftCommand).unwrap();
+    let mut lifecycle=GameLifecycle::new(launch);lifecycle.content_files=Some(files);
+    let result=lifecycle.start_unblocked(|_|Ok(()));assert!(result.is_err(),"probe must never spawn");assert_eq!(lifecycle.process.snapshot().phase,ProcessPhase::Stopped);
+    RECOVERY_START_PROBE.with(|slot|slot.get().unwrap())
 }

@@ -2666,3 +2666,6 @@ fn external_preparation_and_admission_share_the_original_mutation_deadline() {
     );
     assert!(matches!(result, Err(FileError::Unavailable)));
 }
+
+#[path = "recovery_assurance.rs"]
+mod recovery_assurance;

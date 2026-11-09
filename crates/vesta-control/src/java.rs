@@ -90,6 +90,8 @@ pub async fn probe(path: &Path, managed: bool) -> Result<JavaRuntime> {
         .env_remove("JAVA_TOOL_OPTIONS")
         .env_remove("_JAVA_OPTIONS")
         .env_remove("JDK_JAVA_OPTIONS")
+        .env_remove("CURSEFORGE_API_KEY")
+        .env_remove("VESTA_CURSEFORGE_API_KEY")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

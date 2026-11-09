@@ -726,3 +726,6 @@ fn engine_actor() -> OperationsResult<AuditActor> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use game::recovery_start_probe;

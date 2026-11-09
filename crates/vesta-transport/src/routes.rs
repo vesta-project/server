@@ -36,6 +36,8 @@ struct Completion {
     device_name: Option<String>,
     #[serde(default)]
     public_key: Option<String>,
+    #[serde(default)]
+    invitation_code: Option<String>,
 }
 
 pub(super) fn fixed_refusal(path: &str) -> Option<Reply> {
@@ -623,9 +625,9 @@ fn dispatch(
                     };
                     match host
                         .management()
-                        .enroll_pack_profile(profile, &name, &key, authorization)
+                        .enroll_pack_profile_with_invitation(profile, &name, &key, input.invitation_code.as_deref())
                     {
-                        Ok(device) => json(serde_json::json!({"device_id":device.device_id})),
+                        Ok(device) => json(serde_json::json!({"device_id":device.device_id,"role":device.role})),
                         Err(e) => management_error(e),
                     }
                 }
@@ -713,13 +715,6 @@ fn minecraft_error(code: &'static str) -> Reply {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Pair {
-    code: String,
-    device_name: String,
-    public_key: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct DeviceChallenge {
     device_id: String,
 }
@@ -763,12 +758,26 @@ fn manage_dispatch(
     }
     match path {
         "/api/v3/manage/device/enroll" => {
-            let Ok(input) = serde_json::from_slice::<DeviceEnrollment>(bytes) else {
+            error(StatusCode::UNAUTHORIZED, "management_session_invalid")
+        }
+        "/api/v3/manage/pair" => {
+            // A code attaches access to the current account; it is never a
+            // replacement for account authentication. The transaction below
+            // rechecks identity/revocation and owns invitation consumption.
+            let Some(token) = authorization else {
+                return error(StatusCode::UNAUTHORIZED, "management_session_invalid");
+            };
+            if let Err(e) = management.authenticate(token) {
+                return management_error(e);
+            }
+            let Ok(input) = serde_json::from_slice::<InvitationRedemption>(bytes) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
             };
-            match management.enroll_device_for(&input.device_name, &input.public_key, authorization)
-            {
-                Ok(device) => json(serde_json::json!({"device_id":device.device_id})),
+            match management.enroll_for(&input.code, &input.device_name, &input.public_key, Some(token)) {
+                Ok(enrolled) => json(serde_json::json!({
+                    "server_id": enrolled.server_id, "principal_id": enrolled.principal_id,
+                    "device_id": enrolled.device_id, "role": enrolled.role,
+                })),
                 Err(e) => management_error(e),
             }
         }
@@ -818,28 +827,17 @@ fn manage_dispatch(
                 return error(StatusCode::UNAUTHORIZED, "management_session_invalid");
             };
             match host.minecraft().complete_management(&challenge) {
-                Ok(Some(profile)) => match management.enroll_minecraft_for(
+                Ok(Some(profile)) => match management.enroll_minecraft_with_invitation(
                     profile,
                     &input.device_name,
                     &input.public_key,
-                    authorization,
+                    input.invitation_code.as_deref(),
                 ) {
-                    Ok(enrolled) => json(serde_json::json!({"device_id": enrolled.device_id})),
+                    Ok(enrolled) => json(serde_json::json!({"device_id": enrolled.device_id,"role": enrolled.role})),
                     Err(e) => management_error(e),
                 },
                 Ok(None) => error(StatusCode::UNAUTHORIZED, "management_session_invalid"),
                 Err(e) => minecraft_error(e.code()),
-            }
-        }
-        "/api/v3/manage/pair" => {
-            let Ok(input) = serde_json::from_slice::<Pair>(bytes) else {
-                return error(StatusCode::BAD_REQUEST, "invalid_request");
-            };
-            let code = zeroize::Zeroizing::new(input.code);
-            match management.enroll_for(&code, &input.device_name, &input.public_key, authorization)
-            {
-                Ok(enrolled) => json(serde_json::to_value(enrolled).expect("enrollment JSON")),
-                Err(e) => management_error(e),
             }
         }
         "/api/v3/manage/session/challenge" => {
@@ -870,15 +868,17 @@ fn manage_dispatch(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct MinecraftEnrollment {
-    challenge: String,
+struct InvitationRedemption {
+    code: String,
     device_name: String,
     public_key: String,
 }
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DeviceEnrollment {
+struct MinecraftEnrollment {
+    #[serde(default)]
+    invitation_code: Option<String>,
+    challenge: String,
     device_name: String,
     public_key: String,
 }

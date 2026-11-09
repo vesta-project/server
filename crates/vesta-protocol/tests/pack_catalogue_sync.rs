@@ -20,6 +20,15 @@ const D: &str = "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 const E: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const F: &str = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 
+#[test]
+fn ampersand_is_a_literal_portable_component_not_path_syntax() {
+    let path="kubejs/server_scripts/mods/Laser Bridges & Doors/Recipes.js";
+    assert_eq!(RelativePath::parse(path).unwrap().as_str(),path);
+    for bad in ["../A & B","A & B/../outside","/A & B","A & B\\outside","A & B/CON.js","A & B/trailing.","A & B/stream:secret"] {
+        assert!(RelativePath::parse(bad).is_err(),"accepted unsafe path: {bad}");
+    }
+}
+
 // Full-width hashes are deliberate: short Java unit-test hash placeholders do not
 // establish integrity and are not valid inputs to this native application boundary.
 const GOLDEN_MANIFEST: &[u8] = br#"{

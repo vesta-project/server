@@ -928,7 +928,7 @@ fn integrated_12k_roster_status_metrics_network_and_resource_events() {
     let mut churn_bytes = 0;
     let mut churn_frames = 0;
     while churn < 120 {
-        assert!(start.elapsed()<Duration::from_secs(15));
+        assert!(start.elapsed()<Duration::from_secs(15), "100-request batch took {elapsed:.2}s; received {churn}/120 churn events after {:.2}s", start.elapsed().as_secs_f64());
         let notice = realtime_json(&mut peer);
         if notice["type"]=="players.delta" {
             assert_eq!(notice["data"]["base_revision"],revision);

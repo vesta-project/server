@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version = "1.88"
 publish.workspace = true
 
+[features]
+latency-probe = ["vesta-control/latency-probe"]
+
 [dependencies]
 vesta-control = { path = "../vesta-control" }
 vesta-server-install = { path = "../vesta-server-install" }

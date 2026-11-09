@@ -95,7 +95,7 @@ impl RelativePath {
                     c.is_ascii_alphanumeric()
                         || matches!(
                             c,
-                            b'~' | b',' | b'.' | b'_' | b'-' | b'+' | b'\'' | b' ' | b'(' | b')' | b'[' | b']' | b'$' | b'!'
+                            b'~' | b',' | b'.' | b'_' | b'-' | b'+' | b'\'' | b' ' | b'(' | b')' | b'[' | b']' | b'$' | b'!' | b'&'
                         )
                 })
             {

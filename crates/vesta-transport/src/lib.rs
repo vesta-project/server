@@ -808,7 +808,13 @@ impl BlockingJobs {
         operational: bool,
         action: impl FnOnce() -> Reply + Send + 'static,
     ) -> Reply {
-        self.run(action).await.unwrap_or_else(|_| {
+        #[cfg(feature = "latency-probe")] let queued = std::time::Instant::now();
+        self.run(move || {
+            #[cfg(feature = "latency-probe")] let queue_ns = queued.elapsed().as_nanos();
+            #[allow(unused_mut)] let mut reply = action();
+            #[cfg(feature = "latency-probe")] if reply.headers().contains_key("x-vesta-latency-probe") { reply.headers_mut().insert("x-vesta-queue-ns",http::HeaderValue::from_str(&queue_ns.to_string()).unwrap()); }
+            reply
+        }).await.unwrap_or_else(|_| {
             if operational {
                 manage::error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable")
             } else {

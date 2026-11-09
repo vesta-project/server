@@ -320,6 +320,7 @@ fn entry(
     server: Side,
 ) -> Result<PackEntry> {
     Ok(PackEntry {
+            artifact_sha512: None,
         id,
         kind: kind(&path)?,
         path,
@@ -687,6 +688,11 @@ fn parse_zip(
                 row["env"]["client"] != "optional",
                 server,
             )?;
+            if matches!(imported.source, EntrySource::Provider { .. }) {
+                let hash = row["hashes"]["sha512"].as_str().ok_or_else(invalid)?;
+                crate::content::ExpectedHash::Sha512(hash.into()).validate()?;
+                imported.artifact_sha512 = Some(hash.to_ascii_lowercase());
+            }
             imported.environment.client = match row["env"]["client"].as_str() {
                 Some("unsupported") => Side::Unsupported,
                 Some("optional") => Side::Optional,
@@ -751,7 +757,8 @@ fn parse_zip(
                     ));
                 }
             };
-            let path = format!("mods/{filename}");
+            let directory=providers.archive_directory(Provider::Curseforge,&project).map_err(|error| ReleaseError::provider_file(error,"curseforge",&project,&version,"metadata",Some(&filename)))?;
+            let path = format!("{directory}/{filename}");
             manifest.entries.push(entry(
                 format!("import-{i}"),
                 path,
@@ -842,6 +849,37 @@ mod tests {
         z.finish().unwrap().into_inner()
     }
     #[test]
+    fn curseforge_resource_pack_references_use_their_catalogue_directory() {
+        struct ResourceProvider;
+        impl ProviderClient for ResourceProvider {
+            fn archive_directory(&self, _:Provider, _: &str)->crate::content::Result<&'static str>{Ok("resourcepacks")}
+            fn archive_filename(&self, _:Provider, _: &str,_:&str)->crate::content::Result<String>{Ok("textures.zip".into())}
+            fn resolve(&self,_:Provider,_:&str,_:&str)->crate::content::Result<crate::content::ResolvedSource>{panic!("import must not download resource pack")}
+        }
+        let manifest=br#"{"manifestType":"minecraftModpack","manifestVersion":1,"name":"Pack","version":"1.0","minecraft":{"version":"1.21.1","modLoaders":[{"id":"fabric-0.16.14","primary":true}]},"files":[{"projectID":123,"fileID":456,"required":true}]}"#;
+        let (pack,_)=parse_archive(&archive(&[("manifest.json",manifest)]),&ResourceProvider, |_|Ok(None)).unwrap();
+        assert_eq!(pack.entries[0].path,"resourcepacks/textures.zip");
+        assert_eq!(pack.entries[0].kind,EntryKind::ResourcePack);
+    }
+    #[test]
+    fn mrpack_retains_exact_digest_and_disabled_name() {
+        let document=serde_json::json!({"formatVersion":1,"game":"minecraft","name":"Pinned","versionId":"1.0","dependencies":{"minecraft":"1.21.1","fabric-loader":"0.18.4"},"files":[
+            {"path":"mods/renamed.jar","hashes":{"sha512":"a".repeat(128)}},
+            {"path":"mods/old-name.jar.disabled","hashes":{"sha512":"b".repeat(128)}}
+        ]});
+        let identify=|_:&str|Ok(Some(crate::content::ContentProvider {provider:"modrinth".into(),project_id:"same-project".into(),version_id:"version".into()}));
+        let bytes=archive(&[("modrinth.index.json",&serde_json::to_vec(&document).unwrap())]);
+        let (manifest,_)=parse_archive(&bytes,&Providers,identify).unwrap();
+        assert_eq!(manifest.entries[0].path,"mods/renamed.jar");
+        assert_eq!(manifest.entries[0].artifact_sha512.as_deref(),Some("a".repeat(128).as_str()));
+        assert_eq!(manifest.entries[1].path,"mods/old-name.jar.disabled");
+        assert_eq!(manifest.entries[1].artifact_sha512.as_deref(),Some("b".repeat(128).as_str()));
+        let mut tampered=document.clone();tampered["files"][0]["hashes"]["sha512"]="not-a-digest".into();
+        assert!(parse_archive(&archive(&[("modrinth.index.json",&serde_json::to_vec(&tampered).unwrap())]),&Providers,identify).is_err());
+        let mut active_duplicate=document;active_duplicate["files"][1]["path"]="mods/another-active.jar".into();
+        assert!(parse_archive(&archive(&[("modrinth.index.json",&serde_json::to_vec(&active_duplicate).unwrap())]),&Providers,identify).is_err());
+    }
+    #[test]
     fn mrpack_preserves_optional_side_and_embeds_overrides_without_trusting_urls() {
         let document = serde_json::json!({"formatVersion":1,"game":"minecraft","name":"Imported","versionId":"2.0","dependencies":{"minecraft":"1.21.1","fabric-loader":"0.16.10"},"files":[{"path":"mods/example.jar","hashes":{"sha512":"a".repeat(128)},"downloads":["http://127.0.0.1/private"],"env":{"client":"optional","server":"required"}}]});
         let bytes = archive(&[
@@ -921,6 +959,17 @@ mod tests {
         assert_eq!(manifest.loader_version.as_deref(), Some("14.23.5.2860"));
         assert_eq!(manifest.override_files[0].path, "config/forgeendertech/Biomes/minecraft$mutated_ice_flats.cfg");
         assert_eq!(blobs, vec![b"legacy=true".to_vec()]);
+    }
+    #[test]
+    fn dedicated_server_archive_preserves_portable_ampersand_directory() {
+        let path="kubejs/server_scripts/mods/Laser Bridges & Doors/Recipes.js";
+        crate::files::RelativePath::parse(path).unwrap();
+        let bytes=archive(&[(path,b"// data only; never executed by import")]);
+        let (manifest,blobs)=parse_zip(Cursor::new(bytes),&Providers,|_|Ok(None),None,Some(&mut Vec::new()),None).unwrap();
+        assert_eq!(manifest.entries.len(),1);assert_eq!(manifest.entries[0].path,path);assert_eq!(blobs.len(),1);
+        for unsafe_path in ["../Laser & Doors/Recipes.js","kubejs/../Recipes.js","kubejs\\Recipes.js","kubejs/CON/Recipes.js","kubejs/trailing./Recipes.js"] {
+            assert!(parse_zip(Cursor::new(archive(&[(unsafe_path,b"data")])),&Providers,|_|Ok(None),None,Some(&mut Vec::new()),None).is_err());
+        }
     }
     #[test]
     fn dedicated_server_folder_preserves_managed_files_and_installs_game_data() {
@@ -1043,6 +1092,23 @@ mod tests {
     fn archive_traversal_refuses_but_unusual_non_executable_content_can_be_reviewed() {
         assert!(parse_archive(&archive(&[("../secret", b"x")]), &Providers, |_| Ok(None)).is_err());
         assert!(parse_archive(&archive(&[("hello.txt", b"x")]), &Providers, |_| Ok(None)).is_ok());
+    }
+
+    #[test]
+    fn assurance_archive_links_depth_and_malformed_structure_refuse_without_extraction() {
+        let mut zip=zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.add_symlink("config/link","../../owned-witness",zip::write::SimpleFileOptions::default()).unwrap();
+        let bytes=zip.finish().unwrap().into_inner();
+        assert!(matches!(parse_archive(&bytes,&Providers,|_|Ok(None)),Err(ReleaseError::Refusal{rule:"no_symbolic_links",..})));
+        let at_limit=format!("config/{}/value.json",vec!["a";30].join("/"));
+        assert!(parse_archive(&archive(&[(&at_limit,b"{}")]),&Providers,|_|Ok(None)).is_ok());
+        let too_deep=format!("config/{}/value.json",vec!["a";31].join("/"));
+        assert!(parse_archive(&archive(&[(&too_deep,b"{}")]),&Providers,|_|Ok(None)).is_err());
+        for path in ["config/../escape","/absolute","config\\escape","config/%2e%2e/escape","config/CON.json"] {
+            assert!(parse_archive(&archive(&[(path,b"x")]),&Providers,|_|Ok(None)).is_err());
+        }
+        let valid=archive(&[("config/value.json",b"{}")]);
+        for length in [0,1,valid.len()/2,valid.len()-1] {assert!(parse_archive(&valid[..length],&Providers,|_|Ok(None)).is_err());}
     }
 }
 

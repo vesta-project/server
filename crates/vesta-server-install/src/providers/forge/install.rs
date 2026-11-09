@@ -327,6 +327,8 @@ async fn processor(
         "JDK_JAVA_OPTIONS",
         "OPENJ9_JAVA_OPTIONS",
         "IBM_JAVA_OPTIONS",
+        "CURSEFORGE_API_KEY",
+        "VESTA_CURSEFORGE_API_KEY",
     ] {
         command.env_remove(key);
     }

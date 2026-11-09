@@ -28,7 +28,31 @@ const ROTATED_KEY: &[u8] = include_bytes!("fixtures/test-only-mismatched-key.pem
 const KEY: &[u8] = include_bytes!("fixtures/test-only-server-key.pem");
 const CA: &[u8] = include_bytes!("fixtures/test-only-ca.pem");
 const PASSWORD: &str = "transport test password only";
+
+#[test]
+fn content_summary_returns_rows_before_byte_verification() {
+    let f = Fixture::new("minecraft", 8, 4096, 5);
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &device, &key);
+    std::fs::create_dir_all(f.temp.path().join("game/mods")).unwrap();
+    std::fs::write(f.temp.path().join("game/mods/example.jar"), b"fixture").unwrap();
+    management_reply_error(&f.request("GET", "/api/v3/manage/content?view=summary", b"", None), 401, "management_session_invalid");
+    let summary = f.request("GET", "/api/v3/manage/content?view=summary", b"", Some(&token));
+    assert_eq!(summary.status, 200);
+    let entry = &summary.json()["data"]["items"][0];
+    assert_eq!(entry["filename"], "example.jar");
+    assert!(entry["sha256"].is_null());
+    assert!(entry["provider"].is_null());
+    let verified = f.request("GET", "/api/v3/manage/content", b"", Some(&token));
+    assert_eq!(verified.status, 200);
+    assert!(verified.json()["data"]["items"][0]["sha256"].as_str().is_some());
+    management_reply_error(&f.request("GET", "/api/v3/manage/content?view=unknown", b"", Some(&token)), 400, "invalid_request");
+}
 type TlsStream = StreamOwned<ClientConnection, TcpStream>;
+#[path = "resource_performance/mod.rs"]
+mod resource_performance;
+#[path = "same_device/mod.rs"]
+mod same_device;
 #[path = "pack_workspace/mod.rs"]
 mod pack_workspace_tests;
 #[path = "hosted_resource_packs/mod.rs"]
@@ -203,6 +227,7 @@ impl Fixture {
         let document = format!(
             "schema-version = 1\n[paths]\nstate = 'private-state'\ngame = 'game'\nscan-roots = ['game/config']\nlaunch-definition = 'private/launch.toml'\n[pack]\nname = 'Hosted'\nversion = '1.0.0'\nrevision = 1\nminimum-revision = 1\nminecraft-version = '1.21.1'\nunresolved-disposition = 'embed-public'\n[pack-access]\nmode = '{mode}'\n[listener]\nmode = 'tls'\nbind = '127.0.0.1'\nport = 25567\ncertificate = 'private/cert.pem'\nprivate-key = 'private/key.pem'\nmax-connections = {connections}\nmax-request-bytes = {max_body}\nrequest-timeout-seconds = {timeout}\n{options}\n"
         );
+        std::fs::write(base.join("host.toml"), document.as_bytes()).unwrap();
         let config =
             HostConfiguration::parse_toml(document.as_bytes(), base, Path::new("host.toml"))
                 .unwrap();
@@ -1114,6 +1139,7 @@ impl Fixture {
                 &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref()),
             )
             .unwrap();
+        bind_fixture_account(self, &device, &key);
         let nonce = management.challenge(&device.device_id).unwrap();
         let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
             key.sign(&vesta_control::identity::management::session_message(
@@ -1628,23 +1654,24 @@ fn enroll_management(
     use ring::signature::KeyPair;
     let code = f.host().management().issue_local(role, 10).unwrap();
     let key = management_key();
-    let request = serde_json::json!({"code": code.secret.expose(), "device_name": "TLS test device", "public_key": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref())});
-    let reply = f.request(
-        "POST",
-        "/api/v3/manage/pair",
-        &serde_json::to_vec(&request).unwrap(),
-        None,
-    );
-    assert_eq!(reply.status, 200);
-    assert_eq!(reply.json()["role"], role.id());
-    f.request(
-        "POST",
-        "/api/v3/manage/pair",
-        &serde_json::to_vec(&request).unwrap(),
-        None,
-    )
-    .error(401, "management_pair_invalid");
-    (reply.json()["device_id"].as_str().unwrap().to_owned(), key)
+    let enrolled = f.host().management().enroll(code.secret.expose(), "TLS test device",
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref())).unwrap();
+    bind_fixture_account(f, &enrolled, &key);
+    (enrolled.device_id, key)
+}
+fn bind_fixture_account(f: &Fixture, enrolled: &vesta_control::identity::management::Enrolled, key: &ring::signature::Ed25519KeyPair) {
+    use ring::signature::KeyPair;
+    // Transport fixtures never contact Mojang. Seed the verified account binding
+    // locally; production enrollment is exercised by the control identity tests.
+    let raw = hex::encode(&key.public_key().as_ref()[..16]);
+    let account = format!("{}-{}-{}-{}-{}", &raw[..8], &raw[8..12], &raw[12..16], &raw[16..20], &raw[20..]);
+    f.host().database().write(|c| {
+        c.execute("INSERT INTO user_minecraft_accounts(server_id,minecraft_uuid,principal_id) VALUES(?,?,?)",
+            rusqlite::params![enrolled.server_id, account, enrolled.principal_id])?;
+        c.execute("UPDATE management_device_keys SET linked_minecraft_uuid=? WHERE device_id=?",
+            rusqlite::params![account, enrolled.device_id])?;
+        Ok(())
+    }).unwrap();
 }
 fn management_session(f: &Fixture, device: &str, key: &ring::signature::Ed25519KeyPair) -> String {
     use base64::Engine as _;
@@ -1662,6 +1689,41 @@ fn management_session(f: &Fixture, device: &str, key: &ring::signature::Ed25519K
     f.request("POST", "/api/v3/manage/session", &request, None)
         .error(401, "management_session_invalid");
     reply.json()["token"].as_str().unwrap().to_owned()
+}
+#[test]
+fn signed_in_invitation_redemption_preserves_account_and_rejects_anonymous_replay_and_foreign_keys() {
+    use base64::{Engine as _,engine::general_purpose::URL_SAFE_NO_PAD};
+    use ring::signature::KeyPair;
+    use vesta_control::identity::{BuiltinRole,Capability};
+    let f=Fixture::new("minecraft",8,4096,10);
+    let (device,key)=enroll_management(&f,BuiltinRole::Viewer);
+    let token=management_session(&f,&device,&key);
+    let original=f.host().management().authorize(&token,Capability::StatusView,None).unwrap();
+    assert!(f.host().management().authorize(&token,Capability::ContentInstall,None).is_err());
+    let code=f.host().management().issue_local(BuiltinRole::Maintainer,10).unwrap();
+    let input=serde_json::json!({"code":code.secret.expose(),"device_name":"Signed-in fixture","public_key":URL_SAFE_NO_PAD.encode(key.public_key().as_ref())});
+    let send=|body:&serde_json::Value,session:Option<&str>|f.request("POST","/api/v3/manage/pair",&serde_json::to_vec(body).unwrap(),session);
+    send(&input,None).error(401,"management_session_invalid");
+    send(&input,Some("invalid-bearer")).error(401,"management_session_invalid");
+    let mut malformed=input.clone();malformed["unexpected"]=serde_json::json!(true);
+    send(&malformed,Some(&token)).error(400,"invalid_request");
+    let (foreign,foreign_key)=enroll_management(&f,BuiltinRole::Viewer);
+    let foreign_token=management_session(&f,&foreign,&foreign_key);
+    // A different signed-in principal cannot attach the victim's existing key.
+    send(&input,Some(&foreign_token)).error(401,"management_session_invalid");
+    let reply=send(&input,Some(&token));
+    assert_eq!(reply.status,200,"authenticated redemption must reach account-bound enrollment");
+    let enrolled=reply.json();
+    assert_eq!(enrolled["device_id"],device);
+    assert_eq!(enrolled["principal_id"],original.principal.as_str());
+    assert_eq!(enrolled["server_id"],f.host().management().server_id());
+    assert_eq!(enrolled["role"],"maintainer");
+    assert_eq!(f.host().management().authorize(&token,Capability::ContentInstall,None).unwrap(),original);
+    send(&input,Some(&token)).error(401,"management_pair_invalid");
+    let another=f.host().management().issue_local(BuiltinRole::Maintainer,10).unwrap();
+    let mut after_revoke=input;after_revoke["code"]=serde_json::json!(another.secret.expose());
+    f.host().management().revoke_local(&device).unwrap();
+    send(&after_revoke,Some(&token)).error(401,"management_session_invalid");
 }
 #[test]
 fn management_https_pair_challenge_session_policy_revoke_and_no_remote_link_creation() {
@@ -1768,15 +1830,13 @@ fn management_https_body_rate_limits_strict_shapes_and_unknown_minecraft_proofs(
     let f = Fixture::new("minecraft", 8, 256, 3);
     f.request("POST", "/api/v3/manage/pair", &vec![b'x'; 257], None)
         .error(413, "request_too_large");
+    f.request("POST", "/api/v3/manage/pair",
+        br#"{"code":"wrong","device_name":"Fixture","public_key":"wrong","role":"owner"}"#, None)
+        .error(401, "management_session_invalid");
     for (path, body) in [
         (
-            "/api/v3/manage/pair",
-            br#"{"code":"wrong","device_name":"Fixture","public_key":"wrong","role":"owner"}"#
-                .as_slice(),
-        ),
-        (
             "/api/v3/manage/session/challenge",
-            br#"{"device_id":"unknown","role":"owner"}"#,
+            br#"{"device_id":"unknown","role":"owner"}"#.as_slice(),
         ),
         (
             "/api/v3/manage/session",
@@ -1818,21 +1878,15 @@ fn management_https_body_rate_limits_strict_shapes_and_unknown_minecraft_proofs(
 }
 
 #[test]
-fn public_v3_auth_aliases_and_pair_attachment_reuse_the_signed_users_session() {
+fn public_v3_auth_aliases_accept_linked_devices_and_refuse_code_only_enrollment() {
     use base64::Engine as _;
     use ring::signature::KeyPair;
     let f = Fixture::new("minecraft", 8, 1024, 3);
-    let key = management_key();
+    let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
     let public = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref());
-    let enrolled = f.request(
-        "POST",
-        "/api/v3/auth/device/enroll",
-        &serde_json::to_vec(&serde_json::json!({"device_name":"Alias user","public_key":public}))
-            .unwrap(),
-        None,
-    );
-    assert_eq!(enrolled.status, 200);
-    let device = enrolled.json()["device_id"].as_str().unwrap().to_owned();
+    f.request("POST", "/api/v3/auth/device/enroll",
+        &serde_json::to_vec(&serde_json::json!({"device_name":"Alias user","public_key":public})).unwrap(), None)
+        .error(401, "management_session_invalid");
     let challenge = f.request(
         "POST",
         "/api/v3/auth/session/challenge",
@@ -1863,24 +1917,14 @@ fn public_v3_auth_aliases_and_pair_attachment_reuse_the_signed_users_session() {
         200
     );
     f.request("GET", "/api/v3/manage/status", b"", Some(&token))
-        .error(403, "management_forbidden");
-    f.request("POST", "/api/v2/pack/ticket", b"", Some(&token))
-        .error(401, "pack_session_invalid");
-    let code = f
-        .host()
-        .management()
-        .issue_local(vesta_control::identity::BuiltinRole::Owner, 10)
-        .unwrap();
-    let paired=f.request("POST","/api/v3/manage/pair",&serde_json::to_vec(&serde_json::json!({"code":code.secret.expose(),"device_name":"Alias user","public_key":public})).unwrap(),Some(&token));
-    assert_eq!(paired.status, 200);
-    assert_eq!(paired.json()["device_id"], device);
-    f.request("GET", "/api/v3/manage/status", b"", Some(&token))
         .error(501, "not_implemented");
-    assert_eq!(
-        f.request("POST", "/api/v2/pack/ticket", b"", Some(&token))
-            .status,
-        200
-    );
+    let code = f.host().management().issue_local(vesta_control::identity::BuiltinRole::Owner, 10).unwrap();
+    let request = serde_json::to_vec(&serde_json::json!({"code":code.secret.expose(),"device_name":"Alias user","public_key":public})).unwrap();
+    for authorization in [None, Some(token.as_str())] {
+        f.request("POST", "/api/v3/manage/pair", &request, authorization)
+            .error(401, "management_session_invalid");
+    }
+    assert_eq!(f.request("POST", "/api/v2/pack/ticket", b"", Some(&token)).status, 200);
     assert_eq!(f.host().management().list_local().unwrap().len(), 1);
 }
 #[test]
@@ -1923,13 +1967,15 @@ fn persisted_whitelist_user(f: &Fixture) -> String {
     let db = f.host().database();
     db.write(|c| {
         c.execute(
-            "INSERT INTO user_minecraft_accounts VALUES (?,?,?)",
+            "UPDATE user_minecraft_accounts SET minecraft_uuid=? WHERE server_id=? AND principal_id=?",
             rusqlite::params![
-                db.server_id(),
                 "12345678-1234-4234-8234-123456789abc",
+                db.server_id(),
                 subject.principal.as_str()
             ],
         )?;
+        c.execute("UPDATE management_device_keys SET linked_minecraft_uuid=? WHERE device_id=?",
+            rusqlite::params!["12345678-1234-4234-8234-123456789abc", subject.device.as_str()])?;
         Ok(())
     })
     .unwrap();
@@ -2048,6 +2094,7 @@ fn unreadable_or_malformed_current_admission_disables_only_whitelist_source() {
     );
 }
 
+#[track_caller]
 fn management_reply_error(reply: &WireReply, status: u16, code: &str) {
     assert_eq!(reply.status, status);
     let value = reply.json();
@@ -3185,6 +3232,8 @@ mod large_files;
 
 #[path = "support/management_permissions.rs"]
 mod management_permissions;
+#[path = "support/backend_assurance.rs"]
+mod backend_assurance;
 
 #[path = "support/management_automation.rs"]
 mod management_automation;
@@ -3264,9 +3313,9 @@ fn valid_sessions_have_independent_configured_budgets_and_invalid_bearers_stay_a
             .status,
         200
     );
-    // Two enroll/session helpers consumed ten anonymous requests, independent
-    // of requests made with the valid bearer above.
-    for _ in 0..2 {
+    // Two signed-session helpers consumed six anonymous requests. Verified
+    // enrollment is seeded locally and consumes no HTTP request budget.
+    for _ in 0..6 {
         management_reply_error(
             &f.request("GET", "/api/v3/manage/session", b"", Some(&"x".repeat(43))),
             401,

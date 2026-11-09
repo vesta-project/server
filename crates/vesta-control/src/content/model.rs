@@ -61,6 +61,9 @@ pub struct ContentEntry {
     pub enabled: Option<bool>,
     pub sha256: Option<String>,
     pub provider: Option<ContentProvider>,
+    /// Last recorded identity for display only when this observation was not hashed.
+    #[serde(default)]
+    pub display_provider: Option<ContentProvider>,
     pub declared: Option<DeclaredMetadata>,
     pub pending: Option<String>,
     pub pending_id: Option<String>,

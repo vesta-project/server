@@ -35,3 +35,6 @@ mod error;
 
 pub use error::{ControlError, IdentityErrorCode};
 pub type Result<T> = std::result::Result<T, ControlError>;
+
+#[cfg(feature = "latency-probe")]
+pub use vesta_state::latency_probe;

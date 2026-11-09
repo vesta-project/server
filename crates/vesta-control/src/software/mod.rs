@@ -89,6 +89,8 @@ struct Inner {
     queue: Mutex<Queue>,
     wake: Condvar,
     cancel: AtomicBool,
+    #[cfg(test)]
+    completion_probe: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
 
 /// The owning host keeps this value alive until shutdown. Handle clones do not
@@ -154,6 +156,8 @@ impl SoftwareService {
             queue: Mutex::new(Queue::default()),
             wake: Condvar::new(),
             cancel: AtomicBool::new(false),
+            #[cfg(test)]
+            completion_probe: Mutex::new(None),
         });
         let owned = inner.clone();
         let worker = std::thread::Builder::new()
@@ -617,33 +621,43 @@ impl SoftwareHandle {
                 .map_err(|_| SoftwareError::InvalidRequest)?
                 .as_bytes(),
         );
-        if let Some(job) = self
-            .inner
-            .db
-            .read_with(|t| store::existing(t.connection(), subject, &pack.key, &binding))?
-        {
-            return Ok(job);
-        }
-        let target = pack
-            .workspace
-            .install_switch_review(subject, &pack.input)
-            .map_err(|_| SoftwareError::ConfirmationInvalid)?;
-        if !target.software_switch_required {
+        // Serialize the read/review/admit sequence for pack-only jobs. Otherwise
+        // simultaneous retries can both miss the durable key, and the second
+        // request sees Busy (or an already consumed plan) rather than its job.
+        // This guard is dropped before any asynchronous software planning below.
+        let target = {
             let mut queue=self.inner.queue.lock().map_err(|_|SoftwareError::StateUnavailable)?;
-            if queue.stop { return Err(SoftwareError::RuntimeUnavailable); }
-            let job=self.inner.db.write_with(|tx| -> Result<Job> {
-                let c=tx.connection(); store::authorize(c,&self.inner.db,subject)?;
-                let state=store::state(c)?;
-                if state.recovery { return Err(SoftwareError::RecoveryRequired); }
-                let job = store::admit(c,&self.inner.db,&self.inner.audit,subject,"apply",&pack.key,&binding,state.revision)?;
-                c.execute("DELETE FROM pack_install_result WHERE server_id=?",[self.inner.db.server_id()])?;
-                c.execute("INSERT OR REPLACE INTO pack_install_job VALUES(?,?)", rusqlite::params![self.inner.db.server_id(), job.id])?;
-                Ok(job)
-            })?;
-            queue.work.push_back(Work {id:job.id.clone(),actor:subject.clone(),kind:WorkKind::Pack(Box::new(pack),Box::new(target))});
-            self.inner.wake.notify_one();
-            return Ok(job);
-        }
+            if let Some(job) = self
+                .inner
+                .db
+                .read_with(|t| {
+                    store::authorize(t.connection(), &self.inner.db, subject)?;
+                    store::existing(t.connection(), subject, &pack.key, &binding)
+                })?
+            {
+                return Ok(job);
+            }
+            let target = pack
+                .workspace
+                .install_switch_review(subject, &pack.input)
+                .map_err(|_| SoftwareError::ConfirmationInvalid)?;
+            if !target.software_switch_required {
+                if queue.stop { return Err(SoftwareError::RuntimeUnavailable); }
+                let job=self.inner.db.write_with(|tx| -> Result<Job> {
+                    let c=tx.connection(); store::authorize(c,&self.inner.db,subject)?;
+                    let state=store::state(c)?;
+                    if state.recovery { return Err(SoftwareError::RecoveryRequired); }
+                    let job = store::admit(c,&self.inner.db,&self.inner.audit,subject,"apply",&pack.key,&binding,state.revision)?;
+                    c.execute("DELETE FROM pack_install_result WHERE server_id=?",[self.inner.db.server_id()])?;
+                    c.execute("INSERT OR REPLACE INTO pack_install_job VALUES(?,?)", rusqlite::params![self.inner.db.server_id(), job.id])?;
+                    Ok(job)
+                })?;
+                queue.work.push_back(Work {id:job.id.clone(),actor:subject.clone(),kind:WorkKind::Pack(Box::new(pack),Box::new(target))});
+                self.inner.wake.notify_one();
+                return Ok(job);
+            }
+            target
+        };
         let before = self.status(subject)?;
         if let Some(switch) = &target.software_switch {
             let current = &before.current;
