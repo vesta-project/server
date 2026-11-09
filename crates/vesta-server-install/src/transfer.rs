@@ -159,6 +159,19 @@ impl Transport {
         reporter: &dyn ProgressReporter,
         deadline: Instant,
     ) -> Result<reqwest::Response> {
+        self.request_body(logical, head, role, limits, reporter, deadline, None).await
+    }
+
+    async fn request_body(
+        &self,
+        logical: &Url,
+        head: bool,
+        role: Role,
+        limits: Limits,
+        reporter: &dyn ProgressReporter,
+        deadline: Instant,
+        json_body: Option<&[u8]>,
+    ) -> Result<reqwest::Response> {
         // A forwarding proxy cannot attest the final socket's destination. Fail
         // closed for artifacts instead of delegating untrusted DNS to it.
         if matches!(role, Role::Artifact) && self.proxy.is_some() {
@@ -215,19 +228,18 @@ impl Transport {
         let client = builder.build().map_err(|_| InstallError::TransportFailed)?;
         let response = controlled(
             async {
+                let mut request = client.request(
+                    if json_body.is_some() { reqwest::Method::POST }
+                    else if head { reqwest::Method::HEAD }
+                    else { reqwest::Method::GET },
+                    target,
+                ).header(reqwest::header::ACCEPT_ENCODING, "identity");
+                if let Some(body) = json_body {
+                    request = request.header(reqwest::header::CONTENT_TYPE, "application/json").body(body.to_vec());
+                }
                 tokio::time::timeout(
                     Duration::from_millis(limits.idle_ms),
-                    client
-                        .request(
-                            if head {
-                                reqwest::Method::HEAD
-                            } else {
-                                reqwest::Method::GET
-                            },
-                            target,
-                        )
-                        .header(reqwest::header::ACCEPT_ENCODING, "identity")
-                        .send(),
+                    request.send(),
                 )
                 .await
                 .map_err(|_| InstallError::TransportFailed)?
@@ -243,6 +255,24 @@ impl Transport {
             return Err(InstallError::SourceRefused);
         }
         Ok(response)
+    }
+
+    /// Explicit operator-configured notification destinations use the exact
+    /// same DNS pinning, public-address, TLS and connected-peer checks as
+    /// artifacts. No redirects, provider credentials, proxy or response body.
+    pub(crate) async fn post_json(&self, url: &str, bytes: &[u8], limits: Limits) -> Result<crate::outbound::Response> {
+        let url = Url::parse(url).map_err(|_| InstallError::InvalidInput)?;
+        if url.scheme() != "https" || url.host_str().is_none()
+            || !url.username().is_empty() || url.password().is_some()
+            || url.fragment().is_some() || url.port_or_known_default() != Some(443)
+            || url.as_str().len() > 8192 || bytes.len() as u64 > limits.metadata_bytes
+        { return Err(InstallError::SourceRefused); }
+        let deadline = Instant::now() + limits.duration();
+        let response = self.request_body(&url, false, Role::Artifact, limits,
+            &crate::SilentProgressReporter, deadline, Some(bytes)).await?;
+        let retry=response.headers().get(reqwest::header::RETRY_AFTER);
+        let seconds=retry.and_then(|v|v.to_str().ok()).filter(|s|!s.is_empty() && s.len()<=5 && s.bytes().all(|b|b.is_ascii_digit())).and_then(|v|v.parse::<u64>().ok()).filter(|v|*v<=86400);
+        Ok(crate::outbound::Response{status:response.status().as_u16(),retry_after_seconds:seconds,retry_after_unsupported:retry.is_some() && seconds.is_none()})
     }
 
     pub async fn receive(

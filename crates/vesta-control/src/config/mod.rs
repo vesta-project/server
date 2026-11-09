@@ -607,6 +607,7 @@ pub struct HostConfiguration {
     restart: Option<RestartSettings>,
     backups: Option<BackupSettings>,
     metrics: MetricsSettings,
+    notifications: crate::external_alerts::Settings,
     downloads: DownloadSettings,
     on_agent_start: OnAgentStart,
     java_allowlist: Vec<PathBuf>,
@@ -916,6 +917,11 @@ impl HostConfiguration {
             restart,
             backups,
             downloads: document.downloads.map(|v| v.0).unwrap_or_default(),
+            notifications: {
+                let settings=document.notifications.map(|v|v.0).unwrap_or_default();
+                if !settings.valid(){return Err(ConfigError::InvalidDocument);}
+                settings
+            },
             metrics: document
                 .metrics
                 .map(|v| v.0)
@@ -1012,6 +1018,7 @@ impl HostConfiguration {
     pub fn metrics(&self) -> MetricsSettings {
         self.metrics
     }
+    pub fn notifications(&self) -> &crate::external_alerts::Settings { &self.notifications }
     pub fn backups(&self) -> Option<&BackupSettings> {
         self.backups.as_ref()
     }
@@ -1260,6 +1267,7 @@ struct Document {
     java: Option<Table<WireJava>>,
     backups: Option<Table<WireBackups>>,
     metrics: Option<Table<MetricsSettings>>,
+    notifications: Option<Table<crate::external_alerts::Settings>>,
     downloads: Option<Table<DownloadSettings>>,
 }
 

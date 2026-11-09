@@ -32,6 +32,7 @@ enum Route<'a> {
     Steps(&'a str),
     Discard(&'a str),
     Notifications,
+    Delivery,
     Unread,
     Read,
     Acknowledge,
@@ -62,6 +63,7 @@ fn route(path: &str) -> Option<Route<'_>> {
         "automation/workflows" => Route::Workflows,
         "automation/runs" => Route::Runs,
         "notifications" => Route::Notifications,
+        "notifications/delivery" => Route::Delivery,
         "notifications/unread" => Route::Unread,
         "notifications/read" => Route::Read,
         "notifications/acknowledge" => Route::Acknowledge,
@@ -257,7 +259,7 @@ fn capability(route: Route<'_>, method: &Method) -> Capability {
         Route::Policy if *method == Method::GET => Capability::BackupsView,
         Route::Policy | Route::PolicyReset => Capability::BackupsConfigure,
         Route::RecoveryExport => Capability::RecoveryExport,
-        Route::Notifications | Route::Unread | Route::Read | Route::Acknowledge => {
+        Route::Notifications | Route::Delivery | Route::Unread | Route::Read | Route::Acknowledge => {
             Capability::NotificationsView
         }
         Route::Backups
@@ -904,6 +906,7 @@ fn get(
         Route::Unread if query.is_none() => automation
             .unread_count(subject)
             .map(|count| json!({"unread_count":count})),
+        Route::Delivery if query.is_none() => automation.external_delivery_status(subject).map(|s|json!({"sinks":s})),
         Route::Backups
         | Route::BackupJob(_)
         | Route::Snapshots

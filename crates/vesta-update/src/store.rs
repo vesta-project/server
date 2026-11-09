@@ -1,5 +1,4 @@
 use crate::{Metadata, Trust, metadata, release};
-use fs2::FileExt;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -43,12 +42,8 @@ impl UpdateStore {
     }
     pub(super) fn lock(&self) -> Result<File> {
         let directory = self.db.directory().artifacts().map_err(unavailable)?;
-        let file = directory
-            .open_or_create(&ArtifactName::new("update.lock").map_err(unavailable)?)
-            .map_err(unavailable)?;
-        file.try_lock_exclusive()
-            .map_err(|_| "update_busy".to_owned())?;
-        Ok(file)
+        directory.try_lock_exclusive(&ArtifactName::new("update.lock").map_err(unavailable)?)
+            .map_err(|error| if error.code()=="state_artifact_busy" {"update_busy".to_owned()} else {unavailable(error)})
     }
     /// Bootstrap from the exact already-installed manifest, not from network key material.
     pub fn initialize(

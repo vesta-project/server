@@ -136,6 +136,7 @@ const RUN_COLUMNS: &str = "id,workflow_id,revision,definition_json,principal_id,
 const STEP_COLUMNS: &str =
     "run_id,index_no,attempt,state,operation_ref,output_json,error_code,started_at,finished_at";
 impl Automation {
+    pub(crate) fn database_for_alerts(&self) -> StateDatabase { self.db.clone() }
     pub fn new(db: StateDatabase, port: Arc<dyn ActionPort>) -> Result<Self> {
         db.write(|c| { c.execute_batch("CREATE TABLE IF NOT EXISTS automation_player_visits (uuid TEXT PRIMARY KEY NOT NULL, first_name TEXT NOT NULL, first_seen_at INTEGER NOT NULL) STRICT;")?; Ok(()) })?;
         let audit = AuditLog::new(db.clone())?;

@@ -12,6 +12,7 @@ pub mod backups;
 pub mod config;
 pub mod content;
 pub mod files;
+pub mod external_alerts;
 pub mod host;
 mod host_software;
 pub mod identity;

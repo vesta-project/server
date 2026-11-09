@@ -135,6 +135,7 @@ struct AutomationDriver {
     stop: Arc<std::sync::atomic::AtomicBool>,
     local: Arc<std::sync::OnceLock<crate::operations::LocalRuntime>>,
     thread: Option<thread::JoinHandle<()>>,
+    alerts: Option<crate::external_alerts::Worker>,
 }
 impl AutomationDriver {
     fn start(
@@ -145,7 +146,9 @@ impl AutomationDriver {
         actions: Arc<HostActions>,
         game_directory: std::path::PathBuf,
         mut metrics: crate::metrics::Sampler,
+        notifications: crate::external_alerts::Settings,
     ) -> Result<Self, HostError> {
+        let alerts=crate::external_alerts::Worker::start(automation.database_for_alerts(),notifications).map_err(HostError::State)?;
         use std::sync::atomic::{AtomicBool, Ordering};
         let stop = Arc::new(AtomicBool::new(false));
         let local: Arc<std::sync::OnceLock<crate::operations::LocalRuntime>> = Arc::default();
@@ -250,6 +253,7 @@ impl AutomationDriver {
             stop,
             local,
             thread: Some(thread),
+            alerts,
         })
     }
     fn attach(&self, local: crate::operations::LocalRuntime) {
@@ -263,6 +267,7 @@ impl AutomationDriver {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+        self.alerts.take();
     }
 }
 impl Drop for AutomationDriver {
@@ -723,6 +728,7 @@ fn compose(
             }),
         )
         .with_tick_detection(tick_detection),
+        config.notifications().clone(),
     )?;
     // Last: once the driver runs, failures must go through observation-only shutdown.
     let runtime = match supervisor {

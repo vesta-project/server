@@ -129,6 +129,13 @@ impl StateDirectory {
 }
 
 impl ArtifactDirectory {
+    /// Acquire an exclusive nonblocking advisory lock on a protected ordinary
+    /// artifact. Retain the returned handle for the entire worker lifetime.
+    pub fn try_lock_exclusive(&self, name: &ArtifactName) -> Result<File> {
+        let file = self.open_or_create(name)?;
+        fs2::FileExt::try_lock_exclusive(&file).map_err(|_| StateError::new("state_artifact_busy"))?;
+        Ok(file)
+    }
     fn verify(&self) -> Result<()> {
         self.state.verify_root_spelling()?;
         reject_linked_directories(&self.path, "state_artifact_linked")?;

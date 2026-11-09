@@ -18,6 +18,7 @@ mod providers;
 mod runtime;
 mod transfer;
 pub mod public_address;
+pub mod outbound;
 
 pub use bundle::{ArtifactRecord, BundleReceipt};
 pub use catalogue_cache::{
