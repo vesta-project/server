@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use vesta_update::{UpdateSource, UpdateStore};
-pub const HELP: &str = "vesta-setup update <init|status|check|stage> --root <installation>\n  init: --release-key <trusted public key hex> --channel stable|nightly\n  init/check/stage: --bundle-dir <directory> OR --bundle-url <https-directory>\n                   [--asset-prefix <target->]\nInit requires update metadata for the exact installed release. Stage never activates or restarts.";
+pub const HELP: &str = "vesta-setup update <init|status|check|stage|verify> --root <installation>\n  init: --release-key <trusted public key hex> --channel stable|nightly\n  init/check/stage: --bundle-dir <directory> OR --bundle-url <https-directory>\n                   [--asset-prefix <target->]\n  verify: --manifest-sha256 <staged manifest hash> (offline fresh verification)\nInit requires update metadata for the exact installed release. Stage/verify never activate or restart.";
 pub fn run(args: &[String]) -> Result<(), String> {
     let Some(action) = args.first().map(String::as_str) else {
         println!("{HELP}");
@@ -15,7 +15,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         println!("{HELP}");
         return Ok(());
     }
-    if !matches!(action, "init" | "status" | "check" | "stage") {
+    if !matches!(action, "init" | "status" | "check" | "stage" | "verify") {
         return Err("update_command_invalid".into());
     }
     let mut values = BTreeMap::new();
@@ -29,6 +29,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             "--bundle-dir",
             "--bundle-url",
             "--asset-prefix",
+            "--manifest-sha256",
         ]
         .contains(&key.as_str())
         {
@@ -57,6 +58,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
     if action == "status" && values.len() != 1 {
         return Err("update_status_options_invalid".into());
     }
+    if action == "verify" {
+        if values.len()!=2 || !values.contains_key("--manifest-sha256") {
+            return Err("update_verify_options_invalid".into());
+        }
+    } else if values.contains_key("--manifest-sha256") {
+        return Err("update_option_invalid".into());
+    }
     let source = UpdateSource {
         local: values.get("--bundle-dir").map(PathBuf::from),
         base_url: values.get("--bundle-url").map(|s| s.to_string()),
@@ -75,6 +83,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         "status"=>serde_json::to_value(serde_json::json!({"trust":store.trust()?,"stages":store.status()?,"activation_supported":false})),
         "check"=>serde_json::to_value(store.check(&source,now)?),
         "stage"=>serde_json::to_value(store.stage(&source,now,&mut |_,_,_|{})?),
+        "verify"=>serde_json::to_value(store.verify_staged(values["--manifest-sha256"],now)?),
         _=>return Err("update_command_invalid".into()),
     }.map_err(|_|"update_output_failed")?;
     println!(

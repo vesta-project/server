@@ -103,3 +103,11 @@ and health-check/rollback. It must never execute based solely on `phase=staged`.
 These commands currently use OS-local authority. The check/stage operations do not
 stop Minecraft or the agent and do not require a launcher connection. No live
 Linux installation, remote activation or release publication is claimed yet.
+
+## Fresh offline candidate verification
+
+`vesta-setup update verify --root <installation> --manifest-sha256 <staged-manifest-hash>` re-verifies the saved signed update metadata, saved manifest signature/hash, current trust/expiry/sequence, and all four candidate binaries from protected single-link opened files. It uses no download source and does not execute, select, replace, or restart anything. The JSON observation includes version, sequence, target, timestamp, file/byte counts and `activation_supported: false`.
+
+Staging now retains exact signed manifest bytes/signature in the protected update database. Older staged rows lacking that evidence refuse verification until explicitly re-staged from their valid signed source; the updater does not silently trust filenames or reconstruct unsigned evidence. A superseded candidate cannot bypass the accepted sequence floor. Same-size tampering, missing or linked files, modified proof and expired metadata refuse. Verify shares the installation/staging locks; active binaries remain untouched.
+
+This observation is point-in-time diagnostics, not a portable activation authorisation. Future activation must revalidate authority, metadata and opened binaries at execution, preserve process ownership, and apply a coordinated health/recovery contract. This command does not implement self-update activation or automatic rollout.

@@ -2,8 +2,11 @@
 mod metadata;
 pub mod release;
 mod store;
+mod verification;
+pub mod rollout;
 pub use metadata::{Metadata, Trust};
 pub use store::{StageStatus, UpdateSource, UpdateStore};
+pub use verification::CandidateObservation;
 #[cfg(test)]
 mod tests;
 

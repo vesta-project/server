@@ -7,6 +7,80 @@ use ring::{
 use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf};
 const NOW: i64 = 1_800_000_000_000;
+
+#[test]
+fn staged_observation_reverifies_saved_signatures_offline_after_reopen() {
+    let f=Fixture::new();let store=f.initialized();let (source,m)=f.bundle(2);
+    let staged=store.stage(&source,NOW,&mut|_,_,_|{}).unwrap();
+    // The original download source is no longer authoritative or available.
+    fs::write(source.local.as_ref().unwrap().join("manifest.json"),b"unavailable").unwrap();
+    drop(store);let store=UpdateStore::open(&f.root()).unwrap();
+    let trust=store.trust().unwrap();let checked=store.verify_staged(&m.manifest_sha256,NOW+1).unwrap();
+    assert_eq!(checked.files,4);assert!(checked.bytes>0);assert!(!checked.activation_supported);
+    assert_eq!(checked.version,m.version);assert_eq!(checked.manifest_sha256,staged.manifest_sha256);
+    assert_eq!(store.trust().unwrap(),trust);
+}
+
+#[test]
+fn staged_flag_does_not_hide_same_size_binary_tampering() {
+    let f=Fixture::new();let store=f.initialized();let (source,m)=f.bundle(2);
+    let staged=store.stage(&source,NOW,&mut|_,_,_|{}).unwrap();
+    let name=if cfg!(windows){"vesta.exe"}else{"vesta"};let p=staged.directory.join("bin").join(name);
+    let mut bytes=fs::read(&p).unwrap();bytes[0]^=1;fs::write(&p,&bytes).unwrap();
+    assert_eq!(store.status().unwrap()[0].phase,"staged");
+    assert_eq!(store.verify_staged(&m.manifest_sha256,NOW).unwrap_err(),"update_candidate_hash_mismatch");
+}
+
+#[test]
+fn staged_observation_refuses_missing_or_hard_linked_binary_without_recreation() {
+    let f=Fixture::new();let store=f.initialized();let (source,m)=f.bundle(2);
+    let staged=store.stage(&source,NOW,&mut|_,_,_|{}).unwrap();
+    let bin=staged.directory.join("bin");let hidden=staged.directory.join("hidden-bin");
+    fs::rename(&bin,&hidden).unwrap();
+    assert_eq!(store.verify_staged(&m.manifest_sha256,NOW).unwrap_err(),"update_candidate_unavailable");
+    assert!(!bin.exists());fs::rename(hidden,&bin).unwrap();
+    let name=if cfg!(windows){"vesta.exe"}else{"vesta"};let p=bin.join(name);
+    let other=f.temp.path().join("hard-link");fs::hard_link(&p,&other).unwrap();
+    assert_eq!(store.verify_staged(&m.manifest_sha256,NOW).unwrap_err(),"update_candidate_unavailable");
+    fs::remove_file(other).unwrap();fs::remove_file(p).unwrap();
+    assert_eq!(store.verify_staged(&m.manifest_sha256,NOW).unwrap_err(),"update_candidate_file_missing");
+}
+
+#[test]
+fn staged_observation_rejects_expired_or_superseded_release_and_changed_proof() {
+    let f=Fixture::new();let store=f.initialized();let (source,m)=f.bundle(2);
+    store.stage(&source,NOW,&mut|_,_,_|{}).unwrap();
+    assert_eq!(store.verify_staged(&m.manifest_sha256,m.expires_at_ms).unwrap_err(),"update_metadata_expired");
+    let (newer,latest)=f.bundle(3);store.stage(&newer,NOW,&mut|_,_,_|{}).unwrap();
+    assert_eq!(store.verify_staged(&m.manifest_sha256,NOW).unwrap_err(),"update_rollback_refused");
+    store.db.write(|c| {c.execute("UPDATE update_manifest_proofs SET document=? WHERE hash=?",rusqlite::params![b"{}".as_slice(),latest.manifest_sha256])?;Ok(())}).unwrap();
+    assert_eq!(store.verify_staged(&latest.manifest_sha256,NOW).unwrap_err(),"manifest hash mismatch");
+}
+
+#[test]
+fn staged_observation_does_not_adopt_legacy_missing_proof_or_incomplete_stage() {
+    let f=Fixture::new();let store=f.initialized();let (source,m)=f.bundle(2);
+    store.stage(&source,NOW,&mut|_,_,_|{}).unwrap();
+    store.db.write(|c| {c.execute("DELETE FROM update_manifest_proofs",[])?;Ok(())}).unwrap();
+    assert_eq!(store.verify_staged(&m.manifest_sha256,NOW).unwrap_err(),"update_candidate_proof_unavailable");
+    store.db.write(|c| {c.execute("UPDATE update_stages SET phase='staging'",[])?;Ok(())}).unwrap();
+    assert_eq!(store.verify_staged(&m.manifest_sha256,NOW).unwrap_err(),"update_candidate_not_staged");
+    assert_eq!(store.verify_staged("../escape",NOW).unwrap_err(),"update_candidate_invalid");
+}
+
+#[cfg(unix)]
+#[test]
+fn staged_observation_refuses_binary_or_parent_symlink_even_with_correct_bytes() {
+    use std::os::unix::fs::symlink;
+    let f=Fixture::new();let store=f.initialized();let (source,m)=f.bundle(2);
+    let staged=store.stage(&source,NOW,&mut|_,_,_|{}).unwrap();let bin=staged.directory.join("bin");
+    let p=bin.join("vesta");let saved=f.temp.path().join("correct-vesta");
+    fs::rename(&p,&saved).unwrap();symlink(&saved,&p).unwrap();
+    assert_eq!(store.verify_staged(&m.manifest_sha256,NOW).unwrap_err(),"update_candidate_unavailable");
+    fs::remove_file(&p).unwrap();fs::rename(saved,&p).unwrap();
+    let saved_bin=f.temp.path().join("correct-bin");fs::rename(&bin,&saved_bin).unwrap();symlink(&saved_bin,&bin).unwrap();
+    assert_eq!(store.verify_staged(&m.manifest_sha256,NOW).unwrap_err(),"update_candidate_unavailable");
+}
 struct Fixture {
     temp: tempfile::TempDir,
     key: Ed25519KeyPair,

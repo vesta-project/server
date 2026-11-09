@@ -76,6 +76,17 @@ impl StateDirectory {
         self.flat_directory(ARTIFACTS_DIR)
     }
 
+    /// Owner-only release binary directory with the same single-link/no-reparse
+    /// opened-file checks as other state artifacts. Does not validate signatures.
+    pub fn release_binaries(&self) -> Result<ArtifactDirectory> {
+        let directory = ArtifactDirectory {
+            state: self.clone(),
+            path: self.path().join("bin"),
+        };
+        directory.verify()?;
+        Ok(directory)
+    }
+
     /// The owner-only flat directory holding recoverable copies of replaced/deleted files.
     pub fn trash(&self) -> Result<ArtifactDirectory> {
         self.flat_directory(TRASH_DIR)

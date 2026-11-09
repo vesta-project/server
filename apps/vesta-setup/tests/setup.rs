@@ -118,6 +118,14 @@ fn update_cli_bootstraps_exact_installed_release_and_stages_without_activation()
         serde_json::from_slice::<serde_json::Value>(&stage.stdout).unwrap()["phase"],
         "staged"
     );
+    let verified=run("verify",&["--manifest-sha256",&source.manifest_sha256]);
+    assert!(verified.status.success(),"{}",String::from_utf8_lossy(&verified.stderr));
+    let observation:serde_json::Value=serde_json::from_slice(&verified.stdout).unwrap();
+    assert_eq!(observation["activation_supported"],false);
+    assert_eq!(observation["files"],4);
+    assert_eq!(observation["manifest_sha256"],source.manifest_sha256);
+    assert!(!run("verify",&["--manifest-sha256",&source.manifest_sha256,"--bundle-dir",bundle.temp.path().to_str().unwrap()]).status.success());
+    assert!(!run("check",&["--manifest-sha256",&source.manifest_sha256]).status.success());
     assert_eq!(
         fs::read(root.join("bin/active-fixture")).unwrap(),
         b"unchanged"
@@ -137,6 +145,9 @@ fn update_cli_bootstraps_exact_installed_release_and_stages_without_activation()
         "stage",
         &["--bundle-dir", bundle.temp.path().to_str().unwrap()],
     );
+    assert!(!blocked.status.success());
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("setup_already_running"));
+    let blocked=run("verify",&["--manifest-sha256",&source.manifest_sha256]);
     assert!(!blocked.status.success());
     assert!(String::from_utf8_lossy(&blocked.stderr).contains("setup_already_running"));
 }

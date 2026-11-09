@@ -24,7 +24,7 @@ pub struct StageStatus {
     pub directory: PathBuf,
 }
 pub struct UpdateStore {
-    db: StateDatabase,
+    pub(super) db: StateDatabase,
 }
 type Result<T> = std::result::Result<T, String>;
 fn unavailable<T>(_: T) -> String {
@@ -35,9 +35,10 @@ impl UpdateStore {
         let directory = StateDirectory::new(root, None).map_err(unavailable)?;
         let db = StateDatabase::open(directory, Arc::new(SystemClock)).map_err(unavailable)?;
         db.write(|c|{c.execute_batch("CREATE TABLE IF NOT EXISTS update_trust(singleton INTEGER PRIMARY KEY CHECK(singleton=1),document TEXT NOT NULL CHECK(length(document)<=4096)) STRICT; CREATE TABLE IF NOT EXISTS update_stages(hash TEXT PRIMARY KEY,sequence INTEGER NOT NULL,version TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('staging','staged')),metadata BLOB NOT NULL CHECK(length(metadata)<=16384),signature BLOB NOT NULL CHECK(length(signature)<=256)) STRICT;")?;Ok(())}).map_err(unavailable)?;
+        db.write(|c| { c.execute_batch("CREATE TABLE IF NOT EXISTS update_manifest_proofs(hash TEXT PRIMARY KEY,document BLOB NOT NULL CHECK(length(document)<=16384),signature BLOB NOT NULL CHECK(length(signature)<=256)) STRICT;")?; Ok(()) }).map_err(unavailable)?;
         Ok(Self { db })
     }
-    fn lock(&self) -> Result<File> {
+    pub(super) fn lock(&self) -> Result<File> {
         let directory = self.db.directory().artifacts().map_err(unavailable)?;
         let file = directory
             .open_or_create(&ArtifactName::new("update.lock").map_err(unavailable)?)
@@ -141,7 +142,7 @@ impl UpdateStore {
             })
             .collect()
     }
-    fn candidate(&self, hash: &str) -> PathBuf {
+    pub(super) fn candidate(&self, hash: &str) -> PathBuf {
         self.db.directory().path().join("candidates").join(hash)
     }
     /// Persist the anti-rollback floor before downloading. Never changes active files.
@@ -195,9 +196,12 @@ impl UpdateStore {
         trust.last_seen_ms = now;
         let document = serde_json::to_string(&trust).map_err(unavailable)?;
         let sequence = i64::try_from(m.sequence).map_err(unavailable)?;
+        let (manifest_bytes, manifest_signature) = verified.signed_manifest()?;
         self.db.write(|c| {
             c.execute("UPDATE update_trust SET document=? WHERE singleton=1",[&document])?;
-            c.execute("INSERT INTO update_stages(hash,sequence,version,phase,metadata,signature) VALUES(?,?,?,'staging',?,?) ON CONFLICT(hash) DO UPDATE SET sequence=excluded.sequence,version=excluded.version,phase='staging',metadata=excluded.metadata,signature=excluded.signature",params![m.manifest_sha256,sequence,m.version,bytes,sig])?;Ok(())
+            c.execute("INSERT INTO update_stages(hash,sequence,version,phase,metadata,signature) VALUES(?,?,?,'staging',?,?) ON CONFLICT(hash) DO UPDATE SET sequence=excluded.sequence,version=excluded.version,phase='staging',metadata=excluded.metadata,signature=excluded.signature",params![m.manifest_sha256,sequence,m.version,bytes,sig])?;
+            c.execute("INSERT INTO update_manifest_proofs VALUES(?,?,?) ON CONFLICT(hash) DO UPDATE SET document=excluded.document,signature=excluded.signature",params![m.manifest_sha256,manifest_bytes,manifest_signature])?;
+            Ok(())
         }).map_err(unavailable)?;
         let candidate = self.candidate(&m.manifest_sha256);
         StateDirectory::new(&candidate, None)

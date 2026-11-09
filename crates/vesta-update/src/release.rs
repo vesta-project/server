@@ -53,6 +53,8 @@ pub struct Release {
     manifest_hash: String,
     source: ArtifactSource,
     release_key: String,
+    signed_manifest: Vec<u8>,
+    manifest_signature: Vec<u8>,
 }
 
 pub(crate) fn update_bytes(source: &crate::UpdateSource) -> Result<(Vec<u8>, Vec<u8>), String> {
@@ -152,8 +154,29 @@ pub fn load(source: Source) -> Result<Release, String> {
         _ => return Err("invalid source".into()),
     };
 
-    let actual = Sha256::digest(&manifest_bytes);
-    if !constant_time_equal(&actual, &pin) {
+    let manifest = verify_manifest_bytes(&manifest_bytes, &signature_bytes, &pin, &key)?;
+    if !prefix.is_empty() && prefix != format!("{}-", manifest.target) {
+        return Err("asset prefix target mismatch".into());
+    }
+    Ok(Release {
+        release_key: hex::encode(&key),
+        verified_manifest: manifest.clone(),
+        manifest_hash: hex::encode(pin),
+        manifest,
+        source: artifact_source,
+        signed_manifest: manifest_bytes,
+        manifest_signature: signature_bytes,
+    })
+}
+
+pub(crate) fn verify_manifest_bytes(
+    manifest_bytes: &[u8], signature_bytes: &[u8], pin: &[u8], key: &[u8],
+) -> Result<Manifest, String> {
+    if manifest_bytes.len() as u64 > MAX_MANIFEST || signature_bytes.len() as u64 > MAX_SIGNATURE {
+        return Err("invalid manifest".into());
+    }
+    let actual = Sha256::digest(manifest_bytes);
+    if !constant_time_equal(&actual, pin) {
         return Err("manifest hash mismatch".into());
     }
     let signature = base64::engine::general_purpose::STANDARD
@@ -169,26 +192,21 @@ pub fn load(source: Source) -> Result<Release, String> {
     if signature.len() != 64 {
         return Err("invalid release signature".into());
     }
-    UnparsedPublicKey::new(&ED25519, &key)
-        .verify(&manifest_bytes, &signature)
+    UnparsedPublicKey::new(&ED25519, key)
+        .verify(manifest_bytes, &signature)
         .map_err(|_| "release signature verification failed".to_string())?;
 
     let manifest: Manifest =
-        serde_json::from_slice(&manifest_bytes).map_err(|_| "invalid manifest".to_string())?;
+        serde_json::from_slice(manifest_bytes).map_err(|_| "invalid manifest".to_string())?;
     validate_manifest(&manifest)?;
-    if !prefix.is_empty() && prefix != format!("{}-", manifest.target) {
-        return Err("asset prefix target mismatch".into());
-    }
-    Ok(Release {
-        release_key: hex::encode(&key),
-        verified_manifest: manifest.clone(),
-        manifest_hash: hex::encode(pin),
-        manifest,
-        source: artifact_source,
-    })
+    Ok(manifest)
 }
 
 impl Release {
+    pub(crate) fn signed_manifest(&self) -> Result<(&[u8], &[u8]), String> {
+        self.ensure_intact()?;
+        Ok((&self.signed_manifest, &self.manifest_signature))
+    }
     pub fn verified_update_metadata(&self, now: i64) -> Result<crate::Metadata, String> {
         self.ensure_intact()?;
         let (bytes, sig) = update_bytes(&self.update_source())?;
