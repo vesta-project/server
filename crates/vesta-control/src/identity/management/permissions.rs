@@ -438,6 +438,31 @@ fn session_current(now: i64, expires: i64, monotonic: std::time::Instant) -> Adm
     Ok(())
 }
 impl ManagementAccess {
+    /// First-server setup uses current account-bound Owner authority in the same
+    /// transaction as its effect. Captured bearer data never substitutes for a
+    /// fresh device/account/role check at this boundary.
+    pub(crate) fn owner_transaction<T>(
+        &self,
+        token: &str,
+        work: impl FnOnce(&rusqlite::Connection, &Subject, i64) -> AdminResult<T>,
+    ) -> AdminResult<T> {
+        let subject=self.authenticate(token)?;
+        let stores=self.stores.lock().map_err(|_|PermissionError::Unavailable)?;
+        let session=stores.sessions.get(&bound_hash(b"session",self.server_id(),token)).ok_or(PermissionError::SessionInvalid)?;
+        let result=self.admin_write(|repo| {
+            session_current(repo.now, session.expires, session.monotonic_expires)?;
+            let (current, _) = self.subject_in(repo, &subject.device)?;
+            if current != subject || !repo.policy(Some(&current))?.holds_builtin(BuiltinRole::Owner) {
+                return Err(PermissionError::Forbidden);
+            }
+            work(repo.connection(), &current, repo.now)
+        });
+        // Same store -> DB ordering as the canonical session projection. Session
+        // revocation cannot finish between validation and this SQL/audit effect.
+        drop(stores);
+        result
+    }
+
     fn permission_session(&self, token: &str) -> AdminResult<(Subject, i64, std::time::Instant)> {
         let subject = self.authenticate(token)?;
         let stores = self

@@ -21,6 +21,7 @@ pub mod metrics;
 pub mod minecraft_admission;
 pub mod moderation;
 pub mod motd;
+pub mod onboarding;
 pub mod operations;
 pub mod pack_access;
 pub mod packs;
