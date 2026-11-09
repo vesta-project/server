@@ -369,3 +369,48 @@ fn world_details_include_split_dimensions_pack_states_and_cached_disk_size() {
         first.details.size_bytes
     );
 }
+
+#[test]
+fn fresh_world_preserves_named_world_witnesses_across_known_layout_boundaries() {
+    // Synthetic bytes test Vesta's selection/preservation contract, not whether
+    // any particular Minecraft release can load or migrate these files.
+    for (label, paths, split_seed) in [
+        ("vanilla-anvil",vec!["region/r.0.0.mca","DIM-1/region/r.0.0.mca","DIM1/region/r.0.0.mca","playerdata/player.dat","stats/player.json","advancements/player.json"],false),
+        ("bukkit-split",vec!["region/r.0.0.mca","entities/r.0.0.mca","poi/r.0.0.mca","datapacks/custom pack/pack.mcmeta","data/map_0.dat"],false),
+        ("vanilla-26.1",vec!["dimensions/minecraft/overworld/region/r.0.0.mca","dimensions/minecraft/the_nether/entities/r.0.0.mca","dimensions/minecraft/the_end/poi/r.0.0.mca","players/data/player.dat","players/stats/player.json","players/advancements/player.json","dimensions/custom/moon/region/r.0.0.mca","resourcepacks/custom.zip"],true),
+    ] {
+        let h=Harness::new(false);let files=files(&h);
+        fs::rename(h.cwd.join("world"),h.cwd.join("Adventure World")).unwrap();
+        fs::write(h.cwd.join("server.properties"),b"# preserved\nlevel-name=Adventure World\nlevel-seed=\ncustom-property=preserve\n").unwrap();
+        let mut witnesses=Vec::new();
+        for path in paths {witnesses.push(format!("Adventure World/{path}"));}
+        if label=="bukkit-split" {witnesses.extend(["Adventure World_nether/DIM-1/region/r.0.0.mca".into(),"Adventure World_the_end/DIM1/region/r.0.0.mca".into()]);}
+        witnesses.extend(["mods/custom.jar".into(),"config/custom.toml".into(),"Adventure World/modded/registry.bin".into()]);
+        for (index,path) in witnesses.iter().enumerate() {
+            let file=h.cwd.join(path);fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file,format!("{label}:witness:{index}" )).unwrap();
+        }
+        if split_seed {
+            fs::write(h.cwd.join("Adventure World/level.dat"),crate::world::tests::split_level()).unwrap();
+            let file=h.cwd.join("Adventure World/dimensions/minecraft/overworld/data/minecraft/world_gen_settings.dat");
+            fs::create_dir_all(file.parent().unwrap()).unwrap();fs::write(&file,crate::world::tests::split_worldgen(i64::MIN)).unwrap();
+            witnesses.push("Adventure World/dimensions/minecraft/overworld/data/minecraft/world_gen_settings.dat".into());
+        }
+        witnesses.push("Adventure World/level.dat".into());
+        let before:Vec<_>=witnesses.iter().map(|p|(p.clone(),fs::read(h.cwd.join(p)).unwrap())).collect();
+        let current=files.world(&h.subject).unwrap();assert_eq!(current.name,"Adventure World");assert_eq!(current.seed.as_deref(),Some("-9223372036854775808"));
+        let owned=h.runtime(Duration::from_secs(1));
+        let patch=NewWorld{seed:"".into(),expected_revision:current.revision,confirm_world:current.name};
+        let first=files.new_world(&owned.runtime.network_handle(),&h.subject,"layout-new-world",patch.clone()).unwrap();
+        assert_eq!(first["world"]["exists"],false);assert_ne!(first["world"]["name"],"Adventure World");
+        assert!(first["preserved_worlds"].as_array().unwrap().contains(&serde_json::json!("Adventure World")));
+        if label=="bukkit-split" {
+            for root in ["Adventure World_nether","Adventure World_the_end"] {assert!(first["preserved_worlds"].as_array().unwrap().contains(&serde_json::json!(root)));}
+        }
+        let props=fs::read(h.cwd.join("server.properties")).unwrap();
+        assert_eq!(files.new_world(&owned.runtime.network_handle(),&h.subject,"layout-new-world",patch).unwrap(),first);
+        assert_eq!(fs::read(h.cwd.join("server.properties")).unwrap(),props);
+        for (path,bytes) in before {assert_eq!(fs::read(h.cwd.join(&path)).unwrap(),bytes,"{label}: {path}");}
+        assert!(String::from_utf8(props).unwrap().contains("custom-property=preserve"));
+    }
+}
