@@ -6,7 +6,7 @@ use rusqlite::{Connection, params};
 use vesta_state::{Result, StateError};
 
 pub const MAX_SERIES: usize = 8;
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Fetch {
     pub series: Vec<String>,
     pub from: i64,

@@ -200,6 +200,23 @@ pub struct Current {
     pub status: Status,
 }
 
+/// Portable, read-only diagnostic snapshot. It starts no profiler/console probe
+/// and includes no player identities, console text, paths or environment data.
+#[derive(Serialize)]
+pub struct Capture {
+    pub schema: u8,
+    pub server_id: String,
+    pub captured_at_ms: i64,
+    pub source: &'static str,
+    pub profiler_started: bool,
+    pub request: Fetch,
+    pub current: Current,
+    pub history: Fetched,
+    /// Conservative indication: exactly reaching the caller's point limit is
+    /// not proof that the entire requested window was exported.
+    pub history_point_limit_reached: bool,
+}
+
 pub(crate) fn activity_line(line: &str) -> Option<(&str, &'static str)> {
     // The same anchored INFO envelopes as readiness: vanilla server-thread lines and
     // the Paper-family console form. Chat, other threads and substrings never match.

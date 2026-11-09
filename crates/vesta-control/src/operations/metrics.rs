@@ -122,6 +122,35 @@ impl Operations {
             metrics::fetch(c, request, document.settings)
         })
     }
+
+    /// Export retained telemetry under one fresh authority/data snapshot. An
+    /// incremental cursor cannot describe a standalone performance capture.
+    pub fn metrics_capture(
+        &self,
+        subject: &Subject,
+        request: &metrics::Fetch,
+        fallback: crate::config::MetricsSettings,
+    ) -> OperationsResult<metrics::Capture> {
+        if !request.valid() || request.after.is_some() {
+            return Err(invalid());
+        }
+        self.metrics_read(subject, Capability::MetricsView, |c| {
+            let (_, document) = metrics::effective_policy(c, fallback)?;
+            let history = metrics::fetch(c, request, document.settings)?;
+            let history_point_limit_reached = history.columns.timestamps.len() >= request.max_points;
+            Ok(metrics::Capture {
+                schema: 1,
+                server_id: self.db.server_id().to_owned(),
+                captured_at_ms: self.db.clock().millis(),
+                source: "retained_telemetry",
+                profiler_started: false,
+                request: request.clone(),
+                current: metrics::storage::current(c)?,
+                history,
+                history_point_limit_reached,
+            })
+        })
+    }
 }
 
 /// One fresh permission snapshot for a live push. Player identities never escape

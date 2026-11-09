@@ -10,6 +10,7 @@ pub(super) fn implemented(path: &str) -> bool {
         "/api/v3/manage/metrics/current"
             | "/api/v3/manage/metrics"
             | "/api/v3/manage/metrics/policy"
+            | "/api/v3/manage/metrics/capture"
             | "/api/v3/manage/metrics/stream"
             | "/api/v3/manage/players/activity"
     )
@@ -213,6 +214,22 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     let Some(fetch) = range(request.query) else {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     };
+    if request.path.ends_with("/capture") {
+        if request.if_none_match.is_some() || fetch.after.is_some() {
+            return error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        return match operations.metrics_capture(&subject, &fetch, host.configuration().metrics()) {
+            Ok(capture) => {
+                let mut reply = ok(json!(capture));
+                reply.headers_mut().insert(
+                    "content-disposition",
+                    http::HeaderValue::from_static("attachment; filename=\"vesta-performance-capture.json\""),
+                );
+                reply
+            }
+            Err(e) => operation_error(e),
+        };
+    }
     // Conditional polling reads just the current status, not historical buckets.
     // This is freshly authorized, including for an eventual 304 response.
     if request.if_none_match.is_some() {
