@@ -213,7 +213,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
         "version" if args.len() == 1 => return Ok(Command::Version),
         "update" => {
             if args.len() > 1
-                && !matches!(args[1].to_str(), Some("init" | "status" | "check" | "stage" | "verify" | "configure" | "--help" | "-h"))
+                && !args[1].to_str().is_some_and(vesta_setup::updates::accepts_action)
             {
                 return Err(());
             }

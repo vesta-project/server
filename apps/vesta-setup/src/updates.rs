@@ -5,6 +5,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use vesta_update::{StartupPolicy, UpdateSource, UpdateStore};
+/// Shared by both CLI entry points so their accepted actions cannot drift.
+pub fn accepts_action(action: &str) -> bool {
+    matches!(action, "init" | "status" | "check" | "stage" | "verify" | "configure" | "--help" | "-h")
+}
 pub const HELP: &str = "vesta-setup update <init|status|check|stage|verify|configure> --root <installation>\n  init: --release-key <trusted public key hex> --channel stable|nightly\n  init/check/stage/configure: --bundle-dir <directory> OR --bundle-url <https-directory>\n                             [--asset-prefix <target->]\n  configure: --startup-check on|off --interval-seconds <positive integer>\n  verify: --manifest-sha256 <staged manifest hash> (offline fresh verification)\nInit requires update metadata for the exact installed release. Startup checks are opt-in, metadata-only and nonblocking. Stage/verify never activate or restart.";
 pub fn run(args: &[String]) -> Result<(), String> {
     let Some(action) = args.first().map(String::as_str) else {
@@ -15,7 +19,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         println!("{HELP}");
         return Ok(());
     }
-    if !matches!(action, "init" | "status" | "check" | "stage" | "verify" | "configure") {
+    if !accepts_action(action) {
         return Err("update_command_invalid".into());
     }
     let mut values = BTreeMap::new();

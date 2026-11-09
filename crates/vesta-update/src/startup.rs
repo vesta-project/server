@@ -1,4 +1,5 @@
 //! Opt-in, OS-local startup discovery. Never downloads or activates executables.
+use crate::store::{Result, unavailable};
 use crate::{Metadata, UpdateSource, UpdateStore, metadata, release};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,15 @@ pub struct StartupPolicy {
     /// Explicit operator-selected spacing, including failed/interrupted attempts.
     pub minimum_interval_ms: u64,
     pub source: UpdateSource,
+}
+
+impl StartupPolicy {
+    fn validate_interval(&self) -> Result<()> {
+        if self.minimum_interval_ms == 0 || self.minimum_interval_ms > i64::MAX as u64 {
+            return Err("update_startup_policy_invalid".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,11 +39,6 @@ pub struct StartupCheck {
     pub candidate: Option<Metadata>,
     /// Stable allowlisted classification, never a raw URL or transport diagnostic.
     pub error_code: Option<String>,
-}
-
-type Result<T> = std::result::Result<T, String>;
-fn unavailable<T>(_: T) -> String {
-    "update_state_unavailable".into()
 }
 
 impl UpdateStore {
@@ -81,9 +86,7 @@ impl UpdateStore {
 
     fn validate_startup_policy(&self, policy: &StartupPolicy) -> Result<()> {
         let trust = self.trust()?;
-        if policy.minimum_interval_ms == 0 || policy.minimum_interval_ms > i64::MAX as u64 {
-            return Err("update_startup_policy_invalid".into());
-        }
+        policy.validate_interval()?;
         match (&policy.source.local, &policy.source.base_url) {
             (Some(path), None) if path.is_absolute() => {
                 if path
@@ -161,9 +164,7 @@ impl UpdateStore {
         // Validate persisted values as well as configuration input. Source access
         // itself may now fail (removed directory/offline network); record that
         // safely below, rather than silently claiming no update exists.
-        if policy.minimum_interval_ms == 0 || policy.minimum_interval_ms > i64::MAX as u64 {
-            return Err("update_startup_policy_invalid".into());
-        }
+        policy.validate_interval()?;
         if let Some(last) = self.last_startup_check()? {
             if last.attempted_at_ms < 0 {
                 return Err("update_state_unavailable".into());

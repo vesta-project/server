@@ -27,8 +27,8 @@ pub struct StageStatus {
 pub struct UpdateStore {
     pub(super) db: StateDatabase,
 }
-type Result<T> = std::result::Result<T, String>;
-fn unavailable<T>(_: T) -> String {
+pub(super) type Result<T> = std::result::Result<T, String>;
+pub(super) fn unavailable<T>(_: T) -> String {
     "update_state_unavailable".into()
 }
 impl UpdateStore {
