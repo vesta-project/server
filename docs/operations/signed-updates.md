@@ -111,3 +111,47 @@ Linux installation, remote activation or release publication is claimed yet.
 Staging now retains exact signed manifest bytes/signature in the protected update database. Older staged rows lacking that evidence refuse verification until explicitly re-staged from their valid signed source; the updater does not silently trust filenames or reconstruct unsigned evidence. A superseded candidate cannot bypass the accepted sequence floor. Same-size tampering, missing or linked files, modified proof and expired metadata refuse. Verify shares the installation/staging locks; active binaries remain untouched.
 
 This observation is point-in-time diagnostics, not a portable activation authorisation. Future activation must revalidate authority, metadata and opened binaries at execution, preserve process ownership, and apply a coordinated health/recovery contract. This command does not implement self-update activation or automatic rollout.
+
+## Opt-in startup discovery
+
+After exact-installed-release trust bootstrap, an OS-local operator can configure
+the installed setup host's next-start check:
+
+```text
+vesta-setup update configure --root <installation> --startup-check on --interval-seconds 21600 --bundle-url <operator-selected-https-release-directory> --asset-prefix linux-x86_64-
+vesta-setup update status --root <installation>
+vesta-setup update configure --root <installation> --startup-check off
+```
+
+The interval above is an example supplied by the operator, not a new default.
+`--bundle-dir <absolute-directory>` supports offline discovery. No policy means
+no automatic check. The existing pinned channel/key/target and accepted sequence
+are unchanged; this does not implement channel switching or a signed catalog.
+An immutable directory can only report its own signed release, so a future
+channel catalog is still needed for unattended discovery of subsequent releases.
+
+The installed host starts one background metadata-only attempt. It never waits
+for network discovery before starting its readiness endpoint or existing agent.
+The update lock serializes it with staging/configuration/verification; busy checks
+are skipped. A durable pre-I/O admission spaces successful, failed and interrupted
+attempts across process restarts. Local reconfiguration clears that observation,
+allowing a deliberate immediate check without resetting trust. Clock rollback
+does not bypass spacing. A lost directory or network/signature/expiry failure
+records a failed observation, never a false current/succeeded release. Disabling
+a saved policy remains possible when its local source is no longer available.
+
+Status exposes `startup_policy` and `last_startup_check`: `incomplete`, `current`,
+`available`, or `failed`, with a sanitized stable error classification. The
+timestamp is admission time, not completion time. A failed persistence/lock/open
+operation cannot produce a success observation. The service remains usable;
+this slice does not add a notification bridge, daemon, periodic poller,
+auto-stage/apply, restart, or remote machine-wide updater authority. HTTPS checks
+use the existing operator-configured release transport and bounded metadata
+reads/timeouts; public provider/artifact transport policy is unchanged.
+
+The pure `vesta_update::rollout::preview_rollout` helper describes compatible
+separate-supervisor handoff versus stopped maintenance and uncertainty/writes
+that block or defer it. It consumes native observations, does not discover
+consumers, and always reports `activation_supported: false`. Its output cannot
+authorize execution. The installation registry, signed compatibility declaration,
+stable dispatcher and mutation-fenced health trial remain activation prerequisites.

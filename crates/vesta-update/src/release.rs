@@ -424,7 +424,7 @@ fn decode_hex_exact(value: &str, bytes: usize, error: &'static str) -> Result<Ve
     hex::decode(value).map_err(|_| error.into())
 }
 
-fn validate_base_url(value: &str) -> Result<(), String> {
+pub(crate) fn validate_base_url(value: &str) -> Result<(), String> {
     if !value.starts_with("https://")
         || value.contains('?')
         || value.contains('#')
@@ -541,7 +541,7 @@ fn read_local_bounded(path: &Path, max: u64, error: &'static str) -> Result<Vec<
     Ok(bytes)
 }
 
-fn validate_local_directory(path: &Path) -> Result<(), String> {
+pub(crate) fn validate_local_directory(path: &Path) -> Result<(), String> {
     validate_existing_path_chain(path)?;
     if !fs::metadata(path)
         .map_err(|_| "local release directory unavailable")?

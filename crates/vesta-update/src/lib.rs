@@ -4,6 +4,8 @@ pub mod release;
 mod store;
 mod verification;
 pub mod rollout;
+mod startup;
+pub use startup::{CheckOutcome, StartupCheck, StartupPolicy};
 pub use metadata::{Metadata, Trust};
 pub use store::{StageStatus, UpdateSource, UpdateStore};
 pub use verification::CandidateObservation;

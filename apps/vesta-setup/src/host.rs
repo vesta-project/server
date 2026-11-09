@@ -78,6 +78,7 @@ pub fn serve(root: &Path) -> Result<()> {
     if root.join("private/uninstall-pending").exists() {
         return Err("setup_uninstall_pending".into());
     }
+    crate::updates::start_check(root, &receipt.release_manifest_sha256);
     if receipt.phase == "activated" {
         return run_agent(root);
     }

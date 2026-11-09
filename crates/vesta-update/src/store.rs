@@ -9,7 +9,8 @@ use std::{
 };
 use vesta_state::{StateDatabase, StateDirectory, SystemClock, artifacts::ArtifactName};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateSource {
     pub local: Option<PathBuf>,
     pub base_url: Option<String>,
@@ -36,7 +37,9 @@ impl UpdateStore {
         let db = StateDatabase::open(directory, Arc::new(SystemClock)).map_err(unavailable)?;
         db.write(|c|{c.execute_batch("CREATE TABLE IF NOT EXISTS update_trust(singleton INTEGER PRIMARY KEY CHECK(singleton=1),document TEXT NOT NULL CHECK(length(document)<=4096)) STRICT; CREATE TABLE IF NOT EXISTS update_stages(hash TEXT PRIMARY KEY,sequence INTEGER NOT NULL,version TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('staging','staged')),metadata BLOB NOT NULL CHECK(length(metadata)<=16384),signature BLOB NOT NULL CHECK(length(signature)<=256)) STRICT;")?;Ok(())}).map_err(unavailable)?;
         db.write(|c| { c.execute_batch("CREATE TABLE IF NOT EXISTS update_manifest_proofs(hash TEXT PRIMARY KEY,document BLOB NOT NULL CHECK(length(document)<=16384),signature BLOB NOT NULL CHECK(length(signature)<=256)) STRICT;")?; Ok(()) }).map_err(unavailable)?;
-        Ok(Self { db })
+        let store=Self { db };
+        store.startup_schema()?;
+        Ok(store)
     }
     pub(super) fn lock(&self) -> Result<File> {
         let directory = self.db.directory().artifacts().map_err(unavailable)?;
