@@ -8,6 +8,7 @@
 #![deny(unsafe_code)]
 
 pub mod console;
+pub mod isolation;
 pub mod launch_config;
 pub mod offline;
 pub mod players;

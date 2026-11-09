@@ -33,7 +33,11 @@ pub struct GenerationRecord {
     #[serde(default)]
     pub boot_id: Option<String>,
     pub launch_identity: String,
+    /// Ownership belongs to a sandbox helper; not proof of the game/JVM PID.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sandbox_owner: bool,
 }
+fn is_false(value:&bool)->bool { !value }
 impl GenerationRecord {
     pub fn liveness(&self) -> Liveness {
         native::liveness(self.pid, self.process_start, self.boot_id.as_deref())
@@ -175,6 +179,7 @@ mod tests {
             process_start,
             boot_id: native::boot_id(),
             launch_identity: "aa".repeat(32),
+            sandbox_owner: false,
         }
     }
 

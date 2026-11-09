@@ -10,6 +10,10 @@ getrandom.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+# Isolated development consumes the existing versioned crate from its separate
+# repository. Release packaging must replace this path with an approved published
+# version or immutable repository revision; no sandbox implementation is copied.
+vesta-sandbox = { version = "=0.1.0-alpha.31", path = "../../../launcher/crates/vesta-sandbox" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

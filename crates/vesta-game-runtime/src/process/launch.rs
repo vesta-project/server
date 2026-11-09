@@ -23,6 +23,7 @@ pub struct LaunchSpec {
     cwd: PathBuf,
     stop: GracefulStop,
     required_files: Vec<PathBuf>,
+    isolation: Option<crate::isolation::ServerIsolation>,
 }
 impl fmt::Debug for LaunchSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -45,6 +46,7 @@ impl LaunchSpec {
             cwd,
             stop,
             required_files: Vec::new(),
+            isolation: None,
         };
         spec.validate()?;
         spec.preflight()?;
@@ -64,6 +66,26 @@ impl LaunchSpec {
     }
     pub fn graceful_stop(&self) -> GracefulStop {
         self.stop
+    }
+
+    /// Opt-in local host composition only. Paths are checked again when preparing
+    /// each spawn; callers cannot supply an already-authorized native command.
+    pub fn with_isolation(mut self, policy: crate::isolation::ServerIsolation) -> Result<Self, RuntimeError> {
+        policy.validate(&self.program, &self.cwd)?;
+        self.isolation = Some(policy);
+        Ok(self)
+    }
+
+    pub fn is_isolated(&self) -> bool { self.isolation.is_some() }
+
+    /// A stopped software replacement inherits the current OS-admin policy;
+    /// its launch document cannot remove or broaden the sandbox. Validate the
+    /// new executable/runtime against that same policy before publication.
+    pub fn constrain_replacement(&self, replacement:Self) -> Result<Self, RuntimeError> {
+        match &self.isolation {
+            Some(policy) => replacement.with_isolation(policy.clone()),
+            None => Ok(replacement),
+        }
     }
 
     fn validate(&self) -> Result<(), RuntimeError> {
@@ -124,17 +146,22 @@ impl LaunchSpec {
         self.stop
     }
 
-    pub(super) fn command(&self) -> Command {
-        let mut command = Command::new(&self.program);
+    pub(super) fn command(&self) -> Result<crate::isolation::PreparedCommand, RuntimeError> {
+        let mut prepared = match &self.isolation {
+            Some(policy) => policy.prepare(&self.program, &self.args, &self.cwd)?,
+            None => crate::isolation::PreparedCommand {
+                command: Command::new(&self.program),
+                lifetime: Default::default(),
+            },
+        };
+        let command = &mut prepared.command;
+        if self.isolation.is_none() { command.args(&self.args).current_dir(&self.cwd); }
         command
-            .args(&self.args)
-            .current_dir(&self.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        super::tree::ProcessTree::configure(&mut command);
-        // No shell, environment rewriting or detached-process flags.
-        command
+        super::tree::ProcessTree::configure(command);
+        Ok(prepared)
     }
 }
 

@@ -608,6 +608,7 @@ pub struct HostConfiguration {
     backups: Option<BackupSettings>,
     metrics: MetricsSettings,
     notifications: crate::external_alerts::Settings,
+    isolation: Option<IsolationSettings>,
     downloads: DownloadSettings,
     on_agent_start: OnAgentStart,
     java_allowlist: Vec<PathBuf>,
@@ -922,6 +923,14 @@ impl HostConfiguration {
                 if !settings.valid(){return Err(ConfigError::InvalidDocument);}
                 settings
             },
+            isolation: document.isolation.map(|v| {
+                let value=v.0;
+                if value.profile!="headless" || value.runtime_directories.is_empty() || value.runtime_directories.len()>16 {
+                    return Err(ConfigError::InvalidDocument);
+                }
+                let runtime_directories=value.runtime_directories.iter().map(|p|resolve_value(base,p)).collect::<Result<Vec<_>>>()?;
+                Ok(IsolationSettings {runtime_directories})
+            }).transpose()?,
             metrics: document
                 .metrics
                 .map(|v| v.0)
@@ -1019,6 +1028,16 @@ impl HostConfiguration {
         self.metrics
     }
     pub fn notifications(&self) -> &crate::external_alerts::Settings { &self.notifications }
+    pub fn isolation(&self) -> Option<&IsolationSettings> { self.isolation.as_ref() }
+
+    /// One trusted composition for agent, supervisor and stopped software changes.
+    /// No remote Owner mutation can change this OS-local configuration.
+    pub(crate) fn isolate_launch(&self, spec:vesta_game_runtime::process::LaunchSpec) -> std::result::Result<vesta_game_runtime::process::LaunchSpec,vesta_game_runtime::process::RuntimeError> {
+        let Some(settings)=&self.isolation else {return Ok(spec);};
+        let mut protected=self.host_protected_paths().to_vec();
+        protected.push(self.state.clone());
+        spec.with_isolation(vesta_game_runtime::isolation::ServerIsolation::new(settings.runtime_directories.clone(),protected)?)
+    }
     pub fn backups(&self) -> Option<&BackupSettings> {
         self.backups.as_ref()
     }
@@ -1268,8 +1287,18 @@ struct Document {
     backups: Option<Table<WireBackups>>,
     metrics: Option<Table<MetricsSettings>>,
     notifications: Option<Table<crate::external_alerts::Settings>>,
+    isolation: Option<Table<WireIsolation>>,
     downloads: Option<Table<DownloadSettings>>,
 }
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct IsolationSettings { runtime_directories:Vec<PathBuf> }
+impl IsolationSettings {
+    pub fn runtime_directories(&self)->&[PathBuf] { &self.runtime_directories }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all="kebab-case")]
+struct WireIsolation {profile:String,runtime_directories:Vec<String>}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]

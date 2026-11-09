@@ -183,12 +183,14 @@ impl Running {
         Self::start_with(fixture, None)
     }
     fn start_with(fixture: &Fixture, restart: Option<vesta_supervisor::RestartPolicy>) -> Self {
-        let config = SupervisorConfig {
+        Self::start_config(fixture, SupervisorConfig {
             state: fixture.state.clone(),
             launch: fixture.launch(),
             launch_identity: IDENTITY.into(),
             restart,
-        };
+        })
+    }
+    fn start_config(fixture:&Fixture, config:SupervisorConfig) -> Self {
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let thread = thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -433,6 +435,7 @@ fn surviving_recorded_game_blocks_launch_until_it_exits() {
             process_start: native::process_start(pid).unwrap(),
             boot_id: native::boot_id(),
             launch_identity: IDENTITY.into(),
+            sandbox_owner: false,
         },
     )
     .unwrap();
@@ -1124,6 +1127,7 @@ fn a_lease_on_an_orphan_is_reported_stranded_until_it_exits() {
             process_start: native::process_start(pid).unwrap(),
             boot_id: native::boot_id(),
             launch_identity: IDENTITY.into(),
+            sandbox_owner: false,
         },
     )
     .unwrap();
@@ -1346,6 +1350,35 @@ fn stopped_launch_replacement_requires_hold_and_updates_real_process_owner() {
             .is_err()
     );
     finish(&fixture, running, remote);
+}
+
+#[test]
+fn isolated_stopped_replacement_retains_policy_and_rejects_another_runtime() {
+    if std::env::var_os("VESTA_RUN_NATIVE_SERVER_SANDBOX_TEST").is_none() {
+        eprintln!("native sandbox replacement test not requested"); return;
+    }
+    let fixture=Fixture::new();
+    let unrestricted=fixture.launch();
+    let runtime=fixture.root.path().join("runtime");fs::create_dir(&runtime).unwrap();
+    let program=runtime.join(if cfg!(windows){"owned.exe"}else{"owned"});
+    fs::copy(unrestricted.literal_program(),&program).unwrap();
+    let launch=LaunchSpec::new(program.clone(),unrestricted.literal_args().to_vec(),fixture.game.clone(),GracefulStop::MinecraftCommand).unwrap()
+        .with_isolation(vesta_game_runtime::isolation::ServerIsolation::new(vec![runtime],vec![fixture.state.path().into()]).unwrap()).unwrap();
+    let running=Running::start_config(&fixture,SupervisorConfig {state:fixture.state.clone(),launch,launch_identity:IDENTITY.into(),restart:None});
+    let raw=SupervisorClient::new(&fixture.state).unwrap();
+    let mut remote=RemoteProcess::attach(client(&fixture),IDENTITY.into()).unwrap();
+    let hold=vesta_supervisor::save::hold(&raw,Duration::from_secs(60)).unwrap();
+    let document=|exe:&Path|format!("[minecraft]\nworking-directory={}\n[launch]\nkind='native'\nexecutable={}\nargs=['--exact','inert_supervised_game','--nocapture']\nstop='console-stop'\n",serde_json::to_string(&fixture.game.to_string_lossy().replace('\\',"/")).unwrap(),serde_json::to_string(&exe.to_string_lossy().replace('\\',"/")).unwrap());
+    let invalid=vesta_supervisor::reconfigure::stage_launch(&fixture.state,document(unrestricted.literal_program()).as_bytes()).unwrap();
+    assert!(remote.replace_stopped_launch("2".repeat(64),invalid,hold.clone()).is_err());
+    assert_eq!(vesta_supervisor::probe(&raw).unwrap().unwrap().launch_identity,IDENTITY);
+    let valid=vesta_supervisor::reconfigure::stage_launch(&fixture.state,document(&program).as_bytes()).unwrap();
+    remote.replace_stopped_launch("3".repeat(64),valid,hold.clone()).unwrap();
+    vesta_supervisor::save::release_hold(&raw,&hold).unwrap();
+    remote.start_guarded(|_|Ok::<(),()>(())).unwrap();
+    eventually(||console_contains(&mut remote,"inert-supervised-ready"),"isolated replacement ready");
+    assert!(record::read(&fixture.state.supervisor().unwrap()).unwrap().unwrap().sandbox_owner);
+    finish(&fixture,running,remote);
 }
 
 #[test]

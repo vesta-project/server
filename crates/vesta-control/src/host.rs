@@ -617,7 +617,8 @@ fn compose(
     let graceful_stop = launch.graceful_stop();
     let sftp = crate::sftp::SftpService::open(db.clone(), files.clone(), management.clone())
         .map_err(|_| HostError::Supervisor("sftp_state_unavailable"))?;
-    let spec = launch.into_launch_spec(None).map_err(HostError::Launch)?;
+    let spec = config.isolate_launch(launch.into_launch_spec(None).map_err(HostError::Launch)?)
+        .map_err(|e|HostError::Launch(LaunchConfigError::Preflight(e)))?;
     let tick_detection = crate::metrics::ticks::detect(&spec, config.game());
     let operations = Operations::new(db.clone())
         .map_err(HostError::Operation)?
@@ -807,14 +808,7 @@ fn check_launch(config: &HostConfiguration) -> Result<CheckedLaunch, HostError> 
     {
         return Err(HostError::LaunchDirectory);
     }
-    let identity = vesta_supervisor::launch_identity(&[
-        &bytes,
-        config.base().to_string_lossy().as_bytes(),
-        config.launch_definition().to_string_lossy().as_bytes(),
-        config.game().to_string_lossy().as_bytes(),
-        state.path().to_string_lossy().as_bytes(),
-        launch.working_directory().to_string_lossy().as_bytes(),
-    ]);
+    let identity = crate::host_software::identity(config,&bytes,launch.working_directory(),state.path());
     Ok(CheckedLaunch {
         state,
         launch,
@@ -859,10 +853,11 @@ fn restart_policy(
 /// Does not open a database, acquire runtime ownership or start any process.
 pub fn validate_launch(config: &HostConfiguration) -> Result<(), HostError> {
     let checked = check_launch(config)?;
-    checked
+    let spec=checked
         .launch
         .into_launch_spec(None)
         .map_err(HostError::Launch)?;
+    config.isolate_launch(spec).map_err(|e|HostError::Launch(LaunchConfigError::Preflight(e)))?;
     Ok(())
 }
 
@@ -876,10 +871,11 @@ pub fn supervised_launch(config: &HostConfiguration) -> Result<SupervisedLaunch,
     Ok(SupervisedLaunch {
         restart,
         state: checked.state,
-        spec: checked
+        spec: config.isolate_launch(checked
             .launch
             .into_launch_spec(None)
-            .map_err(HostError::Launch)?,
+            .map_err(HostError::Launch)?)
+            .map_err(|e|HostError::Launch(LaunchConfigError::Preflight(e)))?,
         identity: checked.identity,
     })
 }

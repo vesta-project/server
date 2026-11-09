@@ -47,8 +47,9 @@ impl software::StoppedGuard for Held {
             &self.hooks.config,
             document.as_bytes(),
             parsed.working_directory(),
+            if self.hooks.config.isolation().is_some() {self.hooks.db.directory().path()} else {self.hooks.config.state()},
         );
-        let launch = parsed.into_launch_spec(None).map_err(unavailable)?;
+        let launch = self.hooks.config.isolate_launch(parsed.into_launch_spec(None).map_err(unavailable)?).map_err(unavailable)?;
         let staged = vesta_supervisor::reconfigure::stage_launch(
             self.hooks.db.directory(),
             document.as_bytes(),
@@ -252,15 +253,19 @@ pub(crate) fn open(
     )
     .map(Some)
 }
-pub(crate) fn identity(config: &HostConfiguration, bytes: &[u8], cwd: &Path) -> String {
-    vesta_supervisor::launch_identity(&[
-        bytes,
-        config.base().to_string_lossy().as_bytes(),
-        config.launch_definition().to_string_lossy().as_bytes(),
-        config.game().to_string_lossy().as_bytes(),
-        config.state().to_string_lossy().as_bytes(),
-        cwd.to_string_lossy().as_bytes(),
-    ])
+pub(crate) fn identity(config: &HostConfiguration, bytes: &[u8], cwd: &Path, state:&Path) -> String {
+    let base=config.base().to_string_lossy();
+    let definition=config.launch_definition().to_string_lossy();
+    let game=config.game().to_string_lossy();
+    let state=state.to_string_lossy();
+    let cwd=cwd.to_string_lossy();
+    let mut parts=vec![bytes,base.as_bytes(),definition.as_bytes(),game.as_bytes(),state.as_bytes(),cwd.as_bytes()];
+    let isolation=config.isolation().map(|s| {
+        let values=s.runtime_directories().iter().map(|p|p.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        serde_json::to_vec(&("shared-headless-v1",values)).expect("string-only isolation identity")
+    });
+    if let Some(tag)=&isolation {parts.push(tag);}
+    vesta_supervisor::launch_identity(&parts)
 }
 fn atomic_document(path: &Path, bytes: &[u8]) -> files::Result<()> {
     files::read_local_document(path, 65_536)?;
@@ -327,7 +332,7 @@ pub(crate) fn recovery_binding(
             let parsed=LaunchConfiguration::parse_toml(document.as_bytes(),config.base()).map_err(unavailable)?;
             if !files::same_directory(parsed.working_directory(),config.game()).map_err(unavailable)?{return Ok(false);}
             actual_known|=actual==document.as_bytes();
-            supervisor_known|=identity(config,document.as_bytes(),parsed.working_directory())==observed;
+            supervisor_known|=identity(config,document.as_bytes(),parsed.working_directory(),if config.isolation().is_some(){db.directory().path()}else{config.state()})==observed;
         }
         Ok(actual_known&&supervisor_known)
     }).map_err(|_|HostError::Supervisor("software_recovery_binding_unavailable"));

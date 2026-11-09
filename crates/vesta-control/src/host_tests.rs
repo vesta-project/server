@@ -138,6 +138,31 @@ fn launch_preflight_checks_required_files_without_creating_state() {
 }
 
 #[test]
+fn shared_isolation_is_local_opt_in_and_binds_the_supervisor_launch_identity() {
+    let f=Fixture::new();
+    let plain=f.config("minecraft","private/launch.toml");
+    // Only the local host profile changes, not executable/argv/game selection.
+    let base_text=format!("schema-version=1\n[paths]\nstate='private-state'\ngame='game'\nscan-roots=['game/config']\nlaunch-definition='private/launch.toml'\n[pack]\nname='Hosted'\nversion='1.0.0'\nrevision=1\nminimum-revision=1\nminecraft-version='1.21.1'\n[pack-access]\nmode='minecraft'\n[listener]\nmode='disabled'\n");
+    let parse=|extra:&str|HostConfiguration::parse_toml(format!("{base_text}{extra}").as_bytes(),&f.base(),Path::new("host.toml")).unwrap();
+    let isolated=parse("[isolation]\nprofile='headless'\nruntime-directories=['bin']\n");
+    let launch=|config:&HostConfiguration| {
+        let checked=check_launch(config).unwrap();
+        let spec=config.isolate_launch(checked.launch.into_launch_spec(None).unwrap()).unwrap();
+        (checked.identity,spec)
+    };
+    let (before,unrestricted)=launch(&plain);let (after,restricted)=launch(&isolated);
+    assert!(!unrestricted.is_isolated());assert!(restricted.is_isolated());
+    assert_ne!(before,after);
+    let bytes=std::fs::read(f.temp.path().join("private/launch.toml")).unwrap();
+    let state=vesta_state::StateDirectory::new(plain.state(),Some(plain.game())).unwrap();
+    let legacy=vesta_supervisor::launch_identity(&[&bytes,plain.base().to_string_lossy().as_bytes(),plain.launch_definition().to_string_lossy().as_bytes(),plain.game().to_string_lossy().as_bytes(),state.path().to_string_lossy().as_bytes(),plain.game().to_string_lossy().as_bytes()]);
+    assert_eq!(before,legacy);
+    let bad=parse("[isolation]\nprofile='headless'\nruntime-directories=['private']\n");
+    assert!(validate_launch(&bad).is_err());
+    assert!(!f.database_file().exists());
+}
+
+#[test]
 fn a_missing_or_malformed_launch_definition_refuses_before_any_state_is_created() {
     let f = Fixture::new();
     refused(
@@ -700,6 +725,10 @@ fn host_startup_upgrades_original_v8_without_upload_table_and_purges_orphan_stag
         )
         .unwrap();
     let legacy_release_sql = release_sql.replace(", 'catalogue'", "");
+    // This fixture starts at today's schema. An original v8 database cannot
+    // retain v31 tables while claiming user_version=8: reapplying v31 correctly
+    // refuses those duplicates. Remove their schema before that simulation.
+    offline.execute_batch("DROP TABLE management_invitation_uses; DROP TABLE whitelist_sync_actor; DROP TABLE whitelist_sync_members;").unwrap();
     // These v27 tables must also be absent in the simulated original v8 database.
     offline.execute_batch("DROP TABLE pack_import_warnings; DROP TABLE pack_publication_history; DROP TABLE pack_workspace_uploads; DROP TABLE pack_workspace_published; DROP TABLE pack_workspace_receipts; DROP TABLE pack_workspace_blobs; DROP TABLE pack_workspace;").unwrap();
     offline

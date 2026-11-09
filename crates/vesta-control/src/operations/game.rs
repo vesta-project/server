@@ -60,6 +60,7 @@ impl LiveGameView {
             let state = vesta_state::StateDirectory::new(state, None).ok()?;
             let record = vesta_supervisor::record::read(&state.supervisor().ok()?).ok()??;
             return (record.generation == generation.to_hex()
+                && !record.sandbox_owner
                 && record.launch_identity == *identity
                 && record.liveness() == vesta_supervisor::native::Liveness::Alive)
                 .then_some((generation, record.pid, record.process_start));
@@ -411,7 +412,7 @@ impl GameLifecycle {
                 // Capture once immediately after spawn, while ownership retains the
                 // unreaped child/native handle. Never learn a replacement PID later.
                 if process.snapshot().generation != before {
-                    self.local_identity = process.native_id().and_then(|pid| {
+                    self.local_identity = process.native_game_id().and_then(|pid| {
                         let generation = process.snapshot().generation?;
                         let start = vesta_supervisor::native::process_start(pid)?;
                         Some((generation, pid, start))
@@ -594,6 +595,7 @@ mod metrics_tests {
             process_start: start,
             boot_id: vesta_supervisor::native::boot_id(),
             launch_identity: "02".repeat(32),
+            sandbox_owner: false,
         };
         let mut snapshot = GameProcess::new(ConsoleCapture::new()).snapshot();
         snapshot.generation = Some(generation);
@@ -605,7 +607,7 @@ mod metrics_tests {
         )));
         vesta_supervisor::record::write(&directory, &record).unwrap();
         assert_eq!(view.native_identity(), Some((generation, pid, start)));
-        for changed in 0..3 {
+        for changed in 0..4 {
             vesta_supervisor::record::clear(&directory).unwrap();
             match changed {
                 0 => record.generation = "03".repeat(16),
@@ -613,10 +615,11 @@ mod metrics_tests {
                     record.generation = generation.to_hex();
                     record.launch_identity = "04".repeat(32);
                 }
-                _ => {
+                2 => {
                     record.launch_identity = "02".repeat(32);
                     record.process_start = start.wrapping_add(1);
                 }
+                _ => {record.process_start=start;record.sandbox_owner=true;}
             }
             vesta_supervisor::record::write(&directory, &record).unwrap();
             assert!(view.native_identity().is_none());

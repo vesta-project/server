@@ -56,6 +56,18 @@ fn main() {
     println!("fixture-ready");
     eprintln!("fixture-stderr-ready");
     io::stdout().flush().expect("fixture flush");
+    if mode == "isolated-probe" {
+        let blocked=std::path::Path::new(&args[1]);
+        let read_only=std::path::Path::new(&args[2]);
+        assert!(env::var_os("VESTA_TEST_INHERITED_SENTINEL").is_none(),"inherited environment leaked");
+        assert!(fs::read(blocked).is_err(),"protected file was readable");
+        assert!(fs::write(blocked,b"unexpected").is_err(),"protected file was writable");
+        assert_eq!(fs::read(read_only).unwrap(),b"runtime-readable");
+        assert!(fs::write(read_only,b"unexpected").is_err(),"runtime was writable");
+        fs::write("isolation-verified",b"checked").unwrap();
+        println!("isolation-verified");
+        io::stdout().flush().unwrap();
+    }
     if mode == "crash" {
         process::exit(23);
     }

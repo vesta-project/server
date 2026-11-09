@@ -154,7 +154,7 @@ fn delayed_writer_rechecks_fresh_guard_and_preserves_typed_refusal_without_stdin
     let generation = process.new_generation().unwrap();
     process
         .own_spawned(
-            spec.command().spawn().unwrap(),
+            spec.command().unwrap().command.spawn().unwrap(),
             generation,
             spec.stop(),
             io,
@@ -304,7 +304,7 @@ fn delayed_list_writer_refuses_revocation_without_command_or_phase_change() {
     let generation = process.new_generation().unwrap();
     process
         .own_spawned(
-            spec.command().spawn().unwrap(),
+            spec.command().unwrap().command.spawn().unwrap(),
             generation,
             spec.stop(),
             io,

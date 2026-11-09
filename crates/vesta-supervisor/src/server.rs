@@ -593,8 +593,10 @@ fn execute(core: &Shared, op: Op) -> Reply {
                     if configuration.working_directory() != core.launch.working_directory() {
                         return Err("supervisor_launch_invalid");
                     }
-                    configuration
+                    let replacement=configuration
                         .into_launch_spec(None)
+                        .map_err(|_| "supervisor_launch_invalid")?;
+                    core.launch.constrain_replacement(replacement)
                         .map_err(|_| "supervisor_launch_invalid")
                 })();
                 match replacement {
@@ -1064,6 +1066,7 @@ impl Core {
                 process_start,
                 boot_id: native::boot_id(),
                 launch_identity: self.launch_identity.clone(),
+                sandbox_owner: self.launch.is_isolated(),
             })
         });
         match published.map(|value| record::write(&self.directory, &value)) {

@@ -111,6 +111,7 @@ pub enum WaitOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeError {
     InvalidLaunch,
+    IsolationUnavailable,
     InvalidCommand,
     InvalidTimeout,
     AlreadyOwned,
@@ -130,6 +131,7 @@ impl RuntimeError {
     pub const fn code(self) -> &'static str {
         match self {
             Self::InvalidLaunch => "game_invalid_launch",
+            Self::IsolationUnavailable => "game_isolation_unavailable",
             Self::InvalidCommand => "game_invalid_command",
             Self::InvalidTimeout => "game_invalid_timeout",
             Self::AlreadyOwned => "game_already_owned",
@@ -216,6 +218,8 @@ struct OwnedChild {
     graceful_admitted: bool,
     exit: Option<ExitStatus>,
     io: io::IoThreads,
+    isolated: bool,
+    _isolation: crate::isolation::IsolationLifetime,
 }
 impl Drop for OwnedChild {
     fn drop(&mut self) {
@@ -292,11 +296,12 @@ impl GameProcess {
         // All fallible thread creation is before the external process effect.
         let io = io::IoThreads::prepare(&self.console)?;
         let tree = self.prepare_tree()?;
-        let child = spec
-            .command()
-            .spawn()
+        let mut prepared = spec.command()?;
+        let child = prepared.command.spawn()
             .map_err(|_| RuntimeError::SpawnFailed)?;
-        self.own_spawned(child, generation, spec.stop(), io, tree)
+        let outcome = self.own_spawned(child, generation, spec.stop(), io, tree);
+        self.retain_isolation(&spec, prepared.lifetime);
+        outcome
     }
 
     /// All fallible preparation precedes the guard. A successful guard is
@@ -315,11 +320,20 @@ impl GameProcess {
         let generation = self.new_generation()?;
         let io = io::IoThreads::prepare(&self.console)?;
         let tree = self.prepare_tree()?;
-        let mut command = spec.command();
+        let mut prepared = spec.command()?;
         guard(self.snapshot()).map_err(GuardedError::Guard)?;
-        let child = command.spawn().map_err(|_| RuntimeError::SpawnFailed)?;
-        self.own_spawned(child, generation, spec.stop(), io, tree)
-            .map_err(GuardedError::Runtime)
+        let child = prepared.command.spawn().map_err(|_| RuntimeError::SpawnFailed)?;
+        let outcome = self.own_spawned(child, generation, spec.stop(), io, tree);
+        self.retain_isolation(spec, prepared.lifetime);
+        outcome.map_err(GuardedError::Runtime)
+    }
+
+    fn retain_isolation(&mut self, spec:&LaunchSpec, lifetime:crate::isolation::IsolationLifetime) {
+        // Even uncertain attachment retains a live child and its policy files.
+        if let Some(owned) = &mut self.owned {
+            owned.isolated = spec.is_isolated();
+            owned._isolation = lifetime;
+        }
     }
 
     fn own_spawned(
@@ -339,6 +353,8 @@ impl GameProcess {
             graceful_admitted: false,
             exit: None,
             io,
+            isolated: false,
+            _isolation: Default::default(),
         });
         let owned = self.owned.as_mut().ok_or(RuntimeError::StartupUncertain)?;
         let tree_attached = owned.tree.attach(&owned.child);
@@ -615,6 +631,13 @@ impl GameProcess {
             .as_ref()
             .filter(|owned| owned.exit.is_none())
             .map(|owned| owned.child.id())
+    }
+
+    /// Native game identity for metrics only. A sandbox owner/helper ID remains
+    /// valid for durable family ownership, but is not evidence of the JVM PID.
+    pub fn native_game_id(&self) -> Option<u32> {
+        self.owned.as_ref().filter(|owned| !owned.isolated)?;
+        self.native_id()
     }
 
     /// Bounded observation of retained ownership, including observation failures.
