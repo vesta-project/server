@@ -1,14 +1,15 @@
 //! Signed release trust and side-by-side staging. Never activates executables.
+pub mod activation;
 mod metadata;
 pub mod release;
-mod store;
-mod verification;
 pub mod rollout;
 mod startup;
+mod store;
+mod verification;
+pub use metadata::{ActivationCompatibility, Metadata, Trust};
 pub use startup::{CheckOutcome, StartupCheck, StartupPolicy};
-pub use metadata::{Metadata, Trust};
 pub use store::{StageStatus, UpdateSource, UpdateStore};
-pub use verification::CandidateObservation;
+pub use verification::{CandidateObservation, VerifiedPayload};
 #[cfg(test)]
 mod tests;
 

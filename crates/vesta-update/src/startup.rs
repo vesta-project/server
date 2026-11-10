@@ -181,6 +181,9 @@ impl UpdateStore {
             candidate: None,
             error_code: None,
         };
+        let installed_manifest = self
+            .committed_manifest()?
+            .unwrap_or_else(|| installed_manifest.to_owned());
         // Durable admission before I/O also spaces retries after interruption.
         self.record_startup_check(&observation)?;
         match self
@@ -188,7 +191,7 @@ impl UpdateStore {
             .and_then(|()| self.check(&policy.source, now))
         {
             Ok(m) => {
-                observation.outcome = if m.manifest_sha256.eq_ignore_ascii_case(installed_manifest)
+                observation.outcome = if m.manifest_sha256.eq_ignore_ascii_case(&installed_manifest)
                 {
                     CheckOutcome::Current
                 } else {

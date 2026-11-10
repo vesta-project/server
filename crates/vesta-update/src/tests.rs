@@ -8,6 +8,301 @@ use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf};
 const NOW: i64 = 1_800_000_000_000;
 
+struct ActivationFixture {
+    fixture: Fixture,
+    store: UpdateStore,
+    host: ActivationHooks,
+    original: String,
+}
+struct ActivationHooks {
+    scope: activation::Scope,
+    trials: usize,
+    fail_hash: Option<String>,
+    stopped: bool,
+}
+impl activation::ActivationHost for ActivationHooks {
+    fn observe(&mut self) -> Result<activation::Scope, String> {
+        if self.stopped {
+            Ok(self.scope.clone())
+        } else {
+            Err("owned_fixture_not_stopped".into())
+        }
+    }
+    fn trial(&mut self, payload: &mut VerifiedPayload) -> Result<activation::Health, String> {
+        self.trials += 1;
+        payload.recheck()?;
+        if self.fail_hash.as_deref() == Some(payload.manifest_sha256()) {
+            return Err("owned_fixture_probe_failure".into());
+        }
+        Ok(activation::Health {
+            manifest_sha256: payload.manifest_sha256().into(),
+            scope: self.scope.clone(),
+        })
+    }
+}
+impl ActivationFixture {
+    fn new() -> Self {
+        let fixture = Fixture::new();
+        let (source, m) = fixture.bundle(1);
+        let store = UpdateStore::open(&fixture.root()).unwrap();
+        store
+            .initialize(&fixture.pin(), "nightly", &m.manifest_sha256, &source, NOW)
+            .unwrap();
+        let installed = fixture.temp.path().join("installed");
+        fs::create_dir(&installed).unwrap();
+        let release = release::load(release::Source {
+            local: source.local.clone(),
+            base_url: None,
+            asset_prefix: None,
+            manifest_sha256: m.manifest_sha256.clone(),
+            release_key: fixture.pin(),
+        })
+        .unwrap();
+        release.install(&installed, &mut |_, _, _| {}).unwrap();
+        let mut host = ActivationHooks {
+            scope: activation::Scope {
+                installation_id: "1".repeat(32),
+                server_id: "11111111-1111-4111-8111-111111111111".into(),
+                state_schema: vesta_state::CURRENT_SCHEMA_VERSION,
+                supervisor_ipc: 1,
+                tls_sha256: "2".repeat(64),
+                configuration_sha256: "3".repeat(64),
+                launch_sha256: "4".repeat(64),
+            },
+            trials: 0,
+            fail_hash: None,
+            stopped: true,
+        };
+        store
+            .register_installed(&release, &installed, &mut host, NOW)
+            .unwrap();
+        Self {
+            fixture,
+            store,
+            host,
+            original: m.manifest_sha256,
+        }
+    }
+    fn stage(&self, sequence: u64, compatible: bool) -> (UpdateSource, Metadata) {
+        let (source, mut m) = self.fixture.bundle(sequence);
+        m.activation = Some(ActivationCompatibility {
+            protocol: activation::ACTIVATION_PROTOCOL,
+            state_schema_min: vesta_state::CURRENT_SCHEMA_VERSION,
+            state_schema_max: vesta_state::CURRENT_SCHEMA_VERSION + u32::from(!compatible),
+            supervisor_ipc: 1,
+        });
+        self.fixture.sign(&source, &m);
+        self.store.stage(&source, NOW, &mut |_, _, _| {}).unwrap();
+        (source, m)
+    }
+}
+#[test]
+fn activation_requires_actual_native_fence_signed_compatibility_and_healthy_fallback() {
+    let mut f = ActivationFixture::new();
+    let (_, m) = f.stage(2, false);
+    let calls = f.host.trials;
+    assert_eq!(
+        f.store
+            .prepare_activation(&m.manifest_sha256, "incompatible", &mut f.host, NOW)
+            .unwrap_err(),
+        "update_compatibility_requires_migration"
+    );
+    assert_eq!(f.host.trials, calls);
+    f.host.stopped = false;
+    assert_eq!(
+        f.store
+            .prepare_activation(&m.manifest_sha256, "not-stopped", &mut f.host, NOW)
+            .unwrap_err(),
+        "owned_fixture_not_stopped"
+    );
+    f.host.stopped = true;
+    let (_, m) = f.stage(3, true);
+    let binary = f
+        .store
+        .candidate(&m.manifest_sha256)
+        .join("bin")
+        .join(if cfg!(windows) { "vesta.exe" } else { "vesta" });
+    let before = fs::read(&binary).unwrap();
+    fs::write(&binary, vec![b'x'; before.len()]).unwrap();
+    assert_eq!(
+        f.store
+            .prepare_activation(&m.manifest_sha256, "tampered", &mut f.host, NOW)
+            .unwrap_err(),
+        "update_candidate_hash_mismatch"
+    );
+    assert_eq!(f.host.trials, calls);
+    fs::write(binary, before).unwrap();
+    let mut bad = f.host.scope.clone();
+    bad.tls_sha256 = "not-a-hash".into();
+    f.host.scope = bad;
+    assert_eq!(
+        f.store
+            .prepare_activation(&m.manifest_sha256, "bad-scope", &mut f.host, NOW)
+            .unwrap_err(),
+        "update_scope_unproven"
+    );
+}
+#[test]
+fn activation_trial_failure_keeps_prior_payload_and_never_lowers_download_floor() {
+    let mut f = ActivationFixture::new();
+    let (_, m) = f.stage(2, true);
+    let trust = f.store.trust().unwrap();
+    f.host.fail_hash = Some(m.manifest_sha256.clone());
+    let failed = f
+        .store
+        .prepare_activation(&m.manifest_sha256, "owned-failed-trial", &mut f.host, NOW)
+        .unwrap();
+    assert_eq!(failed.state, "recovered");
+    assert_eq!(failed.previous, f.original);
+    assert_eq!(failed.error.as_deref(), Some("update_trial_failed"));
+    f.host.fail_hash = None;
+    let replay = f
+        .store
+        .prepare_activation(&m.manifest_sha256, "owned-failed-trial", &mut f.host, NOW)
+        .unwrap();
+    assert_eq!(replay, failed);
+    let (intent, payload) = f
+        .store
+        .payload_for_start(&mut f.host, NOW + 7 * 86400000)
+        .unwrap();
+    assert!(intent.is_none());
+    assert_eq!(payload.manifest_sha256(), f.original);
+    assert_eq!(f.store.trust().unwrap(), trust);
+}
+#[test]
+fn activation_commit_failure_remains_pending_and_exact_health_retry_commits_after_reopen() {
+    let mut f = ActivationFixture::new();
+    let (_, m) = f.stage(2, true);
+    let accepted = f
+        .store
+        .prepare_activation(&m.manifest_sha256, "owned-activation", &mut f.host, NOW)
+        .unwrap();
+    assert_eq!(accepted.state, "restart_pending");
+    assert_eq!(
+        f.store
+            .prepare_activation(&m.manifest_sha256, "owned-activation", &mut f.host, NOW)
+            .unwrap(),
+        accepted
+    );
+    let (id, mut payload) = f.store.payload_for_start(&mut f.host, NOW).unwrap();
+    assert_eq!(id.as_deref(), Some(accepted.id.as_str()));
+    let mut health = activation::Health {
+        manifest_sha256: m.manifest_sha256.clone(),
+        scope: f.host.scope.clone(),
+    };
+    health.scope.server_id = "22222222-2222-4222-8222-222222222222".into();
+    assert_eq!(
+        f.store
+            .confirm_started(&accepted.id, &mut payload, &health)
+            .unwrap_err(),
+        "update_health_mismatch"
+    );
+    health.scope = f.host.scope.clone();
+    f.store.db.write(|c|{c.execute_batch("CREATE TRIGGER owned_activation_commit_failure BEFORE UPDATE ON update_active BEGIN SELECT RAISE(ABORT,'owned fixture failure'); END")?;Ok(())}).unwrap();
+    assert!(
+        f.store
+            .confirm_started(&accepted.id, &mut payload, &health)
+            .is_err()
+    );
+    assert_eq!(
+        f.store.activation_status(&accepted.id).unwrap().state,
+        "restart_pending"
+    );
+    f.store
+        .db
+        .write(|c| {
+            c.execute_batch("DROP TRIGGER owned_activation_commit_failure")?;
+            Ok(())
+        })
+        .unwrap();
+    drop(f.store);
+    let store = UpdateStore::open(&f.fixture.root()).unwrap();
+    assert_eq!(
+        store
+            .confirm_started(&accepted.id, &mut payload, &health)
+            .unwrap()
+            .state,
+        "healthy"
+    );
+    assert_eq!(
+        store
+            .confirm_started(&accepted.id, &mut payload, &health)
+            .unwrap()
+            .state,
+        "healthy"
+    );
+    drop(payload);
+    let (id, payload) = store
+        .payload_for_start(&mut f.host, NOW + 7 * 86400000)
+        .unwrap();
+    assert!(id.is_none());
+    assert_eq!(payload.manifest_sha256(), m.manifest_sha256);
+    drop(payload);
+    let calls = f.host.trials;
+    assert_eq!(
+        store
+            .prepare_activation(
+                &m.manifest_sha256,
+                "same-version-noop",
+                &mut f.host,
+                NOW + 7 * 86400000
+            )
+            .unwrap()
+            .state,
+        "healthy"
+    );
+    assert_eq!(f.host.trials, calls);
+}
+#[test]
+fn activation_interrupted_restart_recovers_only_the_exact_prior_healthy_selection() {
+    let mut f = ActivationFixture::new();
+    let (_, m) = f.stage(2, true);
+    let accepted = f
+        .store
+        .prepare_activation(&m.manifest_sha256, "owned-interrupted", &mut f.host, NOW)
+        .unwrap();
+    let trust = f.store.trust().unwrap();
+    drop(f.store);
+    let store = UpdateStore::open(&f.fixture.root()).unwrap();
+    f.host.scope.launch_sha256 = "5".repeat(64);
+    assert_eq!(
+        store
+            .recover_activation(&accepted.id, &mut f.host, NOW)
+            .unwrap_err(),
+        "update_scope_changed"
+    );
+    f.host.scope.launch_sha256 = "4".repeat(64);
+    let status = store
+        .recover_activation(&accepted.id, &mut f.host, NOW)
+        .unwrap();
+    assert_eq!(status.state, "recovered");
+    assert_eq!(
+        store
+            .recover_activation(&accepted.id, &mut f.host, NOW)
+            .unwrap(),
+        status
+    );
+    assert_eq!(store.trust().unwrap(), trust);
+    let (id, payload) = store.payload_for_start(&mut f.host, NOW).unwrap();
+    assert!(id.is_none());
+    assert_eq!(payload.manifest_sha256(), f.original);
+}
+#[cfg(windows)]
+#[test]
+fn activation_execution_handle_denies_replacement_and_write_sharing() {
+    let mut f = ActivationFixture::new();
+    let (_, m) = f.stage(2, true);
+    f.store
+        .prepare_activation(&m.manifest_sha256, "owned-handles", &mut f.host, NOW)
+        .unwrap();
+    let (_, mut payload) = f.store.payload_for_start(&mut f.host, NOW).unwrap();
+    let binary = payload.directory().join("bin/vesta.exe");
+    assert!(fs::write(&binary, b"tamper").is_err());
+    assert!(fs::rename(&binary, binary.with_extension("other")).is_err());
+    payload.recheck().unwrap();
+    assert!(payload.command("../outside.exe").is_err());
+}
+
 #[test]
 fn startup_checks_are_opt_in_metadata_only_and_deduplicated_after_reopen() {
     let f=Fixture::new();let store=f.initialized();let trust=store.trust().unwrap();
@@ -225,6 +520,7 @@ impl Fixture {
         )
         .unwrap();
         let metadata = Metadata {
+            activation: None,
             schema: 1,
             purpose: "vesta-update-release-v1".into(),
             channel: "nightly".into(),
@@ -410,4 +706,57 @@ fn staging_has_an_exclusive_cross_handle_lock() {
     );
     release.send(()).unwrap();
     worker.join().unwrap().unwrap();
+}
+#[test]
+fn startup_discovery_uses_committed_selection_instead_of_original_bootstrap_receipt() {
+    let mut f = ActivationFixture::new();
+    let (source, m) = f.stage(2, true);
+    f.store
+        .configure_startup_check(&StartupPolicy {
+            check_on_start: true,
+            minimum_interval_ms: 1000,
+            source,
+        })
+        .unwrap();
+    assert_eq!(
+        f.store
+            .check_on_start(&f.original, NOW)
+            .unwrap()
+            .unwrap()
+            .outcome,
+        CheckOutcome::Available,
+        "a staged candidate is not installed"
+    );
+    let accepted = f
+        .store
+        .prepare_activation(
+            &m.manifest_sha256,
+            "owned-startup-current",
+            &mut f.host,
+            NOW,
+        )
+        .unwrap();
+    let (_, mut payload) = f.store.payload_for_start(&mut f.host, NOW).unwrap();
+    f.store
+        .confirm_started(
+            &accepted.id,
+            &mut payload,
+            &activation::Health {
+                manifest_sha256: m.manifest_sha256.clone(),
+                scope: f.host.scope.clone(),
+            },
+        )
+        .unwrap();
+    drop(payload);
+    drop(f.store);
+    let store = UpdateStore::open(&f.fixture.root()).unwrap();
+    assert_eq!(
+        store
+            .check_on_start(&f.original, NOW + 1000)
+            .unwrap()
+            .unwrap()
+            .outcome,
+        CheckOutcome::Current,
+        "immutable original receipt must not advertise the already-active release again"
+    );
 }

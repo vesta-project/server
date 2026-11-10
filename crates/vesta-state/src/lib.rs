@@ -34,3 +34,5 @@ pub type Result<T> = std::result::Result<T, StateError>;
 
 #[cfg(feature = "latency-probe")]
 pub mod latency_probe;
+
+pub const UPDATE_ACTIVATION_PROTOCOL: u16 = 1;

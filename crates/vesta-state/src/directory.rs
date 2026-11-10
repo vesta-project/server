@@ -90,7 +90,8 @@ impl StateDirectory {
     /// after inspection. NOFOLLOW protects the leaf on supported opens, not the complete path.
     /// Permissions, re-checks, and an idle WAL anchor reduce accidental churn, not hostile races.
     pub fn verify_database_files(&self) -> Result<()> {
-        #[cfg(feature = "latency-probe")] let _latency_state_files_verify = crate::latency_probe::Span::new("state_files_verify");
+        #[cfg(feature = "latency-probe")]
+        let _latency_state_files_verify = crate::latency_probe::Span::new("state_files_verify");
         self.verify_root_spelling()?;
         require_directory(&self.path)?;
         require_directory(&self.backups)?;
@@ -393,6 +394,31 @@ pub(crate) fn open_regular(path: &Path, create_new: bool, create: bool) -> Resul
     #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (path, create_new, create);
+        Err(StateError::new("state_permissions_unsupported"))
+    }
+}
+
+pub(crate) fn open_execution_file(path: &Path) -> Result<File> {
+    #[cfg(windows)]
+    {
+        crate::windows_security::open_execution_file(path)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.nlink() != 1 {
+            return Err(StateError::new("state_file_linked"));
+        }
+        Ok(file)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = path;
         Err(StateError::new("state_permissions_unsupported"))
     }
 }

@@ -244,6 +244,17 @@ pub(crate) fn open_regular(path: &Path, create_new: bool, create: bool) -> Resul
     Ok(file)
 }
 
+pub(crate) fn open_execution_file(path: &Path) -> Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .access_mode(FILE_GENERIC_READ | READ_CONTROL)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    verify_handle(&file, false)?;
+    Ok(file)
+}
+
 pub(crate) fn tighten_directory(path: &Path) -> Result<()> {
     let file = open_inspection(path, true)?;
     tighten_handle(&file, true)

@@ -36,14 +36,22 @@ impl UpdateStore {
         let db = StateDatabase::open(directory, Arc::new(SystemClock)).map_err(unavailable)?;
         db.write(|c|{c.execute_batch("CREATE TABLE IF NOT EXISTS update_trust(singleton INTEGER PRIMARY KEY CHECK(singleton=1),document TEXT NOT NULL CHECK(length(document)<=4096)) STRICT; CREATE TABLE IF NOT EXISTS update_stages(hash TEXT PRIMARY KEY,sequence INTEGER NOT NULL,version TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('staging','staged')),metadata BLOB NOT NULL CHECK(length(metadata)<=16384),signature BLOB NOT NULL CHECK(length(signature)<=256)) STRICT;")?;Ok(())}).map_err(unavailable)?;
         db.write(|c| { c.execute_batch("CREATE TABLE IF NOT EXISTS update_manifest_proofs(hash TEXT PRIMARY KEY,document BLOB NOT NULL CHECK(length(document)<=16384),signature BLOB NOT NULL CHECK(length(signature)<=256)) STRICT;")?; Ok(()) }).map_err(unavailable)?;
-        let store=Self { db };
+        let store = Self { db };
         store.startup_schema()?;
+        store.activation_schema()?;
         Ok(store)
     }
     pub(super) fn lock(&self) -> Result<File> {
         let directory = self.db.directory().artifacts().map_err(unavailable)?;
-        directory.try_lock_exclusive(&ArtifactName::new("update.lock").map_err(unavailable)?)
-            .map_err(|error| if error.code()=="state_artifact_busy" {"update_busy".to_owned()} else {unavailable(error)})
+        directory
+            .try_lock_exclusive(&ArtifactName::new("update.lock").map_err(unavailable)?)
+            .map_err(|error| {
+                if error.code() == "state_artifact_busy" {
+                    "update_busy".to_owned()
+                } else {
+                    unavailable(error)
+                }
+            })
     }
     /// Bootstrap from the exact already-installed manifest, not from network key material.
     pub fn initialize(
@@ -84,11 +92,16 @@ impl UpdateStore {
             return Ok(old);
         }
         let json = serde_json::to_string(&proposed).map_err(unavailable)?;
+        let (manifest_bytes, manifest_signature) = release.signed_manifest()?;
         self.db
             .write(|c| {
                 c.execute(
                     "INSERT INTO update_trust(singleton,document) VALUES(1,?)",
                     [json],
+                )?;
+                c.execute(
+                    "INSERT INTO update_manifest_proofs VALUES(?,?,?) ON CONFLICT(hash) DO NOTHING",
+                    params![installed_manifest, manifest_bytes, manifest_signature],
                 )?;
                 Ok(())
             })

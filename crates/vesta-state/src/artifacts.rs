@@ -133,7 +133,8 @@ impl ArtifactDirectory {
     /// artifact. Retain the returned handle for the entire worker lifetime.
     pub fn try_lock_exclusive(&self, name: &ArtifactName) -> Result<File> {
         let file = self.open_or_create(name)?;
-        fs2::FileExt::try_lock_exclusive(&file).map_err(|_| StateError::new("state_artifact_busy"))?;
+        fs2::FileExt::try_lock_exclusive(&file)
+            .map_err(|_| StateError::new("state_artifact_busy"))?;
         Ok(file)
     }
     fn verify(&self) -> Result<()> {
@@ -222,6 +223,17 @@ impl ArtifactDirectory {
                 .map_err(|_| StateError::new("state_artifact_linked")),
             Err(_) => Err(StateError::new("state_artifact_linked")),
         }
+    }
+
+    /// Hold executable bytes for a verified native handoff. Windows denies new
+    /// write/delete sharing while the handle lives. This is not signature proof.
+    pub fn open_execution(&self, name: &ArtifactName) -> Result<Option<File>> {
+        self.verify()?;
+        let path = self.entry(name);
+        if !require_regular_or_absent(&path)? {
+            return Ok(None);
+        }
+        crate::directory::open_execution_file(&path).map(Some)
     }
 
     /// Flush directory metadata after a synced create-new file, before recording its name.

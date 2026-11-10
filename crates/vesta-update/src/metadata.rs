@@ -49,6 +49,26 @@ pub struct Metadata {
     pub manifest_sha256: String,
     pub issued_at_ms: i64,
     pub expires_at_ms: i64,
+    /// Signed compatibility evidence. Legacy releases may still be checked and
+    /// staged, but cannot be activated without this attestation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<ActivationCompatibility>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ActivationCompatibility {
+    pub protocol: u16,
+    pub state_schema_min: u32,
+    pub state_schema_max: u32,
+    pub supervisor_ipc: u8,
+}
+impl ActivationCompatibility {
+    pub fn validates(&self) -> bool {
+        self.protocol > 0
+            && self.state_schema_min > 0
+            && self.state_schema_max >= self.state_schema_min
+            && self.supervisor_ipc > 0
+    }
 }
 pub(crate) fn valid_hash(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
@@ -85,6 +105,7 @@ pub(crate) fn verify(
         || m.sequence == 0
         || m.sequence > 9_007_199_254_740_991
         || !valid_hash(&m.manifest_sha256)
+        || m.activation.as_ref().is_some_and(|a| !a.validates())
         || m.version.is_empty()
         || m.version.len() > 64
         || !m

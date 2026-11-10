@@ -42,6 +42,7 @@ fn update_cli_bootstraps_exact_installed_release_and_stages_without_activation()
     )
     .unwrap();
     let m = vesta_update::Metadata {
+        activation: None,
         schema: 1,
         purpose: "vesta-update-release-v1".into(),
         channel: "stable".into(),
@@ -535,6 +536,7 @@ fn real_pending_host_verifies_tls_resumes_identity_and_rejects_wrong_identity() 
     )
     .unwrap();
     let metadata = vesta_update::Metadata {
+        activation: None,
         schema: 1,
         purpose: "vesta-update-release-v1".into(),
         channel: "stable".into(),
