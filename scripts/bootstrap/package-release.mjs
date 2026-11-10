@@ -3,6 +3,7 @@ import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
 import { chmod, copyFile, lstat, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
+import { readActivationCapabilities } from './activation-capabilities.mjs';
 import { releaseCommands } from './release-commands.mjs';
 import { targetFiles, verifyBinaries } from './verify-binaries.mjs';
 
@@ -69,8 +70,10 @@ try {
   const setupHash = files[0].sha256;
   const manifestHash = (await import('node:crypto')).createHash('sha256').update(manifestBytes).digest('hex');
   if(hasUpdates) {
+    const activation=readActivationCapabilities(names.map(name=>path.join(resolvedOutput,name)),options.target);
+    if(!activation)console.warn('Release has no compiled activation declaration; updates are staging-only.');
     const issued=Date.now();
-    const metadata={schema:1,purpose:'vesta-update-release-v1',channel:options.channel,sequence,version:options.version,target:options.target,manifest_sha256:manifestHash,issued_at_ms:issued,expires_at_ms:issued+7*24*60*60*1000};
+    const metadata={schema:1,purpose:'vesta-update-release-v1',channel:options.channel,sequence,version:options.version,target:options.target,manifest_sha256:manifestHash,issued_at_ms:issued,expires_at_ms:issued+7*24*60*60*1000,...(activation?{activation}:{})};
     const bytes=Buffer.from(JSON.stringify(metadata,null,2)+'\n');
     await writeFile(path.join(resolvedOutput,'update.json'),bytes,{flag:'wx'});
     await writeFile(path.join(resolvedOutput,'update.sig'),sign(null,bytes,privateKey).toString('base64')+'\n',{flag:'wx'});

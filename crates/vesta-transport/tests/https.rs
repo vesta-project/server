@@ -30,6 +30,72 @@ const CA: &[u8] = include_bytes!("fixtures/test-only-ca.pem");
 const PASSWORD: &str = "transport test password only";
 
 #[test]
+fn update_probe_is_pinned_loopback_tls_and_has_no_management_or_mutation_routes() {
+    let mut f = Fixture::new("minecraft", 8, 8192, 5);
+    let pin = f.transport.as_ref().unwrap().tls_fingerprint().unwrap();
+    let ListenerDescription::Tls(listener) = f.host().configuration().listener() else {
+        panic!("TLS fixture")
+    };
+    let listener = listener.on_ephemeral_port();
+    let data = || vesta_transport::LocalUpdateProbe {
+        protocol: 1,
+        nonce: "1".repeat(32),
+        manifest_sha256: "2".repeat(64),
+        tls_sha256: pin.clone(),
+        observation: vesta_control::onboarding::consumer::Observation {
+            installation_id: "3".repeat(32),
+            server_id: f.host().database().server_id().into(),
+            state_schema: vesta_state::CURRENT_SCHEMA_VERSION,
+            supervisor_ipc: 1,
+            configuration_sha256: "4".repeat(64),
+            launch_sha256: "5".repeat(64),
+        },
+    };
+    assert!(Transport::start_local_probe(data(), &listener, &"0".repeat(64)).is_err());
+    let transport = Transport::start_local_probe(data(), &listener, &pin).unwrap();
+    assert!(matches!(
+        f.transport
+            .take()
+            .unwrap()
+            .shutdown(Duration::from_secs(5))
+            .unwrap(),
+        TransportShutdown::Complete
+    ));
+    f.address = transport.local_addr();
+    f.transport = Some(transport);
+    let reply = f.request("GET", "/api/v3/update-health", b"", None);
+    assert_eq!(reply.status, 200);
+    assert_eq!(reply.json()["nonce"], "1".repeat(32));
+    assert_eq!(reply.json()["health"]["scope"]["tls_sha256"], pin);
+    for path in [
+        "/api/v3/setup/claim",
+        "/api/v3/setup/apply",
+        "/api/v3/manage/session",
+        "/api/v3/manage/lifecycle/start",
+    ] {
+        assert_eq!(f.request("POST", path, b"{}", None).status, 404);
+    }
+    assert_eq!(
+        f.request("GET", "/api/v3/update-health?unexpected=1", b"", None)
+            .status,
+        400
+    );
+    assert_eq!(
+        f.request("GET", "/api/v3/update-health", b"unexpected", None)
+            .status,
+        400
+    );
+    assert!(
+        f.host()
+            .runtime()
+            .game_snapshot()
+            .unwrap()
+            .generation
+            .is_none()
+    );
+}
+
+#[test]
 fn pending_provisioning_copy_plan_confirm_retry_and_local_handoff_use_real_tls() {
     use vesta_control::onboarding::{
         FirstServerSetup,

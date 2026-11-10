@@ -1,6 +1,6 @@
 # Coordinated Vesta updates
 
-Design checkpoint, 2026-11-10 Australia/Sydney. Activation is not implemented.
+Design checkpoint, 2026-11-10 Australia/Sydney. The stopped, single first-server executor is implemented; see signed-updates.md for its narrower current contract and current acceptance report for executed evidence. The broader multi-consumer rolling design below remains a proposal.
 
 ## Scope and decisions
 
@@ -44,8 +44,7 @@ and signed packages. Client onboarding remains a separate future task.
    stale database that revives revoked access. Incompatible committed schema writes
    require forward recovery or a specifically approved stopped migration plan.
 
-The current pure rollout preview encodes conservative outcomes for these cases
-but executes none of them. Empty or mixed consumer observations cannot claim
+The pure rollout preview encodes conservative outcomes for these cases; the native executor currently admits only a stopped, canonical first-server installation with exact compiled schema/IPC. It does not execute arbitrary preview DTOs. Empty or mixed consumer observations cannot claim
 activation support. A real executor must refresh every authority/identity fact.
 
 ## Discovery and automation follow-ups

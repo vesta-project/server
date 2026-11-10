@@ -86,11 +86,33 @@ pub async fn run(source: &Path, base: &Path, local_only: bool, allow_local: bool
         }
     };
     drop(_registry_admission);
+    let installation_consumer =
+        match vesta_control::onboarding::consumer::Consumer::from_configuration(&configuration) {
+            Ok(c) => c,
+            Err(code) => {
+                eprintln!("{code}");
+                return ExitCode::FAILURE;
+            }
+        };
+    // The installation lease covers direct CLI starts as well as setup's child.
+    // Reuse the existing session/orphan journal; a vanished lock is not stopped proof.
+    let _installation_lease = match installation_consumer
+        .as_ref()
+        .map(|c| c.acquire_lease())
+        .transpose()
+    {
+        Ok(l) => l,
+        Err(code) => {
+            eprintln!("{code}");
+            return ExitCode::FAILURE;
+        }
+    };
     let directories = [source.parent(), configuration.game().parent()]
         .into_iter()
         .flatten()
         .filter(|p| crate::servers::managed_lease(p).is_some())
-        .map(Path::to_owned);
+        .map(Path::to_owned)
+        .chain(installation_consumer.as_ref().map(|c| c.root().to_owned()));
     let supervised = configuration.supervision() == Supervision::Separate;
     let sessions = match crate::sessions::Sessions::begin(directories, supervised) {
         Ok(sessions) => sessions,
@@ -175,6 +197,36 @@ pub async fn run(source: &Path, base: &Path, local_only: bool, allow_local: bool
             return ExitCode::FAILURE;
         }
     };
+    if let Some(nonce) = std::env::var_os("VESTA_UPDATE_READINESS_NONCE") {
+        let ready = (|| {
+            let consumer = installation_consumer
+                .as_ref()
+                .ok_or("update_consumer_not_registered")?;
+            let nonce = nonce.to_str().ok_or("update_readiness_invalid")?;
+            let manifest = std::env::var("VESTA_UPDATE_MANIFEST_SHA256")
+                .map_err(|_| "update_readiness_invalid")?;
+            let pin = transport
+                .as_ref()
+                .ok_or("update_readiness_tls_unproven")?
+                .tls_fingerprint()
+                .map_err(|_| "update_readiness_tls_unproven")?;
+            consumer.publish_readiness(
+                host.configuration(),
+                host.database(),
+                &pin,
+                nonce,
+                &manifest,
+            )
+        })();
+        if let Err(code) = ready {
+            eprintln!("{code}");
+            let _ = control.shutdown().await;
+            sftp.shutdown().await;
+            shutdown_transport(transport.take());
+            shutdown_host(host, sessions);
+            return ExitCode::FAILURE;
+        }
+    }
     if let Some(t) = &transport {
         println!("serving; bound_address={}", t.local_addr());
     } else {

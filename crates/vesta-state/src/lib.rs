@@ -36,3 +36,17 @@ pub type Result<T> = std::result::Result<T, StateError>;
 pub mod latency_probe;
 
 pub const UPDATE_ACTIVATION_PROTOCOL: u16 = 1;
+
+/// Read-only compiled protocol declaration shared by release components. No state is opened.
+pub fn update_capabilities(supervisor_ipc: u8) -> serde_json::Value {
+    let target = if cfg!(all(windows, target_arch = "x86_64")) {
+        "windows-x86_64"
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        "linux-x86_64"
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        "linux-aarch64"
+    } else {
+        "unsupported"
+    };
+    serde_json::json!({"target":target,"activation":{"protocol":UPDATE_ACTIVATION_PROTOCOL,"state_schema_min":CURRENT_SCHEMA_VERSION,"state_schema_max":CURRENT_SCHEMA_VERSION,"supervisor_ipc":supervisor_ipc}})
+}

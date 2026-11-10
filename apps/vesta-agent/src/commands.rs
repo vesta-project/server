@@ -59,7 +59,7 @@ pub async fn run_with_format(command: Command, base: &Path, format: Format) -> E
         }
         Command::Version => {
             println!(
-                "vesta-agent {}; signed_release_packages_supported; self_update_activation_unavailable",
+                "vesta-agent {}; signed_release_packages_supported; self_update_os_local_fenced",
                 env!("CARGO_PKG_VERSION")
             );
             return ExitCode::SUCCESS;

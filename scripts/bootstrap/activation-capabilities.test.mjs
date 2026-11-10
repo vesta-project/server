@@ -1,0 +1,7 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {readActivationCapabilities} from './activation-capabilities.mjs';
+const target='windows-x86_64';const activation={protocol:1,state_schema_min:31,state_schema_max:31,supervisor_ipc:1};
+const ok=()=>({status:0,stdout:JSON.stringify({target,activation})});
+test('actual components must all report the identical compiled compatibility',()=>{let calls=0;assert.deepEqual(readActivationCapabilities(['a','b','c','d'],target,(file,args,options)=>{calls++;assert.deepEqual(args,['update','capabilities']);assert.equal(options.maxBuffer,8192);assert.equal(options.timeout,20000);return ok();}),activation);assert.equal(calls,4);});
+test('legacy packages remain staging-only and partial or inconsistent declarations refuse activation',()=>{assert.equal(readActivationCapabilities(['a','b'],target,()=>({status:2})),null);assert.throws(()=>readActivationCapabilities(['a','b'],target,file=>file==='a'?ok():{status:2}));assert.throws(()=>readActivationCapabilities(['a','b'],target,file=>file==='a'?ok():{status:0,stdout:JSON.stringify({target,activation:{...activation,supervisor_ipc:2}})}));for(const output of ['{}','secret-invalid-json',JSON.stringify({target:'linux-x86_64',activation}),JSON.stringify({target,activation:{...activation,state_schema_max:32}})])assert.throws(()=>readActivationCapabilities(['a'],target,()=>({status:0,stdout:output})));});

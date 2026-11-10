@@ -21,6 +21,41 @@ mod supervision;
 mod uninstall;
 mod uninstall_fs;
 fn main() -> ExitCode {
+    if std::env::args_os().skip(1).eq([
+        std::ffi::OsString::from("update"),
+        std::ffi::OsString::from("capabilities"),
+    ]) {
+        println!(
+            "{}",
+            vesta_state::update_capabilities(vesta_supervisor::wire::VERSION)
+        );
+        return ExitCode::SUCCESS;
+    }
+    let dispatch_args: Vec<_> = std::env::args_os().skip(1).collect();
+    let name = if std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_stem().map(|n| n == "vesta"))
+        .unwrap_or(false)
+    {
+        "vesta"
+    } else {
+        "vesta-agent"
+    };
+    match vesta_setup::updates::dispatch_active(name, &dispatch_args) {
+        Ok(Some(status)) => {
+            return ExitCode::from(
+                status
+                    .code()
+                    .and_then(|c| u8::try_from(c).ok())
+                    .unwrap_or(1),
+            );
+        }
+        Err(code) => {
+            eprintln!("{code}");
+            return ExitCode::FAILURE;
+        }
+        Ok(None) => (),
+    }
     let command = match cli::parse(std::env::args_os().skip(1)) {
         Ok(command) => command,
         Err(()) => {

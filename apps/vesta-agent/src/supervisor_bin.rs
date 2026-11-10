@@ -22,6 +22,16 @@ fn arguments() -> Option<(PathBuf, PathBuf)> {
 }
 
 fn main() -> ExitCode {
+    if std::env::args_os().skip(1).eq([
+        std::ffi::OsString::from("update"),
+        std::ffi::OsString::from("capabilities"),
+    ]) {
+        println!(
+            "{}",
+            vesta_state::update_capabilities(vesta_supervisor::wire::VERSION)
+        );
+        return ExitCode::SUCCESS;
+    }
     let Some((host, base)) = arguments() else {
         eprintln!("{USAGE}");
         return ExitCode::from(2);

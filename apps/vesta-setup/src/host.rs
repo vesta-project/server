@@ -82,6 +82,9 @@ pub(crate) fn acquire_host_lease(root: &Path) -> Result<HostLease> {
     })
 }
 pub fn serve(root: &Path) -> Result<()> {
+    if crate::activation::delegate_host(root)?.is_some() {
+        return Ok(());
+    }
     engine::guard(&root.join("private/uninstall-pending"))?;
     if root.join("private/uninstall-pending").exists() {
         return Err("setup_uninstall_pending".into());
@@ -449,6 +452,9 @@ pub fn activate(root: &Path) -> Result<()> {
     )
 }
 fn run_agent(root: &Path, lease: &HostLease) -> Result<()> {
+    if crate::activation::run_registered(root, lease)?.is_some() {
+        return Ok(());
+    }
     let agent = root.join("bin").join(if cfg!(windows) {
         "vesta-agent.exe"
     } else {

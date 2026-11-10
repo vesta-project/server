@@ -3531,6 +3531,7 @@ dependencies = [
  "vesta-state",
  "vesta-transport",
  "vesta-update",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

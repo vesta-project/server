@@ -11,6 +11,8 @@ use ring::{
 };
 use std::sync::Arc;
 use vesta_state::{StateDirectory, SystemClock};
+#[path = "consumer_tests.rs"]
+mod consumer_tests;
 
 const INSTALLATION: &str = "0123456789abcdef0123456789abcdef";
 struct Fixture {

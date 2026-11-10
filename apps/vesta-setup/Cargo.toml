@@ -26,6 +26,9 @@ vesta-control = { path = "../../crates/vesta-control" }
 vesta-transport = { path = "../../crates/vesta-transport" }
 vesta-update = { path = "../../crates/vesta-update" }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 

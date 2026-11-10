@@ -14,8 +14,14 @@ use vesta_state::{
     audit::{AuditActor, AuditLog, AuditRecord},
 };
 
+pub mod consumer;
 pub mod provisioning;
 
+/// Compiled IPC identity for signed updater capabilities. No host observation,
+/// database opening, or native/runtime effects.
+pub fn compiled_supervisor_ipc() -> u8 {
+    vesta_supervisor::wire::VERSION
+}
 
 type Result<T> = std::result::Result<T, PermissionError>;
 

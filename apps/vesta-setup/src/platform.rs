@@ -1,5 +1,9 @@
 //! Small, least-privilege adapters for launching the Vesta host at user login.
 
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod windows_detach;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
@@ -90,7 +94,10 @@ pub fn disable_startup(root: &Path, executable: &Path, id: &str) -> Result<(), S
 /// Launches `executable host --root root` as a background, non-window process.
 pub fn start_host(root: &Path, executable: &Path) -> Result<(), String> {
     let (root, executable) = validate_installation(root, executable)?;
-    let mut command = Command::new(&executable);
+    start_verified_host(&root, Command::new(&executable))
+}
+/// Native updater supplies a command bound to retained signed payload handles.
+pub(crate) fn start_verified_host(root: &Path, mut command: Command) -> Result<(), String> {
     command
         .arg("host")
         .arg("--root")
@@ -101,18 +108,21 @@ pub fn start_host(root: &Path, executable: &Path) -> Result<(), String> {
         .stderr(Stdio::null());
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x00000008 | 0x08000000); // DETACHED_PROCESS | CREATE_NO_WINDOW
+        // No inherited handles, including redirected CLI capture pipes.
+        windows_detach::spawn(&command, root)
     }
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        command
+            .spawn()
+            .map(|_| ())
+            .map_err(|_| "could not start host".into())
     }
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|_| "could not start host".into())
 }
 
 fn startup_name(id: &str) -> Result<String, String> {

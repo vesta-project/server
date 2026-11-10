@@ -1,7 +1,7 @@
 use std::{path::PathBuf, process::ExitCode};
 use vesta_setup::{engine, host, release::Source, ui, visual_states, wizard};
 
-const HELP: &str = "Vesta host setup\n\n  vesta-setup --bundle-url <https-directory> --manifest-sha256 <hex> --release-key <hex>\n  vesta-setup --bundle-dir <directory> --manifest-sha256 <hex> --release-key <hex>\n              [--asset-prefix <target->] [--answers <json-file> --yes] [--no-color] [--ascii]\n  vesta-setup preview [--state <name> | --export <new-directory>] [--no-color] [--ascii]\n  vesta-setup <host|status|stop|activate|setup-code> --root <installation-directory>\n  vesta-setup configure-server --root <installation> --java <absolute-java-path>\n              [--adoption-jar <relative-jar> OR --adoption-argfile <relative-args>] --copied-export\n  vesta-setup update <init|status|check|stage|verify|configure> --root <installation-directory>\n  vesta-setup uninstall --root <installation-directory> [--servers-root <registry>] [--plan]\n  vesta-setup uninstall --server <name|id> --servers-root <registry> [--plan]\n              [--bundle-url <https-directory> --manifest-sha256 <hex> --release-key <hex>\n               --asset-prefix <target->]\n\nInteractive Vesta host setup. Default HTTPS port: 8443.\nUninstall requires interactive confirmation; --plan only previews selected paths.\n";
+const HELP: &str = "Vesta host setup\n\n  vesta-setup --bundle-url <https-directory> --manifest-sha256 <hex> --release-key <hex>\n  vesta-setup --bundle-dir <directory> --manifest-sha256 <hex> --release-key <hex>\n              [--asset-prefix <target->] [--answers <json-file> --yes] [--no-color] [--ascii]\n  vesta-setup preview [--state <name> | --export <new-directory>] [--no-color] [--ascii]\n  vesta-setup <host|status|stop|activate|setup-code> --root <installation-directory>\n  vesta-setup configure-server --root <installation> --java <absolute-java-path>\n              [--adoption-jar <relative-jar> OR --adoption-argfile <relative-args>] --copied-export\n  vesta-setup update <init|status|check|stage|verify|configure|activate|recover> --root <installation-directory>\n  vesta-setup uninstall --root <installation-directory> [--servers-root <registry>] [--plan]\n  vesta-setup uninstall --server <name|id> --servers-root <registry> [--plan]\n              [--bundle-url <https-directory> --manifest-sha256 <hex> --release-key <hex>\n               --asset-prefix <target->]\n\nInteractive Vesta host setup. Default HTTPS port: 8443.\nUninstall requires interactive confirmation; --plan only previews selected paths.\n";
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -324,6 +324,22 @@ fn uninstall(
 }
 
 fn main() -> ExitCode {
+    let dispatch_args: Vec<_> = std::env::args_os().skip(1).collect();
+    match vesta_setup::updates::dispatch_active("vesta-setup", &dispatch_args) {
+        Ok(Some(status)) => {
+            return ExitCode::from(
+                status
+                    .code()
+                    .and_then(|c| u8::try_from(c).ok())
+                    .unwrap_or(1),
+            );
+        }
+        Err(code) => {
+            eprintln!("{code}");
+            return ExitCode::FAILURE;
+        }
+        Ok(None) => (),
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) if error == "setup_uninstall_handed_off" => ExitCode::from(75),

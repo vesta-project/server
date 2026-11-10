@@ -1047,4 +1047,5 @@ fn paths_use_native_separators_without_reinterpreting_unix_names() {
         .is_err()
     );
 }
-
+#[path = "support/native_activation.rs"]
+mod native_activation;

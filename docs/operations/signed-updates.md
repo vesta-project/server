@@ -1,9 +1,6 @@
-# Signed update foundations
+# Signed Vesta updates
 
-The updater currently verifies trust/metadata and stages packages. It does **not**
-replace running executables, restart agents/supervisors, migrate active state,
-activate, roll back installed Vesta binaries or expose remote update API routes.
-`vesta update` still refuses replacement and points to the staging commands.
+Staging/checking remain independent from activation. OS-local activation is now implemented for the exact account-onboarded first-server consumer with clean stopped runtime/supervisor state and matching compiled schema/IPC. It never overwrites running binaries or grants a remote server Owner installation-wide update authority. Native Linux activation remains unverified; multi-server rolling activation and schema migration remain unsupported.
 
 ## Keys and initial trust
 
@@ -96,9 +93,7 @@ Candidates live beside update state, never in the active installation's `bin`.
 Interrupted stages remain `staging`; retrying the same signed release checks
 completed files and resumes missing artifacts. Tampered existing files refuse
 instead of being overwritten. Status is the last recorded outcome, not fresh
-verification of all bytes. An eventual activator must reverify signatures, expiry,
-all staged hashes and actor approval, then coordinate a durable process handoff
-and health-check/rollback. It must never execute based solely on `phase=staged`.
+verification of all bytes. The native activator reverifies signatures, expiry, staged hashes and stopped ownership at execution. It never executes based solely on `phase=staged`.
 
 These commands currently use OS-local authority. The check/stage operations do not
 stop Minecraft or the agent and do not require a launcher connection. No live
@@ -110,7 +105,7 @@ Linux installation, remote activation or release publication is claimed yet.
 
 Staging now retains exact signed manifest bytes/signature in the protected update database. Older staged rows lacking that evidence refuse verification until explicitly re-staged from their valid signed source; the updater does not silently trust filenames or reconstruct unsigned evidence. A superseded candidate cannot bypass the accepted sequence floor. Same-size tampering, missing or linked files, modified proof and expired metadata refuse. Verify shares the installation/staging locks; active binaries remain untouched.
 
-This observation is point-in-time diagnostics, not a portable activation authorisation. Future activation must revalidate authority, metadata and opened binaries at execution, preserve process ownership, and apply a coordinated health/recovery contract. This command does not implement self-update activation or automatic rollout.
+This observation is point-in-time diagnostics, not a portable activation authorisation. Future activation must revalidate authority, metadata and opened binaries at execution, preserve process ownership, and apply a coordinated health/recovery contract. Verification itself does not activate or restart; use the separate fenced activation command below.
 
 ## Opt-in startup discovery
 
@@ -118,8 +113,7 @@ The public `vesta update <action> ...` entry point now calls the exact same loca
 implementation as `vesta-setup update <action> ...`, including receipt validation,
 installation lock and all trust checks. `vesta-agent` remains an executable alias
 because existing startup records and signed artifact inventories still name it.
-No shell, implicit root selection or activation bypass is introduced. Bare
-`vesta update` continues to refuse activation and points to the supported commands.
+No shell or activation bypass is introduced. Stable installed CLI entrypoints dispatch only to the exact committed healthy payload. Bare `vesta update` prints the supported explicit actions.
 
 After exact-installed-release trust bootstrap, an OS-local operator can configure
 the installed setup host's next-start check:
@@ -162,3 +156,27 @@ that block or defer it. It consumes native observations, does not discover
 consumers, and always reports `activation_supported: false`. Its output cannot
 authorize execution. The installation registry, signed compatibility declaration,
 stable dispatcher and mutation-fenced health trial remain activation prerequisites.
+
+## Stopped activation and exact recovery
+
+```text
+vesta-setup update activate --root <installation> --manifest-sha256 <staged-hash> --idempotency-key <operator-intent> --restart on
+vesta-setup update activate --root <installation> --manifest-sha256 <staged-hash> --idempotency-key <operator-intent> --restart off
+vesta-setup update recover --root <installation> --activation-id <intent-id>
+```
+
+Stop the owned Vesta agent cleanly with its existing local shutdown control first. Unknown/live game generations, unclean session markers, unresolved writes/jobs/recovery, open database WAL and mismatched identity/configuration refuse activation; no process is killed to manufacture stopped proof. Legacy configurations without the canonical installation consumer do not gain implicit adoption/update authority. The exact original signed installed bundle proof must exist (or be explicitly supplied from the original pinned source) before fallback registration.
+
+Packaging probes `update capabilities` on all four actual copied components using bounded local child commands. Only matching target/protocol/exact schema/supervisor IPC declarations become the signed optional `activation` metadata. All-legacy packages are staging-only; mixed/malformed declarations refuse packaging. The native trial verifies these declarations again and runs the held signed setup component?s restricted loopback HTTPS probe. It cannot open/migrate the game database, mutate management state or start Minecraft.
+
+Activation retains verified executable handles and records trial -> restart_pending before normal execution. `--restart off` leaves that durable intent for the next `host --root`; `on` starts the verified bootstrap. Original installation binaries stay immutable; the selected setup component runs the selected agent/supervisor/CLI from its versioned payload. New normal agent readiness must bind the actual child PID, signed payload, server/TLS identity, schema/IPC and unchanged configuration/launch. A pinned real status request is also required. Only then does the transaction mark healthy and select the candidate.
+
+A failed pre-readiness child may recover only after all actual stopped fences are reacquired. Recovery revalidates the exact prior committed signed build and health, never downloads an arbitrary older release, lowers the accepted sequence, restores a stale database or overwrites a world/config. Repeated same-intent submission/recovery is idempotent. No whole-pack rollback, accepted-job cancellation, generic process killing or post-health crash-loop rollback is promised. A live child with unconfirmed readiness blocks fallback; stop/recovery must establish ownership first.
+
+The current compatibility boundary is intentionally exact compiled schema and supervisor IPC: a migration-capable future release requires a separately approved migration/recovery contract. Signed releases lacking activation declarations cannot be activated. Background startup discovery observes committed healthy selection, so the immutable original receipt does not falsely report an already-active release as available. Automatic channels/catalog discovery, periodic apply, key rotation and machine-wide multi-consumer updates remain separate work.
+
+### Windows detached output capture
+
+The fixed Windows bootstrap uses an explicit verified application path and CreateProcessW with handle inheritance disabled. It preserves the existing user, environment and job ownership; it does not overwrite executables, change tokens, break away from a job or launch a shell. Native UTF16 argument quoting preserves spaces, quotes, trailing backslashes and Unicode. Parent process/thread handles are closed without terminating the detached child.
+
+Actual piped CLI capture is covered by the native signed restart-on/recovery acceptance test: output completes within its existing35s bound while the correct recovered service remains live and authenticates on its pinned TLS/server identity. The earlier file-output workaround is removed; failure cleanup gracefully stops only the owned test fixture. No runtime/game process killing or timeout weakening is used. Native Linux activation remains separately unverified.

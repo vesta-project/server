@@ -8,7 +8,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-const PENDING: &str = "operator-session-pending";
+const PENDING: &str = vesta_control::onboarding::consumer::SESSION_PENDING;
 const MARKER: &[u8] = b"vesta-owned-agent-session-v1: shutdown-not-proven\n";
 const SUPERVISED_MARKER: &[u8] = b"vesta-owned-agent-session-v1: supervised-agent-only\n";
 pub fn require_stopped(directory: &Path) -> Result<()> {
