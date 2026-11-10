@@ -2,47 +2,107 @@ use super::*;
 #[test]
 fn performance_capture_endpoint_is_bounded_private_and_never_an_incremental_or_profile_request() {
     use vesta_control::identity::BuiltinRole;
-    let f=Fixture::new("minecraft",8,4096,5);
-    let (device,key)=enroll_management(&f,BuiltinRole::Viewer);
-    let session=management_session(&f,&device,&key);
-    let deadline=std::time::Instant::now()+std::time::Duration::from_secs(10);
-    let at=loop {
-        let current=f.request("GET","/api/v3/manage/metrics/current",b"",Some(&session));assert_eq!(current.status,200);
-        if let Some(at)=current.json()["data"]["sample"]["sampled_at"].as_i64(){break at;}
-        assert!(std::time::Instant::now()<deadline);std::thread::sleep(std::time::Duration::from_millis(20));
+    let f = Fixture::new("minecraft", 8, 4096, 5);
+    let (device, key) = enroll_management(&f, BuiltinRole::Viewer);
+    let session = management_session(&f, &device, &key);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let at = loop {
+        let current = f.request("GET", "/api/v3/manage/metrics/current", b"", Some(&session));
+        assert_eq!(current.status, 200);
+        if let Some(at) = current.json()["data"]["sample"]["sampled_at"].as_i64() {
+            break at;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(20));
     };
-    let request_route=format!("/api/v3/manage/metrics/capture?series=tps,game_memory_bytes&from={at}&to={at}&resolution=raw&max_points=10");
-    let route=request_route.as_str();
-    management_reply_error(&f.request("GET",route,b"",None),401,"management_session_invalid");
-    let capture=f.request("GET",route,b"",Some(&session));assert_eq!(capture.status,200);
-    assert_eq!(capture.headers["content-disposition"],"attachment; filename=\"vesta-performance-capture.json\"");
-    assert_eq!(capture.headers["cache-control"],"no-store");
-    let data=capture.json()["data"].clone();
-    assert_eq!(data["schema"],1);assert_eq!(data["source"],"retained_telemetry");assert_eq!(data["profiler_started"],false);
-    assert_eq!(data["server_id"],f.host().database().server_id());
-    assert_eq!(data["current"]["status"]["revision"],data["history"]["cursor"]);
-    assert_eq!(data["request"]["series"],serde_json::json!(["tps","game_memory_bytes"]));
-    assert_eq!(data["history"]["timestamps"],serde_json::json!([at]));
+    let request_route = format!(
+        "/api/v3/manage/metrics/capture?series=tps,game_memory_bytes&from={at}&to={at}&resolution=raw&max_points=10"
+    );
+    let route = request_route.as_str();
+    management_reply_error(
+        &f.request("GET", route, b"", None),
+        401,
+        "management_session_invalid",
+    );
+    let capture = f.request("GET", route, b"", Some(&session));
+    assert_eq!(capture.status, 200);
+    assert_eq!(
+        capture.headers["content-disposition"],
+        "attachment; filename=\"vesta-performance-capture.json\""
+    );
+    assert_eq!(capture.headers["cache-control"], "no-store");
+    let data = capture.json()["data"].clone();
+    assert_eq!(data["schema"], 1);
+    assert_eq!(data["source"], "retained_telemetry");
+    assert_eq!(data["profiler_started"], false);
+    assert_eq!(data["server_id"], f.host().database().server_id());
+    assert_eq!(
+        data["current"]["status"]["revision"],
+        data["history"]["cursor"]
+    );
+    assert_eq!(
+        data["request"]["series"],
+        serde_json::json!(["tps", "game_memory_bytes"])
+    );
+    assert_eq!(data["history"]["timestamps"], serde_json::json!([at]));
     assert!(data["history"]["series"]["tps"]["avg"][0].is_null());
-    assert_eq!(data["history"]["series"]["tps"]["unknown_count"][0],1);
-    assert_eq!(data["history_point_limit_reached"],false);
-    let limited=f.request("GET",&request_route.replace("max_points=10","max_points=1"),b"",Some(&session));
-    assert_eq!(limited.status,200);assert_eq!(limited.json()["data"]["history_point_limit_reached"],true);
-    for query in ["series=tps&from=0&to=1&after=0","series=tps&from=0&to=1&max_points=2001","series=tps&from=0&to=1&command=spark","series=tps&from=0&to=1&upload=true"] {
-        management_reply_error(&f.request("GET",&format!("/api/v3/manage/metrics/capture?{query}"),b"",Some(&session)),400,"invalid_request");
+    assert_eq!(data["history"]["series"]["tps"]["unknown_count"][0], 1);
+    assert_eq!(data["history_point_limit_reached"], false);
+    let limited = f.request(
+        "GET",
+        &request_route.replace("max_points=10", "max_points=1"),
+        b"",
+        Some(&session),
+    );
+    assert_eq!(limited.status, 200);
+    assert_eq!(limited.json()["data"]["history_point_limit_reached"], true);
+    for query in [
+        "series=tps&from=0&to=1&after=0",
+        "series=tps&from=0&to=1&max_points=2001",
+        "series=tps&from=0&to=1&command=spark",
+        "series=tps&from=0&to=1&upload=true",
+    ] {
+        management_reply_error(
+            &f.request(
+                "GET",
+                &format!("/api/v3/manage/metrics/capture?{query}"),
+                b"",
+                Some(&session),
+            ),
+            400,
+            "invalid_request",
+        );
     }
-    management_reply_error(&metrics_raw(&f,route,Some(&session),Some("\"capture\"")),400,"invalid_request");
+    management_reply_error(
+        &metrics_raw(&f, route, Some(&session), Some("\"capture\"")),
+        400,
+        "invalid_request",
+    );
     f.host().database().write(|c|{
         c.execute("INSERT INTO metrics_activity(id,at,generation,name,kind,bytes) VALUES(2000001,0,'fixture','PrivateCapturePlayer','join',100)",[])?;
         c.execute("UPDATE metrics_status SET storage_bytes=storage_bytes+100 WHERE singleton=1",[])?;
         Ok(())
     }).unwrap();
-    f.request("GET",route,b"",Some(&session)).hides("PrivateCapturePlayer");
-    let (moderator_device,moderator_key)=enroll_management(&f,BuiltinRole::Moderator);
-    let moderator=management_session(&f,&moderator_device,&moderator_key);
-    management_reply_error(&f.request("GET",route,b"",Some(&moderator)),403,"management_forbidden");
-    f.host().database().write(|c|{c.execute("UPDATE devices SET revoked_at=? WHERE id=?",rusqlite::params![f.host().database().clock().millis(),device])?;Ok(())}).unwrap();
-    assert_ne!(f.request("GET",route,b"",Some(&session)).status,200);
+    f.request("GET", route, b"", Some(&session))
+        .hides("PrivateCapturePlayer");
+    let (moderator_device, moderator_key) = enroll_management(&f, BuiltinRole::Moderator);
+    let moderator = management_session(&f, &moderator_device, &moderator_key);
+    management_reply_error(
+        &f.request("GET", route, b"", Some(&moderator)),
+        403,
+        "management_forbidden",
+    );
+    f.host()
+        .database()
+        .write(|c| {
+            c.execute(
+                "UPDATE devices SET revoked_at=? WHERE id=?",
+                rusqlite::params![f.host().database().clock().millis(), device],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_ne!(f.request("GET", route, b"", Some(&session)).status, 200);
 }
 
 #[test]

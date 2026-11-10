@@ -277,17 +277,37 @@ impl ManagementAccess {
         )
     }
     pub fn enroll_minecraft_with_invitation(
-        &self, profile: VerifiedMinecraftProfile, device_name: &str,
-        public_key: &str, invitation_code: Option<&str>,
+        &self,
+        profile: VerifiedMinecraftProfile,
+        device_name: &str,
+        public_key: &str,
+        invitation_code: Option<&str>,
     ) -> Result<Enrolled> {
-        self.enroll_profile(profile, device_name, public_key, None, MinecraftPurpose::ManagementEnrollment, invitation_code)
+        self.enroll_profile(
+            profile,
+            device_name,
+            public_key,
+            None,
+            MinecraftPurpose::ManagementEnrollment,
+            invitation_code,
+        )
     }
     /// Verified account enrollment and optional invitation redemption are atomic.
     pub fn enroll_pack_profile_with_invitation(
-        &self, profile: VerifiedMinecraftProfile, device_name: &str,
-        public_key: &str, invitation_code: Option<&str>,
+        &self,
+        profile: VerifiedMinecraftProfile,
+        device_name: &str,
+        public_key: &str,
+        invitation_code: Option<&str>,
     ) -> Result<Enrolled> {
-        self.enroll_profile(profile, device_name, public_key, None, MinecraftPurpose::Pack, invitation_code)
+        self.enroll_profile(
+            profile,
+            device_name,
+            public_key,
+            None,
+            MinecraftPurpose::Pack,
+            invitation_code,
+        )
     }
     fn enroll_profile(
         &self,
@@ -616,7 +636,14 @@ impl ManagementAccess {
                 &public,
             )?
         } else {
-            self.enroll_minecraft(VerifiedMinecraftProfile::for_test_enrollment(server, MinecraftUuid::parse(&uuid::Uuid::new_v4().to_string()).unwrap()), "Fixture", &public)?
+            self.enroll_minecraft(
+                VerifiedMinecraftProfile::for_test_enrollment(
+                    server,
+                    MinecraftUuid::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
+                ),
+                "Fixture",
+                &public,
+            )?
         };
         let nonce = self.challenge(&device.device_id)?;
         let signature = URL_SAFE_NO_PAD.encode(

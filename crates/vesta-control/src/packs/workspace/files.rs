@@ -66,7 +66,7 @@ fn path(root: &str, name: &str) -> Result<()> {
         .map_err(super::super::PackError::from)?;
     // Apply precisely the existing game-file allowlist, including root option files.
     let entry = PackEntry {
-            artifact_sha512: None,
+        artifact_sha512: None,
         id: "validation".into(),
         kind: super::import::kind(name)?,
         path: name.into(),
@@ -278,7 +278,7 @@ impl PackWorkspace {
                     .entries
                     .retain(|e| !e.path.eq_ignore_ascii_case(&file.path));
                 result.entries.push(PackEntry {
-            artifact_sha512: None,
+                    artifact_sha512: None,
                     id: format!("override-{}", result.entries.len()),
                     kind: super::import::kind(&file.path)?,
                     path: file.path.clone(),

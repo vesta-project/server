@@ -259,9 +259,11 @@ fn capability(route: Route<'_>, method: &Method) -> Capability {
         Route::Policy if *method == Method::GET => Capability::BackupsView,
         Route::Policy | Route::PolicyReset => Capability::BackupsConfigure,
         Route::RecoveryExport => Capability::RecoveryExport,
-        Route::Notifications | Route::Delivery | Route::Unread | Route::Read | Route::Acknowledge => {
-            Capability::NotificationsView
-        }
+        Route::Notifications
+        | Route::Delivery
+        | Route::Unread
+        | Route::Read
+        | Route::Acknowledge => Capability::NotificationsView,
         Route::Backups
         | Route::BackupJob(_)
         | Route::Snapshots
@@ -732,7 +734,10 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             Ok(revision) => ok(json!({"revision":revision})),
             Err(BackupError::PolicyConflict) => {
                 let current = policy_json(&backups.policy());
-                envelope(StatusCode::CONFLICT, json!({"error":{"code":"conflict","reason":"backup_policy_revision_conflict","current":current}}))
+                envelope(
+                    StatusCode::CONFLICT,
+                    json!({"error":{"code":"conflict","reason":"backup_policy_revision_conflict","current":current}}),
+                )
             }
             Err(e) => backup_failure(e),
         };
@@ -906,7 +911,9 @@ fn get(
         Route::Unread if query.is_none() => automation
             .unread_count(subject)
             .map(|count| json!({"unread_count":count})),
-        Route::Delivery if query.is_none() => automation.external_delivery_status(subject).map(|s|json!({"sinks":s})),
+        Route::Delivery if query.is_none() => automation
+            .external_delivery_status(subject)
+            .map(|s| json!({"sinks":s})),
         Route::Backups
         | Route::BackupJob(_)
         | Route::Snapshots

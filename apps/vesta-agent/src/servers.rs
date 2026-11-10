@@ -15,8 +15,8 @@ use vesta_server_install::{
     SilentProgressReporter, TransportConfig,
 };
 use vesta_state::{
-    audit::{AuditActor, AuditLog, AuditRecord},
     StateDatabase, StateDirectory, SystemClock,
+    audit::{AuditActor, AuditLog, AuditRecord},
 };
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -276,7 +276,9 @@ pub async fn create(options: Create, base: &Path) -> Result<()> {
     if startup == crate::cli::AgentStartupChoice::Boot {
         crate::agent_startup::enable(&plan.destination())?;
         crate::agent_startup::start_registered(&plan.destination())?;
-        println!("Agent service start requested; configured for machine boot. Use status to check readiness. Minecraft remains stopped.");
+        println!(
+            "Agent service start requested; configured for machine boot. Use status to check readiness. Minecraft remains stopped."
+        );
     } else {
         println!(
             "Agent startup: manual. Start it with vesta agent serve <host_config> --allow-local. Minecraft remains stopped."

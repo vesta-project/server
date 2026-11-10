@@ -258,10 +258,10 @@ where
     F: FnOnce(Arc<tls::Material>, &TlsListener) -> Arc<A> + Send + 'static,
 {
     let tls = Arc::new(tls::Material::new(listener)?);
-    if let Some(expected) = expected {
-        if tls.fingerprint()?.as_str() != expected {
-            return Err(TransportError::Runtime);
-        }
+    if let Some(expected) = expected
+        && tls.fingerprint()?.as_str() != expected
+    {
+        return Err(TransportError::Runtime);
     }
     let socket = std::net::TcpListener::bind((listener.bind(), listener.port()))
         .map_err(|_| TransportError::Bind)?;

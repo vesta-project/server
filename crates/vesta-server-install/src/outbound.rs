@@ -1,6 +1,6 @@
 //! Small outbound JSON delivery using the installer's hardened public transport.
 //! The URL is a secret-bearing local configuration value, never logged here.
-use crate::{Limits, Result, TransportConfig, transfer::Transport};
+use crate::{transfer::Transport, Limits, Result, TransportConfig};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Response {

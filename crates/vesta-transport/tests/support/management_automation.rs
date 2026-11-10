@@ -368,12 +368,46 @@ fn workflow_tls_owner_crud_manual_run_and_idempotent_replay() {
 fn inbox_tls_moderator_scope_shared_principal_and_viewer_refusal() {
     let f = Fixture::new("minecraft", 8, 16384, 5);
     let (principal, _, moderator, _) = actor(&f, BuiltinRole::Moderator);
-    management_reply_error(&send(&f,"GET","notifications/delivery",b"",None,None),401,"management_session_invalid");
-    let delivery=send(&f,"GET","notifications/delivery",b"",Some(&moderator),None);
-    assert_eq!(delivery.status,200);assert_eq!(delivery.json()["data"]["sinks"],serde_json::json!([]));
-    let (_,_,viewer,_)=actor(&f,BuiltinRole::Viewer);
-    management_reply_error(&send(&f,"GET","notifications/delivery",b"",Some(&viewer),None),403,"management_forbidden");
-    management_reply_error(&send(&f,"GET","notifications/delivery?extra=1",b"",Some(&moderator),None),400,"invalid_request");
+    management_reply_error(
+        &send(&f, "GET", "notifications/delivery", b"", None, None),
+        401,
+        "management_session_invalid",
+    );
+    let delivery = send(
+        &f,
+        "GET",
+        "notifications/delivery",
+        b"",
+        Some(&moderator),
+        None,
+    );
+    assert_eq!(delivery.status, 200);
+    assert_eq!(delivery.json()["data"]["sinks"], serde_json::json!([]));
+    let (_, _, viewer, _) = actor(&f, BuiltinRole::Viewer);
+    management_reply_error(
+        &send(
+            &f,
+            "GET",
+            "notifications/delivery",
+            b"",
+            Some(&viewer),
+            None,
+        ),
+        403,
+        "management_forbidden",
+    );
+    management_reply_error(
+        &send(
+            &f,
+            "GET",
+            "notifications/delivery?extra=1",
+            b"",
+            Some(&moderator),
+            None,
+        ),
+        400,
+        "invalid_request",
+    );
     let (_, device, _, shared_key) = actor(&f, BuiltinRole::Moderator);
     // A second authenticated device is attached to the first principal; inbox state
     // is principal-scoped, while both HTTP credentials remain real signed sessions.

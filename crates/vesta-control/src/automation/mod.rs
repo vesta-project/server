@@ -28,10 +28,10 @@
 mod cron;
 mod inbox;
 pub(crate) use inbox::insert as insert_notification;
+pub(crate) mod joins;
 mod model;
 mod receipt;
 mod service;
-pub(crate) mod joins;
 
 pub use cron::Cron;
 pub use inbox::{Notification, NotificationPage};

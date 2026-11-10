@@ -9,9 +9,9 @@ mod install;
 mod layout;
 mod receipt;
 pub(crate) use install::build;
-pub use receipt::BuiltReceipt;
 pub(crate) use receipt::output_warnings;
 pub(crate) use receipt::verify;
+pub use receipt::BuiltReceipt;
 
 // Audited upstream runner. Updating it requires reviewing its source and pin.
 const TOOL_URL: &str =

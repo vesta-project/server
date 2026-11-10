@@ -74,7 +74,9 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
-    let workspace = match PackWorkspace::open(host.database()).map(|workspace| workspace.with_download_settings(host.configuration().downloads())) {
+    let workspace = match PackWorkspace::open(host.database())
+        .map(|workspace| workspace.with_download_settings(host.configuration().downloads()))
+    {
         Ok(w) => w,
         Err(e) => return pack_error(e),
     };
@@ -94,12 +96,20 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         .strip_prefix("/api/v3/manage/")
         .unwrap_or_default();
     // Exclude local and supervised starts for the whole modpack request.
-    let _modpack_hold = if matches!(action, "pack/install/plan" | "pack/install/apply" | "pack/server-link/unlink") {
-        match vesta_control::files::StoppedGuard::acquire(host.runtime(), host.database().directory()) {
+    let _modpack_hold = if matches!(
+        action,
+        "pack/install/plan" | "pack/install/apply" | "pack/server-link/unlink"
+    ) {
+        match vesta_control::files::StoppedGuard::acquire(
+            host.runtime(),
+            host.database().directory(),
+        ) {
             Ok(hold) => Some(hold),
             Err(_) => return error(StatusCode::CONFLICT, "modpack_requires_stopped"),
         }
-    } else { None };
+    } else {
+        None
+    };
     if action == "pack/server-link" && request.method == Method::GET {
         if !request.bytes.is_empty() {
             return error(StatusCode::BAD_REQUEST, "invalid_request");
@@ -316,10 +326,12 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                 service.apply_pack(&actor, pack).await
             }) {
                 Ok(job) => {
-                    if let Err(error)=workspace.track_install_job(&subject,&job.id) { return pack_error(error); }
+                    if let Err(error) = workspace.track_install_job(&subject, &job.id) {
+                        return pack_error(error);
+                    }
                     ok(
-                    serde_json::json!({"state":"queued", "pending_ids":[], "software_job_id":job.id, "modpack_revision":null}),
-                )
+                        serde_json::json!({"state":"queued", "pending_ids":[], "software_job_id":job.id, "modpack_revision":null}),
+                    )
                 }
                 Err(e) => super::hosting::software_error(e),
             };

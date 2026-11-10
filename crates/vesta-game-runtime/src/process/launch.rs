@@ -70,18 +70,23 @@ impl LaunchSpec {
 
     /// Opt-in local host composition only. Paths are checked again when preparing
     /// each spawn; callers cannot supply an already-authorized native command.
-    pub fn with_isolation(mut self, policy: crate::isolation::ServerIsolation) -> Result<Self, RuntimeError> {
+    pub fn with_isolation(
+        mut self,
+        policy: crate::isolation::ServerIsolation,
+    ) -> Result<Self, RuntimeError> {
         policy.validate(&self.program, &self.cwd)?;
         self.isolation = Some(policy);
         Ok(self)
     }
 
-    pub fn is_isolated(&self) -> bool { self.isolation.is_some() }
+    pub fn is_isolated(&self) -> bool {
+        self.isolation.is_some()
+    }
 
     /// A stopped software replacement inherits the current OS-admin policy;
     /// its launch document cannot remove or broaden the sandbox. Validate the
     /// new executable/runtime against that same policy before publication.
-    pub fn constrain_replacement(&self, replacement:Self) -> Result<Self, RuntimeError> {
+    pub fn constrain_replacement(&self, replacement: Self) -> Result<Self, RuntimeError> {
         match &self.isolation {
             Some(policy) => replacement.with_isolation(policy.clone()),
             None => Ok(replacement),
@@ -155,7 +160,9 @@ impl LaunchSpec {
             },
         };
         let command = &mut prepared.command;
-        if self.isolation.is_none() { command.args(&self.args).current_dir(&self.cwd); }
+        if self.isolation.is_none() {
+            command.args(&self.args).current_dir(&self.cwd);
+        }
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

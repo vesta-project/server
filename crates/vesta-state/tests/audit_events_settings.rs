@@ -515,17 +515,40 @@ fn configuration_editor_label_and_time_survive_account_rename_and_reopen() {
         Ok(())
     }).unwrap();
     let audit = AuditLog::new(fixture.db.clone()).unwrap();
-    audit.append_record(&AuditRecord::of(actor(), "management.permissions.mutate".into(), "server".into(), "success".into(), None).unwrap()).unwrap();
-    fixture.db.write(|c| {
-        c.execute("UPDATE principals SET display_name='Renamed editor' WHERE id='owner'", [])?;
-        Ok(())
-    }).unwrap();
+    audit
+        .append_record(
+            &AuditRecord::of(
+                actor(),
+                "management.permissions.mutate".into(),
+                "server".into(),
+                "success".into(),
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    fixture
+        .db
+        .write(|c| {
+            c.execute(
+                "UPDATE principals SET display_name='Renamed editor' WHERE id='owner'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
     drop(audit);
     let db = reopen(&fixture);
     let audit = AuditLog::new(db).unwrap();
     let rows = audit.page(0, 10).unwrap();
-    let row = rows.iter().find(|row|row.action=="management.permissions.mutate").unwrap();
-    assert_eq!(row.at_ms,FIXED_TIME_MS);
-    assert_eq!(serde_json::from_str::<serde_json::Value>(&row.metadata_json).unwrap()["editor_display_name"],"First editor");
+    let row = rows
+        .iter()
+        .find(|row| row.action == "management.permissions.mutate")
+        .unwrap();
+    assert_eq!(row.at_ms, FIXED_TIME_MS);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&row.metadata_json).unwrap()["editor_display_name"],
+        "First editor"
+    );
     assert!(audit.verify_chain().unwrap().valid);
 }

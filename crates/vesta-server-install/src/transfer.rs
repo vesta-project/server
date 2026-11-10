@@ -1,5 +1,5 @@
 use super::model::*;
-use crate::{TransportConfig, progress::ProgressReporter};
+use crate::{progress::ProgressReporter, TransportConfig};
 use futures::Future;
 use sha1::Sha1;
 use sha2::{Digest as _, Sha256};
@@ -17,6 +17,13 @@ use url::Url;
 pub(crate) struct Source<'a> {
     pub url: &'a str,
     pub software: Software,
+}
+
+#[derive(Clone, Copy)]
+enum RequestKind<'a> {
+    Get,
+    Head,
+    Json(&'a [u8]),
 }
 
 #[derive(Clone, Copy)]
@@ -159,19 +166,35 @@ impl Transport {
         reporter: &dyn ProgressReporter,
         deadline: Instant,
     ) -> Result<reqwest::Response> {
-        self.request_body(logical, head, role, limits, reporter, deadline, None).await
+        self.request_body(
+            logical,
+            if head {
+                RequestKind::Head
+            } else {
+                RequestKind::Get
+            },
+            role,
+            limits,
+            reporter,
+            deadline,
+        )
+        .await
     }
 
     async fn request_body(
         &self,
         logical: &Url,
-        head: bool,
+        kind: RequestKind<'_>,
         role: Role,
         limits: Limits,
         reporter: &dyn ProgressReporter,
         deadline: Instant,
-        json_body: Option<&[u8]>,
     ) -> Result<reqwest::Response> {
+        let (head, json_body) = match kind {
+            RequestKind::Get => (false, None),
+            RequestKind::Head => (true, None),
+            RequestKind::Json(body) => (false, Some(body)),
+        };
         // A forwarding proxy cannot attest the final socket's destination. Fail
         // closed for artifacts instead of delegating untrusted DNS to it.
         if matches!(role, Role::Artifact) && self.proxy.is_some() {
@@ -228,29 +251,39 @@ impl Transport {
         let client = builder.build().map_err(|_| InstallError::TransportFailed)?;
         let response = controlled(
             async {
-                let mut request = client.request(
-                    if json_body.is_some() { reqwest::Method::POST }
-                    else if head { reqwest::Method::HEAD }
-                    else { reqwest::Method::GET },
-                    target,
-                ).header(reqwest::header::ACCEPT_ENCODING, "identity");
+                let mut request = client
+                    .request(
+                        if json_body.is_some() {
+                            reqwest::Method::POST
+                        } else if head {
+                            reqwest::Method::HEAD
+                        } else {
+                            reqwest::Method::GET
+                        },
+                        target,
+                    )
+                    .header(reqwest::header::ACCEPT_ENCODING, "identity");
                 if let Some(body) = json_body {
-                    request = request.header(reqwest::header::CONTENT_TYPE, "application/json").body(body.to_vec());
+                    request = request
+                        .header(reqwest::header::CONTENT_TYPE, "application/json")
+                        .body(body.to_vec());
                 }
-                tokio::time::timeout(
-                    Duration::from_millis(limits.idle_ms),
-                    request.send(),
-                )
-                .await
-                .map_err(|_| InstallError::TransportFailed)?
-                .map_err(|_| InstallError::TransportFailed)
+                tokio::time::timeout(Duration::from_millis(limits.idle_ms), request.send())
+                    .await
+                    .map_err(|_| InstallError::TransportFailed)?
+                    .map_err(|_| InstallError::TransportFailed)
             },
             deadline,
             reporter,
         )
         .await?;
-        if !fixture && self.proxy.is_none()
-            && !response.remote_addr().is_some_and(|peer| pinned.iter().any(|selected| crate::public_address::peer_matches(*selected, peer)))
+        if !fixture
+            && self.proxy.is_none()
+            && !response.remote_addr().is_some_and(|peer| {
+                pinned
+                    .iter()
+                    .any(|selected| crate::public_address::peer_matches(*selected, peer))
+            })
         {
             return Err(InstallError::SourceRefused);
         }
@@ -260,19 +293,46 @@ impl Transport {
     /// Explicit operator-configured notification destinations use the exact
     /// same DNS pinning, public-address, TLS and connected-peer checks as
     /// artifacts. No redirects, provider credentials, proxy or response body.
-    pub(crate) async fn post_json(&self, url: &str, bytes: &[u8], limits: Limits) -> Result<crate::outbound::Response> {
+    pub(crate) async fn post_json(
+        &self,
+        url: &str,
+        bytes: &[u8],
+        limits: Limits,
+    ) -> Result<crate::outbound::Response> {
         let url = Url::parse(url).map_err(|_| InstallError::InvalidInput)?;
-        if url.scheme() != "https" || url.host_str().is_none()
-            || !url.username().is_empty() || url.password().is_some()
-            || url.fragment().is_some() || url.port_or_known_default() != Some(443)
-            || url.as_str().len() > 8192 || bytes.len() as u64 > limits.metadata_bytes
-        { return Err(InstallError::SourceRefused); }
+        if url.scheme() != "https"
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.fragment().is_some()
+            || url.port_or_known_default() != Some(443)
+            || url.as_str().len() > 8192
+            || bytes.len() as u64 > limits.metadata_bytes
+        {
+            return Err(InstallError::SourceRefused);
+        }
         let deadline = Instant::now() + limits.duration();
-        let response = self.request_body(&url, false, Role::Artifact, limits,
-            &crate::SilentProgressReporter, deadline, Some(bytes)).await?;
-        let retry=response.headers().get(reqwest::header::RETRY_AFTER);
-        let seconds=retry.and_then(|v|v.to_str().ok()).filter(|s|!s.is_empty() && s.len()<=5 && s.bytes().all(|b|b.is_ascii_digit())).and_then(|v|v.parse::<u64>().ok()).filter(|v|*v<=86400);
-        Ok(crate::outbound::Response{status:response.status().as_u16(),retry_after_seconds:seconds,retry_after_unsupported:retry.is_some() && seconds.is_none()})
+        let response = self
+            .request_body(
+                &url,
+                RequestKind::Json(bytes),
+                Role::Artifact,
+                limits,
+                &crate::SilentProgressReporter,
+                deadline,
+            )
+            .await?;
+        let retry = response.headers().get(reqwest::header::RETRY_AFTER);
+        let seconds = retry
+            .and_then(|v| v.to_str().ok())
+            .filter(|s| !s.is_empty() && s.len() <= 5 && s.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| *v <= 86400);
+        Ok(crate::outbound::Response {
+            status: response.status().as_u16(),
+            retry_after_seconds: seconds,
+            retry_after_unsupported: retry.is_some() && seconds.is_none(),
+        })
     }
 
     pub async fn receive(
@@ -691,7 +751,9 @@ pub(crate) fn validate_url(raw: &str, software: Software, role: Role) -> Result<
     Ok(u)
 }
 
-pub(crate) fn public_ip(ip: IpAddr) -> bool { crate::public_address::is_public_ip(ip) }
+pub(crate) fn public_ip(ip: IpAddr) -> bool {
+    crate::public_address::is_public_ip(ip)
+}
 
 /// Validate the raw spelling before URL normalization, then the compiled family.
 pub(crate) fn validate_family_url(
@@ -900,9 +962,21 @@ mod public_artifact_policy_tests {
     use super::*;
     #[tokio::test]
     async fn artifact_proxy_refused_before_dns_or_network() {
-        let transport=Transport::new(TransportConfig::proxy("http://FAKE_USER:FAKE_SECRET@proxy.invalid:8080".into()).unwrap());
-        let result=transport.request(&Url::parse("https://piston-data.mojang.com/server.jar").unwrap(),false,Role::Artifact,Limits::default(),&crate::progress::SilentProgressReporter,Instant::now()+Duration::from_secs(1)).await;
-        assert!(matches!(result,Err(InstallError::SourceRefused)));
+        let transport = Transport::new(
+            TransportConfig::proxy("http://FAKE_USER:FAKE_SECRET@proxy.invalid:8080".into())
+                .unwrap(),
+        );
+        let result = transport
+            .request(
+                &Url::parse("https://piston-data.mojang.com/server.jar").unwrap(),
+                false,
+                Role::Artifact,
+                Limits::default(),
+                &crate::progress::SilentProgressReporter,
+                Instant::now() + Duration::from_secs(1),
+            )
+            .await;
+        assert!(matches!(result, Err(InstallError::SourceRefused)));
     }
 }
 

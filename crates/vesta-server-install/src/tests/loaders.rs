@@ -25,14 +25,12 @@ async fn managed_fabric_and_quilt_use_absolute_classpaths_for_preserved_game_dir
             dunce::canonicalize(game.path()).unwrap()
         );
         assert_eq!(launch.args.len(), 5);
-        assert!(
-            launch.args[0].ends_with(
-                &p.destination()
-                    .join("software/vanilla.jar")
-                    .to_string_lossy()
-                    .to_string()
-            )
-        );
+        assert!(launch.args[0].ends_with(
+            &p.destination()
+                .join("software/vanilla.jar")
+                .to_string_lossy()
+                .to_string()
+        ));
         assert_eq!(launch.args[1], "-cp");
         assert_eq!(launch.args[3], bundle::server_main(software).unwrap());
         assert_eq!(launch.args[4], "nogui");
@@ -53,11 +51,9 @@ async fn managed_fabric_and_quilt_use_absolute_classpaths_for_preserved_game_dir
         // The original fresh-install receipt/relative argfile remains verifiable.
         f.installer.verify(&p).await.unwrap();
         std::fs::write(&launch.required_files[1], b"tampered loader").unwrap();
-        assert!(
-            crate::verify_managed_artifacts(&launch.artifacts)
-                .await
-                .is_err()
-        );
+        assert!(crate::verify_managed_artifacts(&launch.artifacts)
+            .await
+            .is_err());
     }
 }
 
@@ -1143,14 +1139,13 @@ async fn loader_library_count_is_capped_before_official_metadata_is_requested() 
         assert_eq!(result.is_ok(), accepted, "{count}");
         if !accepted {
             assert_eq!(result.unwrap_err(), InstallError::InvalidMetadata);
-            assert!(
-                !f.server
-                    .received_requests()
-                    .await
-                    .unwrap()
-                    .iter()
-                    .any(|r| r.url.path().ends_with("/server/json"))
-            );
+            assert!(!f
+                .server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|r| r.url.path().ends_with("/server/json")));
         }
     }
 }
@@ -1503,11 +1498,9 @@ async fn loader_releases_are_stable_choices_without_artifact_downloads() {
             .await
             .unwrap();
         assert!(!choices.is_empty());
-        assert!(
-            choices
-                .iter()
-                .all(|v| v.build.is_none() && v.loader_version.as_deref() == Some(v.id.as_str()))
-        );
+        assert!(choices
+            .iter()
+            .all(|v| v.build.is_none() && v.loader_version.as_deref() == Some(v.id.as_str())));
         assert_eq!(artifact_gets(&f, &libs).await, 0);
         assert!(entries(f.root.path()).is_empty());
     }

@@ -16,8 +16,8 @@ fn child_good() {
         "JDK_JAVA_OPTIONS",
         "OPENJ9_JAVA_OPTIONS",
         "IBM_JAVA_OPTIONS",
-                "CURSEFORGE_API_KEY",
-                "VESTA_CURSEFORGE_API_KEY",
+        "CURSEFORGE_API_KEY",
+        "VESTA_CURSEFORGE_API_KEY",
     ] {
         assert!(std::env::var_os(k).is_none());
     }
@@ -89,8 +89,8 @@ fn child_option_injection_parent() {
         "JDK_JAVA_OPTIONS",
         "OPENJ9_JAVA_OPTIONS",
         "IBM_JAVA_OPTIONS",
-                "CURSEFORGE_API_KEY",
-                "VESTA_CURSEFORGE_API_KEY",
+        "CURSEFORGE_API_KEY",
+        "VESTA_CURSEFORGE_API_KEY",
     ] {
         // SAFETY: this mutation is confined to the isolated exact-selector child process.
         unsafe {
@@ -114,8 +114,8 @@ fn child_option_injection_parent() {
         "JDK_JAVA_OPTIONS",
         "OPENJ9_JAVA_OPTIONS",
         "IBM_JAVA_OPTIONS",
-                "CURSEFORGE_API_KEY",
-                "VESTA_CURSEFORGE_API_KEY",
+        "CURSEFORGE_API_KEY",
+        "VESTA_CURSEFORGE_API_KEY",
     ] {
         assert_eq!(std::env::var(key).unwrap(), "must-not-reach-probe");
     }

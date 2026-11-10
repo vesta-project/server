@@ -42,7 +42,10 @@ fn serve_failed_tls_start_closes_the_host_and_never_generates_material() {
     assert!(output.stdout.is_empty());
     // Local commit 7a7f49a made listener refusal diagnostics specific and fixed-code.
     // Preserve the strict complete stderr assertion and the cleanup checks below.
-    assert_eq!(output.stderr, b"listener_failed: tls_material_unavailable\n");
+    assert_eq!(
+        output.stderr,
+        b"listener_failed: tls_material_unavailable\n"
+    );
     assert!(
         !temp
             .path()

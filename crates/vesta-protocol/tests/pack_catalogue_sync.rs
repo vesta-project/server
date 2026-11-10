@@ -5,9 +5,9 @@ use std::error::Error;
 use vesta_protocol::pack::catalogue::{
     ArchiveFormat, ArchivePack, CatalogueError, FileSource, MAX_COMPONENT_BYTES, MAX_FILE_SIZE,
     MAX_FILES, MAX_JSON_BYTES, MAX_PATH_BYTES, MAX_PATH_COMPONENTS, MAX_REVISION,
-    MAX_SOURCE_ID_BYTES, MAX_SOURCE_URL_BYTES, MAX_TEXT_BYTES, MAX_TOTAL_SIZE, MAX_TOTAL_TEXT_BYTES, Manifest,
-    ManifestMetadata, PackContent, PackFile, Platform, PlatformPack, RelativePath, Sha256,
-    SourceKind,
+    MAX_SOURCE_ID_BYTES, MAX_SOURCE_URL_BYTES, MAX_TEXT_BYTES, MAX_TOTAL_SIZE,
+    MAX_TOTAL_TEXT_BYTES, Manifest, ManifestMetadata, PackContent, PackFile, Platform,
+    PlatformPack, RelativePath, Sha256, SourceKind,
 };
 use vesta_protocol::pack::sync::{
     InstalledFile, InstalledState, RevisionStatus, SyncError, SyncOperation, plan,
@@ -22,10 +22,21 @@ const F: &str = "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 
 #[test]
 fn ampersand_is_a_literal_portable_component_not_path_syntax() {
-    let path="kubejs/server_scripts/mods/Laser Bridges & Doors/Recipes.js";
-    assert_eq!(RelativePath::parse(path).unwrap().as_str(),path);
-    for bad in ["../A & B","A & B/../outside","/A & B","A & B\\outside","A & B/CON.js","A & B/trailing.","A & B/stream:secret"] {
-        assert!(RelativePath::parse(bad).is_err(),"accepted unsafe path: {bad}");
+    let path = "kubejs/server_scripts/mods/Laser Bridges & Doors/Recipes.js";
+    assert_eq!(RelativePath::parse(path).unwrap().as_str(), path);
+    for bad in [
+        "../A & B",
+        "A & B/../outside",
+        "/A & B",
+        "A & B\\outside",
+        "A & B/CON.js",
+        "A & B/trailing.",
+        "A & B/stream:secret",
+    ] {
+        assert!(
+            RelativePath::parse(bad).is_err(),
+            "accepted unsafe path: {bad}"
+        );
     }
 }
 
@@ -662,7 +673,7 @@ fn file_sizes_total_size_and_file_count_are_bounded() {
 #[test]
 fn aggregate_text_budgets_cannot_be_bypassed_by_individually_valid_objects() {
     let source = FileSource::server(Some(&"u".repeat(MAX_SOURCE_URL_BYTES))).unwrap();
-    let files = (0..=MAX_TOTAL_TEXT_BYTES/MAX_SOURCE_URL_BYTES)
+    let files = (0..=MAX_TOTAL_TEXT_BYTES / MAX_SOURCE_URL_BYTES)
         .map(|n| PackFile::new(&format!("{n}.bin"), A, 0, source.clone()).unwrap())
         .collect();
     assert_eq!(
@@ -670,7 +681,7 @@ fn aggregate_text_budgets_cannot_be_bypassed_by_individually_valid_objects() {
         Err(CatalogueError::BudgetExceeded)
     );
     let long_directory = vec!["d".repeat(120); 7].join("/");
-    let files = (0..=MAX_TOTAL_TEXT_BYTES/long_directory.len())
+    let files = (0..=MAX_TOTAL_TEXT_BYTES / long_directory.len())
         .map(|n| InstalledFile::new(&format!("{long_directory}/{n}.bin"), A).unwrap())
         .collect();
     assert_eq!(

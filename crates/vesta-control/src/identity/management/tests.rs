@@ -473,9 +473,20 @@ fn canonical_uuid_devices_pairing_and_authenticated_method_attachment() {
     let f = Fixture::new();
     let k = key();
     let public = URL_SAFE_NO_PAD.encode(k.public_key().as_ref());
-    let first = f.service.enroll_minecraft(profile(&f, USER_UUID), "User", &public).unwrap();
+    let first = f
+        .service
+        .enroll_minecraft(profile(&f, USER_UUID), "User", &public)
+        .unwrap();
     let token = f.session(&first, &k);
-    let linked = f.service.enroll_minecraft_for(profile(&f, USER_UUID), "User", &public, Some(token.secret.expose())).unwrap();
+    let linked = f
+        .service
+        .enroll_minecraft_for(
+            profile(&f, USER_UUID),
+            "User",
+            &public,
+            Some(token.secret.expose()),
+        )
+        .unwrap();
     assert_eq!(linked.principal_id, first.principal_id);
     assert_eq!(linked.device_id, first.device_id);
     let second_key = key();
@@ -592,7 +603,14 @@ fn anonymous_new_user_live_whitelist_and_explicit_roles_are_separate_sources() {
         Err(ManagementError::Forbidden)
     ));
     let key = key();
-    let user = f.service.enroll_minecraft(profile(&f, USER_UUID), "User", &URL_SAFE_NO_PAD.encode(key.public_key().as_ref())).unwrap();
+    let user = f
+        .service
+        .enroll_minecraft(
+            profile(&f, USER_UUID),
+            "User",
+            &URL_SAFE_NO_PAD.encode(key.public_key().as_ref()),
+        )
+        .unwrap();
     let token = f.session(&user, &key);
     let reference = f
         .service
@@ -604,8 +622,12 @@ fn anonymous_new_user_live_whitelist_and_explicit_roles_are_separate_sources() {
             .is_ok()
     );
     assert!(matches!(
-        f.service
-            .authorize_pack(reference, Capability::PackDownload, now, &policy(&f, &empty, &bans)),
+        f.service.authorize_pack(
+            reference,
+            Capability::PackDownload,
+            now,
+            &policy(&f, &empty, &bans)
+        ),
         Err(ManagementError::Forbidden)
     ));
     f.service
@@ -711,7 +733,15 @@ fn password_grants_are_device_bound_and_rotation_cannot_resurrect_them() {
         .test_pack_session(PackGrant::Password(revision), std::time::Instant::now())
         .unwrap();
     let subject = f.service.authenticate(secret.expose()).unwrap();
-    let account_uuid: String = f.db.read(|c| Ok(c.query_row("SELECT minecraft_uuid FROM user_minecraft_accounts WHERE principal_id=?", [subject.principal.as_str()], |r| r.get(0))?)).unwrap();
+    let account_uuid: String =
+        f.db.read(|c| {
+            Ok(c.query_row(
+                "SELECT minecraft_uuid FROM user_minecraft_accounts WHERE principal_id=?",
+                [subject.principal.as_str()],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
     let key = key();
     let second = f
         .service
@@ -1311,27 +1341,92 @@ fn verified_account_invitation_enrollment_is_atomic_and_cannot_reuse_another_acc
     let k = key();
     let public = URL_SAFE_NO_PAD.encode(k.public_key().as_ref());
     let code = f.service.issue_local(BuiltinRole::Owner, 10).unwrap();
-    let pack_profile = |id: &str| VerifiedMinecraftProfile::for_test(
-        ServerUuid::parse(f.service.server_id()).unwrap(), MinecraftUuid::parse(id).unwrap());
-    assert!(matches!(f.service.enroll_pack_profile_with_invitation(pack_profile(USER_UUID), "Owner", &public, Some("invalid")), Err(ManagementError::PairInvalid)));
+    let pack_profile = |id: &str| {
+        VerifiedMinecraftProfile::for_test(
+            ServerUuid::parse(f.service.server_id()).unwrap(),
+            MinecraftUuid::parse(id).unwrap(),
+        )
+    };
+    assert!(matches!(
+        f.service.enroll_pack_profile_with_invitation(
+            pack_profile(USER_UUID),
+            "Owner",
+            &public,
+            Some("invalid")
+        ),
+        Err(ManagementError::PairInvalid)
+    ));
     assert!(f.service.list_local().unwrap().is_empty());
     f.db.write(|c| { c.execute_batch("CREATE TRIGGER fail_verified_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT,'fixture'); END;")?; Ok(()) }).unwrap();
-    assert!(matches!(f.service.enroll_pack_profile_with_invitation(pack_profile(USER_UUID), "Owner", &public, Some(code.secret.expose())), Err(ManagementError::Unavailable)));
+    assert!(matches!(
+        f.service.enroll_pack_profile_with_invitation(
+            pack_profile(USER_UUID),
+            "Owner",
+            &public,
+            Some(code.secret.expose())
+        ),
+        Err(ManagementError::Unavailable)
+    ));
     assert!(f.service.list_local().unwrap().is_empty());
-    f.db.write(|c| {c.execute_batch("DROP TRIGGER fail_verified_audit")?; Ok(())}).unwrap();
-    let owner = f.service.enroll_pack_profile_with_invitation(pack_profile(USER_UUID), "Owner", &public, Some(code.secret.expose())).unwrap();
+    f.db.write(|c| {
+        c.execute_batch("DROP TRIGGER fail_verified_audit")?;
+        Ok(())
+    })
+    .unwrap();
+    let owner = f
+        .service
+        .enroll_pack_profile_with_invitation(
+            pack_profile(USER_UUID),
+            "Owner",
+            &public,
+            Some(code.secret.expose()),
+        )
+        .unwrap();
     let token = f.session(&owner, &k);
-    assert!(f.service.authorize(token.secret.expose(), Capability::SecurityManage, None).is_ok());
+    assert!(
+        f.service
+            .authorize(token.secret.expose(), Capability::SecurityManage, None)
+            .is_ok()
+    );
     let stranger = "123e4567-e89b-42d3-a456-426614174000";
-    assert!(matches!(f.service.enroll_pack_profile_with_invitation(pack_profile(stranger), "Other", &public, None), Err(ManagementError::SessionInvalid)));
+    assert!(matches!(
+        f.service.enroll_pack_profile_with_invitation(
+            pack_profile(stranger),
+            "Other",
+            &public,
+            None
+        ),
+        Err(ManagementError::SessionInvalid)
+    ));
     let other = key();
     let other_public = URL_SAFE_NO_PAD.encode(other.public_key().as_ref());
-    assert!(matches!(f.service.enroll_pack_profile_with_invitation(pack_profile(stranger), "Other", &other_public, Some(code.secret.expose())), Err(ManagementError::PairInvalid)));
-    let player = f.service.enroll_pack_profile_with_invitation(pack_profile(stranger), "Other", &other_public, None).unwrap();
+    assert!(matches!(
+        f.service.enroll_pack_profile_with_invitation(
+            pack_profile(stranger),
+            "Other",
+            &other_public,
+            Some(code.secret.expose())
+        ),
+        Err(ManagementError::PairInvalid)
+    ));
+    let player = f
+        .service
+        .enroll_pack_profile_with_invitation(pack_profile(stranger), "Other", &other_public, None)
+        .unwrap();
     assert_ne!(player.principal_id, owner.principal_id);
     let player_token = f.session(&player, &other);
-    assert!(matches!(f.service.authorize(player_token.secret.expose(), Capability::SecurityManage, None), Err(ManagementError::Forbidden)));
-    let reused = f.service.enroll_pack_profile_with_invitation(pack_profile(USER_UUID), "Owner", &public, None).unwrap();
+    assert!(matches!(
+        f.service.authorize(
+            player_token.secret.expose(),
+            Capability::SecurityManage,
+            None
+        ),
+        Err(ManagementError::Forbidden)
+    ));
+    let reused = f
+        .service
+        .enroll_pack_profile_with_invitation(pack_profile(USER_UUID), "Owner", &public, None)
+        .unwrap();
     assert_eq!(reused.principal_id, owner.principal_id);
     assert_eq!(reused.device_id, owner.device_id);
 }
@@ -1342,43 +1437,134 @@ fn legacy_unbound_owner_credentials_and_sessions_cannot_authenticate_or_attach_a
     let code = f.service.issue_local(BuiltinRole::Owner, 10).unwrap();
     let k = key();
     let public = URL_SAFE_NO_PAD.encode(k.public_key().as_ref());
-    let legacy = f.service.enroll(code.secret.expose(), "Legacy", &public).unwrap();
-    assert!(matches!(f.service.challenge(&legacy.device_id), Err(ManagementError::SessionInvalid)));
-    assert!(matches!(f.service.enroll_minecraft(profile(&f, USER_UUID), "Legacy", &public), Err(ManagementError::SessionInvalid)));
+    let legacy = f
+        .service
+        .enroll(code.secret.expose(), "Legacy", &public)
+        .unwrap();
+    assert!(matches!(
+        f.service.challenge(&legacy.device_id),
+        Err(ManagementError::SessionInvalid)
+    ));
+    assert!(matches!(
+        f.service
+            .enroll_minecraft(profile(&f, USER_UUID), "Legacy", &public),
+        Err(ManagementError::SessionInvalid)
+    ));
     let (linked, linked_key) = f.enroll(BuiltinRole::Owner);
     let session = f.session(&linked, &linked_key);
     // A legacy key on a linked user must remain blocked too. Principal-level
     // account linkage cannot authenticate keys which never verified that UUID.
-    f.db.write(|c| {c.execute("UPDATE management_device_keys SET linked_minecraft_uuid=NULL WHERE device_id=?", [&linked.device_id])?; Ok(())}).unwrap();
-    assert!(matches!(f.service.challenge(&linked.device_id), Err(ManagementError::SessionInvalid)));
-    assert!(matches!(f.service.authenticate(session.secret.expose()), Err(ManagementError::SessionInvalid)));
+    f.db.write(|c| {
+        c.execute(
+            "UPDATE management_device_keys SET linked_minecraft_uuid=NULL WHERE device_id=?",
+            [&linked.device_id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(matches!(
+        f.service.challenge(&linked.device_id),
+        Err(ManagementError::SessionInvalid)
+    ));
+    assert!(matches!(
+        f.service.authenticate(session.secret.expose()),
+        Err(ManagementError::SessionInvalid)
+    ));
     f.db.write(|c| {c.execute("UPDATE management_device_keys SET linked_minecraft_uuid='123e4567-e89b-42d3-a456-426614174000' WHERE device_id=?", [&linked.device_id])?; Ok(())}).unwrap();
-    assert!(matches!(f.service.authenticate(session.secret.expose()), Err(ManagementError::SessionInvalid)));
-    f.db.write(|c| {c.execute("DELETE FROM user_minecraft_accounts WHERE principal_id=?", [&linked.principal_id])?; Ok(())}).unwrap();
-    assert!(matches!(f.service.authenticate(session.secret.expose()), Err(ManagementError::SessionInvalid)));
+    assert!(matches!(
+        f.service.authenticate(session.secret.expose()),
+        Err(ManagementError::SessionInvalid)
+    ));
+    f.db.write(|c| {
+        c.execute(
+            "DELETE FROM user_minecraft_accounts WHERE principal_id=?",
+            [&linked.principal_id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(matches!(
+        f.service.authenticate(session.secret.expose()),
+        Err(ManagementError::SessionInvalid)
+    ));
 }
 
 #[test]
 fn lower_invitation_preserves_existing_linked_owner_authority() {
     let f = Fixture::new();
-    f.service.link_local(MinecraftUuid::parse(USER_UUID).unwrap(), BuiltinRole::Owner).unwrap();
+    f.service
+        .link_local(MinecraftUuid::parse(USER_UUID).unwrap(), BuiltinRole::Owner)
+        .unwrap();
     let code = f.service.issue_local(BuiltinRole::Viewer, 10).unwrap();
     let k = key();
-    let owner = f.service.enroll_minecraft_with_invitation(profile(&f, USER_UUID), "Owner", &URL_SAFE_NO_PAD.encode(k.public_key().as_ref()), Some(code.secret.expose())).unwrap();
+    let owner = f
+        .service
+        .enroll_minecraft_with_invitation(
+            profile(&f, USER_UUID),
+            "Owner",
+            &URL_SAFE_NO_PAD.encode(k.public_key().as_ref()),
+            Some(code.secret.expose()),
+        )
+        .unwrap();
     assert_eq!(owner.role, "owner");
     let token = f.session(&owner, &k);
-    assert!(f.service.authorize(token.secret.expose(), Capability::SecurityManage, None).is_ok());
+    assert!(
+        f.service
+            .authorize(token.secret.expose(), Capability::SecurityManage, None)
+            .is_ok()
+    );
 }
 
 #[test]
 fn explicit_repair_after_device_revocation_requires_a_fresh_key_and_keeps_account_identity() {
- let f=Fixture::new();let (old,old_key)=f.enroll(BuiltinRole::Owner);
- let uuid:String=f.db.read(|c|Ok(c.query_row("SELECT minecraft_uuid FROM user_minecraft_accounts WHERE principal_id=?",[&old.principal_id],|r|r.get(0))?)).unwrap();
- f.db.write(|c|{c.execute("UPDATE devices SET revoked_at=? WHERE id=?",params![f.db.clock().millis(),old.device_id])?;Ok(())}).unwrap();
- assert!(f.service.challenge(&old.device_id).is_err());
- assert!(f.service.enroll_minecraft_with_invitation(profile(&f,&uuid),"Retry old key",&URL_SAFE_NO_PAD.encode(old_key.public_key().as_ref()),None).is_err());
- let fresh=key();let repaired=f.service.enroll_minecraft_with_invitation(profile(&f,&uuid),"Re-paired",&URL_SAFE_NO_PAD.encode(fresh.public_key().as_ref()),None).unwrap();
- assert_eq!(repaired.principal_id,old.principal_id);assert_eq!(repaired.server_id,old.server_id);assert_ne!(repaired.device_id,old.device_id);
- let token=f.session(&repaired,&fresh);assert!(f.service.authorize(token.secret.expose(),Capability::SecurityManage,None).is_ok());
- assert!(f.service.challenge(&old.device_id).is_err());
+    let f = Fixture::new();
+    let (old, old_key) = f.enroll(BuiltinRole::Owner);
+    let uuid: String =
+        f.db.read(|c| {
+            Ok(c.query_row(
+                "SELECT minecraft_uuid FROM user_minecraft_accounts WHERE principal_id=?",
+                [&old.principal_id],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    f.db.write(|c| {
+        c.execute(
+            "UPDATE devices SET revoked_at=? WHERE id=?",
+            params![f.db.clock().millis(), old.device_id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(f.service.challenge(&old.device_id).is_err());
+    assert!(
+        f.service
+            .enroll_minecraft_with_invitation(
+                profile(&f, &uuid),
+                "Retry old key",
+                &URL_SAFE_NO_PAD.encode(old_key.public_key().as_ref()),
+                None
+            )
+            .is_err()
+    );
+    let fresh = key();
+    let repaired = f
+        .service
+        .enroll_minecraft_with_invitation(
+            profile(&f, &uuid),
+            "Re-paired",
+            &URL_SAFE_NO_PAD.encode(fresh.public_key().as_ref()),
+            None,
+        )
+        .unwrap();
+    assert_eq!(repaired.principal_id, old.principal_id);
+    assert_eq!(repaired.server_id, old.server_id);
+    assert_ne!(repaired.device_id, old.device_id);
+    let token = f.session(&repaired, &fresh);
+    assert!(
+        f.service
+            .authorize(token.secret.expose(), Capability::SecurityManage, None)
+            .is_ok()
+    );
+    assert!(f.service.challenge(&old.device_id).is_err());
 }

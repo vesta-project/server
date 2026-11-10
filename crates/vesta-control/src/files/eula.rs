@@ -46,7 +46,7 @@ fn accepted(bytes: &[u8]) -> bool {
             let (key, value) = line.split_once('=')?;
             (key.trim() == "eula").then(|| value.trim() == "true")
         })
-        .last()
+        .next_back()
         .unwrap_or(false)
 }
 #[cfg(test)]

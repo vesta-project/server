@@ -170,7 +170,10 @@ pub fn load(source: Source) -> Result<Release, String> {
 }
 
 pub(crate) fn verify_manifest_bytes(
-    manifest_bytes: &[u8], signature_bytes: &[u8], pin: &[u8], key: &[u8],
+    manifest_bytes: &[u8],
+    signature_bytes: &[u8],
+    pin: &[u8],
+    key: &[u8],
 ) -> Result<Manifest, String> {
     if manifest_bytes.len() as u64 > MAX_MANIFEST || signature_bytes.len() as u64 > MAX_SIGNATURE {
         return Err("invalid manifest".into());

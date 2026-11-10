@@ -1,6 +1,6 @@
 //! Reviewed build input and locally generated output are separate evidence.
 use super::*;
-use crate::{ArtifactRecord, InstallPlan, LaunchRecipe, Receipt, install as publication};
+use crate::{install as publication, ArtifactRecord, InstallPlan, LaunchRecipe, Receipt};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 

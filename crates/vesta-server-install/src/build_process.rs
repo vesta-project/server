@@ -1,6 +1,6 @@
 //! Owned, bounded process-family execution shared by installer build tools.
 //! This is lifecycle ownership, not a sandbox for upstream build code.
-use crate::{InstallError, Result, progress::ProgressReporter};
+use crate::{progress::ProgressReporter, InstallError, Result};
 use std::{
     io::Read,
     path::PathBuf,

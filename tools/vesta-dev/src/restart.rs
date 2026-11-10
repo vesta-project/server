@@ -603,6 +603,92 @@ fn launch_ready(
     Ok(())
 }
 
+// Only dev restart may recover this exact Windows in-process marker. The caller
+// holds the agent and runtime leases. Windows runtime children enter kill-on-close
+// jobs before resuming, and the executable census also waits for their termination.
+fn recover_dev_marker(directory: &Path, config: &HostConfiguration) -> Result<()> {
+    let pending = directory.join("operator-session-pending");
+    match fs::symlink_metadata(&pending) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        _ => {}
+    }
+    let bytes = read_document(&pending)?;
+    let supervised = b"vesta-owned-agent-session-v1: supervised-agent-only\n";
+    let in_process = b"vesta-owned-agent-session-v1: shutdown-not-proven\n";
+    let recoverable = if config.supervision() == Supervision::Separate {
+        bytes == supervised
+    } else if cfg!(windows) && bytes == in_process {
+        let launch: toml::Value = toml::from_str(
+            &String::from_utf8(read_document(config.launch_definition())?)
+                .map_err(|_| "invalid launch encoding")?,
+        )
+        .map_err(|_| "invalid launch configuration")?;
+        if launch["launch"]["kind"].as_str() != Some("native") {
+            return Err("unproven non-native shutdown; restart refused".into());
+        }
+        let executable = launch["launch"]["executable"]
+            .as_str()
+            .and_then(|path| Path::new(path).file_name())
+            .and_then(|name| name.to_str())
+            .ok_or("launch executable unavailable")?;
+        !process_named(executable)?
+    } else {
+        false
+    };
+    if !recoverable {
+        return Err("shutdown was not proven; recovery marker preserved, restart refused".into());
+    }
+    let history = directory.join("operator-sessions");
+    guarded(&history)?;
+    let archived = history.join(format!("dev-recovered-{}", uuid::Uuid::new_v4()));
+    fs::rename(&pending, archived).map_err(|_| "cannot archive recovered dev session")?;
+    println!("Recovered stopped development session (shutdown marker archived).");
+    Ok(())
+}
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn process_named(expected: &str) -> Result<bool> {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, ERROR_NO_MORE_FILES, GetLastError, INVALID_HANDLE_VALUE},
+        System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+            TH32CS_SNAPPROCESS,
+        },
+    };
+    // SAFETY: the snapshot is owned here, the process entry declares its buffer size,
+    // and no process is opened, signalled or modified by this census.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err("process census unavailable; restart refused".into());
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut next = Process32FirstW(snapshot, &mut entry);
+        loop {
+            if next == 0 {
+                let error = GetLastError();
+                CloseHandle(snapshot);
+                return if error == ERROR_NO_MORE_FILES {
+                    Ok(false)
+                } else {
+                    Err("incomplete process census; restart refused".into())
+                };
+            }
+            let count = entry
+                .szExeFile
+                .iter()
+                .position(|value| *value == 0)
+                .unwrap_or(entry.szExeFile.len());
+            if String::from_utf16_lossy(&entry.szExeFile[..count]).eq_ignore_ascii_case(expected) {
+                CloseHandle(snapshot);
+                return Ok(true);
+            }
+            next = Process32NextW(snapshot, &mut entry);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -656,13 +742,29 @@ mod tests {
             let evidence = b"vesta-owned-agent-session-v1: shutdown-not-proven\n";
             fs::write(&marker, evidence).unwrap();
             let running = std::env::current_exe().unwrap();
-            fs::write(directory.join("launch.toml"), format!("[launch]\nkind='native'\nexecutable={:?}\n", running.to_str().unwrap())).unwrap();
+            fs::write(
+                directory.join("launch.toml"),
+                format!(
+                    "[launch]\nkind='native'\nexecutable={:?}\n",
+                    running.to_str().unwrap()
+                ),
+            )
+            .unwrap();
             assert!(quiescent(&source, &config).is_err());
             assert_eq!(fs::read(&marker).unwrap(), evidence);
-            fs::write(directory.join("launch.toml"), "[launch]\nkind='native'\nexecutable='C:/vesta-dev-absent-fixture-7263a.exe'\n").unwrap();
+            fs::write(
+                directory.join("launch.toml"),
+                "[launch]\nkind='native'\nexecutable='C:/vesta-dev-absent-fixture-7263a.exe'\n",
+            )
+            .unwrap();
             assert!(quiescent(&source, &config).unwrap());
             assert!(!marker.exists());
-            let archived = fs::read_dir(directory.join("operator-sessions")).unwrap().next().unwrap().unwrap().path();
+            let archived = fs::read_dir(directory.join("operator-sessions"))
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
             assert_eq!(fs::read(archived).unwrap(), evidence);
         }
     }
@@ -719,57 +821,7 @@ mod tests {
         );
     }
 }
-
-// Only dev restart may recover this exact Windows in-process marker. The caller
-// holds the agent and runtime leases. Windows runtime children enter kill-on-close
-// jobs before resuming, and the executable census also waits for their termination.
-fn recover_dev_marker(directory: &Path, config: &HostConfiguration) -> Result<()> {
-    let pending = directory.join("operator-session-pending");
-    match fs::symlink_metadata(&pending) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        _ => {}
-    }
-    let bytes = read_document(&pending)?;
-    let supervised = b"vesta-owned-agent-session-v1: supervised-agent-only\n";
-    let in_process = b"vesta-owned-agent-session-v1: shutdown-not-proven\n";
-    let recoverable = if config.supervision() == Supervision::Separate {
-        bytes == supervised
-    } else if cfg!(windows) && bytes == in_process {
-        let launch: toml::Value = toml::from_str(&String::from_utf8(read_document(config.launch_definition())?).map_err(|_| "invalid launch encoding")?).map_err(|_| "invalid launch configuration")?;
-        if launch["launch"]["kind"].as_str() != Some("native") { return Err("unproven non-native shutdown; restart refused".into()); }
-        let executable = launch["launch"]["executable"].as_str().and_then(|path| Path::new(path).file_name()).and_then(|name| name.to_str()).ok_or("launch executable unavailable")?;
-        !process_named(executable)?
-    } else { false };
-    if !recoverable { return Err("shutdown was not proven; recovery marker preserved, restart refused".into()); }
-    let history = directory.join("operator-sessions");
-    guarded(&history)?;
-    let archived = history.join(format!("dev-recovered-{}", uuid::Uuid::new_v4()));
-    fs::rename(&pending, archived).map_err(|_| "cannot archive recovered dev session")?;
-    println!("Recovered stopped development session (shutdown marker archived).");
-    Ok(())
-}
-#[cfg(windows)]
-#[allow(unsafe_code)]
-fn process_named(expected: &str) -> Result<bool> {
-    use windows_sys::Win32::{Foundation::{CloseHandle, INVALID_HANDLE_VALUE, ERROR_NO_MORE_FILES, GetLastError}, System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS}};
-    // SAFETY: the snapshot is owned here, the process entry declares its buffer size,
-    // and no process is opened, signalled or modified by this census.
-    unsafe {
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if snapshot == INVALID_HANDLE_VALUE { return Err("process census unavailable; restart refused".into()); }
-        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
-        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-        let mut next = Process32FirstW(snapshot, &mut entry);
-        loop {
-            if next == 0 {
-                let error = GetLastError(); CloseHandle(snapshot);
-                return if error == ERROR_NO_MORE_FILES { Ok(false) } else { Err("incomplete process census; restart refused".into()) };
-            }
-            let count = entry.szExeFile.iter().position(|value| *value == 0).unwrap_or(entry.szExeFile.len());
-            if String::from_utf16_lossy(&entry.szExeFile[..count]).eq_ignore_ascii_case(expected) { CloseHandle(snapshot); return Ok(true); }
-            next = Process32NextW(snapshot, &mut entry);
-        }
-    }
-}
 #[cfg(not(windows))]
-fn process_named(_: &str) -> Result<bool> { Err("unproven shutdown requires runtime recovery".into()) }
+fn process_named(_: &str) -> Result<bool> {
+    Err("unproven shutdown requires runtime recovery".into())
+}

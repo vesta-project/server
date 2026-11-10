@@ -702,40 +702,34 @@ mod profile_tests {
         let loader = "net.fabricmc:fabric-loader:0.19.5";
         let official = server(&[loader]);
         for extra in ["net.fabricmc:other:26.3", "net.fabricmc:intermediary:26.3"] {
-            assert!(
-                classpath_order(
-                    Software::Fabric,
-                    "26.3",
-                    client(&[extra, loader]),
-                    &official,
-                    128
-                )
-                .is_err()
-            );
-        }
-        let intermediary = "net.fabricmc:intermediary:${modrinth.gameVersion}";
-        assert!(
-            classpath_order(
+            assert!(classpath_order(
                 Software::Fabric,
                 "26.3",
-                client(&[intermediary, intermediary, loader]),
+                client(&[extra, loader]),
                 &official,
                 128
             )
-            .is_err()
-        );
+            .is_err());
+        }
+        let intermediary = "net.fabricmc:intermediary:${modrinth.gameVersion}";
+        assert!(classpath_order(
+            Software::Fabric,
+            "26.3",
+            client(&[intermediary, intermediary, loader]),
+            &official,
+            128
+        )
+        .is_err());
         let mut unsafe_url = client(&[intermediary, loader]);
         unsafe_url[0].url = "https://untrusted.invalid/".into();
         assert!(classpath_order(Software::Fabric, "26.3", unsafe_url, &official, 128).is_err());
-        assert!(
-            classpath_order(
-                Software::Fabric,
-                "26.3",
-                client(&[intermediary, loader]),
-                &server(&[loader, "net.fabricmc:required:1"]),
-                128
-            )
-            .is_err()
-        );
+        assert!(classpath_order(
+            Software::Fabric,
+            "26.3",
+            client(&[intermediary, loader]),
+            &server(&[loader, "net.fabricmc:required:1"]),
+            128
+        )
+        .is_err());
     }
 }

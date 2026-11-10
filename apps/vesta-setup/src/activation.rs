@@ -287,14 +287,13 @@ pub(crate) fn run_registered(root: &Path, lease: &host::HostLease) -> Result<Opt
             .try_wait()
             .map_err(|_| "update_agent_wait_failed")?
             .is_some()
+            && let Some(id) = &intent
         {
-            if let Some(id) = &intent {
-                let mut stopped = NativeHost::open(root, lease)?;
-                store.recover_activation(id, &mut stopped, now()?)?;
-                drop(stopped);
-                drop(payload);
-                return run_registered(root, lease); // Recovered intents are no longer selected.
-            }
+            let mut stopped = NativeHost::open(root, lease)?;
+            store.recover_activation(id, &mut stopped, now()?)?;
+            drop(stopped);
+            drop(payload);
+            return run_registered(root, lease); // Recovered intents are no longer selected.
         }
         return Err(error);
     }

@@ -28,9 +28,12 @@ pub struct NotificationPage {
     pub oldest_cursor: Option<i64>,
 }
 impl Automation {
-    pub fn external_delivery_status(&self, subject:&Subject)->Result<Vec<crate::external_alerts::DeliveryStatus>> {
-        self.read(|c|{
-            self.authorize(c,subject,Capability::NotificationsView)?;
+    pub fn external_delivery_status(
+        &self,
+        subject: &Subject,
+    ) -> Result<Vec<crate::external_alerts::DeliveryStatus>> {
+        self.read(|c| {
+            self.authorize(c, subject, Capability::NotificationsView)?;
             crate::external_alerts::status_in(c).map_err(Into::into)
         })
     }

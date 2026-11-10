@@ -5,9 +5,9 @@
 //! jobs, reviewed settings activation and explicit public-release registration.
 mod archive;
 mod build;
+pub mod hosting;
 mod model;
 mod semantic;
-pub mod hosting;
 
 pub use build::{BuiltPack, PublishedPack, build};
 pub use model::{BuildLimits, BuildReport, Error, Input, PackFormat, Resolution, ResolvedPath};

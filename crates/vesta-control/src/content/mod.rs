@@ -174,10 +174,13 @@ impl fmt::Debug for ResolvedSource {
 
 pub trait ProviderClient {
     /// Catalogue destination for an imported entry. This is metadata, not a write grant.
-    fn archive_directory(&self, _provider: Provider, _project: &str) -> Result<&'static str> { Ok("mods") }
+    fn archive_directory(&self, _provider: Provider, _project: &str) -> Result<&'static str> {
+        Ok("mods")
+    }
     /// Identity for archive ingestion only; does not grant download or filesystem authority.
     fn archive_filename(&self, provider: Provider, project: &str, version: &str) -> Result<String> {
-        self.resolve(provider, project, version).map(|source| source.filename)
+        self.resolve(provider, project, version)
+            .map(|source| source.filename)
     }
     /// Optional bounded warm-up; individual resolution remains authoritative.
     fn prefetch_curseforge(&self, _files: &[(String, String)]) -> Result<()> {
@@ -263,7 +266,10 @@ impl<'a> ContentInstaller<'a> {
                 subject,
                 &condition,
                 directory,
-                if matches!(kind, ContentKind::Datapack | ContentKind::ResourcePack | ContentKind::Shader) {
+                if matches!(
+                    kind,
+                    ContentKind::Datapack | ContentKind::ResourcePack | ContentKind::Shader
+                ) {
                     ".zip"
                 } else {
                     ".jar"
@@ -494,11 +500,6 @@ pub(crate) fn fetch_verified_source_into(
     download_verified_into(source, http, &mut url, Some(deadline), output, None)
 }
 
-pub(crate) fn verify_source_reader(source: &ResolvedSource, reader: impl Read) -> Result<()> {
-    source.expected_hash.validate()?;
-    verified_copy(reader, &source.expected_hash, &mut std::io::sink(), None).map(|_| ())
-}
-
 fn download_verified_into(
     source: &ResolvedSource,
     http: &dyn DownloadHttp,
@@ -586,31 +587,55 @@ fn validate_source(source: &ResolvedSource) -> Result<(RelativePath, Url)> {
     if source.download_url.len() > MAX_URL_BYTES {
         return Err(url_refusal("download_url_length", &source.download_url));
     }
-    let url = Url::parse(&source.download_url).map_err(|_| url_refusal("download_url_valid", &source.download_url))?;
+    let url = Url::parse(&source.download_url)
+        .map_err(|_| url_refusal("download_url_valid", &source.download_url))?;
     validate_download_url(source.provider, &url)?;
     Ok((path, url))
 }
 pub(crate) fn provider_storage_name(filename: &str) -> Result<String> {
-    if filename.contains('/') || filename.contains('\\') || filename == "." || filename == ".."
-        || filename.as_bytes().get(1) == Some(&b':') || filename.is_empty() {
+    if filename.contains('/')
+        || filename.contains('\\')
+        || filename == "."
+        || filename == ".."
+        || filename.as_bytes().get(1) == Some(&b':')
+        || filename.is_empty()
+    {
         return Err(ContentError::UnsafeFilename);
     }
-    if RelativePath::parse(&format!("mods/{filename}")).is_ok() && vesta_protocol::pack::catalogue::RelativePath::parse(&format!("mods/{filename}")).is_ok() { return Ok(filename.into()); }
+    if RelativePath::parse(&format!("mods/{filename}")).is_ok()
+        && vesta_protocol::pack::catalogue::RelativePath::parse(&format!("mods/{filename}")).is_ok()
+    {
+        return Ok(filename.into());
+    }
     // The alias must pass both OS storage and catalogue validators. Percent escapes
     // are forbidden by the catalogue, even when the OS accepts them.
-    let extension = filename.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase()).filter(|ext| matches!(ext.as_str(), "jar" | "zip" | "mrpack")).ok_or(ContentError::UnsafeFilename)?;
-    let name = format!("provider-{}.{}", hex::encode(sha2::Sha256::digest(filename.as_bytes())), extension);
-    vesta_protocol::pack::catalogue::RelativePath::parse(&format!("mods/{name}")).map_err(|_| ContentError::UnsafeFilename)?;
+    let extension = filename
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .filter(|ext| matches!(ext.as_str(), "jar" | "zip" | "mrpack"))
+        .ok_or(ContentError::UnsafeFilename)?;
+    let name = format!(
+        "provider-{}.{}",
+        hex::encode(sha2::Sha256::digest(filename.as_bytes())),
+        extension
+    );
+    vesta_protocol::pack::catalogue::RelativePath::parse(&format!("mods/{name}"))
+        .map_err(|_| ContentError::UnsafeFilename)?;
     Ok(name)
 }
 fn validate_filename(filename: &str) -> Result<RelativePath> {
     // Provider archives use private staging; their display name is never a filesystem path.
-    if filename.to_ascii_lowercase().ends_with(".zip") || filename.to_ascii_lowercase().ends_with(".mrpack") {
-        if filename.contains('/') || filename.contains('\\')
-            || filename.as_bytes().get(1) == Some(&b':') {
+    if filename.to_ascii_lowercase().ends_with(".zip")
+        || filename.to_ascii_lowercase().ends_with(".mrpack")
+    {
+        if filename.contains('/')
+            || filename.contains('\\')
+            || filename.as_bytes().get(1) == Some(&b':')
+        {
             return Err(ContentError::UnsafeFilename);
         }
-        return RelativePath::parse("mods/provider-archive.zip").map_err(|_| ContentError::UnsafeFilename);
+        return RelativePath::parse("mods/provider-archive.zip")
+            .map_err(|_| ContentError::UnsafeFilename);
     }
     // A provider filename is a leaf, not a provider-controlled relative path.
     if filename.contains('/')
@@ -621,15 +646,29 @@ fn validate_filename(filename: &str) -> Result<RelativePath> {
     {
         return Err(ContentError::UnsafeFilename);
     }
-    RelativePath::parse(&format!("mods/{}", provider_storage_name(filename)?)).map_err(|_| ContentError::UnsafeFilename)
+    RelativePath::parse(&format!("mods/{}", provider_storage_name(filename)?))
+        .map_err(|_| ContentError::UnsafeFilename)
 }
 fn validate_download_url(_provider: Provider, url: &Url) -> Result<()> {
     // Provider identity authorizes the artifact, never access to private networks.
-    if url.scheme() != "https" || url.host_str().is_none()
-        || !url.username().is_empty() || url.password().is_some()
-    { return Err(url_refusal("download_https_without_credentials", url.as_str())); }
-    let literal=match url.host(){Some(url::Host::Ipv4(v))=>Some(std::net::IpAddr::V4(v)),Some(url::Host::Ipv6(v))=>Some(std::net::IpAddr::V6(v)),_=>None};
-    if literal.is_some_and(|ip|!vesta_server_install::public_address::is_public_ip(ip)) {return Err(url_refusal("download_public_destination",url.as_str()));}
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(url_refusal(
+            "download_https_without_credentials",
+            url.as_str(),
+        ));
+    }
+    let literal = match url.host() {
+        Some(url::Host::Ipv4(v)) => Some(std::net::IpAddr::V4(v)),
+        Some(url::Host::Ipv6(v)) => Some(std::net::IpAddr::V6(v)),
+        _ => None,
+    };
+    if literal.is_some_and(|ip| !vesta_server_install::public_address::is_public_ip(ip)) {
+        return Err(url_refusal("download_public_destination", url.as_str()));
+    }
     Ok(())
 }
 
@@ -701,7 +740,10 @@ pub enum ContentError {
     UnknownSource,
     UnsafeFilename,
     DisallowedUrl,
-    UrlRefusal { rule: &'static str, item: String },
+    UrlRefusal {
+        rule: &'static str,
+        item: String,
+    },
     TooManyRedirects,
     TooLarge,
     HashMismatch,
@@ -727,27 +769,14 @@ mod tests;
 #[cfg(test)]
 mod transition_inventory;
 
-#[cfg(test)]
-mod trusted_pack_policy_tests {
-    use super::*;
-    #[test]
-    fn provider_archive_names_and_https_hosts_are_trusted() {
-        for name in ["Cobblemon 3D Pok\u{00e9} Rods 1.0.zip", "Cobblemon 3D Pok? Rods 1.0.zip"] {
-            let stored = provider_storage_name(name).unwrap();
-            assert!(RelativePath::parse(&format!("mods/{stored}")).is_ok());
-            assert!(vesta_protocol::pack::catalogue::RelativePath::parse(&format!("mods/{stored}")).is_ok());
-        }
-        for name in ["COBBLEVERSE 1.7.42.zip", "Pok?mon: pack.zip"] { assert!(validate_filename(name).is_ok()); }
-        for name in ["../pack.zip", "/pack.zip", "C:pack.zip", "nested\\pack.zip"] { assert!(validate_filename(name).is_err()); }
-        assert!(validate_download_url(Provider::Curseforge, &Url::parse("https://new-cdn.example/pack.zip").unwrap()).is_ok());
-        for url in ["http://cdn.example/pack.zip", "https://user:secret@cdn.example/pack.zip"] { assert!(validate_download_url(Provider::Curseforge, &Url::parse(url).unwrap()).is_err()); }
-    }
-}
-
 /// Retain useful download provenance without credentials, signed query strings or fragments.
 pub(crate) fn sanitized_download_url(value: &str) -> String {
-    let Ok(mut url) = Url::parse(value) else { return "invalid download address".into(); };
-    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() { return "invalid download address".into(); }
+    let Ok(mut url) = Url::parse(value) else {
+        return "invalid download address".into();
+    };
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return "invalid download address".into();
+    }
     let _ = url.set_username("");
     let _ = url.set_password(None);
     url.set_query(None);
@@ -755,5 +784,48 @@ pub(crate) fn sanitized_download_url(value: &str) -> String {
     url.as_str().chars().take(4096).collect()
 }
 fn url_refusal(rule: &'static str, value: &str) -> ContentError {
-    ContentError::UrlRefusal { rule, item: sanitized_download_url(value) }
+    ContentError::UrlRefusal {
+        rule,
+        item: sanitized_download_url(value),
+    }
+}
+
+#[cfg(test)]
+mod trusted_pack_policy_tests {
+    use super::*;
+    #[test]
+    fn provider_archive_names_and_https_hosts_are_trusted() {
+        for name in [
+            "Cobblemon 3D Pok\u{00e9} Rods 1.0.zip",
+            "Cobblemon 3D Pok? Rods 1.0.zip",
+        ] {
+            let stored = provider_storage_name(name).unwrap();
+            assert!(RelativePath::parse(&format!("mods/{stored}")).is_ok());
+            assert!(
+                vesta_protocol::pack::catalogue::RelativePath::parse(&format!("mods/{stored}"))
+                    .is_ok()
+            );
+        }
+        for name in ["COBBLEVERSE 1.7.42.zip", "Pok?mon: pack.zip"] {
+            assert!(validate_filename(name).is_ok());
+        }
+        for name in ["../pack.zip", "/pack.zip", "C:pack.zip", "nested\\pack.zip"] {
+            assert!(validate_filename(name).is_err());
+        }
+        assert!(
+            validate_download_url(
+                Provider::Curseforge,
+                &Url::parse("https://new-cdn.example/pack.zip").unwrap()
+            )
+            .is_ok()
+        );
+        for url in [
+            "http://cdn.example/pack.zip",
+            "https://user:secret@cdn.example/pack.zip",
+        ] {
+            assert!(
+                validate_download_url(Provider::Curseforge, &Url::parse(url).unwrap()).is_err()
+            );
+        }
+    }
 }

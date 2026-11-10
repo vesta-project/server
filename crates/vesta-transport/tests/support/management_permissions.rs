@@ -192,13 +192,13 @@ fn permission_tls_rank_self_top_role_and_versioned_idempotent_user_changes() {
     let v = user(&f, &os, &lower);
     // Owners can grant the top role to another verified Minecraft account.
     let promoted = send(
-            &f,
-            "PUT",
-            &path,
-            &serde_json::json!({"add":["owner"],"remove":[],"expected_version":v["version"]}),
-            Some(&os),
-            Some("tls-owner-role-0001"),
-        );
+        &f,
+        "PUT",
+        &path,
+        &serde_json::json!({"add":["owner"],"remove":[],"expected_version":v["version"]}),
+        Some(&os),
+        Some("tls-owner-role-0001"),
+    );
     assert_eq!(promoted.status, 200);
     assert_eq!(promoted.json()["data"]["rank"], 100);
 }

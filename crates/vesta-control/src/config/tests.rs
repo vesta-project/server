@@ -1500,11 +1500,32 @@ fn startup_policy_migrates_legacy_bool_and_custom_java_roots_are_local_absolute_
 #[test]
 fn download_limits_are_optional_and_strictly_bounded() {
     let temp = tempfile::tempdir().unwrap();
-    assert_eq!(parse(GOLDEN,temp.path()).unwrap().downloads().max_concurrent,None);
+    assert_eq!(
+        parse(GOLDEN, temp.path())
+            .unwrap()
+            .downloads()
+            .max_concurrent,
+        None
+    );
     for value in [1, 8, 16] {
-        assert_eq!(parse(&format!("{GOLDEN}\n[downloads]\nmax-concurrent = {value}\n"),temp.path()).unwrap().downloads().max_concurrent,Some(value));
+        assert_eq!(
+            parse(
+                &format!("{GOLDEN}\n[downloads]\nmax-concurrent = {value}\n"),
+                temp.path()
+            )
+            .unwrap()
+            .downloads()
+            .max_concurrent,
+            Some(value)
+        );
     }
     for value in ["0", "17", "-1", "'auto'", "true"] {
-        assert!(parse(&format!("{GOLDEN}\n[downloads]\nmax-concurrent = {value}\n"),temp.path()).is_err());
+        assert!(
+            parse(
+                &format!("{GOLDEN}\n[downloads]\nmax-concurrent = {value}\n"),
+                temp.path()
+            )
+            .is_err()
+        );
     }
 }

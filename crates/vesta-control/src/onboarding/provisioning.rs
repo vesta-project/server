@@ -97,7 +97,7 @@ struct Actor {
     account: String,
 }
 enum Prepared {
-    Install(InstallPlan),
+    Install(Box<InstallPlan>),
     Copy(CopySnapshot),
 }
 #[derive(Serialize, Deserialize)]
@@ -227,16 +227,14 @@ impl Provisioning {
             } if text(name)
                 && text(minecraft_version)
                 && self.0.source.is_some()
-                && self.0.local.entrypoint().is_some() =>
-            {
-                ()
-            }
+                && self.0.local.entrypoint().is_some() => {}
             _ => return Err(Error::InvalidRequest),
         }
         let id = uuid::Uuid::new_v4().to_string();
         let actor=self.0.setup.with_owner(token,|c,s,now|{
             let (active,total):(bool,i64)=c.query_row("SELECT EXISTS(SELECT 1 FROM setup_provisioning WHERE state IN ('planning','applying','ready','complete')),count(*) FROM setup_provisioning",[],|r|Ok((r.get(0)?,r.get(1)?)))?;
-            if active{return Err(Error::Conflict);}if total>=64{return Err(Error::Saturated);}
+            if active{return Err(Error::Conflict);}
+            if total>=64{return Err(Error::Saturated);}
             let actor=Actor{principal:s.principal.to_string(),device:s.device.to_string(),account:self.0.setup.account(c,s)?};
             c.execute("INSERT INTO setup_provisioning(id,request,actor,state,phase,created_ms) VALUES(?,?,?,'planning','metadata',?)",params![id,request_json,encoded(&actor)?,now])?;
             self.audit(c,s,"setup.first_server.plan",&id)?;
@@ -479,7 +477,7 @@ impl Provisioning {
                     bytes: plan.artifacts().iter().filter_map(|a| a.size).sum(),
                     warnings: plan.warnings().iter().map(|w| format!("{w:?}")).collect(),
                 };
-                (Prepared::Install(plan), review)
+                (Prepared::Install(Box::new(plan)), review)
             }
         };
         let confirmation = uuid::Uuid::new_v4().to_string();
@@ -708,14 +706,13 @@ impl Provisioning {
         if !self.0.root.join("servers/first/game/config").is_dir() {
             value["paths"]["scan-roots"] = serde_json::json!(["servers/first/game"]);
         }
-        if let (Some(software), Some(loader)) = (review.software, review.loader_version.as_ref()) {
-            if matches!(
+        if let (Some(software), Some(loader)) = (review.software, review.loader_version.as_ref())
+            && matches!(
                 software,
                 Software::Fabric | Software::Quilt | Software::Forge | Software::NeoForge
-            ) {
-                value["pack"]["loader"] =
-                    serde_json::json!({"kind":software.id(),"version":loader});
-            }
+            )
+        {
+            value["pack"]["loader"] = serde_json::json!({"kind":software.id(),"version":loader});
         }
         let table = toml::Value::try_from(value).map_err(unavailable)?;
         let document = toml::to_string(&table).map_err(unavailable)?;

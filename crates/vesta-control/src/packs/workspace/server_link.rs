@@ -151,7 +151,7 @@ impl PackWorkspace {
                             ClientPackMode::None
                         },
                         allow_custom_content: false,
-            require_update: false,
+                        require_update: false,
                     }),
                 }
             })
@@ -234,13 +234,16 @@ impl PackWorkspace {
                     )?;
                 }
             }
-            Ok(PackInstallOutcome { decisions: Vec::new(),
+            Ok(PackInstallOutcome {
+                decisions: Vec::new(),
                 software_job_id: None,
                 state: "staged_until_restart".into(),
                 pending_ids,
             })
         })?;
-        files.apply_pack_ids(&outcome.pending_ids).map_err(|_| ReleaseError::Conflict)?;
+        files
+            .apply_pack_ids(&outcome.pending_ids)
+            .map_err(|_| ReleaseError::Conflict)?;
         outcome.state = "installed".into();
         Ok(outcome)
     }
@@ -308,7 +311,7 @@ mod tests {
                 &ClientPackConfig {
                     mode: ClientPackMode::Custom,
                     allow_custom_content: false,
-            require_update: false,
+                    require_update: false,
                 },
             )
             .unwrap();

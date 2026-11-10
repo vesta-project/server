@@ -230,5 +230,7 @@ pub(super) struct StoredLaunch {
 }
 
 impl From<crate::packs::ReleaseError> for SoftwareError {
-    fn from(error: crate::packs::ReleaseError) -> Self { Self::PackFailure(error.code()) }
+    fn from(error: crate::packs::ReleaseError) -> Self {
+        Self::PackFailure(error.code())
+    }
 }

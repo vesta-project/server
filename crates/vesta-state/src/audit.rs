@@ -373,10 +373,23 @@ pub(crate) fn append_on_connection(
     let mut metadata = record.metadata_json();
     // Keep the editor label in the same durable, hash-chained transaction as
     // configuration edits. Later account renames cannot rewrite attribution.
-    if record.action.starts_with("software.") || matches!(record.action.as_str(), "management.permissions.mutate" | "files.write" | "sleep.policy.configure" | "motd.policy.update" | "backups.repository.configure" | "backups.config.update" | "backups.policy.update" | "backups.policy.reset") {
+    if record.action.starts_with("software.")
+        || matches!(
+            record.action.as_str(),
+            "management.permissions.mutate"
+                | "files.write"
+                | "sleep.policy.configure"
+                | "motd.policy.update"
+                | "backups.repository.configure"
+                | "backups.config.update"
+                | "backups.policy.update"
+                | "backups.policy.reset"
+        )
+    {
         let name: Option<String> = c.query_row("SELECT coalesce(n.name,p.display_name) FROM principals p LEFT JOIN user_minecraft_names n ON n.principal_id=p.id WHERE p.id=?", [&record.actor.principal_id], |r| r.get(0)).optional()?;
         if let Some(name) = name {
-            let mut value: serde_json::Value = serde_json::from_str(&metadata).map_err(|_| StateError::new("state_audit_invalid"))?;
+            let mut value: serde_json::Value = serde_json::from_str(&metadata)
+                .map_err(|_| StateError::new("state_audit_invalid"))?;
             value["editor_display_name"] = name.into();
             metadata = value.to_string();
         }

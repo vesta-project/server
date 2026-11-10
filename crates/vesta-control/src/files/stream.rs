@@ -25,7 +25,8 @@ impl FileBrowser {
     /// All three resources (submitted, canonical, handle) pass live policy and
     /// remote document exclusions. The handle allows writers/rotation on Windows.
     pub fn open_stream(&self, subject: &Subject, path: &RelativePath) -> Result<FileStream> {
-        #[cfg(feature = "latency-probe")] let _latency_file_admission = vesta_state::latency_probe::Span::new("file_admission");
+        #[cfg(feature = "latency-probe")]
+        let _latency_file_admission = vesta_state::latency_probe::Span::new("file_admission");
         self.db
             .read_with(|snapshot| {
                 let policy = identity::policy_in(
@@ -118,8 +119,10 @@ impl FileStream {
     /// Fingerprint the admitted interval with fixed-size reads. Reject observations
     /// made while the opening version changes; this never allocates a file-sized buffer.
     pub fn snapshot_digest(&mut self, offset: u64, count: u64) -> Result<[u8; 32]> {
-        #[cfg(feature = "latency-probe")] vesta_state::latency_probe::count("digest_bytes",count);
-        #[cfg(feature = "latency-probe")] let _latency_file_digest = vesta_state::latency_probe::Span::new("file_digest");
+        #[cfg(feature = "latency-probe")]
+        vesta_state::latency_probe::count("digest_bytes", count);
+        #[cfg(feature = "latency-probe")]
+        let _latency_file_digest = vesta_state::latency_probe::Span::new("file_digest");
         if offset > self.size || count > self.size - offset {
             return Err(FileError::InvalidLimit);
         }

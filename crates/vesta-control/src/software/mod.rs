@@ -600,8 +600,14 @@ impl SoftwareHandle {
                 s.revision,
             )?;
             if pack.is_some() {
-                c.execute("DELETE FROM pack_install_result WHERE server_id=?",[self.inner.db.server_id()])?;
-                c.execute("INSERT OR REPLACE INTO pack_install_job VALUES(?,?)", rusqlite::params![self.inner.db.server_id(), job.id])?;
+                c.execute(
+                    "DELETE FROM pack_install_result WHERE server_id=?",
+                    [self.inner.db.server_id()],
+                )?;
+                c.execute(
+                    "INSERT OR REPLACE INTO pack_install_job VALUES(?,?)",
+                    rusqlite::params![self.inner.db.server_id(), job.id],
+                )?;
             }
             Ok(job)
         })?;
@@ -626,15 +632,15 @@ impl SoftwareHandle {
         // request sees Busy (or an already consumed plan) rather than its job.
         // This guard is dropped before any asynchronous software planning below.
         let target = {
-            let mut queue=self.inner.queue.lock().map_err(|_|SoftwareError::StateUnavailable)?;
-            if let Some(job) = self
+            let mut queue = self
                 .inner
-                .db
-                .read_with(|t| {
-                    store::authorize(t.connection(), &self.inner.db, subject)?;
-                    store::existing(t.connection(), subject, &pack.key, &binding)
-                })?
-            {
+                .queue
+                .lock()
+                .map_err(|_| SoftwareError::StateUnavailable)?;
+            if let Some(job) = self.inner.db.read_with(|t| {
+                store::authorize(t.connection(), &self.inner.db, subject)?;
+                store::existing(t.connection(), subject, &pack.key, &binding)
+            })? {
                 return Ok(job);
             }
             let target = pack
@@ -642,17 +648,41 @@ impl SoftwareHandle {
                 .install_switch_review(subject, &pack.input)
                 .map_err(|_| SoftwareError::ConfirmationInvalid)?;
             if !target.software_switch_required {
-                if queue.stop { return Err(SoftwareError::RuntimeUnavailable); }
-                let job=self.inner.db.write_with(|tx| -> Result<Job> {
-                    let c=tx.connection(); store::authorize(c,&self.inner.db,subject)?;
-                    let state=store::state(c)?;
-                    if state.recovery { return Err(SoftwareError::RecoveryRequired); }
-                    let job = store::admit(c,&self.inner.db,&self.inner.audit,subject,"apply",&pack.key,&binding,state.revision)?;
-                    c.execute("DELETE FROM pack_install_result WHERE server_id=?",[self.inner.db.server_id()])?;
-                    c.execute("INSERT OR REPLACE INTO pack_install_job VALUES(?,?)", rusqlite::params![self.inner.db.server_id(), job.id])?;
+                if queue.stop {
+                    return Err(SoftwareError::RuntimeUnavailable);
+                }
+                let job = self.inner.db.write_with(|tx| -> Result<Job> {
+                    let c = tx.connection();
+                    store::authorize(c, &self.inner.db, subject)?;
+                    let state = store::state(c)?;
+                    if state.recovery {
+                        return Err(SoftwareError::RecoveryRequired);
+                    }
+                    let job = store::admit(
+                        c,
+                        &self.inner.db,
+                        &self.inner.audit,
+                        subject,
+                        "apply",
+                        &pack.key,
+                        &binding,
+                        state.revision,
+                    )?;
+                    c.execute(
+                        "DELETE FROM pack_install_result WHERE server_id=?",
+                        [self.inner.db.server_id()],
+                    )?;
+                    c.execute(
+                        "INSERT OR REPLACE INTO pack_install_job VALUES(?,?)",
+                        rusqlite::params![self.inner.db.server_id(), job.id],
+                    )?;
                     Ok(job)
                 })?;
-                queue.work.push_back(Work {id:job.id.clone(),actor:subject.clone(),kind:WorkKind::Pack(Box::new(pack),Box::new(target))});
+                queue.work.push_back(Work {
+                    id: job.id.clone(),
+                    actor: subject.clone(),
+                    kind: WorkKind::Pack(Box::new(pack), Box::new(target)),
+                });
                 self.inner.wake.notify_one();
                 return Ok(job);
             }
@@ -885,15 +915,25 @@ fn validate_request(r: &PlanRequest) -> Result<()> {
         Ok(())
     }
 }
-fn pack_checksum_acknowledged(warnings: &[crate::packs::workspace::InstallWarning], input: &crate::packs::workspace::PackInstallApply) -> bool {
-    input.acknowledge_software_switch && input.acknowledge_warnings
-        && warnings.iter().any(|warning| warning.code == "software_legacy_checksum_review")
+fn pack_checksum_acknowledged(
+    warnings: &[crate::packs::workspace::InstallWarning],
+    input: &crate::packs::workspace::PackInstallApply,
+) -> bool {
+    input.acknowledge_software_switch
+        && input.acknowledge_warnings
+        && warnings
+            .iter()
+            .any(|warning| warning.code == "software_legacy_checksum_review")
 }
 fn valid_key(key: &str) -> Result<()> {
     // HTTP management binds actor/server/route into this namespaced digest.
     // It is a database key, not a filesystem name.
-    if key.strip_prefix("http:").is_some_and(|digest| digest.len() == 64
-        && digest.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))) {
+    if key.strip_prefix("http:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+    }) {
         return Ok(());
     }
     if !(8..=128).contains(&key.len())

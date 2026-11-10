@@ -437,9 +437,12 @@ pub(super) fn storage_fault_consumed() -> bool {
 }
 #[cfg(test)]
 pub(super) fn storage_fault(point: &str) -> Result<()> {
-    if STORAGE_FAULT.with(|slot| slot.get()==Some(point)) {
+    if STORAGE_FAULT.with(|slot| slot.get() == Some(point)) {
         STORAGE_FAULT.with(|slot| slot.set(None));
-        return Err(io_error(std::io::Error::new(std::io::ErrorKind::StorageFull,"injected_owned_fixture_storage")));
+        return Err(io_error(std::io::Error::new(
+            std::io::ErrorKind::StorageFull,
+            "injected_owned_fixture_storage",
+        )));
     }
     Ok(())
 }

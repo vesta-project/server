@@ -72,7 +72,11 @@ pub struct ProviderFailureDetails {
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum ReleaseError {
-    Refusal { code: &'static str, rule: &'static str, item: String },
+    Refusal {
+        code: &'static str,
+        rule: &'static str,
+        item: String,
+    },
     ProviderFile {
         failure: ProviderFailure,
         details: Box<ProviderFailureDetails>,
@@ -130,7 +134,11 @@ impl ReleaseError {
     ) -> Self {
         use crate::content::ContentError;
         if let ContentError::UrlRefusal { rule, item } = error {
-            return Self::Refusal { code: "content_pack_source_unsafe", rule, item };
+            return Self::Refusal {
+                code: "content_pack_source_unsafe",
+                rule,
+                item,
+            };
         }
         let reason = match &error {
             ContentError::UnsafeFilename => "filename_not_portable",
@@ -196,7 +204,11 @@ impl From<crate::content::ContentError> for ReleaseError {
     fn from(error: crate::content::ContentError) -> Self {
         use crate::content::ContentError;
         match error {
-            ContentError::UrlRefusal { rule, item } => Self::Refusal { code: "content_pack_source_unsafe", rule, item },
+            ContentError::UrlRefusal { rule, item } => Self::Refusal {
+                code: "content_pack_source_unsafe",
+                rule,
+                item,
+            },
             ContentError::ProviderNotConfigured => PackError::ProviderNotConfigured.into(),
             ContentError::InvalidRequest => PackError::InvalidArchive.into(),
             ContentError::TooLarge => PackError::TooLarge.into(),
@@ -394,8 +406,16 @@ impl PackReleases {
     /// Included in the signed player release, independently of management access.
     pub fn allow_custom_content(&self) -> Result<bool, ReleaseError> {
         Ok(self.db.read(|c| {
-            let raw: Option<String> = c.query_row("SELECT body FROM client_pack_config WHERE server_id=?", [self.db.server_id()], |r| r.get(0)).optional()?;
-            Ok(raw.and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()).is_some_and(|v| v["allow_custom_content"] == true))
+            let raw: Option<String> = c
+                .query_row(
+                    "SELECT body FROM client_pack_config WHERE server_id=?",
+                    [self.db.server_id()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(raw
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                .is_some_and(|v| v["allow_custom_content"] == true))
         })?)
     }
     pub fn offered(&self) -> Result<Option<PackRelease>, ReleaseError> {
@@ -966,25 +986,61 @@ mod url_provenance_tests {
     use super::*;
     #[test]
     fn download_failure_keeps_sanitized_provenance_out_of_provider_metadata() {
-        let error = ReleaseError::provider_file(crate::content::ContentError::HashMismatch, "modrinth", "project", "version", "download", Some("pack.zip"))
-            .with_download_url("https://user:secret@example.com/pack.zip?token=secret#fragment");
-        let ReleaseError::ProviderFile { failure, details } = error else { panic!("expected provider failure"); };
+        let error = ReleaseError::provider_file(
+            crate::content::ContentError::HashMismatch,
+            "modrinth",
+            "project",
+            "version",
+            "download",
+            Some("pack.zip"),
+        )
+        .with_download_url("https://user:secret@example.com/pack.zip?token=secret#fragment");
+        let ReleaseError::ProviderFile { failure, details } = error else {
+            panic!("expected provider failure");
+        };
         assert_eq!(failure, ProviderFailure::HashMismatch);
-        assert_eq!(details.issue_url.as_deref(), Some("https://example.com/pack.zip"));
+        assert_eq!(
+            details.issue_url.as_deref(),
+            Some("https://example.com/pack.zip")
+        );
         let metadata = serde_json::to_string(&details).unwrap();
         assert!(!metadata.contains("example.com"));
         assert!(!metadata.contains("secret"));
-        assert_eq!(crate::content::sanitized_download_url("mailto:user:secret@example.com?token=secret"), "invalid download address");
+        assert_eq!(
+            crate::content::sanitized_download_url("mailto:user:secret@example.com?token=secret"),
+            "invalid download address"
+        );
     }
     #[test]
     fn unsafe_download_issue_keeps_url_without_secrets() {
         let url = "http://user:password@example.com/pack.zip?token=secret#fragment";
         let source = crate::content::ResolvedSource {
-            provider: crate::content::Provider::Modrinth, filename: "pack.zip".into(), download_url: url.into(),
+            provider: crate::content::Provider::Modrinth,
+            filename: "pack.zip".into(),
+            download_url: url.into(),
             expected_hash: crate::content::ExpectedHash::Sha512("a".repeat(128)),
         };
-        let error = crate::content::fetch_verified_source(&source, &crate::content::UreqDownloadHttp::default(), std::time::Instant::now() + std::time::Duration::from_secs(1)).unwrap_err();
-        let error = ReleaseError::provider_file(error, "modrinth", "project", "version", "download", Some("pack.zip"));
-        assert_eq!(error, ReleaseError::Refusal { code: "content_pack_source_unsafe", rule: "download_https_without_credentials", item: "http://example.com/pack.zip".into() });
+        let error = crate::content::fetch_verified_source(
+            &source,
+            &crate::content::UreqDownloadHttp::default(),
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .unwrap_err();
+        let error = ReleaseError::provider_file(
+            error,
+            "modrinth",
+            "project",
+            "version",
+            "download",
+            Some("pack.zip"),
+        );
+        assert_eq!(
+            error,
+            ReleaseError::Refusal {
+                code: "content_pack_source_unsafe",
+                rule: "download_https_without_credentials",
+                item: "http://example.com/pack.zip".into()
+            }
+        );
     }
 }

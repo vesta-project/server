@@ -7,7 +7,9 @@ use sha2::Sha256;
 fn pack_downloads_have_capacity_beyond_the_interactive_pair_limit() {
     let deadline = Instant::now() + Duration::from_secs(1);
     let mut active = Vec::new();
-    for _ in 0..3 { active.push(super::PACK_DOWNLOADS.acquire(Some(deadline)).unwrap()); }
+    for _ in 0..3 {
+        active.push(super::PACK_DOWNLOADS.acquire(Some(deadline)).unwrap());
+    }
     assert_eq!(active.len(), 3);
 }
 use std::{
@@ -262,7 +264,10 @@ fn disallowed_urls_are_rejected_before_http() {
         let http = FakeHttp::new(vec![]);
         assert_eq!(
             install(&f, s, &http, &WritePrecondition::Absent),
-            Err(ContentError::UrlRefusal { rule: "download_https_without_credentials", item: sanitized_download_url(url) })
+            Err(ContentError::UrlRefusal {
+                rule: "download_https_without_credentials",
+                item: sanitized_download_url(url)
+            })
         );
         assert!(http.urls.borrow().is_empty());
         f.no_effect();
@@ -270,9 +275,8 @@ fn disallowed_urls_are_rejected_before_http() {
 }
 #[test]
 fn redirects_are_rechecked_and_bounded() {
-    for location in [
-        "http://cdn.modrinth.com/mod.jar",
-    ] {
+    {
+        let location = "http://cdn.modrinth.com/mod.jar";
         let f = Fixture::new();
         let http = FakeHttp::new(vec![redirect(location)]);
         assert_eq!(
@@ -282,7 +286,10 @@ fn redirects_are_rechecked_and_bounded() {
                 &http,
                 &WritePrecondition::Absent
             ),
-            Err(ContentError::UrlRefusal { rule: "download_https_without_credentials", item: sanitized_download_url(location) })
+            Err(ContentError::UrlRefusal {
+                rule: "download_https_without_credentials",
+                item: sanitized_download_url(location)
+            })
         );
         assert_eq!(http.urls.borrow().len(), 1);
         f.no_effect();
@@ -296,7 +303,10 @@ fn redirects_are_rechecked_and_bounded() {
             &http,
             &WritePrecondition::Absent
         ),
-        Err(ContentError::UrlRefusal { rule: "download_redirect_limit", item: "https://cdn.modrinth.com/again".into() })
+        Err(ContentError::UrlRefusal {
+            rule: "download_redirect_limit",
+            item: "https://cdn.modrinth.com/again".into()
+        })
     );
     assert_eq!(http.urls.borrow().len(), MAX_REDIRECTS + 1);
     f.no_effect();
@@ -1196,32 +1206,85 @@ fn provider_display_names_use_catalogue_safe_storage_aliases() {
 
 #[test]
 fn assurance_download_diagnostics_remove_fake_credentials_and_signed_parameters() {
-    let input="https://FAKE_USER:FAKE_PASSWORD@example.invalid/artifact.jar?key=FAKE_KEY#FAKE_FRAGMENT";
-    let redacted=sanitized_download_url(input);assert_eq!(redacted,"https://example.invalid/artifact.jar");
-    for secret in ["FAKE_USER","FAKE_PASSWORD","FAKE_KEY","FAKE_FRAGMENT"] {assert!(!redacted.contains(secret));}
-    let error=url_refusal("download_https_without_credentials",input);
-    if let ContentError::UrlRefusal{item,..}=error {assert_eq!(item,redacted);} else {panic!("typed redacted refusal required");}
+    let input =
+        "https://FAKE_USER:FAKE_PASSWORD@example.invalid/artifact.jar?key=FAKE_KEY#FAKE_FRAGMENT";
+    let redacted = sanitized_download_url(input);
+    assert_eq!(redacted, "https://example.invalid/artifact.jar");
+    for secret in ["FAKE_USER", "FAKE_PASSWORD", "FAKE_KEY", "FAKE_FRAGMENT"] {
+        assert!(!redacted.contains(secret));
+    }
+    let error = url_refusal("download_https_without_credentials", input);
+    if let ContentError::UrlRefusal { item, .. } = error {
+        assert_eq!(item, redacted);
+    } else {
+        panic!("typed redacted refusal required");
+    }
 }
 
 #[test]
 fn assurance_observe_private_https_target_policy_without_network() {
     // Diagnostic observation, NOT an assertion that private destinations are blocked.
     // Changing trusted-provider destination policy requires an owner decision.
-    for (kind,text) in [("loopback-v4","https://127.0.0.1/artifact.jar"),("private-v4","https://10.0.0.1/artifact.jar"),("loopback-v6","https://[::1]/artifact.jar"),("link-local","https://169.254.169.254/artifact.jar")] {
-        let accepted=validate_download_url(Provider::Modrinth,&Url::parse(text).unwrap()).is_ok();
+    for (kind, text) in [
+        ("loopback-v4", "https://127.0.0.1/artifact.jar"),
+        ("private-v4", "https://10.0.0.1/artifact.jar"),
+        ("loopback-v6", "https://[::1]/artifact.jar"),
+        ("link-local", "https://169.254.169.254/artifact.jar"),
+    ] {
+        let accepted =
+            validate_download_url(Provider::Modrinth, &Url::parse(text).unwrap()).is_ok();
         eprintln!("ASSURANCE_URL_POLICY kind={kind} accepted={accepted} network_requests=0");
     }
-    assert!(validate_download_url(Provider::Modrinth,&Url::parse("http://127.0.0.1/a").unwrap()).is_err());
-    assert!(validate_download_url(Provider::Modrinth,&Url::parse("https://FAKE_USER:FAKE_PASSWORD@127.0.0.1/a").unwrap()).is_err());
+    assert!(
+        validate_download_url(
+            Provider::Modrinth,
+            &Url::parse("http://127.0.0.1/a").unwrap()
+        )
+        .is_err()
+    );
+    assert!(
+        validate_download_url(
+            Provider::Modrinth,
+            &Url::parse("https://FAKE_USER:FAKE_PASSWORD@127.0.0.1/a").unwrap()
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn public_only_artifacts_refuse_private_literals_and_redirects_before_transport() {
-    for target in ["https://127.0.0.1/a.jar","https://10.0.0.1/a.jar","https://169.254.169.254/a.jar","https://[::1]/a.jar","https://[fc00::1]/a.jar","https://[::ffff:127.0.0.1]/a.jar"] {
-        let f=Fixture::new();let mut artifact=source(Provider::Modrinth,b"mod");artifact.download_url=target.into();let http=FakeHttp::new(vec![response(b"mod")]);
-        assert!(install(&f,artifact,&http,&WritePrecondition::Absent).is_err(),"private artifact was accepted");assert!(http.urls.borrow().is_empty());f.no_effect();
-        let f=Fixture::new();let http=FakeHttp::new(vec![redirect(target),response(b"mod")]);
-        assert!(install(&f,source(Provider::Modrinth,b"mod"),&http,&WritePrecondition::Absent).is_err(),"private redirect was followed");assert_eq!(http.urls.borrow().len(),1);f.no_effect();
+    for target in [
+        "https://127.0.0.1/a.jar",
+        "https://10.0.0.1/a.jar",
+        "https://169.254.169.254/a.jar",
+        "https://[::1]/a.jar",
+        "https://[fc00::1]/a.jar",
+        "https://[::ffff:127.0.0.1]/a.jar",
+    ] {
+        let f = Fixture::new();
+        let mut artifact = source(Provider::Modrinth, b"mod");
+        artifact.download_url = target.into();
+        let http = FakeHttp::new(vec![response(b"mod")]);
+        assert!(
+            install(&f, artifact, &http, &WritePrecondition::Absent).is_err(),
+            "private artifact was accepted"
+        );
+        assert!(http.urls.borrow().is_empty());
+        f.no_effect();
+        let f = Fixture::new();
+        let http = FakeHttp::new(vec![redirect(target), response(b"mod")]);
+        assert!(
+            install(
+                &f,
+                source(Provider::Modrinth, b"mod"),
+                &http,
+                &WritePrecondition::Absent
+            )
+            .is_err(),
+            "private redirect was followed"
+        );
+        assert_eq!(http.urls.borrow().len(), 1);
+        f.no_effect();
     }
 }
 
@@ -1229,29 +1292,61 @@ fn public_only_artifacts_refuse_private_literals_and_redirects_before_transport(
 #[ignore = "bounded in-process download baseline; simulated2ms transport, no network"]
 fn audit_download_400_baseline() {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    struct LocalHttp { calls: AtomicUsize, active: AtomicUsize, peak: AtomicUsize, bytes: Vec<u8> }
+    struct LocalHttp {
+        calls: AtomicUsize,
+        active: AtomicUsize,
+        peak: AtomicUsize,
+        bytes: Vec<u8>,
+    }
     impl DownloadHttp for LocalHttp {
-        fn get(&self,_: &Url) -> Result<HttpResponse> {
-            self.calls.fetch_add(1,Ordering::SeqCst);
-            let active=self.active.fetch_add(1,Ordering::SeqCst)+1; self.peak.fetch_max(active,Ordering::SeqCst);
+        fn get(&self, _: &Url) -> Result<HttpResponse> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(active, Ordering::SeqCst);
             std::thread::sleep(Duration::from_millis(2));
-            self.active.fetch_sub(1,Ordering::SeqCst);
+            self.active.fetch_sub(1, Ordering::SeqCst);
             Ok(response(&self.bytes))
         }
     }
-    for provider in [Provider::Modrinth,Provider::Curseforge] {
-      for width in [1,4,8] {
-        let bytes=vec![42;4096]; let source=source(provider,&bytes);
-        let http=LocalHttp { calls:AtomicUsize::new(0),active:AtomicUsize::new(0),peak:AtomicUsize::new(0),bytes };
-        let start=Instant::now();
-        for batch in (0..400).step_by(width) {
-          std::thread::scope(|scope| { let mut jobs=Vec::new();
-            for _ in batch..(batch+width).min(400) { let http=&http;let source=&source;jobs.push(scope.spawn(move||fetch_verified_source_into(source,http,Instant::now()+Duration::from_secs(30),&mut std::io::sink()).unwrap())); }
-            for job in jobs {job.join().unwrap();}
-          });
+    for provider in [Provider::Modrinth, Provider::Curseforge] {
+        for width in [1, 4, 8] {
+            let bytes = vec![42; 4096];
+            let source = source(provider, &bytes);
+            let http = LocalHttp {
+                calls: AtomicUsize::new(0),
+                active: AtomicUsize::new(0),
+                peak: AtomicUsize::new(0),
+                bytes,
+            };
+            let start = Instant::now();
+            for batch in (0..400).step_by(width) {
+                std::thread::scope(|scope| {
+                    let mut jobs = Vec::new();
+                    for _ in batch..(batch + width).min(400) {
+                        let http = &http;
+                        let source = &source;
+                        jobs.push(scope.spawn(move || {
+                            fetch_verified_source_into(
+                                source,
+                                http,
+                                Instant::now() + Duration::from_secs(30),
+                                &mut std::io::sink(),
+                            )
+                            .unwrap()
+                        }));
+                    }
+                    for job in jobs {
+                        job.join().unwrap();
+                    }
+                });
+            }
+            assert_eq!(http.calls.load(Ordering::SeqCst), 400);
+            println!(
+                "AUDIT_DOWNLOAD provider={provider:?} items=400 width={width} elapsed_ms={} calls={} peak={} simulated_latency_ms=2",
+                start.elapsed().as_secs_f64() * 1000.0,
+                http.calls.load(Ordering::SeqCst),
+                http.peak.load(Ordering::SeqCst)
+            );
         }
-        assert_eq!(http.calls.load(Ordering::SeqCst),400);
-        println!("AUDIT_DOWNLOAD provider={provider:?} items=400 width={width} elapsed_ms={} calls={} peak={} simulated_latency_ms=2",start.elapsed().as_secs_f64()*1000.0,http.calls.load(Ordering::SeqCst),http.peak.load(Ordering::SeqCst));
-      }
     }
 }

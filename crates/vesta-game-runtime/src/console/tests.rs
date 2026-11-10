@@ -46,7 +46,10 @@ fn cursor_exhaustion_never_wraps_evicts_or_partially_records_a_line() {
         let inner = capture.inner.lock().unwrap();
         assert_eq!(inner.latest, u64::MAX);
         assert_eq!(inner.lines.back().unwrap().cursor, u64::MAX);
-        assert_eq!(inner.lines.front().unwrap().cursor, 130 - (MAX_RETAINED_BYTES / MAX_LINE_BYTES) as u64);
+        assert_eq!(
+            inner.lines.front().unwrap().cursor,
+            130 - (MAX_RETAINED_BYTES / MAX_LINE_BYTES) as u64
+        );
         assert_eq!(inner.text_bytes, MAX_RETAINED_BYTES);
         (inner.lines.clone(), inner.text_bytes)
     };

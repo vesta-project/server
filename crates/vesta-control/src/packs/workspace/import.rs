@@ -45,8 +45,16 @@ impl ArchiveBody {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ImportRequest {
-    Provider { expected_revision: String, provider: String, project_id: String, version_id: String },
-    Unlink { expected_revision: String, choice: String },
+    Provider {
+        expected_revision: String,
+        provider: String,
+        project_id: String,
+        version_id: String,
+    },
+    Unlink {
+        expected_revision: String,
+        choice: String,
+    },
     UploadedArchive {
         expected_revision: String,
         upload_id: String,
@@ -199,7 +207,11 @@ impl PackWorkspace {
         if let Some(outcome) = self.replay(subject, key, input)? {
             return Ok(outcome);
         }
-        if let ImportRequest::Unlink { expected_revision, choice } = input {
+        if let ImportRequest::Unlink {
+            expected_revision,
+            choice,
+        } = input
+        {
             return self.mutate(subject, key, input, |c| {
                 let mut manifest = self.read_in(c, mc)?.manifest;
                 client_link::unlink(&mut manifest, choice)?;
@@ -207,7 +219,12 @@ impl PackWorkspace {
             });
         }
         let expected = match input {
-            ImportRequest::Provider { expected_revision, .. } | ImportRequest::Unlink { expected_revision, .. } => expected_revision,
+            ImportRequest::Provider {
+                expected_revision, ..
+            }
+            | ImportRequest::Unlink {
+                expected_revision, ..
+            } => expected_revision,
             ImportRequest::UploadedArchive {
                 expected_revision, ..
             }
@@ -225,26 +242,57 @@ impl PackWorkspace {
         let mut import_warnings = Vec::new();
         let (mut manifest, blobs) = match input {
             ImportRequest::Unlink { .. } => unreachable!(),
-            ImportRequest::Provider { provider, project_id, version_id, .. } => {
-                let platform = match provider.as_str() { "modrinth" => Provider::Modrinth, "curseforge" => Provider::Curseforge, _ => return Err(invalid()) };
+            ImportRequest::Provider {
+                provider,
+                project_id,
+                version_id,
+                ..
+            } => {
+                let platform = match provider.as_str() {
+                    "modrinth" => Provider::Modrinth,
+                    "curseforge" => Provider::Curseforge,
+                    _ => return Err(invalid()),
+                };
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-                let source = providers.resolve_with_deadline(platform, project_id, version_id, deadline).map_err(ReleaseError::from)?;
-                let archive = crate::content::fetch_verified_source(&source, &crate::content::UreqDownloadHttp::default(), deadline).map_err(ReleaseError::from)?;
-                let (base, blobs) = parse_archive(&archive, providers, |hash| Ok(providers.identify_sha512(hash).ok().flatten()))?;
+                let source = providers
+                    .resolve_with_deadline(platform, project_id, version_id, deadline)
+                    .map_err(ReleaseError::from)?;
+                let archive = crate::content::fetch_verified_source(
+                    &source,
+                    &crate::content::UreqDownloadHttp::default(),
+                    deadline,
+                )
+                .map_err(ReleaseError::from)?;
+                let (base, blobs) = parse_archive(&archive, providers, |hash| {
+                    Ok(providers.identify_sha512(hash).ok().flatten())
+                })?;
                 let mut custom = self.read(subject, mc)?.manifest;
-                client_link::link(&mut custom, base, crate::content::ContentProvider { provider: provider.clone(), project_id: project_id.clone(), version_id: version_id.clone() }, mc)?;
+                client_link::link(
+                    &mut custom,
+                    base,
+                    crate::content::ContentProvider {
+                        provider: provider.clone(),
+                        project_id: project_id.clone(),
+                        version_id: version_id.clone(),
+                    },
+                    mc,
+                )?;
                 (custom, blobs)
-            },
+            }
             ImportRequest::UploadedArchive { upload_id, .. } => {
                 let bytes = self.archive_upload(subject, upload_id)?;
                 import_warnings = archive_review_warnings(&bytes)?;
-                parse_archive(&bytes, providers, |hash| Ok(providers.identify_sha512(hash).ok().flatten()))?
-            },
+                parse_archive(&bytes, providers, |hash| {
+                    Ok(providers.identify_sha512(hash).ok().flatten())
+                })?
+            }
             ImportRequest::Archive { content_base64, .. } => {
                 let bytes = STANDARD.decode(content_base64).map_err(|_| invalid())?;
                 import_warnings = archive_review_warnings(&bytes)?;
-                parse_archive(&bytes, providers, |hash| Ok(providers.identify_sha512(hash).ok().flatten()))?
-            },
+                parse_archive(&bytes, providers, |hash| {
+                    Ok(providers.identify_sha512(hash).ok().flatten())
+                })?
+            }
             ImportRequest::Published {
                 expected_published_revision,
                 ..
@@ -320,7 +368,7 @@ fn entry(
     server: Side,
 ) -> Result<PackEntry> {
     Ok(PackEntry {
-            artifact_sha512: None,
+        artifact_sha512: None,
         id,
         kind: kind(&path)?,
         path,
@@ -408,42 +456,142 @@ pub(super) fn parse_spooled(
 /// Dedicated server packs only need runtime identity from the client archive.
 /// Do not validate or materialize client override destinations for a server install.
 pub(super) fn parse_curseforge_runtime(payload: &Payload, store: &Store) -> Result<PackManifest> {
-    let file=store.verify(payload).map_err(super::super::PackError::from)?;
+    let file = store
+        .verify(payload)
+        .map_err(super::super::PackError::from)?;
     parse_curseforge_runtime_reader(file)
 }
-pub(super) fn parse_curseforge_runtime_reader(file: impl Read + std::io::Seek) -> Result<PackManifest> {
-    let mut zip=zip::ZipArchive::new(file).map_err(|_|invalid())?;
-    let mut manifest=zip.by_name("manifest.json").map_err(|_|invalid())?;
-    if manifest.size()>1024*1024 {return Err(invalid());}
-    let mut bytes=Vec::new(); manifest.read_to_end(&mut bytes).map_err(|_|invalid())?;
-    let document:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|invalid())?;
-    let loader=document["minecraft"]["modLoaders"].as_array().and_then(|loaders|loaders.iter().find(|loader|loader["primary"]==true).or_else(||loaders.first())).and_then(|loader|loader["id"].as_str()).ok_or_else(invalid)?;
-    let (family,version)=loader.split_once('-').ok_or_else(invalid)?;
-    let loader=match family {"forge"=>ClientLoader::Forge,"fabric"=>ClientLoader::Fabric,"neoforge"=>ClientLoader::Neoforge,"quilt"=>ClientLoader::Quilt,_=>return Err(invalid())};
-    let result=PackManifest {modpack_link:None,name:string(&document,"name")?.into(),summary:String::new(),icon:None,display_version:document["version"].as_str().filter(|v|v.split('.').all(|part|!part.is_empty()&&part.bytes().all(|b|b.is_ascii_digit()))).unwrap_or("1.0").into(),minecraft_version:string(&document["minecraft"],"version")?.into(),loader,loader_version:Some(version.into()),override_files:Vec::new(),entries:Vec::new()};
-    validate_manifest(&result)?; Ok(result)
+pub(super) fn parse_curseforge_runtime_reader(
+    file: impl Read + std::io::Seek,
+) -> Result<PackManifest> {
+    let mut zip = zip::ZipArchive::new(file).map_err(|_| invalid())?;
+    let mut manifest = zip.by_name("manifest.json").map_err(|_| invalid())?;
+    if manifest.size() > 1024 * 1024 {
+        return Err(invalid());
+    }
+    let mut bytes = Vec::new();
+    manifest.read_to_end(&mut bytes).map_err(|_| invalid())?;
+    let document: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    let loader = document["minecraft"]["modLoaders"]
+        .as_array()
+        .and_then(|loaders| {
+            loaders
+                .iter()
+                .find(|loader| loader["primary"] == true)
+                .or_else(|| loaders.first())
+        })
+        .and_then(|loader| loader["id"].as_str())
+        .ok_or_else(invalid)?;
+    let (family, version) = loader.split_once('-').ok_or_else(invalid)?;
+    let loader = match family {
+        "forge" => ClientLoader::Forge,
+        "fabric" => ClientLoader::Fabric,
+        "neoforge" => ClientLoader::Neoforge,
+        "quilt" => ClientLoader::Quilt,
+        _ => return Err(invalid()),
+    };
+    let result = PackManifest {
+        modpack_link: None,
+        name: string(&document, "name")?.into(),
+        summary: String::new(),
+        icon: None,
+        display_version: document["version"]
+            .as_str()
+            .filter(|v| {
+                v.split('.')
+                    .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+            })
+            .unwrap_or("1.0")
+            .into(),
+        minecraft_version: string(&document["minecraft"], "version")?.into(),
+        loader,
+        loader_version: Some(version.into()),
+        override_files: Vec::new(),
+        entries: Vec::new(),
+    };
+    validate_manifest(&result)?;
+    Ok(result)
 }
 pub(super) fn parse_modrinth_runtime_reader(file: impl Read + Seek) -> Result<PackManifest> {
-    let mut zip=zip::ZipArchive::new(file).map_err(|_|invalid())?;
-    let manifest=zip.by_name("modrinth.index.json").map_err(|_|invalid())?;
-    if manifest.size()>1024*1024 {return Err(invalid());}
-    let document:serde_json::Value=serde_json::from_reader(manifest).map_err(|_|invalid())?;
-    let deps=&document["dependencies"];
-    let (loader,version)=[("forge",ClientLoader::Forge),("fabric-loader",ClientLoader::Fabric),("quilt-loader",ClientLoader::Quilt),("neoforge",ClientLoader::Neoforge)].into_iter().find_map(|(key,loader)|deps[key].as_str().map(|version|(loader,Some(version.to_string())))).unwrap_or((ClientLoader::None,None));
-    let result=PackManifest {modpack_link:None,name:string(&document,"name")?.into(),summary:String::new(),icon:None,display_version:"1.0".into(),minecraft_version:string(deps,"minecraft")?.into(),loader,loader_version:version,override_files:Vec::new(),entries:Vec::new()}; validate_manifest(&result)?; Ok(result)
+    let mut zip = zip::ZipArchive::new(file).map_err(|_| invalid())?;
+    let manifest = zip.by_name("modrinth.index.json").map_err(|_| invalid())?;
+    if manifest.size() > 1024 * 1024 {
+        return Err(invalid());
+    }
+    let document: serde_json::Value = serde_json::from_reader(manifest).map_err(|_| invalid())?;
+    let deps = &document["dependencies"];
+    let (loader, version) = [
+        ("forge", ClientLoader::Forge),
+        ("fabric-loader", ClientLoader::Fabric),
+        ("quilt-loader", ClientLoader::Quilt),
+        ("neoforge", ClientLoader::Neoforge),
+    ]
+    .into_iter()
+    .find_map(|(key, loader)| {
+        deps[key]
+            .as_str()
+            .map(|version| (loader, Some(version.to_string())))
+    })
+    .unwrap_or((ClientLoader::None, None));
+    let result = PackManifest {
+        modpack_link: None,
+        name: string(&document, "name")?.into(),
+        summary: String::new(),
+        icon: None,
+        display_version: "1.0".into(),
+        minecraft_version: string(deps, "minecraft")?.into(),
+        loader,
+        loader_version: version,
+        override_files: Vec::new(),
+        entries: Vec::new(),
+    };
+    validate_manifest(&result)?;
+    Ok(result)
 }
-pub(super) fn parse_server_spooled(payload: &Payload, store: &Store, providers: &dyn ProviderClient, progress: &dyn Fn(usize,usize,u64)->Result<()>) -> Result<(PackManifest, Vec<Payload>, Vec<String>)> {
-    let file = store.verify(payload).map_err(super::super::PackError::from)?;
+pub(super) fn parse_server_spooled(
+    payload: &Payload,
+    store: &Store,
+    providers: &dyn ProviderClient,
+    progress: &dyn Fn(usize, usize, u64) -> Result<()>,
+) -> Result<(PackManifest, Vec<Payload>, Vec<String>)> {
+    let file = store
+        .verify(payload)
+        .map_err(super::super::PackError::from)?;
     let mut skipped = Vec::new();
-    let (manifest, blobs) = parse_zip(file, providers, |_| Ok(None), Some(store), Some(&mut skipped), Some(progress))?;
-    Ok((manifest, blobs.into_iter().map(|body| body.payload(store)).collect::<Result<_>>()?, skipped))
+    let (manifest, blobs) = parse_zip(
+        file,
+        providers,
+        |_| Ok(None),
+        Some(store),
+        Some(&mut skipped),
+        Some(progress),
+    )?;
+    Ok((
+        manifest,
+        blobs
+            .into_iter()
+            .map(|body| body.payload(store))
+            .collect::<Result<_>>()?,
+        skipped,
+    ))
 }
 
 fn managed_server_file(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    lower.starts_with("libraries/") || (!lower.contains('/') &&
-        (matches!(lower.as_str(), "server.properties" | "eula.txt" | "ops.json" | "whitelist.json" | "banned-ips.json" | "banned-players.json" | "usercache.json") ||
-        [".jar", ".bat", ".cmd", ".sh", ".ps1", ".exe"].iter().any(|suffix| lower.ends_with(suffix))))
+    lower.starts_with("libraries/")
+        || (!lower.contains('/')
+            && (matches!(
+                lower.as_str(),
+                "server.properties"
+                    | "eula.txt"
+                    | "ops.json"
+                    | "whitelist.json"
+                    | "banned-ips.json"
+                    | "banned-players.json"
+                    | "usercache.json"
+            ) || [".jar", ".bat", ".cmd", ".sh", ".ps1", ".exe"]
+                .iter()
+                .any(|suffix| lower.ends_with(suffix))))
 }
 
 fn parse_zip(
@@ -452,7 +600,7 @@ fn parse_zip(
     identify: impl Fn(&str) -> Result<Option<crate::content::ContentProvider>>,
     store: Option<&Store>,
     mut managed_skips: Option<&mut Vec<String>>,
-    progress: Option<&dyn Fn(usize,usize,u64)->Result<()>>,
+    progress: Option<&dyn Fn(usize, usize, u64) -> Result<()>>,
 ) -> Result<(PackManifest, Vec<ArchiveBody>)> {
     let invalid = || ReleaseError::Pack(super::super::PackError::InvalidArchive);
     let mut zip = zip::ZipArchive::new(reader).map_err(|_| invalid())?;
@@ -460,12 +608,27 @@ fn parse_zip(
     let mut files = std::collections::BTreeMap::new();
     let mut total = 0u64;
     for i in 0..zip.len() {
-        if i%32==0 {if let Some(progress)=progress {progress(i,zip.len(),total)?;}}
+        if i % 32 == 0
+            && let Some(progress) = progress
+        {
+            progress(i, zip.len(), total)?;
+        }
         let mut f = zip.by_index(i).map_err(|_| invalid())?;
         let name = f.name().to_string();
-        vesta_protocol::pack::catalogue::RelativePath::parse(name.trim_end_matches('/'))
-            .map_err(|_| ReleaseError::Refusal { code: "pack_path_invalid", rule: "safe_relative_path", item: name.clone() })?;
-        if f.is_symlink() { return Err(ReleaseError::Refusal { code: "pack_path_invalid", rule: "no_symbolic_links", item: name }); }
+        vesta_protocol::pack::catalogue::RelativePath::parse(name.trim_end_matches('/')).map_err(
+            |_| ReleaseError::Refusal {
+                code: "pack_path_invalid",
+                rule: "safe_relative_path",
+                item: name.clone(),
+            },
+        )?;
+        if f.is_symlink() {
+            return Err(ReleaseError::Refusal {
+                code: "pack_path_invalid",
+                rule: "no_symbolic_links",
+                item: name,
+            });
+        }
         if f.encrypted() {
             return Err(invalid());
         }
@@ -473,8 +636,14 @@ fn parse_zip(
             continue;
         }
         if let Some(skipped) = managed_skips.as_mut() {
-            let destination = name.strip_prefix("overrides/").or_else(|| name.strip_prefix("server-overrides/")).unwrap_or(&name);
-            if managed_server_file(destination) { skipped.push(name); continue; }
+            let destination = name
+                .strip_prefix("overrides/")
+                .or_else(|| name.strip_prefix("server-overrides/"))
+                .unwrap_or(&name);
+            if managed_server_file(destination) {
+                skipped.push(name);
+                continue;
+            }
         }
         total = total
             .checked_add(f.size())
@@ -488,15 +657,16 @@ fn parse_zip(
             ArchiveBody::Disk(store.clone(), payload)
         } else {
             let mut body = Vec::new();
-            f.read_to_end(&mut body)
-                .map_err(|_| invalid())?;
+            f.read_to_end(&mut body).map_err(|_| invalid())?;
             ArchiveBody::Memory(body)
         };
         if files.insert(name, body).is_some() {
             return Err(invalid());
         }
     }
-    if let Some(progress)=progress {progress(zip.len(),zip.len(),total)?;}
+    if let Some(progress) = progress {
+        progress(zip.len(), zip.len(), total)?;
+    }
     if let Some(index) = files.remove(vesta_protocol::pack::INDEX_NAME) {
         let index: vesta_protocol::pack::model::VestaIndexV1 =
             serde_json::from_slice(&index.bytes()?).map_err(|_| invalid())?;
@@ -620,7 +790,7 @@ fn parse_zip(
         serde_json::from_slice(&mr.as_ref().or(cf.as_ref()).ok_or_else(invalid)?.bytes()?)
             .map_err(|_| invalid())?;
     let mut manifest = PackManifest {
-            modpack_link: None,
+        modpack_link: None,
         name: string(&document, "name")?.into(),
         summary: document["summary"].as_str().unwrap_or_default().into(),
         icon: None,
@@ -757,7 +927,18 @@ fn parse_zip(
                     ));
                 }
             };
-            let directory=providers.archive_directory(Provider::Curseforge,&project).map_err(|error| ReleaseError::provider_file(error,"curseforge",&project,&version,"metadata",Some(&filename)))?;
+            let directory = providers
+                .archive_directory(Provider::Curseforge, &project)
+                .map_err(|error| {
+                    ReleaseError::provider_file(
+                        error,
+                        "curseforge",
+                        &project,
+                        &version,
+                        "metadata",
+                        Some(&filename),
+                    )
+                })?;
             let path = format!("{directory}/{filename}");
             manifest.entries.push(entry(
                 format!("import-{i}"),
@@ -782,7 +963,8 @@ fn parse_zip(
         }
         // CurseForge exports may include profile artwork beside the manifest.
         // It is metadata, never a game override or a server install destination.
-        if cf.is_some() && name.starts_with("profileImage/")
+        if cf.is_some()
+            && name.starts_with("profileImage/")
             && matches!(name.rsplit('.').next(), Some("png" | "jpg" | "jpeg"))
         {
             continue;
@@ -800,7 +982,17 @@ fn parse_zip(
             });
         if let Some((root, path)) = scoped {
             manifest.override_files.push(OverrideFile {
-                root: if root == "overrides" && (path.starts_with("global_packs/") || path.starts_with("journeymap/") || path.starts_with("fancymenu_data/") || path.to_ascii_lowercase().ends_with(".png")) { "client-overrides" } else { root }.into(),
+                root: if root == "overrides"
+                    && (path.starts_with("global_packs/")
+                        || path.starts_with("journeymap/")
+                        || path.starts_with("fancymenu_data/")
+                        || path.to_ascii_lowercase().ends_with(".png"))
+                {
+                    "client-overrides"
+                } else {
+                    root
+                }
+                .into(),
                 path: path.into(),
                 sha256: Some(bytes.hash()),
                 trashed: false,
@@ -852,32 +1044,94 @@ mod tests {
     fn curseforge_resource_pack_references_use_their_catalogue_directory() {
         struct ResourceProvider;
         impl ProviderClient for ResourceProvider {
-            fn archive_directory(&self, _:Provider, _: &str)->crate::content::Result<&'static str>{Ok("resourcepacks")}
-            fn archive_filename(&self, _:Provider, _: &str,_:&str)->crate::content::Result<String>{Ok("textures.zip".into())}
-            fn resolve(&self,_:Provider,_:&str,_:&str)->crate::content::Result<crate::content::ResolvedSource>{panic!("import must not download resource pack")}
+            fn archive_directory(
+                &self,
+                _: Provider,
+                _: &str,
+            ) -> crate::content::Result<&'static str> {
+                Ok("resourcepacks")
+            }
+            fn archive_filename(
+                &self,
+                _: Provider,
+                _: &str,
+                _: &str,
+            ) -> crate::content::Result<String> {
+                Ok("textures.zip".into())
+            }
+            fn resolve(
+                &self,
+                _: Provider,
+                _: &str,
+                _: &str,
+            ) -> crate::content::Result<crate::content::ResolvedSource> {
+                panic!("import must not download resource pack")
+            }
         }
         let manifest=br#"{"manifestType":"minecraftModpack","manifestVersion":1,"name":"Pack","version":"1.0","minecraft":{"version":"1.21.1","modLoaders":[{"id":"fabric-0.16.14","primary":true}]},"files":[{"projectID":123,"fileID":456,"required":true}]}"#;
-        let (pack,_)=parse_archive(&archive(&[("manifest.json",manifest)]),&ResourceProvider, |_|Ok(None)).unwrap();
-        assert_eq!(pack.entries[0].path,"resourcepacks/textures.zip");
-        assert_eq!(pack.entries[0].kind,EntryKind::ResourcePack);
+        let (pack, _) = parse_archive(
+            &archive(&[("manifest.json", manifest)]),
+            &ResourceProvider,
+            |_| Ok(None),
+        )
+        .unwrap();
+        assert_eq!(pack.entries[0].path, "resourcepacks/textures.zip");
+        assert_eq!(pack.entries[0].kind, EntryKind::ResourcePack);
     }
     #[test]
     fn mrpack_retains_exact_digest_and_disabled_name() {
-        let document=serde_json::json!({"formatVersion":1,"game":"minecraft","name":"Pinned","versionId":"1.0","dependencies":{"minecraft":"1.21.1","fabric-loader":"0.18.4"},"files":[
+        let document = serde_json::json!({"formatVersion":1,"game":"minecraft","name":"Pinned","versionId":"1.0","dependencies":{"minecraft":"1.21.1","fabric-loader":"0.18.4"},"files":[
             {"path":"mods/renamed.jar","hashes":{"sha512":"a".repeat(128)}},
             {"path":"mods/old-name.jar.disabled","hashes":{"sha512":"b".repeat(128)}}
         ]});
-        let identify=|_:&str|Ok(Some(crate::content::ContentProvider {provider:"modrinth".into(),project_id:"same-project".into(),version_id:"version".into()}));
-        let bytes=archive(&[("modrinth.index.json",&serde_json::to_vec(&document).unwrap())]);
-        let (manifest,_)=parse_archive(&bytes,&Providers,identify).unwrap();
-        assert_eq!(manifest.entries[0].path,"mods/renamed.jar");
-        assert_eq!(manifest.entries[0].artifact_sha512.as_deref(),Some("a".repeat(128).as_str()));
-        assert_eq!(manifest.entries[1].path,"mods/old-name.jar.disabled");
-        assert_eq!(manifest.entries[1].artifact_sha512.as_deref(),Some("b".repeat(128).as_str()));
-        let mut tampered=document.clone();tampered["files"][0]["hashes"]["sha512"]="not-a-digest".into();
-        assert!(parse_archive(&archive(&[("modrinth.index.json",&serde_json::to_vec(&tampered).unwrap())]),&Providers,identify).is_err());
-        let mut active_duplicate=document;active_duplicate["files"][1]["path"]="mods/another-active.jar".into();
-        assert!(parse_archive(&archive(&[("modrinth.index.json",&serde_json::to_vec(&active_duplicate).unwrap())]),&Providers,identify).is_err());
+        let identify = |_: &str| {
+            Ok(Some(crate::content::ContentProvider {
+                provider: "modrinth".into(),
+                project_id: "same-project".into(),
+                version_id: "version".into(),
+            }))
+        };
+        let bytes = archive(&[(
+            "modrinth.index.json",
+            &serde_json::to_vec(&document).unwrap(),
+        )]);
+        let (manifest, _) = parse_archive(&bytes, &Providers, identify).unwrap();
+        assert_eq!(manifest.entries[0].path, "mods/renamed.jar");
+        assert_eq!(
+            manifest.entries[0].artifact_sha512.as_deref(),
+            Some("a".repeat(128).as_str())
+        );
+        assert_eq!(manifest.entries[1].path, "mods/old-name.jar.disabled");
+        assert_eq!(
+            manifest.entries[1].artifact_sha512.as_deref(),
+            Some("b".repeat(128).as_str())
+        );
+        let mut tampered = document.clone();
+        tampered["files"][0]["hashes"]["sha512"] = "not-a-digest".into();
+        assert!(
+            parse_archive(
+                &archive(&[(
+                    "modrinth.index.json",
+                    &serde_json::to_vec(&tampered).unwrap()
+                )]),
+                &Providers,
+                identify
+            )
+            .is_err()
+        );
+        let mut active_duplicate = document;
+        active_duplicate["files"][1]["path"] = "mods/another-active.jar".into();
+        assert!(
+            parse_archive(
+                &archive(&[(
+                    "modrinth.index.json",
+                    &serde_json::to_vec(&active_duplicate).unwrap()
+                )]),
+                &Providers,
+                identify
+            )
+            .is_err()
+        );
     }
     #[test]
     fn mrpack_preserves_optional_side_and_embeds_overrides_without_trusting_urls() {
@@ -953,56 +1207,138 @@ mod tests {
     #[test]
     fn legacy_curseforge_manifest_runtime_does_not_need_api_version_tags() {
         let document = br#"{"manifestType":"minecraftModpack","manifestVersion":1,"name":"RLCraft","version":"2.9.3","minecraft":{"version":"1.12.2","modLoaders":[{"id":"forge-14.23.5.2860","primary":true}]},"files":[],"overrides":"overrides"}"#;
-        let (manifest, blobs) = parse_archive(&archive(&[("manifest.json", document), ("overrides/config/forgeendertech/Biomes/minecraft$mutated_ice_flats.cfg", b"legacy=true")]), &Providers, |_| unreachable!()).unwrap();
+        let (manifest, blobs) = parse_archive(
+            &archive(&[
+                ("manifest.json", document),
+                (
+                    "overrides/config/forgeendertech/Biomes/minecraft$mutated_ice_flats.cfg",
+                    b"legacy=true",
+                ),
+            ]),
+            &Providers,
+            |_| unreachable!(),
+        )
+        .unwrap();
         assert_eq!(manifest.minecraft_version, "1.12.2");
         assert_eq!(manifest.loader, ClientLoader::Forge);
         assert_eq!(manifest.loader_version.as_deref(), Some("14.23.5.2860"));
-        assert_eq!(manifest.override_files[0].path, "config/forgeendertech/Biomes/minecraft$mutated_ice_flats.cfg");
+        assert_eq!(
+            manifest.override_files[0].path,
+            "config/forgeendertech/Biomes/minecraft$mutated_ice_flats.cfg"
+        );
         assert_eq!(blobs, vec![b"legacy=true".to_vec()]);
     }
     #[test]
     fn dedicated_server_archive_preserves_portable_ampersand_directory() {
-        let path="kubejs/server_scripts/mods/Laser Bridges & Doors/Recipes.js";
+        let path = "kubejs/server_scripts/mods/Laser Bridges & Doors/Recipes.js";
         crate::files::RelativePath::parse(path).unwrap();
-        let bytes=archive(&[(path,b"// data only; never executed by import")]);
-        let (manifest,blobs)=parse_zip(Cursor::new(bytes),&Providers,|_|Ok(None),None,Some(&mut Vec::new()),None).unwrap();
-        assert_eq!(manifest.entries.len(),1);assert_eq!(manifest.entries[0].path,path);assert_eq!(blobs.len(),1);
-        for unsafe_path in ["../Laser & Doors/Recipes.js","kubejs/../Recipes.js","kubejs\\Recipes.js","kubejs/CON/Recipes.js","kubejs/trailing./Recipes.js"] {
-            assert!(parse_zip(Cursor::new(archive(&[(unsafe_path,b"data")])),&Providers,|_|Ok(None),None,Some(&mut Vec::new()),None).is_err());
+        let bytes = archive(&[(path, b"// data only; never executed by import")]);
+        let (manifest, blobs) = parse_zip(
+            Cursor::new(bytes),
+            &Providers,
+            |_| Ok(None),
+            None,
+            Some(&mut Vec::new()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(manifest.entries.len(), 1);
+        assert_eq!(manifest.entries[0].path, path);
+        assert_eq!(blobs.len(), 1);
+        for unsafe_path in [
+            "../Laser & Doors/Recipes.js",
+            "kubejs/../Recipes.js",
+            "kubejs\\Recipes.js",
+            "kubejs/CON/Recipes.js",
+            "kubejs/trailing./Recipes.js",
+        ] {
+            assert!(
+                parse_zip(
+                    Cursor::new(archive(&[(unsafe_path, b"data")])),
+                    &Providers,
+                    |_| Ok(None),
+                    None,
+                    Some(&mut Vec::new()),
+                    None
+                )
+                .is_err()
+            );
         }
     }
     #[test]
     fn dedicated_server_folder_preserves_managed_files_and_installs_game_data() {
-        let bytes = archive(&[("server.properties", b"server-port=1234"), ("start.bat", b"untrusted"),
-            ("forge.jar", b"software"), ("libraries/example.jar", b"software"),
-            ("mods/Level Up! 2.jar", b"mod"), ("config/biome$variant.cfg", b"data")]);
+        let bytes = archive(&[
+            ("server.properties", b"server-port=1234"),
+            ("start.bat", b"untrusted"),
+            ("forge.jar", b"software"),
+            ("libraries/example.jar", b"software"),
+            ("mods/Level Up! 2.jar", b"mod"),
+            ("config/biome$variant.cfg", b"data"),
+        ]);
         let mut skipped = Vec::new();
-        let (manifest, _) = parse_zip(Cursor::new(bytes), &Providers, |_| Ok(None), None, Some(&mut skipped), None).unwrap();
+        let (manifest, _) = parse_zip(
+            Cursor::new(bytes),
+            &Providers,
+            |_| Ok(None),
+            None,
+            Some(&mut skipped),
+            None,
+        )
+        .unwrap();
         assert_eq!(skipped.len(), 4);
         assert_eq!(manifest.entries.len(), 2);
-        assert!(manifest.entries.iter().any(|entry| entry.path == "mods/Level Up! 2.jar"));
-        assert!(manifest.entries.iter().any(|entry| entry.path == "config/biome$variant.cfg"));
+        assert!(
+            manifest
+                .entries
+                .iter()
+                .any(|entry| entry.path == "mods/Level Up! 2.jar")
+        );
+        assert!(
+            manifest
+                .entries
+                .iter()
+                .any(|entry| entry.path == "config/biome$variant.cfg")
+        );
         assert!(!managed_server_file("mods/forge.jar"));
         assert!(!managed_server_file(".vesta/control.json"));
     }
     #[test]
     fn dedicated_runtime_review_does_not_materialize_client_contents() {
-        let f=super::super::tests::Fixture::new();
-        let store=Store::open(&f.db).unwrap();
+        let f = super::super::tests::Fixture::new();
+        let store = Store::open(&f.db).unwrap();
         let document=br#"{"name":"Legacy","version":"2.9.3","minecraft":{"version":"1.12.2","modLoaders":[{"id":"forge-14.23.5.2860","primary":true}]},"files":[{"projectID":123,"fileID":456}]}"#;
-        let bytes=archive(&[("manifest.json",document),("overrides/server.properties",b"managed"),("overrides/client.exe",b"client-only")]);
-        let payload=store.put(&mut Cursor::new(bytes)).unwrap();
-        let manifest=parse_curseforge_runtime(&payload,&store).unwrap();
-        assert_eq!(manifest.minecraft_version,"1.12.2"); assert_eq!(manifest.loader_version.as_deref(),Some("14.23.5.2860"));
-        assert!(manifest.entries.is_empty()); assert!(manifest.override_files.is_empty());
+        let bytes = archive(&[
+            ("manifest.json", document),
+            ("overrides/server.properties", b"managed"),
+            ("overrides/client.exe", b"client-only"),
+        ]);
+        let payload = store.put(&mut Cursor::new(bytes)).unwrap();
+        let manifest = parse_curseforge_runtime(&payload, &store).unwrap();
+        assert_eq!(manifest.minecraft_version, "1.12.2");
+        assert_eq!(manifest.loader_version.as_deref(), Some("14.23.5.2860"));
+        assert!(manifest.entries.is_empty());
+        assert!(manifest.override_files.is_empty());
     }
     #[test]
     fn dedicated_client_overrides_skip_managed_files_before_validation() {
         let document = br#"{"manifestType":"minecraftModpack","manifestVersion":1,"name":"Legacy","version":"1","minecraft":{"version":"1.12.2","modLoaders":[{"id":"forge-14.23.5.2860"}]},"files":[]}"#;
-        let bytes = archive(&[("manifest.json", document), ("overrides/server.properties", b"unsafe"), ("overrides/start.bat", b"unsafe"), ("overrides/config/test.cfg", b"data")]);
+        let bytes = archive(&[
+            ("manifest.json", document),
+            ("overrides/server.properties", b"unsafe"),
+            ("overrides/start.bat", b"unsafe"),
+            ("overrides/config/test.cfg", b"data"),
+        ]);
         assert!(parse_archive(&bytes, &Providers, |_| Ok(None)).is_err());
         let mut skipped = Vec::new();
-        let (manifest, _) = parse_zip(Cursor::new(bytes), &Providers, |_| Ok(None), None, Some(&mut skipped), None).unwrap();
+        let (manifest, _) = parse_zip(
+            Cursor::new(bytes),
+            &Providers,
+            |_| Ok(None),
+            None,
+            Some(&mut skipped),
+            None,
+        )
+        .unwrap();
         assert_eq!(skipped.len(), 2);
         assert_eq!(manifest.override_files.len(), 1);
     }
@@ -1018,7 +1354,11 @@ mod tests {
             ("profileImage/Evon's ModPack Logo Fabric.png", b"image"),
         ]), &Providers, |_| unreachable!()).unwrap();
         assert_eq!(m.override_files.len(), 4);
-        assert!(m.override_files.iter().all(|f| f.root == "client-overrides"));
+        assert!(
+            m.override_files
+                .iter()
+                .all(|f| f.root == "client-overrides")
+        );
     }
     #[test]
     fn curseforge_draft_retains_restricted_file_identity_and_preserves_provider_errors() {
@@ -1096,19 +1436,38 @@ mod tests {
 
     #[test]
     fn assurance_archive_links_depth_and_malformed_structure_refuse_without_extraction() {
-        let mut zip=zip::ZipWriter::new(Cursor::new(Vec::new()));
-        zip.add_symlink("config/link","../../owned-witness",zip::write::SimpleFileOptions::default()).unwrap();
-        let bytes=zip.finish().unwrap().into_inner();
-        assert!(matches!(parse_archive(&bytes,&Providers,|_|Ok(None)),Err(ReleaseError::Refusal{rule:"no_symbolic_links",..})));
-        let at_limit=format!("config/{}/value.json",vec!["a";30].join("/"));
-        assert!(parse_archive(&archive(&[(&at_limit,b"{}")]),&Providers,|_|Ok(None)).is_ok());
-        let too_deep=format!("config/{}/value.json",vec!["a";31].join("/"));
-        assert!(parse_archive(&archive(&[(&too_deep,b"{}")]),&Providers,|_|Ok(None)).is_err());
-        for path in ["config/../escape","/absolute","config\\escape","config/%2e%2e/escape","config/CON.json"] {
-            assert!(parse_archive(&archive(&[(path,b"x")]),&Providers,|_|Ok(None)).is_err());
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.add_symlink(
+            "config/link",
+            "../../owned-witness",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        let bytes = zip.finish().unwrap().into_inner();
+        assert!(matches!(
+            parse_archive(&bytes, &Providers, |_| Ok(None)),
+            Err(ReleaseError::Refusal {
+                rule: "no_symbolic_links",
+                ..
+            })
+        ));
+        let at_limit = format!("config/{}/value.json", vec!["a"; 30].join("/"));
+        assert!(parse_archive(&archive(&[(&at_limit, b"{}")]), &Providers, |_| Ok(None)).is_ok());
+        let too_deep = format!("config/{}/value.json", vec!["a"; 31].join("/"));
+        assert!(parse_archive(&archive(&[(&too_deep, b"{}")]), &Providers, |_| Ok(None)).is_err());
+        for path in [
+            "config/../escape",
+            "/absolute",
+            "config\\escape",
+            "config/%2e%2e/escape",
+            "config/CON.json",
+        ] {
+            assert!(parse_archive(&archive(&[(path, b"x")]), &Providers, |_| Ok(None)).is_err());
         }
-        let valid=archive(&[("config/value.json",b"{}")]);
-        for length in [0,1,valid.len()/2,valid.len()-1] {assert!(parse_archive(&valid[..length],&Providers,|_|Ok(None)).is_err());}
+        let valid = archive(&[("config/value.json", b"{}")]);
+        for length in [0, 1, valid.len() / 2, valid.len() - 1] {
+            assert!(parse_archive(&valid[..length], &Providers, |_| Ok(None)).is_err());
+        }
     }
 }
 
@@ -1120,19 +1479,39 @@ mod live_triage {
     fn evon_provider_archive_ingests() {
         let bytes = std::fs::read(std::env::var("VESTA_TRIAGE_ARCHIVE").unwrap()).unwrap();
         let providers = UreqProviderClient::new(Some(std::env::var("CURSEFORGE_API_KEY").unwrap()))
-            .with_deadline(std::time::Instant::now() + std::time::Duration::from_secs(180)).unwrap();
+            .with_deadline(std::time::Instant::now() + std::time::Duration::from_secs(180))
+            .unwrap();
         let fixture = super::super::tests::Fixture::new();
         let store = Store::open(&fixture.db).unwrap();
-        let (manifest, _) = parse_zip(Cursor::new(bytes), &providers, |_| Ok(None), Some(&store), None, None).unwrap();
+        let (manifest, _) = parse_zip(
+            Cursor::new(bytes),
+            &providers,
+            |_| Ok(None),
+            Some(&store),
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(manifest.loader, ClientLoader::Fabric);
         assert_eq!(manifest.minecraft_version, "26.3");
-        assert!(manifest.override_files.iter().any(|f| f.root == "client-overrides" && f.path.starts_with("global_packs/")));
+        assert!(
+            manifest
+                .override_files
+                .iter()
+                .any(|f| f.root == "client-overrides" && f.path.starts_with("global_packs/"))
+        );
     }
 }
 
 fn archive_review_warnings(bytes: &[u8]) -> Result<Vec<InstallWarning>> {
-    if bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'{') { return Ok(Vec::new()); }
-    super::install::archive_policy::inspect(Cursor::new(bytes), bytes.len() as u64, "imported archive")
+    if bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'{') {
+        return Ok(Vec::new());
+    }
+    super::install::archive_policy::inspect(
+        Cursor::new(bytes),
+        bytes.len() as u64,
+        "imported archive",
+    )
 }
 
 #[cfg(test)]
@@ -1142,11 +1521,17 @@ mod content_kind_tests {
     fn sidecars_are_overrides_even_inside_content_folders() {
         for ext in ["md", "pdf", "cfg", "json5"] {
             for folder in ["mods", "resourcepacks", "shaderpacks", "datapacks"] {
-                assert_eq!(kind(&format!("{folder}/file.{ext}")).unwrap(), EntryKind::ConfigOverride);
+                assert_eq!(
+                    kind(&format!("{folder}/file.{ext}")).unwrap(),
+                    EntryKind::ConfigOverride
+                );
             }
         }
         assert_eq!(kind("mods/example.jar").unwrap(), EntryKind::Mod);
-        assert_eq!(kind("resourcepacks/example.zip").unwrap(), EntryKind::ResourcePack);
+        assert_eq!(
+            kind("resourcepacks/example.zip").unwrap(),
+            EntryKind::ResourcePack
+        );
         assert_eq!(kind("shaderpacks/example.zip").unwrap(), EntryKind::Shader);
         assert_eq!(kind("datapacks/example.zip").unwrap(), EntryKind::Datapack);
     }

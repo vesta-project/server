@@ -137,7 +137,8 @@ impl Operations {
         self.metrics_read(subject, Capability::MetricsView, |c| {
             let (_, document) = metrics::effective_policy(c, fallback)?;
             let history = metrics::fetch(c, request, document.settings)?;
-            let history_point_limit_reached = history.columns.timestamps.len() >= request.max_points;
+            let history_point_limit_reached =
+                history.columns.timestamps.len() >= request.max_points;
             Ok(metrics::Capture {
                 schema: 1,
                 server_id: self.db.server_id().to_owned(),

@@ -72,12 +72,13 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         return match result {
             Ok(v) => ok(json!(v)),
             Err("sleep_forbidden") => error(StatusCode::FORBIDDEN, "forbidden"),
-            Err("sleep_policy_stale_revision") => {
-                match host.sleep().policy(&subject) {
-                    Ok(current) => envelope(StatusCode::CONFLICT, json!({"error":{"code":"conflict","reason":"sleep_policy_conflict","current":current}})),
-                    Err(code) => error(StatusCode::SERVICE_UNAVAILABLE, code),
-                }
-            }
+            Err("sleep_policy_stale_revision") => match host.sleep().policy(&subject) {
+                Ok(current) => envelope(
+                    StatusCode::CONFLICT,
+                    json!({"error":{"code":"conflict","reason":"sleep_policy_conflict","current":current}}),
+                ),
+                Err(code) => error(StatusCode::SERVICE_UNAVAILABLE, code),
+            },
             Err("sleep_policy_invalid") => error(StatusCode::BAD_REQUEST, "invalid_request"),
             Err(code) => error(StatusCode::SERVICE_UNAVAILABLE, code),
         };
@@ -95,7 +96,10 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                 code: OperationErrorCode::SourceRevisionUnavailable,
                 ..
             }) => match operations.motd_policy(&subject) {
-                Ok(current) => envelope(StatusCode::CONFLICT, json!({"error":{"code":"conflict","reason":"motd_policy_conflict","current":current}})),
+                Ok(current) => envelope(
+                    StatusCode::CONFLICT,
+                    json!({"error":{"code":"conflict","reason":"motd_policy_conflict","current":current}}),
+                ),
                 Err(e) => operation_error(e),
             },
             Err(e) => operation_error(e),

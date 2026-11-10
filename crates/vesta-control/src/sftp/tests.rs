@@ -68,7 +68,8 @@ impl Fixture {
             .enroll_minecraft_with_invitation(
                 identity::minecraft::VerifiedMinecraftProfile::for_test_enrollment(
                     identity::minecraft::ServerUuid::parse(service.management.server_id()).unwrap(),
-                    identity::minecraft::MinecraftUuid::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
+                    identity::minecraft::MinecraftUuid::parse(&uuid::Uuid::new_v4().to_string())
+                        .unwrap(),
                 ),
                 "SFTP fixture",
                 &URL_SAFE_NO_PAD.encode(management_key.public_key().as_ref()),

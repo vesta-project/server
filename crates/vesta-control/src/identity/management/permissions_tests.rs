@@ -107,7 +107,14 @@ fn superadmin_is_never_assignable_or_removable_remotely_even_by_another_owner() 
     let (other, _) = actor(&f, BuiltinRole::Owner);
     let (target, _) = actor(&f, BuiltinRole::Viewer);
     // Legacy users lacking a verified account cannot receive the owner tier.
-    f.db.write(|c| { c.execute("DELETE FROM user_minecraft_accounts WHERE principal_id=?", [&target.principal_id])?; Ok(()) }).unwrap();
+    f.db.write(|c| {
+        c.execute(
+            "DELETE FROM user_minecraft_accounts WHERE principal_id=?",
+            [&target.principal_id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
     for (id, add, remove) in [
         (&target.principal_id, vec!["owner"], vec![]),
         (&other.principal_id, vec![], vec!["owner"]),
@@ -597,11 +604,16 @@ fn verified_minecraft_user_name_is_separate_from_device_label() {
     let (owner, k) = f.enroll(BuiltinRole::Owner);
     let s = f.session(&owner, &k);
     // Account identity is the verified profile name; device label is separate.
-    assert_eq!(
-        get(&f, &s, &owner.principal_id)["display_name"],
-        "Fixture"
-    );
-    let account_uuid: String = f.db.read(|c| Ok(c.query_row("SELECT minecraft_uuid FROM user_minecraft_accounts WHERE principal_id=?", [&owner.principal_id], |r| r.get(0))?)).unwrap();
+    assert_eq!(get(&f, &s, &owner.principal_id)["display_name"], "Fixture");
+    let account_uuid: String =
+        f.db.read(|c| {
+            Ok(c.query_row(
+                "SELECT minecraft_uuid FROM user_minecraft_accounts WHERE principal_id=?",
+                [&owner.principal_id],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
     f.service
         .enroll_minecraft_for(
             super::profile(&f, &account_uuid),
@@ -1210,37 +1222,144 @@ fn whitelist_sync_toggle_persists_authority_and_requires_current_version() {
 fn invitation_from_an_unbound_issuer_refuses_and_preserves_usage_for_verified_retry() {
     let f = Fixture::new();
     let (issuer, session) = actor(&f, BuiltinRole::Owner);
-    let invite = run(&f, &session, "bound-issuer-invite-0001", PermissionMutation::Invitation(Invitation {
-        role: "player".into(), expires_minutes: 10, multi_use: true, max_uses: Some(1),
-    })).unwrap();
-    let binding: String = f.db.read(|c| Ok(c.query_row("SELECT linked_minecraft_uuid FROM management_device_keys WHERE device_id=?", [&issuer.device_id], |r| r.get(0))?)).unwrap();
-    f.db.write(|c| { c.execute("UPDATE management_device_keys SET linked_minecraft_uuid=NULL WHERE device_id=?", [&issuer.device_id])?; Ok(()) }).unwrap();
+    let invite = run(
+        &f,
+        &session,
+        "bound-issuer-invite-0001",
+        PermissionMutation::Invitation(Invitation {
+            role: "player".into(),
+            expires_minutes: 10,
+            multi_use: true,
+            max_uses: Some(1),
+        }),
+    )
+    .unwrap();
+    let binding: String =
+        f.db.read(|c| {
+            Ok(c.query_row(
+                "SELECT linked_minecraft_uuid FROM management_device_keys WHERE device_id=?",
+                [&issuer.device_id],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    f.db.write(|c| {
+        c.execute(
+            "UPDATE management_device_keys SET linked_minecraft_uuid=NULL WHERE device_id=?",
+            [&issuer.device_id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
     let k = key();
     let public = URL_SAFE_NO_PAD.encode(k.public_key().as_ref());
     let account = uuid::Uuid::new_v4().to_string();
-    assert_eq!(f.service.enroll_minecraft_with_invitation(super::profile(&f, &account), "Invited", &public, invite["code"].as_str()).unwrap_err(), ManagementError::Forbidden);
-    f.db.read(|c| { let uses: u32 = c.query_row("SELECT uses FROM management_invitation_uses", [], |r|r.get(0))?; assert_eq!(uses,0); Ok(()) }).unwrap();
-    f.db.write(|c| { c.execute("UPDATE management_device_keys SET linked_minecraft_uuid=? WHERE device_id=?", rusqlite::params![binding,issuer.device_id])?; Ok(()) }).unwrap();
-    let user = f.service.enroll_minecraft_with_invitation(super::profile(&f, &account), "Invited", &public, invite["code"].as_str()).unwrap();
+    assert_eq!(
+        f.service
+            .enroll_minecraft_with_invitation(
+                super::profile(&f, &account),
+                "Invited",
+                &public,
+                invite["code"].as_str()
+            )
+            .unwrap_err(),
+        ManagementError::Forbidden
+    );
+    f.db.read(|c| {
+        let uses: u32 = c.query_row("SELECT uses FROM management_invitation_uses", [], |r| {
+            r.get(0)
+        })?;
+        assert_eq!(uses, 0);
+        Ok(())
+    })
+    .unwrap();
+    f.db.write(|c| {
+        c.execute(
+            "UPDATE management_device_keys SET linked_minecraft_uuid=? WHERE device_id=?",
+            rusqlite::params![binding, issuer.device_id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let user = f
+        .service
+        .enroll_minecraft_with_invitation(
+            super::profile(&f, &account),
+            "Invited",
+            &public,
+            invite["code"].as_str(),
+        )
+        .unwrap();
     assert_eq!(user.role, "player");
 }
 
 #[test]
 fn assurance_verified_invitation_concurrency_replay_and_expiry_are_atomic() {
-    use std::sync::{Arc,Barrier,atomic::Ordering};
-    let f=Fixture::new();let (_,owner)=actor(&f,BuiltinRole::Owner);
-    let issue=|key:&str|run(&f,&owner,key,PermissionMutation::Invitation(Invitation{role:"player".into(),expires_minutes:1,multi_use:false,max_uses:None})).unwrap()["code"].as_str().unwrap().to_owned();
-    let code=issue("assurance-concurrent-invite");let before=f.service.list_local().unwrap().len();
-    let barrier=Arc::new(Barrier::new(3));let mut threads=Vec::new();
+    use std::sync::{Arc, Barrier, atomic::Ordering};
+    let f = Fixture::new();
+    let (_, owner) = actor(&f, BuiltinRole::Owner);
+    let issue = |key: &str| {
+        run(
+            &f,
+            &owner,
+            key,
+            PermissionMutation::Invitation(Invitation {
+                role: "player".into(),
+                expires_minutes: 1,
+                multi_use: false,
+                max_uses: None,
+            }),
+        )
+        .unwrap()["code"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let code = issue("assurance-concurrent-invite");
+    let before = f.service.list_local().unwrap().len();
+    let barrier = Arc::new(Barrier::new(3));
+    let mut threads = Vec::new();
     for _ in 0..2 {
-        let service=f.service.clone();let profile=super::profile(&f,&uuid::Uuid::new_v4().to_string());let public=URL_SAFE_NO_PAD.encode(key().public_key().as_ref());let code=code.clone();let barrier=barrier.clone();
-        threads.push(std::thread::spawn(move||{barrier.wait();service.enroll_minecraft_with_invitation(profile,"Owned assurance device",&public,Some(&code))}));
+        let service = f.service.clone();
+        let profile = super::profile(&f, &uuid::Uuid::new_v4().to_string());
+        let public = URL_SAFE_NO_PAD.encode(key().public_key().as_ref());
+        let code = code.clone();
+        let barrier = barrier.clone();
+        threads.push(std::thread::spawn(move || {
+            barrier.wait();
+            service.enroll_minecraft_with_invitation(
+                profile,
+                "Owned assurance device",
+                &public,
+                Some(&code),
+            )
+        }));
     }
-    barrier.wait();let results:Vec<_>=threads.into_iter().map(|t|t.join().unwrap()).collect();
-    assert_eq!(results.iter().filter(|r|r.is_ok()).count(),1);assert_eq!(results.iter().filter(|r|matches!(r,Err(ManagementError::PairInvalid))).count(),1);
-    assert_eq!(f.service.list_local().unwrap().len(),before+1);
-    let redeem=|code:&str|f.service.enroll_minecraft_with_invitation(super::profile(&f,&uuid::Uuid::new_v4().to_string()),"Owned retry",&URL_SAFE_NO_PAD.encode(key().public_key().as_ref()),Some(code));
-    assert!(matches!(redeem(&code),Err(ManagementError::PairInvalid)));
-    let expired=issue("assurance-expiring-invite");f.clock.0.fetch_add(60_001,Ordering::SeqCst);
-    assert!(matches!(redeem(&expired),Err(ManagementError::PairInvalid)));assert_eq!(f.service.list_local().unwrap().len(),before+1);
+    barrier.wait();
+    let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| matches!(r, Err(ManagementError::PairInvalid)))
+            .count(),
+        1
+    );
+    assert_eq!(f.service.list_local().unwrap().len(), before + 1);
+    let redeem = |code: &str| {
+        f.service.enroll_minecraft_with_invitation(
+            super::profile(&f, &uuid::Uuid::new_v4().to_string()),
+            "Owned retry",
+            &URL_SAFE_NO_PAD.encode(key().public_key().as_ref()),
+            Some(code),
+        )
+    };
+    assert!(matches!(redeem(&code), Err(ManagementError::PairInvalid)));
+    let expired = issue("assurance-expiring-invite");
+    f.clock.0.fetch_add(60_001, Ordering::SeqCst);
+    assert!(matches!(
+        redeem(&expired),
+        Err(ManagementError::PairInvalid)
+    ));
+    assert_eq!(f.service.list_local().unwrap().len(), before + 1);
 }

@@ -12,22 +12,22 @@ mod execution_workspace;
 mod install;
 mod managed;
 mod model;
+pub mod outbound;
 mod paths;
 pub mod progress;
 mod providers;
+pub mod public_address;
 mod runtime;
 mod transfer;
-pub mod public_address;
-pub mod outbound;
 
 pub use bundle::{ArtifactRecord, BundleReceipt};
 pub use catalogue_cache::{
-    CATALOGUE_CACHE_DISK_BYTES, CATALOGUE_CACHE_DOCUMENT_BYTES, CATALOGUE_CACHE_ENTRIES,
-    CatalogueRecord, CatalogueStore,
+    CatalogueRecord, CatalogueStore, CATALOGUE_CACHE_DISK_BYTES, CATALOGUE_CACHE_DOCUMENT_BYTES,
+    CATALOGUE_CACHE_ENTRIES,
 };
 pub use config::TransportConfig;
 pub use install::{InstallOutcome, InstallRoots, Receipt};
-pub use managed::{ManagedArtifact, ManagedLaunch, verify_managed_artifacts};
+pub use managed::{verify_managed_artifacts, ManagedArtifact, ManagedLaunch};
 pub use model::{
     Acknowledgments, Approval, ArtifactReview, DigestAlgorithm, GeneratedFile, InstallError,
     InstallPlan, JavaRequirement, LaunchRecipe, Limits, PublishedDigest, Result, Software,
@@ -35,7 +35,7 @@ pub use model::{
 };
 pub use progress::{ProgressReporter, SilentProgressReporter};
 pub use providers::buildtools::{BuiltReceipt, SourceRefs};
-pub use providers::{Selection, releases::SoftwareRelease};
+pub use providers::{releases::SoftwareRelease, Selection};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,

@@ -100,16 +100,17 @@ async fn future_notifications_reuse_inbox_redact_by_default_and_do_not_resend_af
     let id = f.notice("fake-private-title", "fake-private-body");
     d.tick().await.unwrap();
     d.tick().await.unwrap();
-    let bodies = f.fake.bodies.lock().unwrap();
-    assert_eq!(bodies.len(), 1);
-    let text = std::str::from_utf8(&bodies[0]).unwrap();
-    assert!(!text.contains("fake-private"));
-    assert!(!text.contains("secret-token"));
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&bodies[0]).unwrap()["event_id"],
-        id
-    );
-    drop(bodies);
+    {
+        let bodies = f.fake.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        let text = std::str::from_utf8(&bodies[0]).unwrap();
+        assert!(!text.contains("fake-private"));
+        assert!(!text.contains("secret-token"));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bodies[0]).unwrap()["event_id"],
+            id
+        );
+    }
     assert_eq!(f.status().delivered, 1);
     drop(d);
     let d = f.open(settings);

@@ -685,10 +685,16 @@ fn metrics_stream_snapshots_samples_latest_activity_and_rechecks_both_capabiliti
     let mut closed = false;
     for _ in 0..8 {
         match second.read().unwrap() {
-            Message::Close(_) => { closed = true; break; }
+            Message::Close(_) => {
+                closed = true;
+                break;
+            }
             Message::Text(text) => {
                 let notice: serde_json::Value = serde_json::from_str(&text).unwrap();
-                assert!(matches!(notice["type"].as_str(), Some("resources.changed" | "status" | "metrics.sample" | "heartbeat")));
+                assert!(matches!(
+                    notice["type"].as_str(),
+                    Some("resources.changed" | "status" | "metrics.sample" | "heartbeat")
+                ));
             }
             Message::Ping(_) => second.flush().unwrap(),
             other => panic!("unexpected close-handshake frame {other:?}"),
@@ -841,44 +847,88 @@ fn status_stream_pushes_lifecycle_changes_without_telemetry_and_rechecks_status_
 #[test]
 fn integrated_12k_roster_status_metrics_network_and_resource_events() {
     let f = Fixture::inert();
-    let names = (0..12_000).map(|i| format!("Player{i:05}")).collect::<Vec<_>>();
-    std::fs::write(f.temp.path().join("game/tls-inert-roster"), names.join(", ")).unwrap();
+    let names = (0..12_000)
+        .map(|i| format!("Player{i:05}"))
+        .collect::<Vec<_>>();
+    std::fs::write(
+        f.temp.path().join("game/tls-inert-roster"),
+        names.join(", "),
+    )
+    .unwrap();
     let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
     let token = management_session(&f, &device, &key);
     metrics_policy_sample_period(&f, &token, 5);
     let generation = management_start_inert(&f, &token);
     let seed = f.request("GET", "/api/v3/manage/players", b"", Some(&token));
-    assert_eq!(seed.json()["data"]["player_count"], 12_000, "{}", seed.json());
+    assert_eq!(
+        seed.json()["data"]["player_count"],
+        12_000,
+        "{}",
+        seed.json()
+    );
     let base = seed.json()["data"]["revision"].clone();
     let mut peer = metrics_websocket(&f, &token).unwrap();
     let until = Instant::now() + Duration::from_secs(10);
     loop {
         assert!(Instant::now() < until);
-        if realtime_json(&mut peer)["type"] == "resources.changed" { break; }
+        if realtime_json(&mut peer)["type"] == "resources.changed" {
+            break;
+        }
     }
     // A second administrator changes branding while this subscriber stays open.
-    let (other_device, other_key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let (other_device, other_key) =
+        enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
     let other = management_session(&f, &other_device, &other_key);
     let body = serde_json::json!({"expected_revision":"0","name":"Live edit"});
-    let patch = super::management_permissions::send(&f,"PATCH","server",&body,Some(&other),Some("live-branding-editor-001"));
+    let patch = super::management_permissions::send(
+        &f,
+        "PATCH",
+        "server",
+        &body,
+        Some(&other),
+        Some("live-branding-editor-001"),
+    );
     assert_eq!(patch.status, 200);
     let editor = patch.json()["data"]["editor"].clone();
-    assert!(editor["display_name"].as_str().is_some_and(|n| !n.is_empty()), "{editor}");
+    assert!(
+        editor["display_name"]
+            .as_str()
+            .is_some_and(|n| !n.is_empty()),
+        "{editor}"
+    );
     assert!(editor["at_ms"].as_i64().unwrap() > 0);
-    let conflict = super::management_permissions::send(&f,"PATCH","server",&body,Some(&token),Some("live-branding-losing-001"));
-    assert_eq!(conflict.status,409);
-    assert_eq!(conflict.json()["error"]["current"]["editor"],editor);
-    assert_eq!(conflict.json()["error"]["current"]["name"],"Live edit");
+    let conflict = super::management_permissions::send(
+        &f,
+        "PATCH",
+        "server",
+        &body,
+        Some(&token),
+        Some("live-branding-losing-001"),
+    );
+    assert_eq!(conflict.status, 409);
+    assert_eq!(conflict.json()["error"]["current"]["editor"], editor);
+    assert_eq!(conflict.json()["error"]["current"]["name"], "Live edit");
     loop {
         assert!(Instant::now() < until);
         let notice = realtime_json(&mut peer);
-        if notice["type"] == "resources.changed" && notice["resources"]["branding"] == editor {break;}
+        if notice["type"] == "resources.changed" && notice["resources"]["branding"] == editor {
+            break;
+        }
     }
     // Real stdin -> captured console -> roster reconciliation -> stream delta.
     let event_start = Instant::now();
-    for (i, text) in ["Player00000 left the game", "DeltaGuest joined the game"].iter().enumerate() {
-        let reply = management_mutation(&f,&token,"console/command",&format!("load-delta-command-{i:04}"),&serde_json::json!({"expected_generation":generation,"line":format!("owned-roster-event {text}")}));
-        assert_eq!(reply.status,202);
+    for (i, text) in ["Player00000 left the game", "DeltaGuest joined the game"]
+        .iter()
+        .enumerate()
+    {
+        let reply = management_mutation(
+            &f,
+            &token,
+            "console/command",
+            &format!("load-delta-command-{i:04}"),
+            &serde_json::json!({"expected_generation":generation,"line":format!("owned-roster-event {text}")}),
+        );
+        assert_eq!(reply.status, 202);
     }
     let mut revision = base;
     let mut changes = Vec::new();
@@ -895,50 +945,106 @@ fn integrated_12k_roster_status_metrics_network_and_resource_events() {
             changes.extend(notice["data"]["changes"].as_array().unwrap().clone());
         }
     }
-    assert!(changes.iter().any(|c|c["name"]=="DeltaGuest" && c["kind"]=="join"));
-    assert!(changes.iter().any(|c|c["name"]=="Player00000" && c["kind"]=="leave"));
-    let delta_ms = event_start.elapsed().as_secs_f64()*1000.;
+    assert!(
+        changes
+            .iter()
+            .any(|c| c["name"] == "DeltaGuest" && c["kind"] == "join")
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|c| c["name"] == "Player00000" && c["kind"] == "leave")
+    );
+    let delta_ms = event_start.elapsed().as_secs_f64() * 1000.;
     let start = Instant::now();
-    let flood = management_mutation(&f,&token,"console/command","load-roster-flood-0001",&serde_json::json!({"expected_generation":generation,"line":"owned-roster-flood"}));
-    assert_eq!(flood.status,202);
-    let mut latencies = std::collections::BTreeMap::<&str,Vec<f64>>::new();
+    let flood = management_mutation(
+        &f,
+        &token,
+        "console/command",
+        "load-roster-flood-0001",
+        &serde_json::json!({"expected_generation":generation,"line":"owned-roster-flood"}),
+    );
+    assert_eq!(flood.status, 202);
+    let mut latencies = std::collections::BTreeMap::<&str, Vec<f64>>::new();
     let mut bytes = 0;
     let mut memory: Option<f64> = None;
     let mut cpu: Option<f64> = None;
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
-    let history = format!("/api/v3/manage/metrics?series=agent_cpu_percent&from={}&to={now}&resolution=raw", now - 60_000);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let history = format!(
+        "/api/v3/manage/metrics?series=agent_cpu_percent&from={}&to={now}&resolution=raw",
+        now - 60_000
+    );
     for _ in 0..20 {
-        for (name,path) in [("status","/api/v3/manage/server/status"),("public_status","/api/v3/status"),("roster_page","/api/v3/manage/players?limit=200"),("metrics_current","/api/v3/manage/metrics/current"),("metrics_history",history.as_str())] {
+        for (name, path) in [
+            ("status", "/api/v3/manage/server/status"),
+            ("public_status", "/api/v3/status"),
+            ("roster_page", "/api/v3/manage/players?limit=200"),
+            ("metrics_current", "/api/v3/manage/metrics/current"),
+            ("metrics_history", history.as_str()),
+        ] {
             let at = Instant::now();
-            let reply = f.request("GET",path,b"",Some(&token));
-            assert_eq!(reply.status,200,"{name}: {}",reply.json());
-            latencies.entry(name).or_default().push(at.elapsed().as_secs_f64()*1000.);
+            let reply = f.request("GET", path, b"", Some(&token));
+            assert_eq!(reply.status, 200, "{name}: {}", reply.json());
+            latencies
+                .entry(name)
+                .or_default()
+                .push(at.elapsed().as_secs_f64() * 1000.);
             bytes += reply.body.len();
             let value = reply.json();
-            if name=="status" {assert!((12_000..=12_001).contains(&value["data"]["player_count"].as_u64().unwrap()));}
-            if name=="roster_page" {assert_eq!(value["data"]["items"].as_array().unwrap().len(),200);}
-            if name=="metrics_current" {
-                if let Some(v)=value["data"]["sample"]["values"]["agent_memory_bytes"].as_f64(){memory=Some(v);}
-                if let Some(v)=value["data"]["sample"]["values"]["agent_cpu_percent"].as_f64(){cpu=Some(v);}
+            if name == "status" {
+                assert!(
+                    (12_000..=12_001).contains(&value["data"]["player_count"].as_u64().unwrap())
+                );
+            }
+            if name == "roster_page" {
+                assert_eq!(value["data"]["items"].as_array().unwrap().len(), 200);
+            }
+            if name == "metrics_current" {
+                if let Some(v) = value["data"]["sample"]["values"]["agent_memory_bytes"].as_f64() {
+                    memory = Some(v);
+                }
+                if let Some(v) = value["data"]["sample"]["values"]["agent_cpu_percent"].as_f64() {
+                    cpu = Some(v);
+                }
             }
         }
     }
-    let elapsed=start.elapsed().as_secs_f64();
+    let elapsed = start.elapsed().as_secs_f64();
     let mut churn = 0;
     let mut churn_bytes = 0;
     let mut churn_frames = 0;
     while churn < 120 {
-        assert!(start.elapsed()<Duration::from_secs(15), "100-request batch took {elapsed:.2}s; received {churn}/120 churn events after {:.2}s", start.elapsed().as_secs_f64());
+        assert!(
+            start.elapsed() < Duration::from_secs(15),
+            "100-request batch took {elapsed:.2}s; received {churn}/120 churn events after {:.2}s",
+            start.elapsed().as_secs_f64()
+        );
         let notice = realtime_json(&mut peer);
-        if notice["type"]=="players.delta" {
-            assert_eq!(notice["data"]["base_revision"],revision);
-            revision=notice["data"]["revision"].clone();
-            churn+=notice["data"]["changes"].as_array().unwrap().len();
-            churn_bytes+=notice.to_string().len(); churn_frames+=1;
+        if notice["type"] == "players.delta" {
+            assert_eq!(notice["data"]["base_revision"], revision);
+            revision = notice["data"]["revision"].clone();
+            churn += notice["data"]["changes"].as_array().unwrap().len();
+            churn_bytes += notice.to_string().len();
+            churn_frames += 1;
         }
     }
-    let churn_seconds=start.elapsed().as_secs_f64();
-    let summary=latencies.into_iter().map(|(name,mut values)|{values.sort_by(f64::total_cmp);(name,serde_json::json!({"p50_ms":values[10],"p95_ms":values[18],"max_ms":values[19]}))}).collect::<std::collections::BTreeMap<_,_>>();
-    println!("INTEGRATED_SCALE {}",serde_json::json!({"players":12000,"requests":100,"wall_seconds":elapsed,"requests_per_second":100./elapsed,"response_body_bytes":bytes,"seed_bytes":seed.body.len(),"delta_frames":frames,"delta_bytes":delta_bytes,"delta_delivery_ms":delta_ms,"churn_events":churn,"churn_frames":churn_frames,"churn_bytes":churn_bytes,"churn_events_per_second":churn as f64/churn_seconds,"agent_memory_bytes":memory,"agent_cpu_percent":cpu,"latency":summary}));
+    let churn_seconds = start.elapsed().as_secs_f64();
+    let summary = latencies
+        .into_iter()
+        .map(|(name, mut values)| {
+            values.sort_by(f64::total_cmp);
+            (
+                name,
+                serde_json::json!({"p50_ms":values[10],"p95_ms":values[18],"max_ms":values[19]}),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    println!(
+        "INTEGRATED_SCALE {}",
+        serde_json::json!({"players":12000,"requests":100,"wall_seconds":elapsed,"requests_per_second":100./elapsed,"response_body_bytes":bytes,"seed_bytes":seed.body.len(),"delta_frames":frames,"delta_bytes":delta_bytes,"delta_delivery_ms":delta_ms,"churn_events":churn,"churn_frames":churn_frames,"churn_bytes":churn_bytes,"churn_events_per_second":churn as f64/churn_seconds,"agent_memory_bytes":memory,"agent_cpu_percent":cpu,"latency":summary})
+    );
     peer.close(None).unwrap();
 }

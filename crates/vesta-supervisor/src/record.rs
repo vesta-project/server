@@ -37,7 +37,9 @@ pub struct GenerationRecord {
     #[serde(default, skip_serializing_if = "is_false")]
     pub sandbox_owner: bool,
 }
-fn is_false(value:&bool)->bool { !value }
+fn is_false(value: &bool) -> bool {
+    !value
+}
 impl GenerationRecord {
     pub fn liveness(&self) -> Liveness {
         native::liveness(self.pid, self.process_start, self.boot_id.as_deref())

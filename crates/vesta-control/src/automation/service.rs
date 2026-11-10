@@ -136,7 +136,9 @@ const RUN_COLUMNS: &str = "id,workflow_id,revision,definition_json,principal_id,
 const STEP_COLUMNS: &str =
     "run_id,index_no,attempt,state,operation_ref,output_json,error_code,started_at,finished_at";
 impl Automation {
-    pub(crate) fn database_for_alerts(&self) -> StateDatabase { self.db.clone() }
+    pub(crate) fn database_for_alerts(&self) -> StateDatabase {
+        self.db.clone()
+    }
     pub fn new(db: StateDatabase, port: Arc<dyn ActionPort>) -> Result<Self> {
         db.write(|c| { c.execute_batch("CREATE TABLE IF NOT EXISTS automation_player_visits (uuid TEXT PRIMARY KEY NOT NULL, first_name TEXT NOT NULL, first_seen_at INTEGER NOT NULL) STRICT;")?; Ok(()) })?;
         let audit = AuditLog::new(db.clone())?;
@@ -561,8 +563,12 @@ impl Automation {
     }
     /// Join observation and its matching runs commit together. Never forget visits during retention.
     pub(crate) fn seed_player_history(&self, ids: &[uuid::Uuid]) -> Result<()> {
-        if ids.len() > 128 { return Err(invalid()); }
-        if ids.is_empty() { return Ok(()); }
+        if ids.len() > 128 {
+            return Err(invalid());
+        }
+        if ids.is_empty() {
+            return Ok(());
+        }
         self.write(|c| {
             let mut count = c.query_row("SELECT count(*) FROM automation_player_visits", [], |r| r.get::<_,i64>(0))?;
             for id in ids {
@@ -573,10 +579,27 @@ impl Automation {
             Ok(())
         })
     }
-    pub(crate) fn observe_player_join(&self, uuid: uuid::Uuid, player: &str, historical: bool) -> Result<bool> {
-        if !crate::moderation::valid_player(player) { return Err(invalid()); }
+    pub(crate) fn observe_player_join(
+        &self,
+        uuid: uuid::Uuid,
+        player: &str,
+        historical: bool,
+    ) -> Result<bool> {
+        if !crate::moderation::valid_player(player) {
+            return Err(invalid());
+        }
         let uuid = uuid.to_string();
-        if self.read(|c| Ok(c.query_row("SELECT 1 FROM automation_player_visits WHERE uuid=?", [&uuid], |_| Ok(())).optional()?.is_some()))? { return Ok(false); }
+        if self.read(|c| {
+            Ok(c.query_row(
+                "SELECT 1 FROM automation_player_visits WHERE uuid=?",
+                [&uuid],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+        })? {
+            return Ok(false);
+        }
         self.write(|c| {
             if c.query_row("SELECT 1 FROM automation_player_visits WHERE uuid=?", [&uuid], |_| Ok(())).optional()?.is_some() { return Ok(false); }
             if c.query_row("SELECT count(*) FROM automation_player_visits", [], |r| r.get::<_,i64>(0))? >= 100_000 { return Err(conflict()); }

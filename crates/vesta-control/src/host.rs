@@ -128,6 +128,12 @@ pub struct Host {
     sleep: crate::sleep::Sleep,
 }
 
+struct DriverTelemetry {
+    game_directory: std::path::PathBuf,
+    metrics: crate::metrics::Sampler,
+    notifications: crate::external_alerts::Settings,
+}
+
 /// Ticks schedules and turns runtime and backup facts into automation events.
 /// Observation only: it never starts or stops anything itself, except the opt-in
 /// start-on-agent-start request through the runtime's normal start path.
@@ -144,11 +150,16 @@ impl AutomationDriver {
         backup_events: mpsc::Receiver<BackupEvent>,
         startup: (crate::config::OnAgentStart, crate::sleep::Sleep),
         actions: Arc<HostActions>,
-        game_directory: std::path::PathBuf,
-        mut metrics: crate::metrics::Sampler,
-        notifications: crate::external_alerts::Settings,
+        telemetry: DriverTelemetry,
     ) -> Result<Self, HostError> {
-        let alerts=crate::external_alerts::Worker::start(automation.database_for_alerts(),notifications).map_err(HostError::State)?;
+        let DriverTelemetry {
+            game_directory,
+            mut metrics,
+            notifications,
+        } = telemetry;
+        let alerts =
+            crate::external_alerts::Worker::start(automation.database_for_alerts(), notifications)
+                .map_err(HostError::State)?;
         use std::sync::atomic::{AtomicBool, Ordering};
         let stop = Arc::new(AtomicBool::new(false));
         let local: Arc<std::sync::OnceLock<crate::operations::LocalRuntime>> = Arc::default();
@@ -504,7 +515,11 @@ impl Host {
                 .as_ref()
                 .map(crate::software::SoftwareService::handle),
             sftp: self.sftp.clone(),
-            resource_packs: self.resource_packs.as_ref().expect("host services open").handle(),
+            resource_packs: self
+                .resource_packs
+                .as_ref()
+                .expect("host services open")
+                .handle(),
         }
     }
     /// Present only when `[backups]` is configured.
@@ -617,8 +632,9 @@ fn compose(
     let graceful_stop = launch.graceful_stop();
     let sftp = crate::sftp::SftpService::open(db.clone(), files.clone(), management.clone())
         .map_err(|_| HostError::Supervisor("sftp_state_unavailable"))?;
-    let spec = config.isolate_launch(launch.into_launch_spec(None).map_err(HostError::Launch)?)
-        .map_err(|e|HostError::Launch(LaunchConfigError::Preflight(e)))?;
+    let spec = config
+        .isolate_launch(launch.into_launch_spec(None).map_err(HostError::Launch)?)
+        .map_err(|e| HostError::Launch(LaunchConfigError::Preflight(e)))?;
     let tick_detection = crate::metrics::ticks::detect(&spec, config.game());
     let operations = Operations::new(db.clone())
         .map_err(HostError::Operation)?
@@ -718,18 +734,20 @@ fn compose(
         backup_events,
         (config.on_agent_start(), sleep.clone()),
         actions,
-        config.game().to_path_buf(),
-        crate::metrics::Sampler::new(
-            db.clone(),
-            config.metrics(),
-            config.game().to_path_buf(),
-            config.backups().and_then(|b| match &b.repository {
-                crate::config::BackupRepository::Local(path) => Some(path.clone()),
-                crate::config::BackupRepository::S3(_) => None,
-            }),
-        )
-        .with_tick_detection(tick_detection),
-        config.notifications().clone(),
+        DriverTelemetry {
+            game_directory: config.game().to_path_buf(),
+            metrics: crate::metrics::Sampler::new(
+                db.clone(),
+                config.metrics(),
+                config.game().to_path_buf(),
+                config.backups().and_then(|b| match &b.repository {
+                    crate::config::BackupRepository::Local(path) => Some(path.clone()),
+                    crate::config::BackupRepository::S3(_) => None,
+                }),
+            )
+            .with_tick_detection(tick_detection),
+            notifications: config.notifications().clone(),
+        },
     )?;
     // Last: once the driver runs, failures must go through observation-only shutdown.
     let runtime = match supervisor {
@@ -747,16 +765,22 @@ fn compose(
         maintenance.clone(),
     )
     .map_err(|_| HostError::Supervisor("software_state_unavailable"))?;
-    let resource_packs = crate::resource_packs::hosting::Service::open(db.clone(), Arc::new(
-        crate::resource_packs::hosting::native::NativeHooks {
+    let resource_packs = crate::resource_packs::hosting::Service::open(
+        db.clone(),
+        Arc::new(crate::resource_packs::hosting::native::NativeHooks {
             recovery: Mutex::new(None),
             maintenance,
-            db: db.clone(), files: files.for_remote(), runtime: runtime.network_handle(),
-            software: software.as_ref().map(crate::software::SoftwareService::handle),
+            db: db.clone(),
+            files: files.for_remote(),
+            runtime: runtime.network_handle(),
+            software: software
+                .as_ref()
+                .map(crate::software::SoftwareService::handle),
             fallback_minecraft_version: config.pack().minecraft_version().into(),
             game: config.game().to_path_buf(),
-        }
-    )).map_err(|_| HostError::Supervisor("resource_pack_state_unavailable"))?;
+        }),
+    )
+    .map_err(|_| HostError::Supervisor("resource_pack_state_unavailable"))?;
     driver.attach(runtime.local_handle());
     drop(startup_gate);
     Ok(Host {
@@ -808,7 +832,8 @@ fn check_launch(config: &HostConfiguration) -> Result<CheckedLaunch, HostError> 
     {
         return Err(HostError::LaunchDirectory);
     }
-    let identity = crate::host_software::identity(config,&bytes,launch.working_directory(),state.path());
+    let identity =
+        crate::host_software::identity(config, &bytes, launch.working_directory(), state.path());
     Ok(CheckedLaunch {
         state,
         launch,
@@ -853,11 +878,13 @@ fn restart_policy(
 /// Does not open a database, acquire runtime ownership or start any process.
 pub fn validate_launch(config: &HostConfiguration) -> Result<(), HostError> {
     let checked = check_launch(config)?;
-    let spec=checked
+    let spec = checked
         .launch
         .into_launch_spec(None)
         .map_err(HostError::Launch)?;
-    config.isolate_launch(spec).map_err(|e|HostError::Launch(LaunchConfigError::Preflight(e)))?;
+    config
+        .isolate_launch(spec)
+        .map_err(|e| HostError::Launch(LaunchConfigError::Preflight(e)))?;
     Ok(())
 }
 
@@ -871,11 +898,14 @@ pub fn supervised_launch(config: &HostConfiguration) -> Result<SupervisedLaunch,
     Ok(SupervisedLaunch {
         restart,
         state: checked.state,
-        spec: config.isolate_launch(checked
-            .launch
-            .into_launch_spec(None)
-            .map_err(HostError::Launch)?)
-            .map_err(|e|HostError::Launch(LaunchConfigError::Preflight(e)))?,
+        spec: config
+            .isolate_launch(
+                checked
+                    .launch
+                    .into_launch_spec(None)
+                    .map_err(HostError::Launch)?,
+            )
+            .map_err(|e| HostError::Launch(LaunchConfigError::Preflight(e)))?,
         identity: checked.identity,
     })
 }
@@ -989,7 +1019,9 @@ impl Drop for AdmissionRefresh {
     }
 }
 impl NetworkHost {
-    pub fn resource_packs(&self) -> &crate::resource_packs::hosting::Handle { &self.resource_packs }
+    pub fn resource_packs(&self) -> &crate::resource_packs::hosting::Handle {
+        &self.resource_packs
+    }
     pub fn software(&self) -> Option<&crate::software::SoftwareHandle> {
         self.software.as_ref()
     }

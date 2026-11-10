@@ -997,12 +997,19 @@ fn remote_repository_initialization_refuses_a_junction_before_writing() {
     let junction = f._temp.path().join("linked-repository");
     let status = std::process::Command::new("cmd")
         .args(["/d", "/c", "mklink", "/J"])
-        .arg(&junction).arg(&target).output().unwrap().status;
+        .arg(&junction)
+        .arg(&target)
+        .output()
+        .unwrap()
+        .status;
     assert!(status.success());
     f.settings.repository = BackupRepository::Local(junction);
     let (backups, _, _) = open(&f, false);
     let doc = policy_document(&[("daily", "stopped", 7)], None);
-    assert_eq!(backups.configure(&owner(), None, &doc, true, "linked-setup"), Err(BackupError::Invalid));
+    assert_eq!(
+        backups.configure(&owner(), None, &doc, true, "linked-setup"),
+        Err(BackupError::Invalid)
+    );
     assert!(!target.join("config.json").exists());
     assert_eq!(backups.policy().revision, None);
 }

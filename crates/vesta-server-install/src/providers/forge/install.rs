@@ -1,8 +1,8 @@
 //! Staged processing and receipt-last publication shared by both Forge families.
 use super::*;
 use crate::{
-    InstallOutcome, InstallPlan, ManagedArtifact, ManagedLaunch, Receipt, ServerInstaller,
-    install as publication,
+    install as publication, InstallOutcome, InstallPlan, ManagedArtifact, ManagedLaunch, Receipt,
+    ServerInstaller,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};

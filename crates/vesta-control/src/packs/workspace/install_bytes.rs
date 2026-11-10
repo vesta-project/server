@@ -78,8 +78,7 @@ pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Vec
             let mut result = Vec::new();
             let mut remaining = usize::MAX / 4 * 3;
             while let Some(blob) = seq.next_element::<Blob>()? {
-                let bytes =
-                    blob.decode::<A::Error>(remaining)?;
+                let bytes = blob.decode::<A::Error>(remaining)?;
                 remaining -= bytes.len();
                 result.push(bytes);
             }

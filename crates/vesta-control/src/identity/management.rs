@@ -212,7 +212,7 @@ impl ManagementAccess {
             session_limit: capacity,
             session_ttl_ms: ttl_ms,
             audit: AuditLog::new(db.clone())?,
-            change_cache: Arc::new(Mutex::new((-1,serde_json::json!({})))),
+            change_cache: Arc::new(Mutex::new((-1, serde_json::json!({})))),
             db,
             stores: Arc::new(Mutex::new(Stores::new()?)),
         })
@@ -350,7 +350,11 @@ impl ManagementAccess {
 
     // This runs inside enrollment's transaction: failed identity, policy or
     // audit checks leave the invitation and its usage counter unchanged.
-    pub(super) fn consume_invitation(&self, repo: &Repository<'_>, code: &str) -> Result<(RoleId, Option<Subject>)> {
+    pub(super) fn consume_invitation(
+        &self,
+        repo: &Repository<'_>,
+        code: &str,
+    ) -> Result<(RoleId, Option<Subject>)> {
         let invalid = ManagementError::PairInvalid;
         decode::<32>(code).map_err(|_| invalid)?;
         let c = repo.connection();
@@ -360,15 +364,35 @@ impl ManagementAccess {
         // BEGIN IMMEDIATE owns redemption. Removal, policy, enrollment and
         // audit commit together; failed transactions leave the code usable.
         let issuer = self.invitation_issuer(repo, &hash)?;
-        let usage: Option<(Option<u32>,u32)> = c.query_row("SELECT max_uses,uses FROM management_invitation_uses WHERE code_hash=?",[hash.as_slice()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-        if let Some((limit,uses)) = usage {
-            if limit.is_some_and(|n| uses>=n) { return Err(invalid); }
-            c.execute("UPDATE management_invitation_uses SET uses=uses+1 WHERE code_hash=?",[hash.as_slice()])?;
-            if limit == Some(uses+1) { c.execute("DELETE FROM management_pairing_codes WHERE code_hash=?",[hash.as_slice()])?; }
-        } else { c.execute("DELETE FROM management_pairing_codes WHERE code_hash = ?", [hash.as_slice()])?; }
+        let usage: Option<(Option<u32>, u32)> = c
+            .query_row(
+                "SELECT max_uses,uses FROM management_invitation_uses WHERE code_hash=?",
+                [hash.as_slice()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((limit, uses)) = usage {
+            if limit.is_some_and(|n| uses >= n) {
+                return Err(invalid);
+            }
+            c.execute(
+                "UPDATE management_invitation_uses SET uses=uses+1 WHERE code_hash=?",
+                [hash.as_slice()],
+            )?;
+            if limit == Some(uses + 1) {
+                c.execute(
+                    "DELETE FROM management_pairing_codes WHERE code_hash=?",
+                    [hash.as_slice()],
+                )?;
+            }
+        } else {
+            c.execute(
+                "DELETE FROM management_pairing_codes WHERE code_hash = ?",
+                [hash.as_slice()],
+            )?;
+        }
         repo.role(&role)?;
         Ok((role, issuer))
-
     }
 
     /// A fresh enrollment-purpose proof identifies the device owner. It grants

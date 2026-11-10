@@ -2,31 +2,53 @@ use super::*;
 
 #[test]
 fn pack_failure_codes_survive_the_software_job_adapter() {
-    let error=SoftwareError::from(crate::packs::ReleaseError::Conflict);
-    assert_eq!(error.code(),"pack_release_conflict");
-    let error=SoftwareError::from(crate::packs::ReleaseError::Refusal {
-        code:"content_pack_download_failed",rule:"fixture".into(),item:"pack".into(),
+    let error = SoftwareError::from(crate::packs::ReleaseError::Conflict);
+    assert_eq!(error.code(), "pack_release_conflict");
+    let error = SoftwareError::from(crate::packs::ReleaseError::Refusal {
+        code: "content_pack_download_failed",
+        rule: "fixture",
+        item: "pack".into(),
     });
-    assert_eq!(error.code(),"content_pack_download_failed");
+    assert_eq!(error.code(), "content_pack_download_failed");
 }
 
 #[test]
 #[ignore = "live CurseForge metadata and archive review; no mod downloads or game writes"]
 fn bedrock_reloaded_metadata_review_reproduction() {
     use crate::packs::workspace::*;
-    let f=Fixture::new();
-    let game=f._temp.path().join("pack-review-game");
+    let f = Fixture::new();
+    let game = f._temp.path().join("pack-review-game");
     std::fs::create_dir(&game).unwrap();
-    let files=crate::files::FileBrowser::open(f.db.clone(),&game,&[]).unwrap();
-    let workspace=PackWorkspace::open(&f.db).unwrap();
-    let releases=crate::packs::PackReleases::open(&f.db).unwrap();
-    let result=workspace.install_plan(&owner(),"1.21.1",Some("fabric"),&PackInstallRequest {
-        analyze:true,source:InstallSource::Provider {provider:"curseforge".into(),project_id:"818272".into(),version_id:"6577747".into()},
-    },&files,&releases,&crate::content::UreqProviderClient::configured());
-    if let Err(error)=&result {
-        eprintln!("Bedrock review failed: {}",error.code());
-        if let crate::packs::ReleaseError::ProviderFile{details,..}=error {eprintln!("stage={} reason={} filename={:?}",details.stage,details.reason,details.filename);}
-        if let crate::packs::ReleaseError::Refusal{code,rule,item}=error {eprintln!("code={code} rule={rule} item={item}");}
+    let files = crate::files::FileBrowser::open(f.db.clone(), &game, &[]).unwrap();
+    let workspace = PackWorkspace::open(&f.db).unwrap();
+    let releases = crate::packs::PackReleases::open(&f.db).unwrap();
+    let result = workspace.install_plan(
+        &owner(),
+        "1.21.1",
+        Some("fabric"),
+        &PackInstallRequest {
+            analyze: true,
+            source: InstallSource::Provider {
+                provider: "curseforge".into(),
+                project_id: "818272".into(),
+                version_id: "6577747".into(),
+            },
+        },
+        &files,
+        &releases,
+        &crate::content::UreqProviderClient::configured(),
+    );
+    if let Err(error) = &result {
+        eprintln!("Bedrock review failed: {}", error.code());
+        if let crate::packs::ReleaseError::ProviderFile { details, .. } = error {
+            eprintln!(
+                "stage={} reason={} filename={:?}",
+                details.stage, details.reason, details.filename
+            );
+        }
+        if let crate::packs::ReleaseError::Refusal { code, rule, item } = error {
+            eprintln!("code={code} rule={rule} item={item}");
+        }
     }
     assert!(result.is_ok());
 }
@@ -49,15 +71,26 @@ const VIEWER_DEVICE: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 fn http_management_keys_are_accepted_without_changing_replay_identity() {
     assert!(valid_key(&format!("http:{}", "a".repeat(64))).is_ok());
     assert!(valid_key("operator-key-123").is_ok());
-    for key in ["http:short".to_owned(), format!("http:{}", "z".repeat(64)), "../key-name".into(), "a key name".into()] {
+    for key in [
+        "http:short".to_owned(),
+        format!("http:{}", "z".repeat(64)),
+        "../key-name".into(),
+        "a key name".into(),
+    ] {
         assert!(valid_key(&key).is_err(), "{key}");
     }
 }
 
 #[test]
 fn pack_software_checksum_consent_is_bound_to_a_visible_review_note() {
-    let mut input = crate::packs::workspace::PackInstallApply { acknowledge_warnings: true, acknowledge_software_switch: true,
-        plan_id: "plan".into(), confirmation_token: "token".into(), choices: vec![], set_as_modpack: false };
+    let mut input = crate::packs::workspace::PackInstallApply {
+        acknowledge_warnings: true,
+        acknowledge_software_switch: true,
+        plan_id: "plan".into(),
+        confirmation_token: "token".into(),
+        choices: vec![],
+        set_as_modpack: false,
+    };
     let warnings = vec!["software_legacy_checksum_review".to_string().into()];
     assert!(pack_checksum_acknowledged(&warnings, &input));
     assert!(!pack_checksum_acknowledged(&[], &input));
@@ -85,7 +118,16 @@ impl RuntimeHooks for Hooks {
         Ok("candidate launch".into())
     }
     fn acquire_stopped(&self) -> Result<Box<dyn StoppedGuard>> {
-        if let Some(inner) = self.0.shutdown_on_stopped.lock().unwrap().take().and_then(|inner| inner.upgrade()) { inner.cancel.store(true, Ordering::Release); }
+        if let Some(inner) = self
+            .0
+            .shutdown_on_stopped
+            .lock()
+            .unwrap()
+            .take()
+            .and_then(|inner| inner.upgrade())
+        {
+            inner.cancel.store(true, Ordering::Release);
+        }
         if self.0.running.load(Ordering::SeqCst) {
             Err(SoftwareError::Busy)
         } else {
@@ -101,7 +143,9 @@ impl StoppedGuard for Guard {
     fn activate(&mut self, document: &str) -> Result<()> {
         self.0.calls.fetch_add(1, Ordering::SeqCst);
         *self.0.document.lock().unwrap() = document.into();
-        if let Some(action) = self.0.activation_action.lock().unwrap().take() { action(); }
+        if let Some(action) = self.0.activation_action.lock().unwrap().take() {
+            action();
+        }
         if self.0.fail_after_write.load(Ordering::SeqCst) {
             Err(SoftwareError::RuntimeUnavailable)
         } else {
@@ -657,8 +701,8 @@ fn successful_job_warnings_survive_reopen_and_idempotent_reads() {
 
 #[tokio::test]
 async fn pack_without_software_switch_runs_as_a_durable_job_and_replays_after_reconnect() {
-    use crate::packs::workspace::*;
     use super::Result;
+    use crate::packs::workspace::*;
     use base64::{Engine, engine::general_purpose::STANDARD};
     let f = Fixture::new();
     let service = f.open();
@@ -667,32 +711,84 @@ async fn pack_without_software_switch_runs_as_a_durable_job_and_replays_after_re
         let mut launch = store::state(c)?.current;
         launch.installation.software = Some(Software::Vanilla);
         launch.installation.version = Some("1.21.1".into());
-        c.execute("UPDATE software_state SET current_launch=? WHERE singleton=1", [store::encode(&launch)?])?;
+        c.execute(
+            "UPDATE software_state SET current_launch=? WHERE singleton=1",
+            [store::encode(&launch)?],
+        )?;
         Ok(())
-    }).unwrap();
+    })
+    .unwrap();
     let workspace = PackWorkspace::open(&f.db).unwrap();
     let pack_game = f._temp.path().join("pack-game");
     std::fs::create_dir(&pack_game).unwrap();
     let files = crate::files::FileBrowser::open(f.db.clone(), &pack_game, &[]).unwrap();
     let releases = crate::packs::PackReleases::open(&f.db).unwrap();
-    let draft = workspace.file_mutate(&owner(), "1.21.1", "pack-file", &FileMutation {
-        expected_revision: "0".into(), change: FileOperation::Write { root: "overrides".into(), path: "config/test.properties".into(), content_base64: STANDARD.encode(b"value=pack\n") },
-    }).unwrap();
-    let plan = workspace.install_plan(&owner(), "1.21.1", Some("vanilla"), &PackInstallRequest { analyze: false, source: InstallSource::Draft { revision: draft.revision } }, &files, &releases, &crate::content::UreqProviderClient::new(None)).unwrap();
+    let draft = workspace
+        .file_mutate(
+            &owner(),
+            "1.21.1",
+            "pack-file",
+            &FileMutation {
+                expected_revision: "0".into(),
+                change: FileOperation::Write {
+                    root: "overrides".into(),
+                    path: "config/test.properties".into(),
+                    content_base64: STANDARD.encode(b"value=pack\n"),
+                },
+            },
+        )
+        .unwrap();
+    let plan = workspace
+        .install_plan(
+            &owner(),
+            "1.21.1",
+            Some("vanilla"),
+            &PackInstallRequest {
+                analyze: false,
+                source: InstallSource::Draft {
+                    revision: draft.revision,
+                },
+            },
+            &files,
+            &releases,
+            &crate::content::UreqProviderClient::new(None),
+        )
+        .unwrap();
     assert!(!plan.software_switch_required);
-    let work = PackWork { workspace: workspace.clone(), files, key: "pack-install-job".into(), input: PackInstallApply {
-        acknowledge_warnings: true, acknowledge_software_switch: false, plan_id: plan.plan_id, confirmation_token: plan.confirmation_token, choices: vec![], set_as_modpack: false,
-    }};
-    let job = service.handle().apply_pack(&owner(), work.clone()).await.unwrap();
+    let work = PackWork {
+        workspace: workspace.clone(),
+        files,
+        key: "pack-install-job".into(),
+        input: PackInstallApply {
+            acknowledge_warnings: true,
+            acknowledge_software_switch: false,
+            plan_id: plan.plan_id,
+            confirmation_token: plan.confirmation_token,
+            choices: vec![],
+            set_as_modpack: false,
+        },
+    };
+    let job = service
+        .handle()
+        .apply_pack(&owner(), work.clone())
+        .await
+        .unwrap();
     workspace.track_install_job(&owner(), &job.id).unwrap();
     assert_eq!(finished(&service.handle(), &job.id).state, "succeeded");
-    assert_eq!(std::fs::read(pack_game.join("config/test.properties")).unwrap(), b"value=pack\n");
+    assert_eq!(
+        std::fs::read(pack_game.join("config/test.properties")).unwrap(),
+        b"value=pack\n"
+    );
     drop(service);
     let reopened = f.open();
     let replay = reopened.handle().apply_pack(&owner(), work).await.unwrap();
     assert_eq!(replay.id, job.id);
     assert_eq!(replay.state, "succeeded");
-    assert_eq!(f.native.calls.load(Ordering::SeqCst), 0, "pack install must not reinstall unchanged software");
+    assert_eq!(
+        f.native.calls.load(Ordering::SeqCst),
+        0,
+        "pack install must not reinstall unchanged software"
+    );
 }
 
 #[test]
@@ -774,8 +870,8 @@ fn remote_paths_and_urls_are_rejected_and_forge_family_requests_are_recognized()
 
 #[tokio::test]
 async fn shutdown_at_pack_admission_does_not_apply_pack_files() {
-    use crate::packs::workspace::*;
     use super::Result;
+    use crate::packs::workspace::*;
     use base64::{Engine, engine::general_purpose::STANDARD};
     let f = Fixture::new();
     let service = f.open();
@@ -784,24 +880,69 @@ async fn shutdown_at_pack_admission_does_not_apply_pack_files() {
         let mut launch = store::state(c)?.current;
         launch.installation.software = Some(Software::Vanilla);
         launch.installation.version = Some("1.21.1".into());
-        c.execute("UPDATE software_state SET current_launch=? WHERE singleton=1", [store::encode(&launch)?])?;
+        c.execute(
+            "UPDATE software_state SET current_launch=? WHERE singleton=1",
+            [store::encode(&launch)?],
+        )?;
         Ok(())
-    }).unwrap();
+    })
+    .unwrap();
     let workspace = PackWorkspace::open(&f.db).unwrap();
     let pack_game = f._temp.path().join("pack-game");
     std::fs::create_dir(&pack_game).unwrap();
     let files = crate::files::FileBrowser::open(f.db.clone(), &pack_game, &[]).unwrap();
     let releases = crate::packs::PackReleases::open(&f.db).unwrap();
-    let draft = workspace.file_mutate(&owner(), "1.21.1", "pack-file", &FileMutation {
-        expected_revision: "0".into(), change: FileOperation::Write { root: "overrides".into(), path: "config/test.properties".into(), content_base64: STANDARD.encode(b"value=pack\n") },
-    }).unwrap();
-    let plan = workspace.install_plan(&owner(), "1.21.1", Some("vanilla"), &PackInstallRequest { analyze: false, source: InstallSource::Draft { revision: draft.revision } }, &files, &releases, &crate::content::UreqProviderClient::new(None)).unwrap();
+    let draft = workspace
+        .file_mutate(
+            &owner(),
+            "1.21.1",
+            "pack-file",
+            &FileMutation {
+                expected_revision: "0".into(),
+                change: FileOperation::Write {
+                    root: "overrides".into(),
+                    path: "config/test.properties".into(),
+                    content_base64: STANDARD.encode(b"value=pack\n"),
+                },
+            },
+        )
+        .unwrap();
+    let plan = workspace
+        .install_plan(
+            &owner(),
+            "1.21.1",
+            Some("vanilla"),
+            &PackInstallRequest {
+                analyze: false,
+                source: InstallSource::Draft {
+                    revision: draft.revision,
+                },
+            },
+            &files,
+            &releases,
+            &crate::content::UreqProviderClient::new(None),
+        )
+        .unwrap();
     assert!(!plan.software_switch_required);
-    let work = PackWork { workspace: workspace.clone(), files, key: "pack-install-job".into(), input: PackInstallApply {
-        acknowledge_warnings: true, acknowledge_software_switch: false, plan_id: plan.plan_id, confirmation_token: plan.confirmation_token, choices: vec![], set_as_modpack: false,
-    }};
+    let work = PackWork {
+        workspace: workspace.clone(),
+        files,
+        key: "pack-install-job".into(),
+        input: PackInstallApply {
+            acknowledge_warnings: true,
+            acknowledge_software_switch: false,
+            plan_id: plan.plan_id,
+            confirmation_token: plan.confirmation_token,
+            choices: vec![],
+            set_as_modpack: false,
+        },
+    };
     *f.native.shutdown_on_stopped.lock().unwrap() = Some(Arc::downgrade(&service.handle().inner));
-    let job = service.handle().apply_pack(&owner(), work.clone()).await.unwrap();
+    let job = service
+        .handle()
+        .apply_pack(&owner(), work.clone())
+        .await
+        .unwrap();
     assert_eq!(finished(&service.handle(), &job.id).state, "failed");
     assert!(!pack_game.join("config/test.properties").exists());
     f.unchanged();
@@ -809,42 +950,135 @@ async fn shutdown_at_pack_admission_does_not_apply_pack_files() {
 
 #[test]
 fn shutdown_at_runtime_activation_admission_does_not_switch_launch() {
- let f=Fixture::new(); let service=f.open(); f.previous("previous"); let h=service.handle();
- let prepared=h.prepare_rollback(&owner(),0).unwrap();
- *f.native.shutdown_on_stopped.lock().unwrap()=Some(Arc::downgrade(&h.inner));
- let job=h.rollback(&owner(),request(&prepared,"cancel-before-activation")).unwrap();
- assert_eq!(finished(&h,&job.id).state,"failed");
- assert_eq!(f.native.calls.load(Ordering::SeqCst),0);
- assert_eq!(f.native.document.lock().unwrap().as_str(),"original launch");
- f.unchanged();
+    let f = Fixture::new();
+    let service = f.open();
+    f.previous("previous");
+    let h = service.handle();
+    let prepared = h.prepare_rollback(&owner(), 0).unwrap();
+    *f.native.shutdown_on_stopped.lock().unwrap() = Some(Arc::downgrade(&h.inner));
+    let job = h
+        .rollback(&owner(), request(&prepared, "cancel-before-activation"))
+        .unwrap();
+    assert_eq!(finished(&h, &job.id).state, "failed");
+    assert_eq!(f.native.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        f.native.document.lock().unwrap().as_str(),
+        "original launch"
+    );
+    f.unchanged();
 }
 
 #[test]
 fn provider_job_error_context_is_redacted_durable_and_authorized() {
-    let f=Fixture::new();let service=f.open();let h=service.handle();
-    let job=f.db.write_with(|tx|store::admit(tx.connection(),&f.db,&h.inner.audit,&owner(),"apply","context-job","bound",0)).unwrap();
-    let work=Work{id:job.id.clone(),actor:owner(),kind:WorkKind::Rollback};
+    let f = Fixture::new();
+    let service = f.open();
+    let h = service.handle();
+    let job =
+        f.db.write_with(|tx| {
+            store::admit(
+                tx.connection(),
+                &f.db,
+                &h.inner.audit,
+                &owner(),
+                "apply",
+                "context-job",
+                "bound",
+                0,
+            )
+        })
+        .unwrap();
+    let work = Work {
+        id: job.id.clone(),
+        actor: owner(),
+        kind: WorkKind::Rollback,
+    };
     let error=crate::packs::ReleaseError::provider_file(crate::content::ContentError::HashMismatch,"modrinth","project","version","download_verify",Some("resource.jar")).with_download_url("https://cdn.modrinth.com/data/project/versions/version/resource.jar?private-token=do-not-store");
-    let error=worker::pack_failure(&h.inner,&work,"preparation",error);
-    worker::fail(&h.inner,&work,error).unwrap();
-    let rows=h.jobs(&owner()).unwrap();let context=rows[0].error_context.as_ref().unwrap();
-    assert_eq!(rows[0].state,"failed");assert_eq!(context["provider"],"modrinth");assert_eq!(context["project_id"],"project");assert_eq!(context["version_id"],"version");assert_eq!(context["filename"],"resource.jar");assert_eq!(context["stage"],"download_verify");assert_eq!(context["phase"],"preparation");
-    let serialized=serde_json::to_string(context).unwrap();assert!(!serialized.contains("http"));assert!(!serialized.contains("do-not-store"));assert!(!serialized.contains("private-token"));
+    let error = worker::pack_failure(&h.inner, &work, "preparation", error);
+    worker::fail(&h.inner, &work, error).unwrap();
+    let rows = h.jobs(&owner()).unwrap();
+    let context = rows[0].error_context.as_ref().unwrap();
+    assert_eq!(rows[0].state, "failed");
+    assert_eq!(context["provider"], "modrinth");
+    assert_eq!(context["project_id"], "project");
+    assert_eq!(context["version_id"], "version");
+    assert_eq!(context["filename"], "resource.jar");
+    assert_eq!(context["stage"], "download_verify");
+    assert_eq!(context["phase"], "preparation");
+    let serialized = serde_json::to_string(context).unwrap();
+    assert!(!serialized.contains("http"));
+    assert!(!serialized.contains("do-not-store"));
+    assert!(!serialized.contains("private-token"));
     assert!(h.jobs(&actor("unknown-device")).is_err());
-    let expected=context.clone();drop(h);drop(service);
-    let reopened=f.open();assert_eq!(reopened.handle().jobs(&owner()).unwrap()[0].error_context.as_ref(),Some(&expected));f.unchanged();
+    let expected = context.clone();
+    drop(h);
+    drop(service);
+    let reopened = f.open();
+    assert_eq!(
+        reopened.handle().jobs(&owner()).unwrap()[0]
+            .error_context
+            .as_ref(),
+        Some(&expected)
+    );
+    f.unchanged();
 }
 
 #[test]
 fn archive_refusal_context_retains_path_and_excludes_url_descriptions() {
-    let f=Fixture::new();let service=f.open();let h=service.handle();
-    for (index,item) in ["kubejs/server_scripts/mods/Laser Bridges & Doors/Recipes.js","https://example.invalid/archive?private-token=do-not-store","bad\npath"].iter().enumerate() {
-        let job=f.db.write_with(|tx|store::admit(tx.connection(),&f.db,&h.inner.audit,&owner(),"apply",&format!("refusal-context-{index}"),"bound",0)).unwrap();
-        let work=Work{id:job.id.clone(),actor:owner(),kind:WorkKind::Rollback};
-        let error=worker::pack_failure(&h.inner,&work,"preparation",crate::packs::ReleaseError::Refusal{code:"pack_path_invalid",rule:"safe_relative_path",item:(*item).into()});worker::fail(&h.inner,&work,error).unwrap();
-        let rows=h.jobs(&owner()).unwrap();let context=rows.iter().find(|r|r.id==job.id).unwrap().error_context.as_ref().unwrap();
-        assert_eq!(context["reason"],"safe_relative_path");
-        if index==0 {assert_eq!(context["path"],*item);} else {assert!(context.get("path").is_none());}
+    let f = Fixture::new();
+    let service = f.open();
+    let h = service.handle();
+    for (index, item) in [
+        "kubejs/server_scripts/mods/Laser Bridges & Doors/Recipes.js",
+        "https://example.invalid/archive?private-token=do-not-store",
+        "bad\npath",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let job =
+            f.db.write_with(|tx| {
+                store::admit(
+                    tx.connection(),
+                    &f.db,
+                    &h.inner.audit,
+                    &owner(),
+                    "apply",
+                    &format!("refusal-context-{index}"),
+                    "bound",
+                    0,
+                )
+            })
+            .unwrap();
+        let work = Work {
+            id: job.id.clone(),
+            actor: owner(),
+            kind: WorkKind::Rollback,
+        };
+        let error = worker::pack_failure(
+            &h.inner,
+            &work,
+            "preparation",
+            crate::packs::ReleaseError::Refusal {
+                code: "pack_path_invalid",
+                rule: "safe_relative_path",
+                item: (*item).into(),
+            },
+        );
+        worker::fail(&h.inner, &work, error).unwrap();
+        let rows = h.jobs(&owner()).unwrap();
+        let context = rows
+            .iter()
+            .find(|r| r.id == job.id)
+            .unwrap()
+            .error_context
+            .as_ref()
+            .unwrap();
+        assert_eq!(context["reason"], "safe_relative_path");
+        if index == 0 {
+            assert_eq!(context["path"], *item);
+        } else {
+            assert!(context.get("path").is_none());
+        }
         assert!(!context.to_string().contains("do-not-store"));
     }
     f.unchanged();

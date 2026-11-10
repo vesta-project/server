@@ -15,20 +15,55 @@ fn inventory_batch_provenance_requires_the_current_file_hash() {
     let hash = hex::encode(sha2::Sha256::digest(b"verified bytes"));
     f.db.write(|c| {
         for path in ["mods/verified.jar", "mods/changed.jar"] {
-            c.execute("INSERT INTO server_content_provenance VALUES(?,?,?)",
-                params![path, hash, r#"{"provider":"modrinth","project_id":"project","version_id":"version"}"#])?;
+            c.execute(
+                "INSERT INTO server_content_provenance VALUES(?,?,?)",
+                params![
+                    path,
+                    hash,
+                    r#"{"provider":"modrinth","project_id":"project","version_id":"version"}"#
+                ],
+            )?;
         }
         Ok(())
-    }).unwrap();
+    })
+    .unwrap();
     let world = f.browser.world(&f.owner).unwrap();
-    let summary = f.browser.content_inventory_view(&f.owner, Some("fabric".into()), "1.21.1".into(), &world, true).unwrap();
+    let summary = f
+        .browser
+        .content_inventory_view(
+            &f.owner,
+            Some("fabric".into()),
+            "1.21.1".into(),
+            &world,
+            true,
+        )
+        .unwrap();
     assert_eq!(summary.items.len(), 2);
-    assert!(summary.items.iter().all(|item| item.sha256.is_none() && item.provider.is_none() && item.declared.is_none()));
-    assert!(summary.items.iter().all(|item| item.display_provider.as_ref().is_some_and(|p| p.project_id == "project")));
-    let inventory = f.browser.content_inventory(&f.owner, Some("fabric".into()), "1.21.1".into(), &world).unwrap();
-    let verified = inventory.items.iter().find(|item| item.path == "mods/verified.jar").unwrap();
+    assert!(
+        summary.items.iter().all(|item| item.sha256.is_none()
+            && item.provider.is_none()
+            && item.declared.is_none())
+    );
+    assert!(summary.items.iter().all(|item| {
+        item.display_provider
+            .as_ref()
+            .is_some_and(|p| p.project_id == "project")
+    }));
+    let inventory = f
+        .browser
+        .content_inventory(&f.owner, Some("fabric".into()), "1.21.1".into(), &world)
+        .unwrap();
+    let verified = inventory
+        .items
+        .iter()
+        .find(|item| item.path == "mods/verified.jar")
+        .unwrap();
     assert_eq!(verified.provider.as_ref().unwrap().project_id, "project");
-    let changed = inventory.items.iter().find(|item| item.path == "mods/changed.jar").unwrap();
+    let changed = inventory
+        .items
+        .iter()
+        .find(|item| item.path == "mods/changed.jar")
+        .unwrap();
     assert!(changed.provider.is_none());
     assert!(changed.display_provider.is_none());
 }
@@ -957,7 +992,8 @@ fn pack_install_applies_overrides_immediately_and_replays() {
             &f.owner,
             "1.21.1",
             Some("vanilla"),
-            &PackInstallRequest { analyze: false,
+            &PackInstallRequest {
+                analyze: false,
                 source: InstallSource::Draft {
                     revision: draft.revision,
                 },
@@ -1111,7 +1147,8 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
                 &f.owner,
                 "1.21.1",
                 Some("vanilla"),
-                &PackInstallRequest { analyze: false,
+                &PackInstallRequest {
+                    analyze: false,
                     source: InstallSource::Draft { revision },
                 },
                 &f.browser,
@@ -1150,7 +1187,10 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
     let link = workspace.server_link(&f.owner).unwrap().unwrap();
     assert!(link.installed.is_some());
     assert!(link.pending.is_none());
-    assert_eq!(std::fs::read(f.game.join("config/owned.txt")).unwrap(), b"owned");
+    assert_eq!(
+        std::fs::read(f.game.join("config/owned.txt")).unwrap(),
+        b"owned"
+    );
     workspace
         .set_client_pack(
             &f.owner,
@@ -1205,14 +1245,27 @@ fn server_modpack_update_and_unlink_preserve_user_content() {
     let (plan, outcome) = install(draft.revision, "owned-update");
     // Completion is already durable when the request returns, including on reopen.
     let reopened = PackWorkspace::open(&f.db).unwrap();
-    assert!(reopened.server_link(&f.owner).unwrap().unwrap().pending.is_none());
+    assert!(
+        reopened
+            .server_link(&f.owner)
+            .unwrap()
+            .unwrap()
+            .pending
+            .is_none()
+    );
     assert_eq!(outcome.state, "installed");
     // Shared launcher policy preserves config files dropped by the author.
     assert_eq!(plan.removed.len(), 0);
     assert_eq!(outcome.pending_ids.len(), 0);
-    assert_eq!(std::fs::read(f.game.join("config/owned.txt")).unwrap(), b"owned");
+    assert_eq!(
+        std::fs::read(f.game.join("config/owned.txt")).unwrap(),
+        b"owned"
+    );
     f.browser.apply_pending_content().unwrap();
-    assert_eq!(std::fs::read(f.game.join("config/owned.txt")).unwrap(), b"owned");
+    assert_eq!(
+        std::fs::read(f.game.join("config/owned.txt")).unwrap(),
+        b"owned"
+    );
     assert!(releases.offered().unwrap().unwrap().revision() > first_revision);
     let installed = reopened.server_link(&f.owner).unwrap().unwrap();
     assert!(installed.pending.is_none());
@@ -1313,7 +1366,8 @@ fn uploaded_archive_delivery_survives_upload_and_plan_removal() {
             &f.owner,
             "1.21.1",
             Some("vanilla"),
-            &PackInstallRequest { analyze: false,
+            &PackInstallRequest {
+                analyze: false,
                 source: InstallSource::UploadedArchive {
                     upload_id: upload.into(),
                 },
@@ -1467,84 +1521,170 @@ fn staged_pack_sidecars_remain_files_and_eula_consent_is_durable() {
 #[ignore = "bounded local performance measurement; no network"]
 fn audit_inventory_400_baseline() {
     use std::io::{Cursor, Write};
-    let f=Fixture::open();
-    let mut zip=zip::ZipWriter::new(Cursor::new(Vec::new()));
-    zip.start_file("fabric.mod.json",zip::write::SimpleFileOptions::default()).unwrap();
-    zip.write_all(br#"{"id":"example","name":"Example","version":"1","environment":"server"}"#).unwrap();
-    let jar=zip.finish().unwrap().into_inner();
-    for i in 0..400 { f.write(&format!("mods/example-{i}.jar"),&jar); }
-    let world=f.browser.world(&f.owner).unwrap();
-    for (name,summary) in [("summary_cold",true),("full_cold",false),("summary_warm",true),("full_warm",false)] {
-        let start=std::time::Instant::now();
-        let inventory=f.browser.content_inventory_view(&f.owner,Some("fabric".into()),"1.21.1".into(),&world,summary).unwrap();
-        assert_eq!(inventory.items.len(),400);
-        println!("AUDIT_BASELINE {}",serde_json::json!({"case":name,"items":400,"elapsed_ms":start.elapsed().as_secs_f64()*1000.0,"json_bytes":serde_json::to_vec(&inventory).unwrap().len(),"declared":inventory.items.iter().filter(|i|i.declared.is_some()).count(),"hashed":inventory.items.iter().filter(|i|i.sha256.is_some()).count(),"provider_requests":0}));
+    let f = Fixture::open();
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.start_file("fabric.mod.json", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(br#"{"id":"example","name":"Example","version":"1","environment":"server"}"#)
+        .unwrap();
+    let jar = zip.finish().unwrap().into_inner();
+    for i in 0..400 {
+        f.write(&format!("mods/example-{i}.jar"), &jar);
+    }
+    let world = f.browser.world(&f.owner).unwrap();
+    for (name, summary) in [
+        ("summary_cold", true),
+        ("full_cold", false),
+        ("summary_warm", true),
+        ("full_warm", false),
+    ] {
+        let start = std::time::Instant::now();
+        let inventory = f
+            .browser
+            .content_inventory_view(
+                &f.owner,
+                Some("fabric".into()),
+                "1.21.1".into(),
+                &world,
+                summary,
+            )
+            .unwrap();
+        assert_eq!(inventory.items.len(), 400);
+        println!(
+            "AUDIT_BASELINE {}",
+            serde_json::json!({"case":name,"items":400,"elapsed_ms":start.elapsed().as_secs_f64()*1000.0,"json_bytes":serde_json::to_vec(&inventory).unwrap().len(),"declared":inventory.items.iter().filter(|i|i.declared.is_some()).count(),"hashed":inventory.items.iter().filter(|i|i.sha256.is_some()).count(),"provider_requests":0})
+        );
     }
 }
 
 #[test]
 fn pack_parent_admission_rechecks_replacement_policy_and_server_root() {
-    let f=Fixture::open();
-    let path=RelativePath::parse("config").unwrap();
-    assert!(matches!(f.browser.pack_parent(&f.owner,&path),Err(FileError::NotFound)));
+    let f = Fixture::open();
+    let path = RelativePath::parse("config").unwrap();
+    assert!(matches!(
+        f.browser.pack_parent(&f.owner, &path),
+        Err(FileError::NotFound)
+    ));
     fs::create_dir(f.game.join("config")).unwrap();
-    f.browser.pack_parent(&f.owner,&path).unwrap();
+    f.browser.pack_parent(&f.owner, &path).unwrap();
     // No cached existence/trust survives deletion or replacement with a regular file.
     fs::remove_dir(f.game.join("config")).unwrap();
-    fs::write(f.game.join("config"),b"not a directory").unwrap();
-    assert!(matches!(f.browser.pack_parent(&f.owner,&path),Err(FileError::NotDirectory)));
+    fs::write(f.game.join("config"), b"not a directory").unwrap();
+    assert!(matches!(
+        f.browser.pack_parent(&f.owner, &path),
+        Err(FileError::NotDirectory)
+    ));
     fs::remove_file(f.game.join("config")).unwrap();
     fs::create_dir(f.game.join("config")).unwrap();
-    f.grant(&f.owner,Capability::FilesList,"config","deny");
-    refused(f.browser.pack_parent(&f.owner,&path),"forbidden");
-    let other=Fixture::open();
+    f.grant(&f.owner, Capability::FilesList, "config", "deny");
+    refused(f.browser.pack_parent(&f.owner, &path), "forbidden");
+    let other = Fixture::open();
     fs::create_dir(other.game.join("config")).unwrap();
-    other.browser.pack_parent(&other.owner,&path).unwrap();
-    refused(other.browser.pack_parent(&f.owner,&path),"forbidden");
+    other.browser.pack_parent(&other.owner, &path).unwrap();
+    refused(other.browser.pack_parent(&f.owner, &path), "forbidden");
 }
 
 #[test]
 fn inventory_metadata_observes_replacement_removal_and_separate_server_authority() {
-    use std::io::{Cursor,Write};
-    let jar=|version:&str| {
-        let mut zip=zip::ZipWriter::new(Cursor::new(Vec::new()));
-        zip.start_file("fabric.mod.json",zip::write::SimpleFileOptions::default()).unwrap();
-        write!(zip,"{{\"id\":\"example\",\"name\":\"Example\",\"version\":\"{version}\"}}").unwrap();
+    use std::io::{Cursor, Write};
+    let jar = |version: &str| {
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file("fabric.mod.json", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        write!(
+            zip,
+            "{{\"id\":\"example\",\"name\":\"Example\",\"version\":\"{version}\"}}"
+        )
+        .unwrap();
         zip.finish().unwrap().into_inner()
     };
-    let f=Fixture::open();let other=Fixture::open();let path=RelativePath::parse("mods/a.jar").unwrap();
-    f.write(path.as_str(),&jar("1"));other.write(path.as_str(),&jar("9"));
-    assert_eq!(f.browser.content_metadata(&f.owner,&path).unwrap().unwrap().version.as_deref(),Some("1"));
+    let f = Fixture::open();
+    let other = Fixture::open();
+    let path = RelativePath::parse("mods/a.jar").unwrap();
+    f.write(path.as_str(), &jar("1"));
+    other.write(path.as_str(), &jar("9"));
+    assert_eq!(
+        f.browser
+            .content_metadata(&f.owner, &path)
+            .unwrap()
+            .unwrap()
+            .version
+            .as_deref(),
+        Some("1")
+    );
     // Same-sized external replacement must not retain a path-only metadata cache hit.
-    f.write(path.as_str(),&jar("2"));
-    assert_eq!(f.browser.content_metadata(&f.owner,&path).unwrap().unwrap().version.as_deref(),Some("2"));
-    assert_eq!(other.browser.content_metadata(&other.owner,&path).unwrap().unwrap().version.as_deref(),Some("9"));
-    refused(other.browser.content_metadata(&f.owner,&path),"forbidden");
-    f.grant(&f.owner,Capability::FilesRead,"mods/a.jar","deny");
-    refused(f.browser.content_metadata(&f.owner,&path),"forbidden");
+    f.write(path.as_str(), &jar("2"));
+    assert_eq!(
+        f.browser
+            .content_metadata(&f.owner, &path)
+            .unwrap()
+            .unwrap()
+            .version
+            .as_deref(),
+        Some("2")
+    );
+    assert_eq!(
+        other
+            .browser
+            .content_metadata(&other.owner, &path)
+            .unwrap()
+            .unwrap()
+            .version
+            .as_deref(),
+        Some("9")
+    );
+    refused(other.browser.content_metadata(&f.owner, &path), "forbidden");
+    f.grant(&f.owner, Capability::FilesRead, "mods/a.jar", "deny");
+    refused(f.browser.content_metadata(&f.owner, &path), "forbidden");
     fs::remove_file(other.game.join("mods/a.jar")).unwrap();
-    assert!(matches!(other.browser.content_metadata(&other.owner,&path),Err(FileError::NotFound)));
+    assert!(matches!(
+        other.browser.content_metadata(&other.owner, &path),
+        Err(FileError::NotFound)
+    ));
 }
 
 #[test]
 fn inventory_metadata_parses_the_admitted_handle_not_a_replaced_path() {
-    use std::io::{Cursor,Write};
-    let jar=|version:&str| {
-        let mut zip=zip::ZipWriter::new(Cursor::new(Vec::new()));
-        zip.start_file("fabric.mod.json",zip::write::SimpleFileOptions::default()).unwrap();
-        write!(zip,"{{\"id\":\"example\",\"name\":\"Example\",\"version\":\"{version}\"}}").unwrap();
+    use std::io::{Cursor, Write};
+    let jar = |version: &str| {
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file("fabric.mod.json", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        write!(
+            zip,
+            "{{\"id\":\"example\",\"name\":\"Example\",\"version\":\"{version}\"}}"
+        )
+        .unwrap();
         zip.finish().unwrap().into_inner()
     };
-    let f=Fixture::open();
-    f.write("mods/example.jar",&jar("1"));
-    let path=f.game.join("mods/example.jar");
-    let replacement=jar("2");
-    super::content::METADATA_AFTER_ADMISSION.with(|hook| *hook.borrow_mut()=Some(Box::new(move || {
-        fs::rename(&path,path.with_extension("old")).unwrap();
-        fs::write(&path,replacement).unwrap();
-    })));
-    let relative=RelativePath::parse("mods/example.jar").unwrap();
-    assert_eq!(f.browser.content_metadata(&f.owner,&relative).unwrap().unwrap().version.as_deref(),Some("1"));
+    let f = Fixture::open();
+    f.write("mods/example.jar", &jar("1"));
+    let path = f.game.join("mods/example.jar");
+    let replacement = jar("2");
+    super::content::METADATA_AFTER_ADMISSION.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            fs::rename(&path, path.with_extension("old")).unwrap();
+            fs::write(&path, replacement).unwrap();
+        }))
+    });
+    let relative = RelativePath::parse("mods/example.jar").unwrap();
+    assert_eq!(
+        f.browser
+            .content_metadata(&f.owner, &relative)
+            .unwrap()
+            .unwrap()
+            .version
+            .as_deref(),
+        Some("1")
+    );
     // A subsequent independent observation must admit and see the new file.
-    assert_eq!(f.browser.content_metadata(&f.owner,&relative).unwrap().unwrap().version.as_deref(),Some("2"));
+    assert_eq!(
+        f.browser
+            .content_metadata(&f.owner, &relative)
+            .unwrap()
+            .unwrap()
+            .version
+            .as_deref(),
+        Some("2")
+    );
 }

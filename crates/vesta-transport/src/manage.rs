@@ -103,11 +103,18 @@ pub(super) fn error(status: StatusCode, code: &'static str) -> Reply {
     envelope(status, json!({"error":{"code":code}}))
 }
 /// Keep compatibility categories while carrying the fixed domain cause to clients.
-pub(super) fn error_with_reason(status: StatusCode, code: &'static str, reason: &'static str) -> Reply {
+pub(super) fn error_with_reason(
+    status: StatusCode,
+    code: &'static str,
+    reason: &'static str,
+) -> Reply {
     envelope(status, json!({"error":{"code":code,"reason":reason}}))
 }
 fn control_reason(error: &vesta_control::ControlError) -> &'static str {
-    error.reason().map(|reason| reason.code()).unwrap_or(error.code())
+    error
+        .reason()
+        .map(|reason| reason.code())
+        .unwrap_or(error.code())
 }
 pub(super) fn ok(data: Value) -> Reply {
     envelope(StatusCode::OK, json!({"data": data}))
@@ -224,13 +231,19 @@ fn revision(value: &str) -> Option<u64> {
     (value <= 9_007_199_254_740_991).then_some(value)
 }
 fn pack_error(error_value: vesta_control::packs::ReleaseError) -> Reply {
-    let reason = match &error_value { vesta_control::packs::ReleaseError::Control(e) => control_reason(e), _ => error_value.code() };
+    let reason = match &error_value {
+        vesta_control::packs::ReleaseError::Control(e) => control_reason(e),
+        _ => error_value.code(),
+    };
     let error = |status, code| error_with_reason(status, code, reason);
     if error_value.code() == "forbidden" {
         return error(StatusCode::FORBIDDEN, "management_forbidden");
     }
     match error_value {
-        vesta_control::packs::ReleaseError::Refusal { code, rule, item } => envelope(StatusCode::BAD_REQUEST, json!({"error":{"code":code,"issue":{"code":code,"rule":rule,"item":item}}})),
+        vesta_control::packs::ReleaseError::Refusal { code, rule, item } => envelope(
+            StatusCode::BAD_REQUEST,
+            json!({"error":{"code":code,"issue":{"code":code,"rule":rule,"item":item}}}),
+        ),
         vesta_control::packs::ReleaseError::ProviderFile { failure, details } => {
             let status = if failure == vesta_control::packs::ProviderFailure::DownloadUnavailable {
                 StatusCode::UNPROCESSABLE_ENTITY
@@ -264,9 +277,9 @@ fn pack_error(error_value: vesta_control::packs::ReleaseError) -> Reply {
             error(StatusCode::BAD_REQUEST, "pack_release_version_invalid")
         }
         vesta_control::packs::ReleaseError::Pack(e) => match e {
-              vesta_control::packs::PackError::InsufficientSpace => {
-                  error(StatusCode::INSUFFICIENT_STORAGE,e.code())
-              }
+            vesta_control::packs::PackError::InsufficientSpace => {
+                error(StatusCode::INSUFFICIENT_STORAGE, e.code())
+            }
             vesta_control::packs::PackError::ProviderNotConfigured
             | vesta_control::packs::PackError::ProviderUnavailable => {
                 error(StatusCode::SERVICE_UNAVAILABLE, e.code())
@@ -464,10 +477,14 @@ pub(super) struct Request<'a> {
 }
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     let resource = match request.path.strip_prefix("/api/v3/manage/").unwrap_or("") {
-        "server" => Some("branding"), "config/server-properties" => Some("properties"),
-        "sleep/policy" => Some("sleep-policy"), "motd/policy" => Some("motd-policy"),
-        "backups/config" => Some("backup-config"), "access-sources" => Some("access-sources"),
-        "roles" => Some("roles"), "software" => Some("software"),
+        "server" => Some("branding"),
+        "config/server-properties" => Some("properties"),
+        "sleep/policy" => Some("sleep-policy"),
+        "motd/policy" => Some("motd-policy"),
+        "backups/config" => Some("backup-config"),
+        "access-sources" => Some("access-sources"),
+        "roles" => Some("roles"),
+        "software" => Some("software"),
         path if path.starts_with("software/") => Some("software"),
         path if path.starts_with("roles/") => Some("roles"),
         path if path.starts_with("users/") && path.ends_with("/roles") => Some("users"),
@@ -475,24 +492,25 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     };
     let token = request.authorization;
     let mut reply = dispatch_inner(host, request);
-    if let (Some(resource), Some(token)) = (resource, token) {
-        if let Ok(changes) = host.management().resource_changes(token) {
-            if let crate::ReplyBody::Bytes(bytes) = reply.body_mut() {
-                if let Ok(mut value) = serde_json::from_slice::<Value>(bytes) {
-                    if !changes[resource].is_null() {
-                        if value["error"]["code"] == "conflict" {
-                            value["error"]["current"]["editor"] = changes[resource].clone();
-                        } else if value["data"].is_object() { value["data"]["editor"] = changes[resource].clone(); }
-                        *bytes = serde_json::to_vec(&value).expect("JSON").into();
-                    }
-                }
-            }
+    if let (Some(resource), Some(token)) = (resource, token)
+        && let Ok(changes) = host.management().resource_changes(token)
+        && let crate::ReplyBody::Bytes(bytes) = reply.body_mut()
+        && let Ok(mut value) = serde_json::from_slice::<Value>(bytes)
+        && !changes[resource].is_null()
+    {
+        if value["error"]["code"] == "conflict" {
+            value["error"]["current"]["editor"] = changes[resource].clone();
+        } else if value["data"].is_object() {
+            value["data"]["editor"] = changes[resource].clone();
         }
+        *bytes = serde_json::to_vec(&value).expect("JSON").into();
     }
     // The resource annotation changes the serialized representation length.
     if let crate::ReplyBody::Bytes(bytes) = reply.body() {
         let length = bytes.len();
-        reply.headers_mut().insert(http::header::CONTENT_LENGTH, length.into());
+        reply
+            .headers_mut()
+            .insert(http::header::CONTENT_LENGTH, length.into());
     }
     reply
 }
@@ -981,20 +999,43 @@ fn dispatch_inner(host: &NetworkHost, request: Request<'_>) -> Reply {
                 Ok(v) => {
                     // Bind pages to the exact roster. A join/leave invalidates
                     // the cursor rather than stitching together different views.
-                    let scope = format!("players-{}-{}", v.generation.to_hex(), v.response_cursor());
+                    let scope =
+                        format!("players-{}-{}", v.generation.to_hex(), v.response_cursor());
                     let (offset, limit) = if query.is_some() {
-                        let Some(value) = page(query, &scope, host.management().server_id(), 200) else {
+                        let Some(value) = page(query, &scope, host.management().server_id(), 200)
+                        else {
                             return error(StatusCode::BAD_REQUEST, "invalid_request");
                         };
                         value
-                    } else { (0, usize::MAX) }; // Legacy clients retain their full snapshot contract.
-                    let Ok(offset) = usize::try_from(offset) else { return error(StatusCode::BAD_REQUEST, "invalid_request"); };
-                    if offset > v.players.len() { return error(StatusCode::BAD_REQUEST, "invalid_request"); }
-                    let visible: Vec<_> = v.players.iter().filter(|p| p.len() <= 16 && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')).collect();
-                    let items: Vec<_> = visible.iter().skip(offset).take(limit).map(|p| json!({"name":p})).collect();
+                    } else {
+                        (0, usize::MAX)
+                    }; // Legacy clients retain their full snapshot contract.
+                    let Ok(offset) = usize::try_from(offset) else {
+                        return error(StatusCode::BAD_REQUEST, "invalid_request");
+                    };
+                    if offset > v.players.len() {
+                        return error(StatusCode::BAD_REQUEST, "invalid_request");
+                    }
+                    let visible: Vec<_> = v
+                        .players
+                        .iter()
+                        .filter(|p| {
+                            p.len() <= 16
+                                && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                        })
+                        .collect();
+                    let items: Vec<_> = visible
+                        .iter()
+                        .skip(offset)
+                        .take(limit)
+                        .map(|p| json!({"name":p}))
+                        .collect();
                     let end = offset.saturating_add(items.len());
-                    let next = (end < visible.len()).then(|| cursor(host.management().server_id(), &scope, end));
-                    ok(json!({"known":true,"generation":v.generation.to_hex(),"revision":v.activity_revision().to_string(),"player_count":v.players.len(),"items":items,"next_cursor":next}))
+                    let next = (end < visible.len())
+                        .then(|| cursor(host.management().server_id(), &scope, end));
+                    ok(
+                        json!({"known":true,"generation":v.generation.to_hex(),"revision":v.activity_revision().to_string(),"player_count":v.players.len(),"items":items,"next_cursor":next}),
+                    )
                 }
                 Err(_) => ok(json!({"known":false,"player_count":null,"items":null})),
             }
@@ -1037,12 +1078,17 @@ fn dispatch_inner(host: &NetworkHost, request: Request<'_>) -> Reply {
 mod reason_transport_tests {
     use super::*;
     fn payload(reply: Reply) -> Value {
-        let crate::ReplyBody::Bytes(bytes) = reply.body() else { panic!("expected JSON"); };
+        let crate::ReplyBody::Bytes(bytes) = reply.body() else {
+            panic!("expected JSON");
+        };
         serde_json::from_slice(bytes).unwrap()
     }
     #[test]
     fn typed_causes_survive_compatibility_categories() {
-        let operation = operation_error(OperationError::Rejected { code: OperationErrorCode::ActorMismatch, reason: None });
+        let operation = operation_error(OperationError::Rejected {
+            code: OperationErrorCode::ActorMismatch,
+            reason: None,
+        });
         let body: Value = payload(operation);
         assert_eq!(body["error"]["code"], "operation_conflict");
         assert_eq!(body["error"]["reason"], "actor_mismatch");
@@ -1050,9 +1096,12 @@ mod reason_transport_tests {
         let body: Value = payload(file);
         assert_eq!(body["error"]["code"], "invalid_request");
         assert_eq!(body["error"]["reason"], "file_path_protected");
-        let denied = pack_error(vesta_control::packs::ReleaseError::Control(vesta_control::ControlError::Rejected {
-            code: vesta_control::IdentityErrorCode::Forbidden, reason: Some(vesta_control::identity::DenyReason::AdminReserved),
-        }));
+        let denied = pack_error(vesta_control::packs::ReleaseError::Control(
+            vesta_control::ControlError::Rejected {
+                code: vesta_control::IdentityErrorCode::Forbidden,
+                reason: Some(vesta_control::identity::DenyReason::AdminReserved),
+            },
+        ));
         let body: Value = payload(denied);
         assert_eq!(body["error"]["reason"], "admin_reserved");
     }

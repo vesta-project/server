@@ -36,7 +36,8 @@ fn value(result: vesta_control::files::Result<impl serde::Serialize>) -> Reply {
     }
 }
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
-    #[cfg(feature = "latency-probe")] vesta_control::latency_probe::begin();
+    #[cfg(feature = "latency-probe")]
+    vesta_control::latency_probe::begin();
     let Some(token) = request.authorization else {
         return error(StatusCode::UNAUTHORIZED, "management_session_invalid");
     };
@@ -45,7 +46,8 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         Err(e) => return management_error(e),
     };
     let summary = request.method == Method::GET
-        && request.path == "/api/v3/manage/content" && request.query == Some("view=summary");
+        && request.path == "/api/v3/manage/content"
+        && request.query == Some("view=summary");
     if (request.query.is_some() && !summary)
         || request.if_match.is_some()
         || request.if_none_match.is_some()
@@ -76,7 +78,8 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             Ok(world) => world,
             Err(e) => return super::files::file_error(e),
         };
-        #[cfg(feature = "latency-probe")] let inventory_start = std::time::Instant::now();
+        #[cfg(feature = "latency-probe")]
+        let inventory_start = std::time::Instant::now();
         let result = host.files().content_inventory_view(
             &subject,
             family,
@@ -84,12 +87,18 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             &world,
             summary,
         );
-        #[cfg(feature = "latency-probe")] let inventory_ns = inventory_start.elapsed().as_nanos();
-        #[allow(unused_mut)] let mut reply = value(result);
-        #[cfg(feature = "latency-probe")] {
+        #[cfg(feature = "latency-probe")]
+        let inventory_ns = inventory_start.elapsed().as_nanos();
+        #[allow(unused_mut)]
+        let mut reply = value(result);
+        #[cfg(feature = "latency-probe")]
+        {
             let metrics = vesta_control::latency_probe::finish();
             let data = serde_json::json!({"inventory_ns":inventory_ns,"metrics":metrics});
-            reply.headers_mut().insert("x-vesta-latency-probe", http::HeaderValue::from_str(&data.to_string()).unwrap());
+            reply.headers_mut().insert(
+                "x-vesta-latency-probe",
+                http::HeaderValue::from_str(&data.to_string()).unwrap(),
+            );
         }
         return reply;
     }
@@ -225,8 +234,13 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "content_provider_not_configured",
             ),
-            Err(ContentError::UrlRefusal { rule, item }) => super::pack_error(
-                vesta_control::packs::ReleaseError::Refusal { code: "content_pack_source_unsafe", rule, item }),
+            Err(ContentError::UrlRefusal { rule, item }) => {
+                super::pack_error(vesta_control::packs::ReleaseError::Refusal {
+                    code: "content_pack_source_unsafe",
+                    rule,
+                    item,
+                })
+            }
             Err(ContentError::File(e)) => super::files::file_error(e),
             Err(ContentError::TooLarge) => error(StatusCode::PAYLOAD_TOO_LARGE, "pack_too_large"),
             Err(ContentError::DownloadUnavailable { .. }) => error(

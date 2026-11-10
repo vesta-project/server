@@ -52,7 +52,10 @@ fn restore_route(path: &str) -> Option<&str> {
     (!id.is_empty() && !id.contains('/')).then_some(id)
 }
 pub(crate) fn file_error(value: FileError) -> Reply {
-    let reason = match &value { FileError::Control(e) => super::control_reason(e), _ => value.code() };
+    let reason = match &value {
+        FileError::Control(e) => super::control_reason(e),
+        _ => value.code(),
+    };
     let error = |status, code| super::error_with_reason(status, code, reason);
     match value {
         FileError::Control(_) => error(StatusCode::FORBIDDEN, "management_forbidden"),
@@ -651,8 +654,12 @@ fn documents(
             }
             Ok(value) => ok(value),
             Err(FileError::Conflict(_)) => {
-                match vesta_control::config::ServerPropertiesEditor::new(host.files()).read(subject) {
-                    Ok(current) => envelope(StatusCode::CONFLICT, json!({"error":{"code":"conflict","reason":"file_revision_conflict","current":current}})),
+                match vesta_control::config::ServerPropertiesEditor::new(host.files()).read(subject)
+                {
+                    Ok(current) => envelope(
+                        StatusCode::CONFLICT,
+                        json!({"error":{"code":"conflict","reason":"file_revision_conflict","current":current}}),
+                    ),
                     Err(e) => file_error(e),
                 }
             }

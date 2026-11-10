@@ -10,41 +10,101 @@ const META: &str = "https://fill.papermc.io/v3/projects/paper";
 
 #[tokio::test]
 async fn outbound_json_uses_one_post_without_redirects_credentials_or_response_body() {
-    let server=MockServer::start().await;
-    Mock::given(method("POST")).and(path("/hook/test-token"))
-        .respond_with(ResponseTemplate::new(302).insert_header("location","http://127.0.0.1/internal").set_body_string("ignored-response-secret"))
-        .mount(&server).await;
-    let h=transport(url::Url::parse(&server.uri()).unwrap());
-    let body=br#"{"event":"backup_failed"}"#;
-    let status=h.post_json("https://notifications.example/hook/test-token",body,Limits::default()).await.unwrap();
-    assert_eq!(status.status,302);
-    let requests=server.received_requests().await.unwrap();assert_eq!(requests.len(),1);
-    assert_eq!(requests[0].body,body);
-    assert_eq!(requests[0].headers.get("content-type").unwrap(),"application/json");
-    for name in ["authorization","proxy-authorization","x-api-key","cookie"] {assert!(!requests[0].headers.contains_key(name));}
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook/test-token"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("location", "http://127.0.0.1/internal")
+                .set_body_string("ignored-response-secret"),
+        )
+        .mount(&server)
+        .await;
+    let h = transport(url::Url::parse(&server.uri()).unwrap());
+    let body = br#"{"event":"backup_failed"}"#;
+    let status = h
+        .post_json(
+            "https://notifications.example/hook/test-token",
+            body,
+            Limits::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status.status, 302);
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].body, body);
+    assert_eq!(
+        requests[0].headers.get("content-type").unwrap(),
+        "application/json"
+    );
+    for name in [
+        "authorization",
+        "proxy-authorization",
+        "x-api-key",
+        "cookie",
+    ] {
+        assert!(!requests[0].headers.contains_key(name));
+    }
 }
 
 #[tokio::test]
 async fn outbound_json_refuses_invalid_sources_oversize_and_proxy_before_request() {
-    let server=MockServer::start().await;let h=transport(url::Url::parse(&server.uri()).unwrap());
-    for url in ["http://notifications.example/hook","https://user:secret@notifications.example/hook","https://notifications.example:8443/hook","https://notifications.example/hook#fragment"] {
-        assert!(h.post_json(url,b"{}",Limits::default()).await.is_err());
+    let server = MockServer::start().await;
+    let h = transport(url::Url::parse(&server.uri()).unwrap());
+    for url in [
+        "http://notifications.example/hook",
+        "https://user:secret@notifications.example/hook",
+        "https://notifications.example:8443/hook",
+        "https://notifications.example/hook#fragment",
+    ] {
+        assert!(h.post_json(url, b"{}", Limits::default()).await.is_err());
     }
-    assert!(h.post_json("https://notifications.example/hook",b"too large",limits()).await.is_err());
-    let proxy=Transport::new(TransportConfig::proxy("http://127.0.0.1:9".into()).unwrap());
-    assert!(matches!(proxy.post_json("https://notifications.example/hook",b"{}",Limits::default()).await,Err(InstallError::SourceRefused)));
+    assert!(h
+        .post_json("https://notifications.example/hook", b"too large", limits())
+        .await
+        .is_err());
+    let proxy = Transport::new(TransportConfig::proxy("http://127.0.0.1:9".into()).unwrap());
+    assert!(matches!(
+        proxy
+            .post_json(
+                "https://notifications.example/hook",
+                b"{}",
+                Limits::default()
+            )
+            .await,
+        Err(InstallError::SourceRefused)
+    ));
     assert!(server.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn outbound_json_preserves_supported_retry_delay_and_refuses_to_guess_other_delays() {
-    let server=MockServer::start().await;
-    for (index,header,seconds,unsupported) in [(0,"120",Some(120),false),(1,"Wed, 21 Oct 2037 07:28:00 GMT",None,true),(2,"999999999",None,true),(3,"invalid",None,true)] {
-        let route=format!("/hook/{index}");
-        Mock::given(method("POST")).and(path(route.clone())).respond_with(ResponseTemplate::new(429).insert_header("retry-after",header)).mount(&server).await;
-        let h=transport(url::Url::parse(&server.uri()).unwrap());
-        let result=h.post_json(&format!("https://notifications.example{route}"),b"{}",Limits::default()).await.unwrap();
-        assert_eq!(result.status,429);assert_eq!(result.retry_after_seconds,seconds);assert_eq!(result.retry_after_unsupported,unsupported);
+    let server = MockServer::start().await;
+    for (index, header, seconds, unsupported) in [
+        (0, "120", Some(120), false),
+        (1, "Wed, 21 Oct 2037 07:28:00 GMT", None, true),
+        (2, "999999999", None, true),
+        (3, "invalid", None, true),
+    ] {
+        let route = format!("/hook/{index}");
+        Mock::given(method("POST"))
+            .and(path(route.clone()))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", header))
+            .mount(&server)
+            .await;
+        let h = transport(url::Url::parse(&server.uri()).unwrap());
+        let result = h
+            .post_json(
+                &format!("https://notifications.example{route}"),
+                b"{}",
+                Limits::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.status, 429);
+        assert_eq!(result.retry_after_seconds, seconds);
+        assert_eq!(result.retry_after_unsupported, unsupported);
     }
 }
 struct RawServer {

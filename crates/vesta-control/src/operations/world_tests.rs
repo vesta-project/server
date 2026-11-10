@@ -24,31 +24,119 @@ fn request(files: &FileBrowser, h: &Harness) -> NewWorld {
 fn offline_datapack_edits_are_guarded_revision_checked_and_replayable() {
     let h = Harness::new(false);
     let files = files(&h);
-    fs::write(h.cwd.join("world/level.dat"), crate::world::tests::level_with_packs()).unwrap();
+    fs::write(
+        h.cwd.join("world/level.dat"),
+        crate::world::tests::level_with_packs(),
+    )
+    .unwrap();
     fs::create_dir_all(h.cwd.join("world/datapacks/disabled")).unwrap();
     let owned = h.runtime(Duration::from_secs(1));
     let original = fs::read(h.cwd.join("world/level.dat")).unwrap();
-    let patch = crate::world::OfflineDatapackPatch { pack_id: "file/disabled".into(), enabled: true, expected_revision: files.world(&h.subject).unwrap().revision };
-    let result = files.patch_offline_datapack(&owned.runtime.network_handle(), &h.subject, "offline-pack", patch.clone()).unwrap();
+    let patch = crate::world::OfflineDatapackPatch {
+        pack_id: "file/disabled".into(),
+        enabled: true,
+        expected_revision: files.world(&h.subject).unwrap().revision,
+    };
+    let result = files
+        .patch_offline_datapack(
+            &owned.runtime.network_handle(),
+            &h.subject,
+            "offline-pack",
+            patch.clone(),
+        )
+        .unwrap();
     let changed = fs::read(h.cwd.join("world/level.dat")).unwrap();
     assert_ne!(original, changed);
-    assert!(files.world(&h.subject).unwrap().details.datapacks.iter().any(|pack| pack.id == "file/disabled" && pack.enabled == Some(true)));
-    assert_eq!(files.patch_offline_datapack(&owned.runtime.network_handle(), &h.subject, "offline-pack", patch.clone()).unwrap(), result);
-    assert!(files.patch_offline_datapack(&owned.runtime.network_handle(), &h.subject, "stale-pack", patch.clone()).is_err());
-    let mut builtin = patch.clone(); builtin.pack_id = "vanilla".into(); builtin.expected_revision = files.world(&h.subject).unwrap().revision;
-    assert!(files.patch_offline_datapack(&owned.runtime.network_handle(), &h.subject, "builtin-pack", builtin).is_err());
+    assert!(
+        files
+            .world(&h.subject)
+            .unwrap()
+            .details
+            .datapacks
+            .iter()
+            .any(|pack| pack.id == "file/disabled" && pack.enabled == Some(true))
+    );
+    assert_eq!(
+        files
+            .patch_offline_datapack(
+                &owned.runtime.network_handle(),
+                &h.subject,
+                "offline-pack",
+                patch.clone()
+            )
+            .unwrap(),
+        result
+    );
+    assert!(
+        files
+            .patch_offline_datapack(
+                &owned.runtime.network_handle(),
+                &h.subject,
+                "stale-pack",
+                patch.clone()
+            )
+            .is_err()
+    );
+    let mut builtin = patch.clone();
+    builtin.pack_id = "vanilla".into();
+    builtin.expected_revision = files.world(&h.subject).unwrap().revision;
+    assert!(
+        files
+            .patch_offline_datapack(
+                &owned.runtime.network_handle(),
+                &h.subject,
+                "builtin-pack",
+                builtin
+            )
+            .is_err()
+    );
     assert_eq!(fs::read(h.cwd.join("world/level.dat")).unwrap(), changed);
     let current_revision = files.world(&h.subject).unwrap().revision;
     let start = h.submit(GameCommand::Start);
     h.wait_state(&start, OperationState::Succeeded);
-    let running_patch = crate::world::OfflineDatapackPatch { expected_revision: current_revision.clone(), enabled: false, ..patch.clone() };
-    assert!(files.patch_offline_datapack(&owned.runtime.network_handle(), &h.subject, "running-pack", running_patch).is_err());
+    let running_patch = crate::world::OfflineDatapackPatch {
+        expected_revision: current_revision.clone(),
+        enabled: false,
+        ..patch.clone()
+    };
+    assert!(
+        files
+            .patch_offline_datapack(
+                &owned.runtime.network_handle(),
+                &h.subject,
+                "running-pack",
+                running_patch
+            )
+            .is_err()
+    );
     assert_eq!(fs::read(h.cwd.join("world/level.dat")).unwrap(), changed);
-    let stop = h.submit(GameCommand::Stop { expected_generation: owned.runtime.game_snapshot().unwrap().generation.unwrap() });
+    let stop = h.submit(GameCommand::Stop {
+        expected_generation: owned.runtime.game_snapshot().unwrap().generation.unwrap(),
+    });
     h.wait_state(&stop, OperationState::Succeeded);
-    h.db.write(|c| { c.execute("DELETE FROM role_assignments WHERE principal_id=?", [h.subject.principal.as_str()])?; Ok(()) }).unwrap();
-    let revoked = crate::world::OfflineDatapackPatch { expected_revision: current_revision, enabled: false, ..patch };
-    assert!(files.patch_offline_datapack(&owned.runtime.network_handle(), &h.subject, "revoked-pack", revoked).is_err());
+    h.db.write(|c| {
+        c.execute(
+            "DELETE FROM role_assignments WHERE principal_id=?",
+            [h.subject.principal.as_str()],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let revoked = crate::world::OfflineDatapackPatch {
+        expected_revision: current_revision,
+        enabled: false,
+        ..patch
+    };
+    assert!(
+        files
+            .patch_offline_datapack(
+                &owned.runtime.network_handle(),
+                &h.subject,
+                "revoked-pack",
+                revoked
+            )
+            .is_err()
+    );
     assert_eq!(fs::read(h.cwd.join("world/level.dat")).unwrap(), changed);
 }
 #[test]
@@ -375,42 +463,147 @@ fn fresh_world_preserves_named_world_witnesses_across_known_layout_boundaries() 
     // Synthetic bytes test Vesta's selection/preservation contract, not whether
     // any particular Minecraft release can load or migrate these files.
     for (label, paths, split_seed) in [
-        ("vanilla-anvil",vec!["region/r.0.0.mca","DIM-1/region/r.0.0.mca","DIM1/region/r.0.0.mca","playerdata/player.dat","stats/player.json","advancements/player.json"],false),
-        ("bukkit-split",vec!["region/r.0.0.mca","entities/r.0.0.mca","poi/r.0.0.mca","datapacks/custom pack/pack.mcmeta","data/map_0.dat"],false),
-        ("vanilla-26.1",vec!["dimensions/minecraft/overworld/region/r.0.0.mca","dimensions/minecraft/the_nether/entities/r.0.0.mca","dimensions/minecraft/the_end/poi/r.0.0.mca","players/data/player.dat","players/stats/player.json","players/advancements/player.json","dimensions/custom/moon/region/r.0.0.mca","resourcepacks/custom.zip"],true),
+        (
+            "vanilla-anvil",
+            vec![
+                "region/r.0.0.mca",
+                "DIM-1/region/r.0.0.mca",
+                "DIM1/region/r.0.0.mca",
+                "playerdata/player.dat",
+                "stats/player.json",
+                "advancements/player.json",
+            ],
+            false,
+        ),
+        (
+            "bukkit-split",
+            vec![
+                "region/r.0.0.mca",
+                "entities/r.0.0.mca",
+                "poi/r.0.0.mca",
+                "datapacks/custom pack/pack.mcmeta",
+                "data/map_0.dat",
+            ],
+            false,
+        ),
+        (
+            "vanilla-26.1",
+            vec![
+                "dimensions/minecraft/overworld/region/r.0.0.mca",
+                "dimensions/minecraft/the_nether/entities/r.0.0.mca",
+                "dimensions/minecraft/the_end/poi/r.0.0.mca",
+                "players/data/player.dat",
+                "players/stats/player.json",
+                "players/advancements/player.json",
+                "dimensions/custom/moon/region/r.0.0.mca",
+                "resourcepacks/custom.zip",
+            ],
+            true,
+        ),
     ] {
-        let h=Harness::new(false);let files=files(&h);
-        fs::rename(h.cwd.join("world"),h.cwd.join("Adventure World")).unwrap();
-        fs::write(h.cwd.join("server.properties"),b"# preserved\nlevel-name=Adventure World\nlevel-seed=\ncustom-property=preserve\n").unwrap();
-        let mut witnesses=Vec::new();
-        for path in paths {witnesses.push(format!("Adventure World/{path}"));}
-        if label=="bukkit-split" {witnesses.extend(["Adventure World_nether/DIM-1/region/r.0.0.mca".into(),"Adventure World_the_end/DIM1/region/r.0.0.mca".into()]);}
-        witnesses.extend(["mods/custom.jar".into(),"config/custom.toml".into(),"Adventure World/modded/registry.bin".into()]);
-        for (index,path) in witnesses.iter().enumerate() {
-            let file=h.cwd.join(path);fs::create_dir_all(file.parent().unwrap()).unwrap();
-            fs::write(file,format!("{label}:witness:{index}" )).unwrap();
+        let h = Harness::new(false);
+        let files = files(&h);
+        fs::rename(h.cwd.join("world"), h.cwd.join("Adventure World")).unwrap();
+        fs::write(
+            h.cwd.join("server.properties"),
+            b"# preserved\nlevel-name=Adventure World\nlevel-seed=\ncustom-property=preserve\n",
+        )
+        .unwrap();
+        let mut witnesses = Vec::new();
+        for path in paths {
+            witnesses.push(format!("Adventure World/{path}"));
+        }
+        if label == "bukkit-split" {
+            witnesses.extend([
+                "Adventure World_nether/DIM-1/region/r.0.0.mca".into(),
+                "Adventure World_the_end/DIM1/region/r.0.0.mca".into(),
+            ]);
+        }
+        witnesses.extend([
+            "mods/custom.jar".into(),
+            "config/custom.toml".into(),
+            "Adventure World/modded/registry.bin".into(),
+        ]);
+        for (index, path) in witnesses.iter().enumerate() {
+            let file = h.cwd.join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, format!("{label}:witness:{index}")).unwrap();
         }
         if split_seed {
-            fs::write(h.cwd.join("Adventure World/level.dat"),crate::world::tests::split_level()).unwrap();
+            fs::write(
+                h.cwd.join("Adventure World/level.dat"),
+                crate::world::tests::split_level(),
+            )
+            .unwrap();
             let file=h.cwd.join("Adventure World/dimensions/minecraft/overworld/data/minecraft/world_gen_settings.dat");
-            fs::create_dir_all(file.parent().unwrap()).unwrap();fs::write(&file,crate::world::tests::split_worldgen(i64::MIN)).unwrap();
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(&file, crate::world::tests::split_worldgen(i64::MIN)).unwrap();
             witnesses.push("Adventure World/dimensions/minecraft/overworld/data/minecraft/world_gen_settings.dat".into());
         }
         witnesses.push("Adventure World/level.dat".into());
-        let before:Vec<_>=witnesses.iter().map(|p|(p.clone(),fs::read(h.cwd.join(p)).unwrap())).collect();
-        let current=files.world(&h.subject).unwrap();assert_eq!(current.name,"Adventure World");assert_eq!(current.seed.as_deref(),Some("-9223372036854775808"));
-        let owned=h.runtime(Duration::from_secs(1));
-        let patch=NewWorld{seed:"".into(),expected_revision:current.revision,confirm_world:current.name};
-        let first=files.new_world(&owned.runtime.network_handle(),&h.subject,"layout-new-world",patch.clone()).unwrap();
-        assert_eq!(first["world"]["exists"],false);assert_ne!(first["world"]["name"],"Adventure World");
-        assert!(first["preserved_worlds"].as_array().unwrap().contains(&serde_json::json!("Adventure World")));
-        if label=="bukkit-split" {
-            for root in ["Adventure World_nether","Adventure World_the_end"] {assert!(first["preserved_worlds"].as_array().unwrap().contains(&serde_json::json!(root)));}
+        let before: Vec<_> = witnesses
+            .iter()
+            .map(|p| (p.clone(), fs::read(h.cwd.join(p)).unwrap()))
+            .collect();
+        let current = files.world(&h.subject).unwrap();
+        assert_eq!(current.name, "Adventure World");
+        assert_eq!(current.seed.as_deref(), Some("-9223372036854775808"));
+        let owned = h.runtime(Duration::from_secs(1));
+        let patch = NewWorld {
+            seed: "".into(),
+            expected_revision: current.revision,
+            confirm_world: current.name,
+        };
+        let first = files
+            .new_world(
+                &owned.runtime.network_handle(),
+                &h.subject,
+                "layout-new-world",
+                patch.clone(),
+            )
+            .unwrap();
+        assert_eq!(first["world"]["exists"], false);
+        assert_ne!(first["world"]["name"], "Adventure World");
+        assert!(
+            first["preserved_worlds"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("Adventure World"))
+        );
+        if label == "bukkit-split" {
+            for root in ["Adventure World_nether", "Adventure World_the_end"] {
+                assert!(
+                    first["preserved_worlds"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&serde_json::json!(root))
+                );
+            }
         }
-        let props=fs::read(h.cwd.join("server.properties")).unwrap();
-        assert_eq!(files.new_world(&owned.runtime.network_handle(),&h.subject,"layout-new-world",patch).unwrap(),first);
-        assert_eq!(fs::read(h.cwd.join("server.properties")).unwrap(),props);
-        for (path,bytes) in before {assert_eq!(fs::read(h.cwd.join(&path)).unwrap(),bytes,"{label}: {path}");}
-        assert!(String::from_utf8(props).unwrap().contains("custom-property=preserve"));
+        let props = fs::read(h.cwd.join("server.properties")).unwrap();
+        assert_eq!(
+            files
+                .new_world(
+                    &owned.runtime.network_handle(),
+                    &h.subject,
+                    "layout-new-world",
+                    patch
+                )
+                .unwrap(),
+            first
+        );
+        assert_eq!(fs::read(h.cwd.join("server.properties")).unwrap(), props);
+        for (path, bytes) in before {
+            assert_eq!(
+                fs::read(h.cwd.join(&path)).unwrap(),
+                bytes,
+                "{label}: {path}"
+            );
+        }
+        assert!(
+            String::from_utf8(props)
+                .unwrap()
+                .contains("custom-property=preserve")
+        );
     }
 }

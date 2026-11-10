@@ -72,14 +72,23 @@ impl FileBrowser {
     // Parent admission needs the directory itself, not a listing of every sibling
     // for every file in a pack. Resolve and authorize afresh; never cache path trust.
     pub(super) fn pack_parent(&self, subject: &Subject, path: &RelativePath) -> Result<()> {
-        self.db.read_with(|snapshot| {
-            let policy = identity::policy_in(snapshot.connection(), self.db.server_id(), self.db.clock().millis(), Some(subject))?;
-            authorize(&policy, Capability::FilesList, &path.resource())?;
-            let checked = self.root.resolve(Some(path))?;
-            authorize(&policy, Capability::FilesList, &checked.resource)?;
-            if !checked.metadata.is_dir() { return Err(FileError::NotDirectory); }
-            Ok(())
-        }).map_err(FileError::from)
+        self.db
+            .read_with(|snapshot| {
+                let policy = identity::policy_in(
+                    snapshot.connection(),
+                    self.db.server_id(),
+                    self.db.clock().millis(),
+                    Some(subject),
+                )?;
+                authorize(&policy, Capability::FilesList, &path.resource())?;
+                let checked = self.root.resolve(Some(path))?;
+                authorize(&policy, Capability::FilesList, &checked.resource)?;
+                if !checked.metadata.is_dir() {
+                    return Err(FileError::NotDirectory);
+                }
+                Ok(())
+            })
+            .map_err(FileError::from)
     }
     /// Insert a reviewed pack atomically with its receipt; always wait for restart.
     #[allow(clippy::type_complexity)]
@@ -179,14 +188,43 @@ impl FileBrowser {
         }
         Ok(ids)
     }
-    pub(crate) fn stage_pack_rotations_in(&self, c: &rusqlite::Connection, subject: &Subject, key: &str, rotations: &[(String,String,String)]) -> Result<Vec<String>> {
-        let mut ids=Vec::new();
-        for (index,(path,target,hash)) in rotations.iter().enumerate() {
-            let staged=self.stage_pack_in(c,subject,&format!("{key}-world-{index}"),&[(path.clone(),Some(hash.clone()),Vec::new(),None)])?;
-            let change=Change {payload:None,pack_file:true,folder:true,kind:ContentKind::Mod,action:"rotate".into(),path:path.clone(),target:Some(target.clone()),expected:Some(hash.clone()),provider:None};
+    pub(crate) fn stage_pack_rotations_in(
+        &self,
+        c: &rusqlite::Connection,
+        subject: &Subject,
+        key: &str,
+        rotations: &[(String, String, String)],
+    ) -> Result<Vec<String>> {
+        let mut ids = Vec::new();
+        for (index, (path, target, hash)) in rotations.iter().enumerate() {
+            let staged = self.stage_pack_in(
+                c,
+                subject,
+                &format!("{key}-world-{index}"),
+                &[(path.clone(), Some(hash.clone()), Vec::new(), None)],
+            )?;
+            let change = Change {
+                payload: None,
+                pack_file: true,
+                folder: true,
+                kind: ContentKind::Mod,
+                action: "rotate".into(),
+                path: path.clone(),
+                target: Some(target.clone()),
+                expected: Some(hash.clone()),
+                provider: None,
+            };
             RelativePath::parse(target)?;
-            self.remote_authorize(c,subject,&change.authority())?;
-            for id in &staged { c.execute("UPDATE server_content_changes SET change_json=? WHERE id=?",params![serde_json::to_string(&change).map_err(|_|FileError::Unavailable)?,id])?; }
+            self.remote_authorize(c, subject, &change.authority())?;
+            for id in &staged {
+                c.execute(
+                    "UPDATE server_content_changes SET change_json=? WHERE id=?",
+                    params![
+                        serde_json::to_string(&change).map_err(|_| FileError::Unavailable)?,
+                        id
+                    ],
+                )?;
+            }
             ids.extend(staged);
         }
         Ok(ids)
@@ -337,8 +375,12 @@ impl FileBrowser {
     }
     /// Display-only listing: omit byte verification and JAR parsing on first paint.
     pub fn content_inventory_view(
-        &self, subject: &Subject, software: Option<String>, minecraft_version: String,
-        world: &crate::world::WorldStatus, summary: bool,
+        &self,
+        subject: &Subject,
+        software: Option<String>,
+        minecraft_version: String,
+        world: &crate::world::WorldStatus,
+        summary: bool,
     ) -> Result<ContentInventory> {
         self.check_remote_surface(subject, &[Capability::FilesList, Capability::FilesRead])?;
         let mut items = Vec::new();
@@ -369,7 +411,8 @@ impl FileBrowser {
                 let relative = RelativePath::parse(&path)?;
                 // Hash only a bounded amount per inventory; provenance is never attached
                 // to bytes which have not been verified in this observation.
-                let hash = if !summary && entry.size <= MAX_WRITE_BYTES as u64
+                let hash = if !summary
+                    && entry.size <= MAX_WRITE_BYTES as u64
                     && entry.size <= hash_budget
                     && items.len() < 128
                 {
@@ -382,7 +425,11 @@ impl FileBrowser {
                 let provider = None;
                 // Declared side/name come from a bounded ZIP metadata read, independently
                 // of the full-file hash budget used for provider provenance.
-                let declared = if summary { None } else { self.content_metadata(subject, &relative).ok().flatten() };
+                let declared = if summary {
+                    None
+                } else {
+                    self.content_metadata(subject, &relative).ok().flatten()
+                };
                 items.push(ContentEntry {
                     modpack_owned: false,
                     kind,
@@ -407,7 +454,9 @@ impl FileBrowser {
             let relative = RelativePath::parse(path)?;
             let checked = self.root.resolve(Some(&relative))?;
             let mut size = checked.metadata.len();
-            let hash = if summary { None } else if checked.metadata.is_dir() {
+            let hash = if summary {
+                None
+            } else if checked.metadata.is_dir() {
                 match self.content_tree(subject, path) {
                     Ok((hash, bytes)) => {
                         size = bytes;
@@ -443,20 +492,31 @@ impl FileBrowser {
         // Reuse one read transaction and prepared statement for all verified
         // files. Never hold the database read while hashing or reading ZIPs.
         let provenance = self.db.read(|c| {
-            let mut query = c.prepare("SELECT sha256, provider_json FROM server_content_provenance WHERE path=?")?;
+            let mut query = c.prepare(
+                "SELECT sha256, provider_json FROM server_content_provenance WHERE path=?",
+            )?;
             let mut rows = Vec::new();
             for (index, item) in items.iter().enumerate() {
-                let recorded = query.query_row(params![item.path], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).optional()?;
-                if let Some((hash, raw)) = recorded {
-                    if item.sha256.as_ref().is_none_or(|current| current == &hash) { rows.push((index, raw)); }
+                let recorded = query
+                    .query_row(params![item.path], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .optional()?;
+                if let Some((hash, raw)) = recorded
+                    && item.sha256.as_ref().is_none_or(|current| current == &hash)
+                {
+                    rows.push((index, raw));
                 }
             }
             Ok(rows)
         })?;
         for (index, raw) in provenance {
             let provider = serde_json::from_str(&raw).map_err(|_| FileError::Unavailable)?;
-            if items[index].sha256.is_some() { items[index].provider = Some(provider); }
-            else { items[index].display_provider = Some(provider); }
+            if items[index].sha256.is_some() {
+                items[index].provider = Some(provider);
+            } else {
+                items[index].display_provider = Some(provider);
+            }
         }
         let changes = self.db.read_with(|tx| {
             let mut q = tx.connection().prepare("SELECT id,change_json,error FROM server_content_changes WHERE state='pending' ORDER BY rowid LIMIT 65536")?;
@@ -513,7 +573,8 @@ impl FileBrowser {
                 });
                 items.last_mut().ok_or(FileError::Unavailable)?
             };
-            if !summary && is_jar(&change.path)
+            if !summary
+                && is_jar(&change.path)
                 && let Some(payload) = &change.payload
             {
                 let store = crate::packs::payload::Store::open(&self.db)?;
@@ -601,20 +662,33 @@ impl FileBrowser {
         subject: &Subject,
         path: &RelativePath,
     ) -> Result<Option<DeclaredMetadata>> {
-        #[cfg(test)] let audit_start=std::time::Instant::now();
+        #[cfg(test)]
+        let audit_start = std::time::Instant::now();
         // Admission checks all submitted/canonical/handle scopes before ZIP parsing.
         let stream = self.open_stream(subject, path)?;
-        #[cfg(test)] METADATA_AFTER_ADMISSION.with(|hook| {
-            if let Some(action) = hook.borrow_mut().take() { action(); }
+        #[cfg(test)]
+        METADATA_AFTER_ADMISSION.with(|hook| {
+            if let Some(action) = hook.borrow_mut().take() {
+                action();
+            }
         });
         if stream.size() > 256 * 1024 * 1024 {
             return Err(FileError::TooLarge);
         }
         let file = stream.into_metadata_reader();
-        #[cfg(test)] let audit_parse=std::time::Instant::now();
-        #[cfg(feature = "latency-probe")] let _zip_span = vesta_state::latency_probe::Span::new("metadata_zip");
-        let metadata=jar_metadata(file);
-        #[cfg(test)] if std::env::var_os("VESTA_AUDIT_TIMING").is_some() { eprintln!("AUDIT_METADATA admission_ms={:.3} zip_ms={:.3}",audit_parse.duration_since(audit_start).as_secs_f64()*1000.0,audit_parse.elapsed().as_secs_f64()*1000.0); }
+        #[cfg(test)]
+        let audit_parse = std::time::Instant::now();
+        #[cfg(feature = "latency-probe")]
+        let _zip_span = vesta_state::latency_probe::Span::new("metadata_zip");
+        let metadata = jar_metadata(file);
+        #[cfg(test)]
+        if std::env::var_os("VESTA_AUDIT_TIMING").is_some() {
+            eprintln!(
+                "AUDIT_METADATA admission_ms={:.3} zip_ms={:.3}",
+                audit_parse.duration_since(audit_start).as_secs_f64() * 1000.0,
+                audit_parse.elapsed().as_secs_f64() * 1000.0
+            );
+        }
         metadata
     }
     pub fn content_mutate(
@@ -978,7 +1052,11 @@ impl FileBrowser {
     pub(crate) fn apply_pack_ids(&self, ids: &[String]) -> Result<()> {
         self.apply_pack_ids_with_progress(ids, |_, _| Ok(()))
     }
-    pub(crate) fn apply_pack_ids_with_progress(&self, ids: &[String], mut progress: impl FnMut(usize, usize) -> Result<()>) -> Result<()> {
+    pub(crate) fn apply_pack_ids_with_progress(
+        &self,
+        ids: &[String],
+        mut progress: impl FnMut(usize, usize) -> Result<()>,
+    ) -> Result<()> {
         for (index, id) in ids.iter().enumerate() {
             progress(index, ids.len())?;
             self.apply_content_id(id)?;
@@ -987,7 +1065,8 @@ impl FileBrowser {
         self.reconcile_content_barrier()
     }
     fn apply_content_id(&self, id: &str) -> Result<()> {
-        #[cfg(test)] let audit_clock = std::time::Instant::now();
+        #[cfg(test)]
+        let audit_clock = std::time::Instant::now();
         let row = self.db.read(|c|c.query_row("SELECT principal,device,change_json,bytes FROM server_content_changes WHERE id=? AND state='pending'",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Vec<u8>>(3)?))).optional().map_err(Into::into))?;
         let Some((principal, device, raw, bytes)) = row else {
             return Ok(());
@@ -1013,14 +1092,18 @@ impl FileBrowser {
             let parts: Vec<_> = change.path.split('/').collect();
             for n in 1..parts.len() {
                 let parent = RelativePath::parse(&parts[..n].join("/"))?;
-                if matches!(self.pack_parent(&subject, &parent), Err(FileError::NotFound)) {
+                if matches!(
+                    self.pack_parent(&subject, &parent),
+                    Err(FileError::NotFound)
+                ) {
                     self.mkdir(&subject, &parent)?;
                 }
             }
         }
         let old =
             self.content_provider(&change.path, change.expected.as_deref().unwrap_or_default())?;
-        #[cfg(test)] let audit_effect = std::time::Instant::now();
+        #[cfg(test)]
+        let audit_effect = std::time::Instant::now();
         let result = files.execute_remote(&subject,&key,json!(["content",id]),||Ok(change.authority()),|files| {
             let outcome = match change.action.as_str() {
                 "install" | "update" => {
@@ -1043,7 +1126,8 @@ impl FileBrowser {
             // Mutations complete their file receipt in the same journal transaction.
             Ok(outcome)
         });
-        #[cfg(test)] let audit_commit = std::time::Instant::now();
+        #[cfg(test)]
+        let audit_commit = std::time::Instant::now();
         match result {
             Ok(_) => self.db.write_with(|tx| {
                 let c=tx.connection();
@@ -1060,7 +1144,15 @@ impl FileBrowser {
                 return Err(error);
             }
         }
-        #[cfg(test)] if std::env::var_os("VESTA_AUDIT_TIMING").is_some() { eprintln!("AUDIT_FILE parent_ms={:.3} effect_ms={:.3} commit_ms={:.3}", audit_effect.duration_since(audit_clock).as_secs_f64()*1000.0, audit_commit.duration_since(audit_effect).as_secs_f64()*1000.0, audit_commit.elapsed().as_secs_f64()*1000.0); }
+        #[cfg(test)]
+        if std::env::var_os("VESTA_AUDIT_TIMING").is_some() {
+            eprintln!(
+                "AUDIT_FILE parent_ms={:.3} effect_ms={:.3} commit_ms={:.3}",
+                audit_effect.duration_since(audit_clock).as_secs_f64() * 1000.0,
+                audit_commit.duration_since(audit_effect).as_secs_f64() * 1000.0,
+                audit_commit.elapsed().as_secs_f64() * 1000.0
+            );
+        }
         self.reconcile_content_barrier()
     }
 }
@@ -1094,24 +1186,41 @@ fn is_jar(name: &str) -> bool {
 }
 
 fn manifest_implementation_version(zip: &mut zip::ZipArchive<impl Read + Seek>) -> Option<String> {
-    let mut file=zip.by_name("META-INF/MANIFEST.MF").ok()?;
-    if file.size()>65536 {return None;}
-    let mut text=String::new();file.by_ref().take(65537).read_to_string(&mut text).ok()?;
-    if text.len()>65536 {return None;}
-    let mut version:Option<String>=None;let mut selected=false;
+    let mut file = zip.by_name("META-INF/MANIFEST.MF").ok()?;
+    if file.size() > 65536 {
+        return None;
+    }
+    let mut text = String::new();
+    file.by_ref().take(65537).read_to_string(&mut text).ok()?;
+    if text.len() > 65536 {
+        return None;
+    }
+    let mut version: Option<String> = None;
+    let mut selected = false;
     for line in text.lines() {
-        if line.is_empty() {break;} // Named-entry sections do not define the JAR version.
-        if let Some(continuation)=line.strip_prefix(' ') {
-            if selected {version.as_mut()?.push_str(continuation);}
+        if line.is_empty() {
+            break;
+        } // Named-entry sections do not define the JAR version.
+        if let Some(continuation) = line.strip_prefix(' ') {
+            if selected {
+                version.as_mut()?.push_str(continuation);
+            }
             continue;
         }
-        selected=false;
-        if let Some((key,value))=line.split_once(':') && key.eq_ignore_ascii_case("Implementation-Version") {
-            if version.is_some() {return None;}
-            version=Some(value.strip_prefix(' ').unwrap_or(value).to_owned());selected=true;
+        selected = false;
+        if let Some((key, value)) = line.split_once(':')
+            && key.eq_ignore_ascii_case("Implementation-Version")
+        {
+            if version.is_some() {
+                return None;
+            }
+            version = Some(value.strip_prefix(' ').unwrap_or(value).to_owned());
+            selected = true;
         }
     }
-    version.filter(|v|!v.is_empty()&&v.len()<=256&&!v.contains("${")&&!v.chars().any(char::is_control))
+    version.filter(|v| {
+        !v.is_empty() && v.len() <= 256 && !v.contains("${") && !v.chars().any(char::is_control)
+    })
 }
 
 /// Keep nearby ZIP header seeks inside the read buffer. BufReader's ordinary
@@ -1170,8 +1279,9 @@ impl<R: Read + Seek> Seek for MetadataReader<R> {
 fn jar_metadata(reader: impl Read + Seek) -> Result<Option<DeclaredMetadata>> {
     // ZIP central-directory parsing issues many small reads. Buffer the already
     // admitted handle; never reopen its pathname or cache authority/metadata.
-    let mut zip = zip::ZipArchive::new(MetadataReader::new(reader).map_err(|_| FileError::Corrupt)?)
-        .map_err(|_| FileError::Corrupt)?;
+    let mut zip =
+        zip::ZipArchive::new(MetadataReader::new(reader).map_err(|_| FileError::Corrupt)?)
+            .map_err(|_| FileError::Corrupt)?;
     if zip.len() > 4096 {
         return Err(FileError::TooLarge);
     }
@@ -1204,11 +1314,15 @@ fn jar_metadata(reader: impl Read + Seek) -> Result<Option<DeclaredMetadata>> {
             loader: Some(loader.into()),
             ..Default::default()
         };
-        if name.ends_with(".json") || name=="mcmod.info" {
+        if name.ends_with(".json") || name == "mcmod.info" {
             let value: serde_json::Value =
                 serde_json::from_str(&text).map_err(|_| FileError::Corrupt)?;
-            let data = if name=="mcmod.info" {
-                value.as_array().or_else(||value["modList"].as_array()).and_then(|rows|rows.first()).ok_or(FileError::Corrupt)?
+            let data = if name == "mcmod.info" {
+                value
+                    .as_array()
+                    .or_else(|| value["modList"].as_array())
+                    .and_then(|rows| rows.first())
+                    .ok_or(FileError::Corrupt)?
             } else if loader == "quilt" {
                 &value["quilt_loader"]
             } else {
@@ -1244,8 +1358,14 @@ fn jar_metadata(reader: impl Read + Seek) -> Result<Option<DeclaredMetadata>> {
                     .take(256)
                     .collect();
             }
-            if name=="mcmod.info" && let Some(deps)=data["dependencies"].as_array() {
-                result.dependencies=deps.iter().filter_map(|v|v.as_str().map(str::to_owned)).take(256).collect();
+            if name == "mcmod.info"
+                && let Some(deps) = data["dependencies"].as_array()
+            {
+                result.dependencies = deps
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .take(256)
+                    .collect();
             }
         } else if name.ends_with(".toml") {
             let value: toml::Value = toml::from_str(&text).map_err(|_| FileError::Corrupt)?;
@@ -1301,10 +1421,14 @@ fn jar_metadata(reader: impl Read + Seek) -> Result<Option<DeclaredMetadata>> {
             }
         }
         result.name = result.name.filter(|v| v.len() <= 256);
-        if matches!(loader,"forge"|"neoforge") && result.version.as_deref()==Some("${file.jarVersion}") {
-            result.version=manifest_implementation_version(&mut zip);
+        if matches!(loader, "forge" | "neoforge")
+            && result.version.as_deref() == Some("${file.jarVersion}")
+        {
+            result.version = manifest_implementation_version(&mut zip);
         }
-        result.version = result.version.filter(|v| !v.is_empty()&&v.len() <= 256&&!v.contains("${")&&!v.chars().any(char::is_control));
+        result.version = result.version.filter(|v| {
+            !v.is_empty() && v.len() <= 256 && !v.contains("${") && !v.chars().any(char::is_control)
+        });
         result.side = result.side.filter(|v| v.len() <= 64);
         result.dependencies.retain(|v| v.len() <= 256);
         result.dependencies.truncate(128);
@@ -1476,20 +1600,58 @@ mod tests {
     }
     #[test]
     fn legacy_forge_metadata_and_manifest_version_are_reported_as_actual_values() {
-        for document in [r#"[{"modid":"legacy","name":"Legacy","version":"2.9.3"}]"#,r#"{"modList":[{"modid":"legacy","name":"Legacy","version":"2.9.3"}]}"#] {
-            let metadata=jar_metadata(Cursor::new(jar("mcmod.info",document))).unwrap().unwrap();
-            assert_eq!(metadata.loader.as_deref(),Some("forge"));assert_eq!(metadata.name.as_deref(),Some("Legacy"));assert_eq!(metadata.version.as_deref(),Some("2.9.3"));
+        for document in [
+            r#"[{"modid":"legacy","name":"Legacy","version":"2.9.3"}]"#,
+            r#"{"modList":[{"modid":"legacy","name":"Legacy","version":"2.9.3"}]}"#,
+        ] {
+            let metadata = jar_metadata(Cursor::new(jar("mcmod.info", document)))
+                .unwrap()
+                .unwrap();
+            assert_eq!(metadata.loader.as_deref(), Some("forge"));
+            assert_eq!(metadata.name.as_deref(), Some("Legacy"));
+            assert_eq!(metadata.version.as_deref(), Some("2.9.3"));
         }
-        let mut zip=zip::ZipWriter::new(Cursor::new(Vec::new()));
-        zip.start_file("META-INF/mods.toml",zip::write::SimpleFileOptions::default()).unwrap();zip.write_all(b"[[mods]]\nmodId='example'\nversion='${file.jarVersion}'\n").unwrap();
-        zip.start_file("META-INF/MANIFEST.MF",zip::write::SimpleFileOptions::default()).unwrap();zip.write_all(b"Manifest-Version: 1.0\r\nImplementation-Version: 1.2.\r\n 3\r\n\r\nName: ignored/entry\r\nImplementation-Version: wrong\r\n").unwrap();
-        let metadata=jar_metadata(Cursor::new(zip.finish().unwrap().into_inner())).unwrap().unwrap();assert_eq!(metadata.version.as_deref(),Some("1.2.3"));
-        let metadata=jar_metadata(Cursor::new(jar("META-INF/mods.toml","[[mods]]\nmodId='example'\nversion='${file.jarVersion}'\n"))).unwrap().unwrap();assert!(metadata.version.is_none(),"an unresolved build placeholder is not an actual version");
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file(
+            "META-INF/mods.toml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"[[mods]]\nmodId='example'\nversion='${file.jarVersion}'\n")
+            .unwrap();
+        zip.start_file(
+            "META-INF/MANIFEST.MF",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"Manifest-Version: 1.0\r\nImplementation-Version: 1.2.\r\n 3\r\n\r\nName: ignored/entry\r\nImplementation-Version: wrong\r\n").unwrap();
+        let metadata = jar_metadata(Cursor::new(zip.finish().unwrap().into_inner()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(metadata.version.as_deref(), Some("1.2.3"));
+        let metadata = jar_metadata(Cursor::new(jar(
+            "META-INF/mods.toml",
+            "[[mods]]\nmodId='example'\nversion='${file.jarVersion}'\n",
+        )))
+        .unwrap()
+        .unwrap();
+        assert!(
+            metadata.version.is_none(),
+            "an unresolved build placeholder is not an actual version"
+        );
     }
     #[test]
     fn manifest_version_fallback_is_bounded_and_main_section_only() {
-        for document in ["Manifest-Version: 1.0\n\nName: entry\nImplementation-Version: wrong\n".to_owned(),"Implementation-Version: first\nImplementation-Version: second\n".into(),"Implementation-Version: ${project.version}\n".into(),format!("Implementation-Version: {}\n","a".repeat(257)),"a".repeat(65537)] {
-            let mut zip=zip::ZipArchive::new(Cursor::new(jar("META-INF/MANIFEST.MF",&document))).unwrap();assert!(manifest_implementation_version(&mut zip).is_none());
+        for document in [
+            "Manifest-Version: 1.0\n\nName: entry\nImplementation-Version: wrong\n".to_owned(),
+            "Implementation-Version: first\nImplementation-Version: second\n".into(),
+            "Implementation-Version: ${project.version}\n".into(),
+            format!("Implementation-Version: {}\n", "a".repeat(257)),
+            "a".repeat(65537),
+        ] {
+            let mut zip =
+                zip::ZipArchive::new(Cursor::new(jar("META-INF/MANIFEST.MF", &document))).unwrap();
+            assert!(manifest_implementation_version(&mut zip).is_none());
         }
     }
     #[test]

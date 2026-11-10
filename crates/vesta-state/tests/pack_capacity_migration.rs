@@ -27,11 +27,18 @@ fn v29_workspace_rows_survive_review_threshold_migration() {
     let directory = f.db.directory().clone();
     let id = f.db.server_id().to_owned();
     f.db.write(|c| {
-        c.execute("INSERT INTO pack_workspace(server_id,revision,manifest_json) VALUES(?,7,'{}')", [&id])?;
-        c.execute("INSERT INTO pack_workspace_blobs VALUES(?,?,X'0102')", rusqlite::params![id, "a".repeat(64)])?;
+        c.execute(
+            "INSERT INTO pack_workspace(server_id,revision,manifest_json) VALUES(?,7,'{}')",
+            [&id],
+        )?;
+        c.execute(
+            "INSERT INTO pack_workspace_blobs VALUES(?,?,X'0102')",
+            rusqlite::params![id, "a".repeat(64)],
+        )?;
         c.execute_batch("DROP TABLE pack_import_warnings; PRAGMA user_version=29;")?;
         Ok(())
-    }).unwrap();
+    })
+    .unwrap();
     f.db.close().unwrap();
     let db = StateDatabase::open(directory, f.clock.clone()).unwrap();
     db.write(|c| {

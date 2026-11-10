@@ -5,8 +5,8 @@ mod build;
 mod configured;
 pub use configured::PreparedPack;
 mod delivery;
-mod publish;
 pub(crate) mod payload;
+mod publish;
 mod releases;
 pub mod workspace;
 pub use build::{

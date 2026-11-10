@@ -243,7 +243,8 @@ impl StateDatabase {
         &self,
         work: impl FnOnce(&ReadTransaction<'_>) -> std::result::Result<T, E>,
     ) -> std::result::Result<T, TransactionError<E>> {
-        #[cfg(feature = "latency-probe")] let _latency_state_read = crate::latency_probe::Span::new("state_read");
+        #[cfg(feature = "latency-probe")]
+        let _latency_state_read = crate::latency_probe::Span::new("state_read");
         let _admission = self.enter(CallKind::Read)?;
         let connection = connect(&self.inner.directory, true)?;
         let transaction = Transaction::new_unchecked(&connection, TransactionBehavior::Deferred)
@@ -523,21 +524,25 @@ fn rollback<T, E>(
 }
 
 fn connect(directory: &StateDirectory, query_only: bool) -> Result<Connection> {
-        #[cfg(feature = "latency-probe")] let _latency_state_connect = crate::latency_probe::Span::new("state_connect");
+    #[cfg(feature = "latency-probe")]
+    let _latency_state_connect = crate::latency_probe::Span::new("state_connect");
     directory.verify_database_files()?;
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-    #[cfg(feature = "latency-probe")] let open_span = crate::latency_probe::Span::new("sqlite_open");
+    #[cfg(feature = "latency-probe")]
+    let open_span = crate::latency_probe::Span::new("sqlite_open");
     let connection = Connection::open_with_flags(directory.database_file(), flags)?;
-    #[cfg(feature = "latency-probe")] drop(open_span);
+    #[cfg(feature = "latency-probe")]
+    drop(open_span);
     configure(&connection, query_only)?;
     directory.verify_database_files()?;
     Ok(connection)
 }
 
 fn configure(connection: &Connection, query_only: bool) -> Result<()> {
-        #[cfg(feature = "latency-probe")] let _latency_sqlite_configure = crate::latency_probe::Span::new("sqlite_configure");
+    #[cfg(feature = "latency-probe")]
+    let _latency_sqlite_configure = crate::latency_probe::Span::new("sqlite_configure");
     connection.busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS))?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     connection.pragma_update(None, "synchronous", "FULL")?;

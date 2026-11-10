@@ -93,7 +93,18 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
         })?
         .unwrap_or_default();
     Ok(Job {
-        error_context: r.get::<_, Option<String>>(7)?.map(|raw| serde_json::from_str(&raw).map_err(|error|rusqlite::Error::FromSqlConversionFailure(7,rusqlite::types::Type::Text,Box::new(error)))).transpose()?,
+        error_context: r
+            .get::<_, Option<String>>(7)?
+            .map(|raw| {
+                serde_json::from_str(&raw).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        7,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
+            })
+            .transpose()?,
         id: r.get(0)?,
         kind: r.get(1)?,
         state: r.get(2)?,

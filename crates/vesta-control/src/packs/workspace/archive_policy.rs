@@ -13,7 +13,9 @@ fn warning(rule: &str, item: &str, actual: u64, limit: u64) -> InstallWarning {
 fn exceeded(warnings: &mut Vec<InstallWarning>, rule: &str, item: &str, actual: u64, limit: u64) {
     // These were in-memory ingestion budgets. Streaming payloads no longer have
     // those limits, so they are neither refusals nor user-facing warnings.
-    if rule.starts_with("legacy_") { return; }
+    if rule.starts_with("legacy_") {
+        return;
+    }
     if actual > limit {
         warnings.push(warning(rule, item, actual, limit));
     }
@@ -193,6 +195,9 @@ mod tests {
             "https://example.com/pack.zip",
         )
         .unwrap();
-        assert!(warnings.is_empty(), "a 16 MiB file is ordinary streamed content");
+        assert!(
+            warnings.is_empty(),
+            "a 16 MiB file is ordinary streamed content"
+        );
     }
 }

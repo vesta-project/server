@@ -446,13 +446,23 @@ impl ManagementAccess {
         token: &str,
         work: impl FnOnce(&rusqlite::Connection, &Subject, i64) -> AdminResult<T>,
     ) -> AdminResult<T> {
-        let subject=self.authenticate(token)?;
-        let stores=self.stores.lock().map_err(|_|PermissionError::Unavailable)?;
-        let session=stores.sessions.get(&bound_hash(b"session",self.server_id(),token)).ok_or(PermissionError::SessionInvalid)?;
-        let result=self.admin_write(|repo| {
+        let subject = self.authenticate(token)?;
+        let stores = self
+            .stores
+            .lock()
+            .map_err(|_| PermissionError::Unavailable)?;
+        let session = stores
+            .sessions
+            .get(&bound_hash(b"session", self.server_id(), token))
+            .ok_or(PermissionError::SessionInvalid)?;
+        let result = self.admin_write(|repo| {
             session_current(repo.now, session.expires, session.monotonic_expires)?;
             let (current, _) = self.subject_in(repo, &subject.device)?;
-            if current != subject || !repo.policy(Some(&current))?.holds_builtin(BuiltinRole::Owner) {
+            if current != subject
+                || !repo
+                    .policy(Some(&current))?
+                    .holds_builtin(BuiltinRole::Owner)
+            {
                 return Err(PermissionError::Forbidden);
             }
             work(repo.connection(), &current, repo.now)
@@ -1059,7 +1069,9 @@ impl ManagementAccess {
     ) -> Result<()> {
         let work = || -> AdminResult<()> {
             let (current_issuer, _) = self.subject_in(repo, &issuer.device)?;
-            if current_issuer != *issuer { return Err(PermissionError::Forbidden); }
+            if current_issuer != *issuer {
+                return Err(PermissionError::Forbidden);
+            }
             let policy = repo.policy(Some(issuer))?;
             require(&policy, Capability::InvitationsCreate)?;
             lower(&policy, target, repo.rank(target)?)?;

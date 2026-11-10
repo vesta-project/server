@@ -99,7 +99,8 @@ fn large_archive_upload_plans_and_applies_every_file_without_sql_payloads() {
             &f.subject,
             "1.21.1",
             Some("vanilla"),
-            &PackInstallRequest { analyze: false,
+            &PackInstallRequest {
+                analyze: false,
                 source: InstallSource::UploadedArchive {
                     upload_id: "large".into(),
                 },
@@ -196,9 +197,24 @@ fn large_archive_upload_plans_and_applies_every_file_without_sql_payloads() {
         2,
         "only the two distinct config baselines should be retained"
     );
-    f.workspace.unlink_server_modpack(&f.subject,"unlink-capacity",&ServerModpackUnlink{remove_owned_files:false},&files).unwrap();
+    f.workspace
+        .unlink_server_modpack(
+            &f.subject,
+            "unlink-capacity",
+            &ServerModpackUnlink {
+                remove_owned_files: false,
+            },
+            &files,
+        )
+        .unwrap();
     Store::open(&f.db).unwrap().collect().unwrap();
-    assert_eq!(std::fs::read_dir(f.db.directory().path().join("pack-payloads")).unwrap().count(),0,"unlink releases config baselines");
+    assert_eq!(
+        std::fs::read_dir(f.db.directory().path().join("pack-payloads"))
+            .unwrap()
+            .count(),
+        0,
+        "unlink releases config baselines"
+    );
 }
 
 #[test]
@@ -356,9 +372,13 @@ fn pack_effects_do_not_consume_the_interactive_file_receipt_quota() {
 #[test]
 #[ignore = "bounded local performance measurement; no provider calls"]
 fn audit_pack_400_local_stage_baseline() {
-    let count: usize = std::env::var("VESTA_AUDIT_FILES").ok().and_then(|v|v.parse().ok()).unwrap_or(400); assert!(count >= 2 && count <= 400);
+    let count: usize = std::env::var("VESTA_AUDIT_FILES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(400);
+    assert!((2..=400).contains(&count));
     let f = Fixture::new();
-    let clock=std::time::Instant::now();
+    let clock = std::time::Instant::now();
     let archive_path = f.temp.path().join("large.zip");
     let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive_path).unwrap());
     let options =
@@ -368,7 +388,7 @@ fn audit_pack_400_local_stage_baseline() {
     for _ in 0..1 {
         zip.write_all(&block).unwrap();
     }
-    for i in 0..count-1 {
+    for i in 0..count - 1 {
         zip.start_file(format!("config/part-{i}.json"), options)
             .unwrap();
         zip.write_all(b"{}\n").unwrap();
@@ -434,8 +454,11 @@ fn audit_pack_400_local_stage_baseline() {
     let files = crate::files::FileBrowser::open(f.db.clone(), &game, &[]).unwrap();
     let releases = super::super::PackReleases::open(&f.db).unwrap();
     let providers = crate::content::UreqProviderClient::new(None);
-    println!("AUDIT_STAGE upload_ms={}",clock.elapsed().as_secs_f64()*1000.0);
-    let clock=std::time::Instant::now();
+    println!(
+        "AUDIT_STAGE upload_ms={}",
+        clock.elapsed().as_secs_f64() * 1000.0
+    );
+    let clock = std::time::Instant::now();
     let inspection = f
         .workspace
         .inspect_archive(
@@ -448,15 +471,19 @@ fn audit_pack_400_local_stage_baseline() {
         )
         .unwrap();
     assert_eq!(inspection.entry_count, count);
-    println!("AUDIT_STAGE inspect_extract_ms={}",clock.elapsed().as_secs_f64()*1000.0);
-    let clock=std::time::Instant::now();
+    println!(
+        "AUDIT_STAGE inspect_extract_ms={}",
+        clock.elapsed().as_secs_f64() * 1000.0
+    );
+    let clock = std::time::Instant::now();
     let plan = f
         .workspace
         .install_plan(
             &f.subject,
             "1.21.1",
             Some("vanilla"),
-            &PackInstallRequest { analyze: false,
+            &PackInstallRequest {
+                analyze: false,
                 source: InstallSource::UploadedArchive {
                     upload_id: "large".into(),
                 },
@@ -485,8 +512,11 @@ fn audit_pack_400_local_stage_baseline() {
             .get("bytes")
             .is_none()
     );
-    println!("AUDIT_STAGE plan_ms={}",clock.elapsed().as_secs_f64()*1000.0);
-    let clock=std::time::Instant::now();
+    println!(
+        "AUDIT_STAGE plan_ms={}",
+        clock.elapsed().as_secs_f64() * 1000.0
+    );
+    let clock = std::time::Instant::now();
     let outcome = f
         .workspace
         .install_apply(
@@ -505,7 +535,10 @@ fn audit_pack_400_local_stage_baseline() {
             &files,
         )
         .unwrap();
-    println!("AUDIT_STAGE hydrate_stage_apply_ms={}",clock.elapsed().as_secs_f64()*1000.0);
+    println!(
+        "AUDIT_STAGE hydrate_stage_apply_ms={}",
+        clock.elapsed().as_secs_f64() * 1000.0
+    );
     assert_eq!(outcome.pending_ids.len(), count);
     let world = files.world(&f.subject).unwrap();
     let inventory = files
@@ -532,7 +565,7 @@ fn audit_pack_400_local_stage_baseline() {
             .len(),
         1024 * 1024
     );
-    for i in 0..count-1 {
+    for i in 0..count - 1 {
         assert_eq!(
             std::fs::read(game.join(format!("config/part-{i}.json"))).unwrap(),
             b"{}\n"
@@ -556,7 +589,22 @@ fn audit_pack_400_local_stage_baseline() {
         2,
         "only the two distinct config baselines should be retained"
     );
-    f.workspace.unlink_server_modpack(&f.subject,"unlink-capacity",&ServerModpackUnlink{remove_owned_files:false},&files).unwrap();
+    f.workspace
+        .unlink_server_modpack(
+            &f.subject,
+            "unlink-capacity",
+            &ServerModpackUnlink {
+                remove_owned_files: false,
+            },
+            &files,
+        )
+        .unwrap();
     Store::open(&f.db).unwrap().collect().unwrap();
-    assert_eq!(std::fs::read_dir(f.db.directory().path().join("pack-payloads")).unwrap().count(),0,"unlink releases config baselines");
+    assert_eq!(
+        std::fs::read_dir(f.db.directory().path().join("pack-payloads"))
+            .unwrap()
+            .count(),
+        0,
+        "unlink releases config baselines"
+    );
 }

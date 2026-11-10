@@ -84,7 +84,9 @@ pub fn enable(directory: &Path) -> Result<()> {
     )
     .map_err(|_| "local_agent_startup_config_invalid")?;
     if configuration.supervision() != vesta_control::config::Supervision::Separate {
-        return Err("Boot startup requires [process] supervision = 'separate' in host.toml. Stop the agent and Minecraft before changing supervision; unresolved sessions require deliberate recovery.");
+        return Err(
+            "Boot startup requires [process] supervision = 'separate' in host.toml. Stop the agent and Minecraft before changing supervision; unresolved sessions require deliberate recovery.",
+        );
     }
     let registration = match load(directory)? {
         Some(registration) => registration,

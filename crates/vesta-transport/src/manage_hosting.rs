@@ -344,10 +344,15 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     let current_software_error = |e| {
         if matches!(e, SoftwareError::RevisionConflict) {
             match service.status(&subject) {
-                Ok(current) => envelope(StatusCode::CONFLICT, json!({"error":{"code":"conflict","reason":"software_revision_conflict","current":current}})),
+                Ok(current) => envelope(
+                    StatusCode::CONFLICT,
+                    json!({"error":{"code":"conflict","reason":"software_revision_conflict","current":current}}),
+                ),
                 Err(e) => software_error(e),
             }
-        } else { software_error(e) }
+        } else {
+            software_error(e)
+        }
     };
     if matches!(
         action,

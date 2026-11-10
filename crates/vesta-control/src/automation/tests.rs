@@ -16,90 +16,280 @@ mod idle;
 #[test]
 fn first_visit_tracks_join_evidence_prior_players_renames_and_restart() {
     let f = Fixture::new();
-    let workflow = f.create(definition(Trigger::PlayerFirstJoined, vec![step("wait", Action::Delay { secs: 60 })]));
+    let workflow = f.create(definition(
+        Trigger::PlayerFirstJoined,
+        vec![step("wait", Action::Delay { secs: 60 })],
+    ));
     let game = f.root.path().join("game");
-    let old = uuid::Uuid::new_v4(); let fresh = uuid::Uuid::new_v4();
+    let old = uuid::Uuid::new_v4();
+    let fresh = uuid::Uuid::new_v4();
     std::fs::create_dir_all(game.join("world/playerdata")).unwrap();
     std::fs::write(game.join("world/playerdata").join(format!("{old}.dat")), []).unwrap();
     let mut tracker = super::joins::JoinTracker::for_test(game.clone(), &f.automation);
-    for (name,id) in [("Old",old),("Fresh",fresh),("Fresh",fresh),("Renamed",fresh)] {
-        tracker.observe_line(&format!("[12:34:56 INFO]: UUID of player {name} is {id}"), &f.automation).unwrap();
-        tracker.observe_line(&format!("[12:34:56 INFO]: {name} joined the game"), &f.automation).unwrap();
+    for (name, id) in [
+        ("Old", old),
+        ("Fresh", fresh),
+        ("Fresh", fresh),
+        ("Renamed", fresh),
+    ] {
+        tracker
+            .observe_line(
+                &format!("[12:34:56 INFO]: UUID of player {name} is {id}"),
+                &f.automation,
+            )
+            .unwrap();
+        tracker
+            .observe_line(
+                &format!("[12:34:56 INFO]: {name} joined the game"),
+                &f.automation,
+            )
+            .unwrap();
     }
-    tracker.observe_line("[12:34:56 INFO]: Unknown joined the game", &f.automation).unwrap();
-    let runs = f.automation.list_runs(&f.owner, Some(&workflow.id), None, 10).unwrap();
+    tracker
+        .observe_line("[12:34:56 INFO]: Unknown joined the game", &f.automation)
+        .unwrap();
+    let runs = f
+        .automation
+        .list_runs(&f.owner, Some(&workflow.id), None, 10)
+        .unwrap();
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].trigger["event"]["player"], "Fresh");
     let reopened = Automation::new(f.db.clone(), f.port.clone()).unwrap();
     let mut tracker = super::joins::JoinTracker::for_test(game, &reopened);
-    tracker.observe_line(&format!("[12:34:56 INFO]: UUID of player Fresh is {fresh}"), &reopened).unwrap();
-    tracker.observe_line("[12:34:56 INFO]: Fresh[/127.0.0.1:1234] logged in with entity id 1 at (1.0, 2.0, 3.0)", &reopened).unwrap();
-    assert_eq!(reopened.list_runs(&f.owner, Some(&workflow.id), None, 10).unwrap().len(), 1);
+    tracker
+        .observe_line(
+            &format!("[12:34:56 INFO]: UUID of player Fresh is {fresh}"),
+            &reopened,
+        )
+        .unwrap();
+    tracker
+        .observe_line(
+            "[12:34:56 INFO]: Fresh[/127.0.0.1:1234] logged in with entity id 1 at (1.0, 2.0, 3.0)",
+            &reopened,
+        )
+        .unwrap();
+    assert_eq!(
+        reopened
+            .list_runs(&f.owner, Some(&workflow.id), None, 10)
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
 fn first_visit_queues_distinct_players_and_retries_atomically_under_pressure() {
     let f = Fixture::new();
-    let workflow = f.create(definition(Trigger::PlayerFirstJoined, vec![step("wait", Action::Delay { secs: 60 })]));
-    for i in 0..10 { assert!(f.automation.observe_player_join(uuid::Uuid::new_v4(), &format!("Player{i}"), false).unwrap()); }
+    let workflow = f.create(definition(
+        Trigger::PlayerFirstJoined,
+        vec![step("wait", Action::Delay { secs: 60 })],
+    ));
+    for i in 0..10 {
+        assert!(
+            f.automation
+                .observe_player_join(uuid::Uuid::new_v4(), &format!("Player{i}"), false)
+                .unwrap()
+        );
+    }
     let retry = uuid::Uuid::new_v4();
-    assert!(f.automation.observe_player_join(retry, "Retry", false).is_err());
-    assert_eq!(f.db.read(|c| c.query_row("SELECT count(*) FROM automation_player_visits WHERE uuid=?", [retry.to_string()], |r| r.get::<_,i64>(0)).map_err(Into::into)).unwrap(), 0);
-    f.db.write(|c| { c.execute("UPDATE workflow_runs SET state='succeeded',finished_at=? WHERE workflow_id=?", params![NOW,workflow.id])?; Ok(()) }).unwrap();
-    assert!(f.automation.observe_player_join(retry, "Retry", false).unwrap());
-    assert!(!f.automation.observe_player_join(retry, "Retry", false).unwrap());
+    assert!(
+        f.automation
+            .observe_player_join(retry, "Retry", false)
+            .is_err()
+    );
+    assert_eq!(
+        f.db.read(|c| c
+            .query_row(
+                "SELECT count(*) FROM automation_player_visits WHERE uuid=?",
+                [retry.to_string()],
+                |r| r.get::<_, i64>(0)
+            )
+            .map_err(Into::into))
+            .unwrap(),
+        0
+    );
+    f.db.write(|c| {
+        c.execute(
+            "UPDATE workflow_runs SET state='succeeded',finished_at=? WHERE workflow_id=?",
+            params![NOW, workflow.id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(
+        f.automation
+            .observe_player_join(retry, "Retry", false)
+            .unwrap()
+    );
+    assert!(
+        !f.automation
+            .observe_player_join(retry, "Retry", false)
+            .unwrap()
+    );
 }
 #[test]
 fn first_visit_does_not_guess_after_a_gap_or_when_enabled_later() {
     let f = Fixture::new();
     let earlier = uuid::Uuid::new_v4();
-    assert!(f.automation.observe_player_join(earlier, "Earlier", false).unwrap());
-    let workflow = f.create(definition(Trigger::PlayerFirstJoined, vec![step("wait", Action::Delay { secs: 60 })]));
-    assert!(!f.automation.observe_player_join(earlier, "Earlier", false).unwrap());
-    let game = f.root.path().join("game"); std::fs::create_dir(&game).unwrap();
+    assert!(
+        f.automation
+            .observe_player_join(earlier, "Earlier", false)
+            .unwrap()
+    );
+    let workflow = f.create(definition(
+        Trigger::PlayerFirstJoined,
+        vec![step("wait", Action::Delay { secs: 60 })],
+    ));
+    assert!(
+        !f.automation
+            .observe_player_join(earlier, "Earlier", false)
+            .unwrap()
+    );
+    let game = f.root.path().join("game");
+    std::fs::create_dir(&game).unwrap();
     let mut tracker = super::joins::JoinTracker::for_test(game, &f.automation);
     tracker.discontinuity();
     let unknown = uuid::Uuid::new_v4();
-    tracker.observe_line(&format!("[12:34:56 INFO]: UUID of player Unknown is {unknown}"), &f.automation).unwrap();
-    tracker.observe_line("[12:34:56 INFO]: Unknown joined the game", &f.automation).unwrap();
-    assert!(f.automation.list_runs(&f.owner, Some(&workflow.id), None, 10).unwrap().is_empty());
-    assert!(!f.automation.observe_player_join(unknown, "Unknown", false).unwrap());
+    tracker
+        .observe_line(
+            &format!("[12:34:56 INFO]: UUID of player Unknown is {unknown}"),
+            &f.automation,
+        )
+        .unwrap();
+    tracker
+        .observe_line("[12:34:56 INFO]: Unknown joined the game", &f.automation)
+        .unwrap();
+    assert!(
+        f.automation
+            .list_runs(&f.owner, Some(&workflow.id), None, 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        !f.automation
+            .observe_player_join(unknown, "Unknown", false)
+            .unwrap()
+    );
 }
 #[test]
 fn first_visit_rejects_stale_uuid_evidence_and_keeps_imported_history() {
     let f = Fixture::new();
-    let workflow = f.create(definition(Trigger::PlayerFirstJoined, vec![step("wait", Action::Delay { secs: 60 })]));
-    let game = f.root.path().join("game"); std::fs::create_dir_all(game.join("world/stats")).unwrap();
+    let workflow = f.create(definition(
+        Trigger::PlayerFirstJoined,
+        vec![step("wait", Action::Delay { secs: 60 })],
+    ));
+    let game = f.root.path().join("game");
+    std::fs::create_dir_all(game.join("world/stats")).unwrap();
     let old = uuid::Uuid::new_v4();
     std::fs::write(game.join("world/stats").join(format!("{old}.json")), b"{}").unwrap();
     let mut tracker = super::joins::JoinTracker::for_test(game.clone(), &f.automation);
-    let current = std::time::SystemTime::now(); let fresh = uuid::Uuid::new_v4();
-    tracker.observe_line_at(&format!("[12:34:56 INFO]: UUID of player Fresh is {fresh}"), current, &f.automation).unwrap();
-    tracker.observe_line_at("[12:34:56 INFO]: Fresh joined the game", current + std::time::Duration::from_secs(121), &f.automation).unwrap();
-    tracker.observe_line_at(&format!("[12:34:56 INFO]: UUID of player Fresh is {fresh}"), current + std::time::Duration::from_secs(122), &f.automation).unwrap();
-    tracker.observe_line_at("[12:34:56 INFO]: Fresh joined the game", current + std::time::Duration::from_secs(123), &f.automation).unwrap();
-    assert!(f.automation.list_runs(&f.owner, Some(&workflow.id), None, 10).unwrap().is_empty());
+    let current = std::time::SystemTime::now();
+    let fresh = uuid::Uuid::new_v4();
+    tracker
+        .observe_line_at(
+            &format!("[12:34:56 INFO]: UUID of player Fresh is {fresh}"),
+            current,
+            &f.automation,
+        )
+        .unwrap();
+    tracker
+        .observe_line_at(
+            "[12:34:56 INFO]: Fresh joined the game",
+            current + std::time::Duration::from_secs(121),
+            &f.automation,
+        )
+        .unwrap();
+    tracker
+        .observe_line_at(
+            &format!("[12:34:56 INFO]: UUID of player Fresh is {fresh}"),
+            current + std::time::Duration::from_secs(122),
+            &f.automation,
+        )
+        .unwrap();
+    tracker
+        .observe_line_at(
+            "[12:34:56 INFO]: Fresh joined the game",
+            current + std::time::Duration::from_secs(123),
+            &f.automation,
+        )
+        .unwrap();
+    assert!(
+        f.automation
+            .list_runs(&f.owner, Some(&workflow.id), None, 10)
+            .unwrap()
+            .is_empty()
+    );
     std::fs::remove_file(game.join("world/stats").join(format!("{old}.json"))).unwrap();
-    assert!(!f.automation.observe_player_join(old,"Returning",false).unwrap());
+    assert!(
+        !f.automation
+            .observe_player_join(old, "Returning", false)
+            .unwrap()
+    );
 }
 #[test]
 fn first_visit_is_distinct_from_empty_server_and_last_player_leaving() {
     let f = Fixture::new();
-    let joined = f.create(definition(Trigger::FirstPlayerJoined, vec![step("wait", Action::Delay { secs: 60 })]));
-    let empty = f.create(definition(Trigger::PlayerCountZero, vec![step("wait", Action::Delay { secs: 60 })]));
-    let new = f.create(definition(Trigger::PlayerFirstJoined, vec![step("wait", Action::Delay { secs: 60 })]));
-    let game = f.root.path().join("game"); std::fs::create_dir(&game).unwrap();
+    let joined = f.create(definition(
+        Trigger::FirstPlayerJoined,
+        vec![step("wait", Action::Delay { secs: 60 })],
+    ));
+    let empty = f.create(definition(
+        Trigger::PlayerCountZero,
+        vec![step("wait", Action::Delay { secs: 60 })],
+    ));
+    let new = f.create(definition(
+        Trigger::PlayerFirstJoined,
+        vec![step("wait", Action::Delay { secs: 60 })],
+    ));
+    let game = f.root.path().join("game");
+    std::fs::create_dir(&game).unwrap();
     let mut tracker = super::joins::JoinTracker::for_test(game, &f.automation);
-    for line in ["Alex joined the game", "Alex joined the game", "Bob joined the game", "Alex left the game", "Bob left the game", "Bob left the game"] {
-        tracker.observe_line(&format!("[12:34:56 INFO]: {line}"), &f.automation).unwrap();
+    for line in [
+        "Alex joined the game",
+        "Alex joined the game",
+        "Bob joined the game",
+        "Alex left the game",
+        "Bob left the game",
+        "Bob left the game",
+    ] {
+        tracker
+            .observe_line(&format!("[12:34:56 INFO]: {line}"), &f.automation)
+            .unwrap();
     }
-    assert_eq!(f.automation.list_runs(&f.owner,Some(&joined.id),None,10).unwrap().len(),1);
-    assert_eq!(f.automation.list_runs(&f.owner,Some(&empty.id),None,10).unwrap().len(),1);
-    assert!(f.automation.list_runs(&f.owner,Some(&new.id),None,10).unwrap().is_empty());
+    assert_eq!(
+        f.automation
+            .list_runs(&f.owner, Some(&joined.id), None, 10)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        f.automation
+            .list_runs(&f.owner, Some(&empty.id), None, 10)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        f.automation
+            .list_runs(&f.owner, Some(&new.id), None, 10)
+            .unwrap()
+            .is_empty()
+    );
     tracker.discontinuity();
-    tracker.observe_line("[12:34:56 INFO]: Fresh joined the game", &f.automation).unwrap();
-    tracker.observe_line("[12:34:56 INFO]: Fresh left the game", &f.automation).unwrap();
-    assert_eq!(f.automation.list_runs(&f.owner,Some(&empty.id),None,10).unwrap().len(),1);
+    tracker
+        .observe_line("[12:34:56 INFO]: Fresh joined the game", &f.automation)
+        .unwrap();
+    tracker
+        .observe_line("[12:34:56 INFO]: Fresh left the game", &f.automation)
+        .unwrap();
+    assert_eq!(
+        f.automation
+            .list_runs(&f.owner, Some(&empty.id), None, 10)
+            .unwrap()
+            .len(),
+        1
+    );
 }
 struct TestClock(AtomicI64);
 impl Clock for TestClock {

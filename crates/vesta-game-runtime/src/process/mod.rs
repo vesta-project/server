@@ -297,7 +297,9 @@ impl GameProcess {
         let io = io::IoThreads::prepare(&self.console)?;
         let tree = self.prepare_tree()?;
         let mut prepared = spec.command()?;
-        let child = prepared.command.spawn()
+        let child = prepared
+            .command
+            .spawn()
             .map_err(|_| RuntimeError::SpawnFailed)?;
         let outcome = self.own_spawned(child, generation, spec.stop(), io, tree);
         self.retain_isolation(&spec, prepared.lifetime);
@@ -322,13 +324,20 @@ impl GameProcess {
         let tree = self.prepare_tree()?;
         let mut prepared = spec.command()?;
         guard(self.snapshot()).map_err(GuardedError::Guard)?;
-        let child = prepared.command.spawn().map_err(|_| RuntimeError::SpawnFailed)?;
+        let child = prepared
+            .command
+            .spawn()
+            .map_err(|_| RuntimeError::SpawnFailed)?;
         let outcome = self.own_spawned(child, generation, spec.stop(), io, tree);
         self.retain_isolation(spec, prepared.lifetime);
         outcome.map_err(GuardedError::Runtime)
     }
 
-    fn retain_isolation(&mut self, spec:&LaunchSpec, lifetime:crate::isolation::IsolationLifetime) {
+    fn retain_isolation(
+        &mut self,
+        spec: &LaunchSpec,
+        lifetime: crate::isolation::IsolationLifetime,
+    ) {
         // Even uncertain attachment retains a live child and its policy files.
         if let Some(owned) = &mut self.owned {
             owned.isolated = spec.is_isolated();

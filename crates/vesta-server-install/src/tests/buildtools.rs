@@ -40,14 +40,12 @@ async fn a_target_without_its_reference_hash_is_not_offered_as_a_verified_build(
         .unwrap()
         .remove("CraftBukkit");
     mount_json(&fixture.server, "/versions/1.21.8.json", source).await;
-    assert!(
-        fixture
-            .installer
-            .releases(Software::Bukkit, "1.21.8", &SilentProgressReporter)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(fixture
+        .installer
+        .releases(Software::Bukkit, "1.21.8", &SilentProgressReporter)
+        .await
+        .unwrap()
+        .is_empty());
     assert_eq!(
         fixture
             .installer
@@ -60,7 +58,7 @@ async fn a_target_without_its_reference_hash_is_not_offered_as_a_verified_build(
 }
 #[test]
 fn buildtools_metadata_policy_refuses_artifacts_aliases_and_url_tricks() {
-    use crate::transfer::{Role, validate_family_url};
+    use crate::transfer::{validate_family_url, Role};
     let valid = "https://hub.spigotmc.org/versions/1.21.8.json";
     assert!(
         validate_family_url(valid, SourceFamily::SpigotVersions, Role::Metadata, false).is_ok()
@@ -154,7 +152,7 @@ async fn source_plans_reject_unreviewed_builds_tools_and_unknown_java() {
 
 #[test]
 fn build_tool_policy_only_accepts_the_reviewed_immutable_release() {
-    use crate::transfer::{Role, validate_family_url};
+    use crate::transfer::{validate_family_url, Role};
     let url = "https://hub.spigotmc.org/jenkins/job/BuildTools/201/artifact/target/BuildTools.jar";
     assert!(
         validate_family_url(url, SourceFamily::SpigotBuildTools, Role::Artifact, false).is_ok()
@@ -166,15 +164,13 @@ fn build_tool_policy_only_accepts_the_reviewed_immutable_release() {
         format!("{url}?download=1"),
         url.replace("target/", "target/../target/"),
     ] {
-        assert!(
-            validate_family_url(
-                &value,
-                SourceFamily::SpigotBuildTools,
-                Role::Artifact,
-                false
-            )
-            .is_err()
-        );
+        assert!(validate_family_url(
+            &value,
+            SourceFamily::SpigotBuildTools,
+            Role::Artifact,
+            false
+        )
+        .is_err());
     }
 }
 

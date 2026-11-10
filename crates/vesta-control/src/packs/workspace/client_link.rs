@@ -16,16 +16,16 @@ pub(super) fn unlink(manifest: &mut PackManifest, choice: &str) -> Result<()> {
     ) {
         return Err(invalid());
     }
-    if let Some(link) = manifest.modpack_link.take() {
-        if choice != "keep_everything" {
-            manifest
-                .override_files
-                .retain(|f| !link.overrides.contains(&(f.root.clone(), f.path.clone())));
-            manifest.entries.retain(|e| {
-                !link.entries.contains(&e.id)
-                    || (choice == "keep_resources" && e.kind != EntryKind::ConfigOverride)
-            });
-        }
+    if let Some(link) = manifest.modpack_link.take()
+        && choice != "keep_everything"
+    {
+        manifest
+            .override_files
+            .retain(|f| !link.overrides.contains(&(f.root.clone(), f.path.clone())));
+        manifest.entries.retain(|e| {
+            !link.entries.contains(&e.id)
+                || (choice == "keep_resources" && e.kind != EntryKind::ConfigOverride)
+        });
     }
     Ok(())
 }
@@ -184,15 +184,49 @@ mod tests {
         link(&mut m, base(&f, "pack"), source("1"), "1.21.1").unwrap();
         // Use a directory override here: the blob store is tested by import/file tests.
         m.override_files[0].sha256 = None;
-        let draft = f.workspace.mutate(&f.subject, "seed-link", &"seed", |c| f.workspace.write_link_in(c, &f.subject, "1.21.1", "0", m)).unwrap();
+        let draft = f
+            .workspace
+            .mutate(&f.subject, "seed-link", &"seed", |c| {
+                f.workspace.write_link_in(c, &f.subject, "1.21.1", "0", m)
+            })
+            .unwrap();
         let releases = crate::packs::PackReleases::open(&f.db).unwrap();
-        let request = ImportRequest::Unlink { expected_revision: draft.revision.clone(), choice: "keep_resources".into() };
+        let request = ImportRequest::Unlink {
+            expected_revision: draft.revision.clone(),
+            choice: "keep_resources".into(),
+        };
         let providers = crate::content::UreqProviderClient::new(None);
-        let first = f.workspace.import(&f.subject, "1.21.1", "unlink", &request, &releases, &providers).unwrap();
-        assert_eq!(first, f.workspace.import(&f.subject, "1.21.1", "unlink", &request, &releases, &providers).unwrap());
-        assert!(f.workspace.import(&f.subject, "1.21.1", "stale", &request, &releases, &providers).is_err());
+        let first = f
+            .workspace
+            .import(
+                &f.subject, "1.21.1", "unlink", &request, &releases, &providers,
+            )
+            .unwrap();
+        assert_eq!(
+            first,
+            f.workspace
+                .import(
+                    &f.subject, "1.21.1", "unlink", &request, &releases, &providers
+                )
+                .unwrap()
+        );
+        assert!(
+            f.workspace
+                .import(
+                    &f.subject, "1.21.1", "stale", &request, &releases, &providers
+                )
+                .is_err()
+        );
         assert!(releases.current().unwrap().is_none());
-        assert!(PackWorkspace::open(&f.db).unwrap().read(&f.subject, "1.21.1").unwrap().manifest.modpack_link.is_none());
+        assert!(
+            PackWorkspace::open(&f.db)
+                .unwrap()
+                .read(&f.subject, "1.21.1")
+                .unwrap()
+                .manifest
+                .modpack_link
+                .is_none()
+        );
     }
     #[test]
     fn collisions_and_runtime_mismatch_are_rejected() {

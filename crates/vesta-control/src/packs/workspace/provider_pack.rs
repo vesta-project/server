@@ -131,7 +131,10 @@ mod tests {
         );
         assert!(history[0].required_update);
         assert_eq!(history[0].provider_version.as_deref(), Some("v1"));
-        assert_eq!((history[0].entry_count, history[0].override_count), (Some(0), Some(0)));
+        assert_eq!(
+            (history[0].entry_count, history[0].override_count),
+            (Some(0), Some(0))
+        );
         assert_eq!(
             f.workspace
                 .publish_provider_pack(&f.subject, "1.21.1", "pointer", &input, &releases)

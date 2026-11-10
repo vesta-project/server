@@ -784,11 +784,17 @@ fn management_roster_seeds_once_tracks_activity_and_rechecks_authority() {
         )
         .unwrap();
     assert_eq!(read().unwrap().players.len(), 3); // Login + join is one player.
-    owned.runtime.network_handle().player_queries().console.ingest(
-        vesta_game_runtime::console::ConsoleStream::Stdout,
-        "[12:00:01 INFO]: OwnedAlpha lost connection: Disconnected",
-        false,
-    ).unwrap();
+    owned
+        .runtime
+        .network_handle()
+        .player_queries()
+        .console
+        .ingest(
+            vesta_game_runtime::console::ConsoleStream::Stdout,
+            "[12:00:01 INFO]: OwnedAlpha lost connection: Disconnected",
+            false,
+        )
+        .unwrap();
     assert_eq!(read().unwrap().players.len(), 2);
     owned
         .runtime

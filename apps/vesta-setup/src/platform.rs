@@ -101,8 +101,8 @@ pub(crate) fn start_verified_host(root: &Path, mut command: Command) -> Result<(
     command
         .arg("host")
         .arg("--root")
-        .arg(&root)
-        .current_dir(&root)
+        .arg(root)
+        .current_dir(root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

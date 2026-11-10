@@ -164,20 +164,79 @@ fn update_cli_bootstraps_exact_installed_release_and_stages_without_activation()
     assert_eq!(status["trust"]["sequence"], 10);
     assert!(status["startup_policy"].is_null());
     assert!(status["last_startup_check"].is_null());
-    let configured=run("configure",&["--startup-check","on","--interval-seconds","3600","--bundle-dir",bundle.temp.path().to_str().unwrap()]);
-    assert!(configured.status.success(),"{}",String::from_utf8_lossy(&configured.stderr));
-    let configured:serde_json::Value=serde_json::from_slice(&configured.stdout).unwrap();
-    assert_eq!(configured["check_on_start"],true);assert_eq!(configured["minimum_interval_ms"],3600000);
+    let configured = run(
+        "configure",
+        &[
+            "--startup-check",
+            "on",
+            "--interval-seconds",
+            "3600",
+            "--bundle-dir",
+            bundle.temp.path().to_str().unwrap(),
+        ],
+    );
+    assert!(
+        configured.status.success(),
+        "{}",
+        String::from_utf8_lossy(&configured.stderr)
+    );
+    let configured: serde_json::Value = serde_json::from_slice(&configured.stdout).unwrap();
+    assert_eq!(configured["check_on_start"], true);
+    assert_eq!(configured["minimum_interval_ms"], 3600000);
     for extras in [
-        vec!["--startup-check","on","--interval-seconds","0","--bundle-dir",bundle.temp.path().to_str().unwrap()],
-        vec!["--startup-check","on","--interval-seconds","18446744073709551615","--bundle-dir",bundle.temp.path().to_str().unwrap()],
-        vec!["--startup-check","on","--interval-seconds","3600","--bundle-url","https://user:fake-secret@example.test/releases"],
-    ] { assert!(!run("configure",&extras).status.success()); }
-    assert!(!run("check",&["--startup-check","on"]).status.success());
-    assert!(!run("configure",&["--startup-check","on","--interval-seconds","3600","--bundle-dir",bundle.temp.path().to_str().unwrap(),"--channel","nightly"]).status.success());
-    assert!(run("configure",&["--startup-check","off"]).status.success());
-    let disabled=run("status",&[]);let disabled:serde_json::Value=serde_json::from_slice(&disabled.stdout).unwrap();
-    assert_eq!(disabled["startup_policy"]["check_on_start"],false);
+        vec![
+            "--startup-check",
+            "on",
+            "--interval-seconds",
+            "0",
+            "--bundle-dir",
+            bundle.temp.path().to_str().unwrap(),
+        ],
+        vec![
+            "--startup-check",
+            "on",
+            "--interval-seconds",
+            "18446744073709551615",
+            "--bundle-dir",
+            bundle.temp.path().to_str().unwrap(),
+        ],
+        vec![
+            "--startup-check",
+            "on",
+            "--interval-seconds",
+            "3600",
+            "--bundle-url",
+            "https://user:fake-secret@example.test/releases",
+        ],
+    ] {
+        assert!(!run("configure", &extras).status.success());
+    }
+    assert!(!run("check", &["--startup-check", "on"]).status.success());
+    assert!(
+        !run(
+            "configure",
+            &[
+                "--startup-check",
+                "on",
+                "--interval-seconds",
+                "3600",
+                "--bundle-dir",
+                bundle.temp.path().to_str().unwrap(),
+                "--channel",
+                "nightly"
+            ]
+        )
+        .status
+        .success()
+    );
+    assert!(
+        run("configure", &["--startup-check", "off"])
+            .status
+            .success()
+    );
+    let disabled = run("status", &[]);
+    let disabled: serde_json::Value = serde_json::from_slice(&disabled.stdout).unwrap();
+    assert_eq!(disabled["startup_policy"]["check_on_start"], false);
     let stage = run(
         "stage",
         &["--bundle-dir", bundle.temp.path().to_str().unwrap()],
@@ -191,14 +250,34 @@ fn update_cli_bootstraps_exact_installed_release_and_stages_without_activation()
         serde_json::from_slice::<serde_json::Value>(&stage.stdout).unwrap()["phase"],
         "staged"
     );
-    let verified=run("verify",&["--manifest-sha256",&source.manifest_sha256]);
-    assert!(verified.status.success(),"{}",String::from_utf8_lossy(&verified.stderr));
-    let observation:serde_json::Value=serde_json::from_slice(&verified.stdout).unwrap();
-    assert_eq!(observation["activation_supported"],false);
-    assert_eq!(observation["files"],4);
-    assert_eq!(observation["manifest_sha256"],source.manifest_sha256);
-    assert!(!run("verify",&["--manifest-sha256",&source.manifest_sha256,"--bundle-dir",bundle.temp.path().to_str().unwrap()]).status.success());
-    assert!(!run("check",&["--manifest-sha256",&source.manifest_sha256]).status.success());
+    let verified = run("verify", &["--manifest-sha256", &source.manifest_sha256]);
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let observation: serde_json::Value = serde_json::from_slice(&verified.stdout).unwrap();
+    assert_eq!(observation["activation_supported"], false);
+    assert_eq!(observation["files"], 4);
+    assert_eq!(observation["manifest_sha256"], source.manifest_sha256);
+    assert!(
+        !run(
+            "verify",
+            &[
+                "--manifest-sha256",
+                &source.manifest_sha256,
+                "--bundle-dir",
+                bundle.temp.path().to_str().unwrap()
+            ]
+        )
+        .status
+        .success()
+    );
+    assert!(
+        !run("check", &["--manifest-sha256", &source.manifest_sha256])
+            .status
+            .success()
+    );
     assert_eq!(
         fs::read(root.join("bin/active-fixture")).unwrap(),
         b"unchanged"
@@ -220,7 +299,7 @@ fn update_cli_bootstraps_exact_installed_release_and_stages_without_activation()
     );
     assert!(!blocked.status.success());
     assert!(String::from_utf8_lossy(&blocked.stderr).contains("setup_already_running"));
-    let blocked=run("verify",&["--manifest-sha256",&source.manifest_sha256]);
+    let blocked = run("verify", &["--manifest-sha256", &source.manifest_sha256]);
     assert!(!blocked.status.success());
     assert!(String::from_utf8_lossy(&blocked.stderr).contains("setup_already_running"));
 }
@@ -665,10 +744,17 @@ fn real_pending_host_verifies_tls_resumes_identity_and_rejects_wrong_identity() 
     assert!(!host::ready(&receipt));
     // OS-local configuration is picked up by the actual installed host on its
     // next startup, without requiring a manifest/artifact download or mutation.
-    updates.configure_startup_check(&vesta_update::StartupPolicy{
-        check_on_start:true,minimum_interval_ms:3600000,
-        source:vesta_update::UpdateSource{local:Some(bundle.temp.path().to_owned()),base_url:None,asset_prefix:None},
-    }).unwrap();
+    updates
+        .configure_startup_check(&vesta_update::StartupPolicy {
+            check_on_start: true,
+            minimum_interval_ms: 3600000,
+            source: vesta_update::UpdateSource {
+                local: Some(bundle.temp.path().to_owned()),
+                base_url: None,
+                asset_prefix: None,
+            },
+        })
+        .unwrap();
     let executable = a.root.join("bin").join(&bundle.manifest.files[0].name);
     platform::start_host(&a.root, &executable).unwrap();
     let deadline = Instant::now() + Duration::from_secs(4);
@@ -679,15 +765,27 @@ fn real_pending_host_verifies_tls_resumes_identity_and_rejects_wrong_identity() 
         host::ready(&receipt),
         "manual host restart must consume its previous stop request"
     );
-    let deadline=Instant::now()+Duration::from_secs(5);
-    while updates.last_startup_check().unwrap().is_none_or(|c|c.outcome==vesta_update::CheckOutcome::Incomplete) && Instant::now()<deadline {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while updates
+        .last_startup_check()
+        .unwrap()
+        .is_none_or(|c| c.outcome == vesta_update::CheckOutcome::Incomplete)
+        && Instant::now() < deadline
+    {
         std::thread::sleep(Duration::from_millis(25));
     }
-    let checked=updates.last_startup_check().unwrap().expect("installed host must execute the configured startup discovery");
-    assert_eq!(checked.outcome,vesta_update::CheckOutcome::Current);
-    assert_eq!(checked.candidate.unwrap().manifest_sha256,receipt.release_manifest_sha256);
-    assert_eq!(updates.trust().unwrap().sequence,7);
-    assert!(updates.status().unwrap().is_empty());assert!(host::ready(&receipt));
+    let checked = updates
+        .last_startup_check()
+        .unwrap()
+        .expect("installed host must execute the configured startup discovery");
+    assert_eq!(checked.outcome, vesta_update::CheckOutcome::Current);
+    assert_eq!(
+        checked.candidate.unwrap().manifest_sha256,
+        receipt.release_manifest_sha256
+    );
+    assert_eq!(updates.trust().unwrap().sequence, 7);
+    assert!(updates.status().unwrap().is_empty());
+    assert!(host::ready(&receipt));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

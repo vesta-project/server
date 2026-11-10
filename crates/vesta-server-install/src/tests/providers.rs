@@ -4,10 +4,26 @@ use super::*;
 #[ignore = "live Forge/Mojang metadata resolution for RLCraft's exact legacy runtime"]
 async fn live_rlcraft_legacy_forge_2860_resolves() {
     let root = tempfile::tempdir().unwrap();
-    let installer = ServerInstaller::new(InstallRoots::new(root.path(), &[]).unwrap(), TransportConfig::direct()).unwrap();
-    let selection = Selection { version: Some("1.12.2".into()), loader_version: Some("14.23.5.2860".into()), ..Selection::default() };
+    let installer = ServerInstaller::new(
+        InstallRoots::new(root.path(), &[]).unwrap(),
+        TransportConfig::direct(),
+    )
+    .unwrap();
+    let selection = Selection {
+        version: Some("1.12.2".into()),
+        loader_version: Some("14.23.5.2860".into()),
+        ..Selection::default()
+    };
     let mut job = super::super::transfer::Job::new(Limits::default(), 0);
-    let resolved = super::super::providers::resolve(&installer.http, Software::Forge, &selection, &mut job, &SilentProgressReporter).await.unwrap();
+    let resolved = super::super::providers::resolve(
+        &installer.http,
+        Software::Forge,
+        &selection,
+        &mut job,
+        &SilentProgressReporter,
+    )
+    .await
+    .unwrap();
     assert_eq!(resolved.version, "1.12.2");
     assert_eq!(resolved.java.major, 8);
     assert!(resolved.processed.unwrap().legacy.is_some());

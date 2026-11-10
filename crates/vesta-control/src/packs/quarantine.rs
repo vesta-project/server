@@ -279,7 +279,6 @@ fn delivery_retained(c: &Connection, name: &str) -> Result<bool, ReleaseError> {
     Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM player_pack_offering WHERE json_extract(body,'$.sha256') || '.' || json_extract(body,'$.format')=?)",[name],|r|r.get(0))?)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

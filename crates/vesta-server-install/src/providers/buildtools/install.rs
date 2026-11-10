@@ -1,7 +1,7 @@
 //! Shared, reviewed source build. Only the verified final JAR is published.
 use super::*;
 use crate::ArtifactRecord;
-use crate::{InstallPlan, ServerInstaller, install as publication, progress::ProgressReporter};
+use crate::{install as publication, progress::ProgressReporter, InstallPlan, ServerInstaller};
 use std::{
     collections::BTreeMap,
     process::{Command, Stdio},

@@ -185,7 +185,9 @@ pub struct PlayerRoster {
     activity_cursor: u64,
 }
 impl PlayerRoster {
-    pub fn activity_revision(&self) -> u64 { self.activity_cursor }
+    pub fn activity_revision(&self) -> u64 {
+        self.activity_cursor
+    }
     pub fn response_cursor(&self) -> u64 {
         self.cursor
     }
@@ -308,24 +310,39 @@ impl QueryEndpoint {
 
 impl super::RuntimeHandle {
     /// Reconcile a bounded captured suffix without cloning the full roster.
-    pub fn roster_delta(&self, subject: &Subject, generation: GenerationId, after: u64) -> PlayerQueryResult<serde_json::Value> {
+    pub fn roster_delta(
+        &self,
+        subject: &Subject,
+        generation: GenerationId,
+        after: u64,
+    ) -> PlayerQueryResult<serde_json::Value> {
         let endpoint = self.player_queries();
-        with_console_access(&endpoint.operations, Some(subject), Capability::PlayersView, || {
-            ensure_view(&endpoint.view, generation)?;
-            let page = endpoint.console.snapshot(after, MAX_PAGE_LINES)?;
-            if page.gap || page.next_cursor != page.latest_cursor || page.lines.iter().any(|l| l.truncated) {
-                return Err(PlayerQueryError::ConsoleGap);
-            }
-            let mut revision = after;
-            let mut changes = Vec::new();
-            for line in page.lines {
-                if let Some((name, kind)) = crate::metrics::activity_line(&line.text) {
-                    revision = line.cursor;
-                    changes.push(serde_json::json!({"name":name,"kind":kind}));
+        with_console_access(
+            &endpoint.operations,
+            Some(subject),
+            Capability::PlayersView,
+            || {
+                ensure_view(&endpoint.view, generation)?;
+                let page = endpoint.console.snapshot(after, MAX_PAGE_LINES)?;
+                if page.gap
+                    || page.next_cursor != page.latest_cursor
+                    || page.lines.iter().any(|l| l.truncated)
+                {
+                    return Err(PlayerQueryError::ConsoleGap);
                 }
-            }
-            Ok(serde_json::json!({"generation":generation.to_hex(),"base_revision":after.to_string(),"revision":revision.to_string(),"changes":changes}))
-        })
+                let mut revision = after;
+                let mut changes = Vec::new();
+                for line in page.lines {
+                    if let Some((name, kind)) = crate::metrics::activity_line(&line.text) {
+                        revision = line.cursor;
+                        changes.push(serde_json::json!({"name":name,"kind":kind}));
+                    }
+                }
+                Ok(
+                    serde_json::json!({"generation":generation.to_hex(),"base_revision":after.to_string(),"revision":revision.to_string(),"changes":changes}),
+                )
+            },
+        )
     }
     /// Seed once, then consume join/leave output. A gap requires one fresh seed;
     /// metrics consent and HTTP read frequency never cause repeated list writes.

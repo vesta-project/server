@@ -227,8 +227,14 @@ pub(super) async fn resolve(
             if !profile.processors.is_empty() || !profile.data.is_empty() {
                 return Err(InstallError::InvalidMetadata);
             }
-            let version: VersionLibraries = parse(embedded.get("version.json").ok_or(InstallError::InvalidMetadata)?)?;
-            if version.libraries.0.len() > MAX_FILES { return Err(InstallError::LimitExceeded); }
+            let version: VersionLibraries = parse(
+                embedded
+                    .get("version.json")
+                    .ok_or(InstallError::InvalidMetadata)?,
+            )?;
+            if version.libraries.0.len() > MAX_FILES {
+                return Err(InstallError::LimitExceeded);
+            }
             profile.libraries = version.libraries;
         }
         let universal = format!("net.minecraftforge:forge:{coordinate}:universal");
@@ -241,11 +247,24 @@ pub(super) async fn resolve(
         let required = if profile.spec == 0 {
             let path = format!("maven/{}", maven(&main)?);
             let fields = manifest(embedded.get(&path).ok_or(InstallError::InvalidMetadata)?)?;
-            Some(fields.get("Class-Path").ok_or(InstallError::InvalidMetadata)?.split_whitespace().map(str::to_owned).collect::<HashSet<_>>())
-        } else { None };
+            Some(
+                fields
+                    .get("Class-Path")
+                    .ok_or(InstallError::InvalidMetadata)?
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect::<HashSet<_>>(),
+            )
+        } else {
+            None
+        };
         for library in profile.libraries.0 {
             let path = maven(&library.name)?;
-            if required.as_ref().is_some_and(|required| library.name != main && !required.contains(&format!("libraries/{path}"))) { continue; }
+            if required.as_ref().is_some_and(|required| {
+                library.name != main && !required.contains(&format!("libraries/{path}"))
+            }) {
+                continue;
+            }
             let item = library
                 .downloads
                 .artifact
@@ -275,7 +294,13 @@ pub(super) async fn resolve(
         }
         if let Some(required) = required {
             let alias = format!("minecraft_server.{version}.jar");
-            if required.iter().any(|path| path != &alias && !contained.contains_key(path) && !artifacts.iter().any(|artifact| &artifact.destination == path)) {
+            if required.iter().any(|path| {
+                path != &alias
+                    && !contained.contains_key(path)
+                    && !artifacts
+                        .iter()
+                        .any(|artifact| &artifact.destination == path)
+            }) {
                 return Err(InstallError::InvalidMetadata);
             }
         }

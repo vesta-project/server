@@ -15,9 +15,9 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-mod execution;
-mod catalogue_cache;
 mod buildtools;
+mod catalogue_cache;
+mod execution;
 mod execution_workspace;
 mod installation;
 mod loaders;

@@ -12,8 +12,8 @@ mod install;
 mod legacy;
 mod recipe;
 pub(crate) use catalogue::{releases, versions};
-pub use install::ProcessedReceipt;
 pub(crate) use install::digest;
+pub use install::ProcessedReceipt;
 pub(crate) use install::{execute, managed_launch, verify};
 
 const MAX_FILES: usize = 1024;

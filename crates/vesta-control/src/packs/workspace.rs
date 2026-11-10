@@ -5,8 +5,8 @@ mod server_updates;
 pub use server_updates::*;
 mod install;
 pub use install::*;
-mod files;
 mod client_link;
+mod files;
 pub use client_link::ClientModpackLink;
 mod provider_pack;
 pub use provider_pack::ProviderPackPublish;
@@ -218,7 +218,8 @@ pub struct PackWorkspace {
 }
 impl PackWorkspace {
     pub fn with_download_settings(mut self, settings: crate::config::DownloadSettings) -> Self {
-        self.download_settings = settings; self
+        self.download_settings = settings;
+        self
     }
     pub fn icon(&self, subject: &Subject, mc: &str) -> Result<Option<PackIcon>> {
         let draft = self.read(subject, mc)?;
@@ -287,7 +288,7 @@ impl PackWorkspace {
                 return Err(invalid());
             }
             entries.push(PackEntry {
-            artifact_sha512: None,
+                artifact_sha512: None,
                 id: format!("{}-{}", selection.provider, selection.project_id),
                 kind: meta.kind,
                 path: format!("{prefix}/{}", meta.filename),
@@ -729,10 +730,18 @@ pub fn validate_manifest(m: &PackManifest) -> Result<()> {
     for e in &m.entries {
         if let Some(hash) = &e.artifact_sha512 {
             crate::content::ExpectedHash::Sha512(hash.clone()).validate()?;
-            if !matches!(&e.source, EntrySource::Provider { provider, .. } if provider == "modrinth") { return Err(invalid()); }
+            if !matches!(&e.source, EntrySource::Provider { provider, .. } if provider == "modrinth")
+            {
+                return Err(invalid());
+            }
         }
-        vesta_protocol::pack::catalogue::RelativePath::parse(&e.path)
-            .map_err(|_| ReleaseError::Refusal { code: "pack_path_invalid", rule: "safe_relative_path", item: e.path.clone() })?;
+        vesta_protocol::pack::catalogue::RelativePath::parse(&e.path).map_err(|_| {
+            ReleaseError::Refusal {
+                code: "pack_path_invalid",
+                rule: "safe_relative_path",
+                item: e.path.clone(),
+            }
+        })?;
         let lower = e.path.to_ascii_lowercase();
         let prefix = match e.kind {
             EntryKind::Mod => "mods/",
@@ -744,7 +753,11 @@ pub fn validate_manifest(m: &PackManifest) -> Result<()> {
         install::validate_game_path(&e.path)?;
         let config_override = e.kind == EntryKind::ConfigOverride;
         if !(lower.starts_with(prefix) || config_override) {
-            return Err(ReleaseError::Refusal { code: "pack_path_invalid", rule: "game_content_directory", item: e.path.clone() });
+            return Err(ReleaseError::Refusal {
+                code: "pack_path_invalid",
+                rule: "game_content_directory",
+                item: e.path.clone(),
+            });
         }
         if !text(&e.id, 128)
             || !ids.insert(&e.id)
@@ -786,9 +799,14 @@ pub fn validate_manifest(m: &PackManifest) -> Result<()> {
     }
     // Count and aggregate text budgets are review warnings; namespace integrity
     // remains mandatory even when an imported archive exceeds those thresholds.
-    let paths = m.entries.iter().map(|e| vesta_protocol::pack::catalogue::RelativePath::parse(&e.path))
-        .collect::<std::result::Result<Vec<_>, _>>().map_err(super::PackError::from)?;
-    vesta_protocol::pack::catalogue::validate_namespace(paths.iter(), false).map_err(super::PackError::from)?;
+    let paths = m
+        .entries
+        .iter()
+        .map(|e| vesta_protocol::pack::catalogue::RelativePath::parse(&e.path))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(super::PackError::from)?;
+    vesta_protocol::pack::catalogue::validate_namespace(paths.iter(), false)
+        .map_err(super::PackError::from)?;
     Ok(())
 }
 pub fn identifier(s: &str) -> bool {

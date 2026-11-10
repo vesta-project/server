@@ -593,10 +593,11 @@ fn execute(core: &Shared, op: Op) -> Reply {
                     if configuration.working_directory() != core.launch.working_directory() {
                         return Err("supervisor_launch_invalid");
                     }
-                    let replacement=configuration
+                    let replacement = configuration
                         .into_launch_spec(None)
                         .map_err(|_| "supervisor_launch_invalid")?;
-                    core.launch.constrain_replacement(replacement)
+                    core.launch
+                        .constrain_replacement(replacement)
                         .map_err(|_| "supervisor_launch_invalid")
                 })();
                 match replacement {

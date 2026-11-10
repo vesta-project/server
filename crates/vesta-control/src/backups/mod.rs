@@ -805,10 +805,23 @@ impl Inner {
                     if checked_at.elapsed() >= Duration::from_secs(3600) {
                         checked_at = std::time::Instant::now();
                         let profiles = self.policy().profiles.clone();
-                        let candidates: Vec<_> = profiles.iter().flat_map(|p| self.engine.snapshots(&profile_tag(&p.name)).unwrap_or_default().into_iter().map(|s| (p.name.clone(), s.id))).collect();
-                        if let Some((profile, snapshot)) = candidates.get(cursor % candidates.len().max(1)) {
+                        let candidates: Vec<_> = profiles
+                            .iter()
+                            .flat_map(|p| {
+                                self.engine
+                                    .snapshots(&profile_tag(&p.name))
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .map(|s| (p.name.clone(), s.id))
+                            })
+                            .collect();
+                        if let Some((profile, snapshot)) =
+                            candidates.get(cursor % candidates.len().max(1))
+                        {
                             let offset = (cursor / candidates.len()).saturating_mul(64);
-                            if let Err(error) = self.engine.verify_snapshot_range(snapshot, offset, 64) {
+                            if let Err(error) =
+                                self.engine.verify_snapshot_range(snapshot, offset, 64)
+                            {
                                 let id = uuid::Uuid::new_v4().to_string();
                                 let now = self.db.clock().millis();
                                 let _ = self.db.write(|c| {

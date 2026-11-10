@@ -702,18 +702,32 @@ impl Engine {
     pub(super) fn verify_snapshot(&self, id: &str) -> Result<()> {
         self.verify_snapshot_range(id, 0, usize::MAX)
     }
-    pub(super) fn verify_snapshot_range(&self, id: &str, offset: usize, limit: usize) -> Result<()> {
+    pub(super) fn verify_snapshot_range(
+        &self,
+        id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<()> {
         let mut seen = BTreeSet::new();
         for file in self.manifest(id)?.files {
             for hash in file.chunks {
-                if !valid_hash(&hash) { return Err(EngineError::Corrupt); }
+                if !valid_hash(&hash) {
+                    return Err(EngineError::Corrupt);
+                }
                 seen.insert(hash);
             }
         }
         let start = offset % seen.len().max(1);
-        for hash in seen.iter().skip(start).chain(seen.iter().take(start)).take(limit) {
+        for hash in seen
+            .iter()
+            .skip(start)
+            .chain(seen.iter().take(start))
+            .take(limit)
+        {
             let bytes = decompress(&self.store.get(&chunk_key(hash))?, CHUNK_SIZE)?;
-            if hash_hex(&bytes) != *hash { return Err(EngineError::Corrupt); }
+            if hash_hex(&bytes) != *hash {
+                return Err(EngineError::Corrupt);
+            }
         }
         Ok(())
     }
@@ -938,10 +952,20 @@ fn keep_set(snapshots: &[(String, i64)], retention: Retention) -> BTreeSet<Strin
         y * 12 + i64::from(m)
     });
     if retention.keep_total > 0 {
-        if retention.keep_last == 0 && retention.keep_hourly == 0 && retention.keep_daily == 0 && retention.keep_weekly == 0 && retention.keep_monthly == 0 {
+        if retention.keep_last == 0
+            && retention.keep_hourly == 0
+            && retention.keep_daily == 0
+            && retention.keep_weekly == 0
+            && retention.keep_monthly == 0
+        {
             keep.extend(newest_first.iter().map(|(id, _)| id.clone()));
         }
-        keep = newest_first.into_iter().filter(|(id, _)| keep.contains(id)).take(retention.keep_total as usize).map(|(id, _)| id.clone()).collect();
+        keep = newest_first
+            .into_iter()
+            .filter(|(id, _)| keep.contains(id))
+            .take(retention.keep_total as usize)
+            .map(|(id, _)| id.clone())
+            .collect();
     }
     keep
 }

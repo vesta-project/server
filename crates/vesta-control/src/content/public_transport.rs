@@ -62,7 +62,8 @@ trait Dial: Debug + Send + Sync + 'static {
 #[derive(Debug, Default)]
 struct SystemDial;
 #[cfg(test)]
-pub(super) static LIVE_DIAL_ATTEMPTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub(super) static LIVE_DIAL_ATTEMPTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 impl Dial for SystemDial {
     type Stream = TcpStream;
     fn dial(&self, a: SocketAddr, t: Duration) -> io::Result<TcpStream> {
@@ -181,7 +182,7 @@ impl Transport for SocketTransport {
     fn is_open(&mut self) -> bool {
         self.stream
             .peer()
-            .is_ok_and(|p| vesta_server_install::public_address::is_public_socket(p))
+            .is_ok_and(vesta_server_install::public_address::is_public_socket)
             && self.stream.open()
     }
 }
@@ -190,8 +191,8 @@ impl Transport for SocketTransport {
 mod tests {
     use super::*;
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     };
     #[derive(Debug)]
     struct Answers {
@@ -300,13 +301,15 @@ mod tests {
                 values,
                 calls: calls.clone(),
             });
-            assert!(resolver
-                .resolve(
-                    &"https://artifact.example/a".parse().unwrap(),
-                    &ureq::Agent::config_builder().build(),
-                    next
-                )
-                .is_err());
+            assert!(
+                resolver
+                    .resolve(
+                        &"https://artifact.example/a".parse().unwrap(),
+                        &ureq::Agent::config_builder().build(),
+                        next
+                    )
+                    .is_err()
+            );
         }
         let dial = FakeDial {
             peer: public,

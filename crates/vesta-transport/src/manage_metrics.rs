@@ -223,7 +223,9 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                 let mut reply = ok(json!(capture));
                 reply.headers_mut().insert(
                     "content-disposition",
-                    http::HeaderValue::from_static("attachment; filename=\"vesta-performance-capture.json\""),
+                    http::HeaderValue::from_static(
+                        "attachment; filename=\"vesta-performance-capture.json\"",
+                    ),
                 );
                 reply
             }

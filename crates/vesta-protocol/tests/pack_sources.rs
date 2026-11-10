@@ -1,6 +1,7 @@
 use vesta_protocol::pack::{
     catalogue::{
-        CatalogueError, FileSource, MAX_FILES, MAX_JSON_BYTES, MAX_TOTAL_TEXT_BYTES, Platform, RelativePath, Sha256,
+        CatalogueError, FileSource, MAX_FILES, MAX_JSON_BYTES, MAX_TOTAL_TEXT_BYTES, Platform,
+        RelativePath, Sha256,
     },
     sources::{KnownSource, SourceRegistry},
 };

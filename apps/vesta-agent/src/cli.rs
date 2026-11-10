@@ -213,12 +213,15 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, ()> {
         "version" if args.len() == 1 => return Ok(Command::Version),
         "update" => {
             if args.len() > 1
-                && !args[1].to_str().is_some_and(vesta_setup::updates::accepts_action)
+                && !args[1]
+                    .to_str()
+                    .is_some_and(vesta_setup::updates::accepts_action)
             {
                 return Err(());
             }
             return Ok(Command::Update(
-                args.iter().skip(1)
+                args.iter()
+                    .skip(1)
                     .map(|a| a.to_str().map(str::to_owned).ok_or(()))
                     .collect::<Result<Vec<_>, _>>()?,
             ));
@@ -391,11 +394,21 @@ mod tests {
         for command in ["version", "update", "--help"] {
             assert!(p(&[command]).is_ok());
         }
-        for action in ["init","status","check","stage","verify","configure","--help"] {
+        for action in [
+            "init",
+            "status",
+            "check",
+            "stage",
+            "verify",
+            "configure",
+            "--help",
+        ] {
             assert!(matches!(p(&["update",action]),Ok(Command::Update(args)) if args==[action]));
-            assert!(matches!(p(&["agent","update",action]),Ok(Command::Update(args)) if args==[action]));
+            assert!(
+                matches!(p(&["agent","update",action]),Ok(Command::Update(args)) if args==[action])
+            );
         }
-        assert!(p(&["update","apply"]).is_err());
+        assert!(p(&["update", "apply"]).is_err());
     }
     #[test]
     fn create_flags_never_accept_eula_or_public_bind() {

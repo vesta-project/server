@@ -2,23 +2,76 @@
 use super::*;
 #[test]
 fn performance_capture_is_one_bounded_authorized_snapshot_without_console_work() {
-    use crate::{config::MetricsSettings,metrics::{Fetch,Resolution}};
-    let h=Harness::new(false);let settings=MetricsSettings::default();
-    let request=Fetch{series:vec!["tps".into(),"game_memory_bytes".into()],from:0,to:1000,resolution:Resolution::Raw,max_points:10,after:None};
-    let before=h.operations.metrics_current(&h.subject).unwrap().status.revision;
-    let capture=h.operations.metrics_capture(&h.subject,&request,settings).unwrap();
-    assert_eq!(capture.schema,1);assert_eq!(capture.source,"retained_telemetry");assert!(!capture.profiler_started);
-    assert_eq!(capture.server_id,h.db.server_id());assert_eq!(capture.current.status.revision,capture.history.cursor);
-    assert_eq!(capture.current.status.revision,before);assert!(capture.history.columns.timestamps.is_empty());
-    assert!(capture.current.sample.is_none());assert_eq!(capture.request.series,request.series);
+    use crate::{
+        config::MetricsSettings,
+        metrics::{Fetch, Resolution},
+    };
+    let h = Harness::new(false);
+    let settings = MetricsSettings::default();
+    let request = Fetch {
+        series: vec!["tps".into(), "game_memory_bytes".into()],
+        from: 0,
+        to: 1000,
+        resolution: Resolution::Raw,
+        max_points: 10,
+        after: None,
+    };
+    let before = h
+        .operations
+        .metrics_current(&h.subject)
+        .unwrap()
+        .status
+        .revision;
+    let capture = h
+        .operations
+        .metrics_capture(&h.subject, &request, settings)
+        .unwrap();
+    assert_eq!(capture.schema, 1);
+    assert_eq!(capture.source, "retained_telemetry");
+    assert!(!capture.profiler_started);
+    assert_eq!(capture.server_id, h.db.server_id());
+    assert_eq!(capture.current.status.revision, capture.history.cursor);
+    assert_eq!(capture.current.status.revision, before);
+    assert!(capture.history.columns.timestamps.is_empty());
+    assert!(capture.current.sample.is_none());
+    assert_eq!(capture.request.series, request.series);
     assert!(!h.cwd.join("operation-commands").exists());
-    let mut invalid=request.clone();invalid.after=Some(0);
-    assert!(h.operations.metrics_capture(&h.subject,&invalid,settings).is_err());
-    invalid=request.clone();invalid.max_points=crate::metrics::MAX_POINTS+1;
-    assert!(h.operations.metrics_capture(&h.subject,&invalid,settings).is_err());
-    h.db.write(|c|{c.execute("DELETE FROM role_assignments WHERE principal_id=?",[h.subject.principal.as_str()])?;Ok(())}).unwrap();
-    assert!(h.operations.metrics_capture(&h.subject,&request,settings).is_err());
-    assert_eq!(h.db.read(|c|Ok(c.query_row("SELECT revision FROM metrics_status WHERE singleton=1",[],|r|r.get::<_,i64>(0))?)).unwrap(),before);
+    let mut invalid = request.clone();
+    invalid.after = Some(0);
+    assert!(
+        h.operations
+            .metrics_capture(&h.subject, &invalid, settings)
+            .is_err()
+    );
+    invalid = request.clone();
+    invalid.max_points = crate::metrics::MAX_POINTS + 1;
+    assert!(
+        h.operations
+            .metrics_capture(&h.subject, &invalid, settings)
+            .is_err()
+    );
+    h.db.write(|c| {
+        c.execute(
+            "DELETE FROM role_assignments WHERE principal_id=?",
+            [h.subject.principal.as_str()],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(
+        h.operations
+            .metrics_capture(&h.subject, &request, settings)
+            .is_err()
+    );
+    assert_eq!(
+        h.db.read(|c| Ok(c.query_row(
+            "SELECT revision FROM metrics_status WHERE singleton=1",
+            [],
+            |r| r.get::<_, i64>(0)
+        )?))
+        .unwrap(),
+        before
+    );
 }
 
 #[test]

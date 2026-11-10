@@ -376,8 +376,17 @@ fn content_summary_returns_rows_before_byte_verification() {
     let token = management_session(&f, &device, &key);
     std::fs::create_dir_all(f.temp.path().join("game/mods")).unwrap();
     std::fs::write(f.temp.path().join("game/mods/example.jar"), b"fixture").unwrap();
-    management_reply_error(&f.request("GET", "/api/v3/manage/content?view=summary", b"", None), 401, "management_session_invalid");
-    let summary = f.request("GET", "/api/v3/manage/content?view=summary", b"", Some(&token));
+    management_reply_error(
+        &f.request("GET", "/api/v3/manage/content?view=summary", b"", None),
+        401,
+        "management_session_invalid",
+    );
+    let summary = f.request(
+        "GET",
+        "/api/v3/manage/content?view=summary",
+        b"",
+        Some(&token),
+    );
     assert_eq!(summary.status, 200);
     let entry = &summary.json()["data"]["items"][0];
     assert_eq!(entry["filename"], "example.jar");
@@ -385,8 +394,21 @@ fn content_summary_returns_rows_before_byte_verification() {
     assert!(entry["provider"].is_null());
     let verified = f.request("GET", "/api/v3/manage/content", b"", Some(&token));
     assert_eq!(verified.status, 200);
-    assert!(verified.json()["data"]["items"][0]["sha256"].as_str().is_some());
-    management_reply_error(&f.request("GET", "/api/v3/manage/content?view=unknown", b"", Some(&token)), 400, "invalid_request");
+    assert!(
+        verified.json()["data"]["items"][0]["sha256"]
+            .as_str()
+            .is_some()
+    );
+    management_reply_error(
+        &f.request(
+            "GET",
+            "/api/v3/manage/content?view=unknown",
+            b"",
+            Some(&token),
+        ),
+        400,
+        "invalid_request",
+    );
 }
 type TlsStream = StreamOwned<ClientConnection, TcpStream>;
 #[path = "hosted_resource_packs/mod.rs"]
@@ -454,8 +476,23 @@ fn hosting_routes_use_authenticated_owner_and_durable_sftp_key_receipts() {
         .request("GET", "/api/v3/manage/world", b"", Some(&token))
         .json()["data"]
         .clone();
-    assert_eq!(f.request("POST", "/api/v3/manage/world/datapacks/offline", b"{}", None).status, 401);
-    let invalid_pack = management_mutation(&f, &token, "world/datapacks/offline", "offline-pack-invalid-1", &serde_json::json!({"pack_id":"file/test.zip","enabled":true,"expected_revision":"invalid"}));
+    assert_eq!(
+        f.request(
+            "POST",
+            "/api/v3/manage/world/datapacks/offline",
+            b"{}",
+            None
+        )
+        .status,
+        401
+    );
+    let invalid_pack = management_mutation(
+        &f,
+        &token,
+        "world/datapacks/offline",
+        "offline-pack-invalid-1",
+        &serde_json::json!({"pack_id":"file/test.zip","enabled":true,"expected_revision":"invalid"}),
+    );
     assert_eq!(invalid_pack.status, 400);
     let selected = management_mutation(
         &f,
@@ -2013,17 +2050,35 @@ fn enroll_management(
     use ring::signature::KeyPair;
     let code = f.host().management().issue_local(role, 10).unwrap();
     let key = management_key();
-    let enrolled = f.host().management().enroll(code.secret.expose(), "TLS test device",
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref())).unwrap();
+    let enrolled = f
+        .host()
+        .management()
+        .enroll(
+            code.secret.expose(),
+            "TLS test device",
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref()),
+        )
+        .unwrap();
     bind_fixture_account(f, &enrolled, &key);
     (enrolled.device_id, key)
 }
-fn bind_fixture_account(f: &Fixture, enrolled: &vesta_control::identity::management::Enrolled, key: &ring::signature::Ed25519KeyPair) {
+fn bind_fixture_account(
+    f: &Fixture,
+    enrolled: &vesta_control::identity::management::Enrolled,
+    key: &ring::signature::Ed25519KeyPair,
+) {
     use ring::signature::KeyPair;
     // Transport fixtures never contact Mojang. Seed the verified account binding
     // locally; production enrollment is exercised by the control identity tests.
     let raw = hex::encode(&key.public_key().as_ref()[..16]);
-    let account = format!("{}-{}-{}-{}-{}", &raw[..8], &raw[8..12], &raw[12..16], &raw[16..20], &raw[20..]);
+    let account = format!(
+        "{}-{}-{}-{}-{}",
+        &raw[..8],
+        &raw[8..12],
+        &raw[12..16],
+        &raw[16..20],
+        &raw[20..]
+    );
     f.host().database().write(|c| {
         c.execute("INSERT INTO user_minecraft_accounts(server_id,minecraft_uuid,principal_id) VALUES(?,?,?)",
             rusqlite::params![enrolled.server_id, account, enrolled.principal_id])?;
@@ -2225,9 +2280,13 @@ fn management_https_body_rate_limits_strict_shapes_and_unknown_minecraft_proofs(
     let f = Fixture::new("minecraft", 8, 256, 3);
     f.request("POST", "/api/v3/manage/pair", &vec![b'x'; 257], None)
         .error(413, "request_too_large");
-    f.request("POST", "/api/v3/manage/pair",
-        br#"{"code":"wrong","device_name":"Fixture","public_key":"wrong","role":"owner"}"#, None)
-        .error(401, "management_session_invalid");
+    f.request(
+        "POST",
+        "/api/v3/manage/pair",
+        br#"{"code":"wrong","device_name":"Fixture","public_key":"wrong","role":"owner"}"#,
+        None,
+    )
+    .error(401, "management_session_invalid");
     for (path, body) in [
         (
             "/api/v3/manage/session/challenge",
@@ -2279,9 +2338,14 @@ fn public_v3_auth_aliases_accept_linked_devices_and_refuse_code_only_enrollment(
     let f = Fixture::new("minecraft", 8, 1024, 3);
     let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
     let public = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref());
-    f.request("POST", "/api/v3/auth/device/enroll",
-        &serde_json::to_vec(&serde_json::json!({"device_name":"Alias user","public_key":public})).unwrap(), None)
-        .error(401, "management_session_invalid");
+    f.request(
+        "POST",
+        "/api/v3/auth/device/enroll",
+        &serde_json::to_vec(&serde_json::json!({"device_name":"Alias user","public_key":public}))
+            .unwrap(),
+        None,
+    )
+    .error(401, "management_session_invalid");
     let challenge = f.request(
         "POST",
         "/api/v3/auth/session/challenge",
@@ -2313,13 +2377,21 @@ fn public_v3_auth_aliases_accept_linked_devices_and_refuse_code_only_enrollment(
     );
     f.request("GET", "/api/v3/manage/status", b"", Some(&token))
         .error(501, "not_implemented");
-    let code = f.host().management().issue_local(vesta_control::identity::BuiltinRole::Owner, 10).unwrap();
+    let code = f
+        .host()
+        .management()
+        .issue_local(vesta_control::identity::BuiltinRole::Owner, 10)
+        .unwrap();
     let request = serde_json::to_vec(&serde_json::json!({"code":code.secret.expose(),"device_name":"Alias user","public_key":public})).unwrap();
     for authorization in [None, Some(token.as_str())] {
         f.request("POST", "/api/v3/manage/pair", &request, authorization)
             .error(401, "management_session_invalid");
     }
-    assert_eq!(f.request("POST", "/api/v2/pack/ticket", b"", Some(&token)).status, 200);
+    assert_eq!(
+        f.request("POST", "/api/v2/pack/ticket", b"", Some(&token))
+            .status,
+        200
+    );
     assert_eq!(f.host().management().list_local().unwrap().len(), 1);
 }
 #[test]
@@ -2945,20 +3017,28 @@ fn management_inert_child() {
             Ok(line) if line == "stop" => std::process::exit(0),
             Ok(line) if line == "list" => {
                 if let Ok(names) = std::fs::read_to_string("tls-inert-roster") {
-                    println!("There are {} of a max of 20000 players online: {names}", names.split(", ").count());
-                } else { println!("There are 2 of a max of 20 players online: OwnedAlpha, OwnedBeta"); }
+                    println!(
+                        "There are {} of a max of 20000 players online: {names}",
+                        names.split(", ").count()
+                    );
+                } else {
+                    println!("There are 2 of a max of 20 players online: OwnedAlpha, OwnedBeta");
+                }
                 std::io::stdout().flush().unwrap();
             }
             Ok(line) if line == "owned-roster-flood" => {
                 for i in 0..120 {
-                    let action = if i % 2 == 0 {"joined"} else {"left"};
+                    let action = if i % 2 == 0 { "joined" } else { "left" };
                     println!("[12:00:03] [Server thread/INFO]: ChurnGuest {action} the game");
                     std::io::stdout().flush().unwrap();
                     std::thread::sleep(Duration::from_millis(5));
                 }
             }
             Ok(line) if line.starts_with("owned-roster-event ") => {
-                println!("[12:00:02] [Server thread/INFO]: {}", line.strip_prefix("owned-roster-event ").unwrap());
+                println!(
+                    "[12:00:02] [Server thread/INFO]: {}",
+                    line.strip_prefix("owned-roster-event ").unwrap()
+                );
                 std::io::stdout().flush().unwrap();
             }
             Ok(line) if line.starts_with("owned-credential-boundaries ") => {
@@ -2974,7 +3054,9 @@ fn management_inert_child() {
                 }
                 for offset in [1, 7, 21, 42] {
                     let marker = format!(" boundary-{offset}: ");
-                    let fill = ".".repeat(vesta_control::operations::MAX_CONSOLE_LINE_BYTES - marker.len() - offset);
+                    let fill = ".".repeat(
+                        vesta_control::operations::MAX_CONSOLE_LINE_BYTES - marker.len() - offset,
+                    );
                     println!("{marker}{fill}{token} :discarded-after-boundary");
                     println!(" split-{offset}: {}", &token[..offset]);
                     println!("{} :split-end-{offset} ", &token[offset..]);
@@ -3118,12 +3200,16 @@ fn management_console_redacts_truncated_and_split_live_credentials_over_tls_and_
     let mut after = String::new();
     let mut lines = Vec::new();
     loop {
-        let path = if after.is_empty() { "/api/v3/manage/console?limit=200".to_owned() } else { format!("/api/v3/manage/console?cursor={after}&limit=200") };
+        let path = if after.is_empty() {
+            "/api/v3/manage/console?limit=200".to_owned()
+        } else {
+            format!("/api/v3/manage/console?cursor={after}&limit=200")
+        };
         let reply = f.request("GET", &path, b"", Some(&token));
         assert_eq!(reply.status, 200);
         reply.hides(&token);
-        let value=reply.json();
-        after=value["data"]["next_cursor"].as_str().unwrap().to_owned();
+        let value = reply.json();
+        after = value["data"]["next_cursor"].as_str().unwrap().to_owned();
         lines.extend(value["data"]["items"].as_array().unwrap().iter().cloned());
         if lines
             .iter()
@@ -3198,8 +3284,16 @@ fn management_tls_inert_lifecycle_command_console_and_known_players() {
     let first = f.request("GET", "/api/v3/manage/players?limit=1", b"", Some(&token));
     assert_eq!(first.status, 200);
     assert_eq!(first.json()["data"]["items"].as_array().unwrap().len(), 1);
-    let next = first.json()["data"]["next_cursor"].as_str().unwrap().to_owned();
-    let second = f.request("GET", &format!("/api/v3/manage/players?limit=1&cursor={next}"), b"", Some(&token));
+    let next = first.json()["data"]["next_cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let second = f.request(
+        "GET",
+        &format!("/api/v3/manage/players?limit=1&cursor={next}"),
+        b"",
+        Some(&token),
+    );
     assert_eq!(second.status, 200);
     assert_eq!(second.json()["data"]["items"].as_array().unwrap().len(), 1);
     assert!(second.json()["data"]["next_cursor"].is_null());

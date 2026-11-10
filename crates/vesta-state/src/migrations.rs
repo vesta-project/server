@@ -1161,7 +1161,7 @@ fn apply_v28(c: &Connection) -> crate::Result<()> {
 }
 
 /// Pack payloads now live in protected files, so archive sizes are metadata only.
-fn apply_v29(c:&Connection)->crate::Result<()> {
+fn apply_v29(c: &Connection) -> crate::Result<()> {
     c.execute_batch(r#"
         ALTER TABLE pack_workspace_uploads RENAME TO pack_workspace_uploads_v28;
         CREATE TABLE pack_workspace_uploads (
@@ -1221,6 +1221,6 @@ fn apply_v30(c: &Connection) -> crate::Result<()> {
 }
 
 fn apply_v31(c: &Connection) -> crate::Result<()> {
- c.execute_batch("CREATE TABLE management_invitation_uses (code_hash BLOB PRIMARY KEY REFERENCES management_pairing_codes(code_hash) ON DELETE CASCADE, max_uses INTEGER CHECK(max_uses>0), uses INTEGER NOT NULL DEFAULT 0) STRICT; CREATE TABLE whitelist_sync_actor(singleton INTEGER PRIMARY KEY CHECK(singleton=1), principal_id TEXT NOT NULL, device_id TEXT NOT NULL) STRICT; CREATE TABLE whitelist_sync_members(uuid TEXT PRIMARY KEY,name TEXT NOT NULL) STRICT;")?;
- Ok(())
+    c.execute_batch("CREATE TABLE management_invitation_uses (code_hash BLOB PRIMARY KEY REFERENCES management_pairing_codes(code_hash) ON DELETE CASCADE, max_uses INTEGER CHECK(max_uses>0), uses INTEGER NOT NULL DEFAULT 0) STRICT; CREATE TABLE whitelist_sync_actor(singleton INTEGER PRIMARY KEY CHECK(singleton=1), principal_id TEXT NOT NULL, device_id TEXT NOT NULL) STRICT; CREATE TABLE whitelist_sync_members(uuid TEXT PRIMARY KEY,name TEXT NOT NULL) STRICT;")?;
+    Ok(())
 }

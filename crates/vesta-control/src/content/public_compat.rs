@@ -1,7 +1,7 @@
 //! Opt-in bounded live compatibility, never run by the ordinary fixture suite.
 use super::*;
 use crate::content::{self, ExpectedHash, Provider, ProviderClient, UreqProviderClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::Digest;
 use std::sync::atomic::{AtomicUsize, Ordering};
 const ROOT: &str = "V:/BIG_BURGS-backend-pass/public-compat-fixtures";
@@ -153,7 +153,11 @@ fn live_public_compat_mojang() -> std::result::Result<(), String> {
         "mojang",
         json!({"label":"mojang","url":url,"hash":hash_json(&hash),"bytes":artifact.len(),"metadata_url":meta,"metadata_hash":version["sha1"],"server_redirects":redirects,"version":"1.21.1"}),
     );
-    eprintln!("PUBLIC_COMPAT provider=mojang full_metadata_bytes={} full_artifact_bytes={} redirects={redirects}",master.len()+bytes.len(),artifact.len());
+    eprintln!(
+        "PUBLIC_COMPAT provider=mojang full_metadata_bytes={} full_artifact_bytes={} redirects={redirects}",
+        master.len() + bytes.len(),
+        artifact.len()
+    );
     Ok(())
 }
 #[test]

@@ -841,8 +841,21 @@ fn inspection_restore_publishes_only_complete_output_and_cleans_failed_stage() {
 
 #[test]
 fn total_cap_bounds_bucket_union_and_works_without_thinning() {
-    let snapshots: Vec<_> = (0..20).map(|i| (format!("{i:032x}"), i * 3_600_000)).collect();
-    for retention in [Retention { keep_total: 4, ..Retention::default() }, Retention { keep_total: 4, keep_hourly: 10, keep_daily: 10, ..Retention::default() }] {
+    let snapshots: Vec<_> = (0..20)
+        .map(|i| (format!("{i:032x}"), i * 3_600_000))
+        .collect();
+    for retention in [
+        Retention {
+            keep_total: 4,
+            ..Retention::default()
+        },
+        Retention {
+            keep_total: 4,
+            keep_hourly: 10,
+            keep_daily: 10,
+            ..Retention::default()
+        },
+    ] {
         let keep = keep_set(&snapshots, retention);
         assert_eq!(keep.len(), 4);
         assert!(keep.contains(&format!("{:032x}", 19)));
@@ -856,8 +869,18 @@ fn snapshot_verification_detects_corrupt_chunks() {
     let store = MemStore::default();
     let engine = Engine::new(Box::new(store.clone()));
     engine.init().unwrap();
-    let backup = engine.backup(source.path(), &Ignore::default(), &tags("p"), Some("profile=p")).unwrap();
+    let backup = engine
+        .backup(
+            source.path(),
+            &Ignore::default(),
+            &tags("p"),
+            Some("profile=p"),
+        )
+        .unwrap();
     engine.verify_snapshot(&backup.snapshot_id).unwrap();
     store.corrupt_one_chunk();
-    assert_eq!(engine.verify_snapshot(&backup.snapshot_id), Err(EngineError::Corrupt));
+    assert_eq!(
+        engine.verify_snapshot(&backup.snapshot_id),
+        Err(EngineError::Corrupt)
+    );
 }

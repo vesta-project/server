@@ -52,23 +52,42 @@ impl PackWorkspace {
         key: &str,
         input: &UploadChunk,
     ) -> Result<UploadReceipt> {
-        self.upload_chunk_with(subject,key,input,|store,name,offset,bytes| store.upload_append(name,offset,bytes).map_err(storage))
+        self.upload_chunk_with(subject, key, input, |store, name, offset, bytes| {
+            store.upload_append(name, offset, bytes).map_err(storage)
+        })
     }
-    fn upload_chunk_with(&self, subject: &Subject, key: &str, input: &UploadChunk, append: impl FnOnce(&Store,&str,u64,&[u8])->Result<()>) -> Result<UploadReceipt> {
+    fn upload_chunk_with(
+        &self,
+        subject: &Subject,
+        key: &str,
+        input: &UploadChunk,
+        append: impl FnOnce(&Store, &str, u64, &[u8]) -> Result<()>,
+    ) -> Result<UploadReceipt> {
         // Serialize spool offset changes, independently of the database writer.
         static APPEND: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _append=APPEND.lock().map_err(|_|invalid())?;
-        if let Some(receipt)=self.replay(subject,key,input)? { return Ok(receipt); }
-        let bytes=STANDARD.decode(&input.content_base64).map_err(|_|invalid())?;
-        if bytes.is_empty() || bytes.len()>512*1024 { return Err(invalid()); }
-        let store=Store::open(&self.db).map_err(storage)?;
-        let _lease=store.lease().map_err(storage)?;
+        let _append = APPEND.lock().map_err(|_| invalid())?;
+        if let Some(receipt) = self.replay(subject, key, input)? {
+            return Ok(receipt);
+        }
+        let bytes = STANDARD
+            .decode(&input.content_base64)
+            .map_err(|_| invalid())?;
+        if bytes.is_empty() || bytes.len() > 512 * 1024 {
+            return Err(invalid());
+        }
+        let store = Store::open(&self.db).map_err(storage)?;
+        let _lease = store.lease().map_err(storage)?;
         let (size,total,sha,complete,name):(i64,i64,String,bool,Option<String>)=self.db.read_with(|t| {
             let c=t.connection(); self.authorize_in(c,subject,Capability::PackEdit)?;
             Ok::<_,ReleaseError>(c.query_row("SELECT coalesce(s.received,length(u.body)),u.total_size,u.sha256,u.complete,s.name FROM pack_workspace_uploads u LEFT JOIN pack_spooled_uploads s USING(server_id,principal_id,device_id,upload_id) WHERE u.server_id=? AND u.principal_id=? AND u.device_id=? AND u.upload_id=?",params![self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),input.upload_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?)
         })?;
-        if complete || revision(&input.offset)?!=size as u64 || size+bytes.len() as i64>total { return Err(ReleaseError::Conflict); }
-        if let Some(name)=&name { append(&store,name,size as u64,&bytes)?; }
+        if complete || revision(&input.offset)? != size as u64 || size + bytes.len() as i64 > total
+        {
+            return Err(ReleaseError::Conflict);
+        }
+        if let Some(name) = &name {
+            append(&store, name, size as u64, &bytes)?;
+        }
         self.mutate(subject,key,input,|c| {
             if let Some(name)=&name {
                 let count=c.execute("UPDATE pack_spooled_uploads SET received=? WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=? AND name=? AND received=? AND EXISTS(SELECT 1 FROM pack_workspace_uploads WHERE server_id=? AND principal_id=? AND device_id=? AND upload_id=? AND complete=0)",params![size+bytes.len() as i64,self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),input.upload_id,name,size,self.db.server_id(),subject.principal.as_str(),subject.device.as_str(),input.upload_id])?;
@@ -182,17 +201,49 @@ mod writer_regression {
     use super::*;
     #[test]
     fn spool_sync_does_not_own_database_writer_and_replay_does_not_append() {
-        let f=super::super::tests::Fixture::new();
-        f.workspace.upload_begin(&f.subject,"begin",&UploadBegin {upload_id:"spool-test".into(),total_size:"3".into(),sha256:digest(b"abc"),archive:true}).unwrap();
-        let input=UploadChunk {upload_id:"spool-test".into(),offset:"0".into(),content_base64:STANDARD.encode(b"abc")};
-        let receipt=f.workspace.upload_chunk_with(&f.subject,"chunk",&input,|store,name,offset,bytes| {
-            // A nested writer acquisition would fail (or deadlock) if append held it.
-            f.db.write(|c| {c.execute_batch("CREATE TABLE upload_writer_probe(value INTEGER)")?; Ok(())}).unwrap();
-            store.upload_append(name,offset,bytes).map_err(storage)
-        }).unwrap();
-        assert_eq!(receipt.size,"3");
-        let replay=f.workspace.upload_chunk_with(&f.subject,"chunk",&input,|_,_,_,_|panic!("replay appended twice")).unwrap();
-        assert_eq!(replay.size,"3");
-        assert!(f.workspace.upload_finish(&f.subject,"finish","spool-test").unwrap().complete);
+        let f = super::super::tests::Fixture::new();
+        f.workspace
+            .upload_begin(
+                &f.subject,
+                "begin",
+                &UploadBegin {
+                    upload_id: "spool-test".into(),
+                    total_size: "3".into(),
+                    sha256: digest(b"abc"),
+                    archive: true,
+                },
+            )
+            .unwrap();
+        let input = UploadChunk {
+            upload_id: "spool-test".into(),
+            offset: "0".into(),
+            content_base64: STANDARD.encode(b"abc"),
+        };
+        let receipt = f
+            .workspace
+            .upload_chunk_with(&f.subject, "chunk", &input, |store, name, offset, bytes| {
+                // A nested writer acquisition would fail (or deadlock) if append held it.
+                f.db.write(|c| {
+                    c.execute_batch("CREATE TABLE upload_writer_probe(value INTEGER)")?;
+                    Ok(())
+                })
+                .unwrap();
+                store.upload_append(name, offset, bytes).map_err(storage)
+            })
+            .unwrap();
+        assert_eq!(receipt.size, "3");
+        let replay = f
+            .workspace
+            .upload_chunk_with(&f.subject, "chunk", &input, |_, _, _, _| {
+                panic!("replay appended twice")
+            })
+            .unwrap();
+        assert_eq!(replay.size, "3");
+        assert!(
+            f.workspace
+                .upload_finish(&f.subject, "finish", "spool-test")
+                .unwrap()
+                .complete
+        );
     }
 }
