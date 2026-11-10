@@ -22,12 +22,21 @@ test('CI checks pushes, pull requests, and manual validation with read-only cont
   assert.match(ci, /permissions:\s*\n\s+contents:\s*read/);
 });
 
-test('nightly publishing is limited to canonical internal sources and scheduled or approved pushes', () => {
-  assert.match(nightly, /cron:\s*'17 3 \* \* \*'/);
-  assert.match(nightly, /branches:\s*\[main, feat\/launcher-compat\]/);
-  assert.match(nightly, /test "\$REPOSITORY" = 'vesta-project\/server'/);
-  assert.match(nightly, /Publishing is allowed only from main or feat\/launcher-compat/);
-  assert.doesNotMatch(nightly, /^\s*pull_request:/m);
+test('nightly publishes only new main pushes, never schedules, manual dispatch or feature branches', () => {
+  const triggers=nightly.slice(nightly.indexOf('on:'),nightly.indexOf('permissions:'));
+  assert.match(triggers,/push:\s*\n\s+branches:\s*\[main\]/);
+  assert.doesNotMatch(triggers,/schedule:|workflow_dispatch:|pull_request:|paths:|feat\//);
+  assert.match(nightly,/test "\$REPOSITORY" = 'vesta-project\/server'/);
+  assert.match(nightly,/test "\$EVENT" = 'push'/);
+  assert.match(nightly,/test "\$REF" = 'refs\/heads\/main'/);
+});
+
+test('Rust jobs check out the shared dependency beside the server at an immutable revision', () => {
+  for(const workflow of [ci,nightly]){
+    assert.match(workflow,/repository: vesta-project\/launcher\n\s+ref: [0-9a-f]{40}\n\s+path: launcher/);
+    assert.match(workflow,/working-directory: server/);
+    assert.match(workflow,/path: server\n\s+persist-credentials: false/);
+  }
 });
 
 test('signing waits for validation and native builds, requires the pinned key, and publishes only after re-verification', () => {

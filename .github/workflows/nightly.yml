@@ -1,21 +1,8 @@
 name: Nightly signed releases
 
 on:
-  schedule:
-    - cron: '17 3 * * *'
   push:
-    branches: [main, feat/launcher-compat]
-    paths:
-      - '.cargo/**'
-      - '.github/workflows/nightly.yml'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'apps/**'
-      - 'crates/**'
-      - 'protocol/**'
-      - 'rust-toolchain*'
-      - 'scripts/bootstrap/**'
-  workflow_dispatch:
+    branches: [main]
 
 permissions:
   contents: read
@@ -30,14 +17,15 @@ jobs:
     name: Check release source
     runs-on: ubuntu-24.04
     steps:
-      - name: Require the canonical repository and an approved source branch
+      - name: Require the canonical repository and an new commit on main
         env:
           REPOSITORY: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
         run: |
           test "$REPOSITORY" = 'vesta-project/server' || { echo 'Nightly publishing is disabled for forks.' >&2; exit 1; }
-          case "$REF" in refs/heads/main|refs/heads/feat/launcher-compat) ;; *) echo 'Publishing is allowed only from main or feat/launcher-compat.' >&2; exit 1;; esac
+          test "$EVENT" = 'push' || { echo 'Publishing requires a new main push.' >&2; exit 1; }
+          test "$REF" = 'refs/heads/main' || { echo 'Publishing is allowed only from main.' >&2; exit 1; }
 
   prepare:
     timeout-minutes: 5
@@ -79,8 +67,19 @@ jobs:
     defaults:
       run:
         shell: bash
+        working-directory: server
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: server
+          persist-credentials: false
+      - name: Checkout pinned shared sandbox source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: vesta-project/launcher
+          ref: 1cd6f70f1a8ed0d50d30acabc219350abcf11d09
+          path: launcher
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
@@ -125,8 +124,19 @@ jobs:
     defaults:
       run:
         shell: bash
+        working-directory: server
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: server
+          persist-credentials: false
+      - name: Checkout pinned shared sandbox source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: vesta-project/launcher
+          ref: 1cd6f70f1a8ed0d50d30acabc219350abcf11d09
+          path: launcher
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
@@ -148,10 +158,10 @@ jobs:
         with:
           name: binaries-${{ matrix.target }}
           path: |
-            target/${{ matrix.rust_target }}/release/vesta-setup${{ matrix.suffix }}
-            target/${{ matrix.rust_target }}/release/vesta-agent${{ matrix.suffix }}
-            target/${{ matrix.rust_target }}/release/vesta-supervisor${{ matrix.suffix }}
-            target/${{ matrix.rust_target }}/release/vesta${{ matrix.suffix }}
+            server/target/${{ matrix.rust_target }}/release/vesta-setup${{ matrix.suffix }}
+            server/target/${{ matrix.rust_target }}/release/vesta-agent${{ matrix.suffix }}
+            server/target/${{ matrix.rust_target }}/release/vesta-supervisor${{ matrix.suffix }}
+            server/target/${{ matrix.rust_target }}/release/vesta${{ matrix.suffix }}
           if-no-files-found: error
           retention-days: 2
 

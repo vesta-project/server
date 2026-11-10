@@ -46,9 +46,21 @@ jobs:
     defaults:
       run:
         shell: bash
+        working-directory: server
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: server
+          persist-credentials: false
+
+      - name: Checkout pinned shared sandbox source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: vesta-project/launcher
+          ref: 1cd6f70f1a8ed0d50d30acabc219350abcf11d09
+          path: launcher
+          persist-credentials: false
 
       - name: Select verified development toolchain
         run: rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
