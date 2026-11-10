@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import {spawnSync} from 'node:child_process';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const ci = await readFile(path.join(root, '.github/workflows/ci.yml'), 'utf8');
@@ -65,5 +66,17 @@ test('all third-party workflow actions are pinned to full commit SHAs', () => {
     const refs = [...workflow.matchAll(/^\s+uses:\s+([^\s#]+)(?:\s+#.*)?$/gm)].map(match => match[1]);
     assert.ok(refs.length > 0, `${filename} contains actions`);
     for (const ref of refs) assert.match(ref, /^[^@]+@[0-9a-f]{40}$/, `${filename} has immutable action reference: ${ref}`);
+  }
+});
+
+// Execute the actual gate, with no signing/provider secrets, network or filesystem effects.
+test('release gate accepts only a changed, non-deleted main push in the canonical repository',()=>{
+  const gate=nightly.split('\n  gate:')[1].split('\n  prepare:')[0];
+  const run=gate.split('        run: |\n')[1].trimEnd().split('\n').map(line=>line.replace(/^          /,'')).join('\n');
+  const bash=process.platform==='win32'?path.join(process.env.ProgramFiles??'C:/Program Files','Git/bin/bash.exe'):'bash';
+  const before='1'.repeat(40),after='2'.repeat(40);const baseline={REPOSITORY:'vesta-project/server',EVENT:'push',REF:'refs/heads/main',BEFORE:before,AFTER:after,COMMIT:after,DELETED:'false'};
+  for(const[change,allowed]of [[{},true],[{REPOSITORY:'someone/fork'},false],[{EVENT:'schedule'},false],[{EVENT:'workflow_dispatch'},false],[{EVENT:'pull_request'},false],[{REF:'refs/heads/feat/launcher-compat'},false],[{REF:'refs/tags/v1.0'},false],[{DELETED:'true'},false],[{AFTER:before,COMMIT:before},false],[{AFTER:'0'.repeat(40),COMMIT:'0'.repeat(40)},false],[{COMMIT:before},false]]){
+    const result=spawnSync(bash,['-c',run],{env:{PATH:process.env.PATH,SYSTEMROOT:process.env.SYSTEMROOT,...baseline,...change},encoding:'utf8',timeout:5000,windowsHide:true});
+    assert.ifError(result.error);assert.equal(result.status===0,allowed,JSON.stringify(change));
   }
 });

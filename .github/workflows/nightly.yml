@@ -17,15 +17,21 @@ jobs:
     name: Check release source
     runs-on: ubuntu-24.04
     steps:
-      - name: Require the canonical repository and an new commit on main
+      - name: Require the canonical repository and a new commit on main
         env:
           REPOSITORY: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+          COMMIT: ${{ github.sha }}
+          DELETED: ${{ github.event.deleted }}
         run: |
           test "$REPOSITORY" = 'vesta-project/server' || { echo 'Nightly publishing is disabled for forks.' >&2; exit 1; }
           test "$EVENT" = 'push' || { echo 'Publishing requires a new main push.' >&2; exit 1; }
           test "$REF" = 'refs/heads/main' || { echo 'Publishing is allowed only from main.' >&2; exit 1; }
+          test "$DELETED" = 'false' && test "$AFTER" != "$BEFORE" && test "$AFTER" = "$COMMIT" || { echo 'Publishing requires a new non-deleted main commit.' >&2; exit 1; }
+          case "$AFTER" in ''|0000000000000000000000000000000000000000) exit 1 ;; esac
 
   prepare:
     timeout-minutes: 5
@@ -77,7 +83,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: vesta-project/launcher
-          ref: 1cd6f70f1a8ed0d50d30acabc219350abcf11d09
+          ref: 92e5737f2912a96ad6eba9a94aa4cefa4ffbdb07
           path: launcher
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -134,7 +140,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: vesta-project/launcher
-          ref: 1cd6f70f1a8ed0d50d30acabc219350abcf11d09
+          ref: 92e5737f2912a96ad6eba9a94aa4cefa4ffbdb07
           path: launcher
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
