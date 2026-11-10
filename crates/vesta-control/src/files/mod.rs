@@ -11,8 +11,9 @@
 //! timestamps). Windows preserves the read-only attribute and refuses read-only replacement
 //! or deletion; it does not copy custom ACLs or other attributes. Stages start private on Unix.
 pub(crate) mod content;
-mod eula;
+pub(crate) mod copied_export;
 mod custom_jar;
+mod eula;
 mod ignore;
 mod local_document;
 mod offline_whitelist;
@@ -40,6 +41,7 @@ pub use stream::{
     FILE_CHUNK_BYTES, FileStream, LinePage, MAX_RANGE_BYTES, MAX_TEXT_LINES, encoding_hint,
 };
 
+pub(crate) use local_document::create_local_directory;
 pub(crate) use local_document::read_local_document;
 pub use mutation::{
     FileChange, MAX_FILE_INTENTS, MAX_INTENT_STAGED_BYTES, MAX_TRASH_FILE_BYTES, MAX_WRITE_BYTES,
@@ -385,7 +387,8 @@ impl FileBrowser {
         entry_limit: usize,
         scan_limit: usize,
     ) -> Result<DirectoryListing> {
-        #[cfg(feature = "latency-probe")] let _span = vesta_state::latency_probe::Span::new("directory_listing");
+        #[cfg(feature = "latency-probe")]
+        let _span = vesta_state::latency_probe::Span::new("directory_listing");
         self.db
             .read_with(|snapshot| {
                 let policy = identity::policy_in(
@@ -404,7 +407,8 @@ impl FileBrowser {
                     return Err(FileError::NotDirectory);
                 }
                 let mut entries = Vec::new();
-                #[cfg(feature = "latency-probe")] vesta_state::latency_probe::count("directory_query",0);
+                #[cfg(feature = "latency-probe")]
+                vesta_state::latency_probe::count("directory_query", 0);
                 let stream = fs::read_dir(&checked.path).map_err(io_error)?;
                 for (scanned, entry) in stream.enumerate() {
                     if scanned >= scan_limit {

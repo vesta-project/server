@@ -22,6 +22,62 @@ struct Bundle {
 }
 
 #[test]
+fn local_server_configuration_requires_an_explicit_copied_export_and_preserves_it() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("installation");
+    fs::create_dir(&root).unwrap();
+    let export = temporary.path().join("copied-export");
+    fs::create_dir(&export).unwrap();
+    fs::write(export.join("server.jar"), b"inert-source").unwrap();
+    let mut input = answers(root.clone());
+    input.existing_server = Some(export.clone());
+    let receipt = Receipt {
+        schema: 1,
+        installation_id: "1".repeat(32),
+        answers: input,
+        release_version: "fixture".into(),
+        release_manifest_sha256: "2".repeat(64),
+        phase: "installed".into(),
+        tls_sha256: "3".repeat(64),
+        startup_registered: false,
+        external_status: Default::default(),
+    };
+    engine::write_private(&root, "setup.json", &serde_json::to_vec(&receipt).unwrap()).unwrap();
+    let java = std::env::current_exe().unwrap();
+    assert_eq!(
+        host::configure_server(&root, java.clone(), Some("server.jar".into()), None, false)
+            .unwrap_err(),
+        "setup_confirm_copied_export_required"
+    );
+    assert!(!root.join("private/first-server.json").exists());
+    host::configure_server(&root, java.clone(), Some("server.jar".into()), None, true).unwrap();
+    let before = fs::read(root.join("private/first-server.json")).unwrap();
+    assert!(
+        host::configure_server(
+            &root,
+            java.clone(),
+            Some("server.jar".into()),
+            Some("args.txt".into()),
+            true
+        )
+        .is_err()
+    );
+    assert!(
+        host::configure_server(&root, java.clone(), None, Some("../args.txt".into()), true)
+            .is_err()
+    );
+    assert!(host::configure_server(&root, java, Some("../server.jar".into()), None, true).is_err());
+    assert_eq!(
+        fs::read(root.join("private/first-server.json")).unwrap(),
+        before
+    );
+    assert_eq!(
+        fs::read(export.join("server.jar")).unwrap(),
+        b"inert-source"
+    );
+}
+
+#[test]
 fn update_cli_bootstraps_exact_installed_release_and_stages_without_activation() {
     let mut bundle = Bundle::new(false);
     let cli = if cfg!(windows) { "vesta.exe" } else { "vesta" };
@@ -991,3 +1047,4 @@ fn paths_use_native_separators_without_reinterpreting_unix_names() {
         .is_err()
     );
 }
+

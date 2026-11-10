@@ -14,6 +14,9 @@ use vesta_state::{
     audit::{AuditActor, AuditLog, AuditRecord},
 };
 
+pub mod provisioning;
+
+
 type Result<T> = std::result::Result<T, PermissionError>;
 
 #[derive(Clone)]
@@ -38,6 +41,9 @@ pub struct FirstServerStatus {
 }
 
 impl FirstServerSetup {
+    pub fn installation_id(&self) -> &str {
+        &self.installation_id
+    }
     /// Trusted OS-local composition only, before exposing a pending listener.
     /// Reopening the same reservation is safe; reusing an established server or
     /// changing installation identity refuses without modifying its principals.

@@ -22,6 +22,8 @@ ureq.workspace = true
 url.workspace = true
 uuid.workspace = true
 vesta-state.workspace = true
+vesta-control = { path = "../../crates/vesta-control" }
+vesta-transport = { path = "../../crates/vesta-transport" }
 vesta-update = { path = "../../crates/vesta-update" }
 
 [dev-dependencies]

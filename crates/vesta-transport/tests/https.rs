@@ -30,6 +30,280 @@ const CA: &[u8] = include_bytes!("fixtures/test-only-ca.pem");
 const PASSWORD: &str = "transport test password only";
 
 #[test]
+fn pending_provisioning_copy_plan_confirm_retry_and_local_handoff_use_real_tls() {
+    use vesta_control::onboarding::{
+        FirstServerSetup,
+        provisioning::{LocalConfiguration, Provisioning},
+    };
+    let mut f = Fixture::configured_with_state("minecraft", 8, 8192, 5, false, "", "private/state");
+    let setup = FirstServerSetup::reserve_local(
+        f.host().database().clone(),
+        "0123456789abcdef0123456789abcdef",
+    )
+    .unwrap();
+    let source = tempfile::tempdir().unwrap();
+    for (name, bytes) in [
+        ("server.jar", b"inert-jar".as_slice()),
+        ("eula.txt", b"eula=false\n"),
+        ("world/level.dat", b"owned-world"),
+        ("config/custom.toml", b"owned-config"),
+        ("world/datapacks/renamed.zip.disabled", b"owned-disabled"),
+    ] {
+        let path = source.path().join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+    let service = Provisioning::open(
+        setup.clone(),
+        f.temp.path(),
+        LocalConfiguration {
+            java: std::env::current_exe().unwrap(),
+            adoption_jar: Some("server.jar".into()),
+            adoption_argfile: None,
+            copied_export_confirmed: true,
+        },
+        Some(source.path()),
+        25567,
+    )
+    .unwrap();
+    let pending = vesta_transport::pending::PendingHost::new(setup)
+        .unwrap()
+        .with_provisioning(service.clone());
+    let ListenerDescription::Tls(listener) = f.host().configuration().listener() else {
+        panic!("TLS fixture")
+    };
+    let listener = listener.on_ephemeral_port();
+    assert!(matches!(
+        f.transport
+            .take()
+            .unwrap()
+            .shutdown(Duration::from_secs(5))
+            .unwrap(),
+        TransportShutdown::Complete
+    ));
+    let transport = Transport::start_pending(pending, &listener).unwrap();
+    f.address = transport.local_addr();
+    f.transport = Some(transport);
+    let (owner, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &owner, &key);
+    assert_eq!(
+        f.request("POST", "/api/v3/setup/claim", b"", Some(&token))
+            .status,
+        200
+    );
+    let plan = br#"{"kind":"adopt_copy","name":"Owned copy","minecraft_version":"1.21.1"}"#;
+    assert_eq!(
+        f.request("POST", "/api/v3/setup/plan", plan, None).status,
+        401
+    );
+    assert_eq!(f.request("POST","/api/v3/setup/plan",br#"{"kind":"adopt_copy","name":"Bad","minecraft_version":"1.21.1","source":"C:/owner"}"#,Some(&token)).status,400);
+    let accepted = f.request("POST", "/api/v3/setup/plan", plan, Some(&token));
+    assert_eq!(accepted.status, 202);
+    let id = accepted.json()["id"].as_str().unwrap().to_owned();
+    let path = format!("/api/v3/setup/jobs/{id}");
+    let poll = |expected: &str| {
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            let r = f.request("GET", &path, b"", Some(&token));
+            assert_eq!(r.status, 200);
+            let j = r.json();
+            if j["state"] == expected {
+                return j;
+            }
+            assert_ne!(j["state"], "failed", "{j}");
+            assert!(Instant::now() < until, "{j}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let review = poll("review");
+    assert_eq!(review["review"]["files"], 8);
+    let mut input = serde_json::json!({"job_id":id,"confirmation":"wrong","idempotency_key":"owned-lost-response","acknowledge_warnings":true,"acknowledge_legacy_checksum":false});
+    assert_eq!(
+        f.request(
+            "POST",
+            "/api/v3/setup/apply",
+            &serde_json::to_vec(&input).unwrap(),
+            Some(&token)
+        )
+        .status,
+        412
+    );
+    input["confirmation"] = review["confirmation"].clone();
+    let bytes = serde_json::to_vec(&input).unwrap();
+    for _ in 0..2 {
+        let apply = f.request("POST", "/api/v3/setup/apply", &bytes, Some(&token));
+        assert_eq!(apply.status, 202);
+        assert_eq!(apply.json()["id"], id);
+    }
+    poll("ready");
+    let game = f.temp.path().join("servers/first/game");
+    assert_eq!(
+        std::fs::read(game.join("world/level.dat")).unwrap(),
+        b"owned-world"
+    );
+    assert_eq!(
+        std::fs::read(game.join("world/datapacks/renamed.zip.disabled")).unwrap(),
+        b"owned-disabled"
+    );
+    assert_eq!(
+        std::fs::read(source.path().join("eula.txt")).unwrap(),
+        b"eula=false\n"
+    );
+    let mut observed = None;
+    assert!(
+        service
+            .publish_ready(|job, server, host, launch| {
+                assert_eq!(job, id);
+                assert_eq!(server, f.host().database().server_id());
+                HostConfiguration::parse_toml(
+                    host.as_bytes(),
+                    f.temp.path(),
+                    Path::new("host.toml"),
+                )
+                .unwrap();
+                assert!(launch.contains("server.jar"));
+                assert!(launch.contains("console-stop"));
+                observed = Some((host.to_owned(), launch.to_owned()));
+                Ok(())
+            })
+            .unwrap()
+    );
+    poll("complete");
+    assert!(observed.is_some());
+    assert_eq!(
+        f.request("POST", "/api/v3/setup/plan", plan, Some(&token))
+            .status,
+        409
+    );
+    assert!(
+        service
+            .publish_ready(|_, _, host, launch| {
+                assert_eq!(
+                    observed.as_ref().unwrap(),
+                    &(host.to_owned(), launch.to_owned())
+                );
+                Ok(())
+            })
+            .unwrap()
+    );
+    service.shutdown().unwrap();
+    assert!(
+        f.host()
+            .runtime()
+            .game_snapshot()
+            .unwrap()
+            .generation
+            .is_none()
+    );
+}
+
+#[test]
+fn pending_setup_uses_account_sessions_and_has_no_game_or_machine_authority() {
+    let mut f = Fixture::new("minecraft", 8, 4096, 5);
+    let setup = vesta_control::onboarding::FirstServerSetup::reserve_local(
+        f.host().database().clone(),
+        "0123456789abcdef0123456789abcdef",
+    )
+    .unwrap();
+    let pending = vesta_transport::pending::PendingHost::new(setup).unwrap();
+    let ListenerDescription::Tls(listener) = f.host().configuration().listener() else {
+        panic!("TLS fixture")
+    };
+    let listener = listener.on_ephemeral_port();
+    assert!(matches!(
+        f.transport
+            .take()
+            .unwrap()
+            .shutdown(Duration::from_secs(5))
+            .unwrap(),
+        TransportShutdown::Complete
+    ));
+    let transport = Transport::start_pending(pending, &listener).unwrap();
+    f.address = transport.local_addr();
+    f.transport = Some(transport);
+    let public = f.request("GET", "/api/v3/setup", b"", None);
+    assert_eq!(public.status, 200);
+    assert_eq!(
+        public.json()["installation_id"],
+        "0123456789abcdef0123456789abcdef"
+    );
+    assert_eq!(public.json()["management_available"], false);
+    assert_eq!(
+        f.request("POST", "/api/v3/setup/claim", b"", None).status,
+        401
+    );
+    assert_eq!(
+        f.request("GET", "/api/v3/setup/status", b"", None).status,
+        401
+    );
+    let (owner, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
+    let token = management_session(&f, &owner, &key);
+    let claimed = f.request("POST", "/api/v3/setup/claim", b"", Some(&token));
+    assert_eq!(claimed.status, 200);
+    assert_eq!(claimed.json()["claimed"], true);
+    assert_eq!(
+        f.request("POST", "/api/v3/setup/claim", b"", Some(&token))
+            .json(),
+        claimed.json()
+    );
+    assert_eq!(
+        f.request("GET", "/api/v3/setup/status", b"", Some(&token))
+            .json(),
+        claimed.json()
+    );
+    for path in [
+        "/api/v3/manage/lifecycle/start",
+        "/api/v3/manage/software/apply",
+        "/api/v3/setup/update",
+        "/api/v3/setup/isolation",
+    ] {
+        assert_eq!(f.request("POST", path, b"{}", Some(&token)).status, 404);
+    }
+    let (admin, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Administrator);
+    let admin = management_session(&f, &admin, &key);
+    assert_eq!(
+        f.request("POST", "/api/v3/setup/claim", b"", Some(&admin))
+            .status,
+        403
+    );
+    assert_eq!(
+        f.request("GET", "/api/v3/setup?token=not-a-credential", b"", None)
+            .status,
+        400
+    );
+    assert_eq!(
+        f.request("GET", "/api/v3/setup", b"unexpected", None)
+            .status,
+        400
+    );
+    assert_eq!(
+        f.request(
+            "POST",
+            "/api/v3/setup/claim",
+            &vec![b'x'; 4097],
+            Some(&token)
+        )
+        .status,
+        413
+    );
+    assert_eq!(
+        f.request("POST", "/api/v3/auth/device/enroll", b"{}", None)
+            .status,
+        401
+    );
+    assert_eq!(f.request("POST","/api/v3/auth/minecraft/complete",br#"{"challenge":"00000000000000000000000000000000","device_name":"Owned pending test","public_key":"invalid"}"#,None).status,401);
+    claimed.hides(&token);
+    assert!(
+        f.host()
+            .runtime()
+            .game_snapshot()
+            .unwrap()
+            .generation
+            .is_none()
+    );
+}
+
+#[test]
 fn content_summary_returns_rows_before_byte_verification() {
     let f = Fixture::new("minecraft", 8, 4096, 5);
     let (device, key) = enroll_management(&f, vesta_control::identity::BuiltinRole::Owner);
@@ -49,14 +323,14 @@ fn content_summary_returns_rows_before_byte_verification() {
     management_reply_error(&f.request("GET", "/api/v3/manage/content?view=unknown", b"", Some(&token)), 400, "invalid_request");
 }
 type TlsStream = StreamOwned<ClientConnection, TcpStream>;
+#[path = "hosted_resource_packs/mod.rs"]
+mod hosted_resource_pack_tests;
+#[path = "pack_workspace/mod.rs"]
+mod pack_workspace_tests;
 #[path = "resource_performance/mod.rs"]
 mod resource_performance;
 #[path = "same_device/mod.rs"]
 mod same_device;
-#[path = "pack_workspace/mod.rs"]
-mod pack_workspace_tests;
-#[path = "hosted_resource_packs/mod.rs"]
-mod hosted_resource_pack_tests;
 
 #[test]
 fn world_read_supports_split_worldgen_and_reports_metadata_errors() {
@@ -202,6 +476,25 @@ impl Fixture {
         inert: bool,
         options: &str,
     ) -> Self {
+        Self::configured_with_state(
+            mode,
+            connections,
+            max_body,
+            timeout,
+            inert,
+            options,
+            "private-state",
+        )
+    }
+    fn configured_with_state(
+        mode: &str,
+        connections: u16,
+        max_body: u32,
+        timeout: u16,
+        inert: bool,
+        options: &str,
+        state: &str,
+    ) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let base = temp.path();
         for dir in ["game/config", "bin", "private"] {
@@ -225,7 +518,7 @@ impl Fixture {
         std::fs::write(base.join("private/cert.pem"), CERT).unwrap();
         std::fs::write(base.join("private/key.pem"), KEY).unwrap();
         let document = format!(
-            "schema-version = 1\n[paths]\nstate = 'private-state'\ngame = 'game'\nscan-roots = ['game/config']\nlaunch-definition = 'private/launch.toml'\n[pack]\nname = 'Hosted'\nversion = '1.0.0'\nrevision = 1\nminimum-revision = 1\nminecraft-version = '1.21.1'\nunresolved-disposition = 'embed-public'\n[pack-access]\nmode = '{mode}'\n[listener]\nmode = 'tls'\nbind = '127.0.0.1'\nport = 25567\ncertificate = 'private/cert.pem'\nprivate-key = 'private/key.pem'\nmax-connections = {connections}\nmax-request-bytes = {max_body}\nrequest-timeout-seconds = {timeout}\n{options}\n"
+            "schema-version = 1\n[paths]\nstate = '{state}'\ngame = 'game'\nscan-roots = ['game/config']\nlaunch-definition = 'private/launch.toml'\n[pack]\nname = 'Hosted'\nversion = '1.0.0'\nrevision = 1\nminimum-revision = 1\nminecraft-version = '1.21.1'\nunresolved-disposition = 'embed-public'\n[pack-access]\nmode = '{mode}'\n[listener]\nmode = 'tls'\nbind = '127.0.0.1'\nport = 25567\ncertificate = 'private/cert.pem'\nprivate-key = 'private/key.pem'\nmax-connections = {connections}\nmax-request-bytes = {max_body}\nrequest-timeout-seconds = {timeout}\n{options}\n"
         );
         std::fs::write(base.join("host.toml"), document.as_bytes()).unwrap();
         let config =
@@ -1691,39 +1984,75 @@ fn management_session(f: &Fixture, device: &str, key: &ring::signature::Ed25519K
     reply.json()["token"].as_str().unwrap().to_owned()
 }
 #[test]
-fn signed_in_invitation_redemption_preserves_account_and_rejects_anonymous_replay_and_foreign_keys() {
-    use base64::{Engine as _,engine::general_purpose::URL_SAFE_NO_PAD};
+fn signed_in_invitation_redemption_preserves_account_and_rejects_anonymous_replay_and_foreign_keys()
+{
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use ring::signature::KeyPair;
-    use vesta_control::identity::{BuiltinRole,Capability};
-    let f=Fixture::new("minecraft",8,4096,10);
-    let (device,key)=enroll_management(&f,BuiltinRole::Viewer);
-    let token=management_session(&f,&device,&key);
-    let original=f.host().management().authorize(&token,Capability::StatusView,None).unwrap();
-    assert!(f.host().management().authorize(&token,Capability::ContentInstall,None).is_err());
-    let code=f.host().management().issue_local(BuiltinRole::Maintainer,10).unwrap();
-    let input=serde_json::json!({"code":code.secret.expose(),"device_name":"Signed-in fixture","public_key":URL_SAFE_NO_PAD.encode(key.public_key().as_ref())});
-    let send=|body:&serde_json::Value,session:Option<&str>|f.request("POST","/api/v3/manage/pair",&serde_json::to_vec(body).unwrap(),session);
-    send(&input,None).error(401,"management_session_invalid");
-    send(&input,Some("invalid-bearer")).error(401,"management_session_invalid");
-    let mut malformed=input.clone();malformed["unexpected"]=serde_json::json!(true);
-    send(&malformed,Some(&token)).error(400,"invalid_request");
-    let (foreign,foreign_key)=enroll_management(&f,BuiltinRole::Viewer);
-    let foreign_token=management_session(&f,&foreign,&foreign_key);
+    use vesta_control::identity::{BuiltinRole, Capability};
+    let f = Fixture::new("minecraft", 8, 4096, 10);
+    let (device, key) = enroll_management(&f, BuiltinRole::Viewer);
+    let token = management_session(&f, &device, &key);
+    let original = f
+        .host()
+        .management()
+        .authorize(&token, Capability::StatusView, None)
+        .unwrap();
+    assert!(
+        f.host()
+            .management()
+            .authorize(&token, Capability::ContentInstall, None)
+            .is_err()
+    );
+    let code = f
+        .host()
+        .management()
+        .issue_local(BuiltinRole::Maintainer, 10)
+        .unwrap();
+    let input = serde_json::json!({"code":code.secret.expose(),"device_name":"Signed-in fixture","public_key":URL_SAFE_NO_PAD.encode(key.public_key().as_ref())});
+    let send = |body: &serde_json::Value, session: Option<&str>| {
+        f.request(
+            "POST",
+            "/api/v3/manage/pair",
+            &serde_json::to_vec(body).unwrap(),
+            session,
+        )
+    };
+    send(&input, None).error(401, "management_session_invalid");
+    send(&input, Some("invalid-bearer")).error(401, "management_session_invalid");
+    let mut malformed = input.clone();
+    malformed["unexpected"] = serde_json::json!(true);
+    send(&malformed, Some(&token)).error(400, "invalid_request");
+    let (foreign, foreign_key) = enroll_management(&f, BuiltinRole::Viewer);
+    let foreign_token = management_session(&f, &foreign, &foreign_key);
     // A different signed-in principal cannot attach the victim's existing key.
-    send(&input,Some(&foreign_token)).error(401,"management_session_invalid");
-    let reply=send(&input,Some(&token));
-    assert_eq!(reply.status,200,"authenticated redemption must reach account-bound enrollment");
-    let enrolled=reply.json();
-    assert_eq!(enrolled["device_id"],device);
-    assert_eq!(enrolled["principal_id"],original.principal.as_str());
-    assert_eq!(enrolled["server_id"],f.host().management().server_id());
-    assert_eq!(enrolled["role"],"maintainer");
-    assert_eq!(f.host().management().authorize(&token,Capability::ContentInstall,None).unwrap(),original);
-    send(&input,Some(&token)).error(401,"management_pair_invalid");
-    let another=f.host().management().issue_local(BuiltinRole::Maintainer,10).unwrap();
-    let mut after_revoke=input;after_revoke["code"]=serde_json::json!(another.secret.expose());
+    send(&input, Some(&foreign_token)).error(401, "management_session_invalid");
+    let reply = send(&input, Some(&token));
+    assert_eq!(
+        reply.status, 200,
+        "authenticated redemption must reach account-bound enrollment"
+    );
+    let enrolled = reply.json();
+    assert_eq!(enrolled["device_id"], device);
+    assert_eq!(enrolled["principal_id"], original.principal.as_str());
+    assert_eq!(enrolled["server_id"], f.host().management().server_id());
+    assert_eq!(enrolled["role"], "maintainer");
+    assert_eq!(
+        f.host()
+            .management()
+            .authorize(&token, Capability::ContentInstall, None)
+            .unwrap(),
+        original
+    );
+    send(&input, Some(&token)).error(401, "management_pair_invalid");
+    let another = f
+        .host()
+        .management()
+        .issue_local(BuiltinRole::Maintainer, 10)
+        .unwrap();
+    let mut after_revoke = input;
+    after_revoke["code"] = serde_json::json!(another.secret.expose());
     f.host().management().revoke_local(&device).unwrap();
-    send(&after_revoke,Some(&token)).error(401,"management_session_invalid");
+    send(&after_revoke, Some(&token)).error(401, "management_session_invalid");
 }
 #[test]
 fn management_https_pair_challenge_session_policy_revoke_and_no_remote_link_creation() {
@@ -3230,10 +3559,10 @@ mod management_files;
 #[path = "support/large_files.rs"]
 mod large_files;
 
-#[path = "support/management_permissions.rs"]
-mod management_permissions;
 #[path = "support/backend_assurance.rs"]
 mod backend_assurance;
+#[path = "support/management_permissions.rs"]
+mod management_permissions;
 
 #[path = "support/management_automation.rs"]
 mod management_automation;

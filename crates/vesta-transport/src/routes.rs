@@ -72,7 +72,10 @@ pub(super) fn pack_review_request(method: &Method, path: &str) -> bool {
     method == Method::POST
         && matches!(
             path,
-            "/api/v3/manage/pack/install/plan" | "/api/v3/manage/pack/install/apply" | "/api/v3/manage/pack/archive/inspect" | "/api/v3/manage/pack/draft/uploads/finish"
+            "/api/v3/manage/pack/install/plan"
+                | "/api/v3/manage/pack/install/apply"
+                | "/api/v3/manage/pack/archive/inspect"
+                | "/api/v3/manage/pack/draft/uploads/finish"
         )
 }
 
@@ -104,27 +107,36 @@ pub(super) fn pack_work_request(method: &Method, path: &str) -> bool {
 }
 
 fn body_reservation(headers: &http::HeaderMap, maximum: usize) -> usize {
-    headers.get(http::header::CONTENT_LENGTH).and_then(|h|h.to_str().ok()).and_then(|h|h.parse::<usize>().ok()).map_or(maximum,|length|length.min(maximum))
+    headers
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.parse::<usize>().ok())
+        .map_or(maximum, |length| length.min(maximum))
 }
 #[cfg(test)]
 mod upload_budget_regression {
     use super::*;
     #[test]
     fn concurrent_chunks_fit_without_claiming_two_megabytes_each() {
-        let mut headers=http::HeaderMap::new();
-        headers.insert(http::header::CONTENT_LENGTH,"699200".parse().unwrap());
-        let bytes=body_reservation(&headers,2*1024*1024);
-        let budget=tokio::sync::Semaphore::new(super::super::REQUEST_BODY_BUDGET-super::super::CONTROL_BODY_BUDGET);
-        let a=budget.try_acquire_many(bytes as u32).unwrap();
-        let b=budget.try_acquire_many(bytes as u32).unwrap();
-        let c=budget.try_acquire_many(bytes as u32).unwrap();
-        assert_eq!(body_reservation(&http::HeaderMap::new(),2048),2048);
-        drop((a,b,c));
-        assert_eq!(budget.available_permits(), super::super::REQUEST_BODY_BUDGET-super::super::CONTROL_BODY_BUDGET);
-        headers.insert(http::header::CONTENT_LENGTH,"999999999".parse().unwrap());
-        assert_eq!(body_reservation(&headers,2048),2048);
-        headers.insert(http::header::CONTENT_LENGTH,"0".parse().unwrap());
-        assert_eq!(body_reservation(&headers,2048),0);
+        let mut headers = http::HeaderMap::new();
+        headers.insert(http::header::CONTENT_LENGTH, "699200".parse().unwrap());
+        let bytes = body_reservation(&headers, 2 * 1024 * 1024);
+        let budget = tokio::sync::Semaphore::new(
+            super::super::REQUEST_BODY_BUDGET - super::super::CONTROL_BODY_BUDGET,
+        );
+        let a = budget.try_acquire_many(bytes as u32).unwrap();
+        let b = budget.try_acquire_many(bytes as u32).unwrap();
+        let c = budget.try_acquire_many(bytes as u32).unwrap();
+        assert_eq!(body_reservation(&http::HeaderMap::new(), 2048), 2048);
+        drop((a, b, c));
+        assert_eq!(
+            budget.available_permits(),
+            super::super::REQUEST_BODY_BUDGET - super::super::CONTROL_BODY_BUDGET
+        );
+        headers.insert(http::header::CONTENT_LENGTH, "999999999".parse().unwrap());
+        assert_eq!(body_reservation(&headers, 2048), 2048);
+        headers.insert(http::header::CONTENT_LENGTH, "0".parse().unwrap());
+        assert_eq!(body_reservation(&headers, 2048), 0);
     }
 }
 
@@ -306,10 +318,14 @@ pub(super) async fn route(
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
     let control = control_request(&method, &path, query.as_deref());
-    let maximum = if request.extensions().get::<super::PackBodyBudget>().is_some() {
+    let maximum = if request
+        .extensions()
+        .get::<super::PackBodyBudget>()
+        .is_some()
+    {
         // Authenticated pack metadata and 512 KiB upload chunks share the existing
         // byte semaphore. The urgent control budget remains separate.
-        state.max_body.max(2*1024*1024)
+        state.max_body.max(2 * 1024 * 1024)
     } else if control {
         state.max_body.min(super::CONTROL_BODY_MAXIMUM)
     } else {
@@ -334,7 +350,10 @@ pub(super) async fn route(
         } else {
             &state.bodies
         };
-        match budget.clone().try_acquire_many_owned(body_reservation(request.headers(), maximum) as u32) {
+        match budget
+            .clone()
+            .try_acquire_many_owned(body_reservation(request.headers(), maximum) as u32)
+        {
             Ok(permit) => Some(permit),
             Err(_) => {
                 return super::with_retry_after(
@@ -351,7 +370,9 @@ pub(super) async fn route(
         .cloned();
     let mut body = request.into_body();
     let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(if body_permit.is_some() {
-        body_permit.as_ref().map_or(0, |permit| permit.num_permits())
+        body_permit
+            .as_ref()
+            .map_or(0, |permit| permit.num_permits())
     } else {
         0
     }));
@@ -472,7 +493,7 @@ pub(crate) struct Requester {
     pub(crate) peer: std::net::IpAddr,
 }
 
-fn json(value: serde_json::Value) -> Reply {
+pub(crate) fn json(value: serde_json::Value) -> Reply {
     response(
         StatusCode::OK,
         serde_json::to_vec(&value).expect("JSON value encoding"),
@@ -623,11 +644,15 @@ fn dispatch(
                     let (Some(name), Some(key)) = (input.device_name, input.public_key) else {
                         return error(StatusCode::BAD_REQUEST, "invalid_request");
                     };
-                    match host
-                        .management()
-                        .enroll_pack_profile_with_invitation(profile, &name, &key, input.invitation_code.as_deref())
-                    {
-                        Ok(device) => json(serde_json::json!({"device_id":device.device_id,"role":device.role})),
+                    match host.management().enroll_pack_profile_with_invitation(
+                        profile,
+                        &name,
+                        &key,
+                        input.invitation_code.as_deref(),
+                    ) {
+                        Ok(device) => json(
+                            serde_json::json!({"device_id":device.device_id,"role":device.role}),
+                        ),
                         Err(e) => management_error(e),
                     }
                 }
@@ -725,7 +750,7 @@ struct ManagementSession {
     nonce: String,
     signature: String,
 }
-fn management_error(e: vesta_control::identity::management::ManagementError) -> Reply {
+pub(crate) fn management_error(e: vesta_control::identity::management::ManagementError) -> Reply {
     use vesta_control::identity::management::ManagementError;
     let status = match e {
         ManagementError::PairInvalid | ManagementError::SessionInvalid => StatusCode::UNAUTHORIZED,
@@ -745,6 +770,48 @@ fn manage_dispatch(
     bytes: &[u8],
 ) -> Reply {
     let management = host.management();
+    if public && path == "/api/v3/manage/password" {
+        return managed_password(host, authorization, bytes);
+    }
+    account_dispatch(
+        management,
+        host.minecraft(),
+        path,
+        public,
+        authorization,
+        bytes,
+    )
+}
+fn managed_password(host: &NetworkHost, authorization: Option<&str>, bytes: &[u8]) -> Reply {
+    let management = host.management();
+    let Some(token) = authorization else {
+        return error(StatusCode::UNAUTHORIZED, "device_session_required");
+    };
+    let Ok(input) = serde_json::from_slice::<Password>(bytes) else {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let Some(passwords) = host.passwords() else {
+        return error(StatusCode::FORBIDDEN, "pack_access_denied");
+    };
+    let verification = match passwords.verify(input.password.into_bytes()) {
+        Ok(v) => v,
+        Err(_) => {
+            return error(StatusCode::SERVICE_UNAVAILABLE, "pack_session_unavailable");
+        }
+    };
+    match host.with_policy(|p| management.grant_password(token, &verification, p)) {
+        Ok(Ok(())) => json(serde_json::json!({"granted":true})),
+        _ => error(StatusCode::FORBIDDEN, "pack_access_denied"),
+    }
+}
+pub(crate) fn account_dispatch(
+    management: &vesta_control::identity::management::ManagementAccess,
+    minecraft: &vesta_control::identity::minecraft::MinecraftChallenges,
+    path: &str,
+    public: bool,
+    authorization: Option<&str>,
+    bytes: &[u8],
+) -> Reply {
     if !public {
         return match authorization.map_or(
             Err(vesta_control::identity::management::ManagementError::SessionInvalid),
@@ -773,33 +840,17 @@ fn manage_dispatch(
             let Ok(input) = serde_json::from_slice::<InvitationRedemption>(bytes) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
             };
-            match management.enroll_for(&input.code, &input.device_name, &input.public_key, Some(token)) {
+            match management.enroll_for(
+                &input.code,
+                &input.device_name,
+                &input.public_key,
+                Some(token),
+            ) {
                 Ok(enrolled) => json(serde_json::json!({
                     "server_id": enrolled.server_id, "principal_id": enrolled.principal_id,
                     "device_id": enrolled.device_id, "role": enrolled.role,
                 })),
                 Err(e) => management_error(e),
-            }
-        }
-        "/api/v3/manage/password" => {
-            let Some(token) = authorization else {
-                return error(StatusCode::UNAUTHORIZED, "device_session_required");
-            };
-            let Ok(input) = serde_json::from_slice::<Password>(bytes) else {
-                return error(StatusCode::BAD_REQUEST, "invalid_request");
-            };
-            let Some(passwords) = host.passwords() else {
-                return error(StatusCode::FORBIDDEN, "pack_access_denied");
-            };
-            let verification = match passwords.verify(input.password.into_bytes()) {
-                Ok(v) => v,
-                Err(_) => {
-                    return error(StatusCode::SERVICE_UNAVAILABLE, "pack_session_unavailable");
-                }
-            };
-            match host.with_policy(|p| management.grant_password(token, &verification, p)) {
-                Ok(Ok(())) => json(serde_json::json!({"granted":true})),
-                _ => error(StatusCode::FORBIDDEN, "pack_access_denied"),
             }
         }
         "/api/v3/manage/minecraft/challenge" => {
@@ -812,7 +863,7 @@ fn manage_dispatch(
             ) else {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
             };
-            match host.minecraft().issue_management(uuid, name) {
+            match minecraft.issue_management(uuid, name) {
                 Ok(c) => json(
                     serde_json::json!({"challenge": c.challenge_id().as_str(), "server_hash": c.server_hash().as_str(), "expires_in": c.lifetime().as_secs()}),
                 ),
@@ -826,14 +877,16 @@ fn manage_dispatch(
             let Ok(challenge) = ChallengeId::parse(&input.challenge) else {
                 return error(StatusCode::UNAUTHORIZED, "management_session_invalid");
             };
-            match host.minecraft().complete_management(&challenge) {
+            match minecraft.complete_management(&challenge) {
                 Ok(Some(profile)) => match management.enroll_minecraft_with_invitation(
                     profile,
                     &input.device_name,
                     &input.public_key,
                     input.invitation_code.as_deref(),
                 ) {
-                    Ok(enrolled) => json(serde_json::json!({"device_id": enrolled.device_id,"role": enrolled.role})),
+                    Ok(enrolled) => json(
+                        serde_json::json!({"device_id": enrolled.device_id,"role": enrolled.role}),
+                    ),
                     Err(e) => management_error(e),
                 },
                 Ok(None) => error(StatusCode::UNAUTHORIZED, "management_session_invalid"),
@@ -862,7 +915,7 @@ fn manage_dispatch(
                 Err(e) => management_error(e),
             }
         }
-        _ => unreachable!("closed public management route set"),
+        _ => error(StatusCode::NOT_FOUND, "not_found"),
     }
 }
 

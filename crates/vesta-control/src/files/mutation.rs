@@ -328,6 +328,30 @@ impl FileBrowser {
         )
     }
 
+    /// Copy-only adoption uses an already admitted source handle and the same
+    /// streamed staging/hash check, durable intent and completion authorization.
+    pub(crate) fn copy_admitted_file(
+        &self,
+        subject: &Subject,
+        path: &RelativePath,
+        reader: &mut File,
+        size: u64,
+        sha256: &str,
+    ) -> Result<FileChange> {
+        let admission = mutation_admission(self.db.directory().path())?;
+        let _guard = self.mutation_guard(&admission)?;
+        self.write_reader_locked(
+            subject,
+            path,
+            &WritePrecondition::Absent,
+            reader,
+            size,
+            sha256.into(),
+            None,
+            true,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn write_reader_locked(
         &self,

@@ -312,9 +312,16 @@ pub fn validate_backup_policy(profiles: &[BackupProfile], limits: &BackupLimits)
         if !crate::backups::ignore::valid_selection(&p.include, &p.exclude)
             || !valid_profile_name(&p.name)
             || profiles[..index].iter().any(|q| q.name == p.name)
-            || [p.keep_total, p.keep_hourly, p.keep_last, p.keep_daily, p.keep_weekly, p.keep_monthly]
-                .iter()
-                .any(|&k| k > MAX_RETENTION)
+            || [
+                p.keep_total,
+                p.keep_hourly,
+                p.keep_last,
+                p.keep_daily,
+                p.keep_weekly,
+                p.keep_monthly,
+            ]
+            .iter()
+            .any(|&k| k > MAX_RETENTION)
             || p.warn_seconds > MAX_WARN_SECONDS
             || p.max_snapshots == Some(0)
         {
@@ -504,6 +511,27 @@ pub struct TlsListener {
     session_requests_per_minute: u32,
 }
 impl TlsListener {
+    /// Bounded loopback-only pending setup; no game configuration is invented.
+    pub fn pending_local(port: u16, certificate: PathBuf, private_key: PathBuf) -> Result<Self> {
+        check_absolute(&certificate)?;
+        check_absolute(&private_key)?;
+        if port == 0 {
+            return Err(ConfigError::InvalidListener);
+        }
+        Ok(Self {
+            bind: std::net::Ipv4Addr::LOCALHOST.into(),
+            port,
+            certificate,
+            private_key,
+            max_connections: 4,
+            max_request_bytes: 8192,
+            request_timeout_seconds: 2,
+            public_endpoint: None,
+            peer_requests_per_minute: default_peer_requests(),
+            peer_connections_per_minute: default_peer_connections(),
+            session_requests_per_minute: default_session_requests(),
+        })
+    }
     /// Operator-advertised HTTPS base URL; never inferred from bind or peer headers.
     pub fn public_endpoint(&self) -> Option<&str> {
         self.public_endpoint.as_deref()
@@ -919,18 +947,32 @@ impl HostConfiguration {
             backups,
             downloads: document.downloads.map(|v| v.0).unwrap_or_default(),
             notifications: {
-                let settings=document.notifications.map(|v|v.0).unwrap_or_default();
-                if !settings.valid(){return Err(ConfigError::InvalidDocument);}
-                settings
-            },
-            isolation: document.isolation.map(|v| {
-                let value=v.0;
-                if value.profile!="headless" || value.runtime_directories.is_empty() || value.runtime_directories.len()>16 {
+                let settings = document.notifications.map(|v| v.0).unwrap_or_default();
+                if !settings.valid() {
                     return Err(ConfigError::InvalidDocument);
                 }
-                let runtime_directories=value.runtime_directories.iter().map(|p|resolve_value(base,p)).collect::<Result<Vec<_>>>()?;
-                Ok(IsolationSettings {runtime_directories})
-            }).transpose()?,
+                settings
+            },
+            isolation: document
+                .isolation
+                .map(|v| {
+                    let value = v.0;
+                    if value.profile != "headless"
+                        || value.runtime_directories.is_empty()
+                        || value.runtime_directories.len() > 16
+                    {
+                        return Err(ConfigError::InvalidDocument);
+                    }
+                    let runtime_directories = value
+                        .runtime_directories
+                        .iter()
+                        .map(|p| resolve_value(base, p))
+                        .collect::<Result<Vec<_>>>()?;
+                    Ok(IsolationSettings {
+                        runtime_directories,
+                    })
+                })
+                .transpose()?,
             metrics: document
                 .metrics
                 .map(|v| v.0)
@@ -1023,20 +1065,37 @@ impl HostConfiguration {
     pub fn start_on_agent_start(&self) -> bool {
         self.on_agent_start == OnAgentStart::Start
     }
-    pub fn downloads(&self) -> DownloadSettings { self.downloads }
+    pub fn downloads(&self) -> DownloadSettings {
+        self.downloads
+    }
     pub fn metrics(&self) -> MetricsSettings {
         self.metrics
     }
-    pub fn notifications(&self) -> &crate::external_alerts::Settings { &self.notifications }
-    pub fn isolation(&self) -> Option<&IsolationSettings> { self.isolation.as_ref() }
+    pub fn notifications(&self) -> &crate::external_alerts::Settings {
+        &self.notifications
+    }
+    pub fn isolation(&self) -> Option<&IsolationSettings> {
+        self.isolation.as_ref()
+    }
 
     /// One trusted composition for agent, supervisor and stopped software changes.
     /// No remote Owner mutation can change this OS-local configuration.
-    pub(crate) fn isolate_launch(&self, spec:vesta_game_runtime::process::LaunchSpec) -> std::result::Result<vesta_game_runtime::process::LaunchSpec,vesta_game_runtime::process::RuntimeError> {
-        let Some(settings)=&self.isolation else {return Ok(spec);};
-        let mut protected=self.host_protected_paths().to_vec();
+    pub(crate) fn isolate_launch(
+        &self,
+        spec: vesta_game_runtime::process::LaunchSpec,
+    ) -> std::result::Result<
+        vesta_game_runtime::process::LaunchSpec,
+        vesta_game_runtime::process::RuntimeError,
+    > {
+        let Some(settings) = &self.isolation else {
+            return Ok(spec);
+        };
+        let mut protected = self.host_protected_paths().to_vec();
         protected.push(self.state.clone());
-        spec.with_isolation(vesta_game_runtime::isolation::ServerIsolation::new(settings.runtime_directories.clone(),protected)?)
+        spec.with_isolation(vesta_game_runtime::isolation::ServerIsolation::new(
+            settings.runtime_directories.clone(),
+            protected,
+        )?)
     }
     pub fn backups(&self) -> Option<&BackupSettings> {
         self.backups.as_ref()
@@ -1292,13 +1351,20 @@ struct Document {
 }
 
 #[derive(Clone, Eq, PartialEq)]
-pub struct IsolationSettings { runtime_directories:Vec<PathBuf> }
+pub struct IsolationSettings {
+    runtime_directories: Vec<PathBuf>,
+}
 impl IsolationSettings {
-    pub fn runtime_directories(&self)->&[PathBuf] { &self.runtime_directories }
+    pub fn runtime_directories(&self) -> &[PathBuf] {
+        &self.runtime_directories
+    }
 }
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all="kebab-case")]
-struct WireIsolation {profile:String,runtime_directories:Vec<String>}
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct WireIsolation {
+    profile: String,
+    runtime_directories: Vec<String>,
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
@@ -1631,8 +1697,14 @@ pub struct DownloadSettings {
     #[serde(default, deserialize_with = "download_concurrency")]
     pub max_concurrent: Option<u8>,
 }
-fn download_concurrency<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<u8>, D::Error> {
+fn download_concurrency<'de, D: Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<u8>, D::Error> {
     let value = u8::deserialize(d)?;
-    if !(1..=16).contains(&value) { return Err(de::Error::custom("download concurrency must be 1 through 16")); }
+    if !(1..=16).contains(&value) {
+        return Err(de::Error::custom(
+            "download concurrency must be 1 through 16",
+        ));
+    }
     Ok(Some(value))
 }

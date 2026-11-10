@@ -1,7 +1,7 @@
 use std::{path::PathBuf, process::ExitCode};
 use vesta_setup::{engine, host, release::Source, ui, visual_states, wizard};
 
-const HELP: &str = "Vesta host setup\n\n  vesta-setup --bundle-url <https-directory> --manifest-sha256 <hex> --release-key <hex>\n  vesta-setup --bundle-dir <directory> --manifest-sha256 <hex> --release-key <hex>\n              [--asset-prefix <target->] [--answers <json-file> --yes] [--no-color] [--ascii]\n  vesta-setup preview [--state <name> | --export <new-directory>] [--no-color] [--ascii]\n  vesta-setup <host|status|stop|activate> --root <installation-directory>\n  vesta-setup update <init|status|check|stage> --root <installation-directory>\n  vesta-setup uninstall --root <installation-directory> [--servers-root <registry>] [--plan]\n  vesta-setup uninstall --server <name|id> --servers-root <registry> [--plan]\n              [--bundle-url <https-directory> --manifest-sha256 <hex> --release-key <hex>\n               --asset-prefix <target->]\n\nInteractive Vesta host setup. Default HTTPS port: 8443.\nUninstall requires interactive confirmation; --plan only previews selected paths.\n";
+const HELP: &str = "Vesta host setup\n\n  vesta-setup --bundle-url <https-directory> --manifest-sha256 <hex> --release-key <hex>\n  vesta-setup --bundle-dir <directory> --manifest-sha256 <hex> --release-key <hex>\n              [--asset-prefix <target->] [--answers <json-file> --yes] [--no-color] [--ascii]\n  vesta-setup preview [--state <name> | --export <new-directory>] [--no-color] [--ascii]\n  vesta-setup <host|status|stop|activate|setup-code> --root <installation-directory>\n  vesta-setup configure-server --root <installation> --java <absolute-java-path>\n              [--adoption-jar <relative-jar> OR --adoption-argfile <relative-args>] --copied-export\n  vesta-setup update <init|status|check|stage|verify|configure> --root <installation-directory>\n  vesta-setup uninstall --root <installation-directory> [--servers-root <registry>] [--plan]\n  vesta-setup uninstall --server <name|id> --servers-root <registry> [--plan]\n              [--bundle-url <https-directory> --manifest-sha256 <hex> --release-key <hex>\n               --asset-prefix <target->]\n\nInteractive Vesta host setup. Default HTTPS port: 8443.\nUninstall requires interactive confirmation; --plan only previews selected paths.\n";
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -21,7 +21,15 @@ fn run() -> Result<(), String> {
     let mut i = usize::from(command.is_some());
     while i < args.len() {
         let key = &args[i];
-        if ["--yes", "--no-color", "--ascii", "--plan"].contains(&key.as_str()) {
+        if [
+            "--yes",
+            "--no-color",
+            "--ascii",
+            "--plan",
+            "--copied-export",
+        ]
+        .contains(&key.as_str())
+        {
             if !flags.insert(key.clone()) {
                 return Err("setup_duplicate_option".into());
             }
@@ -37,6 +45,9 @@ fn run() -> Result<(), String> {
             "--asset-prefix",
             "--server",
             "--servers-root",
+            "--java",
+            "--adoption-jar",
+            "--adoption-argfile",
         ]
         .contains(&key.as_str())
         {
@@ -53,6 +64,29 @@ fn run() -> Result<(), String> {
         }
         i += 1;
     }
+    if command == Some("configure-server") {
+        if flags.iter().any(|k| k != "--copied-export")
+            || values.keys().any(|k| {
+                !matches!(
+                    k.as_str(),
+                    "--root" | "--java" | "--adoption-jar" | "--adoption-argfile"
+                )
+            })
+        {
+            return Err("setup_invalid_host_options".into());
+        }
+        let root = PathBuf::from(values.get("--root").ok_or("setup_missing_option_value")?);
+        let java = PathBuf::from(values.get("--java").ok_or("setup_missing_option_value")?);
+        host::configure_server(
+            &root,
+            java,
+            values.get("--adoption-jar").cloned(),
+            values.get("--adoption-argfile").cloned(),
+            flags.contains("--copied-export"),
+        )?;
+        println!("Local server configuration saved. Restart the pending host to use it.");
+        return Ok(());
+    }
     if command == Some("uninstall") {
         if values.contains_key("--server") && values.contains_key("--root") {
             return Err("setup_server_uninstall_uses_servers_root_only".into());
@@ -68,12 +102,24 @@ fn run() -> Result<(), String> {
         }
         return uninstall(&values, flags.contains("--plan"));
     }
-    if matches!(command, Some("host" | "stop" | "status" | "activate")) {
+    if matches!(
+        command,
+        Some("host" | "stop" | "status" | "activate" | "setup-code")
+    ) {
         if values.len() != 1 || !values.contains_key("--root") || !flags.is_empty() {
             return Err("setup_invalid_host_options".into());
         }
         let root = PathBuf::from(&values["--root"]);
         return match command {
+            Some("setup-code") => {
+                let code = host::setup_code(&root)?;
+                // Explicit local credential output, never a public descriptor or log.
+                println!(
+                    "{}",
+                    serde_json::json!({"code":code.secret.expose(),"expires_at_ms":code.expires_at_ms,"scope":"first_server"})
+                );
+                Ok(())
+            }
             Some("stop") => host::stop(&root),
             Some("activate") => host::activate(&root),
             Some("status") => {
@@ -111,6 +157,10 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     if command.is_some()
+        || values.contains_key("--java")
+        || values.contains_key("--adoption-jar")
+        || values.contains_key("--adoption-argfile")
+        || flags.contains("--copied-export")
         || values
             .keys()
             .any(|k| ["--root", "--state", "--export"].contains(&k.as_str()))

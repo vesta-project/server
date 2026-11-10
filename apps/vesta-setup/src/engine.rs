@@ -247,6 +247,7 @@ pub fn write_private(root: &Path, name: &str, bytes: &[u8]) -> Result<()> {
         "certificate.pem",
         "key.pem",
         "stop-request",
+        "first-server.json",
     ]
     .contains(&name)
     {

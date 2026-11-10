@@ -3527,7 +3527,9 @@ dependencies = [
  "ureq",
  "url",
  "uuid",
+ "vesta-control",
  "vesta-state",
+ "vesta-transport",
  "vesta-update",
 ]
 

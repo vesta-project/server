@@ -4,6 +4,28 @@ use std::{fs, io::Read, path::Path};
 
 pub(crate) const MAX_LOCAL_DOCUMENT_BYTES: usize = 1_048_576;
 
+/// Trusted composition only. Creates one directory under observed plain ancestors;
+/// no recursive traversal through caller-selected links or replacement of entries.
+pub(crate) fn create_local_directory(path: &Path, allow_existing: bool) -> Result<()> {
+    root::absolute(path)?;
+    root::plain_ancestors(path.parent().ok_or(FileError::InvalidRoot)?)?;
+    match fs::symlink_metadata(path) {
+        Ok(meta) => {
+            root::plain(&meta)?;
+            if allow_existing && meta.is_dir() {
+                Ok(())
+            } else {
+                Err(FileError::InvalidRoot)
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(path).map_err(io_error)?;
+            root::plain_ancestors(path)
+        }
+        Err(e) => Err(io_error(e)),
+    }
+}
+
 pub(crate) fn read_local_document(path: &Path, limit: usize) -> Result<Vec<u8>> {
     if limit == 0 || limit > MAX_LOCAL_DOCUMENT_BYTES {
         return Err(FileError::InvalidLimit);

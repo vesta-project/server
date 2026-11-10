@@ -63,6 +63,7 @@ use vesta_control::{
 mod file_body;
 mod manage;
 mod pack_sync;
+pub mod pending;
 mod public_resource_packs;
 mod realtime;
 mod routes;
@@ -808,13 +809,24 @@ impl BlockingJobs {
         operational: bool,
         action: impl FnOnce() -> Reply + Send + 'static,
     ) -> Reply {
-        #[cfg(feature = "latency-probe")] let queued = std::time::Instant::now();
+        #[cfg(feature = "latency-probe")]
+        let queued = std::time::Instant::now();
         self.run(move || {
-            #[cfg(feature = "latency-probe")] let queue_ns = queued.elapsed().as_nanos();
-            #[allow(unused_mut)] let mut reply = action();
-            #[cfg(feature = "latency-probe")] if reply.headers().contains_key("x-vesta-latency-probe") { reply.headers_mut().insert("x-vesta-queue-ns",http::HeaderValue::from_str(&queue_ns.to_string()).unwrap()); }
+            #[cfg(feature = "latency-probe")]
+            let queue_ns = queued.elapsed().as_nanos();
+            #[allow(unused_mut)]
+            let mut reply = action();
+            #[cfg(feature = "latency-probe")]
+            if reply.headers().contains_key("x-vesta-latency-probe") {
+                reply.headers_mut().insert(
+                    "x-vesta-queue-ns",
+                    http::HeaderValue::from_str(&queue_ns.to_string()).unwrap(),
+                );
+            }
             reply
-        }).await.unwrap_or_else(|_| {
+        })
+        .await
+        .unwrap_or_else(|_| {
             if operational {
                 manage::error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable")
             } else {
@@ -881,7 +893,7 @@ async fn serve(
     host: NetworkHost,
     config: TlsListener,
     tls: Arc<tls::Material>,
-    mut stop: watch::Receiver<bool>,
+    stop: watch::Receiver<bool>,
     blocking: BlockingRuntimes,
 ) {
     let Ok(listener) = TcpListener::from_std(socket) else {
@@ -923,6 +935,53 @@ async fn serve(
         realtime_jobs: BlockingJobs::new(blocking.realtime),
         install_jobs: BlockingJobs::new(blocking.install),
     });
+    serve_application(listener, config, shared, stop).await;
+}
+
+pub(crate) trait HttpApplication: Send + Sync + 'static {
+    fn tls(&self) -> &Arc<tls::Material>;
+    fn timeout(&self) -> Duration;
+    fn active_upgrades(&self) -> usize {
+        0
+    }
+    fn dispatch(
+        self: Arc<Self>,
+        request: Request<Incoming>,
+        peer: SocketAddr,
+    ) -> impl Future<Output = Result<Reply, Infallible>> + Send;
+    fn reap(&self, all: bool) -> impl Future<Output = ()> + Send;
+}
+impl HttpApplication for Shared {
+    fn tls(&self) -> &Arc<tls::Material> {
+        &self.tls
+    }
+    fn timeout(&self) -> Duration {
+        self.timeout
+    }
+    fn active_upgrades(&self) -> usize {
+        self.realtime.active()
+    }
+    async fn dispatch(
+        self: Arc<Self>,
+        request: Request<Incoming>,
+        peer: SocketAddr,
+    ) -> Result<Reply, Infallible> {
+        handle(request, peer, self).await
+    }
+    async fn reap(&self, all: bool) {
+        self.realtime.reap(all).await;
+        self.realtime_jobs.reap(all).await;
+        self.jobs.reap(all).await;
+        self.control_jobs.reap(all).await;
+        self.install_jobs.reap(all).await;
+    }
+}
+async fn serve_application<S: HttpApplication>(
+    listener: TcpListener,
+    config: TlsListener,
+    shared: Arc<S>,
+    mut stop: watch::Receiver<bool>,
+) {
     let handshakes = Arc::new(Semaphore::new(HANDSHAKES));
     let mut connection_limiter = PeerRateLimiter::new(
         RatePolicy::new(
@@ -942,13 +1001,13 @@ async fn serve(
             accepted = listener.accept() => {
                 // Transient accept failures (e.g. descriptor exhaustion) must not stop serving.
                 let Ok((socket, peer)) = accepted else { tokio::time::sleep(Duration::from_millis(50)).await; continue; };
-                if connections.len() + shared.realtime.active() >= usize::from(config.max_connections()) { drop(socket); continue; }
+                if connections.len() + shared.active_upgrades() >= usize::from(config.max_connections()) { drop(socket); continue; }
                 if !matches!(connection_limiter.try_acquire(peer.ip()), AdmissionDecision::Allowed) { drop(socket); continue; }
                 let Ok(handshake) = handshakes.clone().try_acquire_owned() else { drop(socket); continue; };
-                let Ok(config) = shared.tls.config() else { drop(socket); continue; };
+                let Ok(config) = shared.tls().config() else { drop(socket); continue; };
                 let tls = TlsAcceptor::from(config); let state = shared.clone();
                 connections.spawn(async move {
-                    let limit = state.timeout;
+                    let limit = state.timeout();
                     // Handshake, heads and routing get `limit`; streamed artifact
                     // bodies are bounded by the throughput floor instead. Expiry drops
                     // the connection, its body and every download permit it holds.
@@ -966,7 +1025,7 @@ async fn serve(
                             async move {
                                 deadline.request();
                                 request.extensions_mut().insert(deadline.clone());
-                                let mut reply = handle(request, peer, state).await?;
+                                let mut reply = state.dispatch(request, peer).await?;
                                 reply.body_mut().watch(deadline);
                                 // An upgrade hands ownership to the separately bounded
                                 // realtime transport; do not replace Connection: upgrade.
@@ -987,20 +1046,12 @@ async fn serve(
                 });
             }
         }
-        shared.jobs.reap(false).await;
-        shared.control_jobs.reap(false).await;
-        shared.install_jobs.reap(false).await;
-        shared.realtime.reap(false).await;
-        shared.realtime_jobs.reap(false).await;
+        shared.reap(false).await;
     }
     drop(listener);
     connections.abort_all();
     while connections.join_next().await.is_some() {}
-    shared.realtime.reap(true).await;
-    shared.realtime_jobs.reap(true).await;
-    shared.jobs.reap(true).await;
-    shared.control_jobs.reap(true).await;
-    shared.install_jobs.reap(true).await;
+    shared.reap(true).await;
 }
 
 async fn handle(
@@ -1048,7 +1099,10 @@ async fn handle(
     } else {
         None
     };
-    if reference.is_some() && request.method()==http::Method::POST && request.uri().path().starts_with("/api/v3/manage/pack/") {
+    if reference.is_some()
+        && request.method() == http::Method::POST
+        && request.uri().path().starts_with("/api/v3/manage/pack/")
+    {
         request.extensions_mut().insert(PackBodyBudget);
     }
     let pack_review =

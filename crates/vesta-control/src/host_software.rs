@@ -47,9 +47,17 @@ impl software::StoppedGuard for Held {
             &self.hooks.config,
             document.as_bytes(),
             parsed.working_directory(),
-            if self.hooks.config.isolation().is_some() {self.hooks.db.directory().path()} else {self.hooks.config.state()},
+            if self.hooks.config.isolation().is_some() {
+                self.hooks.db.directory().path()
+            } else {
+                self.hooks.config.state()
+            },
         );
-        let launch = self.hooks.config.isolate_launch(parsed.into_launch_spec(None).map_err(unavailable)?).map_err(unavailable)?;
+        let launch = self
+            .hooks
+            .config
+            .isolate_launch(parsed.into_launch_spec(None).map_err(unavailable)?)
+            .map_err(unavailable)?;
         let staged = vesta_supervisor::reconfigure::stage_launch(
             self.hooks.db.directory(),
             document.as_bytes(),
@@ -65,6 +73,75 @@ impl software::StoppedGuard for Held {
         self.hold.check().map_err(unavailable)
     }
 }
+/// Shared launch serialization for first provisioning and later software switches.
+/// Preserve native path strings; TOML escapes backslashes. Replacing separators
+/// corrupts Windows verbatim paths and Unix filenames containing a backslash.
+pub(crate) fn managed_launch_document(
+    launch: &ManagedLaunch,
+    jvm_args: &[String],
+    base: &Path,
+) -> Result<String> {
+    let paths = launch
+        .required_files
+        .iter()
+        .map(|p| p.to_str().ok_or(software::SoftwareError::InvalidRequest))
+        .collect::<Result<Vec<_>>>()?;
+    let mut launch_table = toml::map::Map::new();
+    launch_table.insert("kind".into(), toml::Value::String("native".into()));
+    launch_table.insert(
+        "executable".into(),
+        toml::Value::String(
+            launch
+                .java
+                .to_str()
+                .ok_or(software::SoftwareError::InvalidRequest)?
+                .to_owned(),
+        ),
+    );
+    launch_table.insert(
+        "args".into(),
+        toml::Value::Array(
+            launch
+                .args
+                .iter()
+                .cloned()
+                .map(toml::Value::String)
+                .collect(),
+        ),
+    );
+    launch_table.insert(
+        "jvm-args".into(),
+        toml::Value::Array(jvm_args.iter().cloned().map(toml::Value::String).collect()),
+    );
+    launch_table.insert(
+        "required-files".into(),
+        toml::Value::Array(
+            paths
+                .into_iter()
+                .map(|p| toml::Value::String(p.to_owned()))
+                .collect(),
+        ),
+    );
+    launch_table.insert("stop".into(), toml::Value::String("console-stop".into()));
+    let mut minecraft = toml::map::Map::new();
+    minecraft.insert(
+        "working-directory".into(),
+        toml::Value::String(
+            launch
+                .working_directory
+                .as_path()
+                .to_str()
+                .ok_or(software::SoftwareError::InvalidRequest)?
+                .to_owned(),
+        ),
+    );
+    let mut document = toml::map::Map::new();
+    document.insert("minecraft".into(), toml::Value::Table(minecraft));
+    document.insert("launch".into(), toml::Value::Table(launch_table));
+    let text = toml::to_string(&toml::Value::Table(document)).map_err(unavailable)?;
+    LaunchConfiguration::parse_toml(text.as_bytes(), base).map_err(unavailable)?;
+    Ok(text)
+}
 impl RuntimeHooks for Arc<Hooks> {
     fn launch_document(&self, launch: &ManagedLaunch) -> Result<String> {
         if !files::same_directory(&launch.working_directory, self.config.game())
@@ -72,75 +149,14 @@ impl RuntimeHooks for Arc<Hooks> {
         {
             return Err(software::SoftwareError::InvalidRequest);
         }
-        let paths = launch
-            .required_files
-            .iter()
-            .map(|p| p.to_str().ok_or(software::SoftwareError::InvalidRequest))
-            .collect::<Result<Vec<_>>>()?;
-        let mut launch_table = toml::map::Map::new();
-        launch_table.insert("kind".into(), toml::Value::String("native".into()));
-        launch_table.insert(
-            "executable".into(),
-            toml::Value::String(
-                launch
-                    .java
-                    .to_str()
-                    .ok_or(software::SoftwareError::InvalidRequest)?
-                    .replace('\\', "/"),
-            ),
-        );
-        launch_table.insert(
-            "args".into(),
-            toml::Value::Array(
-                launch
-                    .args
-                    .iter()
-                    .cloned()
-                    .map(toml::Value::String)
-                    .collect(),
-            ),
-        );
-        launch_table.insert(
-            "jvm-args".into(),
-            toml::Value::Array(
-                self.jvm_args
-                    .iter()
-                    .cloned()
-                    .map(toml::Value::String)
-                    .collect(),
-            ),
-        );
-        launch_table.insert(
-            "required-files".into(),
-            toml::Value::Array(
-                paths
-                    .into_iter()
-                    .map(|p| toml::Value::String(p.replace('\\', "/")))
-                    .collect(),
-            ),
-        );
-        launch_table.insert("stop".into(), toml::Value::String("console-stop".into()));
-        let mut minecraft = toml::map::Map::new();
-        minecraft.insert(
-            "working-directory".into(),
-            toml::Value::String(
-                self.config
-                    .game()
-                    .to_str()
-                    .ok_or(software::SoftwareError::InvalidRequest)?
-                    .replace('\\', "/"),
-            ),
-        );
-        let mut document = toml::map::Map::new();
-        document.insert("minecraft".into(), toml::Value::Table(minecraft));
-        document.insert("launch".into(), toml::Value::Table(launch_table));
-        let text = toml::to_string(&toml::Value::Table(document)).map_err(unavailable)?;
-        LaunchConfiguration::parse_toml(text.as_bytes(), self.config.base())
-            .map_err(unavailable)?;
-        Ok(text)
+        managed_launch_document(launch, &self.jvm_args, self.config.base())
     }
     fn acquire_stopped(&self) -> Result<Box<dyn software::StoppedGuard>> {
-        let maintenance = self.maintenance.clone().try_lock_owned().map_err(|_|software::SoftwareError::Busy)?;
+        let maintenance = self
+            .maintenance
+            .clone()
+            .try_lock_owned()
+            .map_err(|_| software::SoftwareError::Busy)?;
         let hold = files::StoppedGuard::acquire(&self.runtime, self.db.directory())
             .map_err(unavailable)?;
         if self
@@ -253,18 +269,36 @@ pub(crate) fn open(
     )
     .map(Some)
 }
-pub(crate) fn identity(config: &HostConfiguration, bytes: &[u8], cwd: &Path, state:&Path) -> String {
-    let base=config.base().to_string_lossy();
-    let definition=config.launch_definition().to_string_lossy();
-    let game=config.game().to_string_lossy();
-    let state=state.to_string_lossy();
-    let cwd=cwd.to_string_lossy();
-    let mut parts=vec![bytes,base.as_bytes(),definition.as_bytes(),game.as_bytes(),state.as_bytes(),cwd.as_bytes()];
-    let isolation=config.isolation().map(|s| {
-        let values=s.runtime_directories().iter().map(|p|p.to_string_lossy().into_owned()).collect::<Vec<_>>();
-        serde_json::to_vec(&("shared-headless-v1",values)).expect("string-only isolation identity")
+pub(crate) fn identity(
+    config: &HostConfiguration,
+    bytes: &[u8],
+    cwd: &Path,
+    state: &Path,
+) -> String {
+    let base = config.base().to_string_lossy();
+    let definition = config.launch_definition().to_string_lossy();
+    let game = config.game().to_string_lossy();
+    let state = state.to_string_lossy();
+    let cwd = cwd.to_string_lossy();
+    let mut parts = vec![
+        bytes,
+        base.as_bytes(),
+        definition.as_bytes(),
+        game.as_bytes(),
+        state.as_bytes(),
+        cwd.as_bytes(),
+    ];
+    let isolation = config.isolation().map(|s| {
+        let values = s
+            .runtime_directories()
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        serde_json::to_vec(&("shared-headless-v1", values)).expect("string-only isolation identity")
     });
-    if let Some(tag)=&isolation {parts.push(tag);}
+    if let Some(tag) = &isolation {
+        parts.push(tag);
+    }
     vesta_supervisor::launch_identity(&parts)
 }
 fn atomic_document(path: &Path, bytes: &[u8]) -> files::Result<()> {
@@ -377,5 +411,28 @@ mod tests {
         })
         .unwrap();
         assert!(!known_managed_launch(&db, "selected"));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn generated_launch_preserves_native_verbatim_executable_and_game_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let game = temp.path().join("game");
+        fs::create_dir(&game).unwrap();
+        let jar = game.join("server.jar");
+        fs::write(&jar, b"inert").unwrap();
+        let game = fs::canonicalize(game).unwrap();
+        let jar = fs::canonicalize(jar).unwrap();
+        let java = fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+        let launch = ManagedLaunch {
+            java,
+            working_directory: game.clone(),
+            args: vec!["-jar".into(), jar.to_str().unwrap().into()],
+            required_files: vec![jar],
+            artifacts: vec![],
+        };
+        let document = managed_launch_document(&launch, &[], temp.path()).unwrap();
+        let parsed = LaunchConfiguration::parse_toml(document.as_bytes(), temp.path()).unwrap();
+        assert!(files::same_directory(parsed.working_directory(), &game).unwrap());
+        assert!(parsed.into_launch_spec(None).is_ok());
     }
 }

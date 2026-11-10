@@ -1,5 +1,5 @@
-//! Small, bounded TLS readiness endpoint while app onboarding is pending.
-//! No network mutation, owner enrollment, game launch or credential issuance.
+//! Pending first-server onboarding using canonical account authority and hardened TLS.
+//! No game process, machine-wide authority, or remote setup-code issuance.
 use crate::engine::{self, Receipt, Result};
 use fs2::FileExt;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject};
@@ -7,14 +7,11 @@ use sha2::{Digest, Sha256};
 use std::{
     fs::OpenOptions,
     io::{Read, Write},
-    net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
+    net::{Ipv4Addr, SocketAddr, TcpStream},
     path::Path,
     process::{Command, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::{Duration, Instant},
+    sync::Arc,
+    time::Duration,
 };
 
 fn raw_credentials(root: &Path) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
@@ -50,12 +47,13 @@ pub fn identity_fingerprint(root: &Path) -> Result<String> {
         .map_err(|_| "setup_tls_invalid")?;
     Ok(fingerprint)
 }
-pub fn serve(root: &Path) -> Result<()> {
+pub(crate) struct HostLease {
+    pub(crate) root: std::path::PathBuf,
+    _file: std::fs::File,
+}
+pub(crate) fn acquire_host_lease(root: &Path) -> Result<HostLease> {
     engine::guard(&root.join("private/uninstall-pending"))?;
-    if root.join("private/uninstall-pending").exists() {
-        return Err("setup_uninstall_pending".into());
-    }
-    let receipt = engine::read_receipt(root)?;
+    engine::read_receipt(root)?;
     let directory = vesta_state::StateDirectory::new(root.join("private"), None)
         .map_err(|_| "setup_private_directory_refused")?;
     directory
@@ -78,9 +76,21 @@ pub fn serve(root: &Path) -> Result<()> {
     if root.join("private/uninstall-pending").exists() {
         return Err("setup_uninstall_pending".into());
     }
+    Ok(HostLease {
+        root: root.to_owned(),
+        _file: lock,
+    })
+}
+pub fn serve(root: &Path) -> Result<()> {
+    engine::guard(&root.join("private/uninstall-pending"))?;
+    if root.join("private/uninstall-pending").exists() {
+        return Err("setup_uninstall_pending".into());
+    }
+    let receipt = engine::read_receipt(root)?;
+    let lease = acquire_host_lease(root)?;
     crate::updates::start_check(root, &receipt.release_manifest_sha256);
     if receipt.phase == "activated" {
-        return run_agent(root);
+        return run_agent(root, &lease);
     }
     // An explicit new host invocation consumes a previous clean stop request.
     // Hold the host lock first so a duplicate invocation cannot cancel a stop.
@@ -91,123 +101,254 @@ pub fn serve(root: &Path) -> Result<()> {
         }
         std::fs::remove_file(&stop).map_err(|_| "setup_restart_failed")?;
     }
-    let (certificates, key) = credentials(root, &receipt)?;
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mut config = rustls::ServerConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .map_err(|_| "setup_tls_invalid")?
-        .with_no_client_auth()
-        .with_single_cert(certificates, key)
-        .map_err(|_| "setup_tls_invalid")?;
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
-    let config = Arc::new(config);
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, receipt.answers.port))
-        .map_err(|_| "setup_port_in_use")?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|_| "setup_host_unavailable")?;
-    let active = Arc::new(AtomicUsize::new(0));
-    let mut checked = Instant::now();
-    loop {
-        if checked.elapsed() >= Duration::from_millis(250) {
-            checked = Instant::now();
-            let stop = root.join("private").join("stop-request");
-            if stop.exists()
-                && engine::read_private(&stop, 128)
-                    .is_ok_and(|b| b == receipt.installation_id.as_bytes())
-            {
-                return Ok(());
-            }
-            if engine::read_receipt(root)?.phase == "activated" {
-                drop(listener);
-                let deadline = Instant::now() + Duration::from_secs(3);
-                while active.load(Ordering::Acquire) > 0 && Instant::now() < deadline {
-                    std::thread::sleep(Duration::from_millis(25));
-                }
-                return run_agent(root);
-            }
-        }
-        match listener.accept() {
-            Ok((stream, _)) => {
-                if active
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                        (n < 4).then_some(n + 1)
-                    })
-                    .is_err()
-                {
-                    drop(stream);
-                    continue;
-                }
-                let config = config.clone();
-                let active = active.clone();
-                let receipt = receipt.clone();
-                std::thread::spawn(move || {
-                    struct Slot(Arc<AtomicUsize>);
-                    impl Drop for Slot {
-                        fn drop(&mut self) {
-                            self.0.fetch_sub(1, Ordering::Release);
-                        }
-                    }
-                    let _slot = Slot(active);
-                    let _ = respond(stream, config, &receipt);
-                });
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(25))
-            }
-            Err(_) => return Err("setup_host_unavailable".into()),
-        }
-    }
-}
-fn respond(stream: TcpStream, config: Arc<rustls::ServerConfig>, receipt: &Receipt) -> Result<()> {
-    stream
-        .set_nonblocking(false)
-        .map_err(|_| "setup_connection_failed")?;
-    stream
-        .set_read_timeout(Some(Duration::from_millis(750)))
-        .map_err(|_| "setup_connection_failed")?;
-    stream
-        .set_write_timeout(Some(Duration::from_millis(750)))
-        .map_err(|_| "setup_connection_failed")?;
-    let connection =
-        rustls::ServerConnection::new(config).map_err(|_| "setup_connection_failed")?;
-    let mut stream = rustls::StreamOwned::new(connection, stream);
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let mut request = Vec::new();
-    while !request.windows(4).any(|w| w == b"\r\n\r\n") {
-        if request.len() >= 4096 || Instant::now() >= deadline {
-            return Err("setup_request_refused".into());
-        }
-        let mut chunk = [0; 512];
-        let count = stream
-            .read(&mut chunk)
-            .map_err(|_| "setup_request_refused")?;
-        if count == 0 {
-            return Err("setup_request_refused".into());
-        }
-        request.extend_from_slice(&chunk[..count]);
-    }
-    let line = request.split(|b| *b == b'\n').next().unwrap_or_default();
-    let (status, body) = if line == b"GET /api/v3/setup HTTP/1.1\r" {
-        (
-            "200 OK",
-            serde_json::json!({"api_version":"3","installation_id":receipt.installation_id,"status":"awaiting_app_onboarding","version":receipt.release_version,"management_available":false}),
+    credentials(root, &receipt)?;
+    let state = vesta_state::StateDirectory::new(root.join("private/state"), None)
+        .map_err(|_| "setup_state_invalid")?;
+    let db = vesta_state::StateDatabase::open(state, Arc::new(vesta_state::SystemClock))
+        .map_err(|_| "setup_state_unavailable")?;
+    let setup = vesta_control::onboarding::FirstServerSetup::reserve_local(
+        db.clone(),
+        &receipt.installation_id,
+    )
+    .map_err(|_| "setup_identity_unavailable")?;
+    let local = root.join("private/first-server.json");
+    let provisioning = if local.exists() {
+        let input = serde_json::from_slice(&engine::read_private(&local, 16384)?)
+            .map_err(|_| "setup_local_configuration_invalid")?;
+        Some(
+            vesta_control::onboarding::provisioning::Provisioning::open(
+                setup.clone(),
+                root,
+                input,
+                receipt.answers.existing_server.as_deref(),
+                receipt.answers.port,
+            )
+            .map_err(|_| "setup_provisioning_unavailable")?,
         )
     } else {
-        ("404 Not Found", serde_json::json!({"error":"not_found"}))
+        None
     };
-    let bytes = serde_json::to_vec(&body).map_err(|_| "setup_response_failed")?;
-    write!(stream,"HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n",bytes.len()).map_err(|_|"setup_response_failed")?;
-    stream
-        .write_all(&bytes)
-        .and_then(|_| stream.flush())
-        .map_err(|_| "setup_response_failed")?;
-    Ok(())
+    let mut pending = vesta_transport::pending::PendingHost::new(setup)
+        .map_err(|_| "setup_identity_unavailable")?;
+    if let Some(service) = &provisioning {
+        pending = pending.with_provisioning(service.clone());
+    }
+    let listener = vesta_control::config::TlsListener::pending_local(
+        receipt.answers.port,
+        root.join("private/certificate.pem"),
+        root.join("private/key.pem"),
+    )
+    .map_err(|_| "setup_listener_invalid")?;
+    let transport =
+        vesta_transport::Transport::start_pending_pinned(pending, &listener, &receipt.tls_sha256)
+            .map_err(|_| "setup_host_unavailable")?;
+    loop {
+        if let Some(service) = &provisioning {
+            let completed=service.publish_ready(|id,server_id,host,launch|{
+                let consumer=serde_json::to_vec(&serde_json::json!({"schema":1,"installation_id":receipt.installation_id,"server_id":server_id,"job_id":id,"configuration":"host.toml","state":"private/state","launch_sha256":hex::encode(Sha256::digest(launch.as_bytes())),"host_sha256":hex::encode(Sha256::digest(host.as_bytes())),"installed_manifest_sha256":receipt.release_manifest_sha256})).map_err(|_|vesta_control::identity::management::permissions::PermissionError::Unavailable)?;
+                publish_document(root,"private/launch.toml",launch.as_bytes()).and_then(|_|publish_document(root,"host.toml",host.as_bytes())).and_then(|_|publish_document(root,"private/consumer.json",&consumer)).map_err(|_|vesta_control::identity::management::permissions::PermissionError::Unavailable)
+            }).map_err(|_|"setup_publication_incomplete")?;
+            if completed {
+                // Files/consumer and DB completion precede the start-admitting
+                // receipt. A lost receipt write is retried from complete state.
+                let mut activated = engine::read_receipt(root)?;
+                activated.phase = "activated".into();
+                engine::write_private(
+                    root,
+                    "setup.json",
+                    &serde_json::to_vec(&activated).map_err(|_| "setup_write_failed")?,
+                )?;
+            }
+        }
+        let stopping = root.join("private/stop-request");
+        let stop = stopping.exists()
+            && engine::read_private(&stopping, 128)
+                .is_ok_and(|b| b == receipt.installation_id.as_bytes());
+        let activated = engine::read_receipt(root)?.phase == "activated";
+        if stop || activated {
+            match transport
+                .shutdown(Duration::from_secs(5))
+                .map_err(|_| "setup_shutdown_failed")?
+            {
+                vesta_transport::TransportShutdown::Complete => (),
+                vesta_transport::TransportShutdown::TimedOut(_) => {
+                    return Err("setup_shutdown_incomplete".into());
+                }
+            }
+            if let Some(service) = &provisioning {
+                service
+                    .shutdown()
+                    .map_err(|_| "setup_provisioning_shutdown_failed")?;
+            }
+            db.close().map_err(|_| "setup_state_busy")?;
+            return if activated {
+                run_agent(root, &lease)
+            } else {
+                Ok(())
+            };
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Explicit OS-local runtime/entrypoint selection. Requires restarting a pending
+/// host so the listener's composition is immutable for its lifetime.
+pub fn configure_server(
+    root: &Path,
+    java: std::path::PathBuf,
+    adoption_jar: Option<String>,
+    adoption_argfile: Option<String>,
+    copied_export_confirmed: bool,
+) -> Result<()> {
+    let receipt = engine::read_receipt(root)?;
+    if receipt.phase == "activated" {
+        return Err("setup_already_activated_use_app".into());
+    }
+    let _lock = engine::lock_existing_installation(root)?;
+    engine::guard(&java)?;
+    if !java.is_file()
+        || [adoption_jar.as_ref(), adoption_argfile.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|p| vesta_control::files::RelativePath::parse(p).is_err())
+        || adoption_jar.is_some() && adoption_argfile.is_some()
+    {
+        return Err("setup_local_configuration_invalid".into());
+    }
+    if (adoption_jar.is_some() || adoption_argfile.is_some())
+        && receipt.answers.existing_server.is_none()
+    {
+        return Err("setup_copied_export_not_selected".into());
+    }
+    if receipt.answers.existing_server.is_some()
+        && (!copied_export_confirmed || (adoption_jar.is_none() && adoption_argfile.is_none()))
+    {
+        return Err("setup_confirm_copied_export_required".into());
+    }
+    let config = vesta_control::onboarding::provisioning::LocalConfiguration {
+        java,
+        adoption_jar,
+        adoption_argfile,
+        copied_export_confirmed,
+    };
+    engine::write_private(
+        root,
+        "first-server.json",
+        &serde_json::to_vec(&config).map_err(|_| "setup_write_failed")?,
+    )
+}
+
+/// Generated documents publish absent-only, or verify an identical prior effect.
+/// A foreign config is never overwritten, including after a lost DB commit.
+fn publish_document(root: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
+    if !matches!(
+        relative,
+        "host.toml" | "private/launch.toml" | "private/consumer.json"
+    ) {
+        return Err("setup_file_invalid".into());
+    }
+    let target = root.join(relative);
+    engine::guard(&target)?;
+    if target.exists() {
+        return if engine::read_private(&target, 65536)? == bytes {
+            Ok(())
+        } else {
+            Err("setup_publication_conflict".into())
+        };
+    }
+    let stage = root.join("private").join(format!(
+        ".setup-publication-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&stage)
+            .map_err(|_| "setup_write_failed")?;
+        let private = vesta_state::StateDirectory::new(root.join("private"), None)
+            .map_err(|_| "setup_private_directory_refused")?;
+        private
+            .tighten_file(&stage)
+            .map_err(|_| "setup_private_permissions_failed")?;
+        file.write_all(bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|_| "setup_write_failed")?;
+        drop(file);
+        engine::guard(&target)?;
+        match std::fs::hard_link(&stage, &target) {
+            Ok(()) => (),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if engine::read_private(&target, 65536)? != bytes {
+                    return Err("setup_publication_conflict".into());
+                }
+            }
+            Err(_) => return Err("setup_write_failed".into()),
+        }
+        #[cfg(unix)]
+        std::fs::File::open(target.parent().ok_or("setup_path_invalid")?)
+            .and_then(|d| d.sync_all())
+            .map_err(|_| "setup_write_failed")?;
+        Ok(())
+    })();
+    let cleanup = std::fs::remove_file(&stage);
+    if result.is_ok() && cleanup.is_err() {
+        return Err("setup_publication_cleanup_failed".into());
+    }
+    result
+}
+
+/// Explicit OS-local command only; never served by the pending HTTP routes.
+pub fn setup_code(root: &Path) -> Result<vesta_control::identity::management::PairCode> {
+    let receipt = engine::read_receipt(root)?;
+    if receipt.phase == "activated" {
+        return Err("setup_already_activated_use_app".into());
+    }
+    let state = vesta_state::StateDirectory::new(root.join("private/state"), None)
+        .map_err(|_| "setup_state_invalid")?;
+    let db = vesta_state::StateDatabase::open(state, Arc::new(vesta_state::SystemClock))
+        .map_err(|_| "setup_state_unavailable")?;
+    let setup = vesta_control::onboarding::FirstServerSetup::reserve_local(
+        db.clone(),
+        &receipt.installation_id,
+    )
+    .map_err(|_| "setup_identity_unavailable")?;
+    let result = setup
+        .management()
+        .issue_local(
+            vesta_control::identity::BuiltinRole::Owner,
+            vesta_control::identity::management::DEFAULT_PAIR_MINUTES,
+        )
+        .map_err(|_| "setup_code_unavailable".to_owned());
+    drop(setup);
+    db.close().map_err(|_| "setup_state_busy")?;
+    result
 }
 pub fn ready(receipt: &Receipt) -> bool {
     check_ready(receipt).unwrap_or(false)
 }
 fn check_ready(receipt: &Receipt) -> Result<bool> {
+    let body = pinned_local_json(
+        receipt,
+        SocketAddr::from((Ipv4Addr::LOCALHOST, receipt.answers.port)),
+        "/api/v3/setup",
+    )?;
+    Ok(body["installation_id"] == receipt.installation_id
+        && body["status"] == "awaiting_app_onboarding")
+}
+pub(crate) fn pinned_local_json(
+    receipt: &Receipt,
+    address: SocketAddr,
+    path: &str,
+) -> Result<serde_json::Value> {
+    if !address.ip().is_loopback()
+        || !matches!(
+            path,
+            "/api/v3/setup" | "/api/v3/update-health" | "/api/v3/status"
+        )
+    {
+        return Err("setup_probe_target_refused".into());
+    }
     let root = &receipt.answers.root;
     let (certificates, _) = credentials(root, receipt)?;
     let mut roots = rustls::RootCertStore::empty();
@@ -223,7 +364,7 @@ fn check_ready(receipt: &Receipt) -> Result<bool> {
     let name = ServerName::try_from("localhost").map_err(|_| "setup_tls_invalid")?;
     let connection =
         rustls::ClientConnection::new(Arc::new(config), name).map_err(|_| "setup_tls_invalid")?;
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, receipt.answers.port));
+    let addr = address;
     let socket = TcpStream::connect_timeout(&addr, Duration::from_millis(300))
         .map_err(|_| "setup_host_not_ready")?;
     socket
@@ -234,7 +375,10 @@ fn check_ready(receipt: &Receipt) -> Result<bool> {
         .map_err(|_| "setup_host_not_ready")?;
     let mut stream = rustls::StreamOwned::new(connection, socket);
     stream
-        .write_all(b"GET /api/v3/setup HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
         .map_err(|_| "setup_host_not_ready")?;
     let mut bytes = Vec::new();
     // The server closes its underlying socket after the response. A missing TLS
@@ -258,13 +402,13 @@ fn check_ready(receipt: &Receipt) -> Result<bool> {
         .position(|w| w == b"\r\n\r\n")
         .ok_or("setup_response_invalid")?;
     if !bytes.starts_with(b"HTTP/1.1 200 ") {
-        return Ok(false);
+        return Err("setup_probe_status_invalid".into());
     }
     let body: serde_json::Value =
         serde_json::from_slice(&bytes[delimiter + 4..]).map_err(|_| "setup_response_invalid")?;
-    Ok(body["installation_id"] == receipt.installation_id
-        && body["status"] == "awaiting_app_onboarding")
+    Ok(body)
 }
+
 pub fn stop(root: &Path) -> Result<()> {
     let receipt = engine::read_receipt(root)?;
     if receipt.phase == "activated" {
@@ -304,7 +448,7 @@ pub fn activate(root: &Path) -> Result<()> {
         &serde_json::to_vec_pretty(&receipt).map_err(|_| "setup_write_failed")?,
     )
 }
-fn run_agent(root: &Path) -> Result<()> {
+fn run_agent(root: &Path, lease: &HostLease) -> Result<()> {
     let agent = root.join("bin").join(if cfg!(windows) {
         "vesta-agent.exe"
     } else {
@@ -324,5 +468,31 @@ fn run_agent(root: &Path) -> Result<()> {
         Ok(())
     } else {
         Err("setup_agent_exited".into())
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+    #[test]
+    fn generated_documents_are_idempotent_and_never_replace_foreign_configuration() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("private")).unwrap();
+        publish_document(root.path(), "private/launch.toml", b"owned-launch").unwrap();
+        publish_document(root.path(), "private/launch.toml", b"owned-launch").unwrap();
+        assert!(publish_document(root.path(), "private/launch.toml", b"different-launch").is_err());
+        std::fs::write(root.path().join("host.toml"), b"operator-config").unwrap();
+        assert!(publish_document(root.path(), "host.toml", b"generated-config").is_err());
+        assert_eq!(
+            std::fs::read(root.path().join("host.toml")).unwrap(),
+            b"operator-config"
+        );
+        assert!(publish_document(root.path(), "../outside", b"refused").is_err());
+        assert_eq!(
+            std::fs::read_dir(root.path().join("private"))
+                .unwrap()
+                .count(),
+            1
+        );
     }
 }

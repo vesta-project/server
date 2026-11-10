@@ -1,6 +1,6 @@
 # Vesta host setup
 
-`vesta-setup` installs the signed Vesta host bundle and starts a small, local readiness service. It prepares a host for later app onboarding; it does not set up Minecraft, choose Java, pair an owner device, or enable management APIs. The app onboarding and the activation step described below are still future integration work.
+`vesta-setup` installs the signed Vesta host bundle and starts a loopback TLS pending host. Backend onboarding authenticates the current Minecraft account, claims only this installation?s first server, and prepares either a new server installation or a copy of an OS-selected exported server. Launcher onboarding UI remains future work. Java/source/entrypoint selection and installation updates stay OS-local; first-server Owner access does not grant machine administration. No onboarding action starts Minecraft or accepts its EULA.
 
 The setup CLI targets Windows x86-64, Linux x86-64, and Linux ARM64. Automatic setup-host startup is available on Windows when PowerShell and Task Scheduler are available, and on Linux when the current user's systemd session is available. This setup-host option is distinct from each managed server agent's boot policy. macOS and other targets are unsupported. Windows and isolated Ubuntu 24.04 installation tests are recorded; Linux ARM64 remains untested. There is no live Minecraft launch in this setup path.
 
@@ -70,26 +70,57 @@ vesta-setup activate --root <host-root>
 
 `status` prints JSON with `phase`, `installation_id`, `pending_host_ready`, and the last `external_access` result. The readiness value checks the pending local setup endpoint; it is not a Minecraft or management readiness signal. The external result is a setup-time snapshot, not continuous monitoring.
 
-`host` runs the host process in the foreground. Before activation it serves only the pending local readiness endpoint. After activation it starts the installed `vesta-agent` with the host configuration. The normal installer launches this process in the background so setup can verify the endpoint before it exits.
+`host` runs the host process in the foreground. Before activation it serves the pending account authentication and first-server endpoints below. After activation it starts the installed `vesta-agent` with the host configuration. The normal installer launches this process in the background so setup can verify the endpoint before it exits.
 
 `stop` writes a local stop request. A running pending host notices it shortly and exits cleanly. This does not uninstall Vesta or remove the automatic startup registration. `stop` is not the stop command for an activated agent; use the agent's lifecycle controls once onboarding has activated it. To run the pending host again, launch `vesta-setup host --root <host-root>` or rerun setup with its original options.
 
-`activate` is the local handoff boundary for app onboarding. It requires a ready pending host, a valid `host.toml` in the host root, and a working `bin/vesta-agent`. It asks that agent to validate the configuration with `check-config`, then changes the receipt phase from `ready` to `activated`. The running host notices the phase change and hands off to the agent. The CLI does not create the configuration, authenticate an owner, or provision Minecraft. There is not yet an app flow that performs these steps; invoking activation before a future onboarding flow has written a valid configuration will fail.
+The normal first-server backend flow publishes protected launch/configuration/consumer documents and the completed job before changing the receipt to activated. The pending host drains, closes its state and hands off to the actual managed agent. The older OS-local `activate` command validates an already-provided configuration; it does not replace this account-bound provisioning flow.
 
-## Pending local TLS service and app handoff
+## Pending account and first-server flow
 
-Setup creates a private TLS key and certificate and records the certificate's SHA-256 fingerprint in `private/handoff.json`. That file has schema `1`, an `installation_id`, an `endpoint`, `tls_sha256`, status `awaiting_app_onboarding`, and a `vesta://setup` app URI. The endpoint is `https://127.0.0.1:<port>`; the service binds IPv4 loopback only.
+The TLS leaf fingerprint and installation ID in `private/handoff.json` must match the actual endpoint before authentication. The descriptor is public identity, never an invitation or session credential. Pending listeners remain IPv4 loopback-only; no firewall/NAT change or public listener is implied.
 
-Before activation, the only successful request is:
+The local administrator explicitly selects Java (and, for adoption, one entrypoint):
 
-```http
-GET /api/v3/setup HTTP/1.1
-Host: localhost
+```text
+vesta-setup configure-server --root <host-root> --java <absolute-java>
+vesta-setup configure-server --root <host-root> --java <absolute-java> --adoption-jar server.jar --copied-export
+vesta-setup configure-server --root <host-root> --java <absolute-java> --adoption-argfile libraries/forge/args.txt --copied-export
+vesta-setup setup-code --root <host-root>
 ```
 
-Its JSON response contains `api_version: "3"`, the matching `installation_id`, `status: "awaiting_app_onboarding"`, the release `version`, and `management_available: false`. Other paths return 404. This endpoint is a bounded readiness/handoff probe, not a management API: it has no pairing flow, owner credential, mutation route, game controls, or management authorization. The TLS certificate is self-signed, so a future app client must pin the fingerprint from the local handoff and verify the installation ID before proceeding. The fingerprint and installation ID identify the local installation; neither is a pairing credential.
+For adoption, `existing_server` must point to a separately created export COPY, and `--copied-export` attests that provenance. Exactly one relative JAR or Java argfile may be selected locally; arbitrary scripts and remote executable/path selection are unsupported. The selected source is opened read-only, snapshotted and hashed, rechecked at copy/publication, and never moved, modified or deleted. The target is the stable `servers/first/game` root; interrupted identical effects may be reconciled, foreign effects refuse. Source version/entrypoint choices are operator responsibility.
 
-The intended local activation contract is: the app reads the handoff descriptor, pins the local TLS identity, confirms the installation ID against the pending endpoint, completes its local onboarding work, writes a valid `host.toml`, and invokes `vesta-setup activate --root <host-root>`. Owner pairing, device credentials, Minecraft selection, Java setup, and management API availability belong to that later app flow and are not implied by a successful setup receipt.
+Restart the pending host after local configuration. `setup-code` explicitly outputs a short-lived invitation only to the invoking local terminal. Do not include it in logs/reports. It can authorize only the first-server claim by a verified account, not a machine-wide anonymous Owner. Normal account verification and signed device challenge/session contracts are shared with the managed service.
+
+| Method/route | Contract |
+| --- | --- |
+| GET /api/v3/setup | Public readiness: API/installation/server IDs, awaiting onboarding, management unavailable, whether provisioning is configured. No credential. |
+| POST /api/v3/manage/minecraft/challenge and /complete | Existing Minecraft account verification/enrollment, with invitation where required. The corresponding /api/v3/auth aliases share the handler. |
+| POST /api/v3/manage/session/challenge and /session | Existing signed device session; a session must remain linked to the current account. |
+| POST /api/v3/setup/claim | Current account-bound Owner; EMPTY body. Idempotent same first owner, rejects other accounts and lesser roles. |
+| GET /api/v3/setup/status | Authenticated first-server claim status. |
+| POST /api/v3/setup/plan | Authenticated claimed Owner; accepts software/version selection or adopt_copy, never host paths. Returns202 job. |
+| POST /api/v3/setup/apply | Reviewed job/confirmation, idempotency_key, explicit warning/legacy-checksum acknowledgements. Returns202 same job for identical retry. |
+| GET /api/v3/setup/jobs/<uuid> | Current claimed Owner; bounded persisted job state, phase, safe error and review. |
+
+Install selection example:
+
+```json
+{"kind":"install","name":"First server","software":"vanilla","version":"1.21.1","build":null,"loader_version":null,"experimental":false}
+```
+
+Copy selection example:
+
+```json
+{"kind":"adopt_copy","name":"Copied server","minecraft_version":"1.21.1"}
+```
+
+Jobs progress through planning -> review -> applying -> ready -> complete, or failed/interrupted. Prepare after a service restart requires a new review; no serialized installer plan is accepted as execution authority. Current account/rank/device/claim binding is rechecked at execution boundaries. Revocation refuses subsequent effects. Unknown routes, bodies on GET/claim and unknown request fields refuse. There are no pending game, update or isolation management routes.
+
+At the managed-agent handoff the pending routes retire, connections can close and in-memory sessions require a fresh signed challenge/session. Clients must verify the normal GET /api/v3/status on the SAME pinned TLS/server identity and reauthenticate; a 404 or disconnect alone never proves completion. The protected completed provisioning record remains in the canonical state database. Launcher UI/adapters must implement this handoff explicitly.
+
+The installer?s real download/verification/runtime selection and managed launch implementation is reused. Initial new servers get `eula=false`; copied EULA/config/world/disabled files keep their exact bytes. Activation here starts Vesta?s agent only, not Minecraft. Publication is absent-only or identical so a foreign host configuration is never overwritten.
 
 ## Startup behavior
 
