@@ -73,12 +73,13 @@ fn input_byte_limit_accepts_exact_boundary_and_refuses_one_more_byte() {
 #[test]
 fn entry_limit_is_inclusive_and_refuses_the_next_token() {
     let line = format!(
-        "There are 1024/2000 players online: {}a",
+        "There are {MAX_PLAYERS}/{} players online: {}a",
+        MAX_PLAYERS * 2,
         "a,".repeat(MAX_PLAYERS - 1)
     );
     assert!(line.len() < MAX_INPUT_BYTES);
     let list = parse_without_panic(&line).expect("inclusive token bound");
-    assert_eq!(list.online(), 1024);
+    assert_eq!(list.online(), MAX_PLAYERS as u32);
     assert_eq!(list.players().len(), MAX_PLAYERS);
     assert!(list.players().iter().all(|player| player.name() == "a"));
     assert_refused(&format!("{line},a"), PlayerListError::TooManyPlayers);
@@ -86,9 +87,13 @@ fn entry_limit_is_inclusive_and_refuses_the_next_token() {
 
 #[test]
 fn very_large_entry_lists_hit_the_byte_bound_without_returning_a_partial_list() {
+    // Two bytes per repeated entry must exceed the actual input-byte budget,
+    // independently of the current player-token budget.
+    let entries = MAX_INPUT_BYTES / 2 + 1;
     let line = format!(
-        "There are 100000/200000 players online: {}a",
-        "a,".repeat(99_999)
+        "There are {entries}/{} players online: {}a",
+        entries * 2,
+        "a,".repeat(entries - 1)
     );
     assert!(line.len() > MAX_INPUT_BYTES);
     assert_refused(&line, PlayerListError::TooLarge);
