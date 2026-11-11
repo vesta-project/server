@@ -328,8 +328,8 @@ mod tests {
     fn downloads_reauthorize_device_capability_exact_resource_and_session_between_chunks() {
         use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
         use ring::signature::KeyPair;
-        use vesta_control::identity::BuiltinRole;
-        for refusal in ["device", "capability", "scope", "session"] {
+        use vesta_control::identity::{BuiltinRole, management::ManagementError};
+        for refusal in ["device", "capability", "scope", "session", "account"] {
             let (temp, browser, _subject, db, clock) = file_fixture(3);
             let management = ManagementAccess::new(db.clone()).unwrap();
             let key = ring::signature::Ed25519KeyPair::from_pkcs8(
@@ -346,6 +346,25 @@ mod tests {
                     &URL_SAFE_NO_PAD.encode(key.public_key().as_ref()),
                 )
                 .unwrap();
+            assert!(matches!(
+                management.challenge(&enrolled.device_id),
+                Err(ManagementError::SessionInvalid)
+            ));
+            // Like the HTTPS fixtures, seed an account/device binding locally.
+            // Verified Mojang enrollment is covered by the control identity tests;
+            // an unbound legacy device must never enter this download session.
+            let account = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+            db.write(|c| {
+                c.execute(
+                    "INSERT INTO user_minecraft_accounts(server_id,minecraft_uuid,principal_id) VALUES(?,?,?)",
+                    rusqlite::params![enrolled.server_id, account, enrolled.principal_id],
+                )?;
+                c.execute(
+                    "UPDATE management_device_keys SET linked_minecraft_uuid=? WHERE device_id=?",
+                    rusqlite::params![account, enrolled.device_id],
+                )?;
+                Ok(())
+            }).unwrap();
             let nonce = management.challenge(&enrolled.device_id).unwrap();
             let signature = key.sign(&vesta_control::identity::management::session_message(
                 management.server_id(),
@@ -385,6 +404,10 @@ mod tests {
                         Ok(())
                     }).unwrap(),
                     "session" => { clock.0.fetch_add(24 * 60 * 60 * 1000, std::sync::atomic::Ordering::SeqCst); },
+                    "account" => db.write(|c| {
+                        c.execute("DELETE FROM user_minecraft_accounts WHERE principal_id=?", [&enrolled.principal_id])?;
+                        Ok(())
+                    }).unwrap(),
                     _ => unreachable!(),
                 }
                 assert!(body.frame().await.unwrap().is_err(), "{refusal}");
