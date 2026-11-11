@@ -8,7 +8,8 @@
 //!   sector, so unchanged regions and unchanged parts of changed regions are reused.
 //! - `snapshots/<id>`: compressed JSON manifest (paths, sizes, modification times and
 //!   chunk hashes). Written only after every chunk it references.
-//! - `tags/<id>`: small mutable JSON (time and tags); the snapshot listing.
+//! - `tags/<id>`: mutable time, tags, parent, label and keep metadata.
+//! - `head.json`: the restore point the live world descends from.
 //!
 //! No encryption: repositories are meant for owner-controlled disks or buckets. Data
 //! integrity is checked by hash on restore and by `check`. A repository has a single
@@ -38,11 +39,13 @@ const PRUNE_GRACE_MS: i64 = 60 * 60 * 1000;
 /// Snapshots never promoted into a profile are removed after this long.
 const UNPROMOTED_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 const PROFILE_PREFIX: &str = "profile=";
-/// Pre-restore safety snapshots, kept by their own count retention rather than a profile.
+/// Pre-restore safety snapshots; kept by default, with separate count retention once unkept.
 pub const SAFETY_PREFIX: &str = "safety=";
 
 mod apply;
+mod lineage;
 pub use apply::{ApplyError, ApplySummary};
+pub use lineage::{BackupHistory, BackupPoint, PointUpdate};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EngineError {
@@ -198,6 +201,12 @@ struct Manifest {
 struct TagRecord {
     time_ms: i64,
     tags: Vec<String>,
+    #[serde(default)]
+    parent_id: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    kept: bool,
 }
 
 fn now_ms() -> i64 {
@@ -493,6 +502,7 @@ impl Engine {
             return Err(EngineError::Invalid);
         }
         self.require_initialized()?;
+        let lineage_parent = self.head()?;
         let parent: BTreeMap<String, FileEntry> = match parent_tag {
             Some(tag) => match self.snapshots(tag)?.last() {
                 Some(latest) => self
@@ -601,11 +611,18 @@ impl Engine {
             dirs,
             files: entries,
         };
-        summary.data_added = self.write_snapshot(&manifest, tags, summary.data_added, budget)?;
+        summary.data_added = self.write_snapshot_parent(
+            &manifest,
+            tags,
+            summary.data_added,
+            budget,
+            lineage_parent,
+        )?;
         summary.snapshot_id = id;
         Ok(summary)
     }
 
+    #[cfg(test)]
     fn write_snapshot(
         &self,
         manifest: &Manifest,
@@ -613,11 +630,25 @@ impl Engine {
         added: u64,
         budget: Option<u64>,
     ) -> Result<u64> {
+        self.write_snapshot_parent(manifest, tags, added, budget, None)
+    }
+
+    fn write_snapshot_parent(
+        &self,
+        manifest: &Manifest,
+        tags: &[String],
+        added: u64,
+        budget: Option<u64>,
+        parent_id: Option<String>,
+    ) -> Result<u64> {
         let json = serde_json::to_vec(manifest).map_err(|_| EngineError::Failed)?;
         let object = compress(&json);
         let listing = serde_json::to_vec(&TagRecord {
             time_ms: manifest.time_ms,
             tags: tags.to_vec(),
+            parent_id,
+            label: None,
+            kept: tags.iter().any(|t| t.starts_with(SAFETY_PREFIX)),
         })
         .map_err(|_| EngineError::Failed)?;
         let total = added
@@ -630,6 +661,9 @@ impl Engine {
         self.store
             .put(&format!("snapshots/{}", manifest.id), &object)?;
         self.store.put(&format!("tags/{}", manifest.id), &listing)?;
+        if tags.iter().any(|t| t.starts_with(PROFILE_PREFIX)) {
+            self.set_head(Some(&manifest.id))?;
+        }
         Ok(total)
     }
 
@@ -683,6 +717,9 @@ impl Engine {
             return Err(EngineError::DiskSpaceLow);
         }
         self.store.put(&key, &bytes)?;
+        if tags.iter().any(|t| t.starts_with(PROFILE_PREFIX)) {
+            self.set_head(Some(snapshot))?;
+        }
         Ok(growth)
     }
 
@@ -730,7 +767,14 @@ impl Engine {
         Ok(if retention.is_empty() {
             snapshots.len()
         } else {
-            keep_set(&snapshots, retention).len()
+            let mut keep = keep_set(&snapshots, retention);
+            keep.extend(
+                self.all()?
+                    .into_iter()
+                    .filter(|(_, r)| r.kept && r.tags.iter().any(|t| t == tag))
+                    .map(|(id, _)| id),
+            );
+            keep.len()
         })
     }
 
@@ -746,7 +790,13 @@ impl Engine {
             .filter(|(_, r)| r.tags.iter().any(|t| t == tag))
             .map(|(id, r)| (id, r.time_ms))
             .collect();
-        let keep = keep_set(&snapshots, retention);
+        let mut keep = keep_set(&snapshots, retention);
+        keep.extend(
+            self.all()?
+                .into_iter()
+                .filter(|(_, r)| r.kept)
+                .map(|(id, _)| id),
+        );
         for (id, _) in &snapshots {
             if !keep.contains(id) {
                 self.remove_snapshot(id)?;
@@ -756,6 +806,7 @@ impl Engine {
     }
 
     fn remove_snapshot(&self, id: &str) -> Result<()> {
+        self.reparent_before_remove(id)?;
         // Listing record first, so a crash never leaves a listed snapshot without data.
         self.store.delete(&format!("tags/{id}"))?;
         self.store.delete(&format!("snapshots/{id}"))?;
@@ -777,9 +828,10 @@ impl Engine {
                 continue;
             }
             let promoted = records.get(&id).is_some_and(|r| {
-                r.tags
-                    .iter()
-                    .any(|t| t.starts_with(PROFILE_PREFIX) || t.starts_with(SAFETY_PREFIX))
+                r.kept
+                    || r.tags
+                        .iter()
+                        .any(|t| t.starts_with(PROFILE_PREFIX) || t.starts_with(SAFETY_PREFIX))
             });
             // The store's clock, like the chunk grace period below.
             if !promoted && now - object.modified_ms > UNPROMOTED_TTL_MS {

@@ -404,6 +404,12 @@ impl Engine {
             modified = true;
             summary.files_written += 1;
         }
+        if includes.is_empty() {
+            self.set_head(Some(snapshot)).map_err(|error| ApplyError {
+                error,
+                modified: true,
+            })?;
+        }
         Ok(summary)
     }
 }

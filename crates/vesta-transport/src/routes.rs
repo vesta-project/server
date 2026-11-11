@@ -296,7 +296,10 @@ pub(super) async fn route(
                 || (method == Method::DELETE && path.starts_with("/api/v3/manage/roles/"))))
         || ((super::manage::automation_endpoint(&path)
             || super::manage::presentation::implemented(&path))
-            && matches!(method, Method::POST | Method::PUT | Method::DELETE)))
+            && matches!(
+                method,
+                Method::POST | Method::PUT | Method::DELETE | Method::PATCH
+            )))
         && (request.headers().get_all("content-type").iter().count() != 1
             || request
                 .headers()

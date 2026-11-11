@@ -24,6 +24,7 @@
 pub mod engine;
 pub mod ignore;
 mod limits;
+mod lineage;
 mod policy;
 mod restore;
 pub mod s3;
@@ -77,6 +78,7 @@ pub enum BackupError {
     Disabled,
     UnknownProfile,
     UnknownJob,
+    UnknownSnapshot,
     Invalid,
     Busy,
     Unavailable,
@@ -95,6 +97,7 @@ impl BackupError {
         match self {
             Self::Disabled => "backups_not_configured",
             Self::UnknownProfile => "backup_profile_unknown",
+            Self::UnknownSnapshot => "backup_snapshot_unknown",
             Self::UnknownJob => "backup_job_unknown",
             Self::Invalid => "backup_invalid_request",
             Self::Busy => "backup_busy",
@@ -245,6 +248,7 @@ struct Inner {
     policy: std::sync::RwLock<Arc<policy::BackupPolicy>>,
     /// Serializes policy saves with their in-memory swap.
     policy_write: Mutex<()>,
+    repository: Mutex<()>,
     engine: Engine,
     /// Short-timeout engine for interactive observation (snapshot listing).
     listing: Mutex<()>,
@@ -449,6 +453,7 @@ impl Backups {
             policy_write: Mutex::new(()),
             engine,
             listing: Mutex::new(()),
+            repository: Mutex::new(()),
             game: game.to_owned(),
             env,
             stopping: AtomicBool::new(false),
@@ -959,6 +964,7 @@ impl Inner {
     }
 
     fn execute(&self, job: &Claimed) -> Outcome {
+        let _repository = self.repository.lock().unwrap_or_else(|p| p.into_inner());
         let Some(profile) = self.policy().profile(&job.profile).cloned() else {
             return Outcome::failed(BackupError::UnknownProfile.code());
         };

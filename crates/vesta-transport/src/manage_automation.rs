@@ -38,6 +38,8 @@ enum Route<'a> {
     Acknowledge,
     Backups,
     BackupJob(&'a str),
+    History,
+    Point(&'a str),
     Snapshots,
     Snapshot(&'a str),
     SafetySnapshots,
@@ -67,6 +69,7 @@ fn route(path: &str) -> Option<Route<'_>> {
         "notifications/unread" => Route::Unread,
         "notifications/read" => Route::Read,
         "notifications/acknowledge" => Route::Acknowledge,
+        "backups/history" => Route::History,
         "backups" => Route::Backups,
         "backups/snapshots" => Route::Snapshots,
         "backups/safety-snapshots" => Route::SafetySnapshots,
@@ -121,6 +124,8 @@ fn route(path: &str) -> Option<Route<'_>> {
                 Route::ResolveRecovery(id)
             } else if let Some(id) = resource(action, "backups/snapshots/") {
                 Route::Snapshot(id)
+            } else if let Some(id) = resource(action, "backups/points/") {
+                Route::Point(id)
             } else if let Some(id) = resource(action, "backups/jobs/") {
                 Route::BackupJob(id)
             } else {
@@ -173,9 +178,10 @@ fn mutation_failure(value: MutationError, precondition: bool) -> Reply {
 }
 fn backup_failure(value: BackupError) -> Reply {
     let status = match value {
-        BackupError::Disabled | BackupError::UnknownProfile | BackupError::UnknownJob => {
-            StatusCode::NOT_FOUND
-        }
+        BackupError::Disabled
+        | BackupError::UnknownProfile
+        | BackupError::UnknownJob
+        | BackupError::UnknownSnapshot => StatusCode::NOT_FOUND,
         BackupError::Forbidden => StatusCode::FORBIDDEN,
         BackupError::Invalid => StatusCode::BAD_REQUEST,
         BackupError::Busy
@@ -255,6 +261,7 @@ fn backup_read_failure(value: BackupError, snapshot_listing: bool) -> Reply {
 }
 fn capability(route: Route<'_>, method: &Method) -> Capability {
     match route {
+        Route::Point(_) => Capability::BackupsRestore,
         Route::BackupConfig => Capability::BackupsConfigure,
         Route::Policy if *method == Method::GET => Capability::BackupsView,
         Route::Policy | Route::PolicyReset => Capability::BackupsConfigure,
@@ -264,7 +271,8 @@ fn capability(route: Route<'_>, method: &Method) -> Capability {
         | Route::Unread
         | Route::Read
         | Route::Acknowledge => Capability::NotificationsView,
-        Route::Backups
+        Route::History
+        | Route::Backups
         | Route::BackupJob(_)
         | Route::Snapshots
         | Route::Snapshot(_)
@@ -711,6 +719,23 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     let Some(key) = scoped_key(host, &subject, &request) else {
         return invalid();
     };
+    if let Route::Point(id) = route {
+        if request.method != Method::PATCH {
+            return invalid();
+        }
+        let Some(value) = decode::<engine::PointUpdate>(request.bytes) else {
+            return error(StatusCode::BAD_REQUEST, "invalid_input");
+        };
+        let Some(backups) = host.backups() else {
+            return backup_failure(BackupError::Disabled);
+        };
+        return match backups.point_update(&subject, id, &value, &key) {
+            Ok(point) => ok(json!(point)),
+            Err(BackupError::UnknownSnapshot) => error(StatusCode::NOT_FOUND, "not_found"),
+            Err(BackupError::Invalid) => error(StatusCode::BAD_REQUEST, "invalid_input"),
+            Err(e) => backup_failure(e),
+        };
+    }
     if matches!(route, Route::BackupConfig) {
         if request.method != Method::PUT {
             return invalid();
@@ -914,7 +939,8 @@ fn get(
         Route::Delivery if query.is_none() => automation
             .external_delivery_status(subject)
             .map(|s| json!({"sinks":s})),
-        Route::Backups
+        Route::History
+        | Route::Backups
         | Route::BackupJob(_)
         | Route::Snapshots
         | Route::Snapshot(_)
@@ -1035,6 +1061,7 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
         Job(&'a str),
         Snapshots(&'a str, bool, Option<(String, String)>, usize),
         Snapshot(&'a str, &'a str),
+        History,
         Storage,
         Policy,
         Config,
@@ -1074,6 +1101,7 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
             }
             Query::Snapshot(value, id)
         }
+        Route::History if query.is_none() => Query::History,
         Route::Storage if query.is_none() => Query::Storage,
         Route::Policy if query.is_none() => Query::Policy,
         Route::BackupConfig if query.is_none() => Query::Config,
@@ -1083,7 +1111,9 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
         return backup_failure(BackupError::Disabled);
     };
     // Both list the repository under the same single-listing bound.
-    if backups.policy().profiles.is_empty() && !matches!(query, Query::Policy | Query::Config) {
+    if backups.policy().profiles.is_empty()
+        && !matches!(query, Query::Policy | Query::Config | Query::History)
+    {
         return backup_failure(BackupError::Disabled);
     }
     let snapshot_listing = matches!(
@@ -1104,6 +1134,7 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
             snapshot_projection(host.management().server_id(),profile,safety,snapshots,before.as_ref(),limit)
         }),
         Query::Snapshot(profile,id)=>backups.snapshots(profile).and_then(|snapshots|snapshot_detail(profile,id,snapshots)),
+        Query::History => backups.history().map(|history| json!(history)),
         Query::Storage => backups.storage().map(|status| storage_json(&status)),
         Query::Policy => Ok(policy_json(&backups.policy())),
         Query::Config => {

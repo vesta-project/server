@@ -380,3 +380,29 @@ schedules every second and publishes server and backup events. It never acts on 
 - Filesystem-snapshot acceleration (VSS/Btrfs/ZFS/LVM) and the write guard are missing.
 - No player-count or update events, no script presets, no external notification delivery.
 - Linux is untested.
+
+## Branches
+
+The repository persists the live world's `head` in `head.json`. New restore points
+record the head captured when backup reading starts as `parentId`, across profiles.
+Candidates only advance head after verification and profile promotion. Old tag
+records load with a null parent, null label and `kept: false`.
+
+A successful whole-world in-place restore (an empty `paths` list) moves head to the
+selected point. Any explicit paths list is a partial restore and leaves head alone,
+even if it happens to cover every world file. Inspection restores leave head alone.
+The pre-restore safety point has the previous head as parent and is kept by default,
+preserving the tip of the branch being left. Safety points do not advance head.
+
+Labels are trimmed and must contain 1–60 Unicode characters, or be null. PATCH
+`backups/points/<id>` accepts optional `label` and `kept` fields with an idempotency
+key, using `backups.restore`. GET `backups/history` uses `backups.view` and returns
+all promoted points newest first, bounded by the repository's 10,000 point limit.
+It includes removed profiles and safety points (whose profile is null).
+
+Kept points survive retention and storage/count limits; limits refuse new backups
+rather than delete them. To free an abandoned branch tip, set `kept: false`, then
+let normal retention remove it. Deleting a point rewrites its children's parents to
+the nearest surviving ancestor, and moves head to that ancestor if necessary.
+Repository mutations serialize with backup jobs. Tag and head writes are atomic
+per object; the repository does not provide multi-object crash transactions.
