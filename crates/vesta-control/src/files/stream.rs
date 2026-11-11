@@ -265,6 +265,12 @@ pub const SPOOL_VIEW_TTL: std::time::Duration = std::time::Duration::from_secs(3
 /// One decompression at a time; a busy cache refuses rather than blocking a worker.
 static DECOMPRESSING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(test)]
+pub(super) fn with_decompression_permit_for_test(run: impl FnOnce()) {
+    let _permit = DECOMPRESSING.lock().unwrap();
+    run();
+}
+
 impl FileBrowser {
     /// The decompressed text of a rotated `*.gz` log, as a seekable read-only view.
     /// Authority and path checks are those of `open_stream` on the archive itself.

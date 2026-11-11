@@ -772,8 +772,13 @@ fn spooled_logs(f: &Fixture) -> usize {
         .count()
 }
 
+// These tests expect specific parser/cache outcomes, rather than the intentional
+// process-wide busy refusal. Keep their use of the one production permit isolated.
+static DECOMPRESSED_VIEW_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn rotated_gzip_logs_read_as_a_reused_bounded_decompressed_view() {
+    let _test = DECOMPRESSED_VIEW_TESTS.lock().unwrap();
     let f = Fixture::open();
     let text: Vec<u8> = (0..200_000)
         .flat_map(|i| format!("[12:00:00] [Server thread/INFO]: line {i}\n").into_bytes())
@@ -811,6 +816,7 @@ fn rotated_gzip_logs_read_as_a_reused_bounded_decompressed_view() {
 
 #[test]
 fn only_real_gzip_archives_with_a_gz_name_are_decompressed() {
+    let _test = DECOMPRESSED_VIEW_TESTS.lock().unwrap();
     let f = Fixture::open();
     f.write("latest.log", b"plain text\n");
     refused(
@@ -837,6 +843,7 @@ fn only_real_gzip_archives_with_a_gz_name_are_decompressed() {
 
 #[test]
 fn corrupt_truncated_and_bomb_archives_serve_nothing() {
+    let _test = DECOMPRESSED_VIEW_TESTS.lock().unwrap();
     let f = Fixture::open();
     let archive = gzip(&b"line\n".repeat(50_000));
     f.write("truncated.log.gz", &archive[..archive.len() / 2]);
@@ -865,7 +872,33 @@ fn corrupt_truncated_and_bomb_archives_serve_nothing() {
 }
 
 #[test]
+fn decompression_busy_refuses_without_caching_then_succeeds_after_release() {
+    let _test = DECOMPRESSED_VIEW_TESTS.lock().unwrap();
+    let f = Fixture::open();
+    f.write("busy.log.gz", &gzip(b"owned log\n"));
+    let path = RelativePath::parse("busy.log.gz").unwrap();
+    super::stream::with_decompression_permit_for_test(|| {
+        refused(
+            f.browser.open_decompressed(&f.owner, &path),
+            "file_unavailable",
+        );
+    });
+    assert_eq!(
+        spooled_logs(&f),
+        0,
+        "busy refusal cannot publish a partial view"
+    );
+    let mut view = f.browser.open_decompressed(&f.owner, &path).unwrap();
+    assert_eq!(
+        view.read_chunk(0, FILE_CHUNK_BYTES).unwrap(),
+        b"owned log\n"
+    );
+    assert_eq!(spooled_logs(&f), 1);
+}
+
+#[test]
 fn decompressed_views_expire_after_their_ttl_and_are_rebuilt() {
+    let _test = DECOMPRESSED_VIEW_TESTS.lock().unwrap();
     let f = Fixture::open();
     f.write("old.log.gz", &gzip(b"first\nsecond\n"));
     let path = RelativePath::parse("old.log.gz").unwrap();
