@@ -2383,10 +2383,24 @@ fn public_v3_auth_aliases_accept_linked_devices_and_refuse_code_only_enrollment(
         .issue_local(vesta_control::identity::BuiltinRole::Owner, 10)
         .unwrap();
     let request = serde_json::to_vec(&serde_json::json!({"code":code.secret.expose(),"device_name":"Alias user","public_key":public})).unwrap();
-    for authorization in [None, Some(token.as_str())] {
-        f.request("POST", "/api/v3/manage/pair", &request, authorization)
-            .error(401, "management_session_invalid");
-    }
+    f.request("POST", "/api/v3/manage/pair", &request, None)
+        .error(401, "management_session_invalid");
+    // A code alone cannot authenticate. An existing account session can redeem
+    // it without changing that account or device, and only once.
+    let original = f.host().management().authenticate(&token).unwrap();
+    let redeemed = f.request("POST", "/api/v3/manage/pair", &request, Some(&token));
+    assert_eq!(redeemed.status, 200);
+    let enrolled = redeemed.json();
+    assert_eq!(enrolled["server_id"], f.host().management().server_id());
+    assert_eq!(enrolled["principal_id"], original.principal.as_str());
+    assert_eq!(enrolled["device_id"], device);
+    assert_eq!(enrolled["role"], "owner");
+    assert_eq!(
+        f.host().management().authenticate(&token).unwrap(),
+        original
+    );
+    f.request("POST", "/api/v3/manage/pair", &request, Some(&token))
+        .error(401, "management_pair_invalid");
     assert_eq!(
         f.request("POST", "/api/v2/pack/ticket", b"", Some(&token))
             .status,
