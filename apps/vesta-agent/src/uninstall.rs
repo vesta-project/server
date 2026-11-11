@@ -828,7 +828,13 @@ async fn execute(reviewed: Plan, choice: DataChoice, request: &Request, base: &P
         "setup.json",
         &serde_json::to_vec_pretty(&receipt).map_err(|_| "uninstall_journal_failed")?,
     )
-    .map_err(|_| "uninstall_journal_failed")?;
+    .map_err(|error| {
+        #[cfg(test)]
+        eprintln!("uninstall journal refusal: {error}");
+        #[cfg(not(test))]
+        let _ = error;
+        "uninstall_journal_failed"
+    })?;
     drop(runners);
     drop(leases);
     drop(host_guard);

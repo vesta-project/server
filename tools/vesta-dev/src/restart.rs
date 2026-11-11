@@ -689,6 +689,11 @@ fn process_named(expected: &str) -> Result<bool> {
     }
 }
 
+#[cfg(not(windows))]
+fn process_named(_: &str) -> Result<bool> {
+    Err("unproven shutdown requires runtime recovery".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -820,8 +825,4 @@ mod tests {
             .is_err()
         );
     }
-}
-#[cfg(not(windows))]
-fn process_named(_: &str) -> Result<bool> {
-    Err("unproven shutdown requires runtime recovery".into())
 }
