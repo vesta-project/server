@@ -645,6 +645,85 @@ fn windows_junction_cannot_redirect_installed_binaries() {
     fs::remove_dir(link).unwrap();
 }
 
+#[cfg(windows)]
+#[test]
+#[allow(unsafe_code)] // Bounded native spelling query on a newly owned fixture.
+fn receipt_accepts_native_root_aliases_but_refuses_copies_and_junctions() {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    let temp = tempfile::Builder::new()
+        .prefix("vesta-setup-receipt-alias-")
+        .tempdir_in(std::env::var_os("ProgramData").unwrap())
+        .unwrap();
+    let root = temp.path().join("host");
+    fs::create_dir(&root).unwrap();
+    let input: Vec<u16> = root.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut output = vec![0u16; 32_768];
+    // SAFETY: terminated input and a live output of the advertised capacity.
+    let count = unsafe {
+        windows_sys::Win32::Storage::FileSystem::GetShortPathNameW(
+            input.as_ptr(),
+            output.as_mut_ptr(),
+            output.len() as u32,
+        )
+    } as usize;
+    assert!(count > 0 && count < output.len());
+    let short = PathBuf::from(std::ffi::OsString::from_wide(&output[..count]));
+    eprintln!("native setup root alias exercised: {}", short != root);
+    assert_eq!(
+        fs::canonicalize(&short).unwrap(),
+        fs::canonicalize(&root).unwrap()
+    );
+    let receipt = Receipt {
+        schema: 1,
+        installation_id: "a".repeat(32),
+        answers: answers(short.clone()),
+        release_version: "fixture".into(),
+        release_manifest_sha256: "b".repeat(64),
+        phase: "installed".into(),
+        tls_sha256: "c".repeat(64),
+        startup_registered: false,
+        external_status: Default::default(),
+    };
+    let bytes = serde_json::to_vec(&receipt).unwrap();
+    engine::write_private(&short, "setup.json", &bytes).unwrap();
+    assert_eq!(engine::read_receipt(&short).unwrap().answers.root, short);
+    let loaded = engine::read_receipt(&fs::canonicalize(&root).unwrap()).unwrap();
+    assert_eq!(loaded.answers.root, short);
+    assert_eq!(loaded.installation_id, receipt.installation_id);
+    assert_eq!(loaded.tls_sha256, receipt.tls_sha256);
+    let copy = temp.path().join("copied-host");
+    fs::create_dir(&copy).unwrap();
+    engine::write_private(&copy, "setup.json", &bytes).unwrap();
+    assert_eq!(
+        engine::read_receipt(&copy).unwrap_err(),
+        "setup_receipt_invalid"
+    );
+    let link = temp.path().join("host-link");
+    let status = Command::new("cmd.exe")
+        .args(["/c", "mklink", "/J"])
+        .arg(&link)
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert!(status.status.success(), "create owned fixture junction");
+    let linked_result = engine::read_receipt(&link);
+    let mut redirected = receipt.clone();
+    redirected.answers.root = link.clone();
+    engine::write_private(
+        &root,
+        "setup.json",
+        &serde_json::to_vec(&redirected).unwrap(),
+    )
+    .unwrap();
+    let redirected_result = engine::read_receipt(&root);
+    engine::write_private(&root, "setup.json", &bytes).unwrap();
+    fs::remove_dir(&link).unwrap();
+    assert_eq!(linked_result.unwrap_err(), "setup_link_refused");
+    assert_eq!(redirected_result.unwrap_err(), "setup_receipt_invalid");
+    assert_eq!(fs::read(root.join("private/setup.json")).unwrap(), bytes);
+    assert_eq!(fs::read(copy.join("private/setup.json")).unwrap(), bytes);
+}
+
 struct RunningHost {
     root: PathBuf,
 }

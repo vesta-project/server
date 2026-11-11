@@ -199,7 +199,7 @@ pub fn read_receipt(root: &Path) -> Result<Receipt> {
     )?)
     .map_err(|_| "setup_receipt_invalid")?;
     if r.schema != 1
-        || comparable(&r.answers.root) != comparable(root)
+        || !receipt_root_matches(&r.answers.root, root)
         || r.installation_id.len() != 32
         || !r
             .installation_id
@@ -209,6 +209,25 @@ pub fn read_receipt(root: &Path) -> Result<Receipt> {
         return Err("setup_receipt_invalid".into());
     }
     Ok(r)
+}
+fn receipt_root_matches(recorded: &Path, actual: &Path) -> bool {
+    if guard(recorded).is_err() {
+        return false;
+    }
+    if comparable(recorded) == comparable(actual) {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        // Both paths have passed the no-link guard. Windows startup expands
+        // native 8.3 names; that spelling change must not relocate the receipt.
+        match (recorded.canonicalize(), actual.canonicalize()) {
+            (Ok(recorded), Ok(actual)) => comparable(&recorded) == comparable(&actual),
+            _ => false,
+        }
+    }
+    #[cfg(not(windows))]
+    false
 }
 /// Share the install/uninstall fence before creating any updater state.
 pub(crate) fn lock_existing_installation(root: &Path) -> Result<File> {
