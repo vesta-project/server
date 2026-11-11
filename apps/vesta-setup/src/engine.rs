@@ -268,9 +268,13 @@ pub fn write_private(root: &Path, name: &str, bytes: &[u8]) -> Result<()> {
     }
     let result = (|| {
         let mut file = options.open(&temp).map_err(|_| "setup_write_failed")?;
-        directory
-            .tighten_file(&temp)
-            .map_err(|_| "setup_private_permissions_failed")?;
+        directory.tighten_file(&temp).map_err(|error| {
+            #[cfg(debug_assertions)]
+            eprintln!("setup private file protection (staged): {}", error.code());
+            #[cfg(not(debug_assertions))]
+            let _ = error;
+            "setup_private_permissions_failed"
+        })?;
         file.write_all(bytes)
             .and_then(|_| file.sync_all())
             .map_err(|_| "setup_write_failed")?;
@@ -281,9 +285,16 @@ pub fn write_private(root: &Path, name: &str, bytes: &[u8]) -> Result<()> {
         File::open(root.join("private"))
             .and_then(|directory| directory.sync_all())
             .map_err(|_| "setup_write_failed")?;
-        directory
-            .tighten_file(&target)
-            .map_err(|_| "setup_private_permissions_failed")?;
+        directory.tighten_file(&target).map_err(|error| {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "setup private file protection (published): {}",
+                error.code()
+            );
+            #[cfg(not(debug_assertions))]
+            let _ = error;
+            "setup_private_permissions_failed"
+        })?;
         Ok(())
     })();
     if result.is_err() {
