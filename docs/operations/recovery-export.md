@@ -31,6 +31,8 @@ Excluded tables: `pack_passwords`, `device_password_grants`, `bootstrap_codes`, 
 
 The export does not include `host.toml`, S3 endpoint/bucket configuration, S3 credential files, or the backup repository's chunks and snapshots. Optional encryption protects the exported control data, not the backup repository.
 
+The allowlist also excludes `management_invitation_uses` (counters for excluded code hashes), `whitelist_sync_actor` (live device-bound synchronization authority), and `whitelist_sync_members` (ownership witnesses for the current game's whitelist). Import does not merge these rows from an existing target: they must be empty along with other application state. Enabling synchronization after recovery must establish its actor through the normal authorized settings flow; portable recovery does not restore game-file ownership claims.
+
 Settings, workflow definitions, notification content and other included text can contain operator-supplied free text. There is no generic content secret detector: do not put credentials in these fields. The explicit schema allowlist excludes credential storage, but cannot identify secrets pasted into arbitrary text.
 
 Without a job ID, `backup-resolve` lists interrupted restores as `<id> <error_code>`, or prints `no_restore_needs_recovery`. With a job ID, the confirmation must match exactly. Confirm only after inspecting and accepting the current restored files. Success prints `backup_recovery_resolved`. This marks the recovery requirement resolved; it does not restore files or start the game.

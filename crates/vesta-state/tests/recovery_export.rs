@@ -47,6 +47,10 @@ fn recovery_export_includes_identity_and_roles_but_not_secret_tables() {
                     format!("{:<64}", "unique-bootstrap-secret-do-not-export")
                 ],
             )?;
+            connection.execute("INSERT INTO whitelist_sync_actor VALUES(1,'export-principal','export-device')", [])?;
+            connection.execute("INSERT INTO whitelist_sync_members VALUES('11111111-2222-4333-8444-555555555555','OwnedSyncMember')", [])?;
+            connection.execute("INSERT INTO management_pairing_codes(code_hash,server_id,role_id,created_at,expires_at) VALUES(?,?,'player',1,2)", rusqlite::params![vec![0xcdu8; 32], &server_id])?;
+            connection.execute("INSERT INTO management_invitation_uses VALUES(?,3,1)", [vec![0xcdu8; 32]])?;
             Ok(())
         })
         .unwrap();
@@ -121,4 +125,8 @@ fn recovery_export_includes_identity_and_roles_but_not_secret_tables() {
     assert_eq!(exported_key[public_key_hex], "ab".repeat(32));
     assert!(!tables.contains_key("pack_passwords"));
     assert!(!tables.contains_key("bootstrap_codes"));
+    assert!(!tables.contains_key("management_invitation_uses"));
+    assert!(!tables.contains_key("whitelist_sync_actor"));
+    assert!(!tables.contains_key("whitelist_sync_members"));
+    assert!(!text.contains("OwnedSyncMember"));
 }

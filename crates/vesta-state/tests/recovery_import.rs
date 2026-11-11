@@ -258,6 +258,58 @@ fn nonempty_target_is_refused_without_mutation() {
 }
 
 #[test]
+fn existing_whitelist_sync_state_is_not_a_fresh_import_target() {
+    let (_, export) = populated_source();
+    for (table, sql) in [
+        (
+            "whitelist_sync_actor",
+            "INSERT INTO whitelist_sync_actor VALUES(1,'old-principal','old-device')",
+        ),
+        (
+            "whitelist_sync_members",
+            "INSERT INTO whitelist_sync_members VALUES('11111111-2222-4333-8444-555555555555','OldMember')",
+        ),
+    ] {
+        let target = Fixture::with_time(1_800_000_000_000);
+        target
+            .db
+            .write(|c| {
+                c.execute(sql, [])?;
+                Ok(())
+            })
+            .unwrap();
+        let id = target.db.server_id().to_owned();
+        let directory = target.db.directory().clone();
+        let clock = target.clock.clone();
+        target.db.close().unwrap();
+        let error = import_recovery_export(directory.clone(), clock.clone(), &export).unwrap_err();
+        assert_eq!(error.code(), "state_import_target_not_empty", "{table}");
+        let db = reopen(directory, clock);
+        assert_eq!(db.server_id(), id, "{table}");
+        db.read(|c| {
+            assert_eq!(
+                c.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row
+                    .get::<_, i64>(0))?,
+                1
+            );
+            assert_eq!(
+                c.query_row("SELECT count(*) FROM principals", [], |row| row
+                    .get::<_, i64>(0))?,
+                0
+            );
+            assert_eq!(
+                c.query_row("SELECT count(*) FROM audit_events", [], |row| row
+                    .get::<_, i64>(0))?,
+                0
+            );
+            Ok(())
+        })
+        .unwrap();
+        db.close().unwrap();
+    }
+}
+
+#[test]
 fn mismatched_builtin_capability_and_schema_are_rejected() {
     let (_, export) = populated_source();
     let target = Fixture::with_time(1_800_000_000_000);

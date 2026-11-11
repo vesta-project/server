@@ -203,7 +203,12 @@ const EXCLUDED: &[&str] = &[
     "management_pairing_codes",
     "management_invitation_issuers",
     "management_invitation_ids",
+    // Usage counters belong to excluded pairing-code hashes.
+    "management_invitation_uses",
     "management_owner_links",
+    // Live authority and game-file ownership are not portable control-plane data.
+    "whitelist_sync_actor",
+    "whitelist_sync_members",
     "confirmations",
     "management_permission_receipts",
     "local_authority_uses",
