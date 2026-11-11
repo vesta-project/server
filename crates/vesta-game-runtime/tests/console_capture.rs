@@ -8,7 +8,7 @@ use std::io::{self, Cursor, Read};
 use std::time::SystemTime;
 use vesta_game_runtime::console::{
     CaptureReport, ConsoleCapture, ConsoleError, ConsoleLine, ConsolePage, ConsoleStream,
-    MAX_LINE_BYTES, MAX_PAGE_LINES, MAX_RETAINED_BYTES, MAX_RETAINED_LINES,
+    MAX_LINE_BYTES, MAX_PAGE_BYTES, MAX_PAGE_LINES, MAX_RETAINED_BYTES, MAX_RETAINED_LINES,
 };
 
 /// The component's private read chunk. Pinned here only to keep byte accounting
@@ -108,6 +108,26 @@ fn full_page(capture: &ConsoleCapture) -> ConsolePage {
     capture
         .snapshot(0, MAX_PAGE_LINES)
         .expect("one bounded page")
+}
+
+/// Collect a bounded sample across real byte-limited pages, without treating a
+/// requested line limit as a promise that all those lines fit in one page.
+fn sample_lines(capture: &ConsoleCapture, mut after: u64, limit: usize) -> Vec<ConsoleLine> {
+    assert!((1..=MAX_RETAINED_LINES).contains(&limit));
+    let mut lines = Vec::new();
+    while lines.len() < limit {
+        let page = capture
+            .snapshot(after, (limit - lines.len()).min(MAX_PAGE_LINES))
+            .expect("bounded sample page");
+        assert!(page.lines.iter().map(|line| line.text.len()).sum::<usize>() <= MAX_PAGE_BYTES);
+        if page.lines.is_empty() {
+            break;
+        }
+        assert!(page.next_cursor > after, "nonempty page must advance");
+        after = page.next_cursor;
+        lines.extend(page.lines);
+    }
+    lines
 }
 
 /// Counts what the capture actually retains by paging with the public API only.
@@ -225,7 +245,7 @@ fn publication_bounds_keep_scalars_and_drain_excess_bytes_to_the_marker() {
             truncated_lines: 1
         }
     );
-    let lines = full_page(&overflow).lines;
+    let lines = sample_lines(&overflow, 0, 2);
     assert_eq!(lines[0].text.len(), MAX_LINE_BYTES);
     assert_eq!(lines[0].text, "y".repeat(MAX_LINE_BYTES));
     assert!(lines[0].truncated, "one dropped byte must be reported");
@@ -247,7 +267,7 @@ fn publication_bounds_keep_scalars_and_drain_excess_bytes_to_the_marker() {
                     ChunkedReader::new(input.into_bytes(), 1),
                 )
                 .expect("split scalar capture");
-            let lines = full_page(&boundary).lines;
+            let lines = sample_lines(&boundary, 0, 2);
             assert_eq!(report.lines, 2);
             assert_eq!(report.truncated_lines, u64::from(crossing > 0));
             assert_eq!(
@@ -281,7 +301,7 @@ fn publication_bounds_keep_scalars_and_drain_excess_bytes_to_the_marker() {
             truncated_lines: 1
         }
     );
-    let lines = full_page(&chunked).lines;
+    let lines = sample_lines(&chunked, 0, 2);
     assert_eq!(lines[0].text.len(), MAX_LINE_BYTES);
     assert_eq!(lines[1].text, "TAIL");
     assert!(!lines[1].truncated);
@@ -582,23 +602,44 @@ fn retention_bounds_and_failures_report_fixed_redacted_errors() {
     // The newest lines pushed the oldest window out, in cursor order.
     let bound_line = "z".repeat(MAX_LINE_BYTES);
     let oldest_three = by_bytes.snapshot(0, 3).expect("first retained page");
-    assert_eq!(retained, 128);
-    assert_eq!(cursors(&oldest_three), vec![73, 74, 75]);
-    assert_eq!(line_texts(&oldest_three), vec![bound_line.as_str(); 3]);
+    let evicted = 200 - retained as u64;
+    let first = evicted + 1;
+    let page_capacity = MAX_PAGE_BYTES / MAX_LINE_BYTES;
+    let first_count = 3.min(page_capacity).min(retained);
+    assert_eq!(
+        oldest_three
+            .lines
+            .iter()
+            .map(|line| line.text.len())
+            .sum::<usize>(),
+        first_count * MAX_LINE_BYTES
+    );
+    assert_eq!(
+        cursors(&oldest_three),
+        (first..first + first_count as u64).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        line_texts(&oldest_three),
+        vec![bound_line.as_str(); first_count]
+    );
     assert!(oldest_three.gap);
     let straddling = by_bytes
-        .snapshot(74, 5)
+        .snapshot(first + 1, 5)
         .expect("page straddling the boundary");
-    assert_eq!(cursors(&straddling), vec![75, 76, 77, 78, 79]);
+    let straddling_count = 5.min(page_capacity).min(retained - 2);
+    assert_eq!(
+        cursors(&straddling),
+        (first + 2..first + 2 + straddling_count as u64).collect::<Vec<_>>()
+    );
     assert!(!straddling.gap);
-    assert!(!by_bytes.snapshot(72, 1).unwrap().gap);
-    let evicted_prefix = by_bytes.snapshot(71, 1).expect("evicted prefix");
+    assert!(!by_bytes.snapshot(evicted, 1).unwrap().gap);
+    let evicted_prefix = by_bytes.snapshot(evicted - 1, 1).expect("evicted prefix");
     assert!(
         evicted_prefix.gap,
         "an evicted requested prefix must be reported"
     );
-    assert_eq!(cursors(&evicted_prefix), vec![73]);
-    assert_eq!(evicted_prefix.next_cursor, 73);
+    assert_eq!(cursors(&evicted_prefix), vec![first]);
+    assert_eq!(evicted_prefix.next_cursor, first);
     assert_eq!(evicted_prefix.latest_cursor, 200);
 
     // Invalid page arguments are refused with one fixed code, never clamped.
@@ -613,7 +654,7 @@ fn retention_bounds_and_failures_report_fixed_redacted_errors() {
     let exact = by_bytes
         .snapshot(0, MAX_PAGE_LINES)
         .expect("exact bound accepted");
-    assert_eq!(exact.lines.len(), retained);
+    assert_eq!(exact.lines.len(), retained.min(page_capacity));
     assert_eq!(
         by_count.snapshot(0, MAX_PAGE_LINES).unwrap().lines.len(),
         MAX_PAGE_LINES
