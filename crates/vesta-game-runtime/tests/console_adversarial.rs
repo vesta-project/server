@@ -111,7 +111,8 @@ fn replacement_expansion_alone_can_truncate_below_the_raw_framing_bound() {
         assert_eq!(report.truncated_lines, u64::from(truncated));
         let page = capture.snapshot(0, 1).unwrap();
         assert_eq!(page.lines[0].text, "\u{fffd}".repeat(MAX_LINE_BYTES / 3));
-        assert_eq!(page.lines[0].text.len(), 16_383);
+        assert_eq!(page.lines[0].text.len(), (MAX_LINE_BYTES / 3) * 3);
+        assert!(MAX_LINE_BYTES - page.lines[0].text.len() < 3);
         assert_eq!(page.lines[0].truncated, truncated);
     }
     let capture = ConsoleCapture::new();
@@ -142,10 +143,12 @@ fn mixed_size_publication_evicts_multiple_lines_and_keeps_exact_byte_budget() {
         .capture_reader(ConsoleStream::Stderr, Cursor::new(large))
         .unwrap();
     let first = capture.snapshot(0, 1).unwrap();
-    assert_eq!(first.lines[0].cursor, 5);
+    // A full maximum-size line evicts exactly enough 4096-byte lines.
+    let evicted = MAX_LINE_BYTES.div_ceil(4_096) as u64;
+    assert_eq!(first.lines[0].cursor, evicted + 1);
     assert!(first.gap);
-    assert!(!capture.snapshot(4, 1).unwrap().gap);
-    assert!(capture.snapshot(3, 1).unwrap().gap);
+    assert!(!capture.snapshot(evicted, 1).unwrap().gap);
+    assert!(capture.snapshot(evicted - 1, 1).unwrap().gap);
     let mut after = 0;
     let mut bytes = 0;
     let mut count = 0;
@@ -159,7 +162,7 @@ fn mixed_size_publication_evicts_multiple_lines_and_keeps_exact_byte_budget() {
         assert!(page.next_cursor > after, "nonempty page must advance");
         after = page.next_cursor;
     }
-    assert_eq!(count, 509);
+    assert_eq!(count, 513 - evicted as usize);
     assert_eq!(bytes, MAX_RETAINED_BYTES);
     assert_eq!(after, 513);
     let last = capture.snapshot(512, 1).unwrap();
