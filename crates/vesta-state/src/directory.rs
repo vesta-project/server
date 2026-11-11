@@ -113,11 +113,23 @@ impl StateDirectory {
     /// Tighten only a regular, non-linked file inside this state root. Absent files are harmless.
     pub fn tighten_file(&self, file: &Path) -> Result<()> {
         let raw = raw_absolute(file)?;
+        let parent = raw
+            .parent()
+            .ok_or_else(|| StateError::new("state_file_linked"))?;
+        reject_linked_directories(parent, "state_file_linked")?;
         if !is_within(&lexically_normalize(&raw), &self.path)? {
-            return Err(StateError::new("state_file_linked"));
-        }
-        if let Some(parent) = raw.parent() {
-            reject_linked_directories(parent, "state_file_linked")?;
+            // The stored root is canonical. An unmatched native spelling may be
+            // a Windows 8.3 alias. Resolve only the inspected parent, never the
+            // leaf; ordinary already-matching paths need no extra filesystem query.
+            let name = raw
+                .file_name()
+                .ok_or_else(|| StateError::new("state_file_linked"))?;
+            let admitted = normalize_real(parent)
+                .map_err(|_| StateError::new("state_file_linked"))?
+                .join(name);
+            if !is_within(&admitted, &self.path)? {
+                return Err(StateError::new("state_file_linked"));
+            }
         }
         if require_regular_or_absent(&raw)? {
             let held = open_regular(&raw, false, false)?;

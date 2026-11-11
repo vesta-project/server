@@ -23,6 +23,58 @@ fn standalone_directory(root: &Path, name: &str) -> StateDirectory {
     StateDirectory::new(root.join(name), None).expect("valid test state path")
 }
 
+#[cfg(windows)]
+#[test]
+fn private_file_admission_accepts_native_short_names_without_admitting_parent_escape() {
+    // ProgramData normally retains its native short alias even when creation of new
+    // 8.3 names is disabled. Create only this exclusive, automatically removed root.
+    let temp = tempfile::Builder::new()
+        .prefix("vesta-state-alias-")
+        .tempdir_in(std::env::var_os("ProgramData").expect("Windows ProgramData fixture parent"))
+        .expect("create owned native path fixture");
+    eprintln!("owned native path fixture: {}", temp.path().display());
+    let state = standalone_directory(temp.path(), "private");
+    state.prepare().unwrap();
+    let file = temp.path().join("private/probe.txt");
+    fs::write(&file, b"owned private witness").unwrap();
+    let short = native_short_name(&file);
+    eprintln!("native short-name alias exercised: {}", short != file);
+    assert_eq!(
+        fs::canonicalize(&short).unwrap(),
+        fs::canonicalize(&file).unwrap()
+    );
+    state.tighten_file(&short).unwrap();
+    assert_eq!(fs::read(&file).unwrap(), b"owned private witness");
+    assert_owner_only_acl(&file);
+
+    let outside = temp.path().join("outside.txt");
+    fs::write(&outside, b"outside witness").unwrap();
+    let escape = short.parent().unwrap().join("../outside.txt");
+    assert_error_code(state.tighten_file(&escape), "state_file_linked");
+    assert_eq!(fs::read(&outside).unwrap(), b"outside witness");
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)] // Bounded native spelling query on an exclusively owned fixture.
+fn native_short_name(path: &Path) -> std::path::PathBuf {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    let input: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut output = vec![0u16; 32_768];
+    // SAFETY: input is terminated; output has the exact advertised writable capacity.
+    let count = unsafe {
+        windows_sys::Win32::Storage::FileSystem::GetShortPathNameW(
+            input.as_ptr(),
+            output.as_mut_ptr(),
+            output.len() as u32,
+        )
+    } as usize;
+    assert!(
+        count > 0 && count < output.len(),
+        "native fixture spelling available"
+    );
+    std::ffi::OsString::from_wide(&output[..count]).into()
+}
+
 #[test]
 fn real_wal_database_has_stable_server_identity_and_connection_invariants() {
     let fixture = Fixture::open();
