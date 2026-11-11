@@ -68,6 +68,35 @@ fn v17_upgrade_preserves_identity_and_protected_backup_and_seeds_exact_defaults(
             .unwrap(),
         0
     );
+    for table in [
+        "management_invitation_uses",
+        "whitelist_sync_actor",
+        "whitelist_sync_members",
+    ] {
+        assert_eq!(
+            backup
+                .query_row(
+                    "SELECT count(*) FROM sqlite_schema WHERE name=?",
+                    [table],
+                    |r| r.get::<_, u32>(0)
+                )
+                .unwrap(),
+            0
+        );
+        upgraded
+            .read(|c| {
+                assert_eq!(
+                    c.query_row(
+                        "SELECT count(*) FROM sqlite_schema WHERE name=?",
+                        [table],
+                        |r| r.get::<_, u32>(0)
+                    )?,
+                    1
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
     upgraded.close().unwrap();
 }
 

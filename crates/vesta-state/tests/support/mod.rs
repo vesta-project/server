@@ -150,13 +150,27 @@ pub fn remove_directory_link(link: &Path) -> io::Result<()> {
     }
 }
 
-/// V27 protected pack draft/upload tables.
-pub const REMOVE_V27_SCHEMA: &str = "DROP TABLE pack_import_warnings; DROP TABLE pack_publication_history; DROP TABLE pack_workspace_uploads; DROP TABLE pack_workspace_published; DROP TABLE pack_workspace_receipts; DROP TABLE pack_workspace_blobs; DROP TABLE pack_workspace;";
+// One list for all fixtures that rewind past V31. Production migrations must
+// still reject duplicate tables; the fixture must actually remove later schema.
+macro_rules! without_v31_schema {
+    ($earlier:literal) => {
+        concat!("DROP TABLE management_invitation_uses; DROP TABLE whitelist_sync_actor; DROP TABLE whitelist_sync_members;", $earlier)
+    };
+}
+#[allow(dead_code)]
+pub const REMOVE_V31_SCHEMA: &str = without_v31_schema!("");
+
+/// V27 protected pack draft/upload tables and subsequent additions.
+pub const REMOVE_V27_SCHEMA: &str = without_v31_schema!(
+    "DROP TABLE pack_import_warnings; DROP TABLE pack_publication_history; DROP TABLE pack_workspace_uploads; DROP TABLE pack_workspace_published; DROP TABLE pack_workspace_receipts; DROP TABLE pack_workspace_blobs; DROP TABLE pack_workspace;"
+);
 
 /// V25 public invitation IDs and later workspace tables. Older simulated schemas
 /// must remove all subsequent additions, rather than only lower user_version.
 #[allow(dead_code)]
-pub const REMOVE_V25_SCHEMA: &str = "DROP TABLE pack_import_warnings; DROP TABLE pack_publication_history; DROP TABLE pack_workspace_uploads; DROP TABLE pack_workspace_published; DROP TABLE pack_workspace_receipts; DROP TABLE pack_workspace_blobs; DROP TABLE pack_workspace; DROP TABLE management_invitation_ids;";
+pub const REMOVE_V25_SCHEMA: &str = without_v31_schema!(
+    "DROP TABLE pack_import_warnings; DROP TABLE pack_publication_history; DROP TABLE pack_workspace_uploads; DROP TABLE pack_workspace_published; DROP TABLE pack_workspace_receipts; DROP TABLE pack_workspace_blobs; DROP TABLE pack_workspace; DROP TABLE management_invitation_ids;"
+);
 
 /// V24 metrics additions. Usable inside an existing transaction.
 #[allow(dead_code)]

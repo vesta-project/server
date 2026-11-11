@@ -6,6 +6,7 @@ fn v28_uploads_and_drafts_survive_the_capacity_migration() {
     let directory = f.db.directory().clone();
     let id = f.db.server_id().to_owned();
     f.db.write(|c| {
+        c.execute_batch(support::REMOVE_V31_SCHEMA)?;
         c.execute_batch("DROP TABLE pack_import_warnings; DROP TABLE pack_workspace_uploads; CREATE TABLE pack_workspace_uploads(server_id TEXT NOT NULL REFERENCES server_identity(server_id),principal_id TEXT NOT NULL,device_id TEXT NOT NULL,upload_id TEXT NOT NULL,total_size INTEGER NOT NULL,sha256 TEXT NOT NULL,archive INTEGER NOT NULL,complete INTEGER NOT NULL DEFAULT 0,body BLOB NOT NULL,PRIMARY KEY(server_id,principal_id,device_id,upload_id),CHECK(total_size>=0 AND total_size<=71303168),CHECK(length(body)<=total_size)) STRICT; PRAGMA user_version=28;")?;
         c.execute("INSERT INTO pack_workspace_uploads VALUES(?,'owner','device','resume',6,?,1,0,?)",rusqlite::params![id,"a".repeat(64),b"abc".as_slice()])?;
         c.execute("INSERT INTO pack_workspace(server_id,revision,manifest_json) VALUES(?,1,'{}')",[&id])?;Ok(())
@@ -27,6 +28,7 @@ fn v29_workspace_rows_survive_review_threshold_migration() {
     let directory = f.db.directory().clone();
     let id = f.db.server_id().to_owned();
     f.db.write(|c| {
+        c.execute_batch(support::REMOVE_V31_SCHEMA)?;
         c.execute(
             "INSERT INTO pack_workspace(server_id,revision,manifest_json) VALUES(?,7,'{}')",
             [&id],
