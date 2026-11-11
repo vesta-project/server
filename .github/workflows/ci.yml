@@ -76,6 +76,9 @@ jobs:
       - name: Run Rust tests
         env:
           CARGO_INCREMENTAL: "0"
+          # Native onboarding fixtures package the real setup executable. Embedded
+          # Linux debug symbols can exceed its unchanged 64 MiB artifact bound.
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: rustup run 1.96.0 cargo test --workspace --locked -- --test-threads=1
 
       - name: Run strict all-target Clippy

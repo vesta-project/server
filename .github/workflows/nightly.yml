@@ -101,6 +101,9 @@ jobs:
       - name: Check, test, and lint Rust workspace
         env:
           CARGO_INCREMENTAL: '0'
+          # Keep native test fixtures within the same setup-artifact size bound
+          # as production releases; release build settings remain unchanged.
+          CARGO_PROFILE_TEST_DEBUG: '0'
         run: |
           rustup run 1.96.0 cargo check --workspace --all-targets --locked
           rustup run 1.96.0 cargo test --workspace --locked -- --test-threads=1
