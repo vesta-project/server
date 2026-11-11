@@ -1116,6 +1116,45 @@ fn native_drive_verbatim_and_separator_spellings_do_not_evade_lexical_duplicate_
     );
 }
 
+/// The same refusals must hold when one spelling uses native short (8.3) names
+/// and the other their long names, as hosted runners spell the user temp root.
+#[cfg(windows)]
+#[test]
+fn native_short_name_spellings_do_not_evade_duplicate_refusal() {
+    let (temp, short) = crate::files::short_alias_fixture();
+    let canonical = fs::canonicalize(temp.path()).unwrap();
+    // The non-verbatim long spelling, so TOML forward-slash values join natively.
+    let long = crate::files::long_spelling(&short);
+    let forward = |path: PathBuf| path.to_str().unwrap().replace('\\', "/");
+    let text = GOLDEN.replace(
+        "launch-definition = 'private/launch.toml'",
+        &format!("launch-definition = '{}'", forward(short.join("host.toml"))),
+    );
+    for base in [long.as_path(), short.as_path()] {
+        refused(
+            HostConfiguration::parse_toml(text.as_bytes(), base, &canonical.join("host.toml")),
+            ConfigError::InvalidPath,
+        );
+    }
+    // Existing and missing duplicate roots are both recognized.
+    fs::create_dir_all(temp.path().join("game/mods")).unwrap();
+    for root in ["game/mods", "game/absent/deeper"] {
+        refused(
+            parse(
+                &roots_document(&[root.into(), forward(short.join(root))]),
+                &long,
+            ),
+            ConfigError::DuplicateScanRoot,
+        );
+    }
+    // Distinct roots under the aliased parent remain distinct.
+    parse(
+        &roots_document(&["game/mods".into(), forward(short.join("game/config"))]),
+        &long,
+    )
+    .unwrap();
+}
+
 #[test]
 fn all_error_and_application_debug_output_discards_input_paths_metadata_and_parser_details() {
     let temp = tempfile::tempdir().unwrap();

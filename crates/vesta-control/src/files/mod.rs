@@ -47,6 +47,9 @@ pub use mutation::{
     FileChange, MAX_FILE_INTENTS, MAX_INTENT_STAGED_BYTES, MAX_TRASH_FILE_BYTES, MAX_WRITE_BYTES,
     SPACE_RESERVE_BYTES, TrashEntry, TrashPolicy, WritePrecondition,
 };
+pub(crate) use native::long_spelling;
+#[cfg(all(test, windows))]
+pub(crate) use native::short_alias_fixture;
 pub(crate) use pack_root::{PackNode, PackRoot};
 pub use path::{MAX_COMPONENT_BYTES, MAX_PATH_BYTES, RelativePath};
 pub(crate) use root::{plain as plain_entry, same_directory};

@@ -138,6 +138,70 @@ pub(super) fn actual_path(_file: &File, _path: &Path) -> Result<PathBuf> {
     Err(FileError::Unavailable)
 }
 
+/// The same path with native short-name (8.3) components of its longest existing
+/// prefix replaced by their long names. Only directory entry names are queried:
+/// nothing is opened or created and, unlike canonicalization, links are neither
+/// followed nor removed, so a linked alias keeps its own name. A missing suffix,
+/// an unreadable ancestor and every non-Windows path are returned as spelled.
+#[cfg(windows)]
+pub(crate) fn long_spelling(path: &Path) -> PathBuf {
+    let mut ancestor = path.to_path_buf();
+    let mut suffix = Vec::new();
+    loop {
+        if let Some(mut long) = windows::long_path(&ancestor) {
+            long.extend(suffix.into_iter().rev());
+            return long;
+        }
+        let Some(part) = ancestor.file_name().map(|part| part.to_os_string()) else {
+            return path.to_path_buf();
+        };
+        suffix.push(part);
+        if !ancestor.pop() {
+            return path.to_path_buf();
+        }
+    }
+}
+#[cfg(not(windows))]
+pub(crate) fn long_spelling(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
+/// An exclusively owned temporary directory together with a native short-name
+/// spelling of it. ProgramData normally retains its short alias even when creation
+/// of new 8.3 names is disabled; hosted runners already alias the user temp root.
+#[cfg(all(test, windows))]
+#[allow(unsafe_code)] // Bounded native spelling query on an exclusively owned fixture.
+pub(crate) fn short_alias_fixture() -> (tempfile::TempDir, PathBuf) {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    let short = |path: &Path| {
+        let input: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        let mut output = vec![0_u16; 32_768];
+        // SAFETY: input is terminated; output has the exact advertised capacity.
+        let count = unsafe {
+            windows_sys::Win32::Storage::FileSystem::GetShortPathNameW(
+                input.as_ptr(),
+                output.as_mut_ptr(),
+                output.len() as u32,
+            )
+        } as usize;
+        assert!(count > 0 && count < output.len(), "native fixture spelling");
+        PathBuf::from(std::ffi::OsString::from_wide(&output[..count]))
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let long = long_spelling(temp.path());
+    if short(&long) != long {
+        return (temp, short(&long));
+    }
+    let temp = tempfile::Builder::new()
+        .prefix("vesta-control-alias-")
+        .tempdir_in(std::env::var_os("ProgramData").expect("Windows ProgramData fixture parent"))
+        .expect("create owned native path fixture");
+    let long = long_spelling(temp.path());
+    let alias = short(&long);
+    eprintln!("native short-name alias exercised: {}", alias != long);
+    (temp, alias)
+}
+
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod windows {
@@ -150,7 +214,26 @@ mod windows {
     use windows_sys::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
         FILE_TYPE_DISK, GetFileInformationByHandle, GetFileType, GetFinalPathNameByHandleW,
+        GetLongPathNameW,
     };
+    pub(super) fn long_path(path: &Path) -> Option<PathBuf> {
+        use std::os::windows::ffi::OsStrExt;
+        let input: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        if input[..input.len() - 1].contains(&0) {
+            return None;
+        }
+        let mut units = vec![0_u16; 32_768];
+        // SAFETY: the NUL-terminated input and the writable output of exactly the
+        // supplied capacity are owned buffers that outlive this synchronous call.
+        let written =
+            unsafe { GetLongPathNameW(input.as_ptr(), units.as_mut_ptr(), units.len() as u32) }
+                as usize;
+        if written == 0 || written >= units.len() {
+            return None;
+        }
+        units.truncate(written);
+        Some(PathBuf::from(OsString::from_wide(&units)))
+    }
     pub(super) fn check(file: &File) -> Result<()> {
         // SAFETY: the std File owns a live handle for this entire synchronous call;
         // the initialized output struct is correctly sized and exclusively borrowed.

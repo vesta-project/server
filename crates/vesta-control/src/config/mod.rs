@@ -3,6 +3,8 @@
 //! Parsing is pure: an explicit absolute base resolves path descriptions without
 //! opening files, creating state, binding listeners, launching processes, minting
 //! credentials or granting administration. There is no missing-document fallback.
+//! The only filesystem observation is the Windows long-name query that keeps short
+//! (8.3) spellings of one path from evading the duplicate refusals below.
 //! The persisted database server identity remains authoritative: this schema has
 //! no server ID, owner, role, OP, loopback privilege, password secret, executable,
 //! argument vector or URL-authority field. Minecraft identity is the common pack
@@ -1271,6 +1273,16 @@ fn resolve_value(base: &Path, text: &str) -> Result<PathBuf> {
 }
 
 fn same_spelling(left: &Path, right: &Path) -> bool {
+    // Windows may spell one existing directory by a short (8.3) or a long name, as
+    // a canonical source does beside a configured value. Compare long spellings as
+    // well: a name query that opens and creates nothing and follows no link. This
+    // remains duplicate-spelling rejection, not link or mount alias discovery.
+    same_lexical(left, right)
+        || (cfg!(windows)
+            && same_lexical(&files::long_spelling(left), &files::long_spelling(right)))
+}
+
+fn same_lexical(left: &Path, right: &Path) -> bool {
     // Configured public roots are conservatively portable even on a case-sensitive
     // filesystem. This is lexical duplicate rejection, not native alias discovery.
     let mut left = left.components();

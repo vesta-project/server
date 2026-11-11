@@ -37,6 +37,17 @@ impl Root {
                 return Err(FileError::ProtectedPath);
             }
             protected.push(path.to_path_buf());
+            // Requests are matched against the canonical root, which spells every
+            // ancestor by its long name. Retain the configured spelling in that
+            // form too, without resolving links, so a linked alias below a native
+            // short-name ancestor is still refused as protected, not merely linked.
+            let long = super::native::long_spelling(path);
+            if long != *path {
+                if within(&canonical, &long) {
+                    return Err(FileError::ProtectedPath);
+                }
+                protected.push(long);
+            }
             // Resolve existing ancestor aliases even when a configured secret or
             // several final components are missing. Retain its raw spelling too.
             let real = exclusion(path)?;

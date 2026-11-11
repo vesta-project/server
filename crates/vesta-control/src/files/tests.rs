@@ -1,7 +1,11 @@
 use super::*;
 use crate::identity::{DeviceId, PrincipalId};
 use rusqlite::params;
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tempfile::TempDir;
 use vesta_state::{Clock, StateDirectory};
 
@@ -82,10 +86,14 @@ struct Fixture {
 impl Fixture {
     fn open() -> Self {
         let temp = tempfile::tempdir().unwrap();
-        let game = temp.path().join("game");
+        let root = temp.path().to_path_buf();
+        Self::open_at(temp, &root)
+    }
+    /// `root` is any native spelling of the owned temporary directory.
+    fn open_at(temp: TempDir, root: &Path) -> Self {
+        let game = root.join("game");
         fs::create_dir(&game).unwrap();
-        let directory =
-            StateDirectory::new(temp.path().join("private-state"), Some(&game)).unwrap();
+        let directory = StateDirectory::new(root.join("private-state"), Some(&game)).unwrap();
         let db = StateDatabase::open(directory, Arc::new(FixedClock)).unwrap();
         let owner = seed(&db, true);
         let browser = FileBrowser::open(db.clone(), &game, &[]).unwrap();
@@ -333,6 +341,42 @@ fn host_protected_paths_include_missing_secrets_and_case_variants() {
         browser.read(&f.owner, &RelativePath::parse("SECRET.TXT").unwrap(), 100),
         "file_path_protected",
     );
+}
+/// A configured exclusion that names a linked directory must still refuse that
+/// spelling as protected when its ancestors use native short (8.3) names which
+/// the canonical root spells in full. Hosted runners alias the whole temp root.
+#[cfg(windows)]
+#[test]
+fn protected_alias_spelling_survives_native_short_name_ancestors() {
+    let (temp, short) = native::short_alias_fixture();
+    let f = Fixture::open_at(temp, &short);
+    let real = f.game.join("credentials-real");
+    fs::create_dir(&real).unwrap();
+    let alias = f.game.join("credentials-alias");
+    let status = std::process::Command::new("cmd.exe")
+        .args(["/d", "/c", "mklink", "/J"])
+        .arg(&alias)
+        .arg(&real)
+        .status()
+        .unwrap();
+    assert!(status.success(), "create owned protected alias fixture");
+    let secret = alias.join("missing/token");
+    let browser = FileBrowser::open(f.db.clone(), &f.game, &[&secret]).unwrap();
+    for spelling in [
+        "credentials-alias/missing/token",
+        "credentials-real/missing/token",
+    ] {
+        let path = RelativePath::parse(spelling).unwrap();
+        refused(browser.read(&f.owner, &path, 100), "file_path_protected");
+        refused(browser.list(&f.owner, Some(&path)), "file_path_protected");
+    }
+    // The unprotected remainder of the alias is still refused as a link.
+    let path = RelativePath::parse("credentials-alias/other").unwrap();
+    refused(browser.read(&f.owner, &path, 100), "file_path_linked");
+    f.write("credentials-real/missing/token", b"protected bytes");
+    let path = RelativePath::parse("credentials-real/missing/token").unwrap();
+    refused(browser.read(&f.owner, &path, 100), "file_path_protected");
+    fs::remove_dir(&alias).unwrap();
 }
 #[cfg(any(windows, unix))]
 #[test]
