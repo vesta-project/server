@@ -55,9 +55,20 @@ fn ready(h: &Harness, handle: &RuntimeHandle, g: GenerationId) {
 fn writes(h: &Harness) -> String {
     fs::read_to_string(h.cwd.join("operation-commands")).unwrap_or_default()
 }
-fn await_command(h: &Harness, line: &str) {
+fn await_command(h: &Harness, line: &str, intent: &str) {
     wait_for(|| writes(h).contains(line));
-    std::thread::sleep(Duration::from_millis(40));
+    // Observing fixture stdin does not prove that the runner committed its
+    // operation outcome. Wait for that exact durable receipt, not a scheduler delay.
+    let operation: String = h.db.read(|c| {
+        Ok(c.query_row(
+            "SELECT json_extract(entry.value,'$.operation') FROM settings,json_each(settings.desired_value,'$.entries') AS entry WHERE settings.key='whitelist-runtime' AND json_extract(entry.value,'$.id')=?",
+            [intent], |row| row.get(0),
+        )?)
+    }).unwrap();
+    h.wait_state(
+        &OperationId::parse(&operation).unwrap(),
+        OperationState::Succeeded,
+    );
 }
 
 #[test]
@@ -96,7 +107,7 @@ fn startup_whitelist_dispatch_waits_for_ready_and_file_confirmation_and_recovers
     assert!(!writes(&h).contains("whitelist"));
     ready(&h, &handle, g);
     files.tick_startup_whitelist(&handle).unwrap();
-    await_command(&h, "whitelist add alex");
+    await_command(&h, "whitelist add alex", &id);
     files.tick_startup_whitelist(&handle).unwrap();
     assert_eq!(receipt(&files, &h, &id), "queued");
     // Simulate a crash after operation admission but before persisting its receipt.
@@ -123,11 +134,11 @@ fn startup_whitelist_inverse_after_dispatch_reconciles_in_order_instead_of_cance
     let add = desired(&files, &h, &handle, g, "alex", true, "flight-add");
     ready(&h, &handle, g);
     files.tick_startup_whitelist(&handle).unwrap();
-    await_command(&h, "whitelist add alex");
+    await_command(&h, "whitelist add alex", &add);
     let remove = desired(&files, &h, &handle, g, "alex", false, "flight-remove");
     assert!(files.projected_whitelist(&handle).unwrap().is_empty());
     files.tick_startup_whitelist(&handle).unwrap();
-    await_command(&h, "whitelist remove alex");
+    await_command(&h, "whitelist remove alex", &remove);
     files.tick_startup_whitelist(&handle).unwrap();
     assert_eq!(receipt(&files, &h, &add), "superseded");
     assert_eq!(receipt(&files, &h, &remove), "applied");
@@ -142,7 +153,7 @@ fn startup_whitelist_mismatch_expires_and_rolls_back_projection() {
     let id = desired(&files, &h, &handle, g, "alex", true, "mismatch-add");
     ready(&h, &handle, g);
     files.tick_startup_whitelist(&handle).unwrap();
-    await_command(&h, "whitelist add alex");
+    await_command(&h, "whitelist add alex", &id);
     files.tick_startup_whitelist(&handle).unwrap();
     h.db.write(|c|{c.execute("UPDATE settings SET desired_value=json_set(desired_value,'$.entries[0].verification_since',?) WHERE key='whitelist-runtime'",[h.db.clock().millis()-21000])?;Ok(())}).unwrap();
     assert_eq!(files.tick_startup_whitelist(&handle).unwrap(), vec!["alex"]);
@@ -236,7 +247,7 @@ fn startup_whitelist_inverse_uses_membership_after_concurrent_completion() {
     let add = desired(&files, &h, &handle, g, "alex", true, "retiring-add");
     ready(&h, &handle, g);
     files.tick_startup_whitelist(&handle).unwrap();
-    await_command(&h, "whitelist add alex");
+    await_command(&h, "whitelist add alex", &add);
     let projected = files.projected_whitelist(&handle).unwrap();
     let concurrent = files.clone();
     let runtime = handle.clone();
@@ -249,7 +260,7 @@ fn startup_whitelist_inverse_uses_membership_after_concurrent_completion() {
     assert_eq!(receipt(&files, &h, &add), "applied");
     assert_eq!(receipt(&files, &h, &remove), "queued");
     files.tick_startup_whitelist(&handle).unwrap();
-    await_command(&h, "whitelist remove alex");
+    await_command(&h, "whitelist remove alex", &remove);
     fs::write(h.cwd.join("whitelist.json"), b"[]").unwrap();
     files.tick_startup_whitelist(&handle).unwrap();
     assert_eq!(receipt(&files, &h, &remove), "applied");
@@ -265,7 +276,7 @@ fn startup_whitelist_recovery_required_retires_projection_without_releasing_reco
     let add = desired(&files, &h, &handle, g, "alex", true, "recovery-add");
     ready(&h, &handle, g);
     files.tick_startup_whitelist(&handle).unwrap();
-    await_command(&h, "whitelist add alex");
+    await_command(&h, "whitelist add alex", &add);
     h.db.write(|c| {
         // Construct the complete uncertain-operation state: genuine recovery
         // retains its generation lock, unlike an ordinary succeeded operation.
@@ -312,7 +323,7 @@ fn startup_whitelist_pending_receipts_survive_completed_outcome_retention() {
     assert_eq!(receipt(&files, &h, &add), "queued");
     ready(&h, &handle, g);
     files.tick_startup_whitelist(&handle).unwrap();
-    await_command(&h, "whitelist add alex");
+    await_command(&h, "whitelist add alex", &add);
     let projected = files.projected_whitelist(&handle).unwrap();
     fs::write(
         h.cwd.join("whitelist.json"),
@@ -333,7 +344,7 @@ fn startup_whitelist_offline_mixed_case_uuid_is_not_verified_by_name() {
     let id = desired(&files, &h, &handle, g, "Alex", true, "case-sensitive-add");
     ready(&h, &handle, g);
     files.tick_startup_whitelist(&handle).unwrap();
-    await_command(&h, "whitelist add Alex");
+    await_command(&h, "whitelist add Alex", &id);
     // Minecraft/profile caching can persist the lowercase offline identity.
     fs::write(
         h.cwd.join("whitelist.json"),
