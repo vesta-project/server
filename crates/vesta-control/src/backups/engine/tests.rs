@@ -949,7 +949,8 @@ fn lineage_branch_restore_keep_and_reparent() {
         .snapshot_id;
     let history = engine.history().unwrap();
     let tip = history.points.iter().find(|p| p.id == safety).unwrap();
-    assert!(tip.kept && tip.safety && tip.profile.is_none());
+    // A safety point names the profile whose restore took it, so it can be restored again.
+    assert!(tip.kept && tip.safety && tip.profile.as_deref() == Some("p"));
     assert_eq!(tip.parent_id.as_deref(), Some(b.as_str()));
     engine
         .apply(&a, source.path(), &["world".into()], &ignore, &[], None)

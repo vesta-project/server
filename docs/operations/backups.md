@@ -398,7 +398,7 @@ Labels are trimmed and must contain 1–60 Unicode characters, or be null. PATCH
 `backups/points/<id>` accepts optional `label` and `kept` fields with an idempotency
 key, using `backups.restore`. GET `backups/history` uses `backups.view` and returns
 all promoted points newest first, bounded by the repository's 10,000 point limit.
-It includes removed profiles and safety points (whose profile is null).
+It includes removed profiles and safety points. A safety point reports the profile whose restore took it, so restoring it again goes through that profile.
 
 Kept points survive retention and storage/count limits; limits refuse new backups
 rather than delete them. To free an abandoned branch tip, set `kept: false`, then

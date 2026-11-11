@@ -76,13 +76,13 @@ impl Engine {
             .map(|(id, r)| BackupPoint {
                 id: id.clone(),
                 time: rfc3339(r.time_ms),
-                profile: if r.tags.iter().any(|t| t.starts_with(SAFETY_PREFIX)) {
-                    None
-                } else {
-                    r.tags
-                        .iter()
-                        .find_map(|t| t.strip_prefix(PROFILE_PREFIX).map(str::to_owned))
-                },
+                // A safety point belongs to the profile whose restore took it; restoring it
+                // again goes through that profile.
+                profile: r.tags.iter().find_map(|t| {
+                    t.strip_prefix(PROFILE_PREFIX)
+                        .or_else(|| t.strip_prefix(SAFETY_PREFIX))
+                        .map(str::to_owned)
+                }),
                 safety: r.tags.iter().any(|t| t.starts_with(SAFETY_PREFIX)),
                 parent_id: r
                     .parent_id
