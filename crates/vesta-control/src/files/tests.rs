@@ -1006,6 +1006,8 @@ fn pack_install_applies_overrides_immediately_and_replays() {
     assert_eq!(plan.files.len(), 1);
     assert_eq!(plan.files[0].sha256, hex::encode(Sha256::digest(b"server")));
     assert!(plan.files[0].conflict.is_some());
+    assert!(!plan.software_switch_required);
+    assert!(plan.software_switch.is_none());
     let mut apply = PackInstallApply {
         acknowledge_warnings: true,
         acknowledge_software_switch: false,
@@ -1030,10 +1032,7 @@ fn pack_install_applies_overrides_immediately_and_replays() {
             .is_err()
     );
     apply.confirmation_token = plan.confirmation_token;
-    assert!(workspace.install_switch_review(&f.owner, &apply).is_err());
-    apply.acknowledge_software_switch = true;
     assert!(workspace.install_switch_review(&f.owner, &apply).is_ok());
-    apply.acknowledge_software_switch = false;
 
     assert!(
         workspace
@@ -1093,6 +1092,65 @@ fn pack_install_applies_overrides_immediately_and_replays() {
                 &f.browser
             )
             .is_err()
+    );
+}
+#[test]
+fn pack_version_change_requires_explicit_software_switch_consent() {
+    use crate::packs::{PackReleases, workspace::*};
+    let f = Fixture::open();
+    let workspace = PackWorkspace::open(&f.db).unwrap();
+    let draft = workspace
+        .file_mutate(
+            &f.owner,
+            "1.21.1",
+            "switch-config",
+            &FileMutation {
+                expected_revision: "0".into(),
+                change: FileOperation::Write {
+                    root: "server-overrides".into(),
+                    path: "config/switch.txt".into(),
+                    content_base64: "bmV3".into(),
+                },
+            },
+        )
+        .unwrap();
+    let releases = PackReleases::open(&f.db).unwrap();
+    let plan = workspace
+        .install_plan(
+            &f.owner,
+            "1.20.1",
+            Some("vanilla"),
+            &PackInstallRequest {
+                analyze: false,
+                source: InstallSource::Draft {
+                    revision: draft.revision,
+                },
+            },
+            &f.browser,
+            &releases,
+            &crate::content::UreqProviderClient::new(None),
+        )
+        .unwrap();
+    assert!(plan.valid);
+    assert!(plan.software_switch_required);
+    let switch = plan.software_switch.as_ref().unwrap();
+    assert_eq!(switch.from.minecraft_version, "1.20.1");
+    assert_eq!(switch.to.minecraft_version, "1.21.1");
+    let mut apply = PackInstallApply {
+        acknowledge_warnings: true,
+        acknowledge_software_switch: false,
+        plan_id: plan.plan_id,
+        confirmation_token: plan.confirmation_token,
+        choices: Vec::new(),
+        set_as_modpack: false,
+    };
+    assert!(workspace.install_switch_review(&f.owner, &apply).is_err());
+    assert!(!f.game.join("config/switch.txt").exists());
+    apply.acknowledge_software_switch = true;
+    assert!(workspace.install_switch_review(&f.owner, &apply).is_ok());
+    assert!(
+        !f.game.join("config/switch.txt").exists(),
+        "review must not apply files"
     );
 }
 #[test]

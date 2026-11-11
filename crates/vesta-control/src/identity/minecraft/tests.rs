@@ -1264,16 +1264,24 @@ fn local_link_enrolls_linked_role_unlink_preserves_existing_or_revokes_explicitl
     service
         .authorize(token.secret.expose(), Capability::StatusView, None)
         .unwrap();
-    let (roleless, key) = enroll_device(&service, &challenges);
-    assert!(roleless.role.is_empty());
-    let roleless_token = device_session(&service, &roleless, &key);
-    assert!(service.authenticate(roleless_token.secret.expose()).is_ok());
-    // Same verified UUID means the same canonical user: default unlink
-    // preserves its explicit role, including for a newly authenticated device.
-    assert_eq!(roleless.principal_id, device.principal_id);
+    let (reconnected, key) = enroll_device(&service, &challenges);
+    assert_eq!(reconnected.role, "administrator");
+    let reconnected_token = device_session(&service, &reconnected, &key);
     assert!(
         service
-            .authorize(roleless_token.secret.expose(), Capability::StatusView, None)
+            .authenticate(reconnected_token.secret.expose())
+            .is_ok()
+    );
+    // Same verified UUID means the same canonical user: default unlink
+    // preserves its explicit role, including for a newly authenticated device.
+    assert_eq!(reconnected.principal_id, device.principal_id);
+    assert!(
+        service
+            .authorize(
+                reconnected_token.secret.expose(),
+                Capability::StatusView,
+                None
+            )
             .is_ok()
     );
     // Revoke lineages even when the link was already removed.
@@ -1285,8 +1293,18 @@ fn local_link_enrolls_linked_role_unlink_preserves_existing_or_revokes_explicitl
         Err(ManagementError::SessionInvalid)
     ));
     assert!(matches!(
-        service.authenticate(roleless_token.secret.expose()),
+        service.authenticate(reconnected_token.secret.expose()),
         Err(ManagementError::SessionInvalid)
+    ));
+    // Revocation removes the link-derived role for future devices too; merely
+    // proving the same account again cannot restore the removed assignment.
+    let (revoked, key) = enroll_device(&service, &challenges);
+    assert_eq!(revoked.principal_id, device.principal_id);
+    assert!(revoked.role.is_empty());
+    let revoked_token = device_session(&service, &revoked, &key);
+    assert!(matches!(
+        service.authorize(revoked_token.secret.expose(), Capability::StatusView, None),
+        Err(ManagementError::Forbidden)
     ));
     let audit = vesta_state::audit::AuditLog::new(_db.clone())
         .unwrap()
