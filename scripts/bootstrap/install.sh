@@ -30,8 +30,7 @@ if [[ -n $selection ]]; then
   [[ $selection != tag || $tag =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ ]] || { echo 'Invalid release tag.' >&2; exit 2; }
   [[ $(uname -s) == Linux ]] || { echo 'Automatic release selection supports Linux only. Use install.ps1 with explicit pins on Windows.' >&2; exit 2; }
   case "$(uname -m)" in x86_64|amd64) target=linux-x86_64;; aarch64|arm64) target=linux-aarch64;; *) echo 'Unsupported Linux architecture.' >&2; exit 2;; esac
-  for tool in python3 openssl; do command -v "$tool" >/dev/null || { echo "$tool is required for signed release discovery." >&2; exit 2; }; done
-  python3 --version >/dev/null || { echo 'Python 3 is required for release metadata parsing.' >&2; exit 2; }
+  command -v openssl >/dev/null || { echo 'OpenSSL is required for signed release verification.' >&2; exit 2; }
 else
   [[ -n $setup_url && -n $bundle_url && -n $setup_sha && -n $manifest_sha && -n $release_key ]] || usage
   [[ $setup_url =~ ^https://[^/@\?#]+(/[^\?#]*)?$ && $bundle_url =~ ^https://[^/@\?#]+(/[^\?#]*)?$ ]] || { echo 'Remote URLs must be clean HTTPS URLs without credentials, query, or fragment.' >&2; exit 2; }
@@ -65,104 +64,53 @@ download() {
 if [[ -n $selection ]]; then
   # This pin is part of the trusted source script, never read from release assets.
   release_key=84e1fa3eae990d870d671c0fb585a62906f50d91e3382f3cc9f025d904c8dd8a
-  api=https://api.github.com/repos/vesta-project/server/releases
-  metadata=()
   if [[ $selection == nightly ]]; then
-    # Release records include all asset metadata. Bound each ten-record page,
-    # while retaining the latest-published selection over at most 100 releases.
-    for ((page = 1; page <= 10; page++)); do
-      file="$work/releases-$page.json"
-      download "$api?per_page=10&page=$page" "$file" 4194304
-      count=$(python3 - "$file" <<'PY'
-import json, sys
-try:
-    data = json.load(open(sys.argv[1], encoding='utf-8'))
-    if not isinstance(data, list) or len(data) > 10:
-        raise ValueError('invalid release page')
-    sys.stdout.write(str(len(data)))
-except (ValueError, TypeError):
-    sys.exit('Invalid GitHub release page.')
-PY
-)
-      metadata+=("$file")
-      (( count == 10 )) || break
-    done
-  else
-    download "$api/tags/$tag" "$work/releases.json" 4194304
-    metadata+=("$work/releases.json")
+    # The public feed contains recent published releases without their asset
+    # inventories. Only its canonical entry link can select a candidate tag;
+    # executable trust comes exclusively from signed metadata below.
+    download https://github.com/vesta-project/server/releases.atom "$work/releases.atom" 1048576
+    in_entry=false; in_content=false
+    release_link='^[[:space:]]*<link[[:space:]][^<>]*href="https://github.com/vesta-project/server/releases/tag/(nightly-[0-9]{8}-[0-9a-f]{12})"[[:space:]]*/>[[:space:]]*$'
+    while IFS= read -r line || [[ -n $line ]]; do
+      if [[ $in_content == true ]]; then
+        if [[ $line == *'</content>'* ]]; then in_content=false; fi
+        continue
+      fi
+      if [[ $line =~ ^[[:space:]]*\<content([[:space:]]|\>) ]]; then
+        in_entry=false
+        if [[ $line != *'</content>'* ]]; then in_content=true; fi
+      elif [[ $line =~ ^[[:space:]]*\<entry\>[[:space:]]*$ ]]; then in_entry=true
+      elif [[ $line =~ ^[[:space:]]*\</entry\>[[:space:]]*$ ]]; then in_entry=false
+      elif [[ $in_entry == true && $line == *'rel="alternate"'* && $line =~ $release_link ]]; then tag=${BASH_REMATCH[1]}; break
+      fi
+    done < "$work/releases.atom"
+    [[ -n $tag ]] || { echo 'No published nightly found in the recent GitHub release feed. Select an exact --tag instead.' >&2; exit 1; }
   fi
-  python3 - "$selection" "$tag" "${metadata[@]}" > "$work/tag" <<'PY'
-import datetime, json, re, sys
-sys.stdout.reconfigure(newline='\n')
-try:
-    if sys.argv[1] == 'nightly':
-        data = []
-        for filename in sys.argv[3:]:
-            data.extend(json.load(open(filename, encoding='utf-8')))
-        releases = [r for r in data if isinstance(r, dict) and r.get('draft') is False
-                    and r.get('prerelease') is True
-                    and re.fullmatch(r'nightly-[0-9]{8}-[0-9a-f]{12}', r.get('tag_name', ''))]
-        release = max(releases, key=lambda r: datetime.datetime.fromisoformat(r['published_at'].replace('Z', '+00:00')))
-    else:
-        release = json.load(open(sys.argv[3], encoding='utf-8'))
-        if release.get('draft') is not False or release.get('tag_name') != sys.argv[2]:
-            raise ValueError('release mismatch')
-    print(release['tag_name'])
-except (ValueError, TypeError, KeyError, AttributeError):
-    sys.exit('No matching published release found in GitHub metadata.')
-PY
-  tag=$(cat "$work/tag")
   bundle_url="https://github.com/vesta-project/server/releases/download/$tag"
   asset_prefix="$target-"
-  download "$bundle_url/${asset_prefix}manifest.json" "$work/manifest.json" 65536
-  download "$bundle_url/${asset_prefix}manifest.sig" "$work/manifest.sig" 256
-  python3 - "$work" "$release_key" <<'PY'
-import base64, pathlib, sys
-root = pathlib.Path(sys.argv[1])
-try:
-    signature = base64.b64decode((root / 'manifest.sig').read_bytes().strip(), validate=True)
-    if len(signature) != 64:
-        raise ValueError('invalid length')
-except ValueError:
-    sys.exit('Invalid manifest signature encoding.')
-(root / 'signature').write_bytes(signature)
-(root / 'key.der').write_bytes(bytes.fromhex('302a300506032b6570032100' + sys.argv[2]))
-PY
-  openssl pkeyutl -verify -pubin -keyform DER -inkey "$work/key.der" -rawin -in "$work/manifest.json" -sigfile "$work/signature" >/dev/null || { echo 'Manifest signature verification failed. OpenSSL with Ed25519 raw verification support is required.' >&2; exit 1; }
-  python3 - "$work/manifest.json" "$tag" "$target" > "$work/pins" <<'PY'
-import hashlib, json, re, sys
-sys.stdout.reconfigure(newline='\n')
-def unique(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError('duplicate key')
-        result[key] = value
-    return result
-try:
-    data = open(sys.argv[1], 'rb').read()
-    manifest = json.loads(data, object_pairs_hook=unique)
-    if (manifest['schema'] != 1 or manifest['version'] != sys.argv[2]
-            or manifest['target'] != sys.argv[3]):
-        raise ValueError('manifest identity mismatch')
-    files = manifest['files']
-    names = [f['name'] for f in files]
-    if names not in (['vesta-setup', 'vesta-agent', 'vesta-supervisor'],
-                     ['vesta-setup', 'vesta-agent', 'vesta-supervisor', 'vesta']):
-        raise ValueError('unexpected executable set')
-    for f in files:
-        if type(f['size']) is not int or f['size'] < 1 or not re.fullmatch('[0-9a-f]{64}', f['sha256']):
-            raise ValueError('invalid file identity')
-    if files[0]['size'] > 67108864:
-        raise ValueError('setup exceeds size limit')
-    print(files[0]['sha256'])
-    print(files[0]['size'])
-    print(hashlib.sha256(data).hexdigest())
-except (ValueError, TypeError, KeyError):
-    sys.exit('Signed manifest does not match the selected release, platform or executable contract.')
-PY
-  mapfile -t pins < "$work/pins"
-  setup_sha=${pins[0]}; setup_size=${pins[1]}; manifest_sha=${pins[2]}
+  if [[ $tag == nightly-20261112-a248a66a6ad3 ]]; then
+    # The first immutable nightly predates bootstrap descriptors. These reviewed
+    # source pins retain its installation path without trusting unsigned JSON.
+    case "$target" in
+      linux-x86_64) setup_sha=c9f66b40292a70f32a6584932d10c7a6733866c09a24b3cb7f58304e02848b70; setup_size=18890744; manifest_sha=b68c52742ab8b79836c7435db1530d9b5fa84a9a213081c1e3d084b6246e653c;;
+      linux-aarch64) setup_sha=c57a11956f3794f4639b5b7c732d637a4736f380a895141ee97480e30cabdb3b; setup_size=16948776; manifest_sha=0f66f3d20a7e2445efbe01b9c3f2d70dad2e0589d6d184e58698541ba41add2c;;
+    esac
+  else
+    download "$bundle_url/${asset_prefix}bootstrap.txt" "$work/bootstrap.txt" 65536
+    download "$bundle_url/${asset_prefix}bootstrap.sig" "$work/bootstrap.sig" 256
+    signature=$(tr -d '\r\n' < "$work/bootstrap.sig")
+    [[ $signature =~ ^[A-Za-z0-9+/]{86}==$ ]] || { echo 'Invalid bootstrap signature encoding.' >&2; exit 1; }
+    printf '%s' "$signature" | openssl base64 -d -A -out "$work/signature"
+    der="302a300506032b6570032100$release_key"
+    for ((i = 0; i < ${#der}; i += 2)); do printf '%b' "\\x${der:i:2}"; done > "$work/key.der"
+    openssl pkeyutl -verify -pubin -keyform DER -inkey "$work/key.der" -rawin -in "$work/bootstrap.txt" -sigfile "$work/signature" >/dev/null || { echo 'Bootstrap signature verification failed. OpenSSL with Ed25519 raw verification support is required.' >&2; exit 1; }
+    mapfile -t descriptor < "$work/bootstrap.txt"
+    [[ ${#descriptor[@]} == 7 && ${descriptor[0]} == vesta-setup-bootstrap-v1 && ${descriptor[1]} == "$tag" && ${descriptor[2]} == "$target" && ${descriptor[3]} == vesta-setup && ${descriptor[4]} =~ ^[0-9a-f]{64}$ && ${descriptor[5]} =~ ^[1-9][0-9]{0,7}$ && ${descriptor[6]} =~ ^[0-9a-f]{64}$ ]] || { echo 'Signed bootstrap descriptor does not match the selected release, platform or setup identity.' >&2; exit 1; }
+    printf '%s\n' "${descriptor[@]}" > "$work/bootstrap.canonical"
+    [[ $(sha256sum "$work/bootstrap.txt" | awk '{print $1}') == $(sha256sum "$work/bootstrap.canonical" | awk '{print $1}') ]] || { echo 'Noncanonical bootstrap descriptor.' >&2; exit 1; }
+    setup_sha=${descriptor[4]}; setup_size=${descriptor[5]}; manifest_sha=${descriptor[6]}
+    (( setup_size <= 67108864 )) || { echo 'Setup exceeds size limit.' >&2; exit 1; }
+  fi
   setup_url="$bundle_url/${asset_prefix}vesta-setup"
   echo "Installing Vesta $tag ($target)." >&2
 fi

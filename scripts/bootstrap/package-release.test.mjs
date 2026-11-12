@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { bootstrapDescriptor } from './bootstrap-descriptor.mjs';
 
 const script = fileURLToPath(new URL('./package-release.mjs', import.meta.url));
 const target = process.platform === 'win32' ? 'windows-x86_64' : process.platform === 'linux' && process.arch === 'x64' ? 'linux-x86_64' : process.platform === 'linux' && process.arch === 'arm64' ? 'linux-aarch64' : null;
@@ -103,6 +104,11 @@ test('packager emits a pinned manifest, a valid detached signature, and isolated
     type: 'spki',
   }));
   assert.equal(verify(null, manifestBytes, publicKey, signature), true);
+  const descriptor = await readFile(path.join(f.output, 'bootstrap.txt'));
+  assert.deepEqual(descriptor, bootstrapDescriptor({ version: manifest.version, target, setupSha256: manifest.files[0].sha256, setupSize: manifest.files[0].size, manifestSha256: createHash('sha256').update(manifestBytes).digest('hex') }));
+  const descriptorSignature = Buffer.from((await readFile(path.join(f.output, 'bootstrap.sig'), 'utf8')).trim(), 'base64');
+  assert.equal(verify(null, descriptor, publicKey, descriptorSignature), true);
+  assert.equal(verify(null, Buffer.concat([descriptor, Buffer.from('\n')]), publicKey, descriptorSignature), false);
 
   const release = JSON.parse(await readFile(path.join(f.output, 'release.json'), 'utf8'));
   assert.equal(release.setupSha256, manifest.files[0].sha256);

@@ -25,8 +25,9 @@ On Linux, install the latest signed nightly:
 ```
 
 Use `--tag nightly-YYYYMMDD-COMMIT` instead for a specific release.
-The script detects x86_64/ARM64 and checks the signed manifest and setup binary
-before execution. See [bootstrap prerequisites and trust](docs/operations/bootstrap-release.md#install-on-linux).
+The script detects x86_64/ARM64 and checks signed setup identity and binary integrity
+before execution. It needs Bash, curl, standard Linux tools and OpenSSL; no Python,
+jq or Node runtime. See [bootstrap prerequisites and trust](docs/operations/bootstrap-release.md#install-on-linux).
 
 - [Install and onboard a host](docs/operations/host-setup.md)
 - [Build and run locally](RUNNING.md)

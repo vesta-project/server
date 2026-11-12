@@ -276,6 +276,7 @@ jobs:
           test -n "$RELEASE_PUBLIC_KEY" || { echo 'Required repository variable VESTA_RELEASE_PUBLIC_KEY is missing.' >&2; exit 1; }
           node scripts/bootstrap/check-bootstrap-key.mjs "$RELEASE_PUBLIC_KEY"
           for target in windows-x86_64 linux-x86_64 linux-aarch64; do
+            test -s "$RUNNER_TEMP/signed/signed-$target/release/bootstrap.txt" && test -s "$RUNNER_TEMP/signed/signed-$target/release/bootstrap.sig" || { echo 'Signed bootstrap descriptor is required for new releases.' >&2; exit 1; }
             node scripts/bootstrap/stage-nightly-release.mjs \
               --package "$RUNNER_TEMP/signed/signed-$target/release" \
               --target "$target" \
@@ -323,8 +324,8 @@ jobs:
               )
 
           For the latest nightly, replace --tag $RELEASE_VERSION with --latest-nightly.
-          The source script verifies the signed manifest and setup executable before running setup.
-          Requires Bash, curl, Python 3.7+, sha256sum and OpenSSL with Ed25519 raw verification support.
+          The source script verifies signed setup identity and executable integrity before running setup.
+          Requires Bash, curl, sha256sum and OpenSSL with Ed25519 raw verification support; no Python, jq or Node runtime.
           Target-prefixed assets and explicit-pin commands are also attached for manual deployment.
 
           Release public key pin: ${VESTA_RELEASE_PUBLIC_KEY}
@@ -332,7 +333,7 @@ jobs:
           for target in windows-x86_64 linux-x86_64 linux-aarch64; do
             prefix="$target-"
             package="$RUNNER_TEMP/site/nightly/$RELEASE_VERSION/$target"
-            for name in manifest.json manifest.sig manifest.pub update.json update.sig commands.txt release.json vesta-setup vesta-setup.exe vesta-agent vesta-agent.exe vesta-supervisor vesta-supervisor.exe vesta vesta.exe; do
+            for name in manifest.json manifest.sig manifest.pub bootstrap.txt bootstrap.sig update.json update.sig commands.txt release.json vesta-setup vesta-setup.exe vesta-agent vesta-agent.exe vesta-supervisor vesta-supervisor.exe vesta vesta.exe; do
               if [ -f "$package/$name" ]; then cp "$package/$name" "$RUNNER_TEMP/release-assets/$prefix$name"; fi
             done
           done

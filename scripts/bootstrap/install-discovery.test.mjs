@@ -9,19 +9,16 @@ import test from 'node:test';
 const source = await readFile(new URL('./install.sh', import.meta.url), 'utf8');
 const productionKey = '84e1fa3eae990d870d671c0fb585a62906f50d91e3382f3cc9f025d904c8dd8a';
 const bash = process.platform === 'win32' ? path.join(process.env.ProgramFiles ?? 'C:/Program Files', 'Git/bin/bash.exe') : 'bash';
-const pythonProbe = spawnSync(process.env.VESTA_BOOTSTRAP_TEST_PYTHON ?? 'python3', ['-c', 'import sys; print(sys.executable)'], { encoding: 'utf8' });
-const python = pythonProbe.stdout?.trim() ?? '';
-const canRun = spawnSync(bash, ['-c', 'openssl version'], { encoding: 'utf8' }).status === 0
-  && pythonProbe.status === 0;
+const canRun = spawnSync(bash, ['-c', 'openssl version'], { encoding: 'utf8' }).status === 0;
 const options = { skip: !canRun && process.platform === 'win32' };
 const first = 'nightly-20261110-111111111111';
 const newest = 'nightly-20261112-222222222222';
-const api = 'https://api.github.com/repos/vesta-project/server/releases';
+const feedUrl = 'https://github.com/vesta-project/server/releases.atom';
 const base = tag => `https://github.com/vesta-project/server/releases/download/${tag}`;
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 
-async function fixture(t, { tag = first, target = 'linux-x86_64', changeManifest, changeBytes, changeSignature, changePayload, releases, releaseObject, arch = 'x86_64', oversizeManifest = false } = {}) {
+async function fixture(t, { tag = first, target = 'linux-x86_64', changeManifest, changeBytes, changeSignature, changePayload, releases, feed, arch = 'x86_64', oversizeManifest = false } = {}) {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'vesta-discovery-test-'));
   t.after(() => rm(temp, { recursive: true, force: true }));
   const bin = path.join(temp, 'bin');
@@ -38,19 +35,18 @@ async function fixture(t, { tag = first, target = 'linux-x86_64', changeManifest
     files: ['vesta-setup', 'vesta-agent', 'vesta-supervisor', 'vesta'].map((name, index) => ({ name, size: index ? 1 : payload.length, sha256: index ? 'a'.repeat(64) : digest(payload) })),
   };
   changeManifest?.(manifest);
-  const bytes = changeBytes?.(manifest) ?? Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
+  const manifestHash = digest(Buffer.from(JSON.stringify(manifest)));
+  const fields = ['vesta-setup-bootstrap-v1', manifest.version, manifest.target, manifest.files[0].name, manifest.files[0].sha256, String(manifest.files[0].size), manifestHash];
+  const bytes = changeBytes?.(fields) ?? Buffer.from(fields.join('\n') + '\n');
   const signature = sign(null, bytes, privateKey).toString('base64') + '\n';
-  const release = { tag_name: tag, draft: false, prerelease: true, published_at: '2026-11-10T00:00:00Z', ...releaseObject };
+  const release = { tag_name: tag, draft: false };
+  const atom = feed ?? `<feed>\n${(releases ?? [release]).filter(r => !r.draft).map(r => `<entry>\n<link rel="alternate" type="text/html" href="https://github.com/vesta-project/server/releases/tag/${r.tag_name}"/>\n<content type="html">&lt;link href="https://example.invalid/"/&gt;</content>\n</entry>`).join('\n')}\n</feed>\n`;
   const responses = {
-    [`${api}/tags/${tag}`]: Buffer.from(JSON.stringify(release)).toString('base64'),
-    [`${api}?per_page=100`]: Buffer.from(JSON.stringify(releases ?? [release])).toString('base64'),
-    [`${base(tag)}/${target}-manifest.json`]: Buffer.from(oversizeManifest ? 'x'.repeat(65537) : bytes).toString('base64'),
-    [`${base(tag)}/${target}-manifest.sig`]: Buffer.from(changeSignature?.(signature) ?? signature).toString('base64'),
+    [feedUrl]: Buffer.from(atom).toString('base64'),
+    [`${base(tag)}/${target}-bootstrap.txt`]: Buffer.from(oversizeManifest ? 'x'.repeat(65537) : bytes).toString('base64'),
+    [`${base(tag)}/${target}-bootstrap.sig`]: Buffer.from(changeSignature?.(signature) ?? signature).toString('base64'),
     [`${base(tag)}/${target}-vesta-setup`]: Buffer.from(changePayload?.(payload) ?? payload).toString('base64'),
   };
-  for (let page = 1; page <= 10; page++) {
-    responses[`${api}?per_page=10&page=${page}`] = Buffer.from(JSON.stringify((releases ?? [release]).slice((page - 1) * 10, page * 10))).toString('base64');
-  }
   await writeFile(path.join(temp, 'responses.json'), JSON.stringify(responses));
   await writeFile(path.join(temp, 'curl.mjs'), `import fs from 'node:fs';
 const args = process.argv.slice(2), url = args.at(-1);
@@ -60,12 +56,14 @@ if (!(url in responses)) process.exit(22);
 process.stdout.write(Buffer.from(responses[url], 'base64'));
 `);
   await writeFile(path.join(bin, 'curl'), `#!/usr/bin/env bash\nexec ${quote(process.execPath.replaceAll('\\', '/'))} ${quote(path.join(temp, 'curl.mjs').replaceAll('\\', '/'))} "$@"\n`, { mode: 0o700 });
-  await writeFile(path.join(bin, 'python3'), `#!/usr/bin/env bash\nexec ${quote(python.replaceAll('\\', '/'))} "$@"\n`, { mode: 0o700 });
+  for (const dependency of ['python3', 'python', 'jq', 'node']) {
+    await writeFile(path.join(bin, dependency), '#!/usr/bin/env bash\necho unexpected > "$VESTA_TEST_DEPENDENCY"\nexit 97\n', { mode: 0o700 });
+  }
   await writeFile(path.join(bin, 'uname'), `#!/usr/bin/env bash\ncase "$1" in -s) echo Linux;; -m) echo ${quote(arch)};; *) exit 1;; esac\n`, { mode: 0o700 });
   const capture = path.join(temp, 'capture');
   const requests = path.join(temp, 'requests');
   const shellBin = bin.replaceAll('\\', '/').replace(/^([A-Za-z]):/, (_, drive) => `/${drive.toLowerCase()}`);
-  const env = { ...process.env, VESTA_TEST_BIN: shellBin, TMPDIR: temp.replaceAll('\\', '/'), VESTA_TEST_CAPTURE: capture.replaceAll('\\', '/'), VESTA_TEST_REQUESTS: requests, VESTA_TEST_RESPONSES: path.join(temp, 'responses.json') };
+  const env = { ...process.env, VESTA_TEST_BIN: shellBin, VESTA_TEST_DEPENDENCY: path.join(temp, 'unexpected-dependency').replaceAll('\\', '/'), TMPDIR: temp.replaceAll('\\', '/'), VESTA_TEST_CAPTURE: capture.replaceAll('\\', '/'), VESTA_TEST_REQUESTS: requests, VESTA_TEST_RESPONSES: path.join(temp, 'responses.json') };
   return {
     temp, capture,
     run: args => spawnSync(bash, ['-c', 'export PATH="$VESTA_TEST_BIN:$PATH"; script=$1; shift; source "$script"', 'bootstrap-test', script.replaceAll('\\', '/'), ...args], { encoding: 'utf8', env, timeout: 15000 }),
@@ -83,8 +81,9 @@ test('exact release verifies signature and setup bytes, forwards options, cleans
   assert.match(args[3], /^[a-f0-9]{64}$/);
   assert.deepEqual(args.slice(6), ['--asset-prefix', 'linux-x86_64-', '--answers', '/fixture/answers with spaces.json', '--yes']);
   const requests = await f.requests();
-  assert.equal(requests.length, 4);
-  assert.deepEqual(requests.map(r => r.at(-1)), [`${api}/tags/${first}`, `${base(first)}/linux-x86_64-manifest.json`, `${base(first)}/linux-x86_64-manifest.sig`, `${base(first)}/linux-x86_64-vesta-setup`]);
+  assert.equal(requests.length, 3);
+  assert.deepEqual(requests.map(r => r.at(-1)), [`${base(first)}/linux-x86_64-bootstrap.txt`, `${base(first)}/linux-x86_64-bootstrap.sig`, `${base(first)}/linux-x86_64-vesta-setup`]);
+  assert.equal(await readFile(path.join(f.temp, 'unexpected-dependency')).then(() => true, () => false), false, 'Python, jq and Node are not invoked by the installer');
   for (const r of requests) {
     assert.ok(r.includes('--proto-redir') && r.includes('=https'));
     assert.ok(r.includes('--max-redirs') && r.includes('--max-filesize') && r.includes('--max-time'));
@@ -93,12 +92,12 @@ test('exact release verifies signature and setup bytes, forwards options, cleans
   assert.equal((await readdir(f.temp)).some(name => name.startsWith('vesta-setup-bootstrap.')), false);
 });
 
-test('latest nightly chooses latest published nightly rather than stable, draft or list order', options, async t => {
+test('latest nightly chooses the first canonical nightly entry in the published release feed', options, async t => {
   const r = (tag, published_at, extra = {}) => ({ tag_name: tag, published_at, draft: false, prerelease: true, ...extra });
-  const f = await fixture(t, { tag: newest, releases: [r(first, '2026-11-10T00:00:00Z'), r('v1.0', '2026-11-13T00:00:00Z', { prerelease: false }), r('nightly-20261114-333333333333', '2026-11-14T00:00:00Z', { draft: true }), r(newest, '2026-11-12T00:00:00Z')] });
+  const f = await fixture(t, { tag: newest, releases: [r('v1.0', '2026-11-13T00:00:00Z', { prerelease: false }), r('nightly-20261114-333333333333', '2026-11-14T00:00:00Z', { draft: true }), r(newest, '2026-11-12T00:00:00Z'), r(first, '2026-11-10T00:00:00Z')] });
   const result = f.run(['--latest-nightly']);
   assert.equal(result.status, 0, result.stderr);
-  assert.equal((await f.requests())[0].at(-1), `${api}?per_page=10&page=1`);
+  assert.equal((await f.requests())[0].at(-1), feedUrl);
   assert.equal((await readFile(f.capture, 'utf8')).trim().split('\n')[1], base(newest));
 });
 
@@ -111,35 +110,33 @@ test('ARM64 uses signed ARM64 manifest and artifacts; uninstall still uses nativ
   assert.deepEqual(args.slice(7), ['--asset-prefix', 'linux-aarch64-', '--root', '/fixture/host', '--plan']);
 });
 
-test('asset-filled 100-release history stays bounded per page and selects latest published across pages', options, async t => {
-  const releases = Array.from({ length: 100 }, (_, index) => ({
-    tag_name: index === 99 ? newest : `nightly-20261110-${index.toString(16).padStart(12, '0')}`,
-    draft: false, prerelease: true,
-    published_at: index === 99 ? '2026-11-12T00:00:00Z' : '2026-11-10T00:00:00Z',
-    assets: Array.from({ length: 36 }, (_, asset) => ({ name: `target-${asset}`, browser_download_url: `${base(first)}/asset-${asset}`, metadata: 'x'.repeat(1200) })),
-  }));
-  assert.ok(Buffer.byteLength(JSON.stringify(releases)) > 4194304);
-  const f = await fixture(t, { tag: newest, releases });
+test('release-note content cannot inject a candidate and release history never fetches asset inventories', options, async t => {
+  const feed = `<feed>\n<entry>\n<link rel="alternate" href="https://github.com/vesta-project/server/releases/tag/v1.0"/>\n<content type="html"><![CDATA[\n<entry>\n<link rel="alternate" href="https://github.com/vesta-project/server/releases/tag/${first}"/>\n</entry>\n]]></content>\n</entry>\n<entry>\n<link rel="alternate" href="https://github.com/vesta-project/server/releases/tag/${newest}"/>\n</entry>\n</feed>\n`;
+  const f = await fixture(t, { tag: newest, feed });
   const result = f.run(['--latest-nightly']);
   assert.equal(result.status, 0, result.stderr);
   const requests = await f.requests();
-  assert.deepEqual(requests.slice(0, 10).map(r => r.at(-1)), Array.from({ length: 10 }, (_, index) => `${api}?per_page=10&page=${index + 1}`));
-  assert.equal(requests.length, 13);
+  assert.equal(requests[0].at(-1), feedUrl);
+  assert.equal(requests.length, 4);
+  assert.equal(requests.some(r => r.at(-1).includes('api.github.com')), false);
   assert.equal((await readFile(f.capture, 'utf8')).trim().split('\n')[1], base(newest));
 });
 
 for (const [name, change, error] of [
-  ['tampered manifest signature', { changeSignature: s => `${s[0] === 'A' ? 'B' : 'A'}${s.slice(1)}` }, /signature verification failed/],
-  ['malformed signature', { changeSignature: () => 'not base64' }, /Invalid manifest signature/],
-  ['wrong signed target', { changeManifest: m => { m.target = 'linux-aarch64'; } }, /Signed manifest/],
-  ['wrong signed release', { changeManifest: m => { m.version = newest; } }, /Signed manifest/],
-  ['unexpected executable path', { changeManifest: m => { m.files[0].name = '../vesta-setup'; } }, /Signed manifest/],
-  ['duplicate JSON identity', { changeBytes: m => Buffer.from(JSON.stringify(m).replace('"schema":1', '"schema":1,"schema":1')) }, /Signed manifest/],
+  ['tampered descriptor signature', { changeSignature: s => `${s[0] === 'A' ? 'B' : 'A'}${s.slice(1)}` }, /signature verification failed/],
+  ['malformed signature', { changeSignature: () => 'not base64' }, /Invalid bootstrap signature/],
+  ['wrong signed target', { changeManifest: m => { m.target = 'linux-aarch64'; } }, /Signed bootstrap descriptor/],
+  ['wrong signed release', { changeManifest: m => { m.version = newest; } }, /Signed bootstrap descriptor/],
+  ['wrong signed purpose', { changeBytes: fields => Buffer.from(['other-purpose', ...fields.slice(1), ''].join('\n')) }, /Signed bootstrap descriptor/],
+  ['oversize signed setup', { changeManifest: m => { m.files[0].size = 67108865; } }, /Setup exceeds size limit/],
+  ['unexpected executable path', { changeManifest: m => { m.files[0].name = '../vesta-setup'; } }, /Signed bootstrap descriptor/],
+  ['duplicate descriptor identity', { changeBytes: fields => Buffer.from([...fields, fields[1], ''].join('\n')) }, /Signed bootstrap descriptor/],
+  ['embedded NUL in signed identity', { changeBytes: fields => Buffer.from(fields.join('\n').replace('vesta-setup\n', 'vesta-setup\0\n') + '\n') }, /Noncanonical bootstrap descriptor/],
+  ['oversize release feed', { feed: 'x'.repeat(1048577), releases: [] }, /Download/],
   ['oversize metadata with no advertised length', { oversizeManifest: true }, /Download/],
   ['tampered setup with unchanged size', { changePayload: p => Buffer.concat([Buffer.from('X'), p.subarray(1)]) }, /SHA-256 mismatch/],
   ['truncated setup', { changePayload: p => p.subarray(0, p.length - 1) }, /Setup size mismatch/],
-  ['missing latest nightly', { releases: [] }, /No matching published release/],
-  ['exact API tag mismatch', { releaseObject: { tag_name: newest } }, /No matching published release/],
+  ['missing latest nightly', { releases: [] }, /No published nightly/],
 ]) {
   test(`rejects ${name} before setup execution`, options, async t => {
     const f = await fixture(t, change);
