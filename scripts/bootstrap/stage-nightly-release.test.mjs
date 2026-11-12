@@ -7,6 +7,7 @@ import test from 'node:test';
 import { targetFiles } from './verify-binaries.mjs';
 import { stageNightlyRelease } from './stage-nightly-release.mjs';
 import { releaseCommands } from './release-commands.mjs';
+import { bootstrapDescriptor } from './bootstrap-descriptor.mjs';
 
 const tag = 'nightly-20261024-1234567';
 const bundleUrl = () => `https://github.com/vesta-project/server/releases/download/${tag}`;
@@ -48,6 +49,9 @@ async function fixture(t, target) {
   const prefix = `${target}-`;
   const setupUrl = `${url}/${prefix}${targetFiles[target][0]}`;
   const manifestHash = hash(manifestBytes);
+  const descriptor = bootstrapDescriptor({ version: tag, target, setupSha256: files[0].sha256, setupSize: files[0].size, manifestSha256: manifestHash });
+  await writeFile(path.join(packageDir, 'bootstrap.txt'), descriptor);
+  await writeFile(path.join(packageDir, 'bootstrap.sig'), sign(null, descriptor, privateKey).toString('base64') + '\n');
   const publicKeyHex = publicRaw.toString('hex');
   const metadata = {
     schema: 1, version: tag, target, setupUrl, setupSha256: files[0].sha256,
@@ -78,7 +82,7 @@ test('verifies the target pins and stages a signed directory under the immutable
       packageDir: f.packageDir, target, version: tag, publicKeyHex: f.publicKeyHex, siteRoot: f.siteRoot,
     });
     assert.equal(destination, path.join(f.siteRoot, 'nightly', tag, target));
-    assert.equal((await readdir(destination)).length, targetFiles[target].length + 5);
+    assert.equal((await readdir(destination)).length, targetFiles[target].length + 7);
     assert.equal(await readFile(path.join(destination, 'manifest.json'), 'utf8'), await readFile(path.join(f.packageDir, 'manifest.json'), 'utf8'));
     if (process.platform !== 'win32' && target.startsWith('linux-')) {
       assert.equal((await stat(path.join(destination, 'vesta-setup'))).mode & 0o777, 0o755);
@@ -87,6 +91,32 @@ test('verifies the target pins and stages a signed directory under the immutable
       packageDir: f.packageDir, target, version: tag, publicKeyHex: f.publicKeyHex, siteRoot: f.siteRoot,
     }), /already exists/);
   }
+});
+
+test('publisher rejects signed descriptor identity mismatches and tampering before staging', async t => {
+  for (const index of [0, 1, 2, 3, 4, 5, 6]) {
+    const f = await fixture(t, 'linux-x86_64');
+    const fields = (await readFile(path.join(f.packageDir, 'bootstrap.txt'), 'utf8')).trimEnd().split('\n');
+    fields[index] = index === 4 || index === 6 ? '0'.repeat(64) : 'wrong';
+    const bytes = Buffer.from(fields.join('\n') + '\n');
+    await writeFile(path.join(f.packageDir, 'bootstrap.txt'), bytes);
+    await writeFile(path.join(f.packageDir, 'bootstrap.sig'), sign(null, bytes, f.privateKey).toString('base64') + '\n');
+    await assert.rejects(stageNightlyRelease({ packageDir: f.packageDir, target: f.target, version: tag, publicKeyHex: f.publicKeyHex, siteRoot: f.siteRoot }), /Bootstrap descriptor/);
+    await assert.rejects(readFile(path.join(f.siteRoot, 'nightly', tag, f.target, 'manifest.json')));
+  }
+  const f = await fixture(t, 'linux-x86_64');
+  await writeFile(path.join(f.packageDir, 'bootstrap.sig'), Buffer.alloc(64).toString('base64'));
+  await assert.rejects(stageNightlyRelease({ packageDir: f.packageDir, target: f.target, version: tag, publicKeyHex: f.publicKeyHex, siteRoot: f.siteRoot }), /Bootstrap descriptor/);
+  await rm(path.join(f.packageDir, 'bootstrap.sig'));
+  await assert.rejects(stageNightlyRelease({ packageDir: f.packageDir, target: f.target, version: tag, publicKeyHex: f.publicKeyHex, siteRoot: f.siteRoot }), /file set is incomplete/);
+});
+
+test('legacy packages without bootstrap descriptors can still be independently verified and staged', async t => {
+  const f = await fixture(t, 'linux-x86_64');
+  await rm(path.join(f.packageDir, 'bootstrap.txt'));
+  await rm(path.join(f.packageDir, 'bootstrap.sig'));
+  const destination = await stageNightlyRelease({ packageDir: f.packageDir, target: f.target, version: tag, publicKeyHex: f.publicKeyHex, siteRoot: f.siteRoot });
+  assert.equal((await readdir(destination)).length, targetFiles[f.target].length + 5);
 });
 
 test('refuses a different configured release key and leaves no staged directory', async t => {

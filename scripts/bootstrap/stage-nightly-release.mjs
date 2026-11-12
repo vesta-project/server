@@ -6,6 +6,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { targetFiles, verifyBinaries } from './verify-binaries.mjs';
 import { releaseCommands } from './release-commands.mjs';
+import { bootstrapDescriptor } from './bootstrap-descriptor.mjs';
 
 const artifactNames = ['manifest.json', 'manifest.sig', 'manifest.pub', 'commands.txt', 'release.json'];
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -32,7 +33,8 @@ export async function stageNightlyRelease({ packageDir, target, version, publicK
   const input = await realpath(packageDir);
   const presentNames = (await readdir(input)).sort();
   const hasUpdates=presentNames.includes('update.json')||presentNames.includes('update.sig');
-  const expectedNames = [...targetFiles[target], ...artifactNames,...(hasUpdates?['update.json','update.sig']:[])].sort();
+  const hasBootstrap=presentNames.includes('bootstrap.txt')||presentNames.includes('bootstrap.sig');
+  const expectedNames = [...targetFiles[target], ...artifactNames,...(hasUpdates?['update.json','update.sig']:[]),...(hasBootstrap?['bootstrap.txt','bootstrap.sig']:[])].sort();
   if (JSON.stringify(presentNames) !== JSON.stringify(expectedNames)) throw new Error('Signed package file set is incomplete or contains unexpected files.');
   for (const name of expectedNames) {
     const info = await lstat(path.join(input, name));
@@ -65,6 +67,14 @@ export async function stageNightlyRelease({ packageDir, target, version, publicK
 
   const release = JSON.parse(await readFile(path.join(input, 'release.json'), 'utf8'));
   const manifestHash = sha256(manifestBytes);
+  if (hasBootstrap) {
+    const descriptor = await readFile(path.join(input, 'bootstrap.txt'));
+    const signature = Buffer.from((await readFile(path.join(input, 'bootstrap.sig'), 'utf8')).trim(), 'base64');
+    const expected = bootstrapDescriptor({ version, target, setupSha256: manifest.files[0].sha256, setupSize: manifest.files[0].size, manifestSha256: manifestHash });
+    if (!descriptor.equals(expected) || signature.length !== 64 || !verify(null, descriptor, publicKey, signature)) {
+      throw new Error('Bootstrap descriptor signature or manifest binding is invalid.');
+    }
+  }
   if(hasUpdates) {
     const bytes=await readFile(path.join(input,'update.json'));
     const signature=Buffer.from((await readFile(path.join(input,'update.sig'),'utf8')).trim(),'base64');

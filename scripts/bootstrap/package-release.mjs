@@ -6,6 +6,7 @@ import process from 'node:process';
 import { readActivationCapabilities } from './activation-capabilities.mjs';
 import { releaseCommands } from './release-commands.mjs';
 import { targetFiles, verifyBinaries } from './verify-binaries.mjs';
+import { bootstrapDescriptor } from './bootstrap-descriptor.mjs';
 
 function usage() { throw new Error('Usage: node package-release.mjs --binaries DIR --output NEW_DIR --target windows-x86_64|linux-x86_64|linux-aarch64 --base-url HTTPS_URL --signing-key PKCS8_PEM --version VERSION [--asset-prefix TARGET_PREFIX] [--channel stable|nightly --sequence INTEGER]'); }
 const options = {};
@@ -69,6 +70,9 @@ try {
   const setupName = names[0];
   const setupHash = files[0].sha256;
   const manifestHash = (await import('node:crypto')).createHash('sha256').update(manifestBytes).digest('hex');
+  const descriptor = bootstrapDescriptor({ version: options.version, target: options.target, setupSha256: setupHash, setupSize: files[0].size, manifestSha256: manifestHash });
+  await writeFile(path.join(resolvedOutput, 'bootstrap.txt'), descriptor, { flag: 'wx' });
+  await writeFile(path.join(resolvedOutput, 'bootstrap.sig'), sign(null, descriptor, privateKey).toString('base64') + '\n', { flag: 'wx' });
   if(hasUpdates) {
     const activation=readActivationCapabilities(names.map(name=>path.join(resolvedOutput,name)),options.target);
     if(!activation)console.warn('Release has no compiled activation declaration; updates are staging-only.');

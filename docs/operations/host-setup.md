@@ -8,6 +8,23 @@ Focused verification covers a real pending TLS host, resume/recovery, manual sto
 
 ## Install interactively
 
+On Linux, use the source bootstrap to select and verify a signed release:
+
+```bash
+(
+  set -e
+  umask 077
+  installer=$(mktemp)
+  trap 'rm -f -- "$installer"' EXIT
+  curl --disable -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 -o "$installer" https://raw.githubusercontent.com/vesta-project/server/main/scripts/bootstrap/install.sh
+  bash "$installer" --latest-nightly
+)
+```
+
+Replace `--latest-nightly` with `--tag nightly-YYYYMMDD-COMMIT` to install an exact release. See [bootstrap prerequisites and verification](bootstrap-release.md#install-on-linux). The bootstrap obtains authenticated pins before invoking native setup; downloading or copying `commands.txt` is optional.
+
+For direct native invocation:
+
 Use exactly one verified release source: an absolute local release directory or an HTTPS release URL. Both require the release manifest SHA-256 pin and the Ed25519 public release key supplied by the distributor.
 
 ```text
