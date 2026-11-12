@@ -4,7 +4,7 @@ Nightlies now include signed sequence/expiry update descriptors. See
 [signed update foundations](signed-updates.md) for key generation, trust bootstrap,
 check/stage commands and the remaining activation boundary.
 
-`.github/workflows/ci.yml` runs checks for pushes, pull requests, and manual validation. `.github/workflows/nightly.yml` runs a native build and signed publish when supported source changes are pushed to `main` or `feat/launcher-compat`, on a daily UTC schedule, or by manual dispatch from either approved branch. GitHub only starts scheduled workflows from the repository's default branch. The scheduled run begins after this workflow reaches that branch; pushes to the current integration branch can publish nightlies before then.
+`.github/workflows/ci.yml` runs checks for pushes, pull requests, and manual validation. `.github/workflows/nightly.yml` builds and publishes only after a new commit is pushed to `main` in the canonical repository. It has no scheduled, pull-request or manual publishing trigger. Re-running an already published source commit skips rebuilding it.
 
 The nightly pipeline runs Node checks and the Rust formatting, check, test, and Clippy suite first. It then builds all four executables on native Windows x86_64, Linux x86_64, and Linux ARM64 runners. The build jobs verify the PE/ELF file format and target architecture before uploading unsigned binaries. Separate native packaging jobs download those products, require the configured production signing key, and sign each release manifest. A final publisher rechecks every executable hash and Ed25519 signature against the pinned public key before publishing.
 
@@ -15,7 +15,9 @@ Create an Actions environment named `release-signing` and configure:
 - Environment secret `VESTA_RELEASE_SIGNING_KEY`: the Ed25519 PKCS#8 PEM private key used for manifests. Store the PEM text as a secret. The workflow fails when it is absent; it has no generated-key or unsigned fallback.
 - Repository variable `VESTA_RELEASE_PUBLIC_KEY`: the corresponding raw 32-byte Ed25519 public key encoded as 64 hex characters. This is a public pin. Every native package and the publisher compare the generated key to it before publication.
 
-Restrict the environment to `main` and `feat/launcher-compat`, require reviewers if that matches the repository's release policy, and protect both source branches. The publishing jobs do not run for pull requests or forks. Build and test jobs never receive the private key. The signing jobs run only after the checks and native builds have completed and do not run the Rust build commands.
+The signing preflight and publisher also require this variable to match the public key embedded in the trusted `scripts/bootstrap/install.sh`. Changing a signing key requires a coordinated source-script pin update and trusted-script publication; changing GitHub configuration alone intentionally blocks the release. Downloaded release metadata cannot add trusted keys. An older key's releases need the corresponding reviewed bootstrap revision or independently trusted explicit pins; this check does not introduce automatic key rotation.
+
+Restrict the environment to `main`, require reviewers if that matches the repository's release policy, and protect the source branch. The publishing jobs do not run for pull requests or forks. Build and test jobs never receive the private key. The signing jobs run only after the checks and native builds have completed and do not run the Rust build commands.
 
 The final job needs `contents: write` to create a GitHub Release. The repository or organization Actions policy must allow this job permission. All published files are GitHub Release assets; the workflow does not write package binaries to a Git branch.
 
@@ -41,7 +43,7 @@ The application key is embedded in agent binaries, as in the launcher, and can
 be recovered from them. Raw env files are not part of the release assets.
 Pull-request validation receives no provider secret and works without a key.
 
-Use **Actions → Nightly signed releases → Run workflow** on `main` or `feat/launcher-compat` for an intentional publishing run. The run still executes full validation and all three target builds before signing. Use the CI workflow's manual dispatch for validation without publishing.
+Publish through a reviewed new commit on `main`; there is no manual nightly publishing action. Use the CI workflow's manual dispatch for validation without publishing.
 
 The publisher copies only the verified staging files and rebuilds the convenience archives from those files. It compares bootstrap commands against the canonical generator for the verified release pins and restores Linux executable permissions lost during artifact transport. It uploads all targets into a draft prerelease, then publishes it after successful upload. It does not mark a nightly as the latest stable release. Enable GitHub's immutable-release setting where available to add repository-enforced protection; refusal to overwrite in the workflow does not restrict an administrator's separate actions.
 

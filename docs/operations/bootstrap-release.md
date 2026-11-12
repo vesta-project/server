@@ -9,18 +9,32 @@ The source script is the bootstrap trust anchor: obtain it from the official rep
 Install the latest published nightly (x86_64 or ARM64 is detected automatically):
 
 ```bash
-curl -fsSL --proto '=https' --proto-redir '=https' https://raw.githubusercontent.com/vesta-project/server/main/scripts/bootstrap/install.sh | bash -s -- --latest-nightly
+(
+  set -e
+  umask 077
+  installer=$(mktemp)
+  trap 'rm -f -- "$installer"' EXIT
+  curl --disable -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 -o "$installer" https://raw.githubusercontent.com/vesta-project/server/main/scripts/bootstrap/install.sh
+  bash "$installer" --latest-nightly
+)
 ```
 
 Select an exact release instead:
 
 ```bash
-curl -fsSL --proto '=https' --proto-redir '=https' https://raw.githubusercontent.com/vesta-project/server/main/scripts/bootstrap/install.sh | bash -s -- --tag nightly-20261112-a248a66a6ad3
+(
+  set -e
+  umask 077
+  installer=$(mktemp)
+  trap 'rm -f -- "$installer"' EXIT
+  curl --disable -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 -o "$installer" https://raw.githubusercontent.com/vesta-project/server/main/scripts/bootstrap/install.sh
+  bash "$installer" --tag nightly-20261112-a248a66a6ad3
+)
 ```
 
-Discovery requires Bash 4+, curl, Python 3.7+, `sha256sum`, and OpenSSL supporting Ed25519 `pkeyutl -rawin` verification (OpenSSL 3 is recommended). The script does not install prerequisites or require Node/Rust. It selects the most recently published non-draft nightly from the latest 100 GitHub releases; it fails if that bounded page has no matching nightly. Exact `--tag` selection queries that release directly. GitHub API errors/rate limits fail before setup runs. No GitHub credentials are needed or forwarded.
+Discovery requires Bash 4+, curl, Python 3.7+, `sha256sum`, and OpenSSL supporting Ed25519 `pkeyutl -rawin` verification (OpenSSL 3 is recommended). The script does not install prerequisites or require Node/Rust. It selects the most recently published non-draft nightly from at most 100 GitHub releases, fetched in up to ten pages of ten records; it stops at the first short page and fails if no matching nightly is found. It compares publication times across all fetched pages instead of assuming API order matches publication order. Exact `--tag` selection queries that release directly. GitHub API errors/rate limits fail before setup runs. No GitHub credentials are needed or forwarded.
 
-The script bounds discovery to 4 MiB, the signed manifest to 64 KiB, its signature to 256 bytes, setup to 64 MiB, and HTTPS redirects to five per download. Discovery and explicit pins cannot be mixed. Interactive setup retains terminal input when piped to Bash. Existing answers and uninstall options work with either selector. This invokes normal setup; it does not adopt or modify an existing AMP server automatically.
+The script bounds each discovery page to 4 MiB (at most 40 MiB over ten requests), the signed manifest to 64 KiB, its signature to 256 bytes, setup to 64 MiB, and HTTPS redirects to five per download. Discovery and explicit pins cannot be mixed. The documented command downloads the complete source into a private temporary file before execution; a failed or partial fetch never runs the received script. Existing answers and uninstall options work with either selector. This invokes normal setup; it does not adopt or modify an existing AMP server automatically.
 
 ## Build and package a release
 

@@ -66,21 +66,46 @@ if [[ -n $selection ]]; then
   # This pin is part of the trusted source script, never read from release assets.
   release_key=84e1fa3eae990d870d671c0fb585a62906f50d91e3382f3cc9f025d904c8dd8a
   api=https://api.github.com/repos/vesta-project/server/releases
-  if [[ $selection == nightly ]]; then api="$api?per_page=100"; else api="$api/tags/$tag"; fi
-  download "$api" "$work/releases.json" 4194304
-  python3 - "$work/releases.json" "$selection" "$tag" > "$work/tag" <<'PY'
+  metadata=()
+  if [[ $selection == nightly ]]; then
+    # Release records include all asset metadata. Bound each ten-record page,
+    # while retaining the latest-published selection over at most 100 releases.
+    for ((page = 1; page <= 10; page++)); do
+      file="$work/releases-$page.json"
+      download "$api?per_page=10&page=$page" "$file" 4194304
+      count=$(python3 - "$file" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding='utf-8'))
+    if not isinstance(data, list) or len(data) > 10:
+        raise ValueError('invalid release page')
+    sys.stdout.write(str(len(data)))
+except (ValueError, TypeError):
+    sys.exit('Invalid GitHub release page.')
+PY
+)
+      metadata+=("$file")
+      (( count == 10 )) || break
+    done
+  else
+    download "$api/tags/$tag" "$work/releases.json" 4194304
+    metadata+=("$work/releases.json")
+  fi
+  python3 - "$selection" "$tag" "${metadata[@]}" > "$work/tag" <<'PY'
 import datetime, json, re, sys
 sys.stdout.reconfigure(newline='\n')
 try:
-    data = json.load(open(sys.argv[1], encoding='utf-8'))
-    if sys.argv[2] == 'nightly':
+    if sys.argv[1] == 'nightly':
+        data = []
+        for filename in sys.argv[3:]:
+            data.extend(json.load(open(filename, encoding='utf-8')))
         releases = [r for r in data if isinstance(r, dict) and r.get('draft') is False
                     and r.get('prerelease') is True
                     and re.fullmatch(r'nightly-[0-9]{8}-[0-9a-f]{12}', r.get('tag_name', ''))]
         release = max(releases, key=lambda r: datetime.datetime.fromisoformat(r['published_at'].replace('Z', '+00:00')))
     else:
-        release = data
-        if release.get('draft') is not False or release.get('tag_name') != sys.argv[3]:
+        release = json.load(open(sys.argv[3], encoding='utf-8'))
+        if release.get('draft') is not False or release.get('tag_name') != sys.argv[2]:
             raise ValueError('release mismatch')
     print(release['tag_name'])
 except (ValueError, TypeError, KeyError, AttributeError):

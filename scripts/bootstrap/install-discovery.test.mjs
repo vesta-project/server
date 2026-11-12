@@ -48,6 +48,9 @@ async function fixture(t, { tag = first, target = 'linux-x86_64', changeManifest
     [`${base(tag)}/${target}-manifest.sig`]: Buffer.from(changeSignature?.(signature) ?? signature).toString('base64'),
     [`${base(tag)}/${target}-vesta-setup`]: Buffer.from(changePayload?.(payload) ?? payload).toString('base64'),
   };
+  for (let page = 1; page <= 10; page++) {
+    responses[`${api}?per_page=10&page=${page}`] = Buffer.from(JSON.stringify((releases ?? [release]).slice((page - 1) * 10, page * 10))).toString('base64');
+  }
   await writeFile(path.join(temp, 'responses.json'), JSON.stringify(responses));
   await writeFile(path.join(temp, 'curl.mjs'), `import fs from 'node:fs';
 const args = process.argv.slice(2), url = args.at(-1);
@@ -95,7 +98,7 @@ test('latest nightly chooses latest published nightly rather than stable, draft 
   const f = await fixture(t, { tag: newest, releases: [r(first, '2026-11-10T00:00:00Z'), r('v1.0', '2026-11-13T00:00:00Z', { prerelease: false }), r('nightly-20261114-333333333333', '2026-11-14T00:00:00Z', { draft: true }), r(newest, '2026-11-12T00:00:00Z')] });
   const result = f.run(['--latest-nightly']);
   assert.equal(result.status, 0, result.stderr);
-  assert.equal((await f.requests())[0].at(-1), `${api}?per_page=100`);
+  assert.equal((await f.requests())[0].at(-1), `${api}?per_page=10&page=1`);
   assert.equal((await readFile(f.capture, 'utf8')).trim().split('\n')[1], base(newest));
 });
 
@@ -106,6 +109,23 @@ test('ARM64 uses signed ARM64 manifest and artifacts; uninstall still uses nativ
   const args = (await readFile(f.capture, 'utf8')).trim().split('\n');
   assert.equal(args[0], 'uninstall');
   assert.deepEqual(args.slice(7), ['--asset-prefix', 'linux-aarch64-', '--root', '/fixture/host', '--plan']);
+});
+
+test('asset-filled 100-release history stays bounded per page and selects latest published across pages', options, async t => {
+  const releases = Array.from({ length: 100 }, (_, index) => ({
+    tag_name: index === 99 ? newest : `nightly-20261110-${index.toString(16).padStart(12, '0')}`,
+    draft: false, prerelease: true,
+    published_at: index === 99 ? '2026-11-12T00:00:00Z' : '2026-11-10T00:00:00Z',
+    assets: Array.from({ length: 36 }, (_, asset) => ({ name: `target-${asset}`, browser_download_url: `${base(first)}/asset-${asset}`, metadata: 'x'.repeat(1200) })),
+  }));
+  assert.ok(Buffer.byteLength(JSON.stringify(releases)) > 4194304);
+  const f = await fixture(t, { tag: newest, releases });
+  const result = f.run(['--latest-nightly']);
+  assert.equal(result.status, 0, result.stderr);
+  const requests = await f.requests();
+  assert.deepEqual(requests.slice(0, 10).map(r => r.at(-1)), Array.from({ length: 10 }, (_, index) => `${api}?per_page=10&page=${index + 1}`));
+  assert.equal(requests.length, 13);
+  assert.equal((await readFile(f.capture, 'utf8')).trim().split('\n')[1], base(newest));
 });
 
 for (const [name, change, error] of [

@@ -212,6 +212,7 @@ jobs:
           test -n "$VESTA_RELEASE_SIGNING_KEY" || { echo 'Required environment secret VESTA_RELEASE_SIGNING_KEY is missing.' >&2; exit 1; }
           test -n "$VESTA_RELEASE_PUBLIC_KEY" || { echo 'Required environment variable VESTA_RELEASE_PUBLIC_KEY is missing.' >&2; exit 1; }
           [[ "$VESTA_RELEASE_PUBLIC_KEY" =~ ^[0-9a-fA-F]{64}$ ]] || { echo 'VESTA_RELEASE_PUBLIC_KEY must be the pinned 32-byte Ed25519 public key in hex.' >&2; exit 1; }
+          node scripts/bootstrap/check-bootstrap-key.mjs "$VESTA_RELEASE_PUBLIC_KEY"
           node -e "require('node:fs').writeFileSync(process.env.RUNNER_TEMP + '/vesta-release-signing-key.pem', process.env.VESTA_RELEASE_SIGNING_KEY, { mode: 0o600 })"
       - name: Verify unsigned executables and create the signed package
         env:
@@ -273,6 +274,7 @@ jobs:
           RELEASE_PUBLIC_KEY: ${{ vars.VESTA_RELEASE_PUBLIC_KEY }}
         run: |
           test -n "$RELEASE_PUBLIC_KEY" || { echo 'Required repository variable VESTA_RELEASE_PUBLIC_KEY is missing.' >&2; exit 1; }
+          node scripts/bootstrap/check-bootstrap-key.mjs "$RELEASE_PUBLIC_KEY"
           for target in windows-x86_64 linux-x86_64 linux-aarch64; do
             node scripts/bootstrap/stage-nightly-release.mjs \
               --package "$RUNNER_TEMP/signed/signed-$target/release" \
@@ -311,7 +313,14 @@ jobs:
 
           Install this release on Linux (x86_64/ARM64 detected automatically):
 
-              curl -fsSL --proto '=https' --proto-redir '=https' https://raw.githubusercontent.com/vesta-project/server/main/scripts/bootstrap/install.sh | bash -s -- --tag $RELEASE_VERSION
+              (
+                set -e
+                umask 077
+                installer=\$(mktemp)
+                trap 'rm -f -- "\$installer"' EXIT
+                curl --disable -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 -o "\$installer" https://raw.githubusercontent.com/vesta-project/server/main/scripts/bootstrap/install.sh
+                bash "\$installer" --tag $RELEASE_VERSION
+              )
 
           For the latest nightly, replace --tag $RELEASE_VERSION with --latest-nightly.
           The source script verifies the signed manifest and setup executable before running setup.

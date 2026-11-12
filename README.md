@@ -14,7 +14,14 @@ wrapper is not part of this build or execution path.
 On Linux, install the latest signed nightly:
 
 ```bash
-curl -fsSL --proto '=https' --proto-redir '=https' https://raw.githubusercontent.com/vesta-project/server/main/scripts/bootstrap/install.sh | bash -s -- --latest-nightly
+(
+  set -e
+  umask 077
+  installer=$(mktemp)
+  trap 'rm -f -- "$installer"' EXIT
+  curl --disable -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 -o "$installer" https://raw.githubusercontent.com/vesta-project/server/main/scripts/bootstrap/install.sh
+  bash "$installer" --latest-nightly
+)
 ```
 
 Use `--tag nightly-YYYYMMDD-COMMIT` instead for a specific release.
