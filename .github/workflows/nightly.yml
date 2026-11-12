@@ -232,7 +232,9 @@ jobs:
             --version "$RELEASE_VERSION" \
             --channel nightly --sequence "${{ github.run_number }}"
           node -e "const r=require(process.env.RUNNER_TEMP + '/package/' + process.env.RELEASE_TARGET + '/release/release.json'); if(r.releaseKey.toLowerCase()!==process.env.RELEASE_PUBLIC_KEY.toLowerCase()) throw new Error('Generated public key does not match VESTA_RELEASE_PUBLIC_KEY')"
-          tar -czf "$RUNNER_TEMP/package/$RELEASE_TARGET/vesta-$RELEASE_TARGET-$RELEASE_VERSION.tar.gz" -C "$RUNNER_TEMP/package/$RELEASE_TARGET/release" .
+          # The Linux publisher creates the final archives after re-verification.
+          # Upload only the signed package here; native Windows drive paths are
+          # interpreted as remote archive names by Git Bash's GNU tar.
       - name: Upload signed package for the isolated publisher
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

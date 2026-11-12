@@ -969,6 +969,8 @@ fn integrated_12k_roster_status_metrics_network_and_resource_events() {
     let mut bytes = 0;
     let mut memory: Option<f64> = None;
     let mut cpu: Option<f64> = None;
+    let mut known_status = 0;
+    let mut unknown_status = 0;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -995,9 +997,26 @@ fn integrated_12k_roster_status_metrics_network_and_resource_events() {
             bytes += reply.body.len();
             let value = reply.json();
             if name == "status" {
-                assert!(
-                    (12_000..=12_001).contains(&value["data"]["player_count"].as_u64().unwrap())
-                );
+                assert_eq!(value["data"]["generation"], generation);
+                // Nonblocking status explicitly reports unknown while a roster
+                // projection is busy; it must not fabricate zero or stale data.
+                if value["data"]["player_count_known"].as_bool().unwrap() {
+                    assert!(
+                        (12_000..=12_001)
+                            .contains(&value["data"]["player_count"].as_u64().unwrap())
+                    );
+                    assert!(
+                        value["data"]["player_count_observed_at_ms"]
+                            .as_i64()
+                            .unwrap()
+                            > 0
+                    );
+                    known_status += 1;
+                } else {
+                    assert!(value["data"]["player_count"].is_null());
+                    assert!(value["data"]["player_count_observed_at_ms"].is_null());
+                    unknown_status += 1;
+                }
             }
             if name == "roster_page" {
                 assert_eq!(value["data"]["items"].as_array().unwrap().len(), 200);
@@ -1044,7 +1063,29 @@ fn integrated_12k_roster_status_metrics_network_and_resource_events() {
         .collect::<std::collections::BTreeMap<_, _>>();
     println!(
         "INTEGRATED_SCALE {}",
-        serde_json::json!({"players":12000,"requests":100,"wall_seconds":elapsed,"requests_per_second":100./elapsed,"response_body_bytes":bytes,"seed_bytes":seed.body.len(),"delta_frames":frames,"delta_bytes":delta_bytes,"delta_delivery_ms":delta_ms,"churn_events":churn,"churn_frames":churn_frames,"churn_bytes":churn_bytes,"churn_events_per_second":churn as f64/churn_seconds,"agent_memory_bytes":memory,"agent_cpu_percent":cpu,"latency":summary})
+        serde_json::json!({"players":12000,"requests":100,"known_status_responses":known_status,"unknown_status_responses":unknown_status,"wall_seconds":elapsed,"requests_per_second":100./elapsed,"response_body_bytes":bytes,"seed_bytes":seed.body.len(),"delta_frames":frames,"delta_bytes":delta_bytes,"delta_delivery_ms":delta_ms,"churn_events":churn,"churn_frames":churn_frames,"churn_bytes":churn_bytes,"churn_events_per_second":churn as f64/churn_seconds,"agent_memory_bytes":memory,"agent_cpu_percent":cpu,"latency":summary})
     );
     peer.close(None).unwrap();
+    let _ = peer.read();
+    // After all churn is delivered, require recovery to an exact known count.
+    let settled = Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = f.request("GET", "/api/v3/manage/server/status", b"", Some(&token));
+        assert_eq!(status.status, 200);
+        let data = status.json()["data"].clone();
+        assert_eq!(data["generation"], generation);
+        if data["player_count_known"] == true {
+            assert_eq!(data["player_count"], 12_000);
+            assert!(data["player_count_observed_at_ms"].as_i64().unwrap() > 0);
+            break;
+        }
+        assert_eq!(data["player_count_known"], false);
+        assert!(data["player_count"].is_null());
+        assert!(data["player_count_observed_at_ms"].is_null());
+        assert!(
+            Instant::now() < settled,
+            "status did not recover after churn"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }

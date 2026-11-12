@@ -761,6 +761,16 @@ fn management_roster_seeds_once_tracks_activity_and_rechecks_authority() {
             .management_roster(&harness.subject, generation, QUERY_WAIT)
     };
     assert_eq!(read().unwrap().players.len(), 2);
+    let handle = owned.runtime.network_handle();
+    assert_eq!(handle.last_player_count(Some(generation)).unwrap().0, 2);
+    {
+        let _projection = handle.player_queries().roster.lock().unwrap();
+        assert!(
+            handle.last_player_count(Some(generation)).is_none(),
+            "a busy roster observation must stay explicitly unknown"
+        );
+    }
+    assert_eq!(handle.last_player_count(Some(generation)).unwrap().0, 2);
     for _ in 0..3 {
         assert_eq!(read().unwrap().players.len(), 2);
     }
