@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
     branches: ['**']
   workflow_dispatch:
@@ -18,14 +18,28 @@ jobs:
   test:
     timeout-minutes: 10
     runs-on: ubuntu-latest
+    outputs:
+      rust_scope: ${{ steps.scope.outputs.rust_scope }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Node 22
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
+
+      - name: Determine affected checks
+        id: scope
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_BASE: ${{ github.event.pull_request.base.sha }}
+          CI_BEFORE: ${{ github.event.before }}
+          CI_HEAD: ${{ github.sha }}
+        run: node scripts/change-scope.mjs
 
       - name: Check protocol conformance and requirement ledger
         run: |
@@ -36,6 +50,7 @@ jobs:
           node scripts/build-roadmap-html.mjs --check
 
   rust:
+    needs: test
     timeout-minutes: 45
     name: Rust (${{ matrix.os }})
     strategy:
@@ -43,6 +58,10 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-2025]
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     defaults:
       run:
         shell: bash
@@ -55,6 +74,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout pinned shared sandbox source
+        if: needs.test.outputs.rust_scope != 'none'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: vesta-project/launcher
@@ -63,25 +83,67 @@ jobs:
           persist-credentials: false
 
       - name: Select verified development toolchain
+        if: needs.test.outputs.rust_scope != 'none'
         run: rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
 
+      - name: Restore trusted main Rust cache
+        if: needs.test.outputs.rust_scope != 'none'
+        id: rust-cache
+        continue-on-error: true
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            server/target
+          key: trusted-ci-${{ runner.os }}-rust-1.96.0-${{ hashFiles('server/Cargo.lock', 'server/rust-toolchain.toml', 'server/.github/workflows/ci.yml') }}-${{ github.sha }}
+          restore-keys: |
+            trusted-ci-${{ runner.os }}-rust-1.96.0-${{ hashFiles('server/Cargo.lock', 'server/rust-toolchain.toml', 'server/.github/workflows/ci.yml') }}-
+
+      - name: Select Rust scope
+        if: needs.test.outputs.rust_scope != 'none'
+        id: packages
+        env:
+          SCOPE: ${{ needs.test.outputs.rust_scope }}
+        run: |
+          echo "args=$(node scripts/change-scope.mjs --cargo-args "$SCOPE")" >> "$GITHUB_OUTPUT"
+
       - name: Check formatting
+        if: needs.test.outputs.rust_scope != 'none'
         run: rustup run 1.96.0 cargo fmt --all -- --check
 
       - name: Check all targets
+        if: needs.test.outputs.rust_scope != 'none'
         env:
           CARGO_INCREMENTAL: "0"
-        run: rustup run 1.96.0 cargo check --workspace --all-targets --locked
+        run: rustup run 1.96.0 cargo check ${{ steps.packages.outputs.args }} --all-targets --locked
 
       - name: Run Rust tests
+        if: needs.test.outputs.rust_scope != 'none'
         env:
           CARGO_INCREMENTAL: "0"
           # Native onboarding fixtures package the real setup executable. Embedded
           # Linux debug symbols can exceed its unchanged 64 MiB artifact bound.
           CARGO_PROFILE_TEST_DEBUG: "0"
-        run: rustup run 1.96.0 cargo test --workspace --locked -- --test-threads=1
+        run: rustup run 1.96.0 cargo test ${{ steps.packages.outputs.args }} --locked -- --test-threads=1
 
       - name: Run strict all-target Clippy
+        if: needs.test.outputs.rust_scope != 'none'
         env:
           CARGO_INCREMENTAL: "0"
-        run: rustup run 1.96.0 cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: rustup run 1.96.0 cargo clippy ${{ steps.packages.outputs.args }} --all-targets --locked -- -D warnings
+
+      - name: Save cache only from successful protected main
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.test.outputs.rust_scope != 'none' && steps.rust-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            server/target
+          key: trusted-ci-${{ runner.os }}-rust-1.96.0-${{ hashFiles('server/Cargo.lock', 'server/rust-toolchain.toml', 'server/.github/workflows/ci.yml') }}-${{ github.sha }}
+
+      - name: Rust checks not applicable to this revision
+        if: needs.test.outputs.rust_scope == 'none'
+        run: echo 'No Rust or build-contract changes. Node and bootstrap checks ran in the required test job.'
