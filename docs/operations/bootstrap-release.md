@@ -1,8 +1,26 @@
 # Signed setup bootstrap and release packaging
 
-The setup bootstrap is a small source helper. It downloads the standalone `vesta-setup` executable only from an explicit HTTPS URL and checks its SHA-256 against a value supplied through a trusted channel before running it. That independently delivered checksum is what establishes the executable's trust. The signed release manifest is a second check performed by `vesta-setup`: it verifies the exact manifest bytes against the supplied manifest SHA-256 and validates `manifest.sig` with the Ed25519 release key pin.
+The setup bootstrap is a small source helper. On Linux it can discover a published release and authenticate its manifest with the release public key embedded in the trusted source script, then verify the standalone `vesta-setup` executable's signed size and SHA-256 before running it. Explicit URL/checksum/key inputs remain available for pinned deployment. Native `vesta-setup` independently checks the exact manifest hash and Ed25519 signature before installing the bundle.
 
-Do not run an installer fetched from an untrusted mutable URL without independently obtained pins. HTTPS protects the connection but does not establish that a mutable server served an authorized executable. Deliver the setup URL, setup SHA-256, manifest SHA-256, and public key pin through a trusted release site or another authenticated channel. See [nightly release operations](nightly-releases.md) for the signed nightly publishing workflow.
+The source script is the bootstrap trust anchor: obtain it from the official repository. It never trusts a release key or executable checksum supplied by GitHub release metadata alone. To pin the bootstrap itself, use a reviewed immutable source commit instead of `main`, or download and inspect it before execution. Explicit pins must also come from a trusted channel. See [nightly release operations](nightly-releases.md) for the signed nightly publishing workflow.
+
+## Install on Linux
+
+Install the latest published nightly (x86_64 or ARM64 is detected automatically):
+
+```bash
+curl -fsSL --proto '=https' --proto-redir '=https' https://raw.githubusercontent.com/vesta-project/server/main/scripts/bootstrap/install.sh | bash -s -- --latest-nightly
+```
+
+Select an exact release instead:
+
+```bash
+curl -fsSL --proto '=https' --proto-redir '=https' https://raw.githubusercontent.com/vesta-project/server/main/scripts/bootstrap/install.sh | bash -s -- --tag nightly-20261112-a248a66a6ad3
+```
+
+Discovery requires Bash 4+, curl, Python 3.7+, `sha256sum`, and OpenSSL supporting Ed25519 `pkeyutl -rawin` verification (OpenSSL 3 is recommended). The script does not install prerequisites or require Node/Rust. It selects the most recently published non-draft nightly from the latest 100 GitHub releases; it fails if that bounded page has no matching nightly. Exact `--tag` selection queries that release directly. GitHub API errors/rate limits fail before setup runs. No GitHub credentials are needed or forwarded.
+
+The script bounds discovery to 4 MiB, the signed manifest to 64 KiB, its signature to 256 bytes, setup to 64 MiB, and HTTPS redirects to five per download. Discovery and explicit pins cannot be mixed. Interactive setup retains terminal input when piped to Bash. Existing answers and uninstall options work with either selector. This invokes normal setup; it does not adopt or modify an existing AMP server automatically.
 
 ## Build and package a release
 
@@ -26,7 +44,7 @@ Publish each file as an immutable GitHub Release asset named `<target>-<logical 
 
 ## Bootstrap invocation
 
-The PowerShell source helper is `scripts/bootstrap/install.ps1`; the Bash source helper is `scripts/bootstrap/install.sh`. Each requires explicit `SetupUrl`, `SetupSha256`, `BundleUrl`, `ManifestSha256`, and `ReleaseKey` inputs. `ReleaseKey` is 64 hex characters representing the 32-byte Ed25519 public key. The generated commands embed the setup checksum, manifest checksum, and key pin, and add `--asset-prefix` for flat release assets.
+The PowerShell source helper is `scripts/bootstrap/install.ps1`; the Bash source helper is `scripts/bootstrap/install.sh`. PowerShell requires explicit `SetupUrl`, `SetupSha256`, `BundleUrl`, `ManifestSha256`, and `ReleaseKey` inputs; Bash accepts either the Linux release selectors above or those explicit pins. `ReleaseKey` is 64 hex characters representing the 32-byte Ed25519 public key. Generated `commands.txt` files remain an optional auditable set of release-specific pins, rather than the normal Linux installation entry point. They add `--asset-prefix` for flat release assets.
 
 PowerShell example:
 
@@ -42,6 +60,6 @@ bash scripts/bootstrap/install.sh --setup-url 'https://github.com/vesta-project/
 
 For unattended deployment, add `--answers PATH --yes` (PowerShell: `-Answers PATH -Yes`). The installer must still apply its normal policy and license decisions from the provided answers and may reject missing or invalid consent; `--yes` does not grant consent. On Linux the helper connects installer stdin to `/dev/tty` when an interactive terminal is available, so it also works when the helper itself was piped to Bash. Both helpers use private temporary directories and remove only their own temporary download after execution. The downloaded setup binary is limited to 64 MiB and checked before execution.
 
-The generated one-paste commands create a private temporary workspace, download only the pinned setup executable there, verify its checksum, then start it with the release metadata pins. They do not write into or require a writable current directory. No target package manager or Rust toolchain is required.
+The source helpers and generated one-paste commands create a private temporary workspace, download the pinned setup executable there, verify its checksum, then start it with the release metadata pins. They do not write into or require a writable current directory. No target package manager or Rust toolchain is required.
 
 The same helpers support verified uninstall using `--uninstall` (PowerShell: `-Uninstall`) with the same setup and release pins. Full Vesta uninstall requires `--root HOST`. Removing one managed server uses `--server NAME --servers-root REGISTRY`; omit `--root` in that mode. Add `--plan` to preview. The helper forwards these options to signed native setup, which performs its confirmation and path validation. The helper refuses `--yes` for uninstall and does not remove files itself. See [uninstall behavior and recovery](uninstall.md).

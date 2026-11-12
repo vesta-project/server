@@ -309,7 +309,14 @@ jobs:
           cat > "$RUNNER_TEMP/release-notes.md" <<EOF
           Nightly build for commit $GITHUB_SHA, published on $RELEASE_DATE UTC.
 
-          Flat target-prefixed assets and one-paste bootstrap commands are attached to this release.
+          Install this release on Linux (x86_64/ARM64 detected automatically):
+
+              curl -fsSL --proto '=https' --proto-redir '=https' https://raw.githubusercontent.com/vesta-project/server/main/scripts/bootstrap/install.sh | bash -s -- --tag $RELEASE_VERSION
+
+          For the latest nightly, replace --tag $RELEASE_VERSION with --latest-nightly.
+          The source script verifies the signed manifest and setup executable before running setup.
+          Requires Bash, curl, Python 3.7+, sha256sum and OpenSSL with Ed25519 raw verification support.
+          Target-prefixed assets and explicit-pin commands are also attached for manual deployment.
 
           Release public key pin: ${VESTA_RELEASE_PUBLIC_KEY}
           EOF
