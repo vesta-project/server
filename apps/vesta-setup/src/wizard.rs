@@ -1,5 +1,6 @@
 //! One active prompt, inline redraw, arrow keys, back navigation and plain fallback.
 use crate::{
+    directory_picker,
     engine::{self, Answers, Result, Startup},
     network::{self, ExternalProbe},
     paths, platform,
@@ -57,15 +58,8 @@ impl Terminal {
         }
         let text = ui::render(view, self.theme.clone());
         let mut out = io::stdout().lock();
-        if self.interactive && self.lines > 0 {
-            execute!(
-                out,
-                cursor::MoveUp(self.lines),
-                cursor::MoveToColumn(0),
-                terminal::Clear(ClearType::FromCursorDown)
-            )
+        prepare_frame(&mut out, self.interactive, self.last.is_none(), self.lines)
             .map_err(|_| "setup_terminal_unavailable")?;
-        }
         let output = if terminal::is_raw_mode_enabled().unwrap_or(false) {
             text.replace('\n', "\r\n")
         } else {
@@ -79,6 +73,25 @@ impl Terminal {
         Ok(())
     }
 }
+fn prepare_frame(
+    out: &mut impl Write,
+    interactive: bool,
+    first: bool,
+    lines: u16,
+) -> io::Result<()> {
+    if interactive && first {
+        execute!(out, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+    } else if interactive && lines > 0 {
+        execute!(
+            out,
+            cursor::MoveUp(lines),
+            cursor::MoveToColumn(0),
+            terminal::Clear(ClearType::FromCursorDown)
+        )?;
+    }
+    Ok(())
+}
+
 struct Raw;
 impl Raw {
     fn begin() -> Result<Self> {
@@ -235,6 +248,79 @@ fn view(step: usize, heading: &str, description: &str) -> View {
         description: vec![description.into()],
         rows: vec![],
         hint: "↑ ↓ to choose · Enter to continue · Esc to go back · Ctrl+C to cancel".into(),
+    }
+}
+fn existing_directory(terminal: &mut Terminal) -> Result<Answer<PathBuf>> {
+    let mut current = std::env::current_dir().map_err(|_| "setup_path_unavailable")?;
+    let mut page = 0;
+    let mut error = None;
+    loop {
+        let listing = match directory_picker::list(&current) {
+            Ok(listing) => listing,
+            Err(_) => {
+                match input(
+                    terminal,
+                    2,
+                    "Folder unavailable — enter another path",
+                    "Directory path",
+                    paths::display(&current),
+                    |text| directory_picker::list(&PathBuf::from(text)).map(|_| ()),
+                )? {
+                    Answer::Next(path) => {
+                        current = paths::normalize(&PathBuf::from(path));
+                        page = 0;
+                    }
+                    Answer::Back => return Ok(Answer::Back),
+                }
+                error = None;
+                continue;
+            }
+        };
+        page = page.min(listing.entries.len().saturating_sub(1) / directory_picker::PAGE_SIZE);
+        match choose(
+            terminal,
+            directory_picker::view(&current, &listing, page, error.take()),
+            0,
+        )? {
+            Answer::Back => return Ok(Answer::Back),
+            Answer::Next(0) => match directory_picker::validate_server(&current) {
+                Ok(()) => return Ok(Answer::Next(current)),
+                Err(code) => error = Some(code),
+            },
+            Answer::Next(1) => {
+                if let Some(parent) = current.parent() {
+                    current = parent.to_owned();
+                    page = 0;
+                }
+            }
+            Answer::Next(2) => match input(
+                terminal,
+                2,
+                "Open a folder",
+                "Directory path",
+                paths::display(&current),
+                |text| directory_picker::list(&PathBuf::from(text)).map(|_| ()),
+            )? {
+                Answer::Next(path) => {
+                    current = paths::normalize(&PathBuf::from(path));
+                    page = 0;
+                }
+                Answer::Back => {}
+            },
+            Answer::Next(3) => page = page.saturating_sub(1),
+            Answer::Next(4) => page += 1,
+            Answer::Next(index) => {
+                if let Some(entry) = listing
+                    .entries
+                    .get(page * directory_picker::PAGE_SIZE + index - 5)
+                    .filter(|entry| entry.directory)
+                {
+                    engine::guard(&entry.path)?;
+                    current = entry.path.clone();
+                    page = 0;
+                }
+            }
+        }
     }
 }
 pub fn with_choices(mut view: View, labels: &[(&str, &str, bool)], selected: usize) -> View {
@@ -457,33 +543,8 @@ pub fn ask(terminal: &mut Terminal) -> Result<Answers> {
             },
             1 => {
                 if existing && answers.existing_server.is_none() {
-                    match input(
-                        terminal,
-                        2,
-                        "Connect an existing server",
-                        "Existing Minecraft server folder",
-                        String::new(),
-                        |text| {
-                            let p = PathBuf::from(text);
-                            engine::guard(&p)?;
-                            if !p.is_dir() {
-                                return Err("Choose an existing server directory.".into());
-                            }
-                            if !["server.properties", "eula.txt", "world", "mods", "plugins"]
-                                .iter()
-                                .any(|f| p.join(f).exists())
-                            {
-                                return Err(
-                                    "No Minecraft server files were detected in this directory."
-                                        .into(),
-                                );
-                            }
-                            Ok(())
-                        },
-                    )? {
-                        Answer::Next(p) => {
-                            answers.existing_server = Some(paths::normalize(&PathBuf::from(p)))
-                        }
+                    match existing_directory(terminal)? {
+                        Answer::Next(p) => answers.existing_server = Some(paths::normalize(&p)),
                         Answer::Back => {
                             stage = 0;
                             continue;
@@ -619,4 +680,22 @@ fn friendly(code: &str) -> String {
     "setup_path_invalid"=>"Enter a complete directory path without parent components.",
     _=>"This folder is unavailable. Choose another dedicated installation directory.",
 }.into()
+}
+
+#[cfg(test)]
+mod frame_tests {
+    #[test]
+    fn clears_only_first_interactive_frame_and_preserves_headless_output() {
+        let mut first = Vec::new();
+        super::prepare_frame(&mut first, true, true, 0).unwrap();
+        assert!(String::from_utf8(first).unwrap().contains("\x1b[2J"));
+        let mut redraw = Vec::new();
+        super::prepare_frame(&mut redraw, true, false, 4).unwrap();
+        let redraw = String::from_utf8(redraw).unwrap();
+        assert!(!redraw.contains("\x1b[2J"));
+        assert!(redraw.contains("\x1b[4A"));
+        let mut plain = Vec::new();
+        super::prepare_frame(&mut plain, false, true, 4).unwrap();
+        assert!(plain.is_empty());
+    }
 }

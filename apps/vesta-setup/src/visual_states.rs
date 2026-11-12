@@ -1,6 +1,7 @@
 //! Preview data passed through the exact production view constructors.
 //! These values contain no real machine paths, keys, credentials, or identities.
 use crate::{
+    directory_picker::{self, Entry, Listing},
     engine::{self, Answers, Receipt, Startup},
     network::ExternalStatus,
     paths,
@@ -63,11 +64,27 @@ pub fn all() -> Vec<(&'static str, View)> {
         ("location-new", location()),
         (
             "location-existing",
-            wizard::input_view(
-                2,
-                "Connect an existing server",
-                "Existing Minecraft server folder",
-                &format!("{game}▏"),
+            directory_picker::view(
+                &PathBuf::from(&game),
+                &Listing {
+                    entries: vec![
+                        Entry {
+                            path: PathBuf::from(&game).join("world"),
+                            directory: true,
+                        },
+                        Entry {
+                            path: PathBuf::from(&game).join("server.properties"),
+                            directory: false,
+                        },
+                        Entry {
+                            path: PathBuf::from(&game).join("readme.txt"),
+                            directory: false,
+                        },
+                    ],
+                    truncated: false,
+                    skipped: 0,
+                },
+                0,
                 None,
             ),
         ),
