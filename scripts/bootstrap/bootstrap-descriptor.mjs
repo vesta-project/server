@@ -9,3 +9,13 @@ export function bootstrapDescriptor({ version, target, setupSha256, setupSize, m
   const setupName = target.startsWith('windows-') ? 'vesta-setup.exe' : 'vesta-setup';
   return Buffer.from(['vesta-setup-bootstrap-v1', version, target, setupName, setupSha256, String(setupSize), manifestSha256, ''].join('\n'));
 }
+
+export function installerDescriptor({ version, target, setupSha256, setupSize }) {
+  if (!version?.startsWith('installer-')) throw new Error('Installer release identity is required.');
+  // Reuse all identity/size validation and canonical encoding; the purpose and
+  // last field distinguish independent installer trust from package bootstrap.
+  const lines = bootstrapDescriptor({ version, target, setupSha256, setupSize, manifestSha256:'0'.repeat(64) }).toString().split('\n');
+  lines[0] = 'vesta-installer-bootstrap-v1';
+  lines[6] = '1'; // supported server manifest schema, not an unsigned package pin
+  return Buffer.from(lines.join('\n'));
+}

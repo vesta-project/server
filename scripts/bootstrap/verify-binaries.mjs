@@ -42,9 +42,9 @@ function matchesTarget(header, target) {
     && header.readUInt16LE(18) === expected[target].machine;
 }
 
-export async function verifyBinaries(directory, target) {
+export async function verifyBinaries(directory, target, installerOnly = false) {
   if (!expected[target]) throw new Error(`Unsupported target: ${target}`);
-  const files = targetFiles[target];
+  const files = installerOnly ? targetFiles[target].slice(0, 1) : targetFiles[target];
   const available = await readdir(directory);
   for (const name of files) {
     if (!available.includes(name)) throw new Error(`Missing required binary: ${name}`);
@@ -66,9 +66,9 @@ function usage() {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   const options = {};
-  if (args.length !== 4 || args[0] !== '--binaries' || args[2] !== '--target') usage();
+  if (![4,5].includes(args.length) || args[0] !== '--binaries' || args[2] !== '--target' || (args.length === 5 && args[4] !== '--installer-only')) usage();
   options.binaries = args[1];
   options.target = args[3];
-  await verifyBinaries(options.binaries, options.target);
+  await verifyBinaries(options.binaries, options.target, args.length === 5);
   console.log(`Verified ${options.target} executable headers in ${path.resolve(options.binaries)}`);
 }

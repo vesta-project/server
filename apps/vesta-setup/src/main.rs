@@ -5,11 +5,17 @@ const HELP: &str = "Vesta host setup\n\n  vesta-setup --bundle-url <https-direct
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.is_empty() || args.first().is_some_and(|a| a == "install") {
+        return vesta_setup::installer::run(&args[usize::from(!args.is_empty())..]);
+    }
     if args.first().is_some_and(|a| a == "update") {
         return vesta_setup::updates::run(&args[1..]);
     }
-    if args.is_empty() || args == ["--help"] || args == ["-h"] {
+    if args == ["--help"] || args == ["-h"] {
         println!("{HELP}");
+        println!(
+            "Standalone installer: vesta-setup install [--channel stable|nightly | --tag RELEASE]"
+        );
         return Ok(());
     }
     let mut values = std::collections::BTreeMap::new();
@@ -199,16 +205,7 @@ fn run() -> Result<(), String> {
             return Err(code);
         }
     };
-    let result = engine::prepare(&answers, &release, &mut |phase, file, current, total| {
-        let _ = terminal.show(&engine::progress_view(phase, file, current, total));
-    });
-    match result {
-        Ok(receipt) => terminal.show(&engine::complete_view(&receipt)),
-        Err(code) => {
-            terminal.show(&engine::failure_view(&code))?;
-            Err(code)
-        }
-    }
+    wizard::prepare(&mut terminal, &answers, &release)
 }
 
 fn uninstall(

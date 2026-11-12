@@ -41,3 +41,11 @@ the old comparison baseline. The optional comparison command is documented in th
 external Java checkout; it is not a merge prerequisite or active CI workflow.
 These historical records do not certify every product requirement or old Java
 behaviour as implemented.
+
+## Change-aware CI
+
+CI runs once per feature PR, on main pushes, and on manual dispatch. Node contracts always run. `scripts/change-scope.mjs` selects setup/update package checks for isolated changes and full workspace checks for shared/configuration or unknown changes. Bootstrap shell and documentation changes need no Rust build; both required Rust job names report that explicitly. Missing/manual diff baselines select full checks, and a failed diff fails the job. Formatting, check, test and strict Clippy remain required for each selected Rust scope on Windows and Linux.
+
+Only successful main pushes save trusted Rust caches; PRs may restore them and cache failures cannot skip validation. Release builds remain separate. Run classifier/workflow regressions with `node --test scripts/change-scope.test.mjs scripts/ci-scope-contract.test.mjs scripts/bootstrap/nightly-workflow.test.mjs`.
+
+The opt-in public release-catalog smoke fetches only bounded official metadata and a signed platform manifest, never installs binaries: set `VESTA_PUBLIC_RELEASE_SMOKE=1`, then run `cargo test --locked -p vesta-update --lib release::official::tests::public_catalog_and_manifest_smoke -- --ignored --exact --nocapture`. The ordinary suite leaves this network check ignored.

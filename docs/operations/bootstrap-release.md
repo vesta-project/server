@@ -1,12 +1,12 @@
 # Signed setup bootstrap and release packaging
 
-The setup bootstrap is a small source helper. On Linux it can discover a published release and authenticate its bootstrap descriptor with the release public key embedded in the trusted source script, then verify the standalone `vesta-setup` executable's signed size and SHA-256 before running it. The descriptor also binds the exact manifest hash. Explicit URL/checksum/key inputs remain available for pinned deployment. Native `vesta-setup` parses and independently checks the full manifest, its hash and Ed25519 signature before installing the bundle.
+The setup bootstrap is a small source helper. On Linux it discovers an installer and authenticates its bootstrap descriptor with the release public key embedded in the trusted source script, then verifies the standalone `vesta-setup` executable's signed size and SHA-256 before running it. Independent installer descriptors declare supported server manifest schema; legacy release-matched descriptors bind one package manifest hash. Explicit URL/checksum/key inputs remain available. Native `vesta-setup` parses and independently checks the chosen package's full manifest, signature, platform and version before installation.
 
 The source script is the bootstrap trust anchor: obtain it from the official repository. It never trusts a release key or executable checksum supplied by GitHub release metadata alone. To pin the bootstrap itself, use a reviewed immutable source commit instead of `main`, or download and inspect it before execution. Explicit pins must also come from a trusted channel. See [nightly release operations](nightly-releases.md) for the signed nightly publishing workflow.
 
 ## Install on Linux
 
-Install the latest published nightly (x86_64 or ARM64 is detected automatically):
+Start the latest independent installer (x86_64 or ARM64 is detected automatically), then choose the server channel/version:
 
 ```bash
 (
@@ -15,7 +15,7 @@ Install the latest published nightly (x86_64 or ARM64 is detected automatically)
   installer=$(mktemp)
   trap 'rm -f -- "$installer"' EXIT
   curl --disable -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 -o "$installer" https://raw.githubusercontent.com/vesta-project/server/main/scripts/bootstrap/install.sh
-  bash "$installer" --latest-nightly
+  bash "$installer"
 )
 ```
 
@@ -32,11 +32,23 @@ Select an exact release instead:
 )
 ```
 
-Discovery requires Bash 4+, curl, standard Linux file/hash tools (`sha256sum`, `head`, `tr`, `wc`, `awk`), and OpenSSL supporting Ed25519 `pkeyutl -rawin` verification (OpenSSL 3 is recommended). Python, jq, Node, Rust and Java are not installer prerequisites; the script installs no prerequisite packages. `--latest-nightly` selects the first canonical nightly entry in GitHub's recent public release feed. This feed is finite: if it contains no nightly, select an exact `--tag`. Exact tags address their immutable release assets directly. The feed selects a candidate only; the signed descriptor establishes its version, target, setup identity and manifest hash. No GitHub credentials are needed or forwarded.
+Discovery requires Bash 4+, curl, standard Linux file/hash tools (`sha256sum`, `head`, `tr`, `wc`, `awk`), and OpenSSL supporting Ed25519 `pkeyutl -rawin` verification (OpenSSL 3 is recommended). Python, jq, Node, Rust and Java are not installer prerequisites; the script installs no packages. The public feed selects the newest `installer-*` build independently of the desired server package. Its signed descriptor authenticates the exact installer identity before execution. `--latest-nightly`, `--channel stable|nightly` or `--tag RELEASE` preselect the package in that installer; without them its native UI offers channel and version selection. Native setup uses bounded official catalog requests and the shared signed manifest verifier, never catalog-supplied keys/hashes/asset URLs. Exact tags require an authentic platform-matching server manifest. No GitHub credentials are needed or forwarded.
 
 The script bounds the release feed to 1 MiB, the bootstrap descriptor to 64 KiB, its signature to 256 bytes, setup to 64 MiB, and HTTPS redirects to five per download. It does not fetch release-list asset inventories or parse JSON in shell. Discovery and explicit pins cannot be mixed. The documented command downloads the complete source into a private temporary file before execution; a failed or partial fetch never runs the received script. Existing answers and uninstall options work with either selector. This invokes normal setup; it does not adopt or modify an existing AMP server automatically.
 
 The first published nightly, `nightly-20261112-a248a66a6ad3`, predates bootstrap descriptors. Its reviewed Linux setup size/hash and manifest hash are pinned directly in the trusted script, preserving its installation path. Other descriptor-less releases require independently trusted explicit pins; there is no unsigned-metadata fallback. Original release assets are not modified.
+
+Until the first independent installer is published, the script retains the verified release-matched nightly/exact-tag path. Stable preselection requires the independent installer. Uninstall continues using verified release-matched tools. Explicit local bundles and pins keep their existing CLI behavior. These compatibility paths never execute unverified setup.
+
+An exact-tag installation prefers the independent installer when discovery succeeds, but a failed or oversized feed falls back to that tag's signed release-matched setup. Exact-tag uninstall skips discovery entirely. Channel/default/latest selection still requires working discovery. Failure to authenticate discovered installer metadata never falls back to executing another binary.
+
+## Independent lifecycle
+
+`installer-YYYYMMDD-COMMIT` releases contain only setup plus signed installer metadata. Their descriptor purpose is `vesta-installer-bootstrap-v1`, with server manifest schema `1` in the final field instead of a package manifest hash. Their separate `installer.json` purpose is `vesta-installer-release-v1`; it cannot be mistaken for a server manifest. Packaging, header checks, staging, key verification and signing share the existing implementation via `--product installer` rather than separate download/install engines. The native UI resolves the chosen package, checks its signature, exact tag, target and supported schema, and uses the existing preparation engine. It installs that package's matched host tools; the downloaded independent UI never replaces them with unrelated binaries.
+
+An interactive standalone binary can run with no arguments or `vesta-setup install`. Use `install --channel stable|nightly` or `install --tag RELEASE` for preselection. Headless standalone use requires explicit channel/tag plus `--answers FILE --yes`. Existing pinned `--bundle-dir`/`--bundle-url` commands are retained. Installer code still needs an installer binary release; changing the shell script alone needs no binary release.
+
+The main-push release orchestrator classifies changed files: shell-only and documentation edits publish no binaries, installer-view edits publish only an installer, and shared host/runtime/build-contract changes publish affected server and installer products. All three platforms must verify before publication. Releases remain immutable, signed, canonical-main-only; no scheduled/manual/fork publication or key fallback is introduced.
 
 `bootstrap.txt` is a strict seven-line ASCII protocol, with a final newline: purpose `vesta-setup-bootstrap-v1`, version/tag, target, setup filename, setup SHA-256, decimal setup byte size, and exact manifest SHA-256. `bootstrap.sig` signs these exact bytes with the same Ed25519 key as the manifest. The shell checks the signature before parsing, then exact field count, identity, canonical encoding, size and hash. Packaging and publication share the descriptor generator and require exact agreement with the verified manifest. The publisher requires both files for new releases. A missing or bad descriptor fails closed.
 

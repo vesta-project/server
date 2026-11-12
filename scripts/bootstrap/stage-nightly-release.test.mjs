@@ -7,7 +7,7 @@ import test from 'node:test';
 import { targetFiles } from './verify-binaries.mjs';
 import { stageNightlyRelease } from './stage-nightly-release.mjs';
 import { releaseCommands } from './release-commands.mjs';
-import { bootstrapDescriptor } from './bootstrap-descriptor.mjs';
+import { bootstrapDescriptor, installerDescriptor } from './bootstrap-descriptor.mjs';
 
 const tag = 'nightly-20261024-1234567';
 const bundleUrl = () => `https://github.com/vesta-project/server/releases/download/${tag}`;
@@ -28,7 +28,7 @@ function executable(target, index) {
   return bytes;
 }
 
-async function fixture(t, target) {
+async function fixture(t, target, installerOnly = false) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'vesta-stage-nightly-test-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const packageDir = path.join(root, 'package');
@@ -36,20 +36,22 @@ async function fixture(t, target) {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
   const publicRaw = publicKey.export({ type: 'spki', format: 'der' }).subarray(-32);
   const files = [];
-  for (const [index, name] of targetFiles[target].entries()) {
+  for (const [index, name] of (installerOnly ? targetFiles[target].slice(0,1) : targetFiles[target]).entries()) {
     const bytes = executable(target, index);
     await writeFile(path.join(packageDir, name), bytes);
     files.push({ name, sha256: hash(bytes), size: bytes.length });
   }
-  const manifestBytes = Buffer.from(JSON.stringify({ schema: 1, version: tag, target, files }, null, 2) + '\n');
-  await writeFile(path.join(packageDir, 'manifest.json'), manifestBytes);
-  await writeFile(path.join(packageDir, 'manifest.sig'), sign(null, manifestBytes, privateKey).toString('base64') + '\n');
-  await writeFile(path.join(packageDir, 'manifest.pub'), publicRaw.toString('base64') + '\n');
+  const version = installerOnly ? 'installer-20261113-123456789abc' : tag;
+  const stem = installerOnly ? 'installer' : 'manifest';
+  const manifestBytes = Buffer.from(JSON.stringify({ schema: 1, version, target, files, ...(installerOnly ? {purpose:'vesta-installer-release-v1',server_manifest_schema:1}: {}) }, null, 2) + '\n');
+  await writeFile(path.join(packageDir, `${stem}.json`), manifestBytes);
+  await writeFile(path.join(packageDir, `${stem}.sig`), sign(null, manifestBytes, privateKey).toString('base64') + '\n');
+  await writeFile(path.join(packageDir, `${stem}.pub`), publicRaw.toString('base64') + '\n');
   const url = bundleUrl();
   const prefix = `${target}-`;
   const setupUrl = `${url}/${prefix}${targetFiles[target][0]}`;
   const manifestHash = hash(manifestBytes);
-  const descriptor = bootstrapDescriptor({ version: tag, target, setupSha256: files[0].sha256, setupSize: files[0].size, manifestSha256: manifestHash });
+  const descriptor = (installerOnly ? installerDescriptor : bootstrapDescriptor)({ version, target, setupSha256: files[0].sha256, setupSize: files[0].size, manifestSha256: manifestHash });
   await writeFile(path.join(packageDir, 'bootstrap.txt'), descriptor);
   await writeFile(path.join(packageDir, 'bootstrap.sig'), sign(null, descriptor, privateKey).toString('base64') + '\n');
   const publicKeyHex = publicRaw.toString('hex');
@@ -57,10 +59,27 @@ async function fixture(t, target) {
     schema: 1, version: tag, target, setupUrl, setupSha256: files[0].sha256,
     bundleUrl: url, assetPrefix: prefix, manifestSha256: manifestHash, releaseKey: publicKeyHex,
   };
-  await writeFile(path.join(packageDir, 'commands.txt'), releaseCommands(metadata));
-  await writeFile(path.join(packageDir, 'release.json'), JSON.stringify(metadata) + '\n');
-  return { root, packageDir, siteRoot: path.join(root, 'site'), target, publicKeyHex, privateKey, manifestHash };
+  if (!installerOnly) {
+    await writeFile(path.join(packageDir, 'commands.txt'), releaseCommands(metadata));
+    await writeFile(path.join(packageDir, 'release.json'), JSON.stringify(metadata) + '\n');
+  }
+  return { root, packageDir, siteRoot: path.join(root, 'site'), target, publicKeyHex, privateKey, manifestHash, version };
 }
+
+test('independent installer publication verifies all target identities and rejects mixed server metadata', async t => {
+  for (const target of Object.keys(targetFiles)) {
+    const f = await fixture(t,target,true);
+    const options = {packageDir:f.packageDir,target,version:f.version,publicKeyHex:f.publicKeyHex,siteRoot:f.siteRoot,product:'installer'};
+    const destination = await stageNightlyRelease(options);
+    assert.equal((await readdir(destination)).length,6);
+    await assert.rejects(stageNightlyRelease({...options,product:'server'}),/file set|Manifest/);
+    const changed = await readFile(path.join(f.packageDir,'bootstrap.txt'));
+    changed[0] ^= 1;
+    await writeFile(path.join(f.packageDir,'bootstrap.txt'),changed);
+    await writeFile(path.join(f.packageDir,'bootstrap.sig'),sign(null,changed,f.privateKey).toString('base64'));
+    await assert.rejects(stageNightlyRelease({...options,siteRoot:path.join(f.root,'bad-site')}),/Bootstrap descriptor/);
+  }
+});
 
 test('publisher verifies and retains signed update descriptors and rejects tampering',async t=>{
   const f=await fixture(t,'linux-x86_64');

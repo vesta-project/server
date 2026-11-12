@@ -25,6 +25,9 @@ pub struct Terminal {
     last: Option<Instant>,
 }
 impl Terminal {
+    pub fn is_interactive(&self) -> bool {
+        self.interactive
+    }
     pub fn new(color: bool, unicode: bool) -> Self {
         let interactive = io::stdin().is_terminal()
             && io::stdout().is_terminal()
@@ -513,6 +516,9 @@ pub fn review_view(answers: &Answers, selected: usize) -> View {
     )
 }
 pub fn ask(terminal: &mut Terminal) -> Result<Answers> {
+    ask_for_release(terminal, None)
+}
+pub fn ask_for_release(terminal: &mut Terminal, release: Option<&str>) -> Result<Answers> {
     if !terminal.interactive {
         return Err("setup_terminal_required_use_answers_and_yes".into());
     }
@@ -654,10 +660,120 @@ pub fn ask(terminal: &mut Terminal) -> Result<Answers> {
                     Answer::Back => stage = 2,
                 }
             }
-            _ => match choose(terminal, review_view(&answers, 0), 0)? {
+            _ => match choose(
+                terminal,
+                {
+                    let mut view = review_view(&answers, 0);
+                    if let Some(version) = release {
+                        view.rows.insert(
+                            0,
+                            Row::Detail {
+                                label: "Vesta version".into(),
+                                value: version.into(),
+                            },
+                        );
+                    }
+                    view
+                },
+                0,
+            )? {
                 Answer::Next(0) => return Ok(answers),
                 _ => stage = 3,
             },
+        }
+    }
+}
+pub fn prepare(
+    terminal: &mut Terminal,
+    answers: &Answers,
+    release: &crate::release::Release,
+) -> Result<()> {
+    let result = engine::prepare(answers, release, &mut |phase, file, current, total| {
+        let _ = terminal.show(&engine::progress_view(phase, file, current, total));
+    });
+    match result {
+        Ok(receipt) => terminal.show(&engine::complete_view(&receipt)),
+        Err(code) => {
+            terminal.show(&engine::failure_view(&code))?;
+            Err(code)
+        }
+    }
+}
+pub fn select_package(
+    terminal: &mut Terminal,
+    catalog: &[crate::release::official::Published],
+) -> Result<String> {
+    loop {
+        let stable = catalog.iter().any(|r| !r.nightly);
+        let nightly = catalog.iter().any(|r| r.nightly);
+        let initial = if stable {
+            0
+        } else if nightly {
+            1
+        } else {
+            2
+        };
+        let channels = with_choices(
+            view(
+                1,
+                "Which Vesta release should be installed?",
+                "Installer updates are independent of this selection.",
+            ),
+            &[
+                ("Stable releases", "Recommended for regular use", !stable),
+                ("Nightly builds", "Development builds", !nightly),
+                ("Enter an exact release tag", "", false),
+            ],
+            initial,
+        );
+        let channel = match choose(terminal, channels, initial)? {
+            Answer::Back => return Err("setup_cancelled".into()),
+            Answer::Next(2) => match input(
+                terminal,
+                1,
+                "Select an exact release",
+                "Published server release tag",
+                String::new(),
+                |tag| {
+                    if crate::release::official::valid_tag(tag) {
+                        Ok(())
+                    } else {
+                        Err("Enter a valid server release tag.".into())
+                    }
+                },
+            )? {
+                Answer::Next(tag) => return Ok(tag),
+                Answer::Back => continue,
+            },
+            Answer::Next(index) => index == 1,
+        };
+        let releases: Vec<_> = catalog.iter().filter(|r| r.nightly == channel).collect();
+        let mut page = 0;
+        loop {
+            let start = page * 5;
+            let mut screen = view(
+                1,
+                "Choose a Vesta version",
+                "The selected package is verified before installation.",
+            );
+            let mut choices: Vec<_> = releases
+                .iter()
+                .skip(start)
+                .take(5)
+                .map(|r| (r.tag.as_str(), "", false))
+                .collect();
+            let visible = choices.len();
+            choices.push(("Previous page", "", page == 0));
+            choices.push(("Next page", "", start + visible >= releases.len()));
+            screen = with_choices(screen, &choices, 0);
+            match choose(terminal, screen, 0)? {
+                Answer::Back => break,
+                Answer::Next(index) if index < visible => {
+                    return Ok(releases[start + index].tag.clone());
+                }
+                Answer::Next(index) if index == visible => page = page.saturating_sub(1),
+                Answer::Next(_) => page += 1,
+            }
         }
     }
 }

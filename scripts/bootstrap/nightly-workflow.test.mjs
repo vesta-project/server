@@ -16,8 +16,8 @@ test('nightly binaries require the provider integration key without exposing it 
   assert.doesNotMatch(ci, /secrets\.CURSEFORGE_API_KEY/);
 });
 
-test('CI checks pushes, pull requests, and manual validation with read-only contents access', () => {
-  assert.match(ci, /on:\s*\n\s+push:\s*\n\s+branches:\s*\['\*\*'\]/);
+test('CI checks main pushes, pull requests, and manual validation without duplicate feature pushes', () => {
+  assert.match(ci, /on:\s*\n\s+push:\s*\n\s+branches:\s*\[main\]/);
   assert.match(ci, /pull_request:\s*\n\s+branches:\s*\['\*\*'\]/);
   assert.match(ci, /workflow_dispatch:/);
   assert.match(ci, /permissions:\s*\n\s+contents:\s*read/);
@@ -67,6 +67,28 @@ test('all third-party workflow actions are pinned to full commit SHAs', () => {
     assert.ok(refs.length > 0, `${filename} contains actions`);
     for (const ref of refs) assert.match(ref, /^[^@]+@[0-9a-f]{40}$/, `${filename} has immutable action reference: ${ref}`);
   }
+});
+
+test('independent products share verification and gate every publication on its own scope', () => {
+  assert.match(nightly, /gh api --paginate --slurp "repos\/\$GH_REPO\/releases\?per_page=100"/);
+  assert.doesNotMatch(nightly, /scope.env/);
+  assert.match(nightly, /node scripts\/change-scope.mjs --release-plan/);
+  const validate = nightly.split('\n  validate:')[1].split('\n  build:')[0];
+  assert.match(validate, /if: needs.prepare.outputs.should_build == 'true'/);
+  assert.match(validate, /--cargo-args "\$SCOPE"/);
+  const publish = nightly.split('\n  publish:')[1];
+  assert.ok(publish.indexOf('stage-nightly-release.mjs --product installer') < publish.indexOf('gh release create'));
+  for (const [name, product] of [
+    ['Refuse an existing release tag or release', 'server'],
+    ['Create the immutable GitHub Release with flat target-prefixed assets', 'server'],
+    ['Publish independently verified installer release', 'installer'],
+  ]) {
+    const step = publish.split(`      - name: ${name}\n`)[1].split('\n      - name:')[0];
+    assert.match(step, new RegExp(`if: needs.prepare.outputs.${product}_release == 'true'`));
+  }
+  assert.match(nightly, /Installer signing key does not match configured public pin/);
+  assert.match(nightly, /check-bootstrap-key.mjs "\$RELEASE_PUBLIC_KEY"/);
+  assert.match(nightly, /if: always\(\)[\s\S]*rm -f -- "\$KEY_PATH"/);
 });
 
 // Execute the actual gate, with no signing/provider secrets, network or filesystem effects.

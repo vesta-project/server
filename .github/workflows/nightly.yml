@@ -43,22 +43,35 @@ jobs:
       date: ${{ steps.version.outputs.date }}
       short_sha: ${{ steps.version.outputs.short_sha }}
       should_build: ${{ steps.version.outputs.should_build }}
+      installer_version: ${{ steps.version.outputs.installer_version }}
+      server_release: ${{ steps.version.outputs.server_release }}
+      installer_release: ${{ steps.version.outputs.installer_release }}
+      rust_scope: ${{ steps.version.outputs.rust_scope }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - name: Create date and commit version
         id: version
         env:
           COMMIT: ${{ github.sha }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          CI_EVENT: ${{ github.event_name }}
+          CI_BEFORE: ${{ github.event.before }}
+          CI_HEAD: ${{ github.sha }}
         run: |
           date="$(date -u +%Y%m%d)"
           short_sha="${COMMIT:0:12}"
           echo "date=$date" >> "$GITHUB_OUTPUT"
           echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
           echo "value=nightly-$date-$short_sha" >> "$GITHUB_OUTPUT"
+          echo "installer_version=installer-$date-$short_sha" >> "$GITHUB_OUTPUT"
           export RELEASE_VERSION="nightly-$date-$short_sha"
-          gh api "repos/$GH_REPO/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
-          node -e 'const fs=require("node:fs");const releases=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/releases.json","utf8"));const existing=releases.some(r=>!r.draft&&r.tag_name.startsWith("nightly-")&&(r.tag_name===process.env.RELEASE_VERSION||r.target_commitish===process.env.COMMIT));fs.appendFileSync(process.env.GITHUB_OUTPUT,"should_build="+(!existing)+"\n");if(existing)console.log("This source commit already has a published nightly; no rebuild or republish.");'
+          export INSTALLER_VERSION="installer-$date-$short_sha"
+          gh api --paginate --slurp "repos/$GH_REPO/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+          node scripts/change-scope.mjs --release-plan "$RUNNER_TEMP/releases.json"
 
   validate:
     timeout-minutes: 45
@@ -104,10 +117,13 @@ jobs:
           # Keep native test fixtures within the same setup-artifact size bound
           # as production releases; release build settings remain unchanged.
           CARGO_PROFILE_TEST_DEBUG: '0'
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          SCOPE: ${{ needs.prepare.outputs.rust_scope }}
         run: |
-          rustup run 1.96.0 cargo check --workspace --all-targets --locked
-          rustup run 1.96.0 cargo test --workspace --locked -- --test-threads=1
-          rustup run 1.96.0 cargo clippy --workspace --all-targets --locked -- -D warnings
+          read -r -a packages <<< "$(node scripts/change-scope.mjs --cargo-args "$SCOPE")"
+          rustup run 1.96.0 cargo check "${packages[@]}" --all-targets --locked
+          rustup run 1.96.0 cargo test "${packages[@]}" --locked -- --test-threads=1
+          rustup run 1.96.0 cargo clippy "${packages[@]}" --all-targets --locked -- -D warnings
 
   build:
     timeout-minutes: 45
@@ -156,12 +172,22 @@ jobs:
           CARGO_INCREMENTAL: '0'
           CURSEFORGE_API_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
           VESTA_REQUIRE_PROVIDER_KEYS: '1'
+          SERVER_RELEASE: ${{ needs.prepare.outputs.server_release }}
         run: |
-          rustup run 1.96.0 cargo build --locked --release --target '${{ matrix.rust_target }}' \
-            -p vesta-setup -p vesta-agent -p vesta-supervisor \
-            --bin vesta-setup --bin vesta-agent --bin vesta-supervisor --bin vesta
+          if [ "$SERVER_RELEASE" = true ]; then
+            rustup run 1.96.0 cargo build --locked --release --target '${{ matrix.rust_target }}' \
+              -p vesta-setup -p vesta-agent -p vesta-supervisor \
+              --bin vesta-setup --bin vesta-agent --bin vesta-supervisor --bin vesta
+          else
+            rustup run 1.96.0 cargo build --locked --release --target '${{ matrix.rust_target }}' -p vesta-setup --bin vesta-setup
+          fi
       - name: Verify executable formats and target architectures
-        run: node scripts/bootstrap/verify-binaries.mjs --binaries 'target/${{ matrix.rust_target }}/release' --target '${{ matrix.target }}'
+        env:
+          SERVER_RELEASE: ${{ needs.prepare.outputs.server_release }}
+        run: |
+          extra=()
+          if [ "$SERVER_RELEASE" != true ]; then extra+=(--installer-only); fi
+          node scripts/bootstrap/verify-binaries.mjs --binaries 'target/${{ matrix.rust_target }}/release' --target '${{ matrix.target }}' "${extra[@]}"
       - name: Upload unsigned native build products
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -221,8 +247,14 @@ jobs:
           RELEASE_PUBLIC_KEY: ${{ vars.VESTA_RELEASE_PUBLIC_KEY }}
           RELEASE_SIGNING_KEY_PATH: ${{ runner.temp }}/vesta-release-signing-key.pem
           BUNDLE_BASE_URL: https://github.com/vesta-project/server/releases/download/${{ needs.prepare.outputs.version }}
+          SERVER_RELEASE: ${{ needs.prepare.outputs.server_release }}
+          INSTALLER_RELEASE: ${{ needs.prepare.outputs.installer_release }}
+          INSTALLER_VERSION: ${{ needs.prepare.outputs.installer_version }}
         run: |
-          node scripts/bootstrap/verify-binaries.mjs --binaries "$RUNNER_TEMP/binaries" --target "$RELEASE_TARGET"
+          extra=()
+          if [ "$SERVER_RELEASE" != true ]; then extra+=(--installer-only); fi
+          node scripts/bootstrap/verify-binaries.mjs --binaries "$RUNNER_TEMP/binaries" --target "$RELEASE_TARGET" "${extra[@]}"
+          if [ "$SERVER_RELEASE" = true ]; then
           node scripts/bootstrap/package-release.mjs \
             --binaries "$RUNNER_TEMP/binaries" \
             --output "$RUNNER_TEMP/package/$RELEASE_TARGET/release" \
@@ -233,6 +265,16 @@ jobs:
             --version "$RELEASE_VERSION" \
             --channel nightly --sequence "${{ github.run_number }}"
           node -e "const r=require(process.env.RUNNER_TEMP + '/package/' + process.env.RELEASE_TARGET + '/release/release.json'); if(r.releaseKey.toLowerCase()!==process.env.RELEASE_PUBLIC_KEY.toLowerCase()) throw new Error('Generated public key does not match VESTA_RELEASE_PUBLIC_KEY')"
+          fi
+          if [ "$INSTALLER_RELEASE" = true ]; then
+            node scripts/bootstrap/package-release.mjs \
+              --product installer --binaries "$RUNNER_TEMP/binaries" \
+              --output "$RUNNER_TEMP/package/$RELEASE_TARGET/installer" \
+              --target "$RELEASE_TARGET" --asset-prefix "${RELEASE_TARGET}-" \
+              --base-url "https://github.com/vesta-project/server/releases/download/$INSTALLER_VERSION" \
+              --signing-key "$RELEASE_SIGNING_KEY_PATH" --version "$INSTALLER_VERSION"
+            node -e "const fs=require('node:fs');const pub=fs.readFileSync(process.env.RUNNER_TEMP+'/package/'+process.env.RELEASE_TARGET+'/installer/installer.pub','utf8');if(Buffer.from(pub.trim(),'base64').toString('hex')!==process.env.RELEASE_PUBLIC_KEY.toLowerCase())throw Error('Installer signing key does not match configured public pin');"
+          fi
           # The Linux publisher creates the final archives after re-verification.
           # Upload only the signed package here; native Windows drive paths are
           # interpreted as remote archive names by Git Bash's GNU tar.
@@ -272,10 +314,14 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           RELEASE_PUBLIC_KEY: ${{ vars.VESTA_RELEASE_PUBLIC_KEY }}
+          SERVER_RELEASE: ${{ needs.prepare.outputs.server_release }}
+          INSTALLER_RELEASE: ${{ needs.prepare.outputs.installer_release }}
+          INSTALLER_VERSION: ${{ needs.prepare.outputs.installer_version }}
         run: |
           test -n "$RELEASE_PUBLIC_KEY" || { echo 'Required repository variable VESTA_RELEASE_PUBLIC_KEY is missing.' >&2; exit 1; }
           node scripts/bootstrap/check-bootstrap-key.mjs "$RELEASE_PUBLIC_KEY"
           for target in windows-x86_64 linux-x86_64 linux-aarch64; do
+            if [ "$SERVER_RELEASE" = true ]; then
             test -s "$RUNNER_TEMP/signed/signed-$target/release/bootstrap.txt" && test -s "$RUNNER_TEMP/signed/signed-$target/release/bootstrap.sig" || { echo 'Signed bootstrap descriptor is required for new releases.' >&2; exit 1; }
             node scripts/bootstrap/stage-nightly-release.mjs \
               --package "$RUNNER_TEMP/signed/signed-$target/release" \
@@ -283,8 +329,15 @@ jobs:
               --version "$RELEASE_VERSION" \
               --public-key "$RELEASE_PUBLIC_KEY" \
               --site-root "$RUNNER_TEMP/site"
+            fi
+            if [ "$INSTALLER_RELEASE" = true ]; then
+              node scripts/bootstrap/stage-nightly-release.mjs --product installer \
+                --package "$RUNNER_TEMP/signed/signed-$target/installer" --target "$target" \
+                --version "$INSTALLER_VERSION" --public-key "$RELEASE_PUBLIC_KEY" --site-root "$RUNNER_TEMP/site"
+            fi
           done
       - name: Refuse an existing release tag or release
+        if: needs.prepare.outputs.server_release == 'true'
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           GH_TOKEN: ${{ github.token }}
@@ -298,6 +351,7 @@ jobs:
             exit 1
           fi
       - name: Create the immutable GitHub Release with flat target-prefixed assets
+        if: needs.prepare.outputs.server_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VESTA_RELEASE_PUBLIC_KEY: ${{ vars.VESTA_RELEASE_PUBLIC_KEY }}
@@ -343,4 +397,23 @@ jobs:
             --draft --prerelease --latest=false \
             --title "Nightly $RELEASE_DATE ($SHORT_SHA)" \
             --notes-file "$RUNNER_TEMP/release-notes.md"
+          gh release edit "$RELEASE_VERSION" --draft=false
+
+      - name: Publish independently verified installer release
+        if: needs.prepare.outputs.installer_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.installer_version }}
+        run: |
+          if git ls-remote --exit-code origin "refs/tags/$RELEASE_VERSION" >/dev/null 2>&1 || gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
+            echo 'Installer release already exists; refusing replacement.' >&2; exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/installer-assets"
+          for target in windows-x86_64 linux-x86_64 linux-aarch64; do
+            package="$RUNNER_TEMP/site/installer/$RELEASE_VERSION/$target"
+            for file in "$package/"*; do cp "$file" "$RUNNER_TEMP/installer-assets/$target-$(basename "$file")"; done
+          done
+          printf '%s\n' 'Independent Vesta installer. Choose Stable, Nightly or an exact server release inside setup. Installer updates do not change the selected server package.' > "$RUNNER_TEMP/installer-notes.md"
+          gh release create "$RELEASE_VERSION" "$RUNNER_TEMP/installer-assets/"* --target "$GITHUB_SHA" \
+            --draft --prerelease --latest=false --title "Installer $RELEASE_VERSION" --notes-file "$RUNNER_TEMP/installer-notes.md"
           gh release edit "$RELEASE_VERSION" --draft=false

@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-usage() { echo 'Usage: install.sh (--latest-nightly | --tag RELEASE_TAG | --setup-url HTTPS_URL --setup-sha256 HEX --bundle-url HTTPS_URL --manifest-sha256 HEX --release-key HEX [--asset-prefix TARGET-]) [--answers PATH --yes | --uninstall (--root HOST [--servers-root REGISTRY] | --server NAME --servers-root REGISTRY) [--plan]]' >&2; exit "${1:-2}"; }
+usage() { echo 'Usage: install.sh [--latest-nightly | --channel stable|nightly | --tag RELEASE_TAG] [--answers PATH --yes]. Without a selection, choose the package inside the installer. Explicit --setup-url/--setup-sha256/--bundle-url/--manifest-sha256/--release-key pins and existing uninstall options remain supported.' >&2; exit "${1:-2}"; }
 setup_url= setup_sha= bundle_url= manifest_sha= release_key= asset_prefix= answers= root= servers_root= server= yes=false uninstall=false plan=false
-selection= tag=
+selection= tag= channel= independent=false
 while (($#)); do
   case "$1" in
     --help|-h) usage 0;;
     --latest-nightly) [[ -z $selection ]] || usage; selection=nightly; shift;;
+    --channel) (($# >= 2)) && [[ -z $selection && ( $2 == stable || $2 == nightly ) ]] || usage; selection=channel; channel=$2; shift 2;;
     --tag) (($# >= 2)) && [[ -z $selection ]] || usage; selection=tag; tag=$2; shift 2;;
     --setup-url) (($# >= 2)) || usage; setup_url=$2; shift 2;;
     --setup-sha256) (($# >= 2)) || usage; setup_sha=$2; shift 2;;
@@ -25,9 +26,11 @@ while (($#)); do
     *) usage;;
   esac
 done
+if [[ -z $selection && -z $setup_url && -z $bundle_url && -z $setup_sha && -z $manifest_sha && -z $release_key && -z $asset_prefix ]]; then selection=choose; fi
 if [[ -n $selection ]]; then
   [[ -z $setup_url && -z $bundle_url && -z $setup_sha && -z $manifest_sha && -z $release_key && -z $asset_prefix ]] || { echo 'Release selection cannot be mixed with explicit release pins.' >&2; exit 2; }
   [[ $selection != tag || $tag =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ ]] || { echo 'Invalid release tag.' >&2; exit 2; }
+  [[ $selection != tag || $tag != installer-* ]] || { echo '--tag selects a server package, not an installer build.' >&2; exit 2; }
   [[ $(uname -s) == Linux ]] || { echo 'Automatic release selection supports Linux only. Use install.ps1 with explicit pins on Windows.' >&2; exit 2; }
   case "$(uname -m)" in x86_64|amd64) target=linux-x86_64;; aarch64|arm64) target=linux-aarch64;; *) echo 'Unsupported Linux architecture.' >&2; exit 2;; esac
   command -v openssl >/dev/null || { echo 'OpenSSL is required for signed release verification.' >&2; exit 2; }
@@ -64,27 +67,46 @@ download() {
 if [[ -n $selection ]]; then
   # This pin is part of the trusted source script, never read from release assets.
   release_key=84e1fa3eae990d870d671c0fb585a62906f50d91e3382f3cc9f025d904c8dd8a
-  if [[ $selection == nightly ]]; then
+  package_tag=$tag
+  installer_tag= nightly_tag=
+  if [[ $selection != tag || $uninstall == false ]]; then
     # The public feed contains recent published releases without their asset
     # inventories. Only its canonical entry link can select a candidate tag;
     # executable trust comes exclusively from signed metadata below.
-    download https://github.com/vesta-project/server/releases.atom "$work/releases.atom" 1048576
-    in_entry=false; in_content=false
-    release_link='^[[:space:]]*<link[[:space:]][^<>]*href="https://github.com/vesta-project/server/releases/tag/(nightly-[0-9]{8}-[0-9a-f]{12})"[[:space:]]*/>[[:space:]]*$'
-    while IFS= read -r line || [[ -n $line ]]; do
-      if [[ $in_content == true ]]; then
-        if [[ $line == *'</content>'* ]]; then in_content=false; fi
-        continue
-      fi
-      if [[ $line =~ ^[[:space:]]*\<content([[:space:]]|\>) ]]; then
-        in_entry=false
-        if [[ $line != *'</content>'* ]]; then in_content=true; fi
-      elif [[ $line =~ ^[[:space:]]*\<entry\>[[:space:]]*$ ]]; then in_entry=true
-      elif [[ $line =~ ^[[:space:]]*\</entry\>[[:space:]]*$ ]]; then in_entry=false
-      elif [[ $in_entry == true && $line == *'rel="alternate"'* && $line =~ $release_link ]]; then tag=${BASH_REMATCH[1]}; break
-      fi
-    done < "$work/releases.atom"
-    [[ -n $tag ]] || { echo 'No published nightly found in the recent GitHub release feed. Select an exact --tag instead.' >&2; exit 1; }
+    if download https://github.com/vesta-project/server/releases.atom "$work/releases.atom" 1048576; then
+      in_entry=false; in_content=false
+      release_link='^[[:space:]]*<link[[:space:]][^<>]*href="https://github.com/vesta-project/server/releases/tag/((installer|nightly)-[0-9]{8}-[0-9a-f]{12})"[[:space:]]*/>[[:space:]]*$'
+      while IFS= read -r line || [[ -n $line ]]; do
+        if [[ $in_content == true ]]; then
+          if [[ $line == *'</content>'* ]]; then in_content=false; fi
+          continue
+        fi
+        if [[ $line =~ ^[[:space:]]*\<content([[:space:]]|\>) ]]; then
+          in_entry=false
+          if [[ $line != *'</content>'* ]]; then in_content=true; fi
+        elif [[ $line =~ ^[[:space:]]*\<entry\>[[:space:]]*$ ]]; then in_entry=true
+        elif [[ $line =~ ^[[:space:]]*\</entry\>[[:space:]]*$ ]]; then in_entry=false
+        elif [[ $in_entry == true && $line == *'rel="alternate"'* && $line =~ $release_link ]]; then
+          candidate=${BASH_REMATCH[1]}
+          if [[ $candidate == installer-* && -z $installer_tag ]]; then installer_tag=$candidate; fi
+          if [[ $candidate == nightly-* && -z $nightly_tag ]]; then nightly_tag=$candidate; fi
+          if [[ -n $installer_tag && $uninstall == false ]]; then break; fi
+          if [[ -n $nightly_tag && $uninstall == true ]]; then break; fi
+        fi
+      done < "$work/releases.atom"
+    elif [[ $selection == tag ]]; then
+      echo 'Release discovery unavailable; using signed release-matched setup for the exact tag.' >&2
+    else
+      exit 1
+    fi
+    if [[ -n $installer_tag && $uninstall == false ]]; then
+      tag=$installer_tag; independent=true
+    elif [[ $selection == tag ]]; then tag=$package_tag
+    else
+      [[ $selection != channel || $channel != stable ]] || { echo 'Stable selection requires a published independent installer.' >&2; exit 1; }
+      tag=$nightly_tag
+    fi
+    [[ -n $tag ]] || { echo 'No published installer or nightly found in the recent GitHub release feed.' >&2; exit 1; }
   fi
   bundle_url="https://github.com/vesta-project/server/releases/download/$tag"
   asset_prefix="$target-"
@@ -105,14 +127,20 @@ if [[ -n $selection ]]; then
     for ((i = 0; i < ${#der}; i += 2)); do printf '%b' "\\x${der:i:2}"; done > "$work/key.der"
     openssl pkeyutl -verify -pubin -keyform DER -inkey "$work/key.der" -rawin -in "$work/bootstrap.txt" -sigfile "$work/signature" >/dev/null || { echo 'Bootstrap signature verification failed. OpenSSL with Ed25519 raw verification support is required.' >&2; exit 1; }
     mapfile -t descriptor < "$work/bootstrap.txt"
-    [[ ${#descriptor[@]} == 7 && ${descriptor[0]} == vesta-setup-bootstrap-v1 && ${descriptor[1]} == "$tag" && ${descriptor[2]} == "$target" && ${descriptor[3]} == vesta-setup && ${descriptor[4]} =~ ^[0-9a-f]{64}$ && ${descriptor[5]} =~ ^[1-9][0-9]{0,7}$ && ${descriptor[6]} =~ ^[0-9a-f]{64}$ ]] || { echo 'Signed bootstrap descriptor does not match the selected release, platform or setup identity.' >&2; exit 1; }
+    [[ ${#descriptor[@]} == 7 && ${descriptor[1]} == "$tag" && ${descriptor[2]} == "$target" && ${descriptor[3]} == vesta-setup && ${descriptor[4]} =~ ^[0-9a-f]{64}$ && ${descriptor[5]} =~ ^[1-9][0-9]{0,7}$ ]] || { echo 'Signed bootstrap descriptor does not match the selected release, platform or setup identity.' >&2; exit 1; }
+    if [[ $independent == true ]]; then
+      [[ ${descriptor[0]} == vesta-installer-bootstrap-v1 && ${descriptor[6]} == 1 ]] || { echo 'Signed installer compatibility is invalid.' >&2; exit 1; }
+    else
+      [[ ${descriptor[0]} == vesta-setup-bootstrap-v1 && ${descriptor[6]} =~ ^[0-9a-f]{64}$ ]] || { echo 'Signed bootstrap descriptor has an invalid purpose or manifest binding.' >&2; exit 1; }
+    fi
     printf '%s\n' "${descriptor[@]}" > "$work/bootstrap.canonical"
     [[ $(sha256sum "$work/bootstrap.txt" | awk '{print $1}') == $(sha256sum "$work/bootstrap.canonical" | awk '{print $1}') ]] || { echo 'Noncanonical bootstrap descriptor.' >&2; exit 1; }
     setup_sha=${descriptor[4]}; setup_size=${descriptor[5]}; manifest_sha=${descriptor[6]}
     (( setup_size <= 67108864 )) || { echo 'Setup exceeds size limit.' >&2; exit 1; }
   fi
   setup_url="$bundle_url/${asset_prefix}vesta-setup"
-  echo "Installing Vesta $tag ($target)." >&2
+  if [[ $independent == true ]]; then echo "Starting Vesta installer $tag ($target). Choose the server release inside setup." >&2
+  else echo "Using release-matched setup for Vesta $tag ($target)." >&2; fi
 fi
 setup=$work/vesta-setup
 download "$setup_url" "$setup" 67108864
@@ -122,6 +150,10 @@ actual=$(sha256sum "$setup" | awk '{print $1}')
 chmod 700 "$setup"
 args=(--bundle-url "$bundle_url" --manifest-sha256 "${manifest_sha,,}" --release-key "${release_key,,}")
 [[ -z $asset_prefix ]] || args+=(--asset-prefix "$asset_prefix")
+if [[ $independent == true ]]; then
+  args=(install)
+  case "$selection" in nightly) args+=(--channel nightly);; tag) args+=(--tag "$package_tag");; channel) args+=(--channel "$channel");; esac
+fi
 if [[ $uninstall == true ]]; then
   args=(uninstall "${args[@]}")
   [[ -z $root ]] || args+=(--root "$root")

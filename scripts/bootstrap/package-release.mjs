@@ -6,21 +6,24 @@ import process from 'node:process';
 import { readActivationCapabilities } from './activation-capabilities.mjs';
 import { releaseCommands } from './release-commands.mjs';
 import { targetFiles, verifyBinaries } from './verify-binaries.mjs';
-import { bootstrapDescriptor } from './bootstrap-descriptor.mjs';
+import { bootstrapDescriptor, installerDescriptor } from './bootstrap-descriptor.mjs';
 
-function usage() { throw new Error('Usage: node package-release.mjs --binaries DIR --output NEW_DIR --target windows-x86_64|linux-x86_64|linux-aarch64 --base-url HTTPS_URL --signing-key PKCS8_PEM --version VERSION [--asset-prefix TARGET_PREFIX] [--channel stable|nightly --sequence INTEGER]'); }
+function usage() { throw new Error('Usage: node package-release.mjs --binaries DIR --output NEW_DIR --target windows-x86_64|linux-x86_64|linux-aarch64 --base-url HTTPS_URL --signing-key PKCS8_PEM --version VERSION [--product server|installer] [--asset-prefix TARGET_PREFIX] [--channel stable|nightly --sequence INTEGER]'); }
 const options = {};
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i += 2) {
   const key = args[i];
   if (!key?.startsWith('--') || i + 1 >= args.length) usage();
   const name = key.slice(2);
-  if (!['binaries', 'output', 'target', 'base-url', 'signing-key', 'version', 'asset-prefix', 'sequence', 'channel'].includes(name) || options[name]) usage();
+  if (!['binaries', 'output', 'target', 'base-url', 'signing-key', 'version', 'asset-prefix', 'sequence', 'channel', 'product'].includes(name) || options[name]) usage();
   options[name] = args[i + 1];
 }
 if (['binaries', 'output', 'target', 'base-url', 'signing-key', 'version'].some(name => !options[name])) usage();
 if (!targetFiles[options.target]) throw new Error('Unsupported target.');
 const hasUpdates=options.sequence!==undefined||options.channel!==undefined;
+const installerOnly = options.product === 'installer';
+if (options.product && !['installer','server'].includes(options.product)) throw new Error('Invalid release product.');
+if (installerOnly && (hasUpdates || !options.version.startsWith('installer-'))) throw new Error('Installer releases require an installer tag and cannot carry server update metadata.');
 const sequence=Number(options.sequence);
 if(hasUpdates&&(!Number.isSafeInteger(sequence)||sequence<1||!/^\d+$/.test(options.sequence??'')||!['stable','nightly'].includes(options.channel))) throw new Error('Update metadata needs a positive safe-integer --sequence and --channel stable|nightly.');
 if (options['asset-prefix'] && options['asset-prefix'] !== `${options.target}-`) throw new Error('--asset-prefix must exactly match the supported target prefix.');
@@ -41,7 +44,7 @@ if (inside(resolvedOutput, binaries) || inside(binaries, resolvedOutput)) throw 
 try { await lstat(resolvedOutput); throw new Error('output directory already exists; choose a new directory.'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
 if (await stat(signingPath).then(s => !s.isFile())) throw new Error('signing key must be a file.');
 
-const names = await verifyBinaries(binaries, options.target);
+const names = await verifyBinaries(binaries, options.target, installerOnly);
 if (options.target.startsWith('windows-') && process.platform !== 'win32') throw new Error('Windows target packaging must run on Windows.');
 if (options.target.startsWith('linux-') && process.platform !== 'linux') throw new Error('Linux target packaging must run on Linux.');
 
@@ -57,20 +60,21 @@ try {
     const { createHash } = await import('node:crypto');
     files.push({ name, sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length });
   }
-  const manifest = { schema: 1, version: options.version, target: options.target, files };
+  const manifest = { schema: 1, version: options.version, target: options.target, files, ...(installerOnly ? {purpose:'vesta-installer-release-v1',server_manifest_schema:1}: {}) };
   const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 2) + '\n', 'utf8');
   const privateKey = createPrivateKey(await readFile(signingPath));
   if (privateKey.asymmetricKeyType !== 'ed25519') throw new Error('signing key must be Ed25519 PKCS8 PEM.');
   const publicDer = createPublicKey(privateKey).export({ type: 'spki', format: 'der' });
   const publicRaw = publicDer.subarray(-32);
   const signature = sign(null, manifestBytes, privateKey);
-  await writeFile(path.join(resolvedOutput, 'manifest.json'), manifestBytes, { flag: 'wx' });
-  await writeFile(path.join(resolvedOutput, 'manifest.sig'), signature.toString('base64') + '\n', { flag: 'wx' });
-  await writeFile(path.join(resolvedOutput, 'manifest.pub'), publicRaw.toString('base64') + '\n', { flag: 'wx' });
+  const manifestStem = installerOnly ? 'installer' : 'manifest';
+  await writeFile(path.join(resolvedOutput, `${manifestStem}.json`), manifestBytes, { flag: 'wx' });
+  await writeFile(path.join(resolvedOutput, `${manifestStem}.sig`), signature.toString('base64') + '\n', { flag: 'wx' });
+  await writeFile(path.join(resolvedOutput, `${manifestStem}.pub`), publicRaw.toString('base64') + '\n', { flag: 'wx' });
   const setupName = names[0];
   const setupHash = files[0].sha256;
   const manifestHash = (await import('node:crypto')).createHash('sha256').update(manifestBytes).digest('hex');
-  const descriptor = bootstrapDescriptor({ version: options.version, target: options.target, setupSha256: setupHash, setupSize: files[0].size, manifestSha256: manifestHash });
+  const descriptor = (installerOnly ? installerDescriptor : bootstrapDescriptor)({ version: options.version, target: options.target, setupSha256: setupHash, setupSize: files[0].size, manifestSha256: manifestHash });
   await writeFile(path.join(resolvedOutput, 'bootstrap.txt'), descriptor, { flag: 'wx' });
   await writeFile(path.join(resolvedOutput, 'bootstrap.sig'), sign(null, descriptor, privateKey).toString('base64') + '\n', { flag: 'wx' });
   if(hasUpdates) {
@@ -82,6 +86,7 @@ try {
     await writeFile(path.join(resolvedOutput,'update.json'),bytes,{flag:'wx'});
     await writeFile(path.join(resolvedOutput,'update.sig'),sign(null,bytes,privateKey).toString('base64')+'\n',{flag:'wx'});
   }
+  if (!installerOnly) {
   const assetPrefix = options['asset-prefix'] ?? '';
   const setupUrl = new URL(`${assetPrefix}${setupName}`, base).href;
   const bundleUrl = base.href.replace(/\/$/, '');
@@ -89,6 +94,7 @@ try {
   const release = { schema: 1, version: options.version, target: options.target, setupUrl, setupSha256: setupHash, bundleUrl, ...(assetPrefix ? { assetPrefix } : {}), manifestSha256: manifestHash, releaseKey: keyHex };
   await writeFile(path.join(resolvedOutput, 'commands.txt'), releaseCommands(release), { flag: 'wx' });
   await writeFile(path.join(resolvedOutput, 'release.json'), JSON.stringify(release, null, 2) + '\n', { flag: 'wx' });
+  }
   console.log(`Packaged ${options.target} ${options.version} into ${resolvedOutput}`);
 } catch (error) {
   const { rm } = await import('node:fs/promises');

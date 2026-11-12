@@ -11,7 +11,7 @@ wrapper is not part of this build or execution path.
 
 ## Get started
 
-On Linux, install the latest signed nightly:
+On Linux, start the signed installer and choose the Vesta channel/version inside it:
 
 ```bash
 (
@@ -20,11 +20,12 @@ On Linux, install the latest signed nightly:
   installer=$(mktemp)
   trap 'rm -f -- "$installer"' EXIT
   curl --disable -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 -o "$installer" https://raw.githubusercontent.com/vesta-project/server/main/scripts/bootstrap/install.sh
-  bash "$installer" --latest-nightly
+  bash "$installer"
 )
 ```
 
-Use `--tag nightly-YYYYMMDD-COMMIT` instead for a specific release.
+Add `--channel stable`, `--latest-nightly`, or `--tag RELEASE` to preselect the
+server package. The newest independent installer is used for any of these choices.
 The script detects x86_64/ARM64 and checks signed setup identity and binary integrity
 before execution. It needs Bash, curl, standard Linux tools and OpenSSL; no Python,
 jq or Node runtime. See [bootstrap prerequisites and trust](docs/operations/bootstrap-release.md#install-on-linux).
