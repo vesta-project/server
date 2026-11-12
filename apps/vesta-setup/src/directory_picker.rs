@@ -18,33 +18,58 @@ pub(crate) struct Entry {
 pub(crate) struct Listing {
     pub entries: Vec<Entry>,
     pub truncated: bool,
+    pub skipped: usize,
 }
 pub(crate) fn list(path: &Path) -> engine::Result<Listing> {
     engine::guard(path)?;
+    let entries = fs::read_dir(path)
+        .map_err(|_| "Cannot read this folder. Enter another path.")?
+        .map(|entry| {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let path = entry.path();
+            let directory = file_type.is_dir() && engine::guard(&path).is_ok();
+            Ok(Entry { path, directory })
+        });
+    Ok(collect_entries(entries))
+}
+fn collect_entries(entries: impl Iterator<Item = std::io::Result<Entry>>) -> Listing {
+    let source = entries;
     let mut entries = Vec::new();
     let mut truncated = false;
-    for entry in fs::read_dir(path)
-        .map_err(|_| "Cannot read this folder. Enter another path.")?
-        .take(LIMIT + 1)
-    {
-        if entries.len() == LIMIT {
+    let mut skipped = 0;
+    for (examined, entry) in source.take(LIMIT + 1).enumerate() {
+        if examined == LIMIT {
             truncated = true;
             break;
         }
-        let entry = entry.map_err(|_| "Cannot read this folder. Enter another path.")?;
-        let file_type = entry
-            .file_type()
-            .map_err(|_| "Cannot inspect this folder entry.")?;
-        let path = entry.path();
-        let directory = file_type.is_dir() && engine::guard(&path).is_ok();
-        entries.push(Entry { path, directory });
+        match entry {
+            Ok(entry) => entries.push(entry),
+            Err(_) => skipped += 1,
+        }
     }
     entries.sort_by(|a, b| {
         b.directory
             .cmp(&a.directory)
             .then_with(|| a.path.file_name().cmp(&b.path.file_name()))
     });
-    Ok(Listing { entries, truncated })
+    Listing {
+        entries,
+        truncated,
+        skipped,
+    }
+}
+fn visible_filename(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c.is_whitespace() {
+                format!("\\u{{{:x}}}", u32::from(c))
+            } else {
+                c.escape_debug().collect()
+            }
+        })
+        .collect()
 }
 pub(crate) fn validate_server(path: &Path) -> engine::Result<()> {
     engine::guard(path)?;
@@ -71,7 +96,16 @@ pub(crate) fn view(path: &Path, listing: &Listing, page: usize, error: Option<St
             text,
         });
     }
-    if listing.entries.is_empty() {
+    if listing.skipped > 0 {
+        rows.push(Row::Notice {
+            tone: crate::ui::Tone::Warning,
+            text: format!(
+                "{} entries could not be inspected and are not shown.",
+                listing.skipped
+            ),
+        });
+    }
+    if listing.entries.is_empty() && listing.skipped == 0 {
         rows.push(Row::Notice {
             tone: crate::ui::Tone::Info,
             text: "This folder is empty.".into(),
@@ -80,7 +114,7 @@ pub(crate) fn view(path: &Path, listing: &Listing, page: usize, error: Option<St
     if listing.truncated {
         rows.push(Row::Notice {
             tone: crate::ui::Tone::Warning,
-            text: "Showing the first 1024 entries. Enter a path to find another folder.".into(),
+            text: "Examined the first 1024 entries. Enter a path to find another folder.".into(),
         });
     }
     for (label, disabled) in [
@@ -111,7 +145,7 @@ pub(crate) fn view(path: &Path, listing: &Listing, page: usize, error: Option<St
                 } else {
                     "[file/link]"
                 },
-                entry.path.file_name().unwrap_or_default().to_string_lossy()
+                visible_filename(&entry.path.file_name().unwrap_or_default().to_string_lossy())
             ),
             description: String::new(),
             selected: false,
@@ -125,13 +159,96 @@ pub(crate) fn view(path: &Path, listing: &Listing, page: usize, error: Option<St
             "Browse the folder contents before selecting. Nothing here is modified.".into(),
         ],
         rows,
-        hint: "Up/Down to choose · Enter to open/select · Esc to go back".into(),
+        hint: "Up/Down to choose · Enter to open/select · Esc to go back. \\u{20} marks a space."
+            .into(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn child_errors_keep_good_entries_visible_and_bound_all_attempts() {
+        use std::{cell::Cell, io};
+        let attempts = Cell::new(0);
+        let listing = collect_entries((0..LIMIT + 20).map(|index| {
+            attempts.set(attempts.get() + 1);
+            if index == 1 {
+                Ok(Entry {
+                    path: PathBuf::from("good-folder"),
+                    directory: true,
+                })
+            } else {
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            }
+        }));
+        assert_eq!(listing.entries.len(), 1);
+        assert!(listing.entries[0].directory);
+        assert!(listing.truncated);
+        assert_eq!(listing.skipped, LIMIT - 1);
+        assert!(attempts.get() <= LIMIT + 1);
+        let screen = crate::ui::render(
+            &view(Path::new("/fixture"), &listing, 0, None),
+            crate::ui::Theme {
+                color: false,
+                unicode: false,
+                width: 88,
+            },
+        );
+        assert!(screen.contains("good-folder"));
+        assert!(screen.contains("could not be inspected"));
+    }
+    #[test]
+    fn rendered_whitespace_names_are_distinct_without_changing_selected_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("a b")).unwrap();
+        fs::create_dir(temp.path().join("a  b")).unwrap();
+        let listing = list(temp.path()).unwrap();
+        assert!(listing.entries.iter().all(|entry| entry.directory));
+        let screen = crate::ui::render(
+            &view(temp.path(), &listing, 0, None),
+            crate::ui::Theme {
+                color: false,
+                unicode: false,
+                width: 100,
+            },
+        );
+        assert!(screen.contains("a\\u{20}b"));
+        assert!(screen.contains("a\\u{20}\\u{20}b"));
+        assert!(
+            listing
+                .entries
+                .iter()
+                .any(|entry| entry.path == temp.path().join("a b"))
+        );
+        assert!(
+            listing
+                .entries
+                .iter()
+                .any(|entry| entry.path == temp.path().join("a  b"))
+        );
+    }
+    #[test]
+    fn escaped_labels_are_injective_and_all_failed_entries_do_not_look_empty() {
+        assert_ne!(visible_filename("a b"), visible_filename(r"a\u{20}b"));
+        assert_ne!(visible_filename("a b"), visible_filename("a\u{a0}b"));
+        assert!(!visible_filename("line\n\x1b[2J").contains('\x1b'));
+        let listing = collect_entries(std::iter::once(Err(std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        ))));
+        let screen = crate::ui::render(
+            &view(Path::new("/fixture"), &listing, 0, None),
+            crate::ui::Theme {
+                color: false,
+                unicode: false,
+                width: 88,
+            },
+        );
+        assert!(screen.contains("could not be inspected"));
+        assert!(!screen.contains("This folder is empty"));
+        let temp = tempfile::tempdir().unwrap();
+        assert!(list(&temp.path().join("missing")).is_err());
+    }
     #[test]
     fn preview_orders_folders_shows_files_and_preserves_source() {
         let temp = tempfile::tempdir().unwrap();

@@ -82,6 +82,7 @@ pub fn all() -> Vec<(&'static str, View)> {
                         },
                     ],
                     truncated: false,
+                    skipped: 0,
                 },
                 0,
                 None,
