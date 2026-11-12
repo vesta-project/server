@@ -92,23 +92,6 @@ fn prepare_frame(
     Ok(())
 }
 
-#[cfg(test)]
-mod frame_tests {
-    #[test]
-    fn clears_only_first_interactive_frame_and_preserves_headless_output() {
-        let mut first = Vec::new();
-        super::prepare_frame(&mut first, true, true, 0).unwrap();
-        assert!(String::from_utf8(first).unwrap().contains("\x1b[2J"));
-        let mut redraw = Vec::new();
-        super::prepare_frame(&mut redraw, true, false, 4).unwrap();
-        let redraw = String::from_utf8(redraw).unwrap();
-        assert!(!redraw.contains("\x1b[2J"));
-        assert!(redraw.contains("\x1b[4A"));
-        let mut plain = Vec::new();
-        super::prepare_frame(&mut plain, false, true, 4).unwrap();
-        assert!(plain.is_empty());
-    }
-}
 struct Raw;
 impl Raw {
     fn begin() -> Result<Self> {
@@ -697,4 +680,22 @@ fn friendly(code: &str) -> String {
     "setup_path_invalid"=>"Enter a complete directory path without parent components.",
     _=>"This folder is unavailable. Choose another dedicated installation directory.",
 }.into()
+}
+
+#[cfg(test)]
+mod frame_tests {
+    #[test]
+    fn clears_only_first_interactive_frame_and_preserves_headless_output() {
+        let mut first = Vec::new();
+        super::prepare_frame(&mut first, true, true, 0).unwrap();
+        assert!(String::from_utf8(first).unwrap().contains("\x1b[2J"));
+        let mut redraw = Vec::new();
+        super::prepare_frame(&mut redraw, true, false, 4).unwrap();
+        let redraw = String::from_utf8(redraw).unwrap();
+        assert!(!redraw.contains("\x1b[2J"));
+        assert!(redraw.contains("\x1b[4A"));
+        let mut plain = Vec::new();
+        super::prepare_frame(&mut plain, false, true, 4).unwrap();
+        assert!(plain.is_empty());
+    }
 }
