@@ -3,6 +3,7 @@ mod activation;
 mod directory_picker;
 pub mod engine;
 pub mod host;
+pub mod installer;
 pub mod network;
 pub mod paths;
 pub mod platform;

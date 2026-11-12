@@ -12,6 +12,8 @@ export function checkBootstrapKey(source, expected) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     checkBootstrapKey(await readFile(new URL('./install.sh', import.meta.url), 'utf8'), process.argv[2]);
+    const native = (await readFile(new URL('./release-public-key.txt', import.meta.url), 'utf8')).trim();
+    if (native !== process.argv[2].toLowerCase()) throw new Error('Native installer trust pin differs from the configured release pin.');
   } catch (error) {
     console.error(error.message);
     process.exitCode = 1;

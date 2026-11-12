@@ -17,11 +17,11 @@ On Linux, use the source bootstrap to select and verify a signed release:
   installer=$(mktemp)
   trap 'rm -f -- "$installer"' EXIT
   curl --disable -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 -o "$installer" https://raw.githubusercontent.com/vesta-project/server/main/scripts/bootstrap/install.sh
-  bash "$installer" --latest-nightly
+  bash "$installer"
 )
 ```
 
-Replace `--latest-nightly` with `--tag nightly-YYYYMMDD-COMMIT` to install an exact release. See [bootstrap prerequisites and verification](bootstrap-release.md#install-on-linux). The bootstrap obtains authenticated pins before invoking native setup; downloading or copying `commands.txt` is optional.
+Choose Stable, Nightly or an exact tag inside the installer. To preselect it, append `--channel stable`, `--latest-nightly` or `--tag RELEASE`. Installer releases are independent of the selected server package. See [bootstrap prerequisites and verification](bootstrap-release.md#install-on-linux). The bootstrap verifies the installer before execution; copying `commands.txt` is optional. The selected server package still supplies its version-matched host/runtime tools.
 
 For direct native invocation:
 

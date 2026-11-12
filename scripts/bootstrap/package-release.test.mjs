@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { bootstrapDescriptor } from './bootstrap-descriptor.mjs';
+import { installerDescriptor } from './bootstrap-descriptor.mjs';
 
 const script = fileURLToPath(new URL('./package-release.mjs', import.meta.url));
 const target = process.platform === 'win32' ? 'windows-x86_64' : process.platform === 'linux' && process.arch === 'x64' ? 'linux-x86_64' : process.platform === 'linux' && process.arch === 'arm64' ? 'linux-aarch64' : null;
@@ -60,6 +61,29 @@ function packageArgs(f, output = f.output) {
 function run(args) {
   return spawnSync(process.execPath, args, { encoding: 'utf8' });
 }
+
+test('independent installer package contains only setup and purpose-bound signed metadata', {skip:!target}, async t => {
+  const f = await fixture(t);
+  const version = 'installer-20261113-123456789abc';
+  const args = packageArgs(f);
+  args[args.indexOf('--version') + 1] = version;
+  args[args.indexOf('--base-url') + 1] = `https://github.com/vesta-project/server/releases/download/${version}`;
+  const result = run([...args,'--product','installer']);
+  assert.equal(result.status,0,result.stderr);
+  const {readdir} = await import('node:fs/promises');
+  assert.deepEqual((await readdir(f.output)).sort(),[names[0],'bootstrap.txt','bootstrap.sig','installer.json','installer.sig','installer.pub'].sort());
+  const bytes = await readFile(path.join(f.output,'installer.json'));
+  const manifest = JSON.parse(bytes);
+  assert.equal(manifest.purpose,'vesta-installer-release-v1');
+  assert.equal(manifest.server_manifest_schema,1);
+  assert.equal(manifest.files.length,1);
+  const key = createPublicKey(await readFile(f.signingKey));
+  assert.equal(verify(null,bytes,key,Buffer.from((await readFile(path.join(f.output,'installer.sig'),'utf8')).trim(),'base64')),true);
+  const descriptor = await readFile(path.join(f.output,'bootstrap.txt'));
+  assert.deepEqual(descriptor,installerDescriptor({version,target,setupSha256:manifest.files[0].sha256,setupSize:manifest.files[0].size}));
+  assert.equal(verify(null,descriptor,key,Buffer.from((await readFile(path.join(f.output,'bootstrap.sig'),'utf8')).trim(),'base64')),true);
+  assert.notEqual(run([...packageArgs(f,path.join(f.root,'bad')),'--product','installer']).status,0,'server tags cannot be published as installers');
+});
 
 test('update descriptors bind the signed manifest, channel, sequence and expiry', {skip:!target}, async t=>{
   const f=await fixture(t);const result=run([...packageArgs(f),'--sequence','42','--channel','nightly']);

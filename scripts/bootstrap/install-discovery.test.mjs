@@ -13,12 +13,13 @@ const canRun = spawnSync(bash, ['-c', 'openssl version'], { encoding: 'utf8' }).
 const options = { skip: !canRun && process.platform === 'win32' };
 const first = 'nightly-20261110-111111111111';
 const newest = 'nightly-20261112-222222222222';
+const installerTag = 'installer-20261113-333333333333';
 const feedUrl = 'https://github.com/vesta-project/server/releases.atom';
 const base = tag => `https://github.com/vesta-project/server/releases/download/${tag}`;
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 
-async function fixture(t, { tag = first, target = 'linux-x86_64', changeManifest, changeBytes, changeSignature, changePayload, releases, feed, arch = 'x86_64', oversizeManifest = false } = {}) {
+async function fixture(t, { tag = first, target = 'linux-x86_64', changeManifest, changeBytes, changeSignature, changePayload, releases, feed, arch = 'x86_64', oversizeManifest = false, independent = false } = {}) {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'vesta-discovery-test-'));
   t.after(() => rm(temp, { recursive: true, force: true }));
   const bin = path.join(temp, 'bin');
@@ -36,7 +37,7 @@ async function fixture(t, { tag = first, target = 'linux-x86_64', changeManifest
   };
   changeManifest?.(manifest);
   const manifestHash = digest(Buffer.from(JSON.stringify(manifest)));
-  const fields = ['vesta-setup-bootstrap-v1', manifest.version, manifest.target, manifest.files[0].name, manifest.files[0].sha256, String(manifest.files[0].size), manifestHash];
+  const fields = [independent ? 'vesta-installer-bootstrap-v1' : 'vesta-setup-bootstrap-v1', manifest.version, manifest.target, manifest.files[0].name, manifest.files[0].sha256, String(manifest.files[0].size), independent ? '1' : manifestHash];
   const bytes = changeBytes?.(fields) ?? Buffer.from(fields.join('\n') + '\n');
   const signature = sign(null, bytes, privateKey).toString('base64') + '\n';
   const release = { tag_name: tag, draft: false };
@@ -81,8 +82,8 @@ test('exact release verifies signature and setup bytes, forwards options, cleans
   assert.match(args[3], /^[a-f0-9]{64}$/);
   assert.deepEqual(args.slice(6), ['--asset-prefix', 'linux-x86_64-', '--answers', '/fixture/answers with spaces.json', '--yes']);
   const requests = await f.requests();
-  assert.equal(requests.length, 3);
-  assert.deepEqual(requests.map(r => r.at(-1)), [`${base(first)}/linux-x86_64-bootstrap.txt`, `${base(first)}/linux-x86_64-bootstrap.sig`, `${base(first)}/linux-x86_64-vesta-setup`]);
+  assert.equal(requests.length, 4);
+  assert.deepEqual(requests.map(r => r.at(-1)), [feedUrl,`${base(first)}/linux-x86_64-bootstrap.txt`, `${base(first)}/linux-x86_64-bootstrap.sig`, `${base(first)}/linux-x86_64-vesta-setup`]);
   assert.equal(await readFile(path.join(f.temp, 'unexpected-dependency')).then(() => true, () => false), false, 'Python, jq and Node are not invoked by the installer');
   for (const r of requests) {
     assert.ok(r.includes('--proto-redir') && r.includes('=https'));
@@ -136,7 +137,7 @@ for (const [name, change, error] of [
   ['oversize metadata with no advertised length', { oversizeManifest: true }, /Download/],
   ['tampered setup with unchanged size', { changePayload: p => Buffer.concat([Buffer.from('X'), p.subarray(1)]) }, /SHA-256 mismatch/],
   ['truncated setup', { changePayload: p => p.subarray(0, p.length - 1) }, /Setup size mismatch/],
-  ['missing latest nightly', { releases: [] }, /No published nightly/],
+  ['missing latest nightly', { releases: [] }, /No published installer or nightly/],
 ]) {
   test(`rejects ${name} before setup execution`, options, async t => {
     const f = await fixture(t, change);
@@ -156,4 +157,24 @@ test('rejects selector ambiguity, URL injection, unsupported architecture and un
   const unsupported = await fixture(t, { arch: 'riscv64' });
   assert.equal(unsupported.run(['--latest-nightly']).status, 2);
   assert.deepEqual(await unsupported.requests(), []);
+});
+
+test('newest installer is independent of requested package and permits interactive version selection', options, async t => {
+  for (const [args, expected] of [[[],['install']], [['--latest-nightly'],['install','--channel','nightly']], [['--channel','stable'],['install','--channel','stable']], [['--tag',first],['install','--tag',first]]]) {
+    const f = await fixture(t, {tag:installerTag, independent:true});
+    const result = f.run(args);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual((await readFile(f.capture,'utf8')).trim().split('\n'), expected);
+    const requests = await f.requests();
+    assert.equal(requests.length, 4);
+    assert.equal(requests[1].at(-1), `${base(installerTag)}/linux-x86_64-bootstrap.txt`);
+  }
+});
+
+test('installer compatibility purpose/schema cannot be replaced with server bootstrap pins', options, async t => {
+  const f = await fixture(t, {tag:installerTag, independent:true, changeBytes:fields => Buffer.from([...fields.slice(0,6),'2',''].join('\n'))});
+  const result = f.run([]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Signed installer compatibility is invalid/);
+  assert.equal(await readFile(f.capture).then(()=>true,()=>false), false);
 });

@@ -63,12 +63,12 @@ process.exit(Number(process.env.VESTA_TEST_FETCH_STATUS));
   }
   const accepted = spawnSync(bash, ['-c', `export PATH="$VESTA_TEST_BIN:$PATH"; ${command}`], { encoding: 'utf8', env: { ...env, VESTA_TEST_FETCH_STATUS: '0' }, timeout: 10000 });
   assert.equal(accepted.status, 0, accepted.stderr);
-  assert.equal((await readFile(capture, 'utf8')).trim(), '--latest-nightly');
+  assert.equal((await readFile(capture, 'utf8')).trim(), '', 'the default command leaves package choice inside native setup');
   for (const file of ['docs/operations/bootstrap-release.md', 'docs/operations/host-setup.md']) {
     assert.ok((await readFile(path.join(root, file), 'utf8')).replaceAll('\r\n', '\n').includes(command), `${file} uses the same safe command`);
   }
   const notes = nightly.split('cat > "$RUNNER_TEMP/release-notes.md" <<EOF\n')[1].split('\n          EOF')[0].split('\n').map(line => line.replace(/^          /, '')).join('\n');
   const rendered = spawnSync(bash, ['-c', `cat <<EOF\n${notes}\nEOF`], { encoding: 'utf8', env: { ...env, RELEASE_VERSION: 'nightly-test' }, timeout: 10000 });
   assert.equal(rendered.status, 0, rendered.stderr);
-  assert.ok(rendered.stdout.replace(/^    /gm, '').includes(command.replace('--latest-nightly', '--tag nightly-test')), 'actual release-note heredoc retains the safe command without early shell expansion');
+  assert.ok(rendered.stdout.replace(/^    /gm, '').includes(command.replace('bash "$installer"', 'bash "$installer" --tag nightly-test')), 'actual release-note heredoc retains the safe command without early shell expansion');
 });

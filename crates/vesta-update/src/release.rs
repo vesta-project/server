@@ -6,6 +6,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
+pub mod official;
 
 const MAX_MANIFEST: u64 = 16 * 1024;
 const MAX_SIGNATURE: u64 = 256;
@@ -154,12 +155,35 @@ pub fn load(source: Source) -> Result<Release, String> {
         _ => return Err("invalid source".into()),
     };
 
-    let manifest = verify_manifest_bytes(&manifest_bytes, &signature_bytes, &pin, &key)?;
+    verified_release(
+        artifact_source,
+        &prefix,
+        manifest_bytes,
+        signature_bytes,
+        &pin,
+        &key,
+        None,
+    )
+}
+
+fn verified_release(
+    artifact_source: ArtifactSource,
+    prefix: &str,
+    manifest_bytes: Vec<u8>,
+    signature_bytes: Vec<u8>,
+    pin: &[u8],
+    key: &[u8],
+    expected_version: Option<&str>,
+) -> Result<Release, String> {
+    let manifest = verify_manifest_bytes(&manifest_bytes, &signature_bytes, pin, key)?;
+    if expected_version.is_some_and(|version| manifest.version != version) {
+        return Err("release version does not match selected tag".into());
+    }
     if !prefix.is_empty() && prefix != format!("{}-", manifest.target) {
         return Err("asset prefix target mismatch".into());
     }
     Ok(Release {
-        release_key: hex::encode(&key),
+        release_key: hex::encode(key),
         verified_manifest: manifest.clone(),
         manifest_hash: hex::encode(pin),
         manifest,
