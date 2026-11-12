@@ -19,7 +19,7 @@ const base = tag => `https://github.com/vesta-project/server/releases/download/$
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 
-async function fixture(t, { tag = first, target = 'linux-x86_64', changeManifest, changeBytes, changeSignature, changePayload, releases, feed, arch = 'x86_64', oversizeManifest = false, independent = false } = {}) {
+async function fixture(t, { tag = first, target = 'linux-x86_64', changeManifest, changeBytes, changeSignature, changePayload, releases, feed, arch = 'x86_64', oversizeManifest = false, independent = false, failFeed = false } = {}) {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'vesta-discovery-test-'));
   t.after(() => rm(temp, { recursive: true, force: true }));
   const bin = path.join(temp, 'bin');
@@ -48,6 +48,7 @@ async function fixture(t, { tag = first, target = 'linux-x86_64', changeManifest
     [`${base(tag)}/${target}-bootstrap.sig`]: Buffer.from(changeSignature?.(signature) ?? signature).toString('base64'),
     [`${base(tag)}/${target}-vesta-setup`]: Buffer.from(changePayload?.(payload) ?? payload).toString('base64'),
   };
+  if (failFeed) delete responses[feedUrl];
   await writeFile(path.join(temp, 'responses.json'), JSON.stringify(responses));
   await writeFile(path.join(temp, 'curl.mjs'), `import fs from 'node:fs';
 const args = process.argv.slice(2), url = args.at(-1);
@@ -177,4 +178,22 @@ test('installer compatibility purpose/schema cannot be replaced with server boot
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Signed installer compatibility is invalid/);
   assert.equal(await readFile(f.capture).then(()=>true,()=>false), false);
+});
+
+test('exact tags survive failed discovery and exact uninstall never requests the feed', options, async t => {
+  for (const change of [{failFeed:true},{feed:'x'.repeat(1048577)}]) {
+    const f=await fixture(t,change);
+    const result=f.run(['--tag',first]);
+    assert.equal(result.status,0,result.stderr);
+    assert.ok((await readFile(f.capture,'utf8')).includes(base(first)));
+  }
+  const f=await fixture(t,{failFeed:true});
+  const result=f.run(['--tag',first,'--uninstall','--root','/fixture/host','--plan']);
+  assert.equal(result.status,0,result.stderr);
+  assert.equal((await f.requests()).some(r=>r.at(-1)===feedUrl),false);
+  for(const args of [[],['--latest-nightly'],['--channel','stable']]) {
+    const failed=await fixture(t,{failFeed:true});
+    assert.notEqual(failed.run(args).status,0);
+    await assert.rejects(readFile(failed.capture));
+  }
 });

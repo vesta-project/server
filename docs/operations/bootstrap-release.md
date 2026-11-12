@@ -40,6 +40,8 @@ The first published nightly, `nightly-20261112-a248a66a6ad3`, predates bootstrap
 
 Until the first independent installer is published, the script retains the verified release-matched nightly/exact-tag path. Stable preselection requires the independent installer. Uninstall continues using verified release-matched tools. Explicit local bundles and pins keep their existing CLI behavior. These compatibility paths never execute unverified setup.
 
+An exact-tag installation prefers the independent installer when discovery succeeds, but a failed or oversized feed falls back to that tag's signed release-matched setup. Exact-tag uninstall skips discovery entirely. Channel/default/latest selection still requires working discovery. Failure to authenticate discovered installer metadata never falls back to executing another binary.
+
 ## Independent lifecycle
 
 `installer-YYYYMMDD-COMMIT` releases contain only setup plus signed installer metadata. Their descriptor purpose is `vesta-installer-bootstrap-v1`, with server manifest schema `1` in the final field instead of a package manifest hash. Their separate `installer.json` purpose is `vesta-installer-release-v1`; it cannot be mistaken for a server manifest. Packaging, header checks, staging, key verification and signing share the existing implementation via `--product installer` rather than separate download/install engines. The native UI resolves the chosen package, checks its signature, exact tag, target and supported schema, and uses the existing preparation engine. It installs that package's matched host tools; the downloaded independent UI never replaces them with unrelated binaries.

@@ -69,31 +69,36 @@ if [[ -n $selection ]]; then
   release_key=84e1fa3eae990d870d671c0fb585a62906f50d91e3382f3cc9f025d904c8dd8a
   package_tag=$tag
   installer_tag= nightly_tag=
-  if [[ -n $selection ]]; then
+  if [[ $selection != tag || $uninstall == false ]]; then
     # The public feed contains recent published releases without their asset
     # inventories. Only its canonical entry link can select a candidate tag;
     # executable trust comes exclusively from signed metadata below.
-    download https://github.com/vesta-project/server/releases.atom "$work/releases.atom" 1048576
-    in_entry=false; in_content=false
-    release_link='^[[:space:]]*<link[[:space:]][^<>]*href="https://github.com/vesta-project/server/releases/tag/((installer|nightly)-[0-9]{8}-[0-9a-f]{12})"[[:space:]]*/>[[:space:]]*$'
-    while IFS= read -r line || [[ -n $line ]]; do
-      if [[ $in_content == true ]]; then
-        if [[ $line == *'</content>'* ]]; then in_content=false; fi
-        continue
-      fi
-      if [[ $line =~ ^[[:space:]]*\<content([[:space:]]|\>) ]]; then
-        in_entry=false
-        if [[ $line != *'</content>'* ]]; then in_content=true; fi
-      elif [[ $line =~ ^[[:space:]]*\<entry\>[[:space:]]*$ ]]; then in_entry=true
-      elif [[ $line =~ ^[[:space:]]*\</entry\>[[:space:]]*$ ]]; then in_entry=false
-      elif [[ $in_entry == true && $line == *'rel="alternate"'* && $line =~ $release_link ]]; then
-        candidate=${BASH_REMATCH[1]}
-        if [[ $candidate == installer-* && -z $installer_tag ]]; then installer_tag=$candidate; fi
-        if [[ $candidate == nightly-* && -z $nightly_tag ]]; then nightly_tag=$candidate; fi
-        if [[ -n $installer_tag && $uninstall == false ]]; then break; fi
-        if [[ -n $nightly_tag && $uninstall == true ]]; then break; fi
-      fi
-    done < "$work/releases.atom"
+    if download https://github.com/vesta-project/server/releases.atom "$work/releases.atom" 1048576; then
+      in_entry=false; in_content=false
+      release_link='^[[:space:]]*<link[[:space:]][^<>]*href="https://github.com/vesta-project/server/releases/tag/((installer|nightly)-[0-9]{8}-[0-9a-f]{12})"[[:space:]]*/>[[:space:]]*$'
+      while IFS= read -r line || [[ -n $line ]]; do
+        if [[ $in_content == true ]]; then
+          if [[ $line == *'</content>'* ]]; then in_content=false; fi
+          continue
+        fi
+        if [[ $line =~ ^[[:space:]]*\<content([[:space:]]|\>) ]]; then
+          in_entry=false
+          if [[ $line != *'</content>'* ]]; then in_content=true; fi
+        elif [[ $line =~ ^[[:space:]]*\<entry\>[[:space:]]*$ ]]; then in_entry=true
+        elif [[ $line =~ ^[[:space:]]*\</entry\>[[:space:]]*$ ]]; then in_entry=false
+        elif [[ $in_entry == true && $line == *'rel="alternate"'* && $line =~ $release_link ]]; then
+          candidate=${BASH_REMATCH[1]}
+          if [[ $candidate == installer-* && -z $installer_tag ]]; then installer_tag=$candidate; fi
+          if [[ $candidate == nightly-* && -z $nightly_tag ]]; then nightly_tag=$candidate; fi
+          if [[ -n $installer_tag && $uninstall == false ]]; then break; fi
+          if [[ -n $nightly_tag && $uninstall == true ]]; then break; fi
+        fi
+      done < "$work/releases.atom"
+    elif [[ $selection == tag ]]; then
+      echo 'Release discovery unavailable; using signed release-matched setup for the exact tag.' >&2
+    else
+      exit 1
+    fi
     if [[ -n $installer_tag && $uninstall == false ]]; then
       tag=$installer_tag; independent=true
     elif [[ $selection == tag ]]; then tag=$package_tag
