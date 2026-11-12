@@ -1,0 +1,784 @@
+[
+  {
+    "name": "unordered negotiation",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[1,65535,2]}",
+    "canonical": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[65535,2,1]}",
+    "negotiation": 1
+  },
+  {
+    "name": "no common version is valid bootstrap",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[2]}",
+    "canonical": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[2]}",
+    "negotiationError": "unsupported_protocol"
+  },
+  {
+    "name": "request version and list maxima",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[1,2,3,4,5,6,7,65535]}",
+    "canonical": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[65535,7,6,5,4,3,2,1]}",
+    "negotiation": 1
+  },
+  {
+    "name": "request member order and escaped key",
+    "kind": "request",
+    "json": "{\"versions\":[1,2],\"prot\\u006fcol\":\"vesta.server-capabilities\"}",
+    "canonical": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[2,1]}",
+    "negotiation": 1
+  },
+  {
+    "name": "inclusive 16384 byte request",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[2,1]}",
+    "canonical": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[2,1]}",
+    "padTo": 16384,
+    "negotiation": 1
+  },
+  {
+    "name": "empty manifest",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[]}",
+    "canonical": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[]}"
+  },
+  {
+    "name": "unknown IDs and reason remain inert",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.start.extra\",\"support\":\"supported\",\"reason\":null},{\"id\":\"lifecycle.start\",\"support\":\"supported\",\"reason\":null},{\"id\":\"security.manage\",\"support\":\"supported\",\"reason\":null},{\"id\":\"constructor\",\"support\":\"supported\",\"reason\":null},{\"id\":\"future.feature\",\"support\":\"unsupported\",\"reason\":\"future_reason\"}]}",
+    "canonical": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"constructor\",\"support\":\"supported\",\"reason\":null},{\"id\":\"future.feature\",\"support\":\"unsupported\",\"reason\":\"future_reason\"},{\"id\":\"game.start.extra\",\"support\":\"supported\",\"reason\":null},{\"id\":\"lifecycle.start\",\"support\":\"supported\",\"reason\":null},{\"id\":\"security.manage\",\"support\":\"supported\",\"reason\":null}]}"
+  },
+  {
+    "name": "escaped feature id and reordered keys",
+    "kind": "manifest",
+    "json": "{\"features\":[{\"reason\":null,\"support\":\"supported\",\"id\":\"ga\\u006de.start\"}],\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"version\":1,\"protocol\":\"vesta.server-capabilities\"}",
+    "canonical": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.start\",\"support\":\"supported\",\"reason\":null}]}"
+  },
+  {
+    "name": "feature count and field maxima",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"x00aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x01aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x03aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x04aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x05aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x06aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x07aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x08aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x09aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x10aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x11aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x12aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x13aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x14aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x15aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x16aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x17aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x18aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x19aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x20aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x21aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x22aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x23aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x24aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x25aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x26aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x27aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x28aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x29aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x30aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x31aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x32aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x33aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x34aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x35aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x36aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x37aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x38aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x39aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x40aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x41aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x42aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x43aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x44aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x45aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x46aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x47aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x48aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x49aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x50aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x51aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x52aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x53aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x54aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x55aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x56aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x57aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x58aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x59aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x60aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x61aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x62aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x63aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"}]}",
+    "canonical": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"x00aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x01aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x03aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x04aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x05aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x06aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x07aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x08aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x09aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x10aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x11aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x12aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x13aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x14aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x15aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x16aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x17aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x18aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x19aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x20aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x21aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x22aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x23aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x24aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x25aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x26aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x27aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x28aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x29aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x30aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x31aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x32aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x33aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x34aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x35aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x36aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x37aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x38aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x39aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x40aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x41aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x42aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x43aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x44aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x45aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x46aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x47aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x48aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x49aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x50aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x51aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x52aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x53aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x54aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x55aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x56aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x57aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x58aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x59aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x60aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x61aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x62aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},{\"id\":\"x63aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"}]}"
+  },
+  {
+    "name": "inclusive 16384 byte manifest",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[]}",
+    "canonical": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[]}",
+    "padTo": 16384
+  },
+  {
+    "name": "fixed invalid_message",
+    "kind": "failure",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"error\":\"invalid_message\"}",
+    "canonical": "{\"protocol\":\"vesta.server-capabilities\",\"error\":\"invalid_message\"}"
+  },
+  {
+    "name": "fixed message_too_large",
+    "kind": "failure",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"error\":\"message_too_large\"}",
+    "canonical": "{\"protocol\":\"vesta.server-capabilities\",\"error\":\"message_too_large\"}"
+  },
+  {
+    "name": "fixed unsupported_protocol",
+    "kind": "failure",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"error\":\"unsupported_protocol\"}",
+    "canonical": "{\"protocol\":\"vesta.server-capabilities\",\"error\":\"unsupported_protocol\"}"
+  },
+  {
+    "name": "fixed unexpected_response",
+    "kind": "failure",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"error\":\"unexpected_response\"}",
+    "canonical": "{\"protocol\":\"vesta.server-capabilities\",\"error\":\"unexpected_response\"}"
+  },
+  {
+    "name": "version lexical 0",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[0]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "version lexical -1",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[-1]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "version lexical 65536",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[65536]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "version lexical 2147483648",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[2147483648]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "version lexical 1.0",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[1.0]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "version lexical 1e0",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[1e0]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "version lexical 1E+0",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[1E+0]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "version lexical \"1\"",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[\"1\"]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "version lexical null",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[null]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "version lexical true",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[true]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "version lexical {}",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[{}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "version lexical []",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[[]]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "version lexical 01",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[01]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "version lexical +1",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[+1]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "versions shape []",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "versions shape [1,1]",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[1,1]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "versions shape [1,2,3,4,5,6,7,8,9]",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[1,2,3,4,5,6,7,8,9]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "versions shape null",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":null}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "versions shape \"1\"",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":\"1\"}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "versions shape 1",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":1}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "versions shape {}",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":{}}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "root {}",
+    "kind": "request",
+    "json": "{}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "root []",
+    "kind": "request",
+    "json": "[]",
+    "error": "invalid_message"
+  },
+  {
+    "name": "root null",
+    "kind": "request",
+    "json": "null",
+    "error": "invalid_message"
+  },
+  {
+    "name": "root true",
+    "kind": "request",
+    "json": "true",
+    "error": "invalid_message"
+  },
+  {
+    "name": "root 1",
+    "kind": "request",
+    "json": "1",
+    "error": "invalid_message"
+  },
+  {
+    "name": "root \"value\"",
+    "kind": "request",
+    "json": "\"value\"",
+    "error": "invalid_message"
+  },
+  {
+    "name": "root {\"protocol\":\"vesta.server-capabilities\"}",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\"}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "root {\"versions\":[1]}",
+    "kind": "request",
+    "json": "{\"versions\":[1]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "foreign identifier",
+    "kind": "request",
+    "json": "{\"protocol\":\"foreign\",\"versions\":[1]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "duplicate root key",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"protocol\":\"vesta.server-capabilities\",\"versions\":[1]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "escaped duplicate root key",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"prot\\u006fcol\":\"vesta.server-capabilities\",\"versions\":[1]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "duplicate versions key",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[1],\"versions\":[2]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "unknown permissions",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[2,1],\"permissions\":[\"owner\"]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "unexpected nested value",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[[[[[[[1]]]]]]]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "trailing  {}",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[2,1]} {}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "trailing  true",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[2,1]} true",
+    "error": "invalid_message"
+  },
+  {
+    "name": "trailing  // secret",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[2,1]} // secret",
+    "error": "invalid_message"
+  },
+  {
+    "name": "trailing  /* secret */",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[2,1]} /* secret */",
+    "error": "invalid_message"
+  },
+  {
+    "name": "trailing ,",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[2,1]},",
+    "error": "invalid_message"
+  },
+  {
+    "name": "non-JSON {'protocol':'vesta.s",
+    "kind": "request",
+    "json": "{'protocol':'vesta.server-capabilities','versions':[1]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "non-JSON {protocol:\"vesta.ser",
+    "kind": "request",
+    "json": "{protocol:\"vesta.server-capabilities\",versions:[1]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "non-JSON {\"protocol\":\"vesta.s",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[1,]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "non-JSON \\ufeff{\"protocol\":\"v",
+    "kind": "request",
+    "json": "\\ufeff{\"protocol\":\"vesta.server-capabilities\",\"versions\":[2,1]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "non-JSON /*secret*/{\"protocol",
+    "kind": "request",
+    "json": "/*secret*/{\"protocol\":\"vesta.server-capabilities\",\"versions\":[2,1]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "non-JSON )]}\n{\"protocol\":\"ves",
+    "kind": "request",
+    "json": ")]}\n{\"protocol\":\"vesta.server-capabilities\",\"versions\":[2,1]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "missing manifest protocol",
+    "kind": "manifest",
+    "json": "{\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "null manifest protocol",
+    "kind": "manifest",
+    "json": "{\"protocol\":null,\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "missing manifest version",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "null manifest version",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":null,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "missing manifest server_id",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"features\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "null manifest server_id",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":null,\"features\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "missing manifest features",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\"}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "null manifest features",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":null}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "unsupported manifest version",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":2,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[]}",
+    "error": "unsupported_protocol"
+  },
+  {
+    "name": "manifest numeric 1.0",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1.0,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "manifest numeric 1e0",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1e0,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "manifest numeric \"1\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":\"1\",\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "manifest numeric 0",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":0,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "manifest numeric 65536",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":65536,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "server identity \"12345678-1234-5678-9ABC-123456789ABC\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9ABC-123456789ABC\",\"features\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "server identity \"12345678-1234-5678-9abc-123456789abc\\n\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\\n\",\"features\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "server identity \"{12345678-1234-5678-9abc-123456789abc}\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"{12345678-1234-5678-9abc-123456789abc}\",\"features\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "server identity \"secret\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"secret\",\"features\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "server identity \"\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"\",\"features\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "server identity 1",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":1,\"features\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "feature id \"\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"\",\"support\":\"supported\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "feature id \"game.*\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.*\",\"support\":\"supported\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "feature id \"Game.start\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"Game.start\",\"support\":\"supported\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "feature id \" game.start\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\" game.start\",\"support\":\"supported\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "feature id \"game.start \"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.start \",\"support\":\"supported\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "feature id \"game..start\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game..start\",\"support\":\"supported\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "feature id \"game.start\\n\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.start\\n\",\"support\":\"supported\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "feature id \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"support\":\"supported\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "feature id \" \"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\" \",\"support\":\"supported\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "feature id \"\\ud800\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"\\ud800\",\"support\":\"supported\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "support \"available\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.start\",\"support\":\"available\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "support \"SUPPORTED\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.start\",\"support\":\"SUPPORTED\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "support \"\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.start\",\"support\":\"\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "support null",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.start\",\"support\":null,\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "support true",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.start\",\"support\":true,\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "support 1",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.start\",\"support\":1,\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "unsupported reason \"\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.stop\",\"support\":\"unsupported\",\"reason\":\"\"}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "unsupported reason \"bad.reason\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.stop\",\"support\":\"unsupported\",\"reason\":\"bad.reason\"}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "unsupported reason \"bad reason\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.stop\",\"support\":\"unsupported\",\"reason\":\"bad reason\"}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "unsupported reason \"BAD\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.stop\",\"support\":\"unsupported\",\"reason\":\"BAD\"}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "unsupported reason \"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.stop\",\"support\":\"unsupported\",\"reason\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "unsupported reason null",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.stop\",\"support\":\"unsupported\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "unsupported reason 1",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.stop\",\"support\":\"unsupported\",\"reason\":1}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "unsupported reason \"\\udfff\"",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.stop\",\"support\":\"unsupported\",\"reason\":\"\\udfff\"}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "supported nonnull reason",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.start\",\"support\":\"supported\",\"reason\":\"secret\"}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "missing feature id",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"support\":\"supported\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "missing feature support",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.start\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "missing feature reason",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.start\",\"support\":\"supported\"}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "duplicate feature ids conflict",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.start\",\"support\":\"supported\",\"reason\":null},{\"id\":\"game.start\",\"support\":\"unsupported\",\"reason\":\"future_reason\"}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "too many features",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"x_0\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_1\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_2\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_3\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_4\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_5\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_6\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_7\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_8\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_9\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_10\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_11\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_12\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_13\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_14\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_15\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_16\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_17\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_18\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_19\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_20\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_21\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_22\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_23\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_24\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_25\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_26\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_27\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_28\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_29\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_30\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_31\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_32\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_33\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_34\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_35\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_36\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_37\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_38\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_39\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_40\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_41\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_42\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_43\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_44\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_45\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_46\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_47\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_48\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_49\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_50\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_51\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_52\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_53\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_54\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_55\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_56\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_57\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_58\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_59\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_60\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_61\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_62\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_63\",\"support\":\"supported\",\"reason\":null},{\"id\":\"x_64\",\"support\":\"supported\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "null feature",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[null]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "string features",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":\"secret\"}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "unknown root command",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[],\"command\":\"secret shell\"}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "unknown feature command",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.start\",\"support\":\"supported\",\"reason\":null,\"command\":\"secret shell\"}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "duplicate feature key",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.start\",\"id\":\"game.stop\",\"support\":\"supported\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "escaped duplicate feature key",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[{\"id\":\"game.start\",\"\\u0069d\":\"game.stop\",\"support\":\"supported\",\"reason\":null}]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "duplicate manifest identity",
+    "kind": "manifest",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"version\":1,\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"server_id\":\"12345678-1234-5678-9abc-123456789abc\",\"features\":[]}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "unknown error code",
+    "kind": "failure",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"error\":\"secret\"}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "error identity disclosure",
+    "kind": "failure",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"error\":\"invalid_message\",\"server_id\":\"12345678-1234-5678-9abc-123456789abc\"}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "missing error",
+    "kind": "failure",
+    "json": "{\"protocol\":\"vesta.server-capabilities\"}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "null error",
+    "kind": "failure",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"error\":null}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "duplicate error key",
+    "kind": "failure",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"error\":\"invalid_message\",\"error\":\"unsupported_protocol\"}",
+    "error": "invalid_message"
+  },
+  {
+    "name": "malformed UTF8 c0af",
+    "kind": "request",
+    "hex": "c0af",
+    "error": "invalid_message"
+  },
+  {
+    "name": "malformed UTF8 eda080",
+    "kind": "request",
+    "hex": "eda080",
+    "error": "invalid_message"
+  },
+  {
+    "name": "malformed UTF8 c2",
+    "kind": "request",
+    "hex": "c2",
+    "error": "invalid_message"
+  },
+  {
+    "name": "malformed UTF8 ff",
+    "kind": "request",
+    "hex": "ff",
+    "error": "invalid_message"
+  },
+  {
+    "name": "leading UTF8 BOM",
+    "kind": "request",
+    "hex": "efbbbf7b2270726f746f636f6c223a2276657374612e7365727665722d6361706162696c6974696573222c2276657273696f6e73223a5b322c315d7d",
+    "error": "invalid_message"
+  },
+  {
+    "name": "16385 byte request",
+    "kind": "request",
+    "json": "{\"protocol\":\"vesta.server-capabilities\",\"versions\":[2,1]}",
+    "padTo": 16385,
+    "error": "message_too_large"
+  },
+  {
+    "name": "multibyte over byte cap",
+    "kind": "request",
+    "json": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            \"éééééééééééééééééééééééééééééééééééééééééééééééééé\"",
+    "error": "message_too_large"
+  }
+]

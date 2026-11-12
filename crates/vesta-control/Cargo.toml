@@ -1,0 +1,57 @@
+[package]
+name = "vesta-control"
+version.workspace = true
+edition.workspace = true
+# ZIP 8.2's declared minimum; execution is currently tested only on Rust 1.96.
+rust-version = "1.89"
+publish.workspace = true
+
+[features]
+latency-probe = ["vesta-state/latency-probe"]
+
+[dependencies]
+modpack-engine = { path = "../modpack-engine" }
+vesta-state.workspace = true
+vesta-protocol.workspace = true
+vesta-game-runtime.workspace = true
+vesta-supervisor.workspace = true
+vesta-server-install = { path = "../vesta-server-install" }
+rusqlite.workspace = true
+ring = "=0.17.14"
+sha2.workspace = true
+md-5 = "=0.10.6"
+sha1.workspace = true
+url.workspace = true
+zip = { workspace = true, features = ["deflate-flate2"] }
+tar = "0.4"
+flate2.workspace = true
+hex.workspace = true
+uuid.workspace = true
+getrandom.workspace = true
+base64.workspace = true
+argon2.workspace = true
+zeroize.workspace = true
+subtle.workspace = true
+ureq.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml = { workspace = true, features = ["display"] }
+tokio.workspace = true
+russh = { version = "=0.64.1", default-features = false, features = ["ring"] }
+russh-sftp = "=3.0.1"
+rand = "=0.10.1"
+bytes = "1.12"
+tempfile.workspace = true
+ipnet = { version = "=2.12.0", features = ["serde"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[build-dependencies]
+dotenvy = "=0.15.7"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[lints]
+workspace = true

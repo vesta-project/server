@@ -1,22 +1,32 @@
-build/
-versions/**/gradle.properties
-versions/**/.eclipse/
-versions/**/build/
-.gradle/
-*.class
+# Rust and Node build outputs
+/target/
+node_modules/
+/out/
+/dist/
+/bin/
+
+# Local provider credentials, never release assets
+.env
+.env.*
+!.env.example
+
+# Downloaded Minecraft artifacts
 *.jar
-*.war
-bin/
-out/
+
+# Local runtime installations and diagnostics
+/run/
+/run-server/
+/demo-server/
+/software-installations/
+/.dev/
 *.log
+
+# Editor-local settings
 .idea/
+.vscode/
 *.iml
 *.ipr
 *.iws
-.vscode/
 .settings/
 .project
 .classpath
-target/
-run/
-run-server/

@@ -1,0 +1,55 @@
+[package]
+name = "vesta-agent"
+version.workspace = true
+edition.workspace = true
+# The composed control library includes ZIP 8.2 (Rust 1.88).
+rust-version = "1.88"
+publish.workspace = true
+
+[dependencies]
+vesta-control = { path = "../../crates/vesta-control" }
+vesta-state.workspace = true
+rusqlite.workspace = true
+url.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+vesta-transport = { path = "../../crates/vesta-transport" }
+tokio = { workspace = true, features = ["rt", "signal"] }
+
+socket2 = "=0.6.3"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+fs2.workspace = true
+vesta-server-install = { path = "../../crates/vesta-server-install" }
+vesta-supervisor.workspace = true
+vesta-setup = { path = "../vesta-setup" }
+rustyline = { version = "18.0.1", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Pipes"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+vesta-game-runtime.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "vesta-agent"
+path = "src/main.rs"
+
+[[bin]]
+name = "vesta"
+path = "src/vesta_bin.rs"
+test = false
+bench = false
+
+# Per-server process supervisor started detached by `serve` in separate-supervision mode.
+[[bin]]
+name = "vesta-supervisor"
+path = "src/supervisor_bin.rs"

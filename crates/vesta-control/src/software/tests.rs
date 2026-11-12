@@ -1,0 +1,1088 @@
+use super::*;
+
+#[test]
+fn pack_failure_codes_survive_the_software_job_adapter() {
+    let error = SoftwareError::from(crate::packs::ReleaseError::Conflict);
+    assert_eq!(error.code(), "pack_release_conflict");
+    let error = SoftwareError::from(crate::packs::ReleaseError::Refusal {
+        code: "content_pack_download_failed",
+        rule: "fixture",
+        item: "pack".into(),
+    });
+    assert_eq!(error.code(), "content_pack_download_failed");
+}
+
+#[test]
+#[ignore = "live CurseForge metadata and archive review; no mod downloads or game writes"]
+fn bedrock_reloaded_metadata_review_reproduction() {
+    use crate::packs::workspace::*;
+    let f = Fixture::new();
+    let game = f._temp.path().join("pack-review-game");
+    std::fs::create_dir(&game).unwrap();
+    let files = crate::files::FileBrowser::open(f.db.clone(), &game, &[]).unwrap();
+    let workspace = PackWorkspace::open(&f.db).unwrap();
+    let releases = crate::packs::PackReleases::open(&f.db).unwrap();
+    let result = workspace.install_plan(
+        &owner(),
+        "1.21.1",
+        Some("fabric"),
+        &PackInstallRequest {
+            analyze: true,
+            source: InstallSource::Provider {
+                provider: "curseforge".into(),
+                project_id: "818272".into(),
+                version_id: "6577747".into(),
+            },
+        },
+        &files,
+        &releases,
+        &crate::content::UreqProviderClient::configured(),
+    );
+    if let Err(error) = &result {
+        eprintln!("Bedrock review failed: {}", error.code());
+        if let crate::packs::ReleaseError::ProviderFile { details, .. } = error {
+            eprintln!(
+                "stage={} reason={} filename={:?}",
+                details.stage, details.reason, details.filename
+            );
+        }
+        if let crate::packs::ReleaseError::Refusal { code, rule, item } = error {
+            eprintln!("code={code} rule={rule} item={item}");
+        }
+    }
+    assert!(result.is_ok());
+}
+use rusqlite::params;
+use sha2::Digest;
+use std::{
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    time::{Duration, Instant},
+};
+use vesta_server_install::{InstallRoots, ManagedLaunch, TransportConfig};
+use vesta_state::{StateDirectory, SystemClock};
+
+const PRINCIPAL: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const DEVICE: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const DEVICE2: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const VIEWER: &str = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const VIEWER_DEVICE: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+
+#[test]
+fn http_management_keys_are_accepted_without_changing_replay_identity() {
+    assert!(valid_key(&format!("http:{}", "a".repeat(64))).is_ok());
+    assert!(valid_key("operator-key-123").is_ok());
+    for key in [
+        "http:short".to_owned(),
+        format!("http:{}", "z".repeat(64)),
+        "../key-name".into(),
+        "a key name".into(),
+    ] {
+        assert!(valid_key(&key).is_err(), "{key}");
+    }
+}
+
+#[test]
+fn pack_software_checksum_consent_is_bound_to_a_visible_review_note() {
+    let mut input = crate::packs::workspace::PackInstallApply {
+        acknowledge_warnings: true,
+        acknowledge_software_switch: true,
+        plan_id: "plan".into(),
+        confirmation_token: "token".into(),
+        choices: vec![],
+        set_as_modpack: false,
+    };
+    let warnings = vec!["software_legacy_checksum_review".to_string().into()];
+    assert!(pack_checksum_acknowledged(&warnings, &input));
+    assert!(!pack_checksum_acknowledged(&[], &input));
+    input.acknowledge_warnings = false;
+    assert!(!pack_checksum_acknowledged(&warnings, &input));
+    input.acknowledge_warnings = true;
+    input.acknowledge_software_switch = false;
+    assert!(!pack_checksum_acknowledged(&warnings, &input));
+}
+
+#[derive(Default)]
+struct NativeState {
+    activation_action: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    shutdown_on_stopped: Mutex<Option<std::sync::Weak<Inner>>>,
+    running: AtomicBool,
+    fail_after_write: AtomicBool,
+    blocked: AtomicBool,
+    calls: AtomicUsize,
+    document: Mutex<String>,
+}
+struct Hooks(Arc<NativeState>);
+struct Guard(Arc<NativeState>);
+impl RuntimeHooks for Hooks {
+    fn launch_document(&self, _: &ManagedLaunch) -> Result<String> {
+        Ok("candidate launch".into())
+    }
+    fn acquire_stopped(&self) -> Result<Box<dyn StoppedGuard>> {
+        if let Some(inner) = self
+            .0
+            .shutdown_on_stopped
+            .lock()
+            .unwrap()
+            .take()
+            .and_then(|inner| inner.upgrade())
+        {
+            inner.cancel.store(true, Ordering::Release);
+        }
+        if self.0.running.load(Ordering::SeqCst) {
+            Err(SoftwareError::Busy)
+        } else {
+            Ok(Box::new(Guard(self.0.clone())))
+        }
+    }
+    fn recovery_block(&self, blocked: bool) -> Result<()> {
+        self.0.blocked.store(blocked, Ordering::SeqCst);
+        Ok(())
+    }
+}
+impl StoppedGuard for Guard {
+    fn activate(&mut self, document: &str) -> Result<()> {
+        self.0.calls.fetch_add(1, Ordering::SeqCst);
+        *self.0.document.lock().unwrap() = document.into();
+        if let Some(action) = self.0.activation_action.lock().unwrap().take() {
+            action();
+        }
+        if self.0.fail_after_write.load(Ordering::SeqCst) {
+            Err(SoftwareError::RuntimeUnavailable)
+        } else {
+            Ok(())
+        }
+    }
+}
+struct Fixture {
+    _temp: tempfile::TempDir,
+    db: StateDatabase,
+    game: PathBuf,
+    installer: Arc<ServerInstaller>,
+    native: Arc<NativeState>,
+}
+impl Fixture {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let game = temp.path().join("game");
+        std::fs::create_dir(&game).unwrap();
+        std::fs::write(game.join("server.properties"), b"motd=preserved\n").unwrap();
+        std::fs::create_dir(game.join("world")).unwrap();
+        std::fs::write(game.join("world/level.dat"), b"world unchanged").unwrap();
+        let db = StateDatabase::open(
+            StateDirectory::new(temp.path().join("state"), Some(&game)).unwrap(),
+            Arc::new(SystemClock),
+        )
+        .unwrap();
+        for (index, (principal, device, role)) in [
+            (PRINCIPAL, DEVICE, Some("owner")),
+            (VIEWER, VIEWER_DEVICE, Some("viewer")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            db.write(|c| {
+                let now=db.clock().millis();
+                c.execute("INSERT INTO principals(id,server_id,display_name,status,created_at,updated_at) VALUES(?,?,'fixture','active',?,?)",params![principal,db.server_id(),now,now])?;
+                c.execute("INSERT INTO devices(id,server_id,principal_id,label,public_key_sha256,created_at) VALUES(?,?,?,'fixture',?,?)",params![device,db.server_id(),principal,index.to_string().repeat(64),now])?;
+                c.execute("INSERT INTO role_assignments(id,principal_id,role_id,granted_by,created_at) VALUES(?,?,?,'fixture',?)",params![uuid::Uuid::new_v4().to_string(),principal,role,now])?;
+                Ok(())
+            }).unwrap();
+        }
+        db.write(|c| {c.execute("INSERT INTO devices(id,server_id,principal_id,label,public_key_sha256,created_at) VALUES(?,?,?,'second',?,?)",params![DEVICE2,db.server_id(),PRINCIPAL,"f".repeat(64),db.clock().millis()])?;Ok(())}).unwrap();
+        let base = temp.path().join("software");
+        std::fs::create_dir(&base).unwrap();
+        let installer = Arc::new(
+            ServerInstaller::new(
+                InstallRoots::new(&base, std::slice::from_ref(&game)).unwrap(),
+                TransportConfig::direct(),
+            )
+            .unwrap(),
+        );
+        let native = Arc::new(NativeState::default());
+        *native.document.lock().unwrap() = "original launch".into();
+        Self {
+            _temp: temp,
+            db,
+            game,
+            installer,
+            native,
+        }
+    }
+    fn open(&self) -> SoftwareService {
+        SoftwareService::open(
+            self.db.clone(),
+            self.installer.clone(),
+            std::env::current_exe().unwrap(),
+            self.game.clone(),
+            self.native.document.lock().unwrap().clone(),
+            Arc::new(Hooks(self.native.clone())),
+        )
+        .unwrap()
+    }
+    fn previous(&self, document: &str) {
+        let artifact = self.game.join("retained-software.jar");
+        std::fs::write(&artifact, b"retained software").unwrap();
+        let launch = StoredLaunch {
+            warnings: Vec::new(),
+            installation: Installation {
+                custom_jar: None,
+                loader_version: None,
+                software: Some(Software::Paper),
+                version: Some("1.21.4".into()),
+                build: Some(1),
+                installation_id: "srv_previous".into(),
+            },
+            document: document.into(),
+            artifacts: vec![vesta_server_install::ManagedArtifact {
+                path: artifact,
+                size: 17,
+                sha256: hex::encode(sha2::Sha256::digest(b"retained software")),
+            }],
+        };
+        self.db
+            .write(|c| {
+                c.execute(
+                    "UPDATE software_state SET previous_launch=? WHERE singleton=1",
+                    [store::encode(&launch).unwrap()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+    fn unchanged(&self) {
+        assert_eq!(
+            std::fs::read(self.game.join("server.properties")).unwrap(),
+            b"motd=preserved\n"
+        );
+        assert_eq!(
+            std::fs::read(self.game.join("world/level.dat")).unwrap(),
+            b"world unchanged"
+        );
+    }
+}
+fn actor(device: &str) -> Subject {
+    Subject {
+        principal: crate::identity::PrincipalId::parse(PRINCIPAL).unwrap(),
+        device: crate::identity::DeviceId::parse(device).unwrap(),
+    }
+}
+fn owner() -> Subject {
+    actor(DEVICE)
+}
+
+#[test]
+fn catalogue_persistence_is_bounded_and_never_changes_installation_state() {
+    use vesta_server_install::{CATALOGUE_CACHE_ENTRIES, CatalogueRecord};
+    let fixture = Fixture::new();
+    let service = fixture.open();
+    let handle = service.handle();
+    let cache = super::catalogue_store::open(fixture.db.clone()).unwrap();
+    let before = handle.status(&owner()).unwrap();
+    for index in 0..70 {
+        let key = format!("{index:064x}");
+        let bytes = vec![index as u8; 1024];
+        cache.save(&[(
+            key,
+            CatalogueRecord {
+                sha256: hex::encode(sha2::Sha256::digest(&bytes)),
+                bytes,
+                stored_at_ms: 1000 + index,
+                expires_at_ms: 301_000 + index,
+            },
+        )]);
+    }
+    let count = fixture
+        .db
+        .read(|connection| {
+            Ok(connection.query_row(
+                "SELECT count(*) FROM software_catalogue_cache",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(count, CATALOGUE_CACHE_ENTRIES as i64);
+    assert!(cache.load(&format!("{:064x}", 0)).is_none());
+    assert!(cache.load(&format!("{:064x}", 69)).is_some());
+    let after = handle.status(&owner()).unwrap();
+    assert_eq!(before.revision, after.revision);
+    assert_eq!(
+        before.current.installation_id,
+        after.current.installation_id
+    );
+    fixture.unchanged();
+}
+
+#[tokio::test]
+async fn catalogue_authority_is_checked_before_and_after_cached_query_work() {
+    let fixture = Fixture::new();
+    let service = fixture.open();
+    let handle = service.handle();
+    let polled = AtomicBool::new(false);
+    let result = handle
+        .catalogue(&viewer(), async {
+            polled.store(true, Ordering::SeqCst);
+            Ok(42)
+        })
+        .await;
+    assert!(matches!(result, Err(SoftwareError::Forbidden)));
+    assert!(!polled.load(Ordering::SeqCst));
+    let result = handle
+        .catalogue(&owner(), async {
+            fixture
+                .db
+                .write(|connection| {
+                    connection.execute(
+                        "DELETE FROM role_assignments WHERE principal_id=?",
+                        [PRINCIPAL],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+            Ok(42)
+        })
+        .await;
+    assert!(matches!(result, Err(SoftwareError::Forbidden)));
+}
+
+#[tokio::test]
+async fn cancelled_catalogue_waiter_releases_bounded_admission() {
+    let fixture = Fixture::new();
+    let service = fixture.open();
+    let handle = service.handle();
+    let held = handle.inner.query_permit.acquire().await.unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_millis(30),
+        handle.catalogue(&owner(), async { Ok(42) }),
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(handle.inner.query_waiters.available_permits(), 8);
+    drop(held);
+    assert_eq!(
+        handle.catalogue(&owner(), async { Ok(42) }).await.unwrap(),
+        42
+    );
+}
+
+#[test]
+fn custom_jar_is_confirmed_owner_only_and_restores_managed_with_java() {
+    use std::io::{Cursor, Write};
+    struct CustomHooks(Arc<NativeState>);
+    impl RuntimeHooks for CustomHooks {
+        fn launch_document(&self, launch: &ManagedLaunch) -> Result<String> {
+            Ok(format!(
+                "[minecraft]\nworking-directory={}\n[launch]\nkind='native'\nexecutable={}\nargs={}\nstop='console-stop'\n",
+                toml::Value::String(launch.working_directory.to_string_lossy().into()),
+                toml::Value::String(launch.java.to_string_lossy().into()),
+                toml::Value::Array(
+                    launch
+                        .args
+                        .iter()
+                        .cloned()
+                        .map(toml::Value::String)
+                        .collect()
+                )
+            ))
+        }
+        fn acquire_stopped(&self) -> Result<Box<dyn StoppedGuard>> {
+            Hooks(self.0.clone()).acquire_stopped()
+        }
+        fn recovery_block(&self, blocked: bool) -> Result<()> {
+            Hooks(self.0.clone()).recovery_block(blocked)
+        }
+    }
+    let f = Fixture::new();
+    let original = format!(
+        "[minecraft]\nworking-directory={}\n[launch]\nkind='native'\nexecutable={}\nargs=[]\nstop='console-stop'\n",
+        toml::Value::String(f.game.to_string_lossy().into()),
+        toml::Value::String(std::env::current_exe().unwrap().to_string_lossy().into())
+    );
+    *f.native.document.lock().unwrap() = original.clone();
+    let service = SoftwareService::open(
+        f.db.clone(),
+        f.installer.clone(),
+        std::env::current_exe().unwrap(),
+        f.game.clone(),
+        original,
+        Arc::new(CustomHooks(f.native.clone())),
+    )
+    .unwrap();
+    let handle = service.handle();
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.start_file(
+        "META-INF/MANIFEST.MF",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    zip.write_all(b"Manifest-Version: 1.0\r\nMain-Class: example.Server\r\n\r\n")
+        .unwrap();
+    std::fs::write(
+        f.game.join("custom.jar"),
+        zip.finish().unwrap().into_inner(),
+    )
+    .unwrap();
+    assert!(matches!(
+        handle.prepare_custom_jar(&viewer(), Some("custom.jar".into()), 0),
+        Err(SoftwareError::Forbidden)
+    ));
+    assert!(
+        handle
+            .prepare_custom_jar(&owner(), Some("../custom.jar".into()), 0)
+            .is_err()
+    );
+    let plan = handle
+        .prepare_custom_jar(&owner(), Some("custom.jar".into()), 0)
+        .unwrap();
+    assert_eq!(plan.main_class.as_deref(), Some("example.Server"));
+    assert_eq!(f.native.calls.load(Ordering::SeqCst), 0);
+    let request = CustomJarRequest {
+        plan_id: plan.plan_id,
+        confirmation_token: plan.confirmation_token,
+        idempotency_key: "custom-jar".into(),
+    };
+    let job = handle.apply_custom_jar(&owner(), request).unwrap();
+    assert_eq!(finished(&handle, &job.id).state, "succeeded");
+    assert_eq!(
+        handle
+            .status(&owner())
+            .unwrap()
+            .current
+            .custom_jar
+            .unwrap()
+            .path,
+        "custom.jar"
+    );
+    let plan = handle.prepare_custom_jar(&owner(), None, 1).unwrap();
+    let job = handle
+        .apply_custom_jar(
+            &owner(),
+            CustomJarRequest {
+                plan_id: plan.plan_id,
+                confirmation_token: plan.confirmation_token,
+                idempotency_key: "restore-managed".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(finished(&handle, &job.id).state, "succeeded");
+    assert!(
+        handle
+            .status(&owner())
+            .unwrap()
+            .current
+            .custom_jar
+            .is_none()
+    );
+}
+fn viewer() -> Subject {
+    Subject {
+        principal: crate::identity::PrincipalId::parse(VIEWER).unwrap(),
+        device: crate::identity::DeviceId::parse(VIEWER_DEVICE).unwrap(),
+    }
+}
+fn request(p: &PreparedRollback, key: &str) -> RollbackRequest {
+    RollbackRequest {
+        expected_revision: p.expected_revision,
+        idempotency_key: key.into(),
+        confirm: true,
+        plan_id: p.plan_id.clone(),
+        confirmation_token: p.confirmation_token.clone(),
+    }
+}
+fn finished(handle: &SoftwareHandle, id: &str) -> Job {
+    let end = Instant::now() + Duration::from_secs(5);
+    loop {
+        let job = handle
+            .jobs(&owner())
+            .unwrap()
+            .into_iter()
+            .find(|j| j.id == id)
+            .unwrap();
+        if !matches!(job.state.as_str(), "queued" | "staging" | "activating") {
+            return job;
+        }
+        assert!(Instant::now() < end, "software worker did not finish");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn navigation_has_no_lifecycle_or_provider_effects_and_roles_are_rechecked() {
+    let f = Fixture::new();
+    let service = f.open();
+    let h = service.handle();
+    assert_eq!(h.status(&owner()).unwrap().revision, 0);
+    assert!(h.jobs(&owner()).unwrap().is_empty());
+    assert_eq!(f.native.calls.load(Ordering::SeqCst), 0);
+    assert!(matches!(h.status(&viewer()), Err(SoftwareError::Forbidden)));
+    assert!(matches!(h.jobs(&viewer()), Err(SoftwareError::Forbidden)));
+    assert!(matches!(
+        h.prepare_rollback(&viewer(), 0),
+        Err(SoftwareError::Forbidden)
+    ));
+    f.unchanged();
+}
+
+#[test]
+fn rollback_is_actor_bound_single_use_and_idempotent_after_restart() {
+    let f = Fixture::new();
+    let service = f.open();
+    let h = service.handle();
+    f.previous("previous launch");
+    let p = h.prepare_rollback(&owner(), 0).unwrap();
+    assert!(matches!(
+        h.rollback(&actor(DEVICE2), request(&p, "rollback-1")),
+        Err(SoftwareError::ConfirmationInvalid)
+    ));
+    let first = h.rollback(&owner(), request(&p, "rollback-1")).unwrap();
+    let job = finished(&h, &first.id);
+    assert_eq!(job.state, "succeeded");
+    assert_eq!(h.status(&owner()).unwrap().revision, 1);
+    assert_eq!(*f.native.document.lock().unwrap(), "previous launch");
+    assert_eq!(
+        h.rollback(&owner(), request(&p, "rollback-1")).unwrap().id,
+        first.id
+    );
+    assert!(matches!(
+        h.rollback(&owner(), request(&p, "rollback-2")),
+        Err(SoftwareError::PlanExpired)
+    ));
+    drop(service);
+    let reopened = f.open();
+    let h = reopened.handle();
+    assert_eq!(
+        h.rollback(&owner(), request(&p, "rollback-1")).unwrap().id,
+        first.id
+    );
+    let mut changed = request(&p, "rollback-1");
+    changed.expected_revision = 1;
+    assert!(matches!(
+        h.rollback(&owner(), changed),
+        Err(SoftwareError::IdempotencyConflict)
+    ));
+    assert_eq!(f.native.calls.load(Ordering::SeqCst), 1);
+    assert!(!f.native.blocked.load(Ordering::SeqCst));
+    f.unchanged();
+}
+
+#[test]
+fn wrong_confirmation_burns_only_same_actor_plan() {
+    let f = Fixture::new();
+    let service = f.open();
+    let h = service.handle();
+    f.previous("previous");
+    let p = h.prepare_rollback(&owner(), 0).unwrap();
+    let mut wrong = request(&p, "rollback-1");
+    wrong.confirmation_token = "wrong".into();
+    assert!(matches!(
+        h.rollback(&owner(), wrong),
+        Err(SoftwareError::ConfirmationInvalid)
+    ));
+    assert!(matches!(
+        h.rollback(&owner(), request(&p, "rollback-2")),
+        Err(SoftwareError::PlanExpired)
+    ));
+    assert_eq!(f.native.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn running_game_refuses_activation_without_changing_launch_or_world() {
+    let f = Fixture::new();
+    let service = f.open();
+    let h = service.handle();
+    f.previous("previous");
+    f.native.running.store(true, Ordering::SeqCst);
+    let p = h.prepare_rollback(&owner(), 0).unwrap();
+    let job = h.rollback(&owner(), request(&p, "rollback-1")).unwrap();
+    let done = finished(&h, &job.id);
+    assert_eq!(done.state, "failed");
+    assert_eq!(done.error.as_deref(), Some("software_busy"));
+    assert_eq!(h.status(&owner()).unwrap().revision, 0);
+    assert_eq!(*f.native.document.lock().unwrap(), "original launch");
+    assert!(!f.native.blocked.load(Ordering::SeqCst));
+    f.unchanged();
+}
+#[test]
+fn unverified_previous_launch_is_only_available_for_interrupted_change_recovery() {
+    let f = Fixture::new();
+    let service = f.open();
+    let h = service.handle();
+    f.previous("original launch");
+    assert!(h.status(&owner()).unwrap().previous_restorable);
+    f.db.write(|c| {
+        let mut previous = store::state(c).unwrap().previous.unwrap();
+        previous.artifacts.clear();
+        c.execute(
+            "UPDATE software_state SET previous_launch=?",
+            [store::encode(&previous).unwrap()],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(matches!(
+        h.prepare_rollback(&owner(), 0),
+        Err(SoftwareError::PreviousUnavailable)
+    ));
+    assert!(!h.status(&owner()).unwrap().previous_restorable);
+    f.db.write(|c| {
+        c.execute("UPDATE software_state SET recovery_required=1", [])?;
+        Ok(())
+    })
+    .unwrap();
+    let plan = h.prepare_rollback(&owner(), 0).unwrap();
+    let job = h
+        .rollback(&owner(), request(&plan, "recover-unverified-config"))
+        .unwrap();
+    assert_eq!(finished(&h, &job.id).state, "succeeded");
+    f.unchanged();
+}
+
+#[test]
+fn partial_activation_survives_restart_and_requires_explicit_rollback() {
+    let f = Fixture::new();
+    let service = f.open();
+    let h = service.handle();
+    f.previous("recoverable previous");
+    f.native.fail_after_write.store(true, Ordering::SeqCst);
+    let p = h.prepare_rollback(&owner(), 0).unwrap();
+    let job = h.rollback(&owner(), request(&p, "rollback-1")).unwrap();
+    assert_eq!(finished(&h, &job.id).state, "recovery_required");
+    assert!(f.native.blocked.load(Ordering::SeqCst));
+    assert_eq!(h.status(&owner()).unwrap().revision, 0);
+    drop(service);
+    let reopened = f.open();
+    let h = reopened.handle();
+    assert!(h.status(&owner()).unwrap().recovery_required);
+    assert!(f.native.blocked.load(Ordering::SeqCst));
+    f.native.fail_after_write.store(false, Ordering::SeqCst);
+    let p = h.prepare_rollback(&owner(), 0).unwrap();
+    let next = h.rollback(&owner(), request(&p, "rollback-2")).unwrap();
+    assert_eq!(finished(&h, &next.id).state, "succeeded");
+    assert!(!h.status(&owner()).unwrap().recovery_required);
+    assert!(!f.native.blocked.load(Ordering::SeqCst));
+    f.unchanged();
+}
+
+#[test]
+fn successful_job_warnings_survive_reopen_and_idempotent_reads() {
+    let f = Fixture::new();
+    let service = f.open();
+    f.db.write_with(|tx| -> Result<()> {
+        let c = tx.connection();
+        let mut launch = store::state(c)?.current;
+        launch.warnings = vec![vesta_server_install::Warning::SourceBuildReferenceMismatch];
+        c.execute("INSERT INTO software_jobs(id,kind,state,principal,device,idempotency_key,request_hash,expected_revision,candidate_launch,created_at_ms,updated_at_ms) VALUES('warning','apply','succeeded',?,?,'warning-key','warning-hash',0,?,1,1)", params![PRINCIPAL,DEVICE,store::encode(&launch)?])?;
+        c.execute("INSERT INTO software_job_results(job_id,warnings_json) VALUES('warning',?)", [serde_json::to_string(&launch.warnings).unwrap()])?;
+        Ok(())
+    }).unwrap();
+    assert_eq!(
+        service.handle().jobs(&owner()).unwrap()[0].warnings.len(),
+        1
+    );
+    drop(service);
+    let reopened = f.open();
+    let job =
+        f.db.read_with(|tx| -> Result<_> {
+            store::existing(tx.connection(), &owner(), "warning-key", "warning-hash")
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(job.state, "succeeded");
+    assert!(job.error.is_none());
+    assert_eq!(
+        job.warnings,
+        vec![vesta_server_install::Warning::SourceBuildReferenceMismatch]
+    );
+    assert_eq!(
+        reopened.handle().jobs(&owner()).unwrap()[0].warnings,
+        job.warnings
+    );
+}
+
+#[tokio::test]
+async fn pack_without_software_switch_runs_as_a_durable_job_and_replays_after_reconnect() {
+    use super::Result;
+    use crate::packs::workspace::*;
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let f = Fixture::new();
+    let service = f.open();
+    f.db.write_with(|tx| -> Result<()> {
+        let c = tx.connection();
+        let mut launch = store::state(c)?.current;
+        launch.installation.software = Some(Software::Vanilla);
+        launch.installation.version = Some("1.21.1".into());
+        c.execute(
+            "UPDATE software_state SET current_launch=? WHERE singleton=1",
+            [store::encode(&launch)?],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let workspace = PackWorkspace::open(&f.db).unwrap();
+    let pack_game = f._temp.path().join("pack-game");
+    std::fs::create_dir(&pack_game).unwrap();
+    let files = crate::files::FileBrowser::open(f.db.clone(), &pack_game, &[]).unwrap();
+    let releases = crate::packs::PackReleases::open(&f.db).unwrap();
+    let draft = workspace
+        .file_mutate(
+            &owner(),
+            "1.21.1",
+            "pack-file",
+            &FileMutation {
+                expected_revision: "0".into(),
+                change: FileOperation::Write {
+                    root: "overrides".into(),
+                    path: "config/test.properties".into(),
+                    content_base64: STANDARD.encode(b"value=pack\n"),
+                },
+            },
+        )
+        .unwrap();
+    let plan = workspace
+        .install_plan(
+            &owner(),
+            "1.21.1",
+            Some("vanilla"),
+            &PackInstallRequest {
+                analyze: false,
+                source: InstallSource::Draft {
+                    revision: draft.revision,
+                },
+            },
+            &files,
+            &releases,
+            &crate::content::UreqProviderClient::new(None),
+        )
+        .unwrap();
+    assert!(!plan.software_switch_required);
+    let work = PackWork {
+        workspace: workspace.clone(),
+        files,
+        key: "pack-install-job".into(),
+        input: PackInstallApply {
+            acknowledge_warnings: true,
+            acknowledge_software_switch: false,
+            plan_id: plan.plan_id,
+            confirmation_token: plan.confirmation_token,
+            choices: vec![],
+            set_as_modpack: false,
+        },
+    };
+    let job = service
+        .handle()
+        .apply_pack(&owner(), work.clone())
+        .await
+        .unwrap();
+    workspace.track_install_job(&owner(), &job.id).unwrap();
+    assert_eq!(finished(&service.handle(), &job.id).state, "succeeded");
+    assert_eq!(
+        std::fs::read(pack_game.join("config/test.properties")).unwrap(),
+        b"value=pack\n"
+    );
+    drop(service);
+    let reopened = f.open();
+    let replay = reopened.handle().apply_pack(&owner(), work).await.unwrap();
+    assert_eq!(replay.id, job.id);
+    assert_eq!(replay.state, "succeeded");
+    assert_eq!(
+        f.native.calls.load(Ordering::SeqCst),
+        0,
+        "pack install must not reinstall unchanged software"
+    );
+}
+
+#[test]
+fn interrupted_staging_is_never_replayed_and_unknown_launch_blocks_start() {
+    let f = Fixture::new();
+    let service = f.open();
+    drop(service);
+    f.db.write(|c| {c.execute("INSERT INTO software_jobs(id,kind,state,principal,device,idempotency_key,request_hash,expected_revision,created_at_ms,updated_at_ms) VALUES('interrupted','apply','staging',?,?,'some-key','some-hash',0,1,1)",params![PRINCIPAL,DEVICE])?;Ok(())}).unwrap();
+    let service = f.open();
+    let h = service.handle();
+    assert_eq!(h.jobs(&owner()).unwrap()[0].state, "failed");
+    assert!(!h.status(&owner()).unwrap().recovery_required);
+    drop(service);
+    *f.native.document.lock().unwrap() = "unexpected local edit".into();
+    let service = f.open();
+    assert!(service.handle().status(&owner()).unwrap().recovery_required);
+    assert!(f.native.blocked.load(Ordering::SeqCst));
+    assert_eq!(f.native.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn revoked_owner_cannot_replay_durable_jobs() {
+    let f = Fixture::new();
+    let service = f.open();
+    let h = service.handle();
+    f.previous("previous");
+    let p = h.prepare_rollback(&owner(), 0).unwrap();
+    let job = h.rollback(&owner(), request(&p, "rollback-1")).unwrap();
+    assert_eq!(finished(&h, &job.id).state, "succeeded");
+    f.db.write(|c| {
+        c.execute(
+            "DELETE FROM role_assignments WHERE principal_id=?",
+            [PRINCIPAL],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(matches!(
+        h.rollback(&owner(), request(&p, "rollback-1")),
+        Err(SoftwareError::Forbidden)
+    ));
+    assert!(matches!(h.status(&owner()), Err(SoftwareError::Forbidden)));
+}
+
+#[test]
+fn remote_paths_and_urls_are_rejected_and_forge_family_requests_are_recognized() {
+    for value in [
+        serde_json::json!({"software":"paper","version":"1.21.4","java":"C:/attacker.exe"}),
+        serde_json::json!({"software":"paper","version":"1.21.4","url":"https://attacker.invalid"}),
+    ] {
+        assert!(serde_json::from_value::<PlanRequest>(value).is_err());
+    }
+    for software in [Software::Forge, Software::NeoForge] {
+        assert!(software.descriptor().automatic_backend);
+        assert!(
+            validate_request(&PlanRequest {
+                software,
+                version: "1.21.4".into(),
+                build: None,
+                loader_version: None,
+                experimental: false
+            })
+            .is_ok()
+        );
+    }
+    for version in ["../../world", "https://example.com/jar", "1.21\nstop", ""] {
+        assert!(
+            validate_request(&PlanRequest {
+                software: Software::Vanilla,
+                version: version.into(),
+                build: None,
+                loader_version: None,
+                experimental: false
+            })
+            .is_err()
+        );
+    }
+}
+
+#[tokio::test]
+async fn shutdown_at_pack_admission_does_not_apply_pack_files() {
+    use super::Result;
+    use crate::packs::workspace::*;
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let f = Fixture::new();
+    let service = f.open();
+    f.db.write_with(|tx| -> Result<()> {
+        let c = tx.connection();
+        let mut launch = store::state(c)?.current;
+        launch.installation.software = Some(Software::Vanilla);
+        launch.installation.version = Some("1.21.1".into());
+        c.execute(
+            "UPDATE software_state SET current_launch=? WHERE singleton=1",
+            [store::encode(&launch)?],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let workspace = PackWorkspace::open(&f.db).unwrap();
+    let pack_game = f._temp.path().join("pack-game");
+    std::fs::create_dir(&pack_game).unwrap();
+    let files = crate::files::FileBrowser::open(f.db.clone(), &pack_game, &[]).unwrap();
+    let releases = crate::packs::PackReleases::open(&f.db).unwrap();
+    let draft = workspace
+        .file_mutate(
+            &owner(),
+            "1.21.1",
+            "pack-file",
+            &FileMutation {
+                expected_revision: "0".into(),
+                change: FileOperation::Write {
+                    root: "overrides".into(),
+                    path: "config/test.properties".into(),
+                    content_base64: STANDARD.encode(b"value=pack\n"),
+                },
+            },
+        )
+        .unwrap();
+    let plan = workspace
+        .install_plan(
+            &owner(),
+            "1.21.1",
+            Some("vanilla"),
+            &PackInstallRequest {
+                analyze: false,
+                source: InstallSource::Draft {
+                    revision: draft.revision,
+                },
+            },
+            &files,
+            &releases,
+            &crate::content::UreqProviderClient::new(None),
+        )
+        .unwrap();
+    assert!(!plan.software_switch_required);
+    let work = PackWork {
+        workspace: workspace.clone(),
+        files,
+        key: "pack-install-job".into(),
+        input: PackInstallApply {
+            acknowledge_warnings: true,
+            acknowledge_software_switch: false,
+            plan_id: plan.plan_id,
+            confirmation_token: plan.confirmation_token,
+            choices: vec![],
+            set_as_modpack: false,
+        },
+    };
+    *f.native.shutdown_on_stopped.lock().unwrap() = Some(Arc::downgrade(&service.handle().inner));
+    let job = service
+        .handle()
+        .apply_pack(&owner(), work.clone())
+        .await
+        .unwrap();
+    assert_eq!(finished(&service.handle(), &job.id).state, "failed");
+    assert!(!pack_game.join("config/test.properties").exists());
+    f.unchanged();
+}
+
+#[test]
+fn shutdown_at_runtime_activation_admission_does_not_switch_launch() {
+    let f = Fixture::new();
+    let service = f.open();
+    f.previous("previous");
+    let h = service.handle();
+    let prepared = h.prepare_rollback(&owner(), 0).unwrap();
+    *f.native.shutdown_on_stopped.lock().unwrap() = Some(Arc::downgrade(&h.inner));
+    let job = h
+        .rollback(&owner(), request(&prepared, "cancel-before-activation"))
+        .unwrap();
+    assert_eq!(finished(&h, &job.id).state, "failed");
+    assert_eq!(f.native.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        f.native.document.lock().unwrap().as_str(),
+        "original launch"
+    );
+    f.unchanged();
+}
+
+#[test]
+fn provider_job_error_context_is_redacted_durable_and_authorized() {
+    let f = Fixture::new();
+    let service = f.open();
+    let h = service.handle();
+    let job =
+        f.db.write_with(|tx| {
+            store::admit(
+                tx.connection(),
+                &f.db,
+                &h.inner.audit,
+                &owner(),
+                "apply",
+                "context-job",
+                "bound",
+                0,
+            )
+        })
+        .unwrap();
+    let work = Work {
+        id: job.id.clone(),
+        actor: owner(),
+        kind: WorkKind::Rollback,
+    };
+    let error=crate::packs::ReleaseError::provider_file(crate::content::ContentError::HashMismatch,"modrinth","project","version","download_verify",Some("resource.jar")).with_download_url("https://cdn.modrinth.com/data/project/versions/version/resource.jar?private-token=do-not-store");
+    let error = worker::pack_failure(&h.inner, &work, "preparation", error);
+    worker::fail(&h.inner, &work, error).unwrap();
+    let rows = h.jobs(&owner()).unwrap();
+    let context = rows[0].error_context.as_ref().unwrap();
+    assert_eq!(rows[0].state, "failed");
+    assert_eq!(context["provider"], "modrinth");
+    assert_eq!(context["project_id"], "project");
+    assert_eq!(context["version_id"], "version");
+    assert_eq!(context["filename"], "resource.jar");
+    assert_eq!(context["stage"], "download_verify");
+    assert_eq!(context["phase"], "preparation");
+    let serialized = serde_json::to_string(context).unwrap();
+    assert!(!serialized.contains("http"));
+    assert!(!serialized.contains("do-not-store"));
+    assert!(!serialized.contains("private-token"));
+    assert!(h.jobs(&actor("unknown-device")).is_err());
+    let expected = context.clone();
+    drop(h);
+    drop(service);
+    let reopened = f.open();
+    assert_eq!(
+        reopened.handle().jobs(&owner()).unwrap()[0]
+            .error_context
+            .as_ref(),
+        Some(&expected)
+    );
+    f.unchanged();
+}
+
+#[test]
+fn archive_refusal_context_retains_path_and_excludes_url_descriptions() {
+    let f = Fixture::new();
+    let service = f.open();
+    let h = service.handle();
+    for (index, item) in [
+        "kubejs/server_scripts/mods/Laser Bridges & Doors/Recipes.js",
+        "https://example.invalid/archive?private-token=do-not-store",
+        "bad\npath",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let job =
+            f.db.write_with(|tx| {
+                store::admit(
+                    tx.connection(),
+                    &f.db,
+                    &h.inner.audit,
+                    &owner(),
+                    "apply",
+                    &format!("refusal-context-{index}"),
+                    "bound",
+                    0,
+                )
+            })
+            .unwrap();
+        let work = Work {
+            id: job.id.clone(),
+            actor: owner(),
+            kind: WorkKind::Rollback,
+        };
+        let error = worker::pack_failure(
+            &h.inner,
+            &work,
+            "preparation",
+            crate::packs::ReleaseError::Refusal {
+                code: "pack_path_invalid",
+                rule: "safe_relative_path",
+                item: (*item).into(),
+            },
+        );
+        worker::fail(&h.inner, &work, error).unwrap();
+        let rows = h.jobs(&owner()).unwrap();
+        let context = rows
+            .iter()
+            .find(|r| r.id == job.id)
+            .unwrap()
+            .error_context
+            .as_ref()
+            .unwrap();
+        assert_eq!(context["reason"], "safe_relative_path");
+        if index == 0 {
+            assert_eq!(context["path"], *item);
+        } else {
+            assert!(context.get("path").is_none());
+        }
+        assert!(!context.to_string().contains("do-not-store"));
+    }
+    f.unchanged();
+}
+
+#[path = "recovery_assurance.rs"]
+mod recovery_assurance;

@@ -1,0 +1,38 @@
+[package]
+name = "vesta-server-install"
+version.workspace = true
+# Preserve the extracted implementation's edition; do not change fixture environment semantics.
+edition = "2021"
+# Existing pinned sysinfo 0.38.4 requires 1.88. No dependency downgrade for a lower declaration.
+rust-version = "1.88"
+publish.workspace = true
+license = "GPL-3.0-only"
+
+[dependencies]
+serde = { workspace = true, features = ["rc"] }
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+# Match the companion's selected versions and transport features, not a new HTTP stack.
+tokio = { version = "=1.50.0", features = ["full"] }
+reqwest = { version = "=0.12.28", default-features = false, features = ["json", "stream", "multipart", "socks", "rustls-tls"] }
+futures = "=0.3.32"
+thiserror = "=2.0.21"
+sha1 = "=0.10.6"
+# Purpur's published legacy checksum, never authenticity.
+md-5 = "=0.10.6"
+sysinfo = "=0.38.4"
+dunce = "=1.0.5"
+zip = { workspace = true, features = ["deflate-flate2-zlib-rs"] }
+vesta-game-runtime = { path = "../vesta-game-runtime" }
+url = "=2.5.8"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem", "Win32_System_WindowsProgramming"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock = "=0.6.5"
+
+[lints]
+workspace = true

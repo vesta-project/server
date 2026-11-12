@@ -1,0 +1,11 @@
+Supervised release-5 black-box retest, 2026-10-27.
+Disposable Ubuntu WSL distro Vesta-Usability-20261027. Setup SHA-256 matched TRUST-v3.txt. No code or tests inspected, no screenshot review. Prior failed fixtures and markers preserved.
+
+Fresh host /home/terra/vesta-supervised-host, port 18446: interactive automatic setup completed exit 0. Final screen identifies setup host startup as current-user systemd session and distinguishes unavailable launcher onboarding. vesta-setup status reports ready and pending_host_ready true.
+
+Fresh server /home/terra/supervised-servers: create supervised-server with version 1.21.1, /usr/bin/java, approve-install and both acknowledgment flags. Interactive prompt says agent stays available while Minecraft stopped, boot retains user services without sign-in, and boot-managed servers use a separate supervisor. Chose yes. It printed both warnings and reported eula=pending, no_game_started, and "Agent started; configured for machine boot. Minecraft remains stopped." No EULA accepted or game launched.
+
+Immediate contradictory observation: scoped status exits 1 with local_command_failed: local_agent_not_running_start_serve_first. systemctl --user status shows enabled unit vesta-agent-srv_ff66d3eb93fa43e180f389a76281ac68.service activating (auto-restart), exit 1. Journal repeatedly says supervisor_exited_during_start. No running supervisor or agent was observed. Scoped agent startup status still says machine boot; Minecraft startup is separate. loginctl reports Linger=yes. Scoped agent start exits 1: "systemctl failed (exit status: 1); check current-user systemd session and permission to enable linger" followed by local_command_failed: local_agent_startup_start_failed_server_preserved. Given user manager and linger are available and journal identifies supervisor exit, the hint does not identify the observed immediate failure. Creation success message is premature or misleading because agent is not available.
+
+Restart persistence not tested: agent never achieved demonstrated readiness before restart. Agent stop/start recovery not further exercised; no guards bypassed or fixture changed. WSL distro is not a physical boot environment. Separate supervisor, supervisor recovery, and real game remain unverified. Automatic restart retries continue; preserve for diagnosis.
+

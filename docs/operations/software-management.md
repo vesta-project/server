@@ -1,0 +1,138 @@
+# Server software management
+
+Forge/NeoForge research and staged implementation are documented in
+[the installation plan](../architecture/FORGE_NEOFORGE_INSTALLATION_PLAN.md).
+That plan does not enable either provider or claim installation certification.
+
+Implementation contract, 2026-10-24. All routes use the existing authenticated
+management session. The service independently rechecks canonical owner status and
+`content.install` on every read and write, and again before activation. Anonymous,
+pack-only and non-owner subjects receive `software_forbidden`.
+
+## JSON API
+
+Routes are relative to `/api/v3/manage`. Reject unknown JSON fields. No request
+accepts executable paths, JVM arguments, filesystem paths, download URLs or scripts.
+
+| Method / route | Request | Response |
+| --- | --- | --- |
+| GET `/software` | none | `{available, unavailable_reason, revision, current, previous, recovery_required, catalog:[SoftwareDescriptor]}` |
+| GET `/software/versions?software=paper` | one exact software identifier | `{software, versions:[string]}`; demand-only upstream metadata |
+| GET `/software/releases?software=paper&version=1.21.4` | exact software and Minecraft identifiers | `{software, version, releases:[{id,build,loader_version}]}`; metadata only |
+| POST `/software/plan` | `{software, version, build?:number, loader_version?:string, experimental?:false}` | `{plan_id, confirmation_token, expires_at_ms, expected_revision, software, version, build, java, warnings, risks}` |
+| POST `/software/apply` | `{plan_id, confirmation_token, idempotency_key, acknowledge_warnings, acknowledge_legacy_checksum}` | Job below; HTTP 202 for accepted work |
+| GET `/software/jobs` | none | `{jobs:[Job]}` newest first, bounded to 100 |
+| POST `/software/rollback/plan` | `{expected_revision}` | `{plan_id,confirmation_token,expires_at_ms,expected_revision,target,risks}` |
+| POST `/software/rollback` | `{expected_revision, idempotency_key, confirm:true,plan_id,confirmation_token}` | Job below; HTTP 202 |
+
+`current`/`previous` are nullable `{software, version, build, installation_id}`;
+the original locally approved launch has null software/version and installation_id
+`original`. Revision starts at zero and advances only after successful activation.
+Job: `{id, kind:"apply"|"rollback", state:"queued"|"staging"|"activating"|"succeeded"|"failed"|"recovery_required", created_at_ms, updated_at_ms, error:null|string}`.
+Planning tokens bind actor + device + exact resolved immutable artifact plan +
+launch revision, expire in two minutes and are consumed once. Apply retries with
+the same key return the existing durable job; changed requests conflict.
+
+Release choices use the installer's existing bounded, allowlisted provider metadata.
+Paper/Folia expose stable downloadable builds; Purpur exposes advertised build IDs
+(planning rejects failed builds); Fabric/Quilt expose stable loader versions.
+Build choices are newest first. The service uses the same single-query permit as
+Minecraft-version queries and planning, and rechecks owner authorization after the
+fetch. The launcher requests releases after the Minecraft-version query completes.
+No catalogue request downloads artifacts or changes launch state. Plans also return
+the resolved `loader_version` so the review shows the exact selected loader.
+Catalogue lookups have a 12-second total deadline, including retries and redirects,
+so a stalled provider releases the query slot before the launcher's 15-second
+request expires. Tighter installer limits still apply. Planning and installation
+keep their separate longer job deadlines. Catalogue timeout returns
+`server_install.deadline`; it does not modify the selected software.
+
+Catalogue browsing now uses a bounded per-installer memory cache with optional
+protected agent-state persistence. Validated raw documents and normalized lists
+share an 8 MiB retained-memory budget and 64-entry cap. Persistence keeps at most
+64 MiB of encoded records plus accounting overhead in `software_catalogue_cache`;
+SQLite file/WAL allocation is additional. Cache hits do not write state. Candidate
+documents are committed only after the complete catalogue query validates, and
+same-key requests share bounded admission. Software-service queueing and fetching
+together remain inside the 12-second deadline, with at most eight waiting callers.
+Transient provider failures are shared with the queued request wave for 250 ms,
+so twenty readers do not each repeat the installer's three upstream retries.
+These failures are not persisted or treated as valid catalogue data. Cancellation
+and malformed metadata are not retained by that transient-failure mechanism.
+
+Origin no-store/no-cache and freshness/age restrictions are respected. Conditional
+ETag revalidation is not implemented by this first cache layer: expired entries
+are fetched again. Forge's official Maven catalogue forbids storage; browsing
+therefore uses the same compact Modrinth loader-ID mirror used by the launcher.
+Mirror URLs are ignored. Fresh installation planning still checks exact Forge
+Maven membership, official metadata and artifact pins; browsing snapshots never
+authorize a download or change an installed receipt. The Forge mirror source
+family is metadata-only and cannot download JARs.
+
+CraftBukkit (`bukkit`) and Spigot (`spigot`) share first-party BuildTools metadata
+discovery. They currently report `automatic_backend:false` with
+`buildtools_execution_pending` and must remain hidden from install choices.
+Version/build metadata availability does not mean compilation or activation is
+implemented. No unofficial prebuilt JAR source is used.
+Rollback explicitly selects the durable previous launch, preserves both software
+installations, and never downgrades/reverts world data. It requires an exact
+revision and confirmation; warn that an upgraded world may require backup restore.
+
+Errors use the existing transport envelope with fixed `software_*` codes:
+`forbidden`, `disabled`, `invalid_request`, `busy`, `plan_expired`,
+`confirmation_invalid`, `revision_conflict`, `idempotency_conflict`,
+`previous_unavailable`, `recovery_required`, `state_unavailable`,
+`runtime_unavailable`, plus the installer's redacted `server_install.*` failures.
+
+## Runtime and persistence integration
+
+Implemented automatic providers: Vanilla, Paper, Folia, Purpur, Fabric, Quilt,
+and the shared modern Forge/NeoForge processor adapter. The latter is implemented
+but awaits real installation/platform testing. Legacy Forge 1.7–1.16 profiles now
+have a separate Java-8 adapter; prerelease-only loader versions remain refused.
+See the [legacy checkpoint](../reviews/2026-10-25-legacy-forge.md) and the
+[implementation checkpoint](../reviews/2026-10-25-forge-installation.md).
+Provider resolution,
+allowlisted HTTPS downloads, pinned checksums, selected local Java probing and
+disk reservations reuse `vesta-server-install`.
+
+The protected local configuration supplies the installer root, Java, game root,
+and launch document; these are never remote request fields. Downloads and hashing
+run on one dedicated demand-driven worker, not the urgent management dispatcher.
+No idle timer or provider polling is installed. At most one switch runs at once.
+
+The owner stops Minecraft separately. Applying never stops, starts or restarts it.
+Before activation the runtime adapter obtains the same start exclusion used by
+world restore/backups and a supervisor stopped-game maintenance hold when present.
+It must positively establish stopped, non-draining, no pending restart, and refuse
+unresolved process ownership. It atomically replaces the protected launch document
+and the stopped process owner's launch specification while the hold is retained.
+The new launch uses the existing game directory; world/config/EULA/mod/plugin bytes
+are untouched. Side-by-side artifacts live outside that directory. Activation is
+explicitly approved by apply. A later ordinary Start is separately authorized.
+
+Before replacing a launch, persist both the exact previous and candidate launch and
+an activating journal record. An interrupted activation becomes recovery_required
+and blocks starts on reopen. The operator can use explicit rollback to the stored
+previous launch; never blindly replay an ambiguous activation. Interrupted staging
+fails without touching the live launch. Durable idempotency survives agent restart.
+The runtime adapter must restore the selected active launch on host startup before
+automation can start. It must not merely edit TOML while retaining a stale in-memory
+or separate-supervisor launch. Remote software management reports unavailable
+until this adapter is attached.
+
+Cross-family/version compatibility is advisory, never a promise: mods/plugins,
+Folia threading, dimension layouts and world downgrades can be incompatible. The
+plan always requests backup review and records these warnings. No world backup is
+silently manufactured or declared successful by this service.
+
+## Verified rollback and baseline recovery
+
+CraftBukkit and Spigot use a shared source-build adapter. See
+[BuildTools installations](buildtools.md) for prerequisites and limits. Their
+compilation holds the stopped gate for the entire build, before the usual verified
+activation. Download-only providers keep their existing activation-time hold.
+
+Status reports `previous_restorable` when retained artifact evidence is available. Ordinary rollback requires that evidence, and the worker verifies the recorded hashes before activation. Metadata or an old launch document alone does not establish a restorable installation.
+
+An unverified baseline may only be reapplied while recovery is required after an interrupted change. This recovers the saved launch configuration; it does not restore or verify the old software files. The launcher labels this separately from normal software restore. Actor-bound confirmation, stopped-state exclusion and ordinary launch validation still apply.

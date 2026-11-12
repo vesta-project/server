@@ -1,0 +1,327 @@
+name: Nightly signed releases
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-release-publish
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    timeout-minutes: 5
+    name: Check release source
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require the canonical repository and a new commit on main
+        env:
+          REPOSITORY: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+          COMMIT: ${{ github.sha }}
+          DELETED: ${{ github.event.deleted }}
+        run: |
+          test "$REPOSITORY" = 'vesta-project/server' || { echo 'Nightly publishing is disabled for forks.' >&2; exit 1; }
+          test "$EVENT" = 'push' || { echo 'Publishing requires a new main push.' >&2; exit 1; }
+          test "$REF" = 'refs/heads/main' || { echo 'Publishing is allowed only from main.' >&2; exit 1; }
+          test "$DELETED" = 'false' && test "$AFTER" != "$BEFORE" && test "$AFTER" = "$COMMIT" || { echo 'Publishing requires a new non-deleted main commit.' >&2; exit 1; }
+          case "$AFTER" in ''|0000000000000000000000000000000000000000) exit 1 ;; esac
+
+  prepare:
+    timeout-minutes: 5
+    name: Identify immutable nightly version
+    needs: gate
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+      date: ${{ steps.version.outputs.date }}
+      short_sha: ${{ steps.version.outputs.short_sha }}
+      should_build: ${{ steps.version.outputs.should_build }}
+    steps:
+      - name: Create date and commit version
+        id: version
+        env:
+          COMMIT: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          date="$(date -u +%Y%m%d)"
+          short_sha="${COMMIT:0:12}"
+          echo "date=$date" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+          echo "value=nightly-$date-$short_sha" >> "$GITHUB_OUTPUT"
+          export RELEASE_VERSION="nightly-$date-$short_sha"
+          gh api "repos/$GH_REPO/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+          node -e 'const fs=require("node:fs");const releases=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/releases.json","utf8"));const existing=releases.some(r=>!r.draft&&r.tag_name.startsWith("nightly-")&&(r.tag_name===process.env.RELEASE_VERSION||r.target_commitish===process.env.COMMIT));fs.appendFileSync(process.env.GITHUB_OUTPUT,"should_build="+(!existing)+"\n");if(existing)console.log("This source commit already has a published nightly; no rebuild or republish.");'
+
+  validate:
+    timeout-minutes: 45
+    name: Validate (${{ matrix.os }})
+    needs: [gate, prepare]
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    defaults:
+      run:
+        shell: bash
+        working-directory: server
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: server
+          persist-credentials: false
+      - name: Checkout pinned shared sandbox source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: vesta-project/launcher
+          ref: 930f21dd465453e90af16548eee4db3d53828986
+          path: launcher
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: Run Node checks and release packaging contract tests
+        run: |
+          node --test scripts/*.test.mjs scripts/bootstrap/*.test.mjs scripts/reachability-probe/*.test.mjs
+          node scripts/requirements-ledger.mjs --check
+          node scripts/build-roadmap-html.mjs --check
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
+      - name: Check formatting
+        run: rustup run 1.96.0 cargo fmt --all -- --check
+      - name: Check, test, and lint Rust workspace
+        env:
+          CARGO_INCREMENTAL: '0'
+          # Keep native test fixtures within the same setup-artifact size bound
+          # as production releases; release build settings remain unchanged.
+          CARGO_PROFILE_TEST_DEBUG: '0'
+        run: |
+          rustup run 1.96.0 cargo check --workspace --all-targets --locked
+          rustup run 1.96.0 cargo test --workspace --locked -- --test-threads=1
+          rustup run 1.96.0 cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  build:
+    timeout-minutes: 45
+    name: Build (${{ matrix.target }})
+    needs: [validate, prepare]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x86_64
+            os: windows-2025
+            rust_target: x86_64-pc-windows-msvc
+            suffix: '.exe'
+          - target: linux-x86_64
+            os: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+            suffix: ''
+          - target: linux-aarch64
+            os: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            suffix: ''
+    defaults:
+      run:
+        shell: bash
+        working-directory: server
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: server
+          persist-credentials: false
+      - name: Checkout pinned shared sandbox source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: vesta-project/launcher
+          ref: 930f21dd465453e90af16548eee4db3d53828986
+          path: launcher
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: Install native Rust target
+        run: rustup toolchain install 1.96.0 --profile minimal --target '${{ matrix.rust_target }}'
+      - name: Build all four release executables
+        env:
+          CARGO_INCREMENTAL: '0'
+          CURSEFORGE_API_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
+          VESTA_REQUIRE_PROVIDER_KEYS: '1'
+        run: |
+          rustup run 1.96.0 cargo build --locked --release --target '${{ matrix.rust_target }}' \
+            -p vesta-setup -p vesta-agent -p vesta-supervisor \
+            --bin vesta-setup --bin vesta-agent --bin vesta-supervisor --bin vesta
+      - name: Verify executable formats and target architectures
+        run: node scripts/bootstrap/verify-binaries.mjs --binaries 'target/${{ matrix.rust_target }}/release' --target '${{ matrix.target }}'
+      - name: Upload unsigned native build products
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: binaries-${{ matrix.target }}
+          path: |
+            server/target/${{ matrix.rust_target }}/release/vesta-setup${{ matrix.suffix }}
+            server/target/${{ matrix.rust_target }}/release/vesta-agent${{ matrix.suffix }}
+            server/target/${{ matrix.rust_target }}/release/vesta-supervisor${{ matrix.suffix }}
+            server/target/${{ matrix.rust_target }}/release/vesta${{ matrix.suffix }}
+          if-no-files-found: error
+          retention-days: 2
+
+  sign:
+    timeout-minutes: 15
+    name: Sign and verify (${{ matrix.target }})
+    needs: [build, prepare]
+    runs-on: ${{ matrix.os }}
+    environment: release-signing
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x86_64
+            os: windows-2025
+          - target: linux-x86_64
+            os: ubuntu-24.04
+          - target: linux-aarch64
+            os: ubuntu-24.04-arm
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: binaries-${{ matrix.target }}
+          path: ${{ runner.temp }}/binaries
+      - name: Require pinned production signing credentials
+        env:
+          VESTA_RELEASE_SIGNING_KEY: ${{ secrets.VESTA_RELEASE_SIGNING_KEY }}
+          VESTA_RELEASE_PUBLIC_KEY: ${{ vars.VESTA_RELEASE_PUBLIC_KEY }}
+        run: |
+          test -n "$VESTA_RELEASE_SIGNING_KEY" || { echo 'Required environment secret VESTA_RELEASE_SIGNING_KEY is missing.' >&2; exit 1; }
+          test -n "$VESTA_RELEASE_PUBLIC_KEY" || { echo 'Required environment variable VESTA_RELEASE_PUBLIC_KEY is missing.' >&2; exit 1; }
+          [[ "$VESTA_RELEASE_PUBLIC_KEY" =~ ^[0-9a-fA-F]{64}$ ]] || { echo 'VESTA_RELEASE_PUBLIC_KEY must be the pinned 32-byte Ed25519 public key in hex.' >&2; exit 1; }
+          node -e "require('node:fs').writeFileSync(process.env.RUNNER_TEMP + '/vesta-release-signing-key.pem', process.env.VESTA_RELEASE_SIGNING_KEY, { mode: 0o600 })"
+      - name: Verify unsigned executables and create the signed package
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_PUBLIC_KEY: ${{ vars.VESTA_RELEASE_PUBLIC_KEY }}
+          RELEASE_SIGNING_KEY_PATH: ${{ runner.temp }}/vesta-release-signing-key.pem
+          BUNDLE_BASE_URL: https://github.com/vesta-project/server/releases/download/${{ needs.prepare.outputs.version }}
+        run: |
+          node scripts/bootstrap/verify-binaries.mjs --binaries "$RUNNER_TEMP/binaries" --target "$RELEASE_TARGET"
+          node scripts/bootstrap/package-release.mjs \
+            --binaries "$RUNNER_TEMP/binaries" \
+            --output "$RUNNER_TEMP/package/$RELEASE_TARGET/release" \
+            --target "$RELEASE_TARGET" \
+            --base-url "$BUNDLE_BASE_URL" \
+            --asset-prefix "${RELEASE_TARGET}-" \
+            --signing-key "$RELEASE_SIGNING_KEY_PATH" \
+            --version "$RELEASE_VERSION" \
+            --channel nightly --sequence "${{ github.run_number }}"
+          node -e "const r=require(process.env.RUNNER_TEMP + '/package/' + process.env.RELEASE_TARGET + '/release/release.json'); if(r.releaseKey.toLowerCase()!==process.env.RELEASE_PUBLIC_KEY.toLowerCase()) throw new Error('Generated public key does not match VESTA_RELEASE_PUBLIC_KEY')"
+          tar -czf "$RUNNER_TEMP/package/$RELEASE_TARGET/vesta-$RELEASE_TARGET-$RELEASE_VERSION.tar.gz" -C "$RUNNER_TEMP/package/$RELEASE_TARGET/release" .
+      - name: Upload signed package for the isolated publisher
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signed-${{ matrix.target }}
+          path: ${{ runner.temp }}/package/${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 5
+      - name: Remove the ephemeral signing key file
+        if: always()
+        env:
+          KEY_PATH: ${{ runner.temp }}/vesta-release-signing-key.pem
+        run: rm -f -- "$KEY_PATH"
+
+  publish:
+    timeout-minutes: 15
+    name: Publish immutable nightly
+    needs: [sign, prepare]
+    if: needs.sign.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: signed-*
+          path: ${{ runner.temp }}/signed
+      - name: Reverify signatures and stage target-specific asset sets
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_PUBLIC_KEY: ${{ vars.VESTA_RELEASE_PUBLIC_KEY }}
+        run: |
+          test -n "$RELEASE_PUBLIC_KEY" || { echo 'Required repository variable VESTA_RELEASE_PUBLIC_KEY is missing.' >&2; exit 1; }
+          for target in windows-x86_64 linux-x86_64 linux-aarch64; do
+            node scripts/bootstrap/stage-nightly-release.mjs \
+              --package "$RUNNER_TEMP/signed/signed-$target/release" \
+              --target "$target" \
+              --version "$RELEASE_VERSION" \
+              --public-key "$RELEASE_PUBLIC_KEY" \
+              --site-root "$RUNNER_TEMP/site"
+          done
+      - name: Refuse an existing release tag or release
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git ls-remote --exit-code origin "refs/tags/$RELEASE_VERSION" >/dev/null 2>&1; then
+            echo 'Nightly Git tag already exists; refusing to replace it.' >&2
+            exit 1
+          fi
+          if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
+            echo 'Nightly GitHub Release already exists; refusing to replace it.' >&2
+            exit 1
+          fi
+      - name: Create the immutable GitHub Release with flat target-prefixed assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VESTA_RELEASE_PUBLIC_KEY: ${{ vars.VESTA_RELEASE_PUBLIC_KEY }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_DATE: ${{ needs.prepare.outputs.date }}
+          SHORT_SHA: ${{ needs.prepare.outputs.short_sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-assets"
+          for target in windows-x86_64 linux-x86_64 linux-aarch64; do
+            tar -czf "$RUNNER_TEMP/release-assets/vesta-$target-$RELEASE_VERSION.tar.gz" -C "$RUNNER_TEMP/site/nightly/$RELEASE_VERSION/$target" .
+          done
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          Nightly build for commit $GITHUB_SHA, published on $RELEASE_DATE UTC.
+
+          Flat target-prefixed assets and one-paste bootstrap commands are attached to this release.
+
+          Release public key pin: ${VESTA_RELEASE_PUBLIC_KEY}
+          EOF
+          for target in windows-x86_64 linux-x86_64 linux-aarch64; do
+            prefix="$target-"
+            package="$RUNNER_TEMP/site/nightly/$RELEASE_VERSION/$target"
+            for name in manifest.json manifest.sig manifest.pub update.json update.sig commands.txt release.json vesta-setup vesta-setup.exe vesta-agent vesta-agent.exe vesta-supervisor vesta-supervisor.exe vesta vesta.exe; do
+              if [ -f "$package/$name" ]; then cp "$package/$name" "$RUNNER_TEMP/release-assets/$prefix$name"; fi
+            done
+          done
+          gh release create "$RELEASE_VERSION" \
+            "$RUNNER_TEMP/release-assets/"* \
+            --target "$GITHUB_SHA" \
+            --draft --prerelease --latest=false \
+            --title "Nightly $RELEASE_DATE ($SHORT_SHA)" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
+          gh release edit "$RELEASE_VERSION" --draft=false

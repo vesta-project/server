@@ -1,0 +1,807 @@
+//! P2 device enrollment and proof-of-possession sessions. Local owner methods are
+//! trusted in-process seams used ONLY after native same-account IPC authentication.
+//! They are never exposed to HTTP, pack identities or arbitrary bearer callers.
+//! Codes are durable/hash-only; challenges and sessions end with the process.
+use super::repository::Repository;
+use super::{
+    BuiltinRole, DeviceId, DeviceLabel, DisplayName, Fingerprint, PrincipalId, RoleId, Subject,
+};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use ring::{
+    digest,
+    rand::{SecureRandom, SystemRandom},
+    signature,
+};
+use rusqlite::{OptionalExtension, params};
+use serde::Serialize;
+use std::{
+    collections::HashMap,
+    fmt,
+    sync::{Arc, Mutex},
+};
+use vesta_state::{
+    StateDatabase, TransactionError,
+    audit::{AuditActor, AuditLog, AuditRecord},
+};
+use zeroize::Zeroizing;
+
+pub const DEFAULT_PAIR_MINUTES: u16 = 10;
+pub const MAX_PAIR_MINUTES: u16 = 60;
+pub const MAX_CODES: usize = 32;
+pub const MAX_REGISTERED_DEVICES: usize = 1000;
+pub const MAX_PUBLIC_DEVICE_KEYS: usize = MAX_REGISTERED_DEVICES - MAX_CODES;
+pub const MAX_CHALLENGES: usize = 1024;
+pub const MAX_SESSIONS: usize = 4096;
+pub const CHALLENGE_TTL_MS: i64 = 60_000;
+pub const SESSION_TTL_MS: i64 = 15 * 60_000;
+pub const SESSION_PURPOSE: &str = "vesta.management.session.v1";
+pub(crate) type Hash = [u8; 32];
+type Result<T> = std::result::Result<T, ManagementError>;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagementError {
+    PairInvalid,
+    SessionInvalid,
+    InvalidRequest,
+    Forbidden,
+    Saturated,
+    Unavailable,
+}
+impl ManagementError {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::PairInvalid => "management_pair_invalid",
+            Self::SessionInvalid => "management_session_invalid",
+            Self::InvalidRequest => "invalid_request",
+            Self::Forbidden => "management_forbidden",
+            Self::Saturated => "management_saturated",
+            Self::Unavailable => "management_unavailable",
+        }
+    }
+}
+impl From<vesta_state::StateError> for ManagementError {
+    fn from(_: vesta_state::StateError) -> Self {
+        Self::Unavailable
+    }
+}
+impl From<rusqlite::Error> for ManagementError {
+    fn from(_: rusqlite::Error) -> Self {
+        Self::Unavailable
+    }
+}
+impl From<crate::ControlError> for ManagementError {
+    fn from(_: crate::ControlError) -> Self {
+        Self::Unavailable
+    }
+}
+
+/// No serializer and redacted Debug: exposed only by explicit response builders.
+pub struct Secret(Zeroizing<String>);
+impl Secret {
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ManagementSecret[<redacted>]")
+    }
+}
+pub struct PairCode {
+    pub secret: Secret,
+    pub expires_at_ms: i64,
+}
+pub struct SessionToken {
+    pub secret: Secret,
+    pub expires_at_ms: i64,
+}
+#[derive(Debug, Serialize)]
+pub struct Enrolled {
+    pub server_id: String,
+    pub principal_id: String,
+    pub device_id: String,
+    pub role: String,
+}
+#[derive(Debug, Serialize)]
+pub struct DeviceInfo {
+    pub device_id: String,
+    pub principal_id: String,
+    pub device_name: String,
+    pub revoked: bool,
+}
+struct Challenge {
+    console_edges: Box<[Hash]>,
+    device: DeviceId,
+    expires: i64,
+    monotonic_expires: std::time::Instant,
+}
+struct Session {
+    console_edges: Box<[Hash]>,
+    subject: Subject,
+    server: String,
+    expires: i64,
+    monotonic_expires: std::time::Instant,
+}
+struct Stores {
+    console_credentials: console_redaction::CredentialIndex,
+    challenges: HashMap<Hash, Challenge>,
+    sessions: HashMap<Hash, Session>,
+}
+impl Stores {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            console_credentials: console_redaction::CredentialIndex::new()?,
+            challenges: HashMap::new(),
+            sessions: HashMap::new(),
+        })
+    }
+    fn remove_session(&mut self, hash: &Hash) -> Option<Session> {
+        let session = self.sessions.remove(hash)?;
+        self.console_credentials.remove(&session.console_edges);
+        Some(session)
+    }
+    fn remove_challenge(&mut self, hash: &Hash) -> Option<Challenge> {
+        let challenge = self.challenges.remove(hash)?;
+        self.console_credentials.remove(&challenge.console_edges);
+        Some(challenge)
+    }
+    fn prune(&mut self, now: i64) {
+        let index = &mut self.console_credentials;
+        self.challenges.retain(|_, v| {
+            let keep = v.expires > now && std::time::Instant::now() < v.monotonic_expires;
+            if !keep {
+                index.remove(&v.console_edges);
+            }
+            keep
+        });
+        self.sessions.retain(|_, v| {
+            let keep = v.expires > now && std::time::Instant::now() < v.monotonic_expires;
+            if !keep {
+                index.remove(&v.console_edges);
+            }
+            keep
+        });
+    }
+}
+#[derive(Clone)]
+pub struct ManagementAccess {
+    db: StateDatabase,
+    session_limit: usize,
+    session_ttl_ms: i64,
+    audit: AuditLog,
+    change_cache: Arc<Mutex<(i64, serde_json::Value)>>,
+    stores: Arc<Mutex<Stores>>,
+}
+impl ManagementAccess {
+    /// Domain audit records commit with mutations; replays and losing writes
+    /// cannot publish a newer editor or invalidation hint.
+    pub fn resource_changes(&self, token: &str) -> Result<serde_json::Value> {
+        self.authorize(token, super::Capability::StatusView, None)?;
+        self.read(|repo| {
+            let latest:i64=repo.connection().query_row("SELECT coalesce(max(seq),0) FROM audit_events",[],|r|r.get(0))?;
+            let mut cache=self.change_cache.lock().map_err(|_|ManagementError::Unavailable)?;
+            if cache.0==latest {return Ok(cache.1.clone());}
+            let sql="WITH resources AS (SELECT *, CASE
+                WHEN action='management.permissions.mutate' AND target='server' THEN 'branding'
+                WHEN action='management.permissions.mutate' AND target='access-sources' THEN 'access-sources'
+                WHEN action='management.permissions.mutate' AND (target='roles' OR target LIKE 'roles/%') THEN 'roles'
+                WHEN action='management.permissions.mutate' AND target LIKE 'users/%/roles' THEN 'users'
+                WHEN action='files.write' AND json_valid(metadata_json) AND json_extract(metadata_json,'$.path')='server.properties' THEN 'properties'
+                WHEN action='sleep.policy.configure' THEN 'sleep-policy'
+                WHEN action='motd.policy.update' THEN 'motd-policy'
+                WHEN action IN ('backups.repository.configure','backups.config.update','backups.policy.update','backups.policy.reset') THEN 'backup-config'
+                WHEN action LIKE 'software.%' AND outcome IN ('ok','accepted','succeeded') THEN 'software'
+                END AS resource FROM audit_events WHERE server_id=? AND outcome IN ('success','accepted','succeeded','ok')),
+                heads AS (SELECT resource,max(seq) AS seq FROM resources WHERE resource IS NOT NULL GROUP BY resource)
+                SELECT r.resource,r.seq,r.at,coalesce(json_extract(r.metadata_json,'$.editor_display_name'),n.name,p.display_name,'Server operator') FROM resources r JOIN heads h ON h.seq=r.seq LEFT JOIN principals p ON p.id=r.principal_id LEFT JOIN user_minecraft_names n ON n.principal_id=p.id";
+            let mut changes=serde_json::json!({});
+            let mut statement=repo.connection().prepare(sql)?;
+            let rows=statement.query_map([self.server_id()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,String>(3)?)))?;
+            for row in rows {let (resource,seq,at,name)=row?;changes[resource]=serde_json::json!({"revision":seq.to_string(),"display_name":name,"at_ms":at});}
+            *cache=(latest,changes.clone());
+            Ok(changes)
+        })
+    }
+    pub fn new(db: StateDatabase) -> Result<Self> {
+        Self::with_limits(db, MAX_SESSIONS, SESSION_TTL_MS)
+    }
+    pub(crate) fn with_limits(db: StateDatabase, capacity: usize, ttl_ms: i64) -> Result<Self> {
+        if capacity == 0 || capacity > MAX_SESSIONS || ttl_ms <= 0 || ttl_ms > SESSION_TTL_MS {
+            return Err(ManagementError::InvalidRequest);
+        }
+        Ok(Self {
+            session_limit: capacity,
+            session_ttl_ms: ttl_ms,
+            audit: AuditLog::new(db.clone())?,
+            change_cache: Arc::new(Mutex::new((-1, serde_json::json!({})))),
+            db,
+            stores: Arc::new(Mutex::new(Stores::new()?)),
+        })
+    }
+    pub fn server_id(&self) -> &str {
+        self.db.server_id()
+    }
+    fn now(&self) -> i64 {
+        self.db.clock().millis()
+    }
+    fn write<T>(&self, work: impl FnOnce(&Repository<'_>) -> Result<T>) -> Result<T> {
+        match self.db.write_with(|tx| {
+            work(&Repository::new(
+                tx.connection(),
+                self.server_id(),
+                self.now(),
+            ))
+        }) {
+            Ok(v) => Ok(v),
+            Err(TransactionError::Work(e)) => Err(e),
+            Err(_) => Err(ManagementError::Unavailable),
+        }
+    }
+    fn read<T>(&self, work: impl FnOnce(&Repository<'_>) -> Result<T>) -> Result<T> {
+        match self.db.read_with(|snapshot| {
+            work(&Repository::new(
+                snapshot.connection(),
+                self.server_id(),
+                self.now(),
+            ))
+        }) {
+            Ok(v) => Ok(v),
+            Err(TransactionError::Work(e)) => Err(e),
+            Err(_) => Err(ManagementError::Unavailable),
+        }
+    }
+    fn audit(
+        &self,
+        repo: &Repository<'_>,
+        actor: AuditActor,
+        action: &str,
+        target: &str,
+    ) -> Result<()> {
+        let record = AuditRecord::new(
+            actor,
+            action.to_owned(),
+            target.to_owned(),
+            "success".to_owned(),
+            None,
+            std::iter::empty::<(String, Option<String>)>(),
+        )?;
+        self.audit.append(repo.connection(), &record)?;
+        Ok(())
+    }
+    /// CLI OS account is the owner by explicit owner decision. Call this ONLY
+    /// from the protected native local adapter, never an HTTP route.
+    pub fn issue_local(&self, role: BuiltinRole, minutes: u16) -> Result<PairCode> {
+        if !(1..=MAX_PAIR_MINUTES).contains(&minutes) {
+            return Err(ManagementError::InvalidRequest);
+        }
+        let secret = random_secret()?;
+        self.write(|repo| {
+            let c = repo.connection();
+            c.execute(
+                "DELETE FROM management_pairing_codes WHERE expires_at <= ?",
+                [repo.now],
+            )?;
+            let count: u32 =
+                c.query_row("SELECT count(*) FROM management_pairing_codes", [], |r| {
+                    r.get(0)
+                })?;
+            if count as usize >= MAX_CODES {
+                return Err(ManagementError::Saturated);
+            }
+            let id: RoleId = role.into();
+            repo.role(&id)?;
+            let expires = deadline(repo.now, i64::from(minutes) * 60_000)?;
+            let hash = bound_hash(b"pair", self.server_id(), secret.expose());
+            c.execute(
+                "INSERT INTO management_pairing_codes VALUES (?,?,?,?,?)",
+                params![
+                    hash.as_slice(),
+                    self.server_id(),
+                    id.as_str(),
+                    repo.now,
+                    expires
+                ],
+            )?;
+            self.audit(repo, local_actor()?, "management.pair.issue", role.id())?;
+            Ok(PairCode {
+                secret,
+                expires_at_ms: expires,
+            })
+        })
+    }
+    pub fn enroll(&self, code: &str, device_name: &str, public_key: &str) -> Result<Enrolled> {
+        self.enroll_for(code, device_name, public_key, None)
+    }
+    pub fn enroll_for(
+        &self,
+        code: &str,
+        device_name: &str,
+        public_key: &str,
+        token: Option<&str>,
+    ) -> Result<Enrolled> {
+        let authenticated = token.map(|t| self.authenticate(t)).transpose()?;
+        let invalid = ManagementError::PairInvalid;
+        decode::<32>(code).map_err(|_| invalid)?;
+        let key = decode::<32>(public_key).map_err(|_| ManagementError::InvalidRequest)?;
+        let name = DisplayName::parse(device_name).map_err(|_| ManagementError::InvalidRequest)?;
+        let label = DeviceLabel::parse(device_name).map_err(|_| ManagementError::InvalidRequest)?;
+        let fingerprint = Fingerprint::parse(&hex::encode(digest::digest(&digest::SHA256, &key)))?;
+        self.write(|repo| {
+            let c = repo.connection();
+            let (role, issuer) = self.consume_invitation(repo, code)?;
+            if let Some(subject)=&authenticated {self.subject_in(repo,&subject.device)?;}
+            let existing:Option<(String,String)>=c.query_row("SELECT principal_id,id FROM devices WHERE server_id=? AND public_key_sha256=? AND revoked_at IS NULL",params![self.server_id(),fingerprint.as_str()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            let principal=if let Some(subject)=&authenticated {subject.principal.clone()} else {if existing.is_some() {return Err(ManagementError::SessionInvalid);}self.create_user(repo,&name)?};
+            let device=if let Some((owner,id))=existing {if owner!=principal.as_str(){return Err(ManagementError::SessionInvalid);}DeviceId::parse(&id)?} else {
+                self.check_device_capacity(repo,true)?;
+                let device=repo.insert_device(&principal,&label,&fingerprint)?;
+                c.execute("INSERT INTO management_device_keys (device_id, server_id, public_key) VALUES (?,?,?)", params![device.as_str(), self.server_id(), key.as_slice()])?;device
+            };
+            if let Some(issuer) = issuer {
+                self.redeem_invitation(repo, &issuer, &principal, &role)?;
+            } else {
+                repo.replace_role(&principal, &role, None, "local-owner-pair")?;
+            }
+            let subject = Subject { principal: principal.clone(), device: device.clone() };
+            if !repo.policy(Some(&subject))?.has_current_identity() { return Err(ManagementError::Unavailable); }
+            self.audit(repo, device_actor(&subject)?, "management.pair.enroll", device.as_str())?;
+            Ok(Enrolled { server_id: self.server_id().to_owned(), principal_id: principal.to_string(), device_id: device.to_string(), role: role.to_string() })
+        })
+    }
+
+    // This runs inside enrollment's transaction: failed identity, policy or
+    // audit checks leave the invitation and its usage counter unchanged.
+    pub(super) fn consume_invitation(
+        &self,
+        repo: &Repository<'_>,
+        code: &str,
+    ) -> Result<(RoleId, Option<Subject>)> {
+        let invalid = ManagementError::PairInvalid;
+        decode::<32>(code).map_err(|_| invalid)?;
+        let c = repo.connection();
+        let hash = bound_hash(b"pair", self.server_id(), code);
+        let role: Option<String> = c.query_row("SELECT role_id FROM management_pairing_codes WHERE code_hash = ? AND server_id = ? AND expires_at > ?", params![hash.as_slice(), self.server_id(), repo.now], |r| r.get(0)).optional()?;
+        let role = RoleId::parse(&role.ok_or(invalid)?)?;
+        // BEGIN IMMEDIATE owns redemption. Removal, policy, enrollment and
+        // audit commit together; failed transactions leave the code usable.
+        let issuer = self.invitation_issuer(repo, &hash)?;
+        let usage: Option<(Option<u32>, u32)> = c
+            .query_row(
+                "SELECT max_uses,uses FROM management_invitation_uses WHERE code_hash=?",
+                [hash.as_slice()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((limit, uses)) = usage {
+            if limit.is_some_and(|n| uses >= n) {
+                return Err(invalid);
+            }
+            c.execute(
+                "UPDATE management_invitation_uses SET uses=uses+1 WHERE code_hash=?",
+                [hash.as_slice()],
+            )?;
+            if limit == Some(uses + 1) {
+                c.execute(
+                    "DELETE FROM management_pairing_codes WHERE code_hash=?",
+                    [hash.as_slice()],
+                )?;
+            }
+        } else {
+            c.execute(
+                "DELETE FROM management_pairing_codes WHERE code_hash = ?",
+                [hash.as_slice()],
+            )?;
+        }
+        repo.role(&role)?;
+        Ok((role, issuer))
+    }
+
+    /// A fresh enrollment-purpose proof identifies the device owner. It grants
+    /// a role ONLY when current server-local policy has an explicit owner link.
+    pub fn enroll_minecraft(
+        &self,
+        profile: super::minecraft::VerifiedMinecraftProfile,
+        device_name: &str,
+        public_key: &str,
+    ) -> Result<Enrolled> {
+        self.enroll_minecraft_for(profile, device_name, public_key, None)
+    }
+    pub fn link_local(
+        &self,
+        uuid: super::minecraft::MinecraftUuid,
+        role: BuiltinRole,
+    ) -> Result<()> {
+        let uuid = uuid.as_uuid().to_string();
+        self.write(|repo| {
+            let c = repo.connection();
+            let exists: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM management_owner_links WHERE server_id = ? AND minecraft_uuid = ?)", params![self.server_id(), uuid], |r| r.get(0))?;
+            let count: u32 = c.query_row("SELECT count(*) FROM management_owner_links", [], |r| r.get(0))?;
+            if !exists && count >= 32 { return Err(ManagementError::Saturated); }
+            repo.role(&role.into())?;
+            c.execute("INSERT INTO management_owner_links VALUES (?,?,?,?) ON CONFLICT(server_id,minecraft_uuid) DO UPDATE SET role_id = excluded.role_id, created_at = excluded.created_at", params![self.server_id(), uuid, role.id(), repo.now])?;
+            let principal:Option<String>=c.query_row("SELECT principal_id FROM user_minecraft_accounts WHERE server_id=? AND minecraft_uuid=?",params![self.server_id(),uuid],|r|r.get(0)).optional()?;
+            if let Some(id)=principal {repo.replace_role(&PrincipalId::parse(&id)?,&role.into(),None,"local-owner-minecraft-link")?;}
+            self.audit(repo, local_actor()?, "management.owner.link", &uuid)
+        })
+    }
+    /// Existing devices remain by default. Explicit revocation also applies to
+    /// descendants of older links for this UUID, even after a previous unlink.
+    pub fn unlink_local(
+        &self,
+        uuid: super::minecraft::MinecraftUuid,
+        revoke_devices: bool,
+    ) -> Result<()> {
+        let uuid = uuid.as_uuid().to_string();
+        self.write(|repo| {
+            let c = repo.connection();
+            c.execute("DELETE FROM management_owner_links WHERE server_id = ? AND minecraft_uuid = ?", params![self.server_id(), uuid])?;
+            if revoke_devices {
+                let linked_owner: Option<String> = c.query_row("SELECT a.principal_id FROM role_assignments a JOIN user_minecraft_accounts m ON m.principal_id=a.principal_id WHERE m.server_id=? AND m.minecraft_uuid=? AND a.role_id='owner' AND a.granted_by='local-owner-minecraft-link' AND a.revoked_at IS NULL AND (a.expires_at IS NULL OR a.expires_at>?) LIMIT 1",params![self.server_id(),uuid,repo.now],|r|r.get(0)).optional()?;
+                if let Some(id) = linked_owner { repo.ensure_owner_survives(&PrincipalId::parse(&id)?)?; }
+                c.execute("UPDATE devices SET revoked_at = ?, revoked_by = 'local-os-owner' WHERE server_id = ? AND revoked_at IS NULL AND principal_id IN (SELECT principal_id FROM user_minecraft_accounts WHERE server_id = ? AND minecraft_uuid = ?)", params![repo.now, self.server_id(), self.server_id(), uuid])?;
+                c.execute("UPDATE role_assignments SET revoked_at=?,revoked_by='local-os-owner' WHERE granted_by='local-owner-minecraft-link' AND revoked_at IS NULL AND principal_id IN (SELECT principal_id FROM user_minecraft_accounts WHERE server_id=? AND minecraft_uuid=?)",params![repo.now,self.server_id(),uuid])?;
+            }
+            self.audit(repo, local_actor()?, if revoke_devices { "management.owner.unlink_revoke" } else { "management.owner.unlink" }, &uuid)
+        })
+    }
+    pub fn links_local(&self) -> Result<Vec<serde_json::Value>> {
+        self.write(|repo| {
+            let mut s = repo.connection().prepare("SELECT minecraft_uuid, role_id FROM management_owner_links WHERE server_id = ? ORDER BY minecraft_uuid LIMIT 33")?;
+            let rows = s.query_map([self.server_id()], |r| Ok(serde_json::json!({"minecraft_uuid": r.get::<_, String>(0)?, "role": r.get::<_, String>(1)?})))?;
+            let links = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            if links.len() > 32 { return Err(ManagementError::Saturated); }
+            Ok(links)
+        })
+    }
+    /// Future handlers pass their exact capability and resource here and also
+    /// reload policy in their mutation transaction; Subjects alone are not grants.
+    pub fn authorize(
+        &self,
+        token: &str,
+        capability: super::Capability,
+        resource: Option<&super::Resource>,
+    ) -> Result<Subject> {
+        let subject = self.authenticate(token)?;
+        self.read(|repo| {
+            let (current, _) = self.subject_in(repo, &subject.device)?;
+            if current != subject {
+                return Err(ManagementError::SessionInvalid);
+            }
+            let policy = repo.policy(Some(&subject))?;
+            if !policy.has_current_identity() {
+                return Err(ManagementError::SessionInvalid);
+            }
+            if !policy.check(capability, resource).allowed() {
+                return Err(ManagementError::Forbidden);
+            }
+            Ok(subject)
+        })
+    }
+    fn subject_in(&self, repo: &Repository<'_>, device: &DeviceId) -> Result<(Subject, Vec<u8>)> {
+        let row: Option<(String, Vec<u8>, String)> = repo.connection().query_row(
+            "SELECT d.principal_id, k.public_key, d.public_key_sha256 FROM devices d JOIN management_device_keys k ON k.device_id = d.id JOIN user_minecraft_accounts a ON a.server_id = d.server_id AND a.principal_id = d.principal_id AND k.linked_minecraft_uuid = a.minecraft_uuid WHERE d.id = ? AND d.server_id = ? AND k.server_id = ? AND d.revoked_at IS NULL",
+            params![device.as_str(), self.server_id(), self.server_id()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
+        let (principal, key, fingerprint) = row.ok_or(ManagementError::SessionInvalid)?;
+        if key.len() != 32
+            || hex::encode(digest::digest(&digest::SHA256, &key))
+                != fingerprint.to_ascii_lowercase()
+        {
+            return Err(ManagementError::SessionInvalid);
+        }
+        let subject = Subject {
+            principal: PrincipalId::parse(&principal)?,
+            device: device.clone(),
+        };
+        let policy = repo.policy(Some(&subject))?;
+        if !policy.has_current_identity() {
+            return Err(ManagementError::SessionInvalid);
+        }
+        Ok((subject, key))
+    }
+    pub fn challenge(&self, device: &str) -> Result<Secret> {
+        let device = DeviceId::parse(device).map_err(|_| ManagementError::SessionInvalid)?;
+        let mut stores = self
+            .stores
+            .lock()
+            .map_err(|_| ManagementError::Unavailable)?;
+        stores.prune(self.now());
+        if stores.challenges.len() >= MAX_CHALLENGES {
+            return Err(ManagementError::Saturated);
+        }
+        self.write(|repo| self.subject_in(repo, &device).map(|_| ()))?;
+        let nonce = random_secret()?;
+        let expires = deadline(self.now(), CHALLENGE_TTL_MS)?;
+        let console_edges = stores.console_credentials.register(nonce.expose());
+        stores.challenges.insert(
+            bound_hash(b"challenge", self.server_id(), nonce.expose()),
+            Challenge {
+                console_edges,
+                device,
+                expires,
+                monotonic_expires: std::time::Instant::now()
+                    + std::time::Duration::from_millis(CHALLENGE_TTL_MS as u64),
+            },
+        );
+        Ok(nonce)
+    }
+    pub fn session(&self, device: &str, nonce: &str, signature_text: &str) -> Result<SessionToken> {
+        let invalid = ManagementError::SessionInvalid;
+        let device = DeviceId::parse(device).map_err(|_| invalid)?;
+        decode::<32>(nonce).map_err(|_| invalid)?;
+        let mut stores = self
+            .stores
+            .lock()
+            .map_err(|_| ManagementError::Unavailable)?;
+        stores.prune(self.now());
+        // Consume even failed signature/device attempts, including audit/capacity
+        // failures. No challenge is ever restored after an attempted completion.
+        let challenge = stores
+            .remove_challenge(&bound_hash(b"challenge", self.server_id(), nonce))
+            .ok_or(invalid)?;
+        if challenge.device != device {
+            return Err(invalid);
+        }
+        let signature_bytes = decode::<64>(signature_text).map_err(|_| invalid)?;
+        if stores.sessions.len() >= self.session_limit {
+            return Err(ManagementError::Saturated);
+        }
+        let secret = random_secret()?;
+        let (subject, expires) = self.write(|repo| {
+            if challenge.expires <= repo.now {
+                return Err(invalid);
+            }
+            let (subject, key) = self.subject_in(repo, &device)?;
+            signature::UnparsedPublicKey::new(&signature::ED25519, key)
+                .verify(&session_message(self.server_id(), nonce), &signature_bytes)
+                .map_err(|_| invalid)?;
+            let expires = deadline(repo.now, self.session_ttl_ms)?;
+            self.audit(
+                repo,
+                device_actor(&subject)?,
+                "management.session.issue",
+                device.as_str(),
+            )?;
+            Ok((subject, expires))
+        })?;
+        let console_edges = stores.console_credentials.register(secret.expose());
+        stores.sessions.insert(
+            bound_hash(b"session", self.server_id(), secret.expose()),
+            Session {
+                console_edges,
+                subject,
+                server: self.server_id().to_owned(),
+                expires,
+                monotonic_expires: std::time::Instant::now()
+                    + std::time::Duration::from_millis(self.session_ttl_ms as u64),
+            },
+        );
+        Ok(SessionToken {
+            secret,
+            expires_at_ms: expires,
+        })
+    }
+    /// Authenticated lookup, not reusable policy authority. Future mutations must
+    /// reload/authorize current policy inside their own write transaction.
+    /// Deterministic recognition of currently retained agent-issued credentials.
+    /// Hash lookup avoids retaining extra plaintext tokens for redaction.
+    pub fn redact_console_secrets(&self, text: &str) -> Result<String> {
+        let pairs = self.db.read(|c| {
+            let mut statement = c.prepare("SELECT code_hash FROM management_pairing_codes WHERE server_id=? AND expires_at>? LIMIT 32")?;
+            let rows = statement.query_map(params![self.server_id(),self.now()], |row| row.get::<_,Vec<u8>>(0))?;
+            Ok(rows.collect::<std::result::Result<Vec<_>,_>>()?)
+        })?;
+        let stores = self.stores.lock().unwrap_or_else(|p| p.into_inner());
+        let bytes = text.as_bytes();
+        let mut out = String::with_capacity(text.len());
+        let mut last = 0;
+        let mut at = 0;
+        while at + 43 <= bytes.len() {
+            let candidate = &bytes[at..at + 43];
+            if candidate
+                .iter()
+                .all(|v| v.is_ascii_alphanumeric() || *v == b'_' || *v == b'-')
+            {
+                let candidate = std::str::from_utf8(candidate).expect("ASCII");
+                if (!stores.sessions.is_empty()
+                    && stores.sessions.contains_key(&bound_hash(
+                        b"session",
+                        self.server_id(),
+                        candidate,
+                    )))
+                    || (!stores.challenges.is_empty()
+                        && stores.challenges.contains_key(&bound_hash(
+                            b"challenge",
+                            self.server_id(),
+                            candidate,
+                        )))
+                    || (!pairs.is_empty() && {
+                        let hash = bound_hash(b"pair", self.server_id(), candidate);
+                        pairs.iter().any(|v| v.as_slice() == hash.as_slice())
+                    })
+                {
+                    out.push_str(&text[last..at]);
+                    out.push_str("[redacted]");
+                    at += 43;
+                    last = at;
+                    continue;
+                }
+            }
+            at += 1;
+        }
+        out.push_str(&text[last..]);
+        Ok(out)
+    }
+    /// Two keyed lookups, independent of the number of live sessions. Only
+    /// actual live session/challenge fragments are masked at physical line edges.
+    pub fn redact_console_secret_edges(&self, text: &str) -> Result<String> {
+        let stores = self
+            .stores
+            .lock()
+            .map_err(|_| ManagementError::Unavailable)?;
+        Ok(stores.console_credentials.redact(text))
+    }
+    pub fn authenticate(&self, token: &str) -> Result<Subject> {
+        decode::<32>(token).map_err(|_| ManagementError::SessionInvalid)?;
+        let mut stores = self
+            .stores
+            .lock()
+            .map_err(|_| ManagementError::Unavailable)?;
+        stores.prune(self.now());
+        let hash = bound_hash(b"session", self.server_id(), token);
+        let session = stores
+            .sessions
+            .get(&hash)
+            .ok_or(ManagementError::SessionInvalid)?;
+        if session.server != self.server_id() {
+            return Err(ManagementError::SessionInvalid);
+        }
+        if std::time::Instant::now() >= session.monotonic_expires {
+            stores.remove_session(&hash);
+            return Err(ManagementError::SessionInvalid);
+        }
+        let session = (
+            session.subject.clone(),
+            session.server.clone(),
+            session.expires,
+            session.monotonic_expires,
+        );
+        drop(stores);
+
+        let result = self.read(|repo| {
+            if session.2 <= repo.now {
+                return Err(ManagementError::SessionInvalid);
+            }
+            let (current, _) = self.subject_in(repo, &session.0.device)?;
+            if current != session.0 {
+                return Err(ManagementError::SessionInvalid);
+            }
+            Ok(current)
+        });
+
+        // The read snapshot can take time. Recheck the in-memory grant after it
+        // finishes so a concurrent logout/revoke or expiry cannot authenticate.
+        let mut stores = self
+            .stores
+            .lock()
+            .map_err(|_| ManagementError::Unavailable)?;
+        let current = stores.sessions.get(&hash).is_some_and(|current| {
+            current.subject == session.0
+                && current.server == session.1
+                && current.expires == session.2
+                && current.monotonic_expires == session.3
+                && current.server == self.server_id()
+                && current.expires > self.now()
+                && std::time::Instant::now() < current.monotonic_expires
+        });
+        if !current {
+            stores.remove_session(&hash);
+            return Err(ManagementError::SessionInvalid);
+        }
+        if result.is_err() {
+            stores.remove_session(&hash);
+        }
+        result
+    }
+    pub fn list_local(&self) -> Result<Vec<DeviceInfo>> {
+        self.write(|repo| {
+            let mut s = repo.connection().prepare("SELECT id, principal_id, label, revoked_at IS NOT NULL FROM devices WHERE server_id = ? ORDER BY created_at, id LIMIT 1001")?;
+            let rows = s.query_map([self.server_id()], |r| Ok(DeviceInfo { device_id: r.get(0)?, principal_id: r.get(1)?, device_name: r.get(2)?, revoked: r.get(3)? }))?;
+            let result = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            if result.len() > 1000 { return Err(ManagementError::Saturated); }
+            Ok(result)
+        })
+    }
+    pub fn revoke_local(&self, device: &str) -> Result<()> {
+        let device = DeviceId::parse(device).map_err(|_| ManagementError::InvalidRequest)?;
+        self.write(|repo| {
+            repo.device_principal(&device)?;
+            repo.revoke_device(&device, "local-os-owner")?;
+            self.audit(
+                repo,
+                local_actor()?,
+                "management.device.revoke",
+                device.as_str(),
+            )
+        })
+    }
+}
+/// Exact signed bytes: prefix NUL server-id NUL canonical base64url nonce. Fixed
+/// prefix is both domain separation and purpose; no caller-selected purpose.
+pub fn session_message(server_id: &str, nonce: &str) -> Vec<u8> {
+    format!("{SESSION_PURPOSE}\0{server_id}\0{nonce}").into_bytes()
+}
+fn deadline(now: i64, ttl: i64) -> Result<i64> {
+    now.checked_add(ttl).ok_or(ManagementError::Unavailable)
+}
+fn random_secret() -> Result<Secret> {
+    let mut bytes = [0; 32];
+    SystemRandom::new()
+        .fill(&mut bytes)
+        .map_err(|_| ManagementError::Unavailable)?;
+    Ok(Secret(Zeroizing::new(URL_SAFE_NO_PAD.encode(bytes))))
+}
+fn decode<const N: usize>(text: &str) -> Result<[u8; N]> {
+    if text.len() != (N * 8).div_ceil(6) {
+        return Err(ManagementError::InvalidRequest);
+    }
+    let bytes = URL_SAFE_NO_PAD
+        .decode(text)
+        .map_err(|_| ManagementError::InvalidRequest)?;
+    if URL_SAFE_NO_PAD.encode(&bytes) != text {
+        return Err(ManagementError::InvalidRequest);
+    }
+    bytes
+        .try_into()
+        .map_err(|_| ManagementError::InvalidRequest)
+}
+fn bound_hash(purpose: &[u8], server: &str, secret: &str) -> Hash {
+    let mut context = digest::Context::new(&digest::SHA256);
+    context.update(b"vesta.management.credential.v1\0");
+    context.update(purpose);
+    context.update(b"\0");
+    context.update(server.as_bytes());
+    context.update(b"\0");
+    context.update(secret.as_bytes());
+    context.finish().as_ref().try_into().expect("SHA256 length")
+}
+fn local_actor() -> Result<AuditActor> {
+    Ok(AuditActor::new(
+        "local-os-owner".to_owned(),
+        "local".to_owned(),
+        "protected-local-control".to_owned(),
+    )?)
+}
+fn device_actor(subject: &Subject) -> Result<AuditActor> {
+    Ok(AuditActor::new(
+        subject.principal.to_string(),
+        subject.device.to_string(),
+        "management-device".to_owned(),
+    )?)
+}
+
+#[cfg(test)]
+mod tests;
+
+mod access;
+mod console_redaction;
+pub use access::{AccessSettings, DeviceSessionReference};
+
+pub mod permissions;
+
+mod session;
+
+/// Shared CLI/HTTP invitation URI. Address is operator-configured, never a Host header.
+pub fn pairing_link(
+    endpoint: Option<&str>,
+    fingerprint: Option<&str>,
+    code: &str,
+    server: &str,
+) -> Option<String> {
+    let (endpoint, fingerprint) = (endpoint?, fingerprint?);
+    let mut link = url::Url::parse("vesta://pair").expect("fixed pairing URL");
+    link.query_pairs_mut()
+        .append_pair("endpoint", endpoint)
+        .append_pair("code", code)
+        .append_pair("fp", fingerprint)
+        .append_pair("sid", server);
+    Some(link.into())
+}

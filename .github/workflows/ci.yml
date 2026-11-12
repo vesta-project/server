@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Check protocol conformance and requirement ledger
+        run: |
+          node --test scripts/*.test.mjs
+          node --test scripts/bootstrap/*.test.mjs
+          node --test scripts/reachability-probe/*.test.mjs
+          node scripts/requirements-ledger.mjs --check
+          node scripts/build-roadmap-html.mjs --check
+
+  rust:
+    timeout-minutes: 45
+    name: Rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: server
+          persist-credentials: false
+
+      - name: Checkout pinned shared sandbox source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: vesta-project/launcher
+          ref: 930f21dd465453e90af16548eee4db3d53828986
+          path: launcher
+          persist-credentials: false
+
+      - name: Select verified development toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
+
+      - name: Check formatting
+        run: rustup run 1.96.0 cargo fmt --all -- --check
+
+      - name: Check all targets
+        env:
+          CARGO_INCREMENTAL: "0"
+        run: rustup run 1.96.0 cargo check --workspace --all-targets --locked
+
+      - name: Run Rust tests
+        env:
+          CARGO_INCREMENTAL: "0"
+          # Native onboarding fixtures package the real setup executable. Embedded
+          # Linux debug symbols can exceed its unchanged 64 MiB artifact bound.
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: rustup run 1.96.0 cargo test --workspace --locked -- --test-threads=1
+
+      - name: Run strict all-target Clippy
+        env:
+          CARGO_INCREMENTAL: "0"
+        run: rustup run 1.96.0 cargo clippy --workspace --all-targets --locked -- -D warnings

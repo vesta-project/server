@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:vesta:server-capabilities:v1:feature-manifest",
+  "title": "Vesta draft-v1 implementation feature manifest (not authority)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "version", "server_id", "features"],
+  "properties": {
+    "protocol": { "const": "vesta.server-capabilities" },
+    "version": { "const": 1 },
+    "server_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![\\s\\S])"
+    },
+    "features": {
+      "type": "array", "maxItems": 64, "uniqueItems": true,
+      "items": { "$ref": "#/$defs/feature" }
+    }
+  },
+  "$defs": {
+    "feature": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "support", "reason"],
+      "properties": {
+        "id": {
+          "type": "string", "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*(?![\\s\\S])"
+        },
+        "support": { "enum": ["supported", "unsupported"] },
+        "reason": { "type": ["string", "null"] }
+      },
+      "if": { "properties": { "support": { "const": "supported" } } },
+      "then": { "properties": { "reason": { "type": "null" } } },
+      "else": {
+        "properties": {
+          "reason": {
+            "type": "string", "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_]*(?![\\s\\S])"
+          }
+        }
+      }
+    }
+  }
+}

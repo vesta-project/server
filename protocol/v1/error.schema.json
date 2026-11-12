@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:vesta:server-capabilities:v1:error",
+  "title": "Vesta feature discovery failure (usable before negotiation)",
+  "type": "object", "additionalProperties": false,
+  "required": ["protocol", "error"],
+  "properties": {
+    "protocol": { "const": "vesta.server-capabilities" },
+    "error": { "enum": ["invalid_message", "message_too_large", "unsupported_protocol", "unexpected_response"] }
+  }
+}

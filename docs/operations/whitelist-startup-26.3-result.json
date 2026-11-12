@@ -1,0 +1,38 @@
+{
+    "minecraft":  "26.3",
+    "protocol":  777,
+    "online_mode":  false,
+    "startup_injection":  true,
+    "checks":  [
+                   {
+                       "line":  "[22:11:01] [Server thread/INFO]: System chat: There are 2 whitelisted player(s): vestabefore, vestaremove",
+                       "check":  "startup_file_edits_not_in_memory"
+                   },
+                   {
+                       "names":  [
+                                     "vestabefore",
+                                     "vestaafter",
+                                     "vestaremove"
+                                 ],
+                       "check":  "command_overwrites_startup_file_edits"
+                   },
+                   {
+                       "line":  "[22:11:08] [Server thread/INFO]: System chat: There are 3 whitelisted player(s): vestabefore, vestaafter, vestaduring",
+                       "check":  "post_ready_commands_apply_desired_changes"
+                   },
+                   {
+                       "line":  "[22:11:08] [Server thread/INFO]: System chat: There are 1 whitelisted player(s): vestabefore",
+                       "check":  "explicit_reload_applies_file"
+                   },
+                   {
+                       "requested":  "VestaCaseProbe",
+                       "stored":  {
+                                      "uuid":  "da733afd-1532-348f-adca-1508a4e30052",
+                                      "name":  "vestacaseprobe"
+                                  },
+                       "check":  "offline_command_profile_case_observation"
+                   }
+               ],
+    "exit_code":  0,
+    "server_jar_sha256":  "a362163eec5d1612d520772bc16e5b39c09e3b234fdc045f56bf544284ee8ae6"
+}

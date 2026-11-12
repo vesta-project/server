@@ -1,0 +1,25 @@
+# Offline whitelist management
+
+Follow-up live fixture testing found a startup overwrite race and an offline-mode command-profile casing difference. See [vanilla 26.3 observations](whitelist-startup-observations.md). Starting-state changes now use the separate [desired-membership coordinator](queued-whitelist.md); the stopped editor still requires a fully stopped game. Mixed-case client admission has not been certified by the stopped-editor tests.
+
+Implemented 2026-10-23. Minecraft must be stopped; the Vesta agent must remain reachable. Running-server whitelist actions continue to use typed Minecraft commands.
+
+`GET /api/v3/manage/players/whitelist/offline` returns `{items, sha256}`. A null hash means the file is absent. It requires `players.view` and scoped file-read authority for `whitelist.json`.
+
+`POST` to the same endpoint takes a device-scoped idempotency key and:
+
+```json
+{"player":"Alex","add":true,"expected_sha256":"<current SHA-256, or null for an absent file>"}
+```
+
+It requires `players.moderate`, scoped read authority, and scoped file-create or file-overwrite authority as appropriate. Names use the existing Java Edition validation. Removal uses `add:false`. A stale revision refuses with HTTP 412; null never means overwrite anything. Existing receipts replay under current authority even after Minecraft starts; they do not reapply the file effect. Reusing a key with changed input refuses.
+
+Online-mode additions resolve the canonical name/UUID from the fixed Mojang HTTPS profile endpoint. The lookup has an eight-second maximum within the original mutation deadline, no redirects, bounded headers and a 4-KiB response limit. Exact receipts are checked before lookup and again under mutation admission. Lookup holds neither the global mutation-admission lock nor a stopped-state exclusion, and complete scoped authority is checked before external IO. Failed, malformed or mismatched lookup results refuse the change; no guessed online identity or perpetual lookup/polling is introduced. Vanilla offline-mode additions use Java's MD5-based `OfflinePlayer:<case-sensitive name>` UUID construction. This MD5 use is for Minecraft identity compatibility, not credential security. Forwarding proxies/custom authentication that use online UUIDs despite `online-mode=false` are not established by this setting; this implementation does not certify those identity schemes.
+
+The edit takes the local startup exclusion and, for supervised games, the supervisor's stopped-game maintenance hold. The existing bounded renewal helper maintains that hold during IO. Current process facts and hold continuity are checked before the native replacement and after the filesystem effect, inside the transaction that records its successful receipt. No additional failing guard check runs after that receipt commits. Compensation also checks exclusion at its own filesystem-effect boundary and afterward; lost proof retains the uncertain effect and recovery evidence instead of writing again without exclusion. Lost proof refuses the effect or reports recovery-required uncertainty; it is not a successful verified save. Unknown/stopping/draining/orphan/unresolved processes refuse edits. A concurrent start is refused while the exclusion is held rather than launching against an in-progress edit.
+
+The existing single-file journal provides optimistic concurrency, atomic replacement, recoverable previous bytes, current authorization and auditing. `server.properties` is reread before the effect to detect identity-mode changes during lookup. Files are bounded to 1 MiB / 10,000 entries; duplicate name/UUID identities, duplicate required fields, malformed JSON and invalid entries refuse. Unrelated entries and extension fields are retained. The special file access is limited to the root `whitelist.json`; generic remote file access remains protected.
+
+The launcher enables whitelist add/remove while Minecraft is stopped and the agent is reachable, then reports “Whitelist saved for the next start.” It retains the revision and intent for uncertain retries, including when Minecraft starts meanwhile, and invalidates cached list reads after a saved receipt. It does not silently convert an uncertain offline write into a console command. Bans, OP escalation and proxy MOTD behavior are outside this increment.
+
+Tests cover real HTTPS save/remove/replay/stale-revision/running refusal, online-profile response validation, vanilla offline UUID compatibility, malformed/duplicate entries, extension preservation, the exact protected-file exception, local startup exclusion, actual supervisor hold/start refusal/lost hold, client transport/revision/cache invalidation, and launcher fixture semantics. No live Minecraft session, external Mojang request or cross-platform release certification was run.
