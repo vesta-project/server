@@ -1,6 +1,39 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { classifyChanges, changedFiles, planPublications } from './change-scope.mjs';
+import * as scopeModule from './change-scope.mjs';
+
+test('publication catches skipped pushes from separate product baselines and complete history', () => {
+  const a='a'.repeat(40), b='b'.repeat(40), head='c'.repeat(40);
+  const server={draft:false,tag_name:'nightly-old',published_at:'2026-01-01T00:00:00Z'};
+  const installer={draft:false,tag_name:'installer-old',published_at:'2026-01-02T00:00:00Z'};
+  const git=args=> {
+    if(args[0]==='rev-parse') return Buffer.from(args.at(-1).includes('nightly-')?a:b);
+    if(args[0]==='merge-base') return Buffer.from('');
+    if(args[0]==='diff') return Buffer.from(args.at(-3)===a?'crates/vesta-control/src/lib.rs\0README.md\0':'apps/vesta-setup/src/wizard.rs\0README.md\0');
+    throw Error('unexpected command');
+  };
+  const options={commit:head,serverVersion:'nightly-new',installerVersion:'installer-new'};
+  assert.equal(classifyChanges(['README.md']).server_release,false);
+  assert.deepEqual(scopeModule.planFromHistory([[server],[installer]],options,git),{rust_scope:'full',server_release:true,installer_release:true,should_build:true});
+  const page1=Array.from({length:100},(_,i)=>({draft:false,tag_name:`other-${i}`}));
+  const sameCommitGit=args=>args[0]==='rev-parse'?Buffer.from(head):git(args);
+  assert.equal(scopeModule.planFromHistory([page1,[installer]],options,sameCommitGit).installer_release,false);
+  assert.equal(scopeModule.planFromHistory([[server]],options,git).installer_release,true,'first installer still publishes');
+  const installerOnlyGit=args=> {
+    if(args[0]==='rev-parse') return Buffer.from(args.at(-1).includes('nightly-')?head:b);
+    if(args[0]==='diff') return Buffer.from(args.at(-3)===head?'':'apps/vesta-setup/src/wizard.rs\0');
+    return git(args);
+  };
+  assert.deepEqual(scopeModule.planFromHistory([[server,installer]],options,installerOnlyGit),{rust_scope:'setup',server_release:false,installer_release:true,should_build:true});
+  const unavailable=()=>{throw Error('missing or non-ancestor baseline');};
+  assert.equal(scopeModule.planFromHistory([[server,installer]],options,unavailable).rust_scope,'full');
+  assert.throws(()=>scopeModule.planFromHistory([[server,installer]],options,args=>{
+    if(args[0]==='diff') throw Error('diff failed');
+    return git(args);
+  }),/diff failed/);
+  assert.throws(()=>scopeModule.planFromHistory({},options,git),/history/);
+});
 
 test('bootstrap and docs need no Rust build or binary publication', () => {
   assert.deepEqual(classifyChanges(['scripts/bootstrap/install.sh', 'scripts/bootstrap/install.ps1', 'README.md']), { rust_scope: 'none', server_release: false, installer_release: false });

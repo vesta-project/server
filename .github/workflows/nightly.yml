@@ -70,9 +70,8 @@ jobs:
           echo "installer_version=installer-$date-$short_sha" >> "$GITHUB_OUTPUT"
           export RELEASE_VERSION="nightly-$date-$short_sha"
           export INSTALLER_VERSION="installer-$date-$short_sha"
-          GITHUB_OUTPUT="$RUNNER_TEMP/scope.env" node scripts/change-scope.mjs
-          gh api "repos/$GH_REPO/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
-          node scripts/change-scope.mjs --release-plan "$RUNNER_TEMP/releases.json" "$RUNNER_TEMP/scope.env"
+          gh api --paginate --slurp "repos/$GH_REPO/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+          node scripts/change-scope.mjs --release-plan "$RUNNER_TEMP/releases.json"
 
   validate:
     timeout-minutes: 45

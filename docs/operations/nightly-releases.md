@@ -27,7 +27,7 @@ The final job needs `contents: write` to create a GitHub Release. The repository
 
 ## Release layout and identity
 
-Server packages use `nightly-YYYYMMDD-<12 character commit SHA>` as manifest version and GitHub Release tag. Independent installers use `installer-YYYYMMDD-<12 character commit SHA>`. A preflight checks the most recent 100 releases for each product independently, so a completed server publication does not hide a missing installer publication. A workflow-wide lock serializes publication; existing tags or releases are never replaced. Every requested target/product must finish signing and verification first. Jobs have explicit timeouts and short build-artifact retention.
+Server packages use `nightly-YYYYMMDD-<12 character commit SHA>` as manifest version and GitHub Release tag. Independent installers use `installer-YYYYMMDD-<12 character commit SHA>`. Preflight fetches all release-history pages and compares main against each product's latest published tag commit independently. Skipped/failed intermediate pushes are therefore included even when the current push only changes docs. Missing or non-ancestor baselines conservatively require full validation/publication of the affected product; a failed diff stops planning. Deduplication checks all published tags, including older dates, so completed server publication does not hide a missing installer publication or allow a duplicate installer for the same source. A workflow-wide lock serializes publication; existing tags or releases are never replaced. Every requested target/product must finish signing and verification first. Jobs have explicit timeouts and short build-artifact retention.
 
 The signed assets use flat target-prefixed names at the GitHub Release URL:
 

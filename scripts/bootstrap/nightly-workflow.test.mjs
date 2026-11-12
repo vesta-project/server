@@ -70,7 +70,8 @@ test('all third-party workflow actions are pinned to full commit SHAs', () => {
 });
 
 test('independent products share verification and gate every publication on its own scope', () => {
-  assert.match(nightly, /GITHUB_OUTPUT="\$RUNNER_TEMP\/scope.env" node scripts\/change-scope.mjs/);
+  assert.match(nightly, /gh api --paginate --slurp "repos\/\$GH_REPO\/releases\?per_page=100"/);
+  assert.doesNotMatch(nightly, /scope.env/);
   assert.match(nightly, /node scripts\/change-scope.mjs --release-plan/);
   const validate = nightly.split('\n  validate:')[1].split('\n  build:')[0];
   assert.match(validate, /if: needs.prepare.outputs.should_build == 'true'/);
