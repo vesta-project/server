@@ -32,6 +32,24 @@ const IDLE: Duration = Duration::from_secs(30);
 const SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const CONTROL_BURST: u32 = 8;
 
+type RosterProjection = (String, u64, Option<serde_json::Value>);
+
+fn roster_notice(
+    base: &mut Option<(String, u64)>,
+    projection: Option<RosterProjection>,
+    reset: bool,
+) -> Option<serde_json::Value> {
+    if let Some((generation, revision, delta)) = projection {
+        *base = Some((generation, revision));
+        delta.map(|data| serde_json::json!({"type":"players.delta","data":data}))
+    } else {
+        if reset {
+            *base = None;
+        }
+        None
+    }
+}
+
 // One control frame per second sustained, with an eight-frame initial burst.
 // Count both Ping and Pong so unsolicited Pong floods cannot bypass the budget.
 pub(super) struct ControlRate {
@@ -903,9 +921,15 @@ async fn connected_metrics(
                         move || {
                             use vesta_control::identity::Capability;
                             let changes=host.management().resource_changes(token.as_str()).ok();
-                            let roster=host.management().authorize(token.as_str(),Capability::PlayersView,None).ok().and_then(|subject| {
+                            let subject=host.management().authorize(token.as_str(),Capability::PlayersView,None);
+                            let mut reset_roster=subject.is_err();
+                            let roster=subject.ok().and_then(|subject| {
                                 let runtime=host.runtime();
-                                let generation=runtime.game_snapshot().ok()?.generation?;
+                                let snapshot=runtime.game_snapshot().ok()?;
+                                let Some(generation)=snapshot.generation else {reset_roster=true; return None;};
+                                // A nonblocking roster read can be busy while HTTP
+                                // projects a large roster. Keep the delivered cursor
+                                // until it can be observed again, so events replay.
                                 let revision=runtime.player_roster_revision(Some(generation))?;
                                 let generation_text=generation.to_hex();
                                 let delta=base.filter(|(g,_)|g==&generation_text).and_then(|(_,after)| {
@@ -916,10 +940,10 @@ async fn connected_metrics(
                                 let revision=delta.as_ref().and_then(|v|v["revision"].as_str()).and_then(|s|s.parse().ok()).unwrap_or(revision);
                                 Some((generation_text,revision,delta))
                             });
-                            Ok::<_,Refusal>((changes,roster))
+                            Ok::<_,Refusal>((changes,roster,reset_roster))
                         }
                     }).await;
-                    if let Ok((changes,roster))=updates {
+                    if let Ok((changes,roster,reset_roster))=updates {
                         if let Some(changes)=changes {
                             let tag=changes.to_string();
                             if resource_tag.as_ref()!=Some(&tag) {
@@ -928,13 +952,8 @@ async fn connected_metrics(
                                 resource_tag=Some(tag);
                             }
                         }
-                        if let Some((generation,revision,delta))=roster {
-                            if let Some(delta)=delta {
-                                let notice=serde_json::json!({"type":"players.delta","data":delta});
-                                if send(&mut socket,Message::Text(notice.to_string())).await.is_err(){return CloseCode::Away;}
-                            }
-                            roster_base=Some((generation,revision));
-                        } else {roster_base=None;}
+                        if let Some(notice)=roster_notice(&mut roster_base,roster,reset_roster)
+                            && send(&mut socket,Message::Text(notice.to_string())).await.is_err(){return CloseCode::Away;}
                     }
                     if let Err(e)=push_status(&mut socket,&state,secret.as_str(),&mut status_tag).await {return e.close_code();}
                 }
@@ -998,6 +1017,29 @@ async fn connected_metrics(
 #[cfg(test)]
 mod file_stream_budget_tests {
     use super::*;
+    #[test]
+    fn transient_roster_observation_keeps_the_delivered_cursor_until_recovery() {
+        let mut base = Some(("generation-a".to_owned(), 30));
+        assert!(roster_notice(&mut base, None, false).is_none());
+        assert_eq!(base, Some(("generation-a".to_owned(), 30)));
+        let after = base.as_ref().unwrap().1;
+        let delta = serde_json::json!({"base_revision":after.to_string(),"revision":"120","changes":[{"name":"Guest","kind":"join"}]});
+        let notice = roster_notice(
+            &mut base,
+            Some(("generation-a".into(), 120, Some(delta))),
+            false,
+        )
+        .unwrap();
+        assert_eq!(notice["data"]["base_revision"], "30");
+        assert_eq!(base, Some(("generation-a".to_owned(), 120)));
+        assert!(roster_notice(&mut base, None, true).is_none());
+        assert!(
+            base.is_none(),
+            "explicit loss of authority or generation resets the cursor"
+        );
+        assert!(roster_notice(&mut base, Some(("generation-b".into(), 5, None)), false).is_none());
+        assert_eq!(base, Some(("generation-b".into(), 5)));
+    }
     #[test]
     fn a_slow_consumer_cannot_hold_a_follow_send_indefinitely() {
         struct Stalled;
