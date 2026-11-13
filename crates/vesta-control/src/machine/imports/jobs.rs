@@ -254,6 +254,11 @@ pub struct Review {
     pub inspection: ReviewInspection,
     pub blockers: Vec<String>,
     pub warnings: Vec<String>,
+    /// As in the inspection report; explains `not_minecraft_server`.
+    #[serde(default)]
+    pub found: Vec<String>,
+    #[serde(default)]
+    pub missing: Vec<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -725,6 +730,8 @@ impl ImportJobs {
             ports,
             blockers: blockers.iter().map(|b| (*b).to_owned()).collect(),
             warnings: warnings.iter().map(|w| (*w).to_owned()).collect(),
+            found: report.found.iter().map(|f| (*f).to_owned()).collect(),
+            missing: report.missing.iter().map(|m| (*m).to_owned()).collect(),
         };
         if review.blockers.is_empty() {
             review.confirmation = Some(random_token()?);

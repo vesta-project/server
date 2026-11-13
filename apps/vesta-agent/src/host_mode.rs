@@ -117,12 +117,18 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
         })
         .transpose()
         .map_err(|_| "host_worker_config_invalid")?;
+    // The data directory holding host.toml is never browsable or importable.
     let mut protected = vec![
+        base.to_owned(),
         state_path.clone(),
         source.clone(),
         path(&config.certificate),
         path(&config.private_key),
     ];
+    #[cfg(target_os = "linux")]
+    if let Some(install) = Path::new(vesta_setup::linux_install::DATA_ROOT_RECORD).parent() {
+        protected.push(install.to_owned());
+    }
     if let Some(c) = &worker_configuration {
         protected.extend([
             c.game().to_owned(),
@@ -141,22 +147,33 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
         std::fs::create_dir_all(dir).map_err(|_| "host_servers_unavailable")?;
         protected.push(dir.clone());
     }
-    let folders = Arc::new(
-        FolderBrowser::new(
-            config
-                .import_roots
-                .iter()
-                .enumerate()
-                .map(|(i, p)| ImportRootConfig {
+    let (folders, skipped) = FolderBrowser::new_skipping_unusable(
+        config
+            .import_roots
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let full = path(p);
+                ImportRootConfig {
                     root_id: format!("root-{i}"),
-                    label: format!("Import folder {}", i + 1),
-                    path: path(p),
-                })
-                .collect(),
-            protected,
-        )
-        .map_err(|_| "host_import_roots_invalid")?,
-    );
+                    label: full
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| full.display().to_string()),
+                    path: full,
+                }
+            })
+            .collect(),
+        protected,
+    )
+    .map_err(|_| "host_import_roots_invalid")?;
+    for (root, error) in skipped {
+        eprintln!(
+            "Vesta Server skipped saved import folder {} ({error})",
+            root.path.display()
+        );
+    }
+    let folders = Arc::new(folders);
     let jobs = ImportJobs::open(
         state.clone(),
         folders.clone(),

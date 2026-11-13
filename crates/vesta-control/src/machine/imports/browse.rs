@@ -1,13 +1,16 @@
-//! Owner-only browsing of locally configured host import roots.
+//! Owner-only browsing of host folders: the filesystem root (drive roots on
+//! Windows) plus import roots saved by the privileged local CLI.
 //!
-//! Remote owners never submit raw host paths. They pick a configured root and
-//! slash-separated names below it, and receive opaque folder tokens bound to the
-//! owner binding, the root and the opened directory identity. Every use walks the
-//! path again one component at a time without following links or reparse points,
-//! refuses mount crossings and overlap with protected host paths, and compares the
-//! directory identity before and after reading. This is check-then-use: it detects
-//! swaps between calls, it is not a native sandbox. Copying uses the existing
-//! `CopiedExport` primitives, which repeat their own checks.
+//! Remote owners pick a root and slash-separated names below it (or type an
+//! absolute path for `check`), and receive opaque folder tokens bound to the
+//! owner binding, the root and the opened directory identity. What the service
+//! can read is governed by ordinary file permissions of its account. Every use
+//! walks the path again one component at a time without following links or
+//! reparse points, refuses Vesta Server's own state and pseudo/system trees, and
+//! compares the directory identity before and after reading. Ancestors of
+//! protected paths can be browsed but not imported. This is check-then-use: it
+//! detects swaps between calls, it is not a native sandbox. Copying uses the
+//! existing `CopiedExport` primitives, which repeat their own checks.
 use super::ImportError;
 use crate::files::native;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
@@ -56,6 +59,8 @@ pub struct RootInfo {
     pub label: String,
     pub display_path: String,
     pub readable: bool,
+    /// `filesystem` (`/` or a drive root) or `import_root` (saved locally).
+    pub kind: &'static str,
 }
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -92,6 +97,19 @@ pub struct FolderEntry {
     /// report `source_unreadable` with remediation.
     pub folder_token: Option<String>,
     pub readable: bool,
+    /// Cheap name-only check: `server.properties`, a server jar or loader marker.
+    pub looks_like_server: bool,
+    /// For unreadable entries: a command for a local administrator, never run here.
+    pub remediation_command: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckResponse {
+    pub path: String,
+    /// `ok`, `permission_needed`, `not_found`, `not_directory` or `protected`.
+    pub status: &'static str,
+    pub folder_token: Option<String>,
+    pub remediation_command: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -106,11 +124,11 @@ pub(crate) struct Root {
     pub(crate) config: ImportRootConfig,
     pub(crate) canonical: PathBuf,
     identity: String,
-    #[cfg(unix)]
-    device: u64,
+    filesystem: bool,
 }
 struct Roots {
-    roots: Vec<Root>,
+    saved: Vec<Root>,
+    filesystem: Vec<Root>,
     revision: u64,
 }
 #[derive(Clone)]
@@ -130,8 +148,6 @@ pub(crate) struct OpenedFolder {
     pub(crate) root_id: String,
     pub(crate) parts: Vec<String>,
     pub(crate) identity: String,
-    #[cfg(unix)]
-    pub(crate) device: u64,
 }
 
 pub struct FolderBrowser {
@@ -142,11 +158,31 @@ pub struct FolderBrowser {
 }
 
 impl FolderBrowser {
-    /// `protected` lists host private state, every managed server directory and
-    /// import destinations. Roots overlapping any of them in either direction,
-    /// filesystem roots and linked roots are refused.
+    /// `protected` lists host private state, Vesta Server's install and data
+    /// directories, every managed server directory and import destinations.
+    /// Saved roots overlapping any of them in either direction, filesystem roots
+    /// and linked roots are refused. The filesystem root is always browsable.
     pub fn new(roots: Vec<ImportRootConfig>, protected: Vec<PathBuf>) -> Result<Self, ImportError> {
         Self::with_clock(roots, protected, Arc::new(now_ms))
+    }
+    /// Like `new`, but saved roots that cannot be used (missing, linked,
+    /// overlapping protected paths) are skipped and returned instead of
+    /// failing, so one stale saved folder cannot stop the host.
+    pub fn new_skipping_unusable(
+        roots: Vec<ImportRootConfig>,
+        protected: Vec<PathBuf>,
+    ) -> Result<(Self, Vec<(ImportRootConfig, ImportError)>), ImportError> {
+        let browser = Self::with_clock(Vec::new(), protected, Arc::new(now_ms))?;
+        let mut usable = Vec::new();
+        let mut skipped = Vec::new();
+        for config in roots {
+            match browser.open_root(config.clone()) {
+                Ok(_) => usable.push(config),
+                Err(error) => skipped.push((config, error)),
+            }
+        }
+        browser.replace_roots(usable)?;
+        Ok((browser, skipped))
     }
     pub fn with_clock(
         roots: Vec<ImportRootConfig>,
@@ -165,7 +201,8 @@ impl FolderBrowser {
         }
         let browser = Self {
             roots: RwLock::new(Roots {
-                roots: Vec::new(),
+                saved: Vec::new(),
+                filesystem: Vec::new(),
                 revision: 0,
             }),
             protected: checked_protected,
@@ -175,13 +212,15 @@ impl FolderBrowser {
         browser.replace_roots(roots)?;
         Ok(browser)
     }
-    /// Replace the configured roots (after a local `import-root` change). All
-    /// tokens are revalidated against current root membership on each use.
+    /// Replace the saved roots (after a local `import-root` change) and rescan
+    /// filesystem roots. All tokens are revalidated against current root
+    /// membership on each use.
     pub fn replace_roots(&self, roots: Vec<ImportRootConfig>) -> Result<(), ImportError> {
         let mut checked = Vec::new();
         for config in roots {
             if config.root_id.is_empty()
                 || config.root_id.len() > 64
+                || config.root_id.starts_with(FILESYSTEM_ROOT_PREFIX)
                 || checked
                     .iter()
                     .any(|r: &Root| r.config.root_id == config.root_id)
@@ -190,8 +229,13 @@ impl FolderBrowser {
             }
             checked.push(self.open_root(config)?);
         }
+        let filesystem = filesystem_roots()
+            .into_iter()
+            .filter_map(|config| open_filesystem_root(config).ok())
+            .collect();
         let mut state = self.roots.write().map_err(|_| ImportError::Unavailable)?;
-        state.roots = checked;
+        state.saved = checked;
+        state.filesystem = filesystem;
         state.revision += 1;
         Ok(())
     }
@@ -215,15 +259,17 @@ impl FolderBrowser {
                 return Err(ImportError::ProtectedPath);
             }
         }
+        if system_tree(&canonical) {
+            return Err(ImportError::ProtectedPath);
+        }
         let metadata = fs::symlink_metadata(&canonical).map_err(read_error)?;
         plain_directory(&metadata)?;
         let identity = native::directory_identity(&canonical).map_err(file_error)?;
         Ok(Root {
-            #[cfg(unix)]
-            device: std::os::unix::fs::MetadataExt::dev(&metadata),
             config,
             canonical,
             identity,
+            filesystem: false,
         })
     }
 
@@ -231,26 +277,51 @@ impl FolderBrowser {
         let state = self.roots.read().map_err(|_| ImportError::Unavailable)?;
         Ok(RootsResponse {
             roots: state
-                .roots
+                .saved
                 .iter()
+                .chain(&state.filesystem)
                 .map(|root| RootInfo {
                     root_id: root.config.root_id.clone(),
                     label: root.config.label.clone(),
                     display_path: display(&root.canonical),
                     readable: self.check_root(root).is_ok()
                         && fs::read_dir(&root.canonical).is_ok(),
+                    kind: if root.filesystem {
+                        "filesystem"
+                    } else {
+                        "import_root"
+                    },
                 })
                 .collect(),
             revision: state.revision,
         })
     }
+    /// Saved import roots only; the filesystem root is never scanned as a whole.
     pub(crate) fn root_list(&self) -> Result<Vec<Root>, ImportError> {
         Ok(self
             .roots
             .read()
             .map_err(|_| ImportError::Unavailable)?
-            .roots
+            .saved
             .clone())
+    }
+    /// The filesystem root holding an absolute path, with the path's names below it.
+    pub(crate) fn filesystem_root_for(&self, path: &Path) -> Option<(Root, Vec<String>)> {
+        let key = volume_key(path)?;
+        let mut parts = Vec::new();
+        for component in path.components() {
+            match component {
+                Component::Prefix(_) | Component::RootDir => {}
+                Component::Normal(name) => parts.push(name.to_str()?.to_owned()),
+                _ => return None,
+            }
+        }
+        let state = self.roots.read().ok()?;
+        let root = state
+            .filesystem
+            .iter()
+            .find(|root| volume_key(&root.config.path).as_deref() == Some(key.as_str()))?;
+        Some((root.clone(), parts))
     }
 
     pub fn resolve(
@@ -269,7 +340,7 @@ impl FolderBrowser {
         binding: &OwnerBinding,
         request: &ListRequest,
     ) -> Result<ListResponse, ImportError> {
-        let opened = self.open(binding, &request.folder_token)?;
+        let opened = self.open_for_browsing(binding, &request.folder_token)?;
         let root = self.root(&opened.root_id)?;
         let after = match &request.cursor {
             None => None,
@@ -320,15 +391,12 @@ impl FolderBrowser {
             let Ok(metadata) = fs::symlink_metadata(&child) else {
                 continue;
             };
-            if plain_directory(&metadata).is_err()
-                || self.protected_overlap(&child)
-                || !same_device(&opened, &metadata)
-            {
+            if plain_directory(&metadata).is_err() || self.hidden(&child) {
                 continue;
             }
             let mut parts = opened.parts.clone();
             parts.push(name.clone());
-            let readable = fs::read_dir(&child).is_ok();
+            let server = looks_like_server(&child);
             let folder_token = self
                 .mint(binding, &root, parts, &child)
                 .ok()
@@ -337,7 +405,9 @@ impl FolderBrowser {
                 name: name.clone(),
                 kind: "directory",
                 folder_token,
-                readable,
+                readable: server.is_some(),
+                looks_like_server: server == Some(true),
+                remediation_command: server.is_none().then(|| remediation_command(&child)),
             });
         }
         // Detect a swap of the listed directory while it was being read.
@@ -352,8 +422,21 @@ impl FolderBrowser {
         })
     }
 
-    /// Revalidate a token for this owner and re-walk its directory.
+    /// Revalidate a token for this owner and re-walk its directory, for use as
+    /// an import source: folders containing protected paths (for example `/`
+    /// or the parent of Vesta Server's data directory) are refused.
     pub(crate) fn open(
+        &self,
+        binding: &OwnerBinding,
+        token: &str,
+    ) -> Result<OpenedFolder, ImportError> {
+        let opened = self.open_for_browsing(binding, token)?;
+        if self.protected_overlap(&opened.path) {
+            return Err(ImportError::ProtectedPath);
+        }
+        Ok(opened)
+    }
+    fn open_for_browsing(
         &self,
         binding: &OwnerBinding,
         token: &str,
@@ -388,9 +471,62 @@ impl FolderBrowser {
             root_id: entry.root_id,
             parts: entry.parts,
             identity,
-            #[cfg(unix)]
-            device: root.device,
         })
+    }
+
+    /// Resolve a typed absolute host path. Only `ok` carries a token, minted
+    /// exactly as if the folder had been browsed to from the filesystem root.
+    pub fn check(&self, binding: &OwnerBinding, text: &str) -> Result<CheckResponse, ImportError> {
+        let typed = normalize_absolute(text)?;
+        let reply = |path: &Path, status, token: Option<String>| {
+            let remediation_command =
+                (status == "permission_needed").then(|| remediation_command(&typed));
+            Ok(CheckResponse {
+                path: display(path),
+                status,
+                folder_token: token,
+                remediation_command,
+            })
+        };
+        if self.hidden(&typed) {
+            return reply(&typed, "protected", None);
+        }
+        let real = match fs::canonicalize(&typed) {
+            Ok(real) => real,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                return reply(&typed, "permission_needed", None);
+            }
+            Err(_) => return reply(&typed, "not_found", None),
+        };
+        if self.hidden(&real) {
+            return reply(&real, "protected", None);
+        }
+        match fs::metadata(&real) {
+            Ok(metadata) if !metadata.is_dir() => return reply(&real, "not_directory", None),
+            Ok(_) => {}
+            Err(_) => return reply(&typed, "permission_needed", None),
+        }
+        if let Err(error) = fs::read_dir(&real) {
+            return match error.kind() {
+                io::ErrorKind::NotFound => reply(&typed, "not_found", None),
+                _ => reply(&typed, "permission_needed", None),
+            };
+        }
+        let Some((root, parts)) = self.filesystem_root_for(&real) else {
+            return reply(&typed, "not_found", None);
+        };
+        let root = self.root(&root.config.root_id)?;
+        match self.walk(&root, &parts) {
+            Ok(path) => {
+                let token = self.mint(binding, &root, parts, &path)?;
+                reply(&path, "ok", Some(token.folder_token))
+            }
+            Err(ImportError::ProtectedPath) => reply(&real, "protected", None),
+            Err(ImportError::NotFound) => reply(&typed, "not_found", None),
+            Err(ImportError::NotDirectory) => reply(&real, "not_directory", None),
+            Err(ImportError::Unreadable) => reply(&typed, "permission_needed", None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Mint a token for a directory reached by `walk`/scan below `root`.
@@ -437,15 +573,16 @@ impl FolderBrowser {
     }
 
     pub(crate) fn root(&self, root_id: &str) -> Result<Root, ImportError> {
-        let root = self
-            .roots
-            .read()
-            .map_err(|_| ImportError::Unavailable)?
-            .roots
-            .iter()
-            .find(|root| root.config.root_id == root_id)
-            .cloned()
-            .ok_or(ImportError::UnknownRoot)?;
+        let root = {
+            let state = self.roots.read().map_err(|_| ImportError::Unavailable)?;
+            state
+                .saved
+                .iter()
+                .chain(&state.filesystem)
+                .find(|root| root.config.root_id == root_id)
+                .cloned()
+                .ok_or(ImportError::UnknownRoot)?
+        };
         self.check_root(&root)?;
         Ok(root)
     }
@@ -460,7 +597,9 @@ impl FolderBrowser {
     }
 
     /// Walk `parts` below the root one component at a time: no links, reparse
-    /// points, special files, mount crossings or protected overlap.
+    /// points, special files, protected paths or pseudo/system trees. Mounted
+    /// filesystems may be entered (a separate `/home` or `/srv` is common); the
+    /// source size walk and copy still refuse mount crossings inside a server.
     pub(crate) fn walk(&self, root: &Root, parts: &[String]) -> Result<PathBuf, ImportError> {
         if parts.len() > MAX_DEPTH {
             return Err(ImportError::InvalidPath);
@@ -469,22 +608,18 @@ impl FolderBrowser {
         for part in parts {
             segment(part)?;
             let child = path.join(part);
-            if self.protected_overlap(&child) {
+            if self.hidden(&child) {
                 return Err(ImportError::ProtectedPath);
             }
             let metadata = fs::symlink_metadata(&child).map_err(read_error)?;
             plain_directory(&metadata)?;
-            #[cfg(unix)]
-            if std::os::unix::fs::MetadataExt::dev(&metadata) != root.device {
-                return Err(ImportError::MountBoundary);
-            }
             let actual = fs::canonicalize(&child).map_err(read_error)?;
             if actual.parent() != Some(path.as_path()) {
                 return Err(ImportError::LinkedPath);
             }
             path = actual;
         }
-        if self.protected_overlap(&path) {
+        if self.hidden(&path) {
             return Err(ImportError::ProtectedPath);
         }
         Ok(path)
@@ -494,15 +629,185 @@ impl FolderBrowser {
             .iter()
             .any(|protected| within(path, protected) || within(protected, path))
     }
+    /// Never listed or entered: protected paths and everything below them, and
+    /// pseudo/system trees.
+    pub(crate) fn hidden(&self, path: &Path) -> bool {
+        self.protected
+            .iter()
+            .any(|protected| within(path, protected))
+            || system_tree(path)
+    }
 }
 
-#[cfg(unix)]
-fn same_device(opened: &OpenedFolder, metadata: &Metadata) -> bool {
-    std::os::unix::fs::MetadataExt::dev(metadata) == opened.device
+/// Root ids of filesystem roots start with this; saved roots may not.
+const FILESYSTEM_ROOT_PREFIX: &str = "filesystem";
+
+#[cfg(not(windows))]
+fn filesystem_roots() -> Vec<ImportRootConfig> {
+    vec![ImportRootConfig {
+        root_id: FILESYSTEM_ROOT_PREFIX.into(),
+        label: "/".into(),
+        path: PathBuf::from("/"),
+    }]
 }
-#[cfg(not(unix))]
-fn same_device(_opened: &OpenedFolder, _metadata: &Metadata) -> bool {
-    true
+#[cfg(windows)]
+fn filesystem_roots() -> Vec<ImportRootConfig> {
+    // Probe letters instead of GetLogicalDrives: this crate denies unsafe_code.
+    (b'A'..=b'Z')
+        .map(|b| char::from(b))
+        .filter(|letter| fs::metadata(format!("{letter}:\\")).is_ok())
+        .map(|letter| ImportRootConfig {
+            root_id: format!("{FILESYSTEM_ROOT_PREFIX}-{}", letter.to_ascii_lowercase()),
+            label: format!("{letter}:\\"),
+            path: PathBuf::from(format!("{letter}:\\")),
+        })
+        .collect()
+}
+fn open_filesystem_root(config: ImportRootConfig) -> Result<Root, ImportError> {
+    let canonical = fs::canonicalize(&config.path).map_err(read_error)?;
+    let metadata = fs::symlink_metadata(&canonical).map_err(read_error)?;
+    if !metadata.is_dir() {
+        return Err(ImportError::NotDirectory);
+    }
+    let identity = native::directory_identity(&canonical).map_err(file_error)?;
+    Ok(Root {
+        config,
+        canonical,
+        identity,
+        filesystem: true,
+    })
+}
+/// `/` on Unix; the upper-case drive letter on Windows (plain or verbatim).
+fn volume_key(path: &Path) -> Option<String> {
+    match path.components().next()? {
+        Component::RootDir => Some("/".into()),
+        Component::Prefix(prefix) => match prefix.kind() {
+            std::path::Prefix::Disk(d) | std::path::Prefix::VerbatimDisk(d) => {
+                Some(char::from(d).to_ascii_uppercase().to_string())
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Pseudo filesystems, boot files and per-service private trees.
+#[cfg(not(windows))]
+const SYSTEM_TREES: &[&str] = &[
+    "/proc",
+    "/sys",
+    "/dev",
+    "/run",
+    "/boot",
+    "/efi",
+    "/lost+found",
+    "/snap",
+    "/var/run",
+    "/var/lock",
+];
+/// Top-level folders of a drive that are never server folders.
+#[cfg(windows)]
+const SYSTEM_TREES: &[&str] = &[
+    "Windows",
+    "System Volume Information",
+    "Recovery",
+    "Config.Msi",
+    "PerfLogs",
+];
+pub(crate) fn system_tree(path: &Path) -> bool {
+    if path
+        .components()
+        .any(|c| c.as_os_str().eq_ignore_ascii_case("lost+found"))
+    {
+        return true;
+    }
+    if cfg!(windows) {
+        let first = path.components().find_map(|c| match c {
+            Component::Normal(name) => Some(name.to_string_lossy()),
+            _ => None,
+        });
+        return first.is_some_and(|first| {
+            first.starts_with('$') || SYSTEM_TREES.iter().any(|t| first.eq_ignore_ascii_case(t))
+        });
+    }
+    SYSTEM_TREES.iter().any(|tree| within(path, Path::new(tree)))
+}
+
+/// Names-only probe of a directory: `None` when it cannot be read.
+pub(crate) fn looks_like_server(path: &Path) -> Option<bool> {
+    let read = fs::read_dir(path).ok()?;
+    for entry in read.take(512).flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if entry.file_type().is_ok_and(|t| t.is_file()) && server_marker(&name) {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+fn server_marker(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "server.properties"
+            | "server.jar"
+            | "minecraft_server.jar"
+            | "fabric-server-launch.jar"
+            | "fabric-server-launcher.properties"
+            | "quilt-server-launch.jar"
+            | "user_jvm_args.txt"
+            | "bukkit.yml"
+            | "spigot.yml"
+            | "paper.yml"
+            | "purpur.yml"
+    ) {
+        return true;
+    }
+    lower.ends_with(".jar")
+        && [
+            "minecraft_server.",
+            "fabric-server-mc.",
+            "paper-",
+            "purpur-",
+            "spigot-",
+            "forge-",
+            "neoforge-",
+        ]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+        && !lower.contains("installer")
+}
+
+/// The local administrator command that grants the service read access.
+pub(crate) fn remediation_command(path: &Path) -> String {
+    super::amp::remediation(path, super::amp::SERVICE_USER).command
+}
+
+/// Absolute, lexically normalised (`.` dropped, `..` applied, no NUL). Links
+/// are not resolved here; `check` resolves the result.
+pub(crate) fn normalize_absolute(text: &str) -> Result<PathBuf, ImportError> {
+    if text.is_empty() || text.len() > 4_096 || text.contains('\0') {
+        return Err(ImportError::InvalidPath);
+    }
+    let path = Path::new(text);
+    if !path.is_absolute() {
+        return Err(ImportError::InvalidPath);
+    }
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => out.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if out.parent().is_some() {
+                    out.pop();
+                }
+            }
+            Component::Normal(name) => out.push(name),
+        }
+    }
+    Ok(out)
 }
 
 pub(crate) fn now_ms() -> u64 {

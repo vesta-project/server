@@ -176,11 +176,18 @@ fn unknown_software_and_non_minecraft_folders_are_blocked_not_guessed() {
     let report = inspect(&b, "plain");
     assert!(!report.minecraft);
     assert!(report.blockers.contains(&"not_minecraft_server"));
+    assert!(report.found.is_empty());
+    assert_eq!(
+        report.missing,
+        vec!["server_properties", "server_jar", "world"]
+    );
     let report = inspect(&b, "odd");
     assert!(report.minecraft);
     assert_eq!(report.detected.loader, None);
     assert!(report.blockers.contains(&"software_unresolved"));
     assert!(report.blockers.contains(&"launch_unresolved"));
+    assert!(report.found.contains(&"server_properties"));
+    assert!(report.missing.contains(&"world"));
 }
 
 #[test]
@@ -202,13 +209,14 @@ fn amp_tree_yields_candidates_without_reading_amp_config() {
     let b = browser(&home);
     let scan = CandidateScan {
         amp_datastores: vec![home.join(".ampdata/instances")],
+        common_locations: Vec::new(),
         service_user: "vesta".into(),
     };
     let result = amp::candidates(&b, &owner(), &scan).unwrap();
     assert_eq!(result.candidates.len(), 1, "{result:?}");
     let candidate = &result.candidates[0];
     assert_eq!(candidate.kind, "amp");
-    assert_eq!(candidate.label, "Survival01");
+    assert_eq!(candidate.label, "Minecraft");
     assert_eq!(candidate.confidence, "high");
     assert!(
         !serde_json::to_string(&result)
@@ -219,7 +227,7 @@ fn amp_tree_yields_candidates_without_reading_amp_config() {
         &b,
         &owner(),
         &InspectRequest {
-            folder_token: candidate.folder_token.clone(),
+            folder_token: candidate.folder_token.clone().expect("readable candidate"),
             ..InspectRequest::default()
         },
     )
@@ -230,7 +238,7 @@ fn amp_tree_yields_candidates_without_reading_amp_config() {
 }
 
 #[test]
-fn amp_instances_outside_roots_are_reported_with_a_local_command() {
+fn manager_instances_outside_saved_roots_are_still_candidates() {
     let temp = tempfile::tempdir().unwrap();
     let datastore = temp.path().join("ampdata/instances");
     write(datastore.join("Creative/Minecraft/server.properties"), "");
@@ -239,20 +247,17 @@ fn amp_instances_outside_roots_are_reported_with_a_local_command() {
     let b = browser(&imports);
     let scan = CandidateScan {
         amp_datastores: vec![datastore],
+        common_locations: Vec::new(),
         service_user: "vesta".into(),
     };
     let result = amp::candidates(&b, &owner(), &scan).unwrap();
-    assert!(result.candidates.is_empty());
-    let warning = &result.warnings[0];
-    assert_eq!(warning.code, "outside_import_roots");
-    assert!(
-        warning
-            .remediation
-            .as_ref()
-            .unwrap()
-            .command
-            .contains("vesta import-root add")
-    );
+    assert_eq!(result.candidates.len(), 1, "{result:?}");
+    let candidate = &result.candidates[0];
+    assert_eq!(candidate.kind, "amp");
+    assert_eq!(candidate.source, "server_manager");
+    assert!(candidate.readable);
+    assert!(candidate.folder_token.is_some());
+    assert!(result.warnings.is_empty());
 }
 
 #[test]
@@ -492,6 +497,7 @@ fn symlink_escapes_are_refused_and_not_listed() {
     assert!(listing.entries.is_empty());
     let scan = CandidateScan {
         amp_datastores: Vec::new(),
+        common_locations: Vec::new(),
         service_user: "vesta".into(),
     };
     assert!(
@@ -706,4 +712,197 @@ fn real_amp_process_and_listener_block_then_clear() {
     let report = inspect(&b, relative);
     assert!(!report.blockers.contains(&"source_running"), "{report:?}");
     assert!(!report.blockers.contains(&"game_port_in_use"), "{report:?}");
+}
+
+#[test]
+fn filesystem_roots_are_listed_and_entries_carry_looks_like_server() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = temp.path().join("survival");
+    write(server.join("server.properties"), "");
+    write(server.join("server.jar"), "");
+    fs::create_dir_all(temp.path().join("empty")).unwrap();
+    let b = FolderBrowser::new(Vec::new(), Vec::new()).unwrap();
+    let roots = b.roots().unwrap();
+    assert!(
+        roots.roots.iter().any(|r| r.kind == "filesystem"),
+        "{roots:?}"
+    );
+    let (root, parts) = b.filesystem_root_for(temp.path()).expect("temp volume");
+    let token = b
+        .resolve(
+            &owner(),
+            &ResolveRequest {
+                root_id: root.config.root_id,
+                relative_path: parts.join("/"),
+            },
+        )
+        .unwrap()
+        .folder_token;
+    let listing = b
+        .list(
+            &owner(),
+            &ListRequest {
+                folder_token: token,
+                cursor: None,
+            },
+        )
+        .unwrap();
+    let survival = listing
+        .entries
+        .iter()
+        .find(|e| e.name == "survival")
+        .expect("survival");
+    assert!(survival.looks_like_server);
+    assert!(survival.readable);
+    let empty = listing
+        .entries
+        .iter()
+        .find(|e| e.name == "empty")
+        .expect("empty");
+    assert!(!empty.looks_like_server);
+    assert!(empty.readable);
+    assert!(empty.remediation_command.is_none());
+}
+
+#[test]
+fn check_reports_each_status() {
+    let temp = tempfile::tempdir().unwrap();
+    let ok_dir = temp.path().join("ok");
+    fs::create_dir_all(&ok_dir).unwrap();
+    write(temp.path().join("file.txt"), "x");
+    let protected = temp.path().join("private");
+    fs::create_dir_all(&protected).unwrap();
+    let b = FolderBrowser::new(Vec::new(), vec![protected.clone()]).unwrap();
+    let ok = b.check(&owner(), &ok_dir.to_string_lossy()).unwrap();
+    assert_eq!(ok.status, "ok");
+    assert!(ok.folder_token.is_some());
+    assert!(ok.remediation_command.is_none());
+    let missing = b
+        .check(
+            &owner(),
+            &temp.path().join("no-such").to_string_lossy(),
+        )
+        .unwrap();
+    assert_eq!(missing.status, "not_found");
+    let file = b
+        .check(&owner(), &temp.path().join("file.txt").to_string_lossy())
+        .unwrap();
+    assert_eq!(file.status, "not_directory");
+    let blocked = b
+        .check(&owner(), &protected.to_string_lossy())
+        .unwrap();
+    assert_eq!(blocked.status, "protected");
+    assert!(b.check(&owner(), "relative").is_err());
+}
+
+#[test]
+fn candidates_stay_silent_for_bare_unreadable_defaults() {
+    let temp = tempfile::tempdir().unwrap();
+    let imports = temp.path().join("imports");
+    fs::create_dir_all(&imports).unwrap();
+    let b = browser(&imports);
+    let absent = temp.path().join("absent-home");
+    let empty = temp.path().join("empty-home");
+    fs::create_dir_all(&empty).unwrap();
+    let scan = CandidateScan {
+        amp_datastores: vec![absent.join(".ampdata/instances")],
+        common_locations: vec![absent, empty],
+        service_user: "vesta".into(),
+    };
+    let result = amp::candidates(&b, &owner(), &scan).unwrap();
+    assert!(result.candidates.is_empty(), "{result:?}");
+    assert!(result.warnings.is_empty(), "{result:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn listing_marks_unreadable_children_and_check_needs_permission() {
+    use std::os::unix::fs::PermissionsExt;
+    if running_as_root() {
+        eprintln!("running as root; permissions are not enforced");
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let locked = temp.path().join("locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let b = FolderBrowser::new(Vec::new(), Vec::new()).unwrap();
+    let (root, parts) = b.filesystem_root_for(temp.path()).expect("temp volume");
+    let token = b
+        .resolve(
+            &owner(),
+            &ResolveRequest {
+                root_id: root.config.root_id,
+                relative_path: parts.join("/"),
+            },
+        )
+        .unwrap()
+        .folder_token;
+    let listing = b
+        .list(
+            &owner(),
+            &ListRequest {
+                folder_token: token,
+                cursor: None,
+            },
+        )
+        .unwrap();
+    let entry = listing
+        .entries
+        .iter()
+        .find(|e| e.name == "locked")
+        .expect("locked listed");
+    assert!(!entry.readable);
+    assert!(!entry.looks_like_server);
+    assert!(
+        entry
+            .remediation_command
+            .as_ref()
+            .is_some_and(|c| c.contains("import-root add"))
+    );
+    let checked = b.check(&owner(), &locked.to_string_lossy()).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(checked.status, "permission_needed");
+    assert!(
+        checked
+            .remediation_command
+            .as_ref()
+            .is_some_and(|c| c.contains("import-root add"))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn protected_and_system_trees_are_hidden_when_browsing_filesystem() {
+    let b = FolderBrowser::new(Vec::new(), vec![PathBuf::from("/var/lib/vesta")]).unwrap();
+    let roots = b.roots().unwrap();
+    let fs_root = roots
+        .roots
+        .iter()
+        .find(|r| r.kind == "filesystem")
+        .expect("filesystem root");
+    let listing = b
+        .list(
+            &owner(),
+            &ListRequest {
+                folder_token: b
+                    .resolve(
+                        &owner(),
+                        &ResolveRequest {
+                            root_id: fs_root.root_id.clone(),
+                            relative_path: String::new(),
+                        },
+                    )
+                    .unwrap()
+                    .folder_token,
+                cursor: None,
+            },
+        )
+        .unwrap();
+    for forbidden in ["proc", "sys", "dev", "run", "boot"] {
+        assert!(
+            listing.entries.iter().all(|e| e.name != forbidden),
+            "{forbidden} listed: {listing:?}"
+        );
+    }
 }

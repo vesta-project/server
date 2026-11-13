@@ -21,7 +21,8 @@ UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=$root
-ProtectHome=read-only
+# Home and common server locations stay visible; ACLs govern what vesta may read.
+ProtectHome=false
 PrivateTmp=true
 PrivateDevices=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
@@ -46,16 +47,24 @@ fi
 if [[ $mode == print-unit ]]; then root=$1; unit; exit; fi
 removal=
 declare -A explicit=()
-root=/var/lib/vesta; port=25500; source_dir=; local_only=false; start=true; service=true; answers=; yes=false
+root=/var/lib/vesta; port=25500; source_dir=; local_only=false; start=true; service=true; answers=; yes=false; json=false
 if [[ $mode == install ]]; then binaries=${1:?}; shift; fi
-if [[ $mode == import-root ]]; then [[ ${1:-} == add ]] || fail 'Usage: vesta import-root add <path> [--root /var/lib/vesta]'; shift; source_dir=${1:?}; shift; fi
+import_action=
+if [[ $mode == import-root ]]; then
+  import_action=${1:-}
+  case $import_action in
+    add|list|remove) shift;;
+    *) fail 'Usage: vesta import-root add <path> | list | remove <path>  [--root /var/lib/vesta] [--yes] [--json]';;
+  esac
+  if [[ $import_action == add || $import_action == remove ]]; then source_dir=${1:?}; shift; fi
+fi
 
 while (($#)); do
  case $1 in
  --keep-data|--remove-data) [[ -z $removal ]] || fail "Choose one data-removal option"; removal=$1; shift;;
  --root) explicit[root]=true; root=${2:?}; shift 2;; --port) explicit[port]=true; port=${2:?}; shift 2;; --server-dir) explicit[server_dir]=true; source_dir=${2:?}; shift 2;;
  --local-only) explicit[local_only]=true; local_only=true; shift;; --no-start) start=false; shift;; --no-service) service=false; start=false; shift;;
- --answers) answers=${2:?}; shift 2;; --yes) yes=true; shift;; *) fail "Unknown option $1";;
+ --answers) answers=${2:?}; shift 2;; --yes) yes=true; shift;; --json) json=true; shift;; *) fail "Unknown option $1";;
  esac
 done
 if [[ $mode == import-root || $mode == uninstall ]] && [[ ${explicit[root]:-} != true && -f /usr/local/lib/vesta/data-root ]]; then
@@ -99,9 +108,75 @@ if [[ $mode == uninstall ]]; then
 fi
 if [[ $mode == import-root ]]; then
  [[ -f $root/host.toml ]] || fail 'No installed host.toml at this data directory.'
+ roots_file=$root/import-roots.json
+ if [[ $import_action == list ]]; then
+  python3 - "$roots_file" "$json" <<'PY'
+import json,sys
+from pathlib import Path
+p=Path(sys.argv[1]); as_json=sys.argv[2]=='true'
+roots=json.loads(p.read_text()) if p.exists() else []
+if not isinstance(roots,list): roots=[]
+roots=[r for r in roots if isinstance(r,str)]
+if as_json:
+ print(json.dumps({"roots":[{"path":r} for r in roots]},separators=(',',':')))
+elif not roots:
+ print('No import folders registered.')
+else:
+ print('Import folders')
+ print()
+ for r in roots:
+  print(f'  {r}')
+PY
+  exit
+ fi
  source_dir=$(realpath -e -- "$source_dir")
  [[ -d $source_dir && $source_dir != / ]] || fail 'Choose an existing import directory, not /.'
- # An overlapping root is refused by Vesta Server at startup; refuse it here instead.
+ if [[ $import_action == remove ]]; then
+  python3 - "$roots_file" "$source_dir" <<'PY' || fail 'That path is not a registered import folder.'
+import json,sys
+from pathlib import Path
+p=Path(sys.argv[1]); target=sys.argv[2]
+a=json.loads(p.read_text()) if p.exists() else []
+sys.exit(0 if isinstance(a,list) and target in a else 1)
+PY
+  command -v setfacl >/dev/null || fail 'Install ACL tools first: sudo apt install acl'
+  echo "Will revoke vesta access from: $source_dir"
+  if [[ $yes == false && -t 0 ]]; then
+   read -r -p 'Revoke these permissions and unregister the folder? [y/N] ' answer
+   [[ $answer == y || $answer == Y || $answer == yes ]] || fail 'No permissions changed.'
+  fi
+  setfacl -R -P -x u:vesta -- "$source_dir" 2>/dev/null || true
+  python3 - "$roots_file" "$source_dir" <<'PY'
+import json,sys
+from pathlib import Path
+p=Path(sys.argv[1]); target=sys.argv[2]
+a=[r for r in (json.loads(p.read_text()) if p.exists() else []) if isinstance(r,str) and r!=target]
+# Drop traverse ACL on parents only when no remaining root still needs them.
+remaining=a
+parent=str(Path(target).parent)
+while parent!='/':
+ need=any(r==parent or r.startswith(parent.rstrip('/')+'/') for r in remaining)
+ if not need:
+  import subprocess
+  subprocess.run(['setfacl','-x','u:vesta',parent],check=False)
+ parent=str(Path(parent).parent)
+t=p.with_suffix('.tmp'); t.write_text(json.dumps(a)); t.chmod(0o644); t.replace(p)
+sug=Path(sys.argv[1]).parent/'suggested-import.json'
+if sug.exists():
+ try:
+  if json.loads(sug.read_text()).get('path')==target: sug.unlink()
+ except Exception: pass
+PY
+  if [[ $json == true ]]; then
+   echo "{\"removed\":\"$source_dir\"}"
+  else
+   echo "Import root removed: $source_dir"
+   echo 'Restarting Vesta Server so the launcher drops this folder.'
+  fi
+  if [[ -f /etc/systemd/system/vesta.service ]]; then systemctl try-restart vesta.service; fi
+  exit
+ fi
+ # add
  for protected in "$root" /usr/local/lib/vesta; do
   [[ $source_dir != "$protected" && $source_dir != "$protected"/* && $protected != "$source_dir"/* ]] || fail "Import directory overlaps Vesta Server files: $protected"
  done
@@ -125,8 +200,12 @@ suggestion=Path(sys.argv[1])/"suggested-import.json"
 suggestion.write_text(json.dumps({"path":sys.argv[2]})); suggestion.chmod(0o644)
 t=p.with_suffix('.tmp'); t.write_text(json.dumps(a)); t.chmod(0o644); t.replace(p)
 PY
- echo "Import root added: $source_dir"
- echo 'Restarting Vesta Server so the launcher can use this folder.'
+ if [[ $json == true ]]; then
+  echo "{\"added\":\"$source_dir\"}"
+ else
+  echo "Import root added: $source_dir"
+  echo 'Restarting Vesta Server so the launcher can use this folder.'
+ fi
  if [[ -f /etc/systemd/system/vesta.service ]]; then systemctl try-restart vesta.service; fi
  exit
 fi

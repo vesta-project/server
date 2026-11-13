@@ -9,7 +9,7 @@ pub mod jobs;
 
 pub use amp::{CandidateScan, CandidatesResponse, ImportCandidate, ImportWarning, Remediation};
 pub use browse::{
-    FolderBrowser, FolderEntry, FolderTokenResponse, ImportRootConfig, ListRequest, ListResponse,
+    CheckResponse, FolderBrowser, FolderEntry, FolderTokenResponse, ImportRootConfig, ListRequest, ListResponse,
     OwnerBinding, ResolveRequest, RootInfo, RootsResponse,
 };
 pub use inspection::{InspectRequest, InspectionReport, Loader};

@@ -57,6 +57,10 @@ pub(super) fn dispatch(
                 }
             ))
         }
+        ("POST", "/v1/host/folders/check") => {
+            let r: Check = input!();
+            result!(router.folders.check(&binding, &r.path))
+        }
         ("POST", "/v1/host/folders/list") => {
             let r: List = input!();
             result!(router.folders.list(
@@ -272,6 +276,11 @@ fn job_failure(error: JobError) -> Reply {
 struct Resolve {
     root_id: String,
     relative_path: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Check {
+    path: String,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

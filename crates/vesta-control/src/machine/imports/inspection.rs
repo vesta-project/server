@@ -123,6 +123,12 @@ pub struct InspectionReport {
     pub destination_free_bytes: Option<u64>,
     pub blockers: Vec<&'static str>,
     pub warnings: Vec<&'static str>,
+    /// Server files recognised: `server_properties`, `server_jar` (a jar or
+    /// loader argfile to launch), `world`, `loader_files`.
+    pub found: Vec<&'static str>,
+    /// Of `server_jar`, `server_properties`, `world`: what is absent. Explains
+    /// `not_minecraft_server`.
+    pub missing: Vec<&'static str>,
 }
 
 /// Inspect the folder a token admits for this owner.
@@ -255,6 +261,8 @@ pub(crate) fn inspect_path(
         destination_free_bytes: None,
         blockers: Vec::new(),
         warnings: Vec::new(),
+        found: Vec::new(),
+        missing: Vec::new(),
     };
     let listing = match top_level(path) {
         Ok(listing) => listing,
@@ -291,6 +299,24 @@ pub(crate) fn inspect_path(
     report.detected.loader = loader;
     report.detected.minecraft_version = version;
     report.detected.launch = detect_launch(path, &listing, loader);
+    let has = |e: &str| report.evidence.iter().any(|x| *x == e);
+    for (name, present) in [
+        ("server_properties", has("server_properties")),
+        (
+            "server_jar",
+            has("server_jar") || report.detected.launch.is_some(),
+        ),
+        ("world", has("world_directory")),
+    ] {
+        if present {
+            report.found.push(name);
+        } else {
+            report.missing.push(name);
+        }
+    }
+    if has("loader_markers") {
+        report.found.push("loader_files");
+    }
 
     report.size = size(path, blockers);
     if !report.minecraft {

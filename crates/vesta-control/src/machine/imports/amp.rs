@@ -1,12 +1,14 @@
-//! Bounded discovery of import candidates inside configured roots, with AMP
-//! (CubeCoders) instance layouts as hints. AMP paths are evidence, not proof.
-//! AMP passwords/tokens are never read: only `instances.json` may be opened, only
-//! inside an import root, bounded, and only whitelisted name/path fields are kept.
-//! Nothing is executed and no AMP command is run. Unreadable locations become
-//! warnings with an owner-runnable remediation, never escalation.
+//! Bounded discovery of import candidates: saved import roots, a few common
+//! server locations, and other server managers' instance layouts (AMP by
+//! CubeCoders) as hints. Layouts are evidence, not proof. Manager passwords and
+//! tokens are never read: only `instances.json` may be opened, only inside a
+//! saved import root, bounded, and only whitelisted name/path fields are kept.
+//! Nothing is executed. Only folders that look like servers are reported;
+//! unreadable ones only when identified specifically (never a bare `/home`),
+//! with an owner-runnable remediation command.
 use super::{
     ImportError,
-    browse::{FolderBrowser, OwnerBinding, Root, display, plain_directory, within},
+    browse::{FolderBrowser, OwnerBinding, Root, display, remediation_command, within},
     inspection::{amp_instance, minecraft_evidence, top_level},
 };
 use serde::Serialize;
@@ -20,27 +22,45 @@ use std::{
 pub const MAX_CANDIDATES: usize = 100;
 const MAX_VISITS: usize = 2_000;
 const MAX_SCAN_DEPTH: usize = 4;
+/// Common locations are scanned shallowly with their own small budget, and
+/// silently: a location that is absent, unreadable or empty says nothing.
+const COMMON_SCAN_DEPTH: usize = 3;
+const COMMON_VISITS: usize = 400;
 const MAX_INSTANCES_JSON_BYTES: u64 = 1024 * 1024;
 /// AMP's documented default instance datastore on Linux.
 pub const DEFAULT_AMP_DATASTORE: &str = "/home/amp/.ampdata/instances";
+/// The account Vesta Server runs as on Linux installs.
+pub const SERVICE_USER: &str = "vesta";
+/// Never descended into while scanning.
+const SKIPPED_NAMES: &[&str] = &["node_modules", "__pycache__", "target"];
 
 #[derive(Clone, Debug)]
 pub struct CandidateScan {
     /// Datastore directories holding `<instance>/Minecraft`. Defaults are hints;
     /// custom datastores are configured locally.
     pub amp_datastores: Vec<PathBuf>,
+    /// Places people commonly keep servers, scanned shallowly.
+    pub common_locations: Vec<PathBuf>,
     /// The local account the Vesta Server runs as, for remediation commands.
     pub service_user: String,
 }
 impl Default for CandidateScan {
     fn default() -> Self {
+        let (amp_datastores, common_locations) = if cfg!(windows) {
+            (Vec::new(), Vec::new())
+        } else {
+            (
+                vec![PathBuf::from(DEFAULT_AMP_DATASTORE)],
+                ["/srv", "/opt", "/home", "/var/games", "/var/lib/minecraft"]
+                    .iter()
+                    .map(PathBuf::from)
+                    .collect(),
+            )
+        };
         Self {
-            amp_datastores: if cfg!(windows) {
-                Vec::new()
-            } else {
-                vec![PathBuf::from(DEFAULT_AMP_DATASTORE)]
-            },
-            service_user: "vesta".into(),
+            amp_datastores,
+            common_locations,
+            service_user: SERVICE_USER.into(),
         }
     }
 }
@@ -49,11 +69,18 @@ impl Default for CandidateScan {
 #[serde(rename_all = "camelCase")]
 pub struct ImportCandidate {
     pub candidate_id: String,
-    /// `amp` or `minecraft`.
+    /// `amp` or `minecraft` (machine code; not for display).
     pub kind: &'static str,
+    /// `import_root`, `server_manager` or `common_location` (machine code).
+    pub source: &'static str,
+    /// The folder's own name.
     pub label: String,
     pub display_path: String,
-    pub folder_token: String,
+    /// Null when the folder cannot be opened at all (an untraversable parent).
+    pub folder_token: Option<String>,
+    pub readable: bool,
+    /// Present exactly when `readable` is false.
+    pub remediation_command: Option<String>,
     /// `high`, `medium` or `low`.
     pub confidence: &'static str,
     pub evidence: Vec<&'static str>,
@@ -68,7 +95,7 @@ pub struct Remediation {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportWarning {
-    /// `source_unreadable`, `outside_import_roots` or `scan_truncated`.
+    /// `scan_truncated` (a saved import root held more than the scan visits).
     pub code: &'static str,
     pub display_path: String,
     pub remediation: Option<Remediation>,
@@ -80,41 +107,88 @@ pub struct CandidatesResponse {
     pub warnings: Vec<ImportWarning>,
 }
 
+struct Scan<'a> {
+    browser: &'a FolderBrowser,
+    binding: &'a OwnerBinding,
+    seen: BTreeSet<PathBuf>,
+    out: CandidatesResponse,
+}
+
 pub fn candidates(
     browser: &FolderBrowser,
     binding: &OwnerBinding,
     scan: &CandidateScan,
 ) -> Result<CandidatesResponse, ImportError> {
-    let roots = browser.root_list()?;
-    let mut out = CandidatesResponse {
-        candidates: Vec::new(),
-        warnings: Vec::new(),
+    let saved = browser.root_list()?;
+    let mut state = Scan {
+        browser,
+        binding,
+        seen: BTreeSet::new(),
+        out: CandidatesResponse {
+            candidates: Vec::new(),
+            warnings: Vec::new(),
+        },
     };
-    let mut seen = BTreeSet::new();
-    let mut visits = 0_usize;
-    for listed in &roots {
+    let mut budget = MAX_VISITS;
+    for listed in &saved {
         let Ok(root) = browser.root(&listed.config.root_id) else {
             continue;
         };
-        let mut queue = vec![Vec::<String>::new()];
+        if !state.tree(&root, Vec::new(), MAX_SCAN_DEPTH, &mut budget, "import_root")? {
+            state.out.warnings.push(ImportWarning {
+                code: "scan_truncated",
+                display_path: display(&root.canonical),
+                remediation: None,
+            });
+            return Ok(state.out);
+        }
+    }
+    for datastore in &scan.amp_datastores {
+        state.manager_hint(&saved, datastore)?;
+    }
+    for location in &scan.common_locations {
+        let Some((root, parts)) = browser.filesystem_root_for(location) else {
+            continue;
+        };
+        let mut budget = COMMON_VISITS;
+        if !state.tree(&root, parts, COMMON_SCAN_DEPTH, &mut budget, "common_location")?
+            && state.out.candidates.len() >= MAX_CANDIDATES
+        {
+            break;
+        }
+    }
+    Ok(state.out)
+}
+
+impl Scan<'_> {
+    /// Breadth-bounded scan below `start`. Returns false when a bound was hit.
+    fn tree(
+        &mut self,
+        root: &Root,
+        start: Vec<String>,
+        depth: usize,
+        budget: &mut usize,
+        source: &'static str,
+    ) -> Result<bool, ImportError> {
+        let base = start.len();
+        let mut queue = vec![start];
         while let Some(parts) = queue.pop() {
-            if out.candidates.len() >= MAX_CANDIDATES || visits >= MAX_VISITS {
-                out.warnings.push(ImportWarning {
-                    code: "scan_truncated",
-                    display_path: display(&root.canonical),
-                    remediation: None,
-                });
-                return Ok(out);
+            if self.out.candidates.len() >= MAX_CANDIDATES || *budget == 0 {
+                return Ok(false);
             }
-            visits += 1;
-            let path = match browser.walk(&root, &parts) {
-                Ok(path) => path,
-                Err(_) => continue,
+            *budget -= 1;
+            let Ok(path) = self.browser.walk(root, &parts) else {
+                continue;
             };
             let listing = match top_level(&path) {
                 Ok(listing) => listing,
                 Err(ImportError::Unreadable) => {
-                    out.warnings.push(unreadable(&path, scan));
+                    // Below the starting folder, a name that says "minecraft"
+                    // identifies a likely server folder worth asking about.
+                    if parts.len() > base && (likely_by_name(&path) || amp_instance(&path).is_some())
+                    {
+                        self.push(root, Some(parts), &path, None, source)?;
+                    }
                     continue;
                 }
                 Err(_) => continue,
@@ -123,20 +197,18 @@ pub fn candidates(
             if evidence.contains(&"server_properties")
                 || (evidence.contains(&"world_directory") && evidence.contains(&"server_jar"))
             {
-                if seen.insert(path.clone()) {
-                    push_candidate(browser, binding, &root, parts, &path, evidence, &mut out)?;
-                }
+                self.push(root, Some(parts), &path, Some(evidence), source)?;
                 continue;
             }
-            if parts.len() >= MAX_SCAN_DEPTH {
+            if parts.len() - base >= depth {
                 continue;
             }
             for dir in listing.dirs.iter().rev() {
-                if dir.starts_with('.') && dir != ".ampdata" {
+                if (dir.starts_with('.') && dir != ".ampdata") || SKIPPED_NAMES.contains(&dir.as_str())
+                {
                     continue;
                 }
-                let child = path.join(dir);
-                if browser.protected_overlap(&child) {
+                if self.browser.hidden(&path.join(dir)) {
                     continue;
                 }
                 let mut next = parts.clone();
@@ -144,155 +216,135 @@ pub fn candidates(
                 queue.push(next);
             }
         }
+        Ok(true)
     }
-    for datastore in &scan.amp_datastores {
-        hint(
-            browser, binding, &roots, datastore, scan, &mut seen, &mut out,
-        )?;
-    }
-    Ok(out)
-}
 
-fn push_candidate(
-    browser: &FolderBrowser,
-    binding: &OwnerBinding,
-    root: &Root,
-    parts: Vec<String>,
-    path: &Path,
-    mut evidence: Vec<&'static str>,
-    out: &mut CandidatesResponse,
-) -> Result<(), ImportError> {
-    let amp = amp_instance(path);
-    if amp.is_some() {
-        evidence.push("amp_instance_layout");
-    }
-    let confidence =
-        if evidence.contains(&"server_properties") && evidence.contains(&"world_directory") {
-            "high"
-        } else if evidence.contains(&"server_properties") {
-            "medium"
-        } else {
-            "low"
-        };
-    let label = amp.clone().unwrap_or_else(|| {
-        parts
-            .last()
-            .cloned()
-            .unwrap_or_else(|| root.config.label.clone())
-    });
-    let id_source = format!("{}/{}", root.config.root_id, parts.join("/"));
-    let token = browser.mint(binding, root, parts, path)?;
-    use sha2::Digest;
-    out.candidates.push(ImportCandidate {
-        candidate_id: hex::encode(&sha2::Sha256::digest(id_source.as_bytes())[..16]),
-        kind: if amp.is_some() { "amp" } else { "minecraft" },
-        label,
-        display_path: token.display_path,
-        folder_token: token.folder_token,
-        confidence,
-        evidence,
-    });
-    Ok(())
-}
-
-/// Report AMP instances found through a datastore hint that the scan did not
-/// already cover: outside every import root, or unreadable.
-fn hint(
-    browser: &FolderBrowser,
-    binding: &OwnerBinding,
-    roots: &[Root],
-    datastore: &Path,
-    scan: &CandidateScan,
-    seen: &mut BTreeSet<PathBuf>,
-    out: &mut CandidatesResponse,
-) -> Result<(), ImportError> {
-    if !datastore.is_absolute() {
-        return Ok(());
-    }
-    let mut instances: Vec<PathBuf> = Vec::new();
-    match fs::read_dir(datastore) {
-        Ok(read) => {
+    /// Instances of another server manager found through its datastore. A
+    /// datastore that is absent or unreadable is silent; an instance folder
+    /// identified inside a readable datastore is reported even if unreadable.
+    fn manager_hint(&mut self, saved: &[Root], datastore: &Path) -> Result<(), ImportError> {
+        if !datastore.is_absolute() {
+            return Ok(());
+        }
+        let mut instances: Vec<PathBuf> = Vec::new();
+        if let Ok(read) = fs::read_dir(datastore) {
             for entry in read.take(256).flatten() {
                 if entry.file_type().is_ok_and(|t| t.is_dir()) {
                     instances.push(entry.path().join("Minecraft"));
                 }
             }
         }
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-            out.warnings.push(unreadable(datastore, scan));
+        if let Some(ampdata) = datastore.parent() {
+            for path in instances_json(self.browser, saved, &ampdata.join("instances.json"), datastore)
+            {
+                if !instances.contains(&path) {
+                    instances.push(path);
+                }
+            }
+        }
+        for instance in instances {
+            if self.out.candidates.len() >= MAX_CANDIDATES {
+                break;
+            }
+            let Some((root, parts)) = self.browser.filesystem_root_for(&instance) else {
+                continue;
+            };
+            let Ok(root) = self.browser.root(&root.config.root_id) else {
+                continue;
+            };
+            match self.browser.walk(&root, &parts) {
+                Ok(path) => match top_level(&path) {
+                    Ok(listing) => {
+                        let evidence = minecraft_evidence(&path, &listing);
+                        if evidence.iter().any(|e| {
+                            matches!(
+                                *e,
+                                "server_properties" | "world_directory" | "server_jar" | "loader_markers"
+                            )
+                        }) {
+                            self.push(&root, Some(parts), &path, Some(evidence), "server_manager")?;
+                        }
+                    }
+                    Err(ImportError::Unreadable) => {
+                        self.push(&root, Some(parts), &path, None, "server_manager")?;
+                    }
+                    Err(_) => {}
+                },
+                // The instance folder exists for root but its parent cannot be
+                // traversed by the service: no token, still worth asking about.
+                Err(ImportError::Unreadable) => {
+                    self.push(&root, None, &instance, None, "server_manager")?;
+                }
+                Err(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// `evidence` is None for an unreadable folder; `parts` None when no token
+    /// can be minted.
+    fn push(
+        &mut self,
+        root: &Root,
+        parts: Option<Vec<String>>,
+        path: &Path,
+        evidence: Option<Vec<&'static str>>,
+        source: &'static str,
+    ) -> Result<(), ImportError> {
+        if !self.seen.insert(path.to_path_buf()) {
             return Ok(());
         }
-        Err(_) => {
-            // Absent or blocked parent: check whether the parent is the obstacle.
-            if let Some(parent) = first_unreadable_ancestor(datastore) {
-                out.warnings.push(unreadable(&parent, scan));
-            }
-            return Ok(());
+        let readable = evidence.is_some();
+        let mut evidence = evidence.unwrap_or_else(|| vec!["folder_name"]);
+        let amp = amp_instance(path).is_some();
+        if amp {
+            evidence.push("amp_instance_layout");
         }
+        let confidence =
+            if evidence.contains(&"server_properties") && evidence.contains(&"world_directory") {
+                "high"
+            } else if evidence.contains(&"server_properties") {
+                "medium"
+            } else {
+                "low"
+            };
+        let token = match parts {
+            Some(parts) => self
+                .browser
+                .mint(self.binding, root, parts, path)
+                .ok()
+                .map(|t| t.folder_token),
+            None => None,
+        };
+        use sha2::Digest;
+        self.out.candidates.push(ImportCandidate {
+            candidate_id: hex::encode(&sha2::Sha256::digest(display(path).as_bytes())[..16]),
+            kind: if amp { "amp" } else { "minecraft" },
+            source,
+            label: path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| display(path)),
+            display_path: display(path),
+            folder_token: token,
+            readable,
+            remediation_command: (!readable).then(|| remediation_command(path)),
+            confidence,
+            evidence,
+        });
+        Ok(())
     }
-    if let Some(ampdata) = datastore.parent() {
-        for path in instances_json(browser, roots, &ampdata.join("instances.json"), datastore) {
-            if !instances.contains(&path) {
-                instances.push(path);
-            }
-        }
-    }
-    for instance in instances {
-        let Ok(metadata) = fs::symlink_metadata(&instance) else {
-            if instance.parent().is_some_and(|p| fs::read_dir(p).is_err()) {
-                out.warnings.push(unreadable(&instance, scan));
-            }
-            continue;
-        };
-        if plain_directory(&metadata).is_err() {
-            continue;
-        }
-        let canonical = fs::canonicalize(&instance).unwrap_or(instance.clone());
-        if seen.contains(&canonical) {
-            continue;
-        }
-        let Some(root) = roots.iter().find(|r| within(&canonical, &r.canonical)) else {
-            out.warnings.push(ImportWarning {
-                code: "outside_import_roots",
-                display_path: display(&canonical),
-                remediation: Some(Remediation {
-                    command: format!("sudo vesta import-root add {}", quote(&canonical)),
-                    alternative: "Or stop the AMP instance and copy its Minecraft folder into an existing import root.".into(),
-                }),
-            });
-            continue;
-        };
-        if fs::read_dir(&canonical).is_err() {
-            out.warnings.push(unreadable(&canonical, scan));
-            continue;
-        }
-        // Inside a root but beyond scan depth: admit through the root walk.
-        let Ok(relative) = canonical.strip_prefix(&root.canonical) else {
-            continue;
-        };
-        let parts: Vec<String> = relative
-            .components()
-            .filter_map(|c| c.as_os_str().to_str().map(str::to_owned))
-            .collect();
-        let Ok(root) = browser.root(&root.config.root_id) else {
-            continue;
-        };
-        let Ok(path) = browser.walk(&root, &parts) else {
-            continue;
-        };
-        let Ok(listing) = top_level(&path) else {
-            continue;
-        };
-        if out.candidates.len() < MAX_CANDIDATES && seen.insert(path.clone()) {
-            let evidence = minecraft_evidence(&path, &listing);
-            push_candidate(browser, binding, &root, parts, &path, evidence, out)?;
-        }
-    }
-    Ok(())
 }
 
-/// AMP's instance list, read only inside an import root. Only instance names,
-/// modules and data paths are used; everything else is discarded unread.
+fn likely_by_name(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.to_ascii_lowercase().contains("minecraft"))
+}
+
+/// The manager's instance list, read only inside a saved import root. Only
+/// instance names, modules and data paths are used; everything else is
+/// discarded unread.
 fn instances_json(
     browser: &FolderBrowser,
     roots: &[Root],
@@ -364,49 +416,22 @@ pub(crate) fn parse_instances(bytes: &[u8], datastore: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn first_unreadable_ancestor(path: &Path) -> Option<PathBuf> {
-    let mut ancestors: Vec<&Path> = path.ancestors().collect();
-    ancestors.reverse();
-    for ancestor in ancestors {
-        match fs::symlink_metadata(ancestor) {
-            Ok(_) => {
-                if fs::read_dir(ancestor).is_err() {
-                    return Some(ancestor.to_path_buf());
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-                return Some(ancestor.to_path_buf());
-            }
-            Err(_) => return None,
-        }
-    }
-    None
-}
-
-fn unreadable(path: &Path, scan: &CandidateScan) -> ImportWarning {
-    ImportWarning {
-        code: "source_unreadable",
-        display_path: display(path),
-        remediation: Some(remediation(path, &scan.service_user)),
-    }
-}
-
-/// Narrow read access for one instance, granted by a local administrator.
-/// Never ownership changes or whole-datastore access.
+/// Narrow read access for one folder, granted by a local administrator.
+/// Never ownership changes or access to a whole datastore.
 pub fn remediation(path: &Path, user: &str) -> Remediation {
     let user: String = user
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
         .collect();
-    let alternative = "Or stop the AMP instance and copy its Minecraft folder into an import root as a read-only export.".to_owned();
+    let alternative = "Or stop the other server manager, copy this folder somewhere Vesta Server can already read, then import the copy.".to_owned();
     if cfg!(windows) {
         return Remediation {
             command: format!("icacls {} /grant {user}:(OI)(CI)RX /T", quote(path)),
             alternative,
         };
     }
-    // The privileged local CLI registers the folder as an import root and
-    // grants the service account the narrow read/traverse access itself.
+    // The privileged local CLI saves the folder as an import root and grants
+    // the service account the narrow read/traverse access itself.
     Remediation {
         command: format!("sudo vesta import-root add {}", quote(path)),
         alternative,

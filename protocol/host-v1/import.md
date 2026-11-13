@@ -2,24 +2,27 @@
 
 Only current primary owner/owner can call these HTTPS routes. Server Admin file access is confined to managed server storage and cannot reach them. No browser-local file picker: paths refer to the host, e.g. the Linux machine at 192.168.1.67. Host response paths are informational; opaque tokens identify admitted directories. No unrestricted file-read API is introduced.
 
-## Browse and AMP candidates
+## Browse and candidates
 
 | Method/path | Request -> response |
 |---|---|
-| GET `/v1/host/folders/roots` | `{roots:[{rootId,label,displayPath,readable}],revision}`; configured import roots only, plus owner-visible managed destination capacity. |
-| POST `/v1/host/folders/resolve` | `{rootId,relativePath}` -> `{folderToken,displayPath,expiresAt}`; relative path uses slash segments, no `..`, absolute path, NUL or traversal. Enables typed host path by selecting its permitted root. |
-| POST `/v1/host/folders/list` | `{folderToken,cursor:null|string}` -> `{displayPath,entries:[{name,kind:"directory",folderToken,readable}],nextCursor}`. Directories only, 100/page; no file contents. |
-| GET `/v1/host/imports/candidates` | `{candidates:[{candidateId,kind:"amp"|"minecraft",label,displayPath,folderToken,confidence,evidence}],warnings}`; bounded scan of configured roots, max 100 entries. |
+| GET `/v1/host/folders/roots` | `{roots:[{rootId,label,displayPath,readable,kind:"filesystem"|"import_root"}],revision}`. Always includes the filesystem root (`/` or each drive root on Windows) plus saved import roots. Saved roots are labelled by their folder name (never "Import folder 1"); `displayPath` is the full path. |
+| POST `/v1/host/folders/resolve` | `{rootId,relativePath}` -> `{folderToken,displayPath,expiresAt}`; relative path uses slash segments, no `..`, absolute path, NUL or traversal. |
+| POST `/v1/host/folders/check` | `{path:"<absolute>"}` -> `{path,status:"ok"|"permission_needed"|"not_found"|"not_directory"|"protected",folderToken:null|string,remediationCommand:null|string}`. `ok` mints a token usable like a browsed folder. When a parent is unreadable, prefer `permission_needed` with `remediationCommand` for the typed path (`sudo vesta import-root add '<absolute path>'`). |
+| POST `/v1/host/folders/list` | `{folderToken,cursor:null|string}` -> `{displayPath,entries:[{name,kind:"directory",folderToken,readable,looksLikeServer,remediationCommand}],nextCursor}`. Every visible sub-directory is listed with `readable:true|false`; unreadable entries cannot be entered and carry `remediationCommand`. `looksLikeServer` is a cheap name check (`server.properties` or a recognisable server jar/loader marker). Never listed or enterable: Vesta Server's own data/install directories and pseudo/system trees (`/proc`, `/sys`, `/dev`, `/run`, `/boot`, `/lost+found`, and the like). Directories only, 100/page; no file contents. |
+| GET `/v1/host/imports/candidates` | `{candidates:[{candidateId,kind:"amp"|"minecraft",source,label,displayPath,folderToken,readable,remediationCommand,confidence,evidence}],warnings}`. Only folders that look like servers and are readable, or that exist but need permission (with `remediationCommand`). No warnings for absent or bare unreadable default locations (a bare unreadable `/home` is not a warning). Labels are the folder's own name; `kind`/`source` are machine codes, not for display. Max 100 entries. |
 | POST `/v1/host/imports/plan` | Request below -> 202 `{jobId,state:"planning"}`. |
 | GET `/v1/host/imports/jobs/{jobId}` | Durable job and review below. |
 | POST `/v1/host/imports/apply` | `{planId,confirmation,acknowledgedWarnings:[code],eulaAccepted:true,sourceStoppedConfirmed:true}` -> 202 `{jobId,serverId}`; Idempotency-Key required. |
 | POST `/v1/host/imports/jobs/{jobId}/cancel` | -> `{state}`; cancels at safe copy boundary, does not delete original or stop unrelated processes. |
 
-Folder token random 32 bytes, expires 10min, bound to host/account/device/root and open directory identity; it is not a bearer authorization replacement. Revalidate current owner and root membership every use. Reject links/reparse points, special files, traversal, mounts outside allowed roots and overlap in either direction with host private state, any managed server or destination. Use descriptor-relative/no-follow access through scan and copy; canonicalize-once/string-prefix checks are insufficient. Roots configured by privileged local `vesta import-root add <path>`; remote owners cannot expose `/`, host secrets or arbitrary executables by adding roots. Installer registers readable default AMP candidates only within narrowly configured import roots; unreadable candidates appear as warnings, not invented contents. No privileged HTTP filesystem helper.
+Folder token random 32 bytes, expires 10min, bound to host/account/device/root and open directory identity; it is not a bearer authorization replacement. Revalidate current owner and root membership every use. Reject links/reparse points, special files, traversal and overlap in either direction with host private state, any managed server or destination. Ancestors of protected paths may be browsed but not imported. Use descriptor-relative/no-follow access through scan and copy; canonicalize-once/string-prefix checks are insufficient. Roots are also registered by privileged local `vesta import-root add|list|remove`; `remove` revokes the ACL that `add` granted. Remote owners cannot expose host secrets by adding roots. Access to `/home`, `/srv`, `/opt`, `/mnt` and `/var` is governed by ordinary file ACLs (the service unit must not hide those trees). No privileged HTTP filesystem helper. User-visible API and CLI text never names another server manager product; machine codes such as `amp` may remain internal.
 
-Typical AMP candidate `/home/amp/.ampdata/instances/<instance>/Minecraft`; inspect bounded metadata in `/home/amp/.ampdata/instances.json` only when explicitly readable and allowed. [CubeCoders](https://discourse.cubecoders.com/t/diagnosing-amp-application-startup-issues/2289) documents the default instance datastore; custom roots must be supplied locally. Candidate heuristics: `server.properties`, world directories, jar/loader metadata; AMP ancestry/config is evidence, not proof. Never read or return AMP passwords/tokens, execute AMP CLI, source scripts, execute candidate jars or recursively scan the whole filesystem.
+Typical layout from another server manager: `/home/amp/.ampdata/instances/<instance>/Minecraft`. Bounded metadata in `instances.json` is read only when explicitly readable and inside a saved import root. [CubeCoders](https://discourse.cubecoders.com/t/diagnosing-amp-application-startup-issues/2289) documents that default datastore; custom roots must be supplied locally. Candidate heuristics: `server.properties`, world directories, jar/loader metadata; manager ancestry/config is evidence, not proof. Never read or return manager passwords/tokens, execute its CLI, source scripts, execute candidate jars or recursively scan the whole filesystem.
 
-Dedicated Vesta account may not traverse AMP home. Return `source_unreadable` with owner-visible instructions to stop AMP, then export a read-only copy into the registered staging root, or have a local administrator run `sudo vesta import-root add <instance path>`, which registers the folder and grants narrowly scoped read/traverse access for the service account. Do not run as amp/root, chown AMP files or open its whole datastore to Vesta. If using an exported copy, retain the original instance path/port as separately supplied inspection hints, and flag process correlation as unknown if unavailable. Existing `CopiedExport` protections remain mandatory.
+When the dedicated Vesta account cannot read a folder, inspection returns `source_unreadable` (and browse/`check` carry `remediationCommand`). A local administrator runs `sudo vesta import-root add <path>`, which registers the folder and grants narrowly scoped read/traverse access for the service account—or the owner stops the other server manager, exports a read-only copy into a readable location, and imports the copy. Do not run as the other manager's user/root, chown its files or open its whole datastore to Vesta. If using an exported copy, retain the original instance path/port as separately supplied inspection hints, and flag process correlation as unknown if unavailable. Existing `CopiedExport` protections remain mandatory.
+
+Inspection of a non-server folder returns blocker `not_minecraft_server` with `missing:["server_jar"|"server_properties"|"world"]` and `found:[...]` so the launcher can explain what was recognised. Review carries the same `found`/`missing` fields.
 
 ## Plan and review
 
@@ -65,11 +68,12 @@ All routes below need `Authorization: Bearer <host session>` of a current primar
 
 | Method/path | Body | Success |
 |---|---|---|
-| GET `/v1/host/folders/roots` | | 200 roots |
+| GET `/v1/host/folders/roots` | | 200 roots (filesystem + saved import roots) |
 | POST `/v1/host/folders/resolve` | `{rootId,relativePath}` | 200 `{folderToken,displayPath,expiresAt}` |
-| POST `/v1/host/folders/list` | `{folderToken,cursor}` | 200 listing |
+| POST `/v1/host/folders/check` | `{path}` | 200 `{path,status,folderToken,remediationCommand}` |
+| POST `/v1/host/folders/list` | `{folderToken,cursor}` | 200 listing (`looksLikeServer`, `remediationCommand`) |
 | GET `/v1/host/imports/candidates` | | 200 candidates/warnings |
-| POST `/v1/host/imports/inspect` | `{folderToken,gamePort}` | 200 inspection report (no job) |
+| POST `/v1/host/imports/inspect` | `{folderToken,gamePort}` | 200 inspection report (`found`/`missing`; no job) |
 | POST `/v1/host/imports/resources` | `{gamePort,memoryMiB}` | 200 `{memory,port}` |
 | POST `/v1/host/imports/plan` | `{folderToken,name,gamePort,memoryMiB,launchChoice,minecraftVersion}` | 202 `{jobId,state:"planning"}` |
 | GET `/v1/host/imports/jobs/{jobId}` | | 200 job; while `starting` this call also observes readiness |

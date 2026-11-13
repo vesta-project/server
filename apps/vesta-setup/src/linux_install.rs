@@ -154,10 +154,20 @@ mod tests {
             "WantedBy=multi-user.target",
             "NoNewPrivileges=true",
             "ProtectSystem=strict",
+            "ProtectHome=false",
         ] {
             assert!(s.contains(needle), "{needle}");
         }
+        assert!(!s.contains("ProtectHome=read-only"));
+        assert!(!s.contains("ProtectHome=true"));
         assert!(!s.contains("--user"));
+        for open in ["/home", "/srv", "/opt", "/mnt", "/var"] {
+            assert!(
+                !s.contains(&format!("InaccessiblePaths={open}"))
+                    && !s.contains(&format!("InaccessiblePaths= {open}")),
+                "{open} must stay visible"
+            );
+        }
     }
     #[test]
     fn linux_rerun_preserves_existing_configuration() {
@@ -180,6 +190,14 @@ mod tests {
         std::fs::create_dir(root.path().join("host")).unwrap();
         let error = crate::updates::run(&["activate".into(), "--root".into(), root.path().display().to_string()]).unwrap_err();
         assert!(error.contains("Host-mode signed update trials"));
+    }
+    #[test]
+    fn linux_import_root_list_and_remove_are_wired() {
+        assert!(SCRIPT.contains("import_action=${1:-}"));
+        assert!(SCRIPT.contains("add|list|remove)"));
+        assert!(SCRIPT.contains("No import folders registered."));
+        assert!(SCRIPT.contains("setfacl -R -P -x u:vesta"));
+        assert!(SCRIPT.contains("Import root removed:"));
     }
     #[test]
     fn linux_options_reject_bad_ports_and_unsafe_roots_before_changes() {
