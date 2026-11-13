@@ -1054,3 +1054,17 @@ pub(crate) fn stopped_evidence(source: &Path, port: Option<u16>) -> Option<&'sta
         assert_eq!(stopped_evidence(dir.path(),None),Some("source_recently_active"));
     }
 }
+
+#[cfg(all(test,unix))] mod swap_tests {
+ use super::*;
+ #[test] fn properties_swap_to_link_is_refused() {
+  let t=tempfile::tempdir().unwrap();let source=t.path().join("source");fs::create_dir(&source).unwrap();
+  fs::write(source.join("server.properties"),"server-port=25565").unwrap();
+  let held=crate::files::native::import_open(&source.join("server.properties"),false).unwrap();
+  fs::rename(source.join("server.properties"),source.join("old")).unwrap();
+  fs::write(t.path().join("outside"),"server-port=1").unwrap();
+  std::os::unix::fs::symlink(t.path().join("outside"),source.join("server.properties")).unwrap();
+  assert!(read_properties(&source.join("server.properties")).is_err());
+  let mut text=String::new();held.take(1024).read_to_string(&mut text).unwrap();assert_eq!(text,"server-port=25565");
+ }
+}

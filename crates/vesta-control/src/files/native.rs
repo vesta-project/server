@@ -533,13 +533,13 @@ pub(crate) fn import_open(path: &Path, directory: bool) -> Result<File> {
 #[cfg(windows)]
 pub(crate) fn import_open(path: &Path, directory: bool) -> Result<File> {
  use std::os::windows::fs::OpenOptionsExt;
- use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS,FILE_FLAG_OPEN_REPARSE_POINT,FILE_SHARE_READ};
+ use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS,FILE_FLAG_OPEN_REPARSE_POINT,FILE_SHARE_READ,FILE_SHARE_WRITE};
  let mut ancestors=Vec::new();let mut current=PathBuf::new();
  let components:Vec<_>=path.components().collect();
  for (i,part) in components.iter().enumerate(){
   current.push(part.as_os_str());
   if matches!(part,std::path::Component::Prefix(_)){continue;}
-  let file=OpenOptions::new().read(true).share_mode(FILE_SHARE_READ)
+  let file=OpenOptions::new().read(true).share_mode(FILE_SHARE_READ|FILE_SHARE_WRITE)
    .custom_flags(FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT).open(&current).map_err(io_error)?;
   let m=file.metadata().map_err(io_error)?;
   use std::os::windows::fs::MetadataExt;
@@ -561,7 +561,7 @@ pub(crate) fn import_locked(file: &File) -> bool {
  // Java FileChannel locks use POSIX record locks rather than flock.
  let mut lock:libc::flock=unsafe {std::mem::zeroed()};
  lock.l_type=libc::F_WRLCK as _;lock.l_whence=libc::SEEK_SET as _;
- unsafe {libc::fcntl(file.as_raw_fd(),libc::F_GETLK,&mut lock)<0 || lock.l_type!=libc::F_UNLCK as _}
+ unsafe {libc::fcntl(file.as_raw_fd(),libc::F_GETLK,&mut lock)<0 || lock.l_type!=libc::F_UNLCK as libc::c_short}
 }
 #[cfg(not(unix))]
 pub(crate) fn import_locked(file: &File) -> bool {fs2::FileExt::try_lock_exclusive(file).is_err()}
