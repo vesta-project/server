@@ -1,5 +1,6 @@
 use super::*;
 use crate::machine::imports::browse::{ImportRootConfig, ResolveRequest};
+use crate::worker::ServerWorker;
 use std::sync::{
     Mutex,
     atomic::{AtomicU64, Ordering},
@@ -420,7 +421,7 @@ fn duplicate_apply_is_idempotent_and_conflicting_body_is_refused() {
         f.jobs
             .apply(&f.binding, &Fixture::apply_request(&other), "key-3")
             .unwrap_err(),
-        JobError::CAPACITY
+        JobError("name_in_use")
     );
     f.jobs.run_apply(&f.binding, &first.job_id).unwrap();
     assert_eq!(
@@ -657,4 +658,106 @@ fn escaping_world_blocks_and_bind_address_warns() {
     let r = job.review.unwrap();
     assert!(r.blockers.contains(&"world_outside_source".into()));
     assert!(r.warnings.contains(&"bind_address_cleared".into()));
+}
+
+#[test]
+fn non_server_plan_has_only_cause_and_suggests_child() {
+    let f = Fixture::new();
+    f.vanilla();
+    let job = f.plan("");
+    let review = job.review.unwrap();
+    assert_eq!(review.blockers, vec!["not_minecraft_server"]);
+    assert!(review.warnings.is_empty());
+    assert_eq!(review.nearby.len(), 1);
+    assert!(review.nearby[0].path.ends_with("vanilla"));
+    assert!(
+        f.browser
+            .open(&f.binding, &review.nearby[0].folder_token)
+            .is_ok()
+    );
+}
+
+#[test]
+fn two_servers_reserve_distinct_ports_and_shared_memory() {
+    let mut f = Fixture::new();
+    f.vanilla();
+    f.fabric();
+    let first = f.plan("vanilla");
+    let a = f
+        .jobs
+        .apply(&f.binding, &Fixture::apply_request(&first), "first")
+        .unwrap();
+    f.jobs.run_apply(&f.binding, &a.job_id).unwrap();
+    let second = f
+        .jobs
+        .plan(
+            &f.binding,
+            PlanRequest {
+                folder_token: f.token("fabric"),
+                name: "Creative".into(),
+                game_port: None,
+                memory_mib: Some(2048),
+                launch_choice: None,
+                minecraft_version: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        second.review.as_ref().unwrap().resources.game_port,
+        Some(25566)
+    );
+    let b = f
+        .jobs
+        .apply(&f.binding, &Fixture::apply_request(&second), "second")
+        .unwrap();
+    f.jobs.run_apply(&f.binding, &b.job_id).unwrap();
+    assert!(f.state.server(a.server_id).unwrap().is_some());
+    assert!(f.state.server(b.server_id).unwrap().is_some());
+    let held = f.jobs.read(|c| reservations_in(c, None)).unwrap();
+    assert_eq!(held.memory_mib, 4096);
+    assert_eq!(
+        resources::plan_memory(Some(16 * GIB), &held, Some(16 * 1024)).blocker,
+        Some("memory_budget_exceeded")
+    );
+    f.reopen();
+    let first_worker = f
+        .jobs
+        .create_worker(a.server_id, Arc::new(SystemClock))
+        .unwrap();
+    let second_worker = f
+        .jobs
+        .create_worker(b.server_id, Arc::new(SystemClock))
+        .unwrap();
+    assert_ne!(
+        first_worker.handle().server_id(),
+        second_worker.handle().server_id()
+    );
+    first_worker
+        .shutdown(std::time::Duration::from_secs(10))
+        .unwrap();
+    second_worker
+        .shutdown(std::time::Duration::from_secs(10))
+        .unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_source_plan_reports_only_the_source_cause() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    f.vanilla();
+    let source = f.source("vanilla");
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o000)).unwrap();
+    let enforced = fs::read_dir(&source).is_err();
+    let job = if enforced {
+        Some(f.plan("vanilla"))
+    } else {
+        None
+    };
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
+    if let Some(job) = job {
+        let review = job.review.unwrap();
+        assert_eq!(review.blockers, vec!["source_unreadable"]);
+        assert!(review.warnings.is_empty());
+    }
 }

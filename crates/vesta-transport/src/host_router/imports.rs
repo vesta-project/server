@@ -18,6 +18,9 @@ pub(super) fn dispatch(
     headers: &http::HeaderMap,
     bytes: &[u8],
 ) -> Reply {
+    if let Err(error) = router.folders.refresh_roots() {
+        return failure(StatusCode::SERVICE_UNAVAILABLE, error.code());
+    }
     let binding = OwnerBinding {
         host_id: router
             .identity

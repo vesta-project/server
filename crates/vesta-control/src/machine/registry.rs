@@ -65,8 +65,8 @@ pub struct ServerEntry {
 }
 
 impl HostState {
-    /// One active server in the first slice. Deleted ids remain tombstoned and
-    /// can never be reused; increasing capacity later changes no identity/API.
+    /// Deleted ids remain tombstoned and can never be reused. Active names
+    /// and ports are unique across all servers.
     pub fn register_server(
         &self,
         actor: Actor,
@@ -76,9 +76,9 @@ impl HostState {
         self.write(|c| {
             require_owner(c,actor)?; expect_revision(c,revision)?; validate(entry)?;
             if entry.server_id==snapshot_in(c)?.host_id || entry.state==ServerState::Deleted { return Err(reject(Code::InvalidRequest)); }
-            let count:i64=c.query_row("SELECT count(*) FROM machine_servers WHERE state!='deleted'",[],|r|r.get(0))?;
+            let conflict: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM machine_servers WHERE state!='deleted' AND (lower(name)=lower(?1) OR game_port=?2))", params![entry.name, entry.game_port], |r|r.get(0))?;
             let used=server_in(c,entry.server_id)?.is_some();
-            if count>=1 || used { return Err(reject(Code::Conflict)); }
+            if conflict || used { return Err(reject(Code::Conflict)); }
             c.execute("INSERT INTO machine_servers(server_id,name,game_port,state,visibility) VALUES(?1,?2,?3,?4,?5)",params![entry.server_id.to_string(),entry.name,entry.game_port,entry.state.as_str(),entry.visibility.as_str()])?;
             changed(c,true,"server_register",&actor.audit(),&entry.server_id.to_string(),self.now_ms())
         })
@@ -91,6 +91,8 @@ impl HostState {
     ) -> Result<HostSnapshot> {
         self.write(|c| {
             require_owner(c,actor)?; expect_revision(c,revision)?; validate(entry)?; require_server(c,entry.server_id)?;
+            let conflict: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM machine_servers WHERE state!='deleted' AND server_id!=?1 AND (lower(name)=lower(?2) OR game_port=?3))", params![entry.server_id.to_string(),entry.name,entry.game_port], |r|r.get(0))?;
+            if entry.state != ServerState::Deleted && conflict { return Err(reject(Code::Conflict)); }
             c.execute("UPDATE machine_servers SET name=?1,game_port=?2,state=?3,visibility=?4 WHERE server_id=?5",params![entry.name,entry.game_port,entry.state.as_str(),entry.visibility.as_str(),entry.server_id.to_string()])?;
             changed(c,true,"server_update",&actor.audit(),&entry.server_id.to_string(),self.now_ms())
         })

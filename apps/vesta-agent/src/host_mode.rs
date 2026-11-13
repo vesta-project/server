@@ -89,10 +89,14 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
     let mut config: Config =
         toml::from_str(std::str::from_utf8(&bytes).map_err(|_| "host_config_invalid")?)
             .map_err(|_| "host_config_invalid")?;
+    let configured_roots = config.import_roots.clone();
     // Root-owned catalogue maintained by the local privileged CLI.
     let roots_file = base.join("import-roots.json");
     if roots_file.exists() {
-        let roots: Vec<PathBuf> = serde_json::from_slice(&std::fs::read(roots_file).map_err(|_| "host_import_roots_unreadable")?).map_err(|_| "host_import_roots_invalid")?;
+        let roots: Vec<PathBuf> = serde_json::from_slice(
+            &std::fs::read(&roots_file).map_err(|_| "host_import_roots_unreadable")?,
+        )
+        .map_err(|_| "host_import_roots_invalid")?;
         config.import_roots.extend(roots);
     }
     let path = |p: &Path| {
@@ -174,6 +178,37 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
         );
     }
     let folders = Arc::new(folders);
+    let root_base = base.to_owned();
+    folders.set_root_loader(move || {
+        let mut paths = configured_roots.clone();
+        match std::fs::read(&roots_file) {
+            Ok(bytes) if bytes.len() <= 64 * 1024 => paths.extend(
+                serde_json::from_slice::<Vec<PathBuf>>(&bytes)
+                    .map_err(|_| vesta_control::machine::imports::ImportError::Unavailable)?,
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return Err(vesta_control::machine::imports::ImportError::Unavailable),
+        }
+        Ok(paths
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let full = if p.is_absolute() {
+                    p
+                } else {
+                    root_base.join(p)
+                };
+                ImportRootConfig {
+                    root_id: format!("root-{i}"),
+                    label: full
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| full.display().to_string()),
+                    path: full,
+                }
+            })
+            .collect())
+    });
     let jobs = ImportJobs::open(
         state.clone(),
         folders.clone(),
@@ -184,10 +219,10 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
     )
     .map_err(|_| "host_imports_unavailable")?;
     let factory = (jobs.clone(), clock.clone());
-    let router = HostRouter::new(identity.clone(), config.name.clone(), folders).with_imports(
-        jobs.clone(),
-        move |id| factory.0.create_worker(id, factory.1.clone()),
-    );
+    let router = HostRouter::new(identity.clone(), config.name.clone(), folders)
+        .with_imports(jobs.clone(), move |id| {
+            factory.0.create_worker(id, factory.1.clone())
+        });
     let entries = state
         .snapshot()
         .map_err(|_| "host_state_unavailable")?
@@ -204,7 +239,10 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
             Ok(w) => {
                 router.adopt_worker(w);
             }
-            Err(e) => eprintln!("Vesta Server could not open server {}: {e}", entry.server_id),
+            Err(e) => eprintln!(
+                "Vesta Server could not open server {}: {e}",
+                entry.server_id
+            ),
         }
     }
     let mut worker = None;

@@ -48,8 +48,6 @@ pub const PLAN_TTL_MS: u64 = 10 * 60 * 1000;
 pub const COPY_RESERVE_BYTES: u64 = 64 * 1024 * 1024;
 const PROGRESS_EVERY: u64 = 64;
 const MAX_JOBS: i64 = 256;
-/// Mirrors the registry's first-slice capacity (one active server).
-const REGISTRY_CAPACITY: i64 = 1;
 
 /// Fixed error codes. Blocker codes from the contract are reused verbatim.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -259,6 +257,8 @@ pub struct Review {
     pub found: Vec<String>,
     #[serde(default)]
     pub missing: Vec<String>,
+    #[serde(default)]
+    pub nearby: Vec<inspection::Nearby>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -681,12 +681,24 @@ impl ImportJobs {
             None => (report.size.files, report.size.bytes),
         };
         let free = self.0.env.free_bytes(&self.0.servers);
-        if free.is_none_or(|free| free < bytes.saturating_add(SPACE_MARGIN_BYTES))
-            || !report.size.complete
+        if report.size.complete
+            && free.is_some_and(|free| free < bytes.saturating_add(SPACE_MARGIN_BYTES))
         {
             blockers.insert("insufficient_space");
         }
 
+        let invalid_source = if blockers.contains("source_unreadable") {
+            Some("source_unreadable")
+        } else if !report.minecraft {
+            Some("not_minecraft_server")
+        } else {
+            None
+        };
+        if let Some(cause) = invalid_source {
+            blockers.clear();
+            blockers.insert(cause);
+            warnings.clear();
+        }
         let server_id = Uuid::new_v4();
         let plan_id = Uuid::new_v4().to_string();
         let now = super::browse::now_ms();
@@ -740,6 +752,11 @@ impl ImportJobs {
             warnings: warnings.iter().map(|w| (*w).to_owned()).collect(),
             found: report.found.iter().map(|f| (*f).to_owned()).collect(),
             missing: report.missing.iter().map(|m| (*m).to_owned()).collect(),
+            nearby: if invalid_source == Some("not_minecraft_server") {
+                inspection::nearby(&self.0.browser, binding, &request.folder_token)
+            } else {
+                Vec::new()
+            },
         };
         if review.blockers.is_empty() {
             review.confirmation = Some(random_token()?);
@@ -850,19 +867,14 @@ impl ImportJobs {
             let port = review.resources.game_port.ok_or(JobError::BLOCKED)?;
             let memory = review.resources.memory_mib.ok_or(JobError::BLOCKED)?;
             let held = reservations_in(c, None)?;
-            let committed: i64 = c.query_row(
-                "SELECT count(*) FROM machine_servers WHERE state!='deleted'",
-                [],
-                |r| r.get(0),
-            )?;
-            let pending: i64 = c.query_row(
-                "SELECT count(*) FROM machine_import_reservations r WHERE released=0 AND NOT EXISTS(SELECT 1 FROM machine_servers s WHERE s.server_id=r.server_id)",
-                [],
-                |r| r.get(0),
-            )?;
-            if committed + pending >= REGISTRY_CAPACITY {
-                return Err(JobError::CAPACITY);
-            }
+            let raw: String = c.query_row("SELECT request FROM machine_import_jobs WHERE job_id=?1", [&job_id], |r| r.get(0))?;
+            let requested: PlanRequest = serde_json::from_str(&raw).map_err(|_| JobError::UNAVAILABLE)?;
+            let name_used: bool = c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM machine_servers WHERE state!='deleted' AND lower(name)=lower(?1))
+                 OR EXISTS(SELECT 1 FROM machine_import_jobs j JOIN machine_import_reservations r ON r.job_id=j.job_id
+                           WHERE r.released=0 AND lower(trim(json_extract(j.request,'$.name')))=lower(?1))",
+                [requested.name.trim()], |r| r.get(0))?;
+            if name_used { return Err(JobError("name_in_use")); }
             if held.ports.contains(&port) {
                 return Err(JobError("game_port_in_use"));
             }

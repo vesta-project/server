@@ -552,7 +552,7 @@ fn unreadable_directories_report_source_unreadable() {
     );
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(result.unwrap_err(), ImportError::Unreadable);
-    assert!(report.unwrap().blockers.contains(&"source_unreadable"));
+    assert_eq!(report.unwrap().blockers, vec!["source_unreadable"]);
 }
 #[cfg(unix)]
 fn running_as_root() -> bool {
@@ -778,19 +778,14 @@ fn check_reports_each_status() {
     assert!(ok.folder_token.is_some());
     assert!(ok.remediation_command.is_none());
     let missing = b
-        .check(
-            &owner(),
-            &temp.path().join("no-such").to_string_lossy(),
-        )
+        .check(&owner(), &temp.path().join("no-such").to_string_lossy())
         .unwrap();
     assert_eq!(missing.status, "not_found");
     let file = b
         .check(&owner(), &temp.path().join("file.txt").to_string_lossy())
         .unwrap();
     assert_eq!(file.status, "not_directory");
-    let blocked = b
-        .check(&owner(), &protected.to_string_lossy())
-        .unwrap();
+    let blocked = b.check(&owner(), &protected.to_string_lossy()).unwrap();
     assert_eq!(blocked.status, "protected");
     assert!(b.check(&owner(), "relative").is_err());
 }
@@ -905,4 +900,36 @@ fn protected_and_system_trees_are_hidden_when_browsing_filesystem() {
             "{forbidden} listed: {listing:?}"
         );
     }
+}
+
+#[test]
+fn non_server_inspection_only_reports_cause_with_nearby() {
+    let temp = tempfile::tempdir().unwrap();
+    write(
+        temp.path().join("survival/server.properties"),
+        "server-port=25565",
+    );
+    let b = browser(temp.path());
+    let report = inspect(&b, "");
+    assert_eq!(report.blockers, vec!["not_minecraft_server"]);
+    assert!(report.warnings.is_empty());
+    assert_eq!(report.nearby.len(), 1);
+    assert!(report.nearby[0].path.ends_with("survival"));
+}
+
+#[test]
+fn root_loader_observes_local_changes_without_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let child = temp.path().join("added");
+    fs::create_dir(&child).unwrap();
+    let b = browser(temp.path());
+    let config = root_config(&child);
+    b.set_root_loader(move || Ok(vec![config.clone()]));
+    let roots = b.roots().unwrap();
+    assert!(
+        roots
+            .roots
+            .iter()
+            .any(|r| r.display_path == display(&child))
+    );
 }

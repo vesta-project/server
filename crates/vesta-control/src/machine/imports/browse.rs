@@ -119,7 +119,7 @@ pub struct ListResponse {
     pub next_cursor: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Root {
     pub(crate) config: ImportRootConfig,
     pub(crate) canonical: PathBuf,
@@ -152,6 +152,8 @@ pub(crate) struct OpenedFolder {
 
 pub struct FolderBrowser {
     roots: RwLock<Roots>,
+    reload:
+        RwLock<Option<Arc<dyn Fn() -> Result<Vec<ImportRootConfig>, ImportError> + Send + Sync>>>,
     protected: Vec<PathBuf>,
     tokens: Mutex<HashMap<String, TokenEntry>>,
     clock: Clock,
@@ -200,6 +202,7 @@ impl FolderBrowser {
             checked_protected.push(path);
         }
         let browser = Self {
+            reload: RwLock::new(None),
             roots: RwLock::new(Roots {
                 saved: Vec::new(),
                 filesystem: Vec::new(),
@@ -234,9 +237,11 @@ impl FolderBrowser {
             .filter_map(|config| open_filesystem_root(config).ok())
             .collect();
         let mut state = self.roots.write().map_err(|_| ImportError::Unavailable)?;
-        state.saved = checked;
-        state.filesystem = filesystem;
-        state.revision += 1;
+        if state.saved != checked || state.filesystem != filesystem {
+            state.saved = checked;
+            state.filesystem = filesystem;
+            state.revision += 1;
+        }
         Ok(())
     }
     fn open_root(&self, config: ImportRootConfig) -> Result<Root, ImportError> {
@@ -273,7 +278,29 @@ impl FolderBrowser {
         })
     }
 
+    pub fn set_root_loader(
+        &self,
+        loader: impl Fn() -> Result<Vec<ImportRootConfig>, ImportError> + Send + Sync + 'static,
+    ) {
+        *self.reload.write().expect("root loader") = Some(Arc::new(loader));
+    }
+    pub fn refresh_roots(&self) -> Result<(), ImportError> {
+        let loader = self
+            .reload
+            .read()
+            .map_err(|_| ImportError::Unavailable)?
+            .clone();
+        if let Some(loader) = loader {
+            let usable = loader()?
+                .into_iter()
+                .filter(|config| self.open_root(config.clone()).is_ok())
+                .collect();
+            self.replace_roots(usable)?;
+        }
+        Ok(())
+    }
     pub fn roots(&self) -> Result<RootsResponse, ImportError> {
+        self.refresh_roots()?;
         let state = self.roots.read().map_err(|_| ImportError::Unavailable)?;
         Ok(RootsResponse {
             roots: state

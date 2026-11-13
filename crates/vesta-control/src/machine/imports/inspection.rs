@@ -129,6 +129,48 @@ pub struct InspectionReport {
     /// Of `server_jar`, `server_properties`, `world`: what is absent. Explains
     /// `not_minecraft_server`.
     pub missing: Vec<&'static str>,
+    pub nearby: Vec<Nearby>,
+}
+
+#[derive(Clone, Debug, Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Nearby {
+    pub folder_token: String,
+    pub path: String,
+    pub looks_like_server: bool,
+}
+
+pub(crate) fn nearby(browser: &FolderBrowser, binding: &OwnerBinding, token: &str) -> Vec<Nearby> {
+    let mut nearby = Vec::new();
+    let mut cursor = None;
+    loop {
+        let Ok(page) = browser.list(
+            binding,
+            &super::browse::ListRequest {
+                folder_token: token.into(),
+                cursor,
+            },
+        ) else {
+            break;
+        };
+        for entry in page.entries {
+            if entry.readable && entry.looks_like_server {
+                if let Some(folder_token) = entry.folder_token {
+                    nearby.push(Nearby {
+                        folder_token,
+                        path: format!("{}/{}", page.display_path.trim_end_matches('/'), entry.name),
+                        looks_like_server: true,
+                    });
+                }
+            }
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() || nearby.len() >= 100 {
+            break;
+        }
+    }
+    nearby.truncate(100);
+    nearby
 }
 
 /// Inspect the folder a token admits for this owner.
@@ -141,6 +183,20 @@ pub fn inspect(
     let mut blockers = BTreeSet::new();
     let mut warnings = BTreeSet::new();
     let mut report = inspect_path(&opened.path, &mut blockers, &mut warnings);
+
+    if blockers.contains("source_unreadable") || !report.minecraft {
+        let cause = if blockers.contains("source_unreadable") {
+            "source_unreadable"
+        } else {
+            "not_minecraft_server"
+        };
+        if cause == "not_minecraft_server" {
+            report.nearby = nearby(browser, binding, &request.folder_token);
+        }
+        report.blockers = vec![cause];
+        report.warnings.clear();
+        return Ok(report);
+    }
 
     let mut sources = vec![opened.path.clone()];
     if let Some(original) = &request.original_path
@@ -211,15 +267,13 @@ pub fn inspect(
         match crate::files::native::volume_space(destination) {
             Ok((available, _)) => {
                 report.destination_free_bytes = Some(available);
-                if !report.size.complete
-                    || available < report.size.bytes.saturating_add(SPACE_MARGIN_BYTES)
+                if report.size.complete
+                    && available < report.size.bytes.saturating_add(SPACE_MARGIN_BYTES)
                 {
                     blockers.insert("insufficient_space");
                 }
             }
-            Err(_) => {
-                blockers.insert("insufficient_space");
-            }
+            Err(_) => {}
         }
     }
     if report.detected.kind == "amp" {
@@ -266,6 +320,7 @@ pub(crate) fn inspect_path(
         warnings: Vec::new(),
         found: Vec::new(),
         missing: Vec::new(),
+        nearby: Vec::new(),
     };
     let listing = match top_level(path) {
         Ok(listing) => listing,
