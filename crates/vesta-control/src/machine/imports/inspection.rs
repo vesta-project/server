@@ -1051,19 +1051,31 @@ mod linux {
 
 /// Independent, unprivileged source-port probe, even when importing to another port.
 pub(crate) fn stopped_evidence(source: &Path, port: Option<u16>) -> Option<&'static str> {
-    if port.is_some_and(|port| {
-        ["127.0.0.1", "::1"].iter().any(|ip| {
-            let address = format!("{}:{port}", if *ip == "::1" { "[::1]" } else { ip });
-            address.parse().ok().is_some_and(|a| {
-                std::net::TcpStream::connect_timeout(&a, std::time::Duration::from_millis(100))
-                    .is_ok()
-            })
-        })
+    let properties = read_properties(&source.join("server.properties")).ok();
+    let mut addresses = vec![
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+    ];
+    if let Some(ip) = properties
+        .as_ref()
+        .and_then(|p| p.get("server-ip"))
+        .and_then(|v| v.parse::<IpAddr>().ok())
+    {
+        // Probe only this host's interfaces, never a source-supplied remote address.
+        if !ip.is_unspecified() && std::net::TcpListener::bind((ip, 0)).is_ok() {
+            addresses.push(ip);
+        }
+    }
+    if addresses.into_iter().any(|ip| {
+        std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::new(ip, port.unwrap_or(25565)),
+            std::time::Duration::from_millis(100),
+        )
+        .is_ok()
     }) {
         return Some("source_port_listening");
     }
-    let world = read_properties(&source.join("server.properties"))
-        .ok()
+    let world = properties
         .and_then(|p| p.get("level-name").cloned())
         .unwrap_or_else(|| "world".into());
     if !super::properties::safe_world(&world) {
