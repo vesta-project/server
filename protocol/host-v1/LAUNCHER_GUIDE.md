@@ -9,7 +9,7 @@ All binary signatures and public keys use `vesta_host_client::encode`.
 
 1. Connect to `https://address:25500` (or the explicit port). GET
    `/v1/host/discovery` gives `hostId`; discovery is a hint. Use one dedicated
-   TLS 1.3 connection with resumption and early data disabled for steps 2–6.
+   TLS 1.3 connection with resumption and early data disabled for steps 2ï¿½6.
 2. `SetupCode::parse(code)`, then `Client::start(&code, Purpose::Claim, None,
    hostId, device_public_key)` returns `(client, Start)`. POST Start to
    `/v1/host/pake/start`, deserialize `Started`.
