@@ -62,13 +62,13 @@ POST `/v1/host/creates/jobs/{jobId}/start` (empty body) -> 202 envelope. Trusted
 | pack_review_warning | warning | Review the pack notices before creating this server. |
 | restore_version_unknown | warning | Vesta Server could not identify this backup's Minecraft version. |
 
-Transport errors use import's `{error:{code,requestId}}`: 400 `invalid_request|idempotency_key_required|eula_required|warnings_unacknowledged`; 404 `create_job_not_found`; 409 `conflict|plan_blocked|plan_expired|confirmation_invalid|idempotency_conflict|name_in_use|game_port_in_use|memory_budget_exceeded`; 413 `request_too_large`; 501 `not_supported_yet`; 503 `creates_unavailable|create_jobs_saturated|worker_unavailable|unavailable`. Download failures surface fixed job errors `download_failed|integrity_conflict|install_failed|java_unresolved|start_failed`. Suggested text: “Vesta Server could not finish this step. Try again.” Cancellation uses `cancelled`; interruption uses `interrupted`.
+Transport errors use import's `{error:{code,requestId}}`: 400 `invalid_request|idempotency_key_required|eula_required|warnings_unacknowledged`; 404 `create_job_not_found`; 409 `conflict|plan_blocked|plan_expired|confirmation_invalid|idempotency_conflict|name_in_use|game_port_in_use|memory_budget_exceeded`; 413 `request_too_large`; 501 `not_supported_yet`; 503 `creates_unavailable|create_jobs_saturated|worker_unavailable|unavailable`. Download failures surface fixed job errors `download_failed|integrity_conflict|install_failed|java_unresolved|start_failed`. Suggested text: "Vesta Server could not finish this step. Try again." Cancellation uses `cancelled`; interruption uses `interrupted`.
 
 ## Server cards and import corrections
 
 GET `/v1/host/servers` entries gain `software:{kind,version}|null`, `minecraftVersion:string|null`, `iconEtag:string|null`. Null means unknown/no icon. Exact authenticated image URL: `/v1/servers/{serverId}/manage/server/icon` (PNG); ETag is the existing quoted SHA256 branding icon etag.
 
-Import inspection and review gain `nearby:[{folderToken,path,looksLikeServer:true}]` for immediate readable child server folders, allowing “Did you mean survival?”. An unreadable source yields only `source_unreadable`; a readable non-server yields only `not_minecraft_server`, plus found/missing/nearby. Do not derive Java/space/resource blockers without valid source facts. Never report insufficient_space for unknown required size or when free >= required. Re-read saved import roots per request so `vesta import-root add` takes effect without restarting.
+Import inspection and review gain `nearby:[{folderToken,path,looksLikeServer:true}]` for immediate readable child server folders, allowing "Did you mean survival?". An unreadable source yields only `source_unreadable`; a readable non-server yields only `not_minecraft_server`, plus found/missing/nearby. Do not derive Java/space/resource blockers without valid source facts. Never report insufficient_space for unknown required size or when free >= required. Re-read saved import roots per request so `vesta import-root add` takes effect without restarting.
 
 ## Implementation status
 
