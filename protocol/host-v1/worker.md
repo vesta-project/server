@@ -33,3 +33,31 @@ Worker executes only if subject generation equals its persisted current generati
 Host commits a grant/revocation and new generation, immediately denies old sessions/streams, pushes full snapshot to every registered worker (generation is host-wide), waits for durable ack before returning successful mutation. Sessions with active devices may continue with freshly resolved authority; their cached generation is not authority. Worker ack occurs after queued actions and subscriptions are invalidated and currently executing authorization-critical effects reach a safe barrier. Completed effects cannot be undone; in-flight long jobs stop at their next safe checkpoint. Unreachable workers keep games running but no privileged management; host returns 503 `revocation_pending` with operation id, not a false global success. Retry/status completes after sync or explicit worker quarantine. Policy lease <=10s, renewed by authenticated heartbeat only for matching generation. Expired lease/disconnect blocks new effects and output; if unreachable worker might retain a lease, host waits lease expiry before declaring revocation barrier complete. Never authorize from stale cached owners after host outage. Persist generation floor across worker restart; no rollback on reconnect.
 
 Tests required: forged peer/MAC, reused nonce/sequence, oversized frame, wrong host/server/epoch, stale and future generation, revoke while queued/streaming, disconnected lease expiry, resync after crash, hung output while revoke arrives, operation retry, host/worker restart with live game and save lease. OS checks must prove mod code cannot read host or worker credentials or reach recovery.
+
+## First in-process slice (H05)
+
+The initial implementation uses `vesta_control::worker::ServerWorker`, with
+`Worker` retaining the composed service/runtime owner and `WorkerHandle` exposing
+admission. `Worker::from_registry` constructs zero or one worker from a trusted
+registry entry and host-local configuration/supervisor. It starts no HTTPS or
+SFTP listener and creates no account/device credentials. Existing standalone
+`serve` remains a compatibility path.
+
+`sync_policy` accepts a complete effective grant snapshot, persists its generation
+floor and refuses rollback or changed policy at the same generation. Every newly
+opened handle requires synchronization before accepting subjects. Subjects carry
+host/server/account/device ids, generation, a maximum 30-second validity window
+and exact capabilities. A request-scoped management facade checks those values
+and intersects capabilities with the current server-role policy; existing domain
+mutations reload that policy inside their transactions. Legacy identity/security
+routes are excluded by the transport adapter. The adapter accepts server-relative
+management suffixes (for example `files/content`) and only allowlisted request
+metadata, preserving existing handler bodies and streaming response types.
+
+These Rust data types are an internal seam, not the JSON wire format above.
+Authenticated IPC, policy leases, queued-operation generation barriers and stream
+revocation remain H06/H07 hardening. The in-process facade must only receive
+subjects already authenticated by the host; it is never a public subject-taking
+endpoint. Host route mounting and rewriting legacy server ids/URLs in payloads
+remain H08. Existing supervisor/save/operation leases and shutdown ownership are
+unchanged; a shutdown timeout returns the worker owner for a later retry.

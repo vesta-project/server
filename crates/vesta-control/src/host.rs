@@ -318,6 +318,15 @@ impl Host {
         clock: Arc<dyn Clock>,
         supervisor: Option<vesta_supervisor::RemoteProcess>,
     ) -> Result<Self, HostError> {
+        Self::open_bound(config, clock, supervisor, None)
+    }
+
+    pub(crate) fn open_bound(
+        config: HostConfiguration,
+        clock: Arc<dyn Clock>,
+        supervisor: Option<vesta_supervisor::RemoteProcess>,
+        worker: Option<(uuid::Uuid, uuid::Uuid)>,
+    ) -> Result<Self, HostError> {
         let checked = check_launch(&config)?;
         let owner = match (config.supervision(), supervisor) {
             (Supervision::InProcess, None) => {
@@ -363,6 +372,12 @@ impl Host {
             }
         };
         let db = StateDatabase::open(checked.state, clock).map_err(HostError::State)?;
+        if let Some((host, server)) = worker {
+            if crate::identity::worker_policy::initialize(&db, host, server).is_err() {
+                let _ = db.close();
+                return Err(HostError::Supervisor("worker_policy_unavailable"));
+            }
+        }
         match compose(config, &db, checked.launch, owner) {
             Ok(host) => Ok(host),
             Err(error) => {
@@ -1019,6 +1034,10 @@ impl Drop for AdmissionRefresh {
     }
 }
 impl NetworkHost {
+    pub(crate) fn with_trusted(mut self, trusted: crate::worker::TrustedAuthorization) -> Self {
+        self.management = self.management.with_trusted(trusted);
+        self
+    }
     pub fn resource_packs(&self) -> &crate::resource_packs::hosting::Handle {
         &self.resource_packs
     }

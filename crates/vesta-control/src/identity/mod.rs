@@ -7,6 +7,7 @@
 //! authority remains unavailable in production. Resource scopes are lexical, not
 //! filesystem confinement, and naming a capability does not implement a handler.
 mod authorization;
+pub(crate) mod worker_policy;
 mod builtin_roles;
 mod capability;
 mod domain;

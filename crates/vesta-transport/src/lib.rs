@@ -62,6 +62,7 @@ use vesta_control::{
 
 mod file_body;
 mod manage;
+pub mod worker;
 mod pack_sync;
 pub mod pending;
 mod probe;

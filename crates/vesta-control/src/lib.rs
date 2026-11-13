@@ -14,6 +14,7 @@ pub mod content;
 pub mod external_alerts;
 pub mod files;
 pub mod host;
+pub mod worker;
 mod host_software;
 pub mod identity;
 pub mod java;

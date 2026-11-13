@@ -165,6 +165,7 @@ impl Stores {
 #[derive(Clone)]
 pub struct ManagementAccess {
     db: StateDatabase,
+    trusted: Option<Arc<crate::worker::TrustedAuthorization>>,
     session_limit: usize,
     session_ttl_ms: i64,
     audit: AuditLog,
@@ -209,6 +210,7 @@ impl ManagementAccess {
             return Err(ManagementError::InvalidRequest);
         }
         Ok(Self {
+            trusted: None,
             session_limit: capacity,
             session_ttl_ms: ttl_ms,
             audit: AuditLog::new(db.clone())?,
@@ -461,6 +463,9 @@ impl ManagementAccess {
         resource: Option<&super::Resource>,
     ) -> Result<Subject> {
         let subject = self.authenticate(token)?;
+        if let Some(trusted) = &self.trusted {
+            return trusted.authorize(capability, resource);
+        }
         self.read(|repo| {
             let (current, _) = self.subject_in(repo, &subject.device)?;
             if current != subject {
@@ -639,7 +644,12 @@ impl ManagementAccess {
             .map_err(|_| ManagementError::Unavailable)?;
         Ok(stores.console_credentials.redact(text))
     }
+    pub(crate) fn with_trusted(mut self, trusted: crate::worker::TrustedAuthorization) -> Self {
+        self.trusted = Some(Arc::new(trusted));
+        self
+    }
     pub fn authenticate(&self, token: &str) -> Result<Subject> {
+        if let Some(trusted) = &self.trusted { return trusted.authenticate(); }
         decode::<32>(token).map_err(|_| ManagementError::SessionInvalid)?;
         let mut stores = self
             .stores
