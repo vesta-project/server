@@ -4,9 +4,6 @@ mod agent_startup;
 mod cli;
 mod commands;
 mod control;
-mod host_local;
-#[cfg(windows)]
-mod host_local_windows;
 #[cfg(test)]
 mod control_tests;
 mod editor;
@@ -58,20 +55,6 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
         Ok(None) => (),
-    }
-    if dispatch_args
-        .first()
-        .and_then(|a| a.to_str())
-        .is_some_and(|a| matches!(a, "setup-code" | "link"))
-    {
-        let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        else {
-            eprintln!("host_local_runtime_unavailable");
-            return ExitCode::FAILURE;
-        };
-        return runtime.block_on(host_local::run(dispatch_args));
     }
     let command = match cli::parse(std::env::args_os().skip(1)) {
         Ok(command) => command,

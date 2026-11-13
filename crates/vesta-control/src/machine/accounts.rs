@@ -70,17 +70,6 @@ pub struct HostAccounts {
     proofs: HashMap<String, Proof>,
 }
 impl HostAccounts {
-    #[cfg(test)]
-    pub(crate) fn seed_test_proof(&mut self, id: &str, scope: &AccountScope, account: Uuid) {
-        self.proofs.insert(
-            id.into(),
-            Proof {
-                scope: scope.clone(),
-                account,
-                deadline: Deadline::new(self.state.now_ms(), 120),
-            },
-        );
-    }
     pub fn new(state: HostState) -> Result<Self> {
         let host = state.snapshot().map_err(|_| UNAVAILABLE)?.host_id;
         let verifier =
@@ -187,21 +176,11 @@ impl HostAccounts {
         scope: &AccountScope,
         commit: impl FnOnce(Uuid) -> Result<T>,
     ) -> Result<T> {
-        self.consume_checked(id, scope, |account, _| commit(account))
-    }
-    /// The callback must recheck this lease inside its enrollment transaction,
-    /// after waiting for database admission and immediately before mutation.
-    pub fn consume_checked<T>(
-        &mut self,
-        id: &str,
-        scope: &AccountScope,
-        commit: impl FnOnce(Uuid, &dyn Fn() -> bool) -> Result<T>,
-    ) -> Result<T> {
         let proof = self.proofs.get(id).ok_or(PAIRING)?;
         if &proof.scope != scope || !proof.deadline.live(self.state.now_ms()) {
             return Err(PAIRING);
         }
-        let result = commit(proof.account, &|| proof.deadline.live(self.state.now_ms()))?;
+        let result = commit(proof.account)?;
         self.proofs.remove(id);
         Ok(result)
     }

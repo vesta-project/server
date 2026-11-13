@@ -273,7 +273,7 @@ async fn serve_stream<S: AsyncRead + AsyncWrite + Unpin>(
     result
 }
 #[cfg(target_os = "linux")]
-pub(crate) struct SocketCleanup {
+struct SocketCleanup {
     path: PathBuf,
     device: u64,
     inode: u64,
@@ -298,7 +298,7 @@ impl Drop for SocketCleanup {
 /// Caller owns the managed instance lease and runtime runner lock. Reclaim only
 /// an owner-only socket inode that demonstrably has no listener.
 #[cfg(target_os = "linux")]
-pub(crate) fn bind_control(endpoint: &Path) -> Result<(tokio::net::UnixListener, SocketCleanup)> {
+fn bind_control(endpoint: &Path) -> Result<(tokio::net::UnixListener, SocketCleanup)> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
     local_files::guard(endpoint)?;
     let (_directory, address) = vesta_supervisor::native::socket_address(endpoint)

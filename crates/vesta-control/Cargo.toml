@@ -10,7 +10,6 @@ publish.workspace = true
 latency-probe = ["vesta-state/latency-probe"]
 
 [dependencies]
-chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
 modpack-engine = { path = "../modpack-engine" }
 vesta-state.workspace = true
 vesta-protocol.workspace = true

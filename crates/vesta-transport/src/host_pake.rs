@@ -15,14 +15,12 @@ use zeroize::Zeroizing;
 /// One accepted TLS connection. Drop every strong reference on disconnect.
 /// Request extensions carry a clone; stored exchanges hold only Weak references.
 pub struct Connection {
-    pub(crate) identity_id: uuid::Uuid,
     exporter: Zeroizing<[u8; 32]>,
     pub fingerprint: String,
 }
 impl Connection {
     pub(crate) fn new(exporter: [u8; 32], fingerprint: String) -> Arc<Self> {
         Arc::new(Self {
-            identity_id: uuid::Uuid::new_v4(),
             exporter: Zeroizing::new(exporter),
             fingerprint,
         })
@@ -58,7 +56,6 @@ pub struct Capability {
     pub purpose: Purpose,
     pub link_id: Option<String>,
     pub code_epoch: u64,
-    pub valid_until: Instant,
 }
 struct Code {
     password: SetupCode,
@@ -85,8 +82,6 @@ pub struct HostPake {
     link: Option<Code>,
     exchanges: HashMap<String, Exchange>,
     tokens: HashMap<[u8; 32], Token>,
-    completed_links: HashMap<[u8; 32], Token>,
-    completed_claims: HashMap<[u8; 32], Token>,
     buckets: HashMap<IpAddr, u8>,
     window: Instant,
     starts: u8,
@@ -116,8 +111,6 @@ impl HostPake {
             link: None,
             exchanges: HashMap::new(),
             tokens: HashMap::new(),
-            completed_links: HashMap::new(),
-            completed_claims: HashMap::new(),
             buckets: HashMap::new(),
             window: now,
             starts: 0,
@@ -150,11 +143,6 @@ impl HostPake {
         self.exchanges
             .retain(|_, x| x.capability.purpose != purpose);
         self.tokens.retain(|_, x| x.capability.purpose != purpose);
-        if purpose == Purpose::Link {
-            self.completed_links.clear();
-        } else {
-            self.completed_claims.clear();
-        }
         let shown = SetupCode::parse(password.canonical())?;
         let code = Some(Code {
             password,
@@ -173,10 +161,6 @@ impl HostPake {
         self.exchanges
             .retain(|_, x| x.deadline > now && x.connection.strong_count() > 0);
         self.tokens
-            .retain(|_, x| x.deadline > now && x.connection.strong_count() > 0);
-        self.completed_links
-            .retain(|_, x| x.deadline > now && x.connection.strong_count() > 0);
-        self.completed_claims
             .retain(|_, x| x.deadline > now && x.connection.strong_count() > 0);
         if self.claim.as_ref().is_some_and(|x| x.deadline <= now) {
             self.claim = None;
@@ -284,7 +268,6 @@ impl HostPake {
             purpose: request.purpose,
             link_id: code.link_id.clone(),
             code_epoch: code.epoch,
-            valid_until: code.deadline,
         };
         self.exchanges.insert(
             response.exchange_id.clone(),
@@ -331,14 +314,12 @@ impl HostPake {
             pake_token: token,
             expires_at: timestamp(ttl),
         };
-        let mut capability = exchange.capability;
-        capability.valid_until = now + ttl;
         self.tokens.insert(
             hash,
             Token {
                 connection: exchange.connection,
                 deadline: now + ttl,
-                capability,
+                capability: exchange.capability,
             },
         );
         Ok(response)
@@ -354,19 +335,6 @@ impl HostPake {
     }
     /// Authorizes account challenge/completion and the matching claim/link only.
     /// Never translate this capability into an ordinary host bearer.
-    pub fn account_capability(
-        &mut self,
-        connection: &Arc<Connection>,
-        token: &str,
-    ) -> Result<Capability> {
-        self.reap(Instant::now());
-        let t = self.tokens.get(&token_hash(token)?).ok_or(PairingFailed)?;
-        if !t.connection.ptr_eq(&Arc::downgrade(connection)) {
-            return Err(PairingFailed);
-        }
-        self.code(&t.capability)?;
-        Ok(t.capability.clone())
-    }
     pub fn authorize(
         &mut self,
         connection: &Arc<Connection>,
@@ -395,120 +363,24 @@ impl HostPake {
         let cap = self.authorize(connection, token, Purpose::Claim, device_key)?;
         authority.consume_claim(&cap)?;
         self.claim = None;
-        let completed: Vec<_> = self
-            .tokens
-            .iter()
-            .filter(|(_, t)| t.capability.exchange_id == cap.exchange_id)
-            .map(|(key, _)| *key)
-            .collect();
-        for key in completed {
-            if let Some(token) = self.tokens.remove(&key) {
-                self.completed_claims.insert(key, token);
-            }
-        }
         self.tokens
             .retain(|_, x| x.capability.purpose != Purpose::Claim);
         self.exchanges
             .retain(|_, x| x.capability.purpose != Purpose::Claim);
         Ok(())
     }
-    /// Authorizes only an exact retry of the durable claim receipt, never a new
-    /// account proof or claim. Reconnection uses fresh device session proof.
-    pub fn claim_result_capability(
-        &mut self,
-        connection: &Arc<Connection>,
-        token: &str,
-    ) -> Result<Capability> {
-        self.reap(Instant::now());
-        let t = self
-            .completed_claims
-            .get(&token_hash(token)?)
-            .ok_or(PairingFailed)?;
-        if !t.connection.ptr_eq(&Arc::downgrade(connection)) {
-            return Err(PairingFailed);
-        }
-        Ok(t.capability.clone())
-    }
     /// H04 calls only after committing the exact approved link request.
-    pub fn validate_link_capability(&mut self, cap: &Capability) -> Result<()> {
-        self.reap(Instant::now());
-        self.code(cap)?;
-        if cap.purpose != Purpose::Link
-            || !self.tokens.values().any(|t| {
-                t.capability.exchange_id == cap.exchange_id
-                    && t.capability.code_epoch == cap.code_epoch
-            })
-        {
-            return Err(PairingFailed);
-        }
-        Ok(())
-    }
     pub fn consume_link(&mut self, cap: &Capability) -> Result<()> {
         self.code(cap)?;
         if cap.purpose != Purpose::Link {
             return Err(PairingFailed);
         }
         self.link = None;
-        let completed: Vec<_> = self
-            .tokens
-            .iter()
-            .filter(|(_, x)| x.capability.exchange_id == cap.exchange_id)
-            .map(|(k, _)| *k)
-            .collect();
-        for key in completed {
-            if let Some(token) = self.tokens.remove(&key) {
-                self.completed_links.insert(key, token);
-            }
-        }
         self.tokens
             .retain(|_, x| x.capability.purpose != Purpose::Link);
         self.exchanges
             .retain(|_, x| x.capability.purpose != Purpose::Link);
         Ok(())
-    }
-    /// Completed link tokens allow only polling the committed device id. They
-    /// cannot authorize account proof, enrollment, or ordinary host operations.
-    pub fn authorize_link_status(
-        &mut self,
-        connection: &Arc<Connection>,
-        token: &str,
-        device_key: &str,
-    ) -> Result<Capability> {
-        if let Ok(cap) = self.authorize(connection, token, Purpose::Link, device_key) {
-            return Ok(cap);
-        }
-        self.reap(Instant::now());
-        let t = self
-            .completed_links
-            .get(&token_hash(token)?)
-            .ok_or(PairingFailed)?;
-        if !t.connection.ptr_eq(&Arc::downgrade(connection))
-            || t.capability.device_key != device_key
-        {
-            return Err(PairingFailed);
-        }
-        Ok(t.capability.clone())
-    }
-    pub fn link_poll_capability(
-        &mut self,
-        connection: &Arc<Connection>,
-        token: &str,
-    ) -> Result<Capability> {
-        if let Ok(cap) = self.account_capability(connection, token) {
-            if cap.purpose == Purpose::Link {
-                return Ok(cap);
-            }
-            return Err(PairingFailed);
-        }
-        self.reap(Instant::now());
-        let t = self
-            .completed_links
-            .get(&token_hash(token)?)
-            .ok_or(PairingFailed)?;
-        if !t.connection.ptr_eq(&Arc::downgrade(connection)) {
-            return Err(PairingFailed);
-        }
-        Ok(t.capability.clone())
     }
 }
 #[cfg(test)]

@@ -34,20 +34,3 @@ strings. Every authority change advances the host-wide generation. Worker
 synchronization/barriers, wire idempotency, PAKE, online account proof and sessions
 belong to their respective packages and are not implemented here. Reserved module
 files are intentionally empty extension points.
-
-H02/H04 composition: construct one `vesta_transport::host_identity::HostIdentity`
-for the host process. H08 passes the actual TLS `Connection` into PAKE and account
-calls and uses its session methods; never deserialize `AccountScope`, `LinkApprover`
-or `LocalPrivilege`. Account completion performs Mojang I/O without holding the
-PAKE lock and reauthorizes afterward. Invite enrollment remains F02.
-
-H10 starts `apps/vesta-agent/src/host_local.rs::Server::start` with that SAME
-`Arc<HostIdentity>` and the protected host-state path. The CLI commands are wired
-in `main.rs`; they never open or modify the DB directly. The socket is separate
-from game control and HTTP. Linux admits the service uid and root, with 0700 parent,
-0600 socket and peer-credential checks. Windows uses a protected service-SID plus
-Administrators pipe DACL, rejects remote clients and checks the server process SID
-against the host-state directory owner. This first pass deliberately still trusts
-processes running as the service user. H11 must provision distinct game/worker
-identities and test that they cannot traverse host state or reach this channel.
-No H04 change starts a listener from `serve.rs`, which H05/H10 own.

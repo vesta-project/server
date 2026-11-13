@@ -586,7 +586,6 @@ The game-runtime crate now directly uses the workspace-pinned serde_json to vali
 - `rand_chacha = 0.3.1` (tests only): seeded deterministic transcript vectors, never production entropy.
 - `chrono = 0.4.45` (std only): reuse the already locked timestamp library for RFC3339 response expiry formatting; admission uses monotonic deadlines.
 - The new dependency-light `vesta-host-client` also directly pins the existing workspace serde/serde_json, sha2, base64 and zeroize versions so it can be consumed independently by path/git without server control/store dependencies. Transport adds the existing workspace uuid edge. The isolated conformance harness reuses existing rustls and certificate fixtures; it opens loopback sockets only in tests.
-- `vesta-control` uses the existing pinned `chrono = 0.4.45` (std only) to validate signed host-link RFC3339 expiry timestamps.
 
 ## LAN DNS-SD (2026-11-13)
 

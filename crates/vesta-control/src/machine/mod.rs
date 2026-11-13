@@ -17,5 +17,3 @@ pub use state::{HostSnapshot, HostState};
 
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod enrollment_tests;
