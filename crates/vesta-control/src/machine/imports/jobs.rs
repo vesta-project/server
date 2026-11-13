@@ -398,6 +398,19 @@ impl ImportJobs {
     pub fn servers_root(&self) -> &Path {
         &self.0.servers
     }
+    /// Names held by committed servers and pending imports share one namespace.
+    pub fn suggested_create_name(&self) -> JobResult<String> {
+        self.read(|c| {
+            let mut stmt = c.prepare("SELECT name FROM machine_servers WHERE state!='deleted' UNION SELECT json_extract(request,'$.name') FROM machine_import_jobs WHERE state IN ('applying','interrupted')")?;
+            let names = stmt.query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for n in 1..=100_000 {
+                let name = if n == 1 { "Minecraft Server".into() } else { format!("Minecraft Server {n}") };
+                if !names.iter().any(|v| v.trim().eq_ignore_ascii_case(&name)) { return Ok(name); }
+            }
+            Err(JobError::CAPACITY)
+        })
+    }
     /// Shared committed and in-flight reservations, used by owner resource previews.
     pub fn resource_plans(
         &self,

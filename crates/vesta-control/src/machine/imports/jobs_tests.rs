@@ -764,3 +764,25 @@ fn unreadable_source_plan_reports_only_the_source_cause() {
         assert!(review.warnings.is_empty());
     }
 }
+
+#[test]
+fn create_defaults_include_pending_import_name_port_and_memory_reservations() {
+    let f = Fixture::new();
+    f.vanilla();
+    let job = f.jobs.plan(&f.binding, PlanRequest {
+        folder_token: f.token("vanilla"), name: "minecraft server".into(), game_port: None,
+        memory_mib: Some(8192), launch_choice: None, minecraft_version: None,
+    }).unwrap();
+    let accepted = f.jobs.apply(&f.binding, &Fixture::apply_request(&job), "reserved-default").unwrap();
+    assert_eq!(f.jobs.suggested_create_name().unwrap(), "Minecraft Server 2");
+    let (memory, port) = f.jobs.resource_plans(None, None).unwrap();
+    assert_eq!(port.game_port, Some(25566));
+    assert_eq!(memory.memory_mib, Some(4096));
+    assert_eq!(memory.reserved_mib, 8192);
+    f.jobs.cancel(&f.binding, &accepted.job_id).unwrap();
+    f.jobs.run_apply(&f.binding, &accepted.job_id).unwrap();
+    assert_eq!(f.jobs.suggested_create_name().unwrap(), "Minecraft Server");
+    let (memory, port) = f.jobs.resource_plans(None, None).unwrap();
+    assert_eq!(port.game_port, Some(25565));
+    assert_eq!(memory.reserved_mib, 0);
+}

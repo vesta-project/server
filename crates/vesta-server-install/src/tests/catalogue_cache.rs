@@ -303,3 +303,27 @@ async fn cancellation_while_waiting_releases_query_admission() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn minecraft_catalogue_preserves_upstream_release_evidence_and_reuses_cache() {
+    let fixture = Fixture::new(Software::Vanilla).await;
+    fixture.server.reset().await;
+    Mock::given(method("GET")).and(path("/minecraft/v0/manifest.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "latest":{"release":"26.1"},
+            "versions":[
+                {"id":"26.2-snapshot-1","type":"snapshot","url":"https://piston-meta.mojang.com/snapshot.json","sha1":"a".repeat(40)},
+                {"id":"26.1","type":"release","url":"https://piston-meta.mojang.com/release.json","sha1":"b".repeat(40)}
+            ]
+        }))).expect(1).mount(&fixture.server).await;
+    for _ in 0..2 {
+        let versions = fixture.installer.minecraft_catalogue(&SilentProgressReporter).await.unwrap();
+        assert_eq!(versions.len(), 2);
+        assert!(versions[0].experimental);
+        assert!(!versions[0].recommended);
+        assert!(versions[1].stable);
+        assert!(versions[1].recommended);
+        assert_eq!(versions[1].id, "26.1");
+    }
+    assert_eq!(fixture.server.received_requests().await.unwrap().len(), 1);
+}

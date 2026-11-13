@@ -22,12 +22,12 @@ mod transfer;
 
 pub use bundle::{ArtifactRecord, BundleReceipt};
 pub use catalogue_cache::{
-    CatalogueRecord, CatalogueStore, CATALOGUE_CACHE_DISK_BYTES, CATALOGUE_CACHE_DOCUMENT_BYTES,
-    CATALOGUE_CACHE_ENTRIES,
+    CATALOGUE_CACHE_DISK_BYTES, CATALOGUE_CACHE_DOCUMENT_BYTES, CATALOGUE_CACHE_ENTRIES,
+    CatalogueRecord, CatalogueStore,
 };
 pub use config::TransportConfig;
 pub use install::{InstallOutcome, InstallRoots, Receipt};
-pub use managed::{verify_managed_artifacts, ManagedArtifact, ManagedLaunch};
+pub use managed::{ManagedArtifact, ManagedLaunch, verify_managed_artifacts};
 pub use model::{
     Acknowledgments, Approval, ArtifactReview, DigestAlgorithm, GeneratedFile, InstallError,
     InstallPlan, JavaRequirement, LaunchRecipe, Limits, PublishedDigest, Result, Software,
@@ -35,7 +35,7 @@ pub use model::{
 };
 pub use progress::{ProgressReporter, SilentProgressReporter};
 pub use providers::buildtools::{BuiltReceipt, SourceRefs};
-pub use providers::{releases::SoftwareRelease, Selection};
+pub use providers::{Selection, releases::SoftwareRelease};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -65,6 +65,39 @@ pub struct ServerInstaller {
 const CATALOGUE_TOTAL_MS: u64 = 12_000;
 
 impl ServerInstaller {
+    /// Minecraft manifest classifications, preserving upstream newest-first order.
+    /// Unlike `versions`, this keeps release/snapshot evidence for host defaults.
+    pub async fn minecraft_catalogue(
+        &self,
+        reporter: &dyn ProgressReporter,
+    ) -> Result<Vec<MinecraftVersion>> {
+        if reporter.is_dry_run() {
+            return Err(InstallError::InvalidInput);
+        }
+        let mut job = self.catalogue_job();
+        let key = self
+            .http
+            .catalogue_key(&format!("minecraft-manifest:{:?}", self.limits));
+        let guard = self.http.catalogues.query(&key, &job, reporter).await?;
+        if let Some(versions) = self
+            .cached_result::<MinecraftVersion>(&key, &job, reporter)
+            .await?
+        {
+            if versions
+                .iter()
+                .all(|v| model::identifier(&v.id) && v.stable != v.experimental)
+                && versions.iter().filter(|v| v.recommended).count() == 1
+                && versions.iter().any(|v| v.recommended && v.stable)
+            {
+                return Ok(versions);
+            }
+        }
+        let versions = providers::minecraft_catalogue(&self.http, &mut job, reporter)
+            .await
+            .inspect_err(|e| guard.failed(*e))?;
+        self.cache_result(key, &versions, job);
+        Ok(versions)
+    }
     fn catalogue_job(&self) -> transfer::Job {
         let mut limits = self.limits;
         limits.total_ms = limits.total_ms.min(CATALOGUE_TOTAL_MS);
@@ -323,6 +356,13 @@ impl ServerInstaller {
         }
         install::disk_space(&self.roots.base)
     }
+}
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct MinecraftVersion {
+    pub id: String,
+    pub stable: bool,
+    pub experimental: bool,
+    pub recommended: bool,
 }
 fn now() -> Result<u64> {
     SystemTime::now()

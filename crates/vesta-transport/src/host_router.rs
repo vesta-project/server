@@ -17,6 +17,7 @@ use vesta_control::{
     },
     worker::{ServerSubject, ServerWorker, Worker, WorkerGrant, WorkerHandle, WorkerPolicy},
 };
+mod creates;
 mod imports;
 mod owners;
 
@@ -36,6 +37,7 @@ pub struct HostRouter {
     /// Workers this router created or adopted; the host shuts them down.
     owned: Arc<Mutex<Vec<Worker>>>,
     imports: Option<Arc<ImportService>>,
+    catalogue: Option<Arc<dyn vesta_control::machine::creates::Catalogue>>,
 }
 impl HostRouter {
     pub fn new(identity: Arc<HostIdentity>, name: String, folders: Arc<FolderBrowser>) -> Self {
@@ -46,6 +48,7 @@ impl HostRouter {
             workers: Default::default(),
             owned: Default::default(),
             imports: None,
+            catalogue: None,
         }
     }
     /// Enable the import job routes. `create` builds a registered server's
@@ -55,10 +58,21 @@ impl HostRouter {
         jobs: ImportJobs,
         create: impl Fn(Uuid) -> Result<Worker, JobError> + Send + Sync + 'static,
     ) -> Self {
+        self.catalogue = vesta_control::machine::creates::LiveCatalogue::open(jobs.servers_root())
+            .ok()
+            .map(|c| Arc::new(c) as Arc<dyn vesta_control::machine::creates::Catalogue>);
         self.imports = Some(Arc::new(ImportService {
             jobs,
             create: Box::new(create),
         }));
+        self
+    }
+    /// Substitute metadata providers (also useful for offline installations).
+    pub fn with_create_catalogue(
+        mut self,
+        catalogue: Arc<dyn vesta_control::machine::creates::Catalogue>,
+    ) -> Self {
+        self.catalogue = Some(catalogue);
         self
     }
     /// The owner-chosen machine name, or the configured one until renamed.
@@ -196,8 +210,8 @@ impl Transport {
                     let Some(router) = weak.upgrade().map(|a| a.router.clone()) else {
                         break;
                     };
-                    let _ = tokio::task::spawn_blocking(move || router.refresh_server_states())
-                        .await;
+                    let _ =
+                        tokio::task::spawn_blocking(move || router.refresh_server_states()).await;
                 }
             });
             app
@@ -441,7 +455,10 @@ impl Application {
         peer: SocketAddr,
         bytes: &[u8],
     ) -> Reply {
-        if query.is_some() && !path.starts_with("/v1/servers/") {
+        if query.is_some()
+            && !path.starts_with("/v1/servers/")
+            && path != "/v1/host/catalogue/software"
+        {
             return failure(StatusCode::BAD_REQUEST, "invalid_request");
         }
         if matches!(*method, Method::GET | Method::HEAD) && !bytes.is_empty() {
@@ -716,6 +733,9 @@ impl Application {
         }
         if owner.is_none() {
             return failure(StatusCode::FORBIDDEN, "forbidden");
+        }
+        if path.starts_with("/v1/host/catalogue/") || path.starts_with("/v1/host/creates/") {
+            return creates::dispatch(&self.router, method, path, query);
         }
         if method == Method::PATCH && path == "/v1/host" {
             return match state.update_settings(Actor::Account(device.account_id), input!()) {

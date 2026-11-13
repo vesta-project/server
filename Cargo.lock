@@ -3726,6 +3726,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
+ "url",
  "uuid",
  "vesta-control",
  "vesta-host-client",

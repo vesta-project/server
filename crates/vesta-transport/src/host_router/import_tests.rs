@@ -16,6 +16,40 @@ use vesta_control::{
 
 const GIB: u64 = 1024 * 1024 * 1024;
 
+struct FakeCatalogue;
+impl vesta_control::machine::creates::Catalogue for FakeCatalogue {
+    fn minecraft(&self) -> Result<Vec<vesta_server_install::MinecraftVersion>, JobError> {
+        Ok(vec![
+            vesta_server_install::MinecraftVersion {
+                id: "26.2-snapshot-1".into(),
+                stable: false,
+                experimental: true,
+                recommended: false,
+            },
+            vesta_server_install::MinecraftVersion {
+                id: "26.1".into(),
+                stable: true,
+                experimental: false,
+                recommended: true,
+            },
+        ])
+    }
+    fn releases(
+        &self,
+        kind: vesta_server_install::Software,
+        _: &str,
+    ) -> Result<Vec<vesta_server_install::SoftwareRelease>, JobError> {
+        if kind == vesta_server_install::Software::Spigot {
+            return Err(JobError("provider_unavailable"));
+        }
+        Ok(vec![vesta_server_install::SoftwareRelease {
+            id: "42".into(),
+            build: Some(42),
+            loader_version: None,
+        }])
+    }
+}
+
 /// Deterministic observations: source stopped, ports free, plenty of disk.
 #[derive(Default)]
 struct FakeEnv {
@@ -147,7 +181,8 @@ impl Host {
         let router = HostRouter::new(identity, "Test machine".into(), folders)
             .with_imports(jobs, move |id| {
                 factory.create_worker(id, Arc::new(vesta_state::SystemClock))
-            });
+            })
+            .with_create_catalogue(Arc::new(FakeCatalogue));
         let transport = Transport::start_host(router.clone(), &listener).unwrap();
         let mut wire = Wire::connect(transport.local_addr());
         let owner = format!(
@@ -660,4 +695,82 @@ fn real_vanilla_import_reaches_online_and_is_managed_through_mapped_routes() {
             .unwrap()
             .is_some()
     );
+}
+
+#[test]
+fn create_catalogue_and_defaults_are_machine_level_and_owner_only() {
+    let host = Host::new(Arc::new(FakeEnv::default()));
+    for path in [
+        "/v1/host/catalogue/minecraft",
+        "/v1/host/catalogue/software?minecraftVersion=26.1",
+        "/v1/host/creates/defaults",
+    ] {
+        let (status, value) = host.call("GET", path, Value::Null, &host.stranger);
+        assert_eq!(status, 403, "{value}");
+    }
+    let (status, value) = host.call(
+        "GET",
+        "/v1/host/catalogue/minecraft",
+        Value::Null,
+        &host.owner,
+    );
+    assert_eq!(status, 200, "{value}");
+    assert_eq!(value["latestStable"], "26.1");
+    assert_eq!(value["versions"][0]["experimental"], true);
+    let (status, value) = host.call(
+        "GET",
+        "/v1/host/catalogue/software?minecraftVersion=26.1",
+        Value::Null,
+        &host.owner,
+    );
+    assert_eq!(status, 200, "{value}");
+    let kinds = value["kinds"].as_array().unwrap();
+    assert_eq!(kinds.len(), 10);
+    assert_eq!(kinds[0]["kind"], "vanilla");
+    assert_eq!(kinds[0]["available"], true);
+    assert_eq!(kinds[0]["builds"][0]["recommended"], true);
+    assert_eq!(kinds[9]["available"], false);
+    assert_eq!(kinds[2]["builds"][0]["recommended"], false);
+    let (status, value) = host.call("GET", "/v1/host/creates/defaults", Value::Null, &host.owner);
+    assert_eq!(status, 200, "{value}");
+    assert_eq!(value["name"], "Minecraft Server");
+    assert_eq!(value["minecraftVersion"], "26.1");
+    assert_eq!(value["gamePort"], 25565);
+    assert_eq!(value["memoryMiB"], 6144);
+    assert_eq!(value["java"], "automatic");
+    assert!(host.router.workers.lock().unwrap().is_empty());
+}
+
+#[test]
+fn create_catalogue_validates_query_and_does_not_recommend_experimental() {
+    let host = Host::new(Arc::new(FakeEnv::default()));
+    for query in [
+        "",
+        "minecraftVersion=",
+        "minecraftVersion=missing",
+        "minecraftVersion=26.1&minecraftVersion=26.1",
+        "minecraftVersion=..%2Fsecret",
+        "x=26.1",
+    ] {
+        let (status, value) = host.call(
+            "GET",
+            &format!("/v1/host/catalogue/software?{query}"),
+            Value::Null,
+            &host.owner,
+        );
+        assert_eq!(status, 400, "{query}: {value}");
+    }
+    let (status, value) = host.call(
+        "GET",
+        "/v1/host/catalogue/software?minecraftVersion=26.2-snapshot-1",
+        Value::Null,
+        &host.owner,
+    );
+    assert_eq!(status, 200, "{value}");
+    for kind in value["kinds"].as_array().unwrap() {
+        assert_eq!(kind["recommended"], false);
+        for build in kind["builds"].as_array().unwrap() {
+            assert_eq!(build["recommended"], false);
+        }
+    }
 }
