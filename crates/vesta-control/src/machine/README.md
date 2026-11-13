@@ -11,6 +11,11 @@ H02 should retain account/device ids in sessions and call `active_device` (or
 `owners::active_device_in` on an existing transaction) and resolve current roles
 for every operation. Stored generation values are counters, not authority.
 
+Account sign-in (`signin.rs`) enrolls a new key for a verified account that already
+holds a role, without PAKE or approval; its proof is bound to the connection's TLS
+fingerprint and the owner setting `newDeviceSignIn` (`settings.rs`) can require
+link approval instead.
+
 H04 must verify PAKE/account proof/signatures before enrollment. Use
 `HostState::write` with `HostState::claim_in` or `HostState::enroll_device_in` so
 code/proof consumption and enrollment share one transaction. Returning an error

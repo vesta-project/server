@@ -209,6 +209,10 @@ impl HostSessions {
     pub fn claimed(&mut self, commit: &super::claim::ClaimCommit<'_>) -> Result<SessionResponse> {
         self.issue(&commit.device()?)
     }
+    /// Only a committed account sign-in can issue its initial bearer.
+    pub fn signed_in(&mut self, enrollment: &super::signin::SignedIn) -> Result<SessionResponse> {
+        self.issue(enrollment.device())
+    }
     pub fn new(state: HostState) -> Self {
         Self {
             state,

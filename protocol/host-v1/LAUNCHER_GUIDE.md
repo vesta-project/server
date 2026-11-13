@@ -33,6 +33,53 @@ All binary signatures and public keys use `vesta_host_client::encode`.
    private key after success. Response includes a host session. An identical
    lost-reply retry is supported on this connection; a new claim is refused.
 
+## Sign in on a new device (no code)
+
+For a claimed machine the user already has a role on (owner or any server
+role). Permissions follow the Minecraft account; no link code or approval.
+Generate a fresh Ed25519 key for this machine (never reuse one across hosts).
+Use one dedicated TLS 1.3 connection (resumption and early data disabled) for
+steps 1-5; no Authorization header until the session.
+
+1. Connect and record the observed leaf certificate SHA-256 `F`. GET
+   `/v1/host/discovery`; require `fingerprint == F`. Decide the pin for
+   `(hostId, F)`: from an invite/link the launcher holds, from the same machine
+   already known on another profile, or by trust on first use. For first use,
+   show the machine name and address and let the user confirm before any account
+   step. An existing pin that differs from `F` is a "machine identity changed"
+   error; never re-pin silently.
+2. POST `/v1/host/accounts/challenge`
+   `{accountId,name,deviceKey,purpose:"signin",binding:F}` (no Authorization).
+   Reply `{challengeId,serverHash,nonce,expiresAt}`.
+3. Compute `requests::account_server_hash(hostId, deviceKey, "signin", F,
+   accountId, nonce)` from your own values. If it differs from `serverHash`,
+   abort and do not call Mojang. Otherwise call Mojang session `join` with
+   `serverHash`.
+4. Sign `requests::signing_bytes("vesta.host.account.v1", value)` where value is
+   `{hostId,deviceKey,challengeId,serverHash,purpose:"signin",binding:F}`. POST
+   `{challengeId,signature}` to `/v1/host/accounts/complete` -> `{accountProofId,accountId,expiresAt}`.
+5. Sign `requests::signing_bytes("vesta.host.signin.v1", value)` where value is
+   `{hostId,fingerprint:F,accountProofId,deviceKey,deviceName}`. POST
+   `{accountProofId,deviceKey,deviceName,signature}` to `/v1/host/sign-in`.
+   200 `{state:"enrolled",hostId,fingerprint,accountId,deviceId,deviceName,session,expiresAt,authGeneration}`:
+   persist pin, hostId, deviceId and key; use the session. `deviceName` is the
+   stored (sanitised, at most 64 characters) name.
+
+Errors: 403 `account_has_no_access` (this account has no role here: "Ask an
+owner to give you access"); 403 `device_approval_required` (the owner requires
+approval: fall back to the link-code flow, identity.md "Device link"); 409 `device_key_unusable`
+(make a new key and restart at step 2); 401 `pairing_failed` (expired, reused or
+mismatched proof: restart at step 2); 429 `rate_limited` (5 challenges per minute
+per address); 503 `account_verification_unavailable` (Mojang unreachable). If the
+step 5 reply is lost, recover the deviceId with the `{deviceKey}` session
+challenge below. Owners see the new device in GET `/v1/host/devices` and can
+revoke it; a revoked key must be replaced by a new one.
+
+Owner settings: GET `/v1/host` shows owners `newDeviceSignIn`. PATCH `/v1/host`
+`{name?,newDeviceSignIn?}` renames the machine (1-63 UTF-8 bytes) or switches
+between `"account"` (default) and `"approval"`. GET `/v1/host/owners` lists
+`{accountId,role,name}` for the primary owner and owners.
+
 ## Sign in on subsequent launches
 
 Use pinned TLS; no setup code or online account proof is required. POST

@@ -159,8 +159,8 @@ impl HostLinks {
             || scope.device_key != request.request.device_key
             || request.request.host_id != self.state.snapshot().map_err(|_| UNAVAILABLE)?.host_id
             || request.request.requested_role != "linked_device"
-            || request.request.device_name.trim().is_empty()
-            || request.request.device_name.len() > 128
+            || super::settings::device_name(&request.request.device_name).as_deref()
+                != Some(request.request.device_name.as_str())
             || link.target.is_some_and(|a| a != request.request.account_id)
         {
             return Err(PAIRING);

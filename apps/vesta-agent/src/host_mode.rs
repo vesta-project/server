@@ -274,6 +274,7 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
         }
     };
     let mut advertised = claim_state();
+    let mut advertised_name = router.display_name();
     let mut discovery = if config.local_only || !config.discovery_interfaces.is_empty() {
         Some(
             DiscoveryAdvertiser::start(DiscoveryConfig {
@@ -282,7 +283,7 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
                     fingerprint: transport
                         .tls_fingerprint()
                         .map_err(|_| "host_tls_unavailable")?,
-                    name: config.name.clone(),
+                    name: advertised_name.clone(),
                     state: advertised,
                 },
                 hostname: config.discovery_hostname,
@@ -300,7 +301,16 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
     tokio::pin!(signal);
     let mut tick = tokio::time::interval(Duration::from_secs(2));
     loop {
-        tokio::select! {_=&mut signal=>break,_=tick.tick()=>{let next=claim_state();if next!=advertised {if let Some(ad)=&mut discovery{let _=ad.update(next,config.name.clone());}advertised=next;}}}
+        tokio::select! {_=&mut signal=>break,_=tick.tick()=>{
+            // Claim and owner renames are re-announced on the next tick.
+            let next=claim_state();
+            let name=router.display_name();
+            if next!=advertised || name!=advertised_name {
+                if let Some(ad)=&mut discovery{let _=ad.update(next,name.clone());}
+                advertised=next;
+                advertised_name=name;
+            }
+        }}
     }
     if let Some(ad) = discovery {
         let _ = ad.shutdown();

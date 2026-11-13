@@ -13,6 +13,8 @@ pub enum AccountPurpose {
     Claim,
     Link,
     Invite,
+    /// No code: binding is the TLS certificate fingerprint of the live connection.
+    Signin,
 }
 /// Trusted transport adapter input, constructed only after authorizing the current
 /// PAKE/invite capability on this live connection. Re-authorize at every call.
@@ -37,6 +39,8 @@ pub struct AccountChallengeRequest {
 pub struct AccountChallengeResponse {
     pub challenge_id: String,
     pub server_hash: String,
+    /// Lets the launcher recompute `server_hash` from values it observed itself.
+    pub nonce: String,
     pub expires_at: String,
 }
 #[derive(Deserialize)]
@@ -61,6 +65,7 @@ struct Pending {
 struct Proof {
     scope: AccountScope,
     account: Uuid,
+    name: String,
     deadline: Deadline,
 }
 pub struct HostAccounts {
@@ -77,6 +82,7 @@ impl HostAccounts {
             Proof {
                 scope: scope.clone(),
                 account,
+                name: "Tester".into(),
                 deadline: Deadline::new(self.state.now_ms(), 120),
             },
         );
@@ -115,10 +121,18 @@ impl HostAccounts {
         let account = MinecraftUuid::from_uuid(request.account_id).map_err(|_| PAIRING)?;
         let name = MinecraftName::parse(&request.name).map_err(|_| PAIRING)?;
         let host = self.state.snapshot().map_err(|_| UNAVAILABLE)?.host_id;
-        let issued=self.verifier.issue_host(account,name,|nonce|canonical(&json!({"hostId":host,"deviceKey":request.device_key,"purpose":request.purpose,"binding":request.binding,"accountId":request.account_id,"nonce":nonce}))).map_err(provider_error)?;
+        let mut nonce = String::new();
+        let issued = self
+            .verifier
+            .issue_host(account, name, |n| {
+                nonce = n.to_owned();
+                canonical(&json!({"hostId":host,"deviceKey":request.device_key,"purpose":request.purpose,"binding":request.binding,"accountId":request.account_id,"nonce":n}))
+            })
+            .map_err(provider_error)?;
         let response = AccountChallengeResponse {
             challenge_id: issued.challenge_id().as_str().into(),
             server_hash: issued.server_hash().as_str().into(),
+            nonce,
             expires_at: Deadline::new(now, 60).text(),
         };
         self.pending.insert(
@@ -169,6 +183,7 @@ impl HostAccounts {
             Proof {
                 scope: scope.clone(),
                 account: p.account,
+                name: profile.name().as_str().into(),
                 deadline,
             },
         );
@@ -187,23 +202,36 @@ impl HostAccounts {
         scope: &AccountScope,
         commit: impl FnOnce(Uuid) -> Result<T>,
     ) -> Result<T> {
-        self.consume_checked(id, scope, |account, _| commit(account))
+        self.consume_checked(id, scope, |account, _, _| commit(account))
     }
-    /// The callback must recheck this lease inside its enrollment transaction,
-    /// after waiting for database admission and immediately before mutation.
+    /// The callback receives the verified account id and Minecraft name. It must
+    /// recheck this lease inside its enrollment transaction, after waiting for
+    /// database admission and immediately before mutation.
     pub fn consume_checked<T>(
         &mut self,
         id: &str,
         scope: &AccountScope,
-        commit: impl FnOnce(Uuid, &dyn Fn() -> bool) -> Result<T>,
+        commit: impl FnOnce(Uuid, &str, &dyn Fn() -> bool) -> Result<T>,
     ) -> Result<T> {
         let proof = self.proofs.get(id).ok_or(PAIRING)?;
         if &proof.scope != scope || !proof.deadline.live(self.state.now_ms()) {
             return Err(PAIRING);
         }
-        let result = commit(proof.account, &|| proof.deadline.live(self.state.now_ms()))?;
+        let result = commit(proof.account, &proof.name, &|| {
+            proof.deadline.live(self.state.now_ms())
+        })?;
         self.proofs.remove(id);
         Ok(result)
+    }
+    /// Scope recorded for a live sign-in challenge. The transport compares it to
+    /// the current connection before completing; it grants nothing by itself.
+    pub fn pending_sign_in_scope(&self, challenge_id: &str) -> Option<AccountScope> {
+        self.pending
+            .get(challenge_id)
+            .filter(|p| {
+                p.scope.purpose == AccountPurpose::Signin && p.deadline.live(self.state.now_ms())
+            })
+            .map(|p| p.scope.clone())
     }
 }
 fn provider_error(error: crate::identity::minecraft::MinecraftError) -> IdentityFailure {
@@ -254,6 +282,7 @@ mod tests {
                 Proof {
                     scope: scope.clone(),
                     account: Uuid::new_v4(),
+                    name: "Tester".into(),
                     deadline,
                 },
             );
@@ -264,6 +293,7 @@ mod tests {
             Proof {
                 scope: scope.clone(),
                 account: Uuid::new_v4(),
+                name: "Tester".into(),
                 deadline: Deadline::new(state.now_ms(), 120),
             },
         );

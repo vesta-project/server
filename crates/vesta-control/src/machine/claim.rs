@@ -93,7 +93,7 @@ impl<'a> ClaimCommit<'a> {
             self.accounts.borrow_mut().consume_checked(
                 &self.request.account_proof_id,
                 &self.scope,
-                |account, proof_live| {
+                |account, name, proof_live| {
                     self.state
                         .write(|c| {
                             if !proof_live() || !capability_live() {
@@ -114,6 +114,12 @@ impl<'a> ClaimCommit<'a> {
                                 decode::<32>(device_key).map_err(|_| {
                                     super::state::reject(crate::IdentityErrorCode::InvalidRequest)
                                 })?,
+                                self.state.now_ms(),
+                            )?;
+                            super::owners::record_account_name_in(
+                                c,
+                                account,
+                                name,
                                 self.state.now_ms(),
                             )?;
                             save_receipt(c, "claim", exchange, &body, device.device_id)?;

@@ -14,17 +14,20 @@ All new mutations require `Idempotency-Key` (UUID); persist actor+method+route+b
 |---|---|
 | GET `/v1/host/discovery` | Anonymous `{hostId,fingerprint,protocol:"host-v1",name}`; add `claimState:"unclaimed"|"claimed"` only to directly connected LAN/loopback peers. Do not trust forwarded headers. Outside LAN omit name and claimState. No registry. |
 | POST `/v1/host/pake/start`, `/pake/finish` | Under the same `/v1/host` prefix; see identity. Claim starts are possible while unclaimed even outside LAN, but no separate public claim-state response. |
-| POST `/v1/host/accounts/challenge`, `/accounts/complete`, `/claim` | PAKE-bound account proof and atomic claim, identity.md. |
+| POST `/v1/host/accounts/challenge`, `/accounts/complete`, `/claim` | PAKE-bound account proof and atomic claim, identity.md. Without a Pake header the account routes accept only `purpose:"signin"`, bound to the connection's certificate fingerprint. |
+| POST `/v1/host/sign-in` | No code: signin account proof + device key -> `{state:"enrolled",hostId,fingerprint,accountId,deviceId,deviceName,session,expiresAt,authGeneration}` when the account already holds a role; 403 `account_has_no_access` / `device_approval_required`. identity.md "Account sign-in on a new device". |
 | POST `/v1/host/sessions/challenge`, `/sessions` | Device proof -> host bearer; identity.md. |
 | DELETE `/v1/host/sessions/current` | Current bearer -> 204. |
 | GET `/v1/host/operations/{operationId}` | Owner -> `{operationId,state:"running"|"complete"|"blocked"|"failed",error,authGeneration}` for a host mutation awaiting worker barriers; durable retry/status, never a server-operation alias. |
-| GET `/v1/host` | Bearer -> `{hostId,name,fingerprint,endpoints,authGeneration,capabilities,role,revision}`. |
+| GET `/v1/host` | Bearer -> `{hostId,name,fingerprint,endpoints,authGeneration,capabilities,role,revision}`; owners also get `newDeviceSignIn:"account"|"approval"`. |
+| PATCH `/v1/host` | Owner `{name?,newDeviceSignIn?}` (at least one) -> `{hostId,name,newDeviceSignIn,revision}`. Name: control/bidi characters removed, whitespace collapsed, 1..63 UTF-8 bytes, else 400 `invalid_request`. Audited; renaming re-announces mDNS within seconds and changes discovery/`GET /v1/host` names. |
+| GET `/v1/host/owners` | Owner -> `{owners:[{accountId,role:"primary_owner"|"owner",name}]}`, primary first; `name` is the last Minecraft name verified on this host by claim or sign-in, or null. |
 | GET `/v1/host/servers?cursor=...` | Bearer -> `{servers:[{serverId,name,gamePort,state,role}],nextCursor}`; owners see all, others only current server grants. |
 | GET `/v1/host/devices` | Owner -> `{devices:[{deviceId,name,accountId,revoked,createdAt}],nextCursor}`; accountId is Minecraft UUID. |
 | DELETE `/v1/host/devices/{deviceId}` | Owner -> 204; primary-owner protection and barrier in identity.md. Self-revoke allowed. |
 | PUT `/v1/host/owners/{accountId}` | Primary owner, `{role:"owner"}` -> `{authGeneration,revision}`; DELETE demotes owner only. |
 | POST `/v1/host/ownership/transfer` | Primary owner, fresh device signature over targetAccountId, nonce, expiry and current revision -> `{authGeneration,revision}`; target must already be an owner. |
-| POST `/v1/host/link-codes` | Owner `{targetAccountId}` -> `{linkId,code,expiresAt}`; local privileged `vesta link` may omit target, then approval shows the verified account. |
+| POST `/v1/host/link-codes` | Optional fallback to account sign-in. Owner `{targetAccountId}` -> `{linkId,code,expiresAt}`; local privileged `vesta link` may omit target, then approval shows the verified account. |
 | POST `/v1/host/links`, GET `/links/{linkId}`, POST `/links/{linkId}/approve` | Identity.md. GET is either owner-authenticated or authenticated with the link's PAKE capability. |
 | POST `/v1/servers/{serverId}/invitations` | Admin or owner `{role,expiresAt,maxUses}` -> `{inviteId,invite,expiresAt}`; only server roles, never owner. DELETE same path plus `/{inviteId}` revokes. |
 | POST `/v1/host/invites/redeem` | Verified account+device, `{invite,accountProofId,deviceKey,signature}` -> `{hostId,serverId,role,session}`; proof purpose binds hash of exact invite payload. Atomic usage count and grant; never execute pack installation on redemption. |

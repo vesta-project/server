@@ -12,6 +12,8 @@ pub mod link;
 pub mod recovery;
 pub mod resources;
 pub mod sessions;
+pub mod settings;
+pub mod signin;
 
 pub use state::{HostSnapshot, HostState};
 
@@ -19,3 +21,5 @@ pub use state::{HostSnapshot, HostState};
 mod tests;
 #[cfg(test)]
 mod enrollment_tests;
+#[cfg(test)]
+mod signin_tests;

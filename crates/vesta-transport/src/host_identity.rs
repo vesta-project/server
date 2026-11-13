@@ -14,6 +14,7 @@ use vesta_control::machine::{
     },
     recovery::{LocalPrivilege, RecoveryRequest, recover},
     sessions::*,
+    signin::{SignInRequest, sign_in},
 };
 use vesta_host_client::{Finish, Finished, PairingFailed, Purpose, Start, Started};
 const FAILED: IdentityFailure = IdentityFailure("pairing_failed");
@@ -60,10 +61,52 @@ pub struct ClaimResponse {
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SignInResponse {
+    pub state: &'static str,
+    pub host_id: Uuid,
+    pub fingerprint: String,
+    pub account_id: Uuid,
+    pub device_id: Uuid,
+    pub device_name: String,
+    pub session: String,
+    pub expires_at: String,
+    pub auth_generation: String,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LinkCodeResponse {
     pub link_id: Uuid,
     pub code: String,
     pub expires_at: String,
+}
+/// Anonymous sign-in challenges spend the shared Mojang challenge budget, so
+/// they get their own small per-address and host-wide allowance.
+struct SignInLimits {
+    window: std::time::Instant,
+    host: u32,
+    peers: std::collections::HashMap<std::net::IpAddr, u8>,
+}
+impl SignInLimits {
+    const PER_PEER: u8 = 5;
+    const PER_HOST: u32 = 30;
+    fn admit(&mut self, peer: std::net::IpAddr) -> Result<()> {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.window) >= std::time::Duration::from_secs(60) {
+            self.window = now;
+            self.host = 0;
+            self.peers.clear();
+        }
+        let used = self.peers.get(&peer).copied();
+        if self.host >= Self::PER_HOST
+            || used.unwrap_or(0) >= Self::PER_PEER
+            || (used.is_none() && self.peers.len() >= 1024)
+        {
+            return Err(IdentityFailure("rate_limited"));
+        }
+        self.host += 1;
+        *self.peers.entry(peer).or_default() += 1;
+        Ok(())
+    }
 }
 pub struct HostIdentity {
     pub state: HostState,
@@ -72,6 +115,7 @@ pub struct HostIdentity {
     sessions: Mutex<HostSessions>,
     links: Mutex<HostLinks>,
     link_cap: Mutex<Option<Capability>>,
+    sign_in_limits: Mutex<SignInLimits>,
 }
 impl HostIdentity {
     pub fn new(state: HostState) -> Result<Self> {
@@ -82,6 +126,11 @@ impl HostIdentity {
             sessions: Mutex::new(HostSessions::new(state.clone())),
             links: Mutex::new(HostLinks::new(state.clone())),
             link_cap: Mutex::new(None),
+            sign_in_limits: Mutex::new(SignInLimits {
+                window: std::time::Instant::now(),
+                host: 0,
+                peers: Default::default(),
+            }),
             state,
         })
     }
@@ -116,7 +165,7 @@ impl HostIdentity {
         let purpose_pake = match purpose {
             AccountPurpose::Claim => Purpose::Claim,
             AccountPurpose::Link => Purpose::Link,
-            AccountPurpose::Invite => return Err(FAILED),
+            AccountPurpose::Invite | AccountPurpose::Signin => return Err(FAILED),
         };
         let cap = lock(&self.pake)?
             .authorize(connection, token, purpose_pake, key)
@@ -221,6 +270,77 @@ impl HostIdentity {
             fingerprint: connection.fingerprint.clone(),
             account_id: s.account_id,
             device_id: s.device_id,
+            session: s.session,
+            expires_at: s.expires_at,
+            auth_generation: s.auth_generation,
+        })
+    }
+    /// No code: the binding must be this connection's TLS certificate
+    /// fingerprint, so the Mojang join covers the certificate the launcher saw.
+    pub fn sign_in_challenge(
+        &self,
+        connection: &Arc<Connection>,
+        peer: std::net::IpAddr,
+        request: AccountChallengeRequest,
+    ) -> Result<AccountChallengeResponse> {
+        if request.purpose != AccountPurpose::Signin || request.binding != connection.fingerprint
+        {
+            return Err(FAILED);
+        }
+        lock(&self.sign_in_limits)?.admit(peer)?;
+        let scope = AccountScope {
+            connection_id: connection.identity_id,
+            device_key: request.device_key.clone(),
+            purpose: AccountPurpose::Signin,
+            binding: connection.fingerprint.clone(),
+        };
+        lock(&self.accounts)?.challenge(&scope, request)
+    }
+    pub fn sign_in_complete(
+        &self,
+        connection: &Arc<Connection>,
+        request: AccountCompleteRequest,
+    ) -> Result<AccountProofResponse> {
+        let mut accounts = lock(&self.accounts)?;
+        let scope = accounts
+            .pending_sign_in_scope(&request.challenge_id)
+            .ok_or(FAILED)?;
+        if scope.connection_id != connection.identity_id || scope.binding != connection.fingerprint
+        {
+            return Err(FAILED);
+        }
+        accounts.complete(&scope, request)
+    }
+    /// Enrolls (or re-confirms) this device for the verified account when the
+    /// account already holds a role here, then issues its first session.
+    pub fn sign_in(
+        &self,
+        connection: &Arc<Connection>,
+        request: SignInRequest,
+    ) -> Result<SignInResponse> {
+        let mut accounts = lock(&self.accounts)?;
+        let scope = AccountScope {
+            connection_id: connection.identity_id,
+            device_key: request.device_key.clone(),
+            purpose: AccountPurpose::Signin,
+            binding: connection.fingerprint.clone(),
+        };
+        let signed = sign_in(
+            &self.state,
+            &mut accounts,
+            &scope,
+            &connection.fingerprint,
+            &request,
+        )?;
+        drop(accounts);
+        let s = lock(&self.sessions)?.signed_in(&signed)?;
+        Ok(SignInResponse {
+            state: "enrolled",
+            host_id: s.host_id,
+            fingerprint: connection.fingerprint.clone(),
+            account_id: s.account_id,
+            device_id: s.device_id,
+            device_name: signed.device().name.clone(),
             session: s.session,
             expires_at: s.expires_at,
             auth_generation: s.auth_generation,

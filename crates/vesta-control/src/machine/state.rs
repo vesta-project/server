@@ -146,4 +146,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS machine_game_port ON machine_servers(game_port
 CREATE TABLE IF NOT EXISTS machine_server_grants(server_id TEXT NOT NULL REFERENCES machine_servers(server_id), account_id TEXT NOT NULL REFERENCES machine_accounts(account_id),
  role TEXT NOT NULL CHECK(role IN ('admin','moderator','player')), PRIMARY KEY(server_id,account_id));
 CREATE TABLE IF NOT EXISTS machine_audit(sequence INTEGER PRIMARY KEY,action TEXT NOT NULL,actor TEXT NOT NULL,target TEXT NOT NULL,at_ms INTEGER NOT NULL,revision INTEGER NOT NULL,auth_generation INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS machine_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS machine_account_names(account_id TEXT PRIMARY KEY REFERENCES machine_accounts(account_id), name TEXT NOT NULL, verified_at_ms INTEGER NOT NULL);
 ";

@@ -13,7 +13,7 @@ use vesta_control::{
             FolderBrowser, OwnerBinding,
             jobs::{ImportJobs, JobError},
         },
-        owners::{Actor, Device, EffectiveRole, ServerRole},
+        owners::{Actor, Device, EffectiveRole, HostRole, ServerRole},
     },
     worker::{ServerSubject, ServerWorker, Worker, WorkerGrant, WorkerHandle, WorkerPolicy},
 };
@@ -60,6 +60,15 @@ impl HostRouter {
             create: Box::new(create),
         }));
         self
+    }
+    /// The owner-chosen machine name, or the configured one until renamed.
+    pub fn display_name(&self) -> String {
+        self.identity
+            .state
+            .settings()
+            .ok()
+            .and_then(|s| s.name)
+            .unwrap_or_else(|| self.name.clone())
     }
     pub fn imports(&self) -> Option<&ImportJobs> {
         self.imports.as_deref().map(|i| &i.jobs)
@@ -235,11 +244,16 @@ fn failure(status: StatusCode, code: &str) -> Reply {
 fn output<T: Serialize>(result: vesta_control::machine::sessions::Result<T>) -> Reply {
     match result {
         Ok(value) => routes::json(serde_json::to_value(value).expect("wire response")),
+        Err(e) if e.0 == "rate_limited" => with_retry_after(
+            failure(StatusCode::TOO_MANY_REQUESTS, e.0),
+            Duration::from_secs(1),
+        ),
         Err(e) => failure(
-            if e.0.ends_with("unavailable") {
-                StatusCode::SERVICE_UNAVAILABLE
-            } else {
-                StatusCode::UNAUTHORIZED
+            match e.0 {
+                c if c.ends_with("unavailable") => StatusCode::SERVICE_UNAVAILABLE,
+                "account_has_no_access" | "device_approval_required" => StatusCode::FORBIDDEN,
+                "device_key_unusable" => StatusCode::CONFLICT,
+                _ => StatusCode::UNAUTHORIZED,
             },
             e.0,
         ),
@@ -258,6 +272,12 @@ fn role_name(role: EffectiveRole) -> &'static str {
         EffectiveRole::Server(ServerRole::Admin) => "admin",
         EffectiveRole::Server(ServerRole::Moderator) => "moderator",
         EffectiveRole::Server(ServerRole::Player) => "player",
+    }
+}
+fn host_role_name(role: HostRole) -> &'static str {
+    match role {
+        HostRole::PrimaryOwner => "primary_owner",
+        HostRole::Owner => "owner",
     }
 }
 fn grant_role(role: EffectiveRole) -> (vesta_control::worker::ServerRole, BuiltinRole) {
@@ -446,7 +466,7 @@ impl Application {
             };
             let mut value = json!({"hostId":s.host_id,"fingerprint":self.tls.fingerprint().unwrap_or_default(),"protocol":"host-v1"});
             if lan(peer.ip()) {
-                value["name"] = json!(self.router.name);
+                value["name"] = json!(self.router.display_name());
                 value["claimState"] = json!(if s.primary_account_id.is_none() {
                     "unclaimed"
                 } else {
@@ -519,13 +539,26 @@ impl Application {
                     | "/v1/host/accounts/complete"
                     | "/v1/host/claim"
                     | "/v1/host/links"
+                    | "/v1/host/sign-in"
             ) {
                 let Some(c) = connection.as_ref() else {
                     return failure(StatusCode::UNAUTHORIZED, "pairing_failed");
                 };
-                return match path {
-                    "/v1/host/pake/start" => output(identity.pake_start(c, peer.ip(), input!())),
-                    "/v1/host/pake/finish" => output(identity.pake_finish(c, input!())),
+                return match (path, pake) {
+                    ("/v1/host/pake/start", _) => {
+                        output(identity.pake_start(c, peer.ip(), input!()))
+                    }
+                    ("/v1/host/pake/finish", _) => output(identity.pake_finish(c, input!())),
+                    ("/v1/host/sign-in", None) => output(identity.sign_in(c, input!())),
+                    ("/v1/host/accounts/challenge", None) => {
+                        output(identity.sign_in_challenge(c, peer.ip(), input!()))
+                    }
+                    ("/v1/host/accounts/complete", None) => {
+                        output(identity.sign_in_complete(c, input!()))
+                    }
+                    ("/v1/host/sign-in", Some(_)) => {
+                        failure(StatusCode::UNAUTHORIZED, "pairing_failed")
+                    }
                     _ => {
                         let Some(p) = pake else {
                             return failure(StatusCode::UNAUTHORIZED, "pairing_failed");
@@ -672,12 +705,39 @@ impl Application {
             if self.router.imports.is_some() {
                 capabilities.push("import-jobs");
             }
-            return routes::json(
-                json!({"hostId":s.host_id,"name":self.router.name,"fingerprint":self.tls.fingerprint().unwrap_or_default(),"endpoints":[],"authGeneration":s.auth_generation.to_string(),"revision":s.revision.to_string(),"role":owner.map(|r|if r==vesta_control::machine::owners::HostRole::PrimaryOwner{"primary_owner"}else{"owner"}),"capabilities":capabilities}),
-            );
+            let mut value = json!({"hostId":s.host_id,"name":self.router.display_name(),"fingerprint":self.tls.fingerprint().unwrap_or_default(),"endpoints":[],"authGeneration":s.auth_generation.to_string(),"revision":s.revision.to_string(),"role":owner.map(host_role_name),"capabilities":capabilities});
+            if owner.is_some() {
+                let Ok(settings) = state.settings() else {
+                    return failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable");
+                };
+                value["newDeviceSignIn"] = json!(settings.new_device_sign_in);
+            }
+            return routes::json(value);
         }
         if owner.is_none() {
             return failure(StatusCode::FORBIDDEN, "forbidden");
+        }
+        if method == Method::PATCH && path == "/v1/host" {
+            return match state.update_settings(Actor::Account(device.account_id), input!()) {
+                Ok(settings) => match state.snapshot() {
+                    Ok(s) => routes::json(
+                        json!({"hostId":s.host_id,"name":self.router.display_name(),"newDeviceSignIn":settings.new_device_sign_in,"revision":s.revision.to_string()}),
+                    ),
+                    Err(_) => failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable"),
+                },
+                Err(e) if e.code() == "invalid_request" => {
+                    failure(StatusCode::BAD_REQUEST, "invalid_request")
+                }
+                Err(_) => failure(StatusCode::FORBIDDEN, "forbidden"),
+            };
+        }
+        if method == Method::GET && path == "/v1/host/owners" {
+            return match state.owners(Actor::Account(device.account_id)) {
+                Ok(owners) => routes::json(
+                    json!({"owners":owners.into_iter().map(|o|json!({"accountId":o.account_id,"role":host_role_name(o.role),"name":o.name})).collect::<Vec<_>>()}),
+                ),
+                Err(_) => failure(StatusCode::FORBIDDEN, "forbidden"),
+            };
         }
         if let Some(reply) =
             self.ownership

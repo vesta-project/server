@@ -66,6 +66,49 @@ pub struct Device {
     pub revoked_at_ms: Option<i64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnerEntry {
+    pub account_id: Uuid,
+    pub role: HostRole,
+    /// Last Minecraft name verified by a fresh account proof on this host.
+    pub name: Option<String>,
+}
+
+/// Primary owner, owner, or a grant on any server that is not deleted.
+pub(crate) fn holds_any_role_in(c: &Connection, account: Uuid) -> Result<bool> {
+    if host_role_in(c, account)?.is_some() {
+        return Ok(true);
+    }
+    Ok(account_exists(c, account)?
+        && c.query_row(
+            "SELECT 1 FROM machine_server_grants g JOIN machine_servers s USING(server_id) WHERE g.account_id=?1 AND s.state!='deleted' LIMIT 1",
+            [account.to_string()],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+pub(crate) fn record_account_name_in(
+    c: &Connection,
+    account: Uuid,
+    name: &str,
+    now: i64,
+) -> Result<()> {
+    c.execute(
+        "INSERT INTO machine_account_names(account_id,name,verified_at_ms) VALUES(?1,?2,?3) ON CONFLICT(account_id) DO UPDATE SET name=excluded.name,verified_at_ms=excluded.verified_at_ms",
+        params![account.to_string(), name, now],
+    )?;
+    Ok(())
+}
+fn account_name_in(c: &Connection, account: Uuid) -> Result<Option<String>> {
+    Ok(c.query_row(
+        "SELECT name FROM machine_account_names WHERE account_id=?1",
+        [account.to_string()],
+        |r| r.get(0),
+    )
+    .optional()?)
+}
+
 pub fn host_role_in(c: &Connection, account: Uuid) -> Result<Option<HostRole>> {
     if !account_exists(c, account)? {
         return Ok(None);
@@ -225,6 +268,37 @@ impl HostState {
             )
         })
     }
+    /// Owner-only: the primary owner first, then owners by account id.
+    pub fn owners(&self, actor: Actor) -> Result<Vec<OwnerEntry>> {
+        self.read(|c| {
+            require_owner(c, actor)?;
+            let mut entries = Vec::new();
+            if let Some(primary) = snapshot_in(c)?.primary_account_id {
+                entries.push(OwnerEntry {
+                    account_id: primary,
+                    role: HostRole::PrimaryOwner,
+                    name: account_name_in(c, primary)?,
+                });
+            }
+            let mut statement =
+                c.prepare("SELECT account_id FROM machine_owners ORDER BY account_id")?;
+            let ids = statement
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for id in ids {
+                let account = uuid(id)?;
+                if entries.iter().any(|e| e.account_id == account) {
+                    continue;
+                }
+                entries.push(OwnerEntry {
+                    account_id: account,
+                    role: HostRole::Owner,
+                    name: account_name_in(c, account)?,
+                });
+            }
+            Ok(entries)
+        })
+    }
     pub fn device(&self, id: Uuid) -> Result<Option<Device>> {
         self.read(|c| device_in(c, id))
     }
@@ -289,7 +363,7 @@ impl HostState {
     }
 }
 
-fn enroll_device_in(
+pub(crate) fn enroll_device_in(
     c: &Connection,
     account: Uuid,
     name: &str,
@@ -340,6 +414,19 @@ pub fn active_device_in(c: &Connection, id: Uuid) -> Result<Option<Device>> {
         return Ok(None);
     }
     Ok(Some(device))
+}
+pub(crate) fn device_by_key_in(c: &Connection, key: &[u8; 32]) -> Result<Option<Device>> {
+    let id: Option<String> = c
+        .query_row(
+            "SELECT device_id FROM machine_devices WHERE public_key=?1",
+            [key.as_slice()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match id {
+        Some(id) => device_in(c, uuid(id)?),
+        None => Ok(None),
+    }
 }
 pub fn device_in(c: &Connection, id: Uuid) -> Result<Option<Device>> {
     let row:Option<(String,String,Vec<u8>,i64,Option<i64>)>=c.query_row("SELECT account_id,name,public_key,created_at_ms,revoked_at_ms FROM machine_devices WHERE device_id=?1",[id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
