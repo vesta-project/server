@@ -93,24 +93,70 @@ pub fn run(args: &[String]) -> engine::Result<()> {
             }
         }
     };
+    let release = verify_official(&mut terminal, &tag, 1).inspect_err(|code| {
+        let _ = terminal.show(&engine::failure_view(code));
+    })?;
+    let selection = match headless_answers {
+        Some(answers) => wizard::SetupSelection {
+            answers,
+            resume: None,
+        },
+        None => wizard::ask_installation(&mut terminal, Some(&tag))?,
+    };
+    let release = resolve_resume_release(&selection, release, |tag| {
+        verify_official(&mut terminal, tag, 5)
+    })
+    .inspect_err(|code| {
+        let _ = terminal.show(&engine::failure_view(code));
+    })?;
+    wizard::prepare(&mut terminal, &selection.answers, &release)
+}
+
+fn verify_official(
+    terminal: &mut wizard::Terminal,
+    tag: &str,
+    step: usize,
+) -> engine::Result<release::Release> {
     terminal.show(&ui::View {
-        step: 1,
+        step,
         heading: format!("Verifying Vesta {tag}"),
         description: vec![
-            "The selected package must match its trusted signature, platform and release identity."
+            "The package must match its trusted signature, platform and exact release identity."
                 .into(),
         ],
         rows: vec![],
         hint: String::new(),
     })?;
-    let release = release::official::load(&tag, RELEASE_KEY.trim()).inspect_err(|code| {
-        let _ = terminal.show(&engine::failure_view(code));
-    })?;
-    let answers = match headless_answers {
-        Some(answers) => answers,
-        None => wizard::ask_for_release(&mut terminal, Some(&tag))?,
+    release::official::load(tag, RELEASE_KEY.trim())
+}
+
+/// Resolve an explicitly confirmed interactive resume. Headless/pinned callers
+/// retain their explicit selection and the engine's exact receipt checks.
+pub fn resolve_resume_release(
+    selection: &wizard::SetupSelection,
+    selected: release::Release,
+    load: impl FnOnce(&str) -> engine::Result<release::Release>,
+) -> engine::Result<release::Release> {
+    selected.ensure_intact()?;
+    let Some(receipt) = &selection.resume else {
+        return Ok(selected);
     };
-    wizard::prepare(&mut terminal, &answers, &release)
+    if selection.answers != receipt.answers {
+        return Err("setup_resume_settings_mismatch".into());
+    }
+    let matches = |release: &release::Release| {
+        release.manifest.version == receipt.release_version
+            && release.manifest_hash() == receipt.release_manifest_sha256
+    };
+    if matches(&selected) {
+        return Ok(selected);
+    }
+    let restored = load(&receipt.release_version)?;
+    restored.ensure_intact()?;
+    if !matches(&restored) || restored.release_key() != selected.release_key() {
+        return Err("setup_resume_release_mismatch".into());
+    }
+    Ok(restored)
 }
 
 #[cfg(test)]

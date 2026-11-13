@@ -416,6 +416,130 @@ fn answers(root: PathBuf) -> Answers {
 }
 
 #[test]
+fn interactive_resume_restores_saved_release_without_accepting_newest_or_changed_proof() {
+    use vesta_setup::{installer::resolve_resume_release, wizard::SetupSelection};
+    let old = Bundle::new(false);
+    let mut new = Bundle::new(false);
+    new.manifest.version = "0.2.0".into();
+    new.sign();
+    let newest = release::load(new.source()).unwrap();
+    let expected = release::load(old.source()).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("host");
+    fs::create_dir(&root).unwrap();
+    let game = temp.path().join("copied-server");
+    fs::create_dir(&game).unwrap();
+    fs::write(game.join("server.properties"), b"fixture server").unwrap();
+    fs::write(game.join("world-witness"), b"preserve copied world").unwrap();
+    let mut a = answers(root.clone());
+    a.existing_server = Some(game.clone());
+    let receipt = Receipt {
+        schema: 1,
+        installation_id: "1".repeat(32),
+        answers: a.clone(),
+        release_version: expected.manifest.version.clone(),
+        release_manifest_sha256: expected.manifest_hash().into(),
+        phase: "created".into(),
+        tls_sha256: String::new(),
+        startup_registered: false,
+        external_status: Default::default(),
+    };
+    engine::write_private(&root, "setup.json", &serde_json::to_vec(&receipt).unwrap()).unwrap();
+    let saved = fs::read(root.join("private/setup.json")).unwrap();
+    assert_eq!(
+        engine::prepare(&a, &newest, &mut |_, _, _, _| {}).unwrap_err(),
+        "setup_resume_settings_mismatch"
+    );
+    let selection = SetupSelection {
+        answers: a.clone(),
+        resume: Some(engine::read_receipt(&root).unwrap()),
+    };
+    let restored = resolve_resume_release(&selection, newest.clone(), |tag| {
+        assert_eq!(tag, expected.manifest.version);
+        release::load(old.source())
+    })
+    .unwrap();
+    assert_eq!(restored.manifest_hash(), expected.manifest_hash());
+    assert_eq!(restored.manifest.version, receipt.release_version);
+    restored.install(&root, &mut |_, _, _| {}).unwrap(); // inert fixtures; never launch a runtime
+    for file in &old.manifest.files {
+        assert_eq!(
+            fs::read(root.join("bin").join(&file.name)).unwrap(),
+            fs::read(old.temp.path().join(&file.name)).unwrap()
+        );
+    }
+    assert_eq!(
+        resolve_resume_release(&selection, expected.clone(), |_| panic!(
+            "matching release must reuse proof"
+        ))
+        .unwrap()
+        .manifest_hash(),
+        expected.manifest_hash()
+    );
+    assert!(resolve_resume_release(&selection, newest.clone(), |_| Ok(newest.clone())).is_err());
+    let mut changed = Bundle::new(false);
+    changed.manifest.files[1].sha256 = "ab".repeat(32);
+    changed.sign();
+    assert!(
+        resolve_resume_release(&selection, newest.clone(), |_| release::load(
+            changed.source()
+        ))
+        .is_err()
+    );
+    let mut foreign = Bundle::new(false);
+    foreign.key = Ed25519KeyPair::from_seed_unchecked(&[42; 32]).unwrap();
+    foreign.sign();
+    assert!(
+        resolve_resume_release(&selection, newest.clone(), |_| release::load(
+            foreign.source()
+        ))
+        .is_err()
+    );
+    let mut altered = expected.clone();
+    altered.manifest.version = "tampered".into();
+    assert!(resolve_resume_release(&selection, newest.clone(), |_| Ok(altered)).is_err());
+    assert!(
+        resolve_resume_release(&selection, newest.clone(), |_| Err(
+            "saved release unavailable".into()
+        ))
+        .is_err()
+    );
+    let mut mismatched = SetupSelection {
+        answers: a.clone(),
+        resume: Some(receipt),
+    };
+    mismatched.answers.startup = Startup::Automatic;
+    assert!(
+        resolve_resume_release(&mismatched, newest.clone(), |_| panic!(
+            "settings mismatch must fail before network"
+        ))
+        .is_err()
+    );
+    let headless = SetupSelection {
+        answers: a,
+        resume: None,
+    };
+    assert_eq!(
+        resolve_resume_release(&headless, newest, |_| panic!(
+            "headless must not change explicit release"
+        ))
+        .unwrap()
+        .manifest
+        .version,
+        "0.2.0"
+    );
+    assert_eq!(fs::read(root.join("private/setup.json")).unwrap(), saved);
+    assert_eq!(
+        engine::read_receipt(&root).unwrap().installation_id,
+        "1".repeat(32)
+    );
+    assert_eq!(
+        fs::read(game.join("world-witness")).unwrap(),
+        b"preserve copied world"
+    );
+}
+
+#[test]
 fn target_prefixed_signed_release_assets_install_to_logical_filenames() {
     let bundle = Bundle::new(false);
     let prefix = format!("{}-", platform::target().unwrap());
@@ -803,7 +927,23 @@ fn real_pending_host_verifies_tls_resumes_identity_and_rejects_wrong_identity() 
     impostor = receipt.clone();
     impostor.tls_sha256 = "00".repeat(32);
     assert!(!host::ready(&impostor));
-    let resumed = engine::prepare(&a, &release, &mut |_, _, _, _| {}).unwrap();
+    let mut newer = Bundle::new(false);
+    newer.manifest.version = "0.2.0".into();
+    newer.sign();
+    let selection = vesta_setup::wizard::SetupSelection {
+        answers: a.clone(),
+        resume: Some(engine::read_receipt(&a.root).unwrap()),
+    };
+    let restored = vesta_setup::installer::resolve_resume_release(
+        &selection,
+        release::load(newer.source()).unwrap(),
+        |tag| {
+            assert_eq!(tag, receipt.release_version);
+            release::load(bundle.source())
+        },
+    )
+    .unwrap();
+    let resumed = engine::prepare(&selection.answers, &restored, &mut |_, _, _, _| {}).unwrap();
     assert_eq!(resumed.installation_id, receipt.installation_id);
     assert_eq!(resumed.tls_sha256, receipt.tls_sha256);
     // The same version label cannot substitute a different signed release on resume.

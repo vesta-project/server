@@ -533,11 +533,27 @@ pub fn ask(terminal: &mut Terminal) -> Result<Answers> {
     ask_for_release(terminal, None)
 }
 pub fn ask_for_release(terminal: &mut Terminal, release: Option<&str>) -> Result<Answers> {
+    ask_internal(terminal, release, false).map(|selection| selection.answers)
+}
+pub struct SetupSelection {
+    pub answers: Answers,
+    /// Set only after explicit interactive consent to restore this receipt.
+    pub resume: Option<engine::Receipt>,
+}
+pub fn ask_installation(terminal: &mut Terminal, release: Option<&str>) -> Result<SetupSelection> {
+    ask_internal(terminal, release, true)
+}
+fn ask_internal(
+    terminal: &mut Terminal,
+    release: Option<&str>,
+    restore_release: bool,
+) -> Result<SetupSelection> {
     if !terminal.interactive {
         return Err("setup_terminal_required_use_answers_and_yes".into());
     }
     let mut stage = 0;
     let mut existing = false;
+    let mut resume: Option<engine::Receipt> = None;
     let mut answers = Answers {
         schema: 1,
         root: engine::default_root(),
@@ -557,11 +573,13 @@ pub fn ask_for_release(terminal: &mut Terminal, release: Option<&str>) -> Result
                 Answer::Next(i) => {
                     existing = i == 1;
                     answers.existing_server = None;
+                    resume = None;
                     stage = 1;
                 }
                 Answer::Back => return Err("setup_cancelled".into()),
             },
             1 => {
+                resume = None;
                 if existing && answers.existing_server.is_none() {
                     match existing_directory(terminal)? {
                         Answer::Next(p) => answers.existing_server = Some(paths::normalize(&p)),
@@ -598,9 +616,23 @@ pub fn ask_for_release(terminal: &mut Terminal, release: Option<&str>) -> Result
             2 => {
                 if answers.root.join("private").join("setup.json").exists() {
                     let prior = engine::read_receipt(&answers.root)?;
-                    match choose(terminal, resume_view(&prior.answers, 0), 0)? {
+                    let mut screen = resume_view(&prior.answers, 0);
+                    if restore_release {
+                        screen.rows.insert(
+                            0,
+                            Row::Detail {
+                                label: "Saved Vesta version".into(),
+                                value: prior.release_version.clone(),
+                            },
+                        );
+                        screen.description.push("Resume restores the original version, port, startup and connection-check settings.".into());
+                    }
+                    match choose(terminal, screen, 0)? {
                         Answer::Next(0) => {
-                            answers = prior.answers;
+                            answers = prior.answers.clone();
+                            if restore_release {
+                                resume = Some(prior);
+                            }
                             stage = 4;
                             continue;
                         }
@@ -678,7 +710,11 @@ pub fn ask_for_release(terminal: &mut Terminal, release: Option<&str>) -> Result
                 terminal,
                 {
                     let mut view = review_view(&answers, 0);
-                    if let Some(version) = release {
+                    if let Some(version) = resume
+                        .as_ref()
+                        .map(|r| r.release_version.as_str())
+                        .or(release)
+                    {
                         view.rows.insert(
                             0,
                             Row::Detail {
@@ -691,8 +727,8 @@ pub fn ask_for_release(terminal: &mut Terminal, release: Option<&str>) -> Result
                 },
                 0,
             )? {
-                Answer::Next(0) => return Ok(answers),
-                _ => stage = 3,
+                Answer::Next(0) => return Ok(SetupSelection { answers, resume }),
+                _ => stage = if resume.is_some() { 1 } else { 3 },
             },
         }
     }
