@@ -159,20 +159,36 @@ impl MinecraftChallenges {
         profile: MinecraftUuid,
         name: MinecraftName,
     ) -> Result<IssuedChallenge, MinecraftError> {
-        self.issue_for(profile, name, MinecraftPurpose::Pack)
+        self.issue_for(profile, name, MinecraftPurpose::Pack, None)
     }
     pub fn issue_management(
         &self,
         profile: MinecraftUuid,
         name: MinecraftName,
     ) -> Result<IssuedChallenge, MinecraftError> {
-        self.issue_for(profile, name, MinecraftPurpose::ManagementEnrollment)
+        self.issue_for(profile, name, MinecraftPurpose::ManagementEnrollment, None)
+    }
+    /// Host binding is serialized by the host authority; the nonce is generated
+    /// inside the shared, bounded challenge store, never selected by a client.
+    pub(crate) fn issue_host(
+        &self,
+        profile: MinecraftUuid,
+        name: MinecraftName,
+        binding: impl FnOnce(&str) -> Vec<u8>,
+    ) -> Result<IssuedChallenge, MinecraftError> {
+        self.issue_for(
+            profile,
+            name,
+            MinecraftPurpose::ManagementEnrollment,
+            Some(Box::new(binding)),
+        )
     }
     fn issue_for(
         &self,
         profile: MinecraftUuid,
         name: MinecraftName,
         purpose: MinecraftPurpose,
+        binding: Option<Box<dyn FnOnce(&str) -> Vec<u8> + '_>>,
     ) -> Result<IssuedChallenge, MinecraftError> {
         let mut state = self
             .shared
@@ -188,6 +204,7 @@ impl MinecraftChallenges {
         if state.pending.len() + state.active >= self.shared.limits.max_outstanding {
             return Err(MinecraftError::busy());
         }
+        let mut binding = binding;
         for _ in 0..NONCE_ATTEMPTS {
             let mut nonce = [0u8; 32];
             getrandom::fill(&mut nonce).map_err(|_| MinecraftError::unavailable())?;
@@ -195,7 +212,18 @@ impl MinecraftChallenges {
             if state.pending.contains_key(&id) {
                 continue;
             }
-            let hash = server_hash_for(self.server, &nonce, purpose);
+            let hash = if let Some(binding) = binding.take() {
+                let mut digest = Sha256::new();
+                digest.update(b"vesta.host.account.v1\0");
+                digest.update(binding(&base64::Engine::encode(
+                    &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                    nonce,
+                )));
+                let bytes = digest.finalize();
+                ServerHash::from_digest(bytes[..20].try_into().expect("digest length"))
+            } else {
+                server_hash_for(self.server, &nonce, purpose)
+            };
             let deadline = self
                 .shared
                 .clock
