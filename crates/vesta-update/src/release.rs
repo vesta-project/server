@@ -357,12 +357,7 @@ impl Release {
             };
             let (temp_path, mut output) = create_temp(&destination)?;
             let copy_result = if let Some(mut response) = response_guard {
-                let reader = response
-                    .body_mut()
-                    .with_config()
-                    .limit(artifact.size)
-                    .reader();
-                copy_artifact(reader, &mut output, artifact, progress)
+                copy_response_artifact(response.body_mut(), &mut output, artifact, progress)
             } else {
                 copy_artifact(&mut input, &mut output, artifact, progress)
             };
@@ -695,6 +690,24 @@ fn create_temp(destination: &Path) -> Result<(PathBuf, File), String> {
 
 static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+fn copy_response_artifact(
+    body: &mut ureq::Body,
+    output: &mut File,
+    artifact: &Artifact,
+    progress: &mut dyn FnMut(&str, u64, u64),
+) -> Result<(), String> {
+    // ureq errors on a read at the limit, even when the next byte is EOF.
+    // Admit one probe byte; copy_artifact still refuses to write beyond the
+    // signed size and requires exact size/hash before publishing the file.
+    let probe_limit = artifact.size.checked_add(1).ok_or("artifact too large")?;
+    copy_artifact(
+        body.with_config().limit(probe_limit).reader(),
+        output,
+        artifact,
+        progress,
+    )
+}
+
 fn copy_artifact(
     mut reader: impl Read,
     output: &mut File,
@@ -705,9 +718,9 @@ fn copy_artifact(
     let mut total = 0u64;
     let mut buffer = [0u8; STREAM_CHUNK];
     loop {
-        let n = reader
-            .read(&mut buffer)
-            .map_err(|_| "artifact read failed")?;
+        let n = reader.read(&mut buffer).map_err(|error| {
+            format!("artifact read failed: {} ({})", artifact.name, error.kind())
+        })?;
         if n == 0 {
             break;
         }
@@ -768,6 +781,71 @@ fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
 #[cfg(test)]
 mod redirect_tests {
     use super::*;
+    #[test]
+    #[ignore = "opt-in bounded signed public artifact download; never executes binaries"]
+    fn public_signed_artifact_copy_smoke() {
+        assert_eq!(
+            std::env::var("VESTA_PUBLIC_RELEASE_SMOKE").as_deref(),
+            Ok("1")
+        );
+        let catalog = official::catalog().unwrap();
+        let tag = official::latest(&catalog, true).unwrap();
+        let release = official::load(
+            tag,
+            include_str!("../../../scripts/bootstrap/release-public-key.txt").trim(),
+        )
+        .unwrap();
+        let artifact = release
+            .manifest
+            .files
+            .iter()
+            .min_by_key(|a| a.size)
+            .unwrap();
+        assert!(
+            artifact.size <= 16 * 1024 * 1024,
+            "public smoke fixture exceeds its 16MiB test budget"
+        );
+        let ArtifactSource::Remote(base, prefix) = &release.source else {
+            panic!("expected public remote")
+        };
+        let mut response =
+            download_response(&http_agent(), &format!("{base}/{prefix}{}", artifact.name)).unwrap();
+        assert_eq!(response.status(), 200);
+        let mut output = tempfile::tempfile().unwrap();
+        copy_response_artifact(
+            response.body_mut(),
+            &mut output,
+            artifact,
+            &mut |_, _, _| {},
+        )
+        .unwrap();
+        assert_eq!(output.metadata().unwrap().len(), artifact.size);
+        eprintln!(
+            "Verified {tag}/{}: {} bytes, signed hash checked; never executed",
+            artifact.name, artifact.size
+        );
+    }
+    #[test]
+    fn remote_artifact_exact_eof_and_invalid_bodies() {
+        let bytes = b"verified fixture artifact";
+        let artifact = Artifact {
+            name: "vesta-agent".into(),
+            size: bytes.len() as u64,
+            sha256: hex::encode(Sha256::digest(bytes)),
+        };
+        for payload in [
+            bytes.to_vec(),
+            bytes[..3].to_vec(),
+            [bytes.as_slice(), b"extra"].concat(),
+            vec![b'x'; bytes.len()],
+        ] {
+            let mut body = ureq::Body::builder().reader(std::io::Cursor::new(payload.clone()));
+            let mut out = tempfile::tempfile().unwrap();
+            let result = copy_response_artifact(&mut body, &mut out, &artifact, &mut |_, _, _| {});
+            assert_eq!(result.is_ok(), payload == bytes, "{result:?}");
+            assert!(out.metadata().unwrap().len() <= artifact.size);
+        }
+    }
     #[test]
     fn release_redirects_allow_https_cdn_signatures_but_not_downgrades_or_credentials() {
         let from =
