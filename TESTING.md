@@ -44,7 +44,7 @@ behaviour as implemented.
 
 ## Change-aware CI
 
-CI runs once per feature PR, on main pushes, and on manual dispatch. Node contracts always run. `scripts/change-scope.mjs` selects setup/update package checks for isolated changes and full workspace checks for shared/configuration or unknown changes. Bootstrap shell and documentation changes need no Rust build; both required Rust job names report that explicitly. Missing/manual diff baselines select full checks, and a failed diff fails the job. Formatting, check, test and strict Clippy remain required for each selected Rust scope on Windows and Linux.
+The CI workflow runs for feature PRs/manual validation and is reused once by the main-push release workflow. Main does not independently trigger a second CI workflow, and publishing does not repeat the test matrix. Node contracts always run. `scripts/change-scope.mjs` unions the current change scope with pending-release scope, so a docs-only push cannot publish untested earlier Rust changes. Setup/update package checks serve isolated changes; shared/configuration, unknown and missing/manual baselines select full checks. A failed diff fails the job. Bootstrap shell and documentation-only changes need no Rust build. Formatting, check, test and strict Clippy remain required for each selected Rust scope on Windows and Linux. Signed direct main pushes are allowed; a release still requires successful CI for that exact source.
 
 Only successful main pushes save trusted Rust caches; PRs may restore them and cache failures cannot skip validation. Release builds remain separate. Run classifier/workflow regressions with `node --test scripts/change-scope.test.mjs scripts/ci-scope-contract.test.mjs scripts/bootstrap/nightly-workflow.test.mjs`.
 

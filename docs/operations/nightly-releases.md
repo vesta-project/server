@@ -4,7 +4,7 @@ Nightlies now include signed sequence/expiry update descriptors. See
 [signed update foundations](signed-updates.md) for key generation, trust bootstrap,
 check/stage commands and the remaining activation boundary.
 
-`.github/workflows/ci.yml` checks main pushes, pull requests, and manual validation. Feature branches run through their PR rather than duplicate push and PR runs. `.github/workflows/nightly.yml` builds and publishes only after a new commit is pushed to `main` in the canonical repository. It has no scheduled, pull-request or manual publishing trigger. Re-running an already published source commit skips that product.
+`.github/workflows/ci.yml` validates PRs/manual requests and exposes the same checks as a reusable workflow. The main-push `.github/workflows/nightly.yml` calls that workflow once before building/signing: there is no separate main CI run or second release test matrix. The call includes pending-release scope as well as current-push scope, retaining catch-up correctness. Publication has no scheduled, PR or manual trigger and remains canonical-main-only. Re-running an already published source commit skips that product while still validating the main update.
 
 The shared change classifier selects checks and publications. Shell-script-only and documentation changes run Node contracts without building or publishing binaries. Installer-view changes test setup and publish an independent installer; shared host/runtime and unknown changes retain full Rust checks and publish both products. Packaging changes exercise setup and update verification. CI-configuration changes retain the full check matrix without themselves requiring a binary release. The required Rust status names remain present even when no Rust checks apply.
 

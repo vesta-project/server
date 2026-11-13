@@ -47,6 +47,11 @@ export function changedFiles({ event, base, before, head }, git = args => execFi
 export function cargoArgs(scope) {
   return new Map([['setup','-p vesta-setup'],['update','-p vesta-update'],['setup-update','-p vesta-setup -p vesta-update']]).get(scope) ?? '--workspace';
 }
+export function mergeRustScopes(...scopes) {
+  if (scopes.some(scope => !['none','setup','update','setup-update','full'].includes(scope)) || scopes.includes('full')) return 'full';
+  if (scopes.includes('setup-update') || scopes.includes('setup') && scopes.includes('update')) return 'setup-update';
+  return scopes.find(scope=>scope!=='none') ?? 'none';
+}
 export function planPublications(scope, releases, {commit, serverVersion, installerVersion}, releaseCommit = r => r.target_commitish) {
   if (!Array.isArray(releases) || typeof scope.server_release !== 'boolean' || typeof scope.installer_release !== 'boolean') throw new Error('Invalid publication scope.');
   const exists = (prefix, tag) => releases.some(r => !r.draft && typeof r.tag_name === 'string' && r.tag_name.startsWith(prefix) && (r.tag_name === tag || releaseCommit(r) === commit));
@@ -88,8 +93,7 @@ export function planFromHistory(pages, options, git = args => execFileSync('git'
   });
   const plan = planPublications({rust_scope:'none',server_release:scopes[0].server_release,installer_release:scopes[1].installer_release},releases,options,commitOf);
   const active = [plan.server_release && scopes[0].rust_scope, plan.installer_release && scopes[1].rust_scope].filter(Boolean);
-  const rustScope = active.includes('full') ? 'full' : active.includes('setup-update') || (active.includes('setup') && active.includes('update'))
-    ? 'setup-update' : active[0] ?? 'none';
+  const rustScope = mergeRustScopes(...active);
   return {...plan,rust_scope:rustScope};
 }
 
@@ -104,6 +108,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   } else {
   const files = changedFiles({ event: process.env.CI_EVENT, base: process.env.CI_BASE, before: process.env.CI_BEFORE, head: process.env.CI_HEAD });
   const result = files === null ? { rust_scope: 'full', server_release: true, installer_release: true } : classifyChanges(files);
+  result.rust_scope=mergeRustScopes(result.rust_scope,process.env.CI_RELEASE_SCOPE || 'none');
   const output = Object.entries(result).map(([key, value]) => `${key}=${value}\n`).join('');
   if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, output);
   process.stdout.write(output);

@@ -6,6 +6,15 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
 const ci = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+test('main uses the same CI once and cannot omit pending release validation',async()=>{
+  const nightly=await readFile(new URL('../.github/workflows/nightly.yml',import.meta.url),'utf8');
+  assert.match(ci,/workflow_call:[\s\S]*release_rust_scope:/);
+  assert.match(ci,/CI_RELEASE_SCOPE: \$\{\{ inputs.release_rust_scope \}\}/);
+  assert.equal((nightly.match(/uses: .\/\.github\/workflows\/ci.yml/g)||[]).length,1);
+  assert.doesNotMatch(nightly,/cargo test|cargo clippy|cargo check/);
+  assert.match(nightly,/needs: \[validate, prepare\]/);
+  assert.doesNotMatch(ci.slice(0,ci.indexOf('permissions:')),/\bpush:/);
+});
 test('required job names remain; no Rust change is explicit, classifier failure cannot skip checks', () => {
   assert.match(ci, /name: Rust \(\$\{\{ matrix.os \}\}\)/);
   assert.match(ci, /needs: test/);

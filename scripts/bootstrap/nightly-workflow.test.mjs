@@ -16,8 +16,9 @@ test('nightly binaries require the provider integration key without exposing it 
   assert.doesNotMatch(ci, /secrets\.CURSEFORGE_API_KEY/);
 });
 
-test('CI checks main pushes, pull requests, and manual validation without duplicate feature pushes', () => {
-  assert.match(ci, /on:\s*\n\s+push:\s*\n\s+branches:\s*\[main\]/);
+test('CI is reused once by main publication and remains callable for PR/manual validation', () => {
+  assert.doesNotMatch(ci.slice(0,ci.indexOf('permissions:')), /\bpush:/);
+  assert.match(ci,/workflow_call:/);
   assert.match(ci, /pull_request:\s*\n\s+branches:\s*\['\*\*'\]/);
   assert.match(ci, /workflow_dispatch:/);
   assert.match(ci, /permissions:\s*\n\s+contents:\s*read/);
@@ -65,7 +66,10 @@ test('all third-party workflow actions are pinned to full commit SHAs', () => {
   for (const [filename, workflow] of [['ci.yml', ci], ['nightly.yml', nightly]]) {
     const refs = [...workflow.matchAll(/^\s+uses:\s+([^\s#]+)(?:\s+#.*)?$/gm)].map(match => match[1]);
     assert.ok(refs.length > 0, `${filename} contains actions`);
-    for (const ref of refs) assert.match(ref, /^[^@]+@[0-9a-f]{40}$/, `${filename} has immutable action reference: ${ref}`);
+    for (const ref of refs) {
+      if (ref.startsWith('./')) assert.equal(ref,'./.github/workflows/ci.yml');
+      else assert.match(ref, /^[^@]+@[0-9a-f]{40}$/, `${filename} has immutable action reference: ${ref}`);
+    }
   }
 });
 
@@ -74,8 +78,10 @@ test('independent products share verification and gate every publication on its 
   assert.doesNotMatch(nightly, /scope.env/);
   assert.match(nightly, /node scripts\/change-scope.mjs --release-plan/);
   const validate = nightly.split('\n  validate:')[1].split('\n  build:')[0];
-  assert.match(validate, /if: needs.prepare.outputs.should_build == 'true'/);
-  assert.match(validate, /--cargo-args "\$SCOPE"/);
+  assert.match(validate, /uses: .\/\.github\/workflows\/ci.yml/);
+  assert.match(validate, /release_rust_scope: \$\{\{ needs.prepare.outputs.rust_scope \}\}/);
+  assert.doesNotMatch(validate,/cargo test|runs-on:|secrets: inherit/);
+  assert.match(nightly.split('\n  build:')[1],/if: needs.prepare.outputs.should_build == 'true'/);
   const publish = nightly.split('\n  publish:')[1];
   assert.ok(publish.indexOf('stage-nightly-release.mjs --product installer') < publish.indexOf('gh release create'));
   for (const [name, product] of [

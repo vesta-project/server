@@ -73,62 +73,20 @@ jobs:
           gh api --paginate --slurp "repos/$GH_REPO/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
           node scripts/change-scope.mjs --release-plan "$RUNNER_TEMP/releases.json"
 
+  # One canonical validation matrix, also used for PR/manual checks. Include
+  # catch-up release scope so a docs-only push cannot skip unpublished Rust.
   validate:
-    timeout-minutes: 45
-    name: Validate (${{ matrix.os }})
+    name: Validate
     needs: [gate, prepare]
-    if: needs.prepare.outputs.should_build == 'true'
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, windows-2025]
-    defaults:
-      run:
-        shell: bash
-        working-directory: server
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: server
-          persist-credentials: false
-      - name: Checkout pinned shared sandbox source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: vesta-project/launcher
-          ref: 930f21dd465453e90af16548eee4db3d53828986
-          path: launcher
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22'
-      - name: Run Node checks and release packaging contract tests
-        run: |
-          node --test scripts/*.test.mjs scripts/bootstrap/*.test.mjs scripts/reachability-probe/*.test.mjs
-          node scripts/requirements-ledger.mjs --check
-          node scripts/build-roadmap-html.mjs --check
-      - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
-      - name: Check formatting
-        run: rustup run 1.96.0 cargo fmt --all -- --check
-      - name: Check, test, and lint Rust workspace
-        env:
-          CARGO_INCREMENTAL: '0'
-          # Keep native test fixtures within the same setup-artifact size bound
-          # as production releases; release build settings remain unchanged.
-          CARGO_PROFILE_TEST_DEBUG: '0'
-          CARGO_PROFILE_DEV_DEBUG: '0'
-          SCOPE: ${{ needs.prepare.outputs.rust_scope }}
-        run: |
-          read -r -a packages <<< "$(node scripts/change-scope.mjs --cargo-args "$SCOPE")"
-          rustup run 1.96.0 cargo check "${packages[@]}" --all-targets --locked
-          rustup run 1.96.0 cargo test "${packages[@]}" --locked -- --test-threads=1
-          rustup run 1.96.0 cargo clippy "${packages[@]}" --all-targets --locked -- -D warnings
+    uses: ./.github/workflows/ci.yml
+    with:
+      release_rust_scope: ${{ needs.prepare.outputs.rust_scope }}
 
   build:
     timeout-minutes: 45
     name: Build (${{ matrix.target }})
     needs: [validate, prepare]
+    if: needs.prepare.outputs.should_build == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

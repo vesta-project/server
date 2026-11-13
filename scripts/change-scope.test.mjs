@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { classifyChanges, changedFiles, planPublications } from './change-scope.mjs';
+import { classifyChanges, changedFiles, planPublications, mergeRustScopes } from './change-scope.mjs';
 import * as scopeModule from './change-scope.mjs';
+
+test('one CI matrix includes both current push and unpublished release scope',()=>{
+  assert.equal(mergeRustScopes('none','full'),'full');
+  assert.equal(mergeRustScopes('setup','update'),'setup-update');
+  assert.equal(mergeRustScopes('none','setup'),'setup');
+  assert.equal(mergeRustScopes('none','none'),'none');
+  assert.equal(mergeRustScopes('setup','bogus'),'full');
+});
 
 test('publication catches skipped pushes from separate product baselines and complete history', () => {
   const a='a'.repeat(40), b='b'.repeat(40), head='c'.repeat(40);
