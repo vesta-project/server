@@ -401,7 +401,9 @@ impl ImportJobs {
     /// Names held by committed servers and pending imports share one namespace.
     pub fn suggested_create_name(&self) -> JobResult<String> {
         self.read(|c| {
-            let mut stmt = c.prepare("SELECT name FROM machine_servers WHERE state!='deleted' UNION SELECT json_extract(request,'$.name') FROM machine_import_jobs WHERE state IN ('applying','interrupted')")?;
+            let mut stmt = c.prepare("SELECT name FROM machine_servers WHERE state!='deleted'
+                UNION SELECT json_extract(j.request,'$.name') FROM machine_import_jobs j
+                JOIN machine_import_reservations r ON r.job_id=j.job_id WHERE r.released=0")?;
             let names = stmt.query_map([], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             for n in 1..=100_000 {
