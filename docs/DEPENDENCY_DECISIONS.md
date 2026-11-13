@@ -577,3 +577,12 @@ remain release gates.
 ## Temporary Java Edition responder and MOTD rendering (2026-10-14)
 
 The game-runtime crate now directly uses the workspace-pinned serde_json to validate and encode bounded status/disconnect packets. Cargo.lock changes only that local dependency edge: no external package or version is added. Socket ownership stays in the existing native game owner/supervisor rather than adding a proxy, executable or third-party service. The control renderer uses the existing base64 and flate2 dependencies for bounded 64x64 PNG validation/re-encoding and a generated fallback; metadata is stripped. Linux and live Minecraft/client compatibility remain release gates.
+
+## Host PAKE bootstrap (2026-11-13)
+
+- `spake2 = 0.4.0`: pinned RustCrypto Ed25519Group asymmetric SPAKE2 implementation shared by the server and Rust/Tauri launcher; upstream is maintained, but its documented lack of independent audit and timing caveats remain release-review gates. Sources: https://github.com/RustCrypto/PAKEs and https://docs.rs/spake2/0.4.0/spake2/ .
+- `hkdf = 0.12.4` and `hmac = 0.12.1`: RustCrypto HKDF-SHA256 and constant-time HMAC-SHA256 verification for exporter/transcript binding and mutual key confirmation; no handwritten cryptographic primitives.
+- `rand_core = 0.6.4` with getrandom: OS randomness compatible with the pinned SPAKE2 API for passwords, nonces, SPAKE secrets and opaque capabilities.
+- `rand_chacha = 0.3.1` (tests only): seeded deterministic transcript vectors, never production entropy.
+- `chrono = 0.4.45` (std only): reuse the already locked timestamp library for RFC3339 response expiry formatting; admission uses monotonic deadlines.
+- The new dependency-light `vesta-host-client` also directly pins the existing workspace serde/serde_json, sha2, base64 and zeroize versions so it can be consumed independently by path/git without server control/store dependencies. Transport adds the existing workspace uuid edge. The isolated conformance harness reuses existing rustls and certificate fixtures; it opens loopback sockets only in tests.

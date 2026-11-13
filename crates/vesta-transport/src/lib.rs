@@ -69,6 +69,7 @@ mod public_resource_packs;
 mod realtime;
 mod routes;
 pub use probe::LocalUpdateProbe;
+pub mod host_pake;
 mod tls;
 type Reply = Response<ReplyBody>;
 const DOWNLOADS: usize = 2;
@@ -1006,7 +1007,7 @@ async fn serve_application<S: HttpApplication>(
                 if connections.len() + shared.active_upgrades() >= usize::from(config.max_connections()) { drop(socket); continue; }
                 if !matches!(connection_limiter.try_acquire(peer.ip()), AdmissionDecision::Allowed) { drop(socket); continue; }
                 let Ok(handshake) = handshakes.clone().try_acquire_owned() else { drop(socket); continue; };
-                let Ok(config) = shared.tls().config() else { drop(socket); continue; };
+                let Ok((config, fingerprint)) = shared.tls().accept_config() else { drop(socket); continue; };
                 let tls = TlsAcceptor::from(config); let state = shared.clone();
                 connections.spawn(async move {
                     let limit = state.timeout();
@@ -1018,15 +1019,19 @@ async fn serve_application<S: HttpApplication>(
                     let work = async move {
                         let Ok(Ok(stream)) = tokio::time::timeout(HANDSHAKE_TIMEOUT.min(limit), tls.accept(socket)).await else { return; };
                         drop(handshake);
+                        let context = tls::connection_context(stream.get_ref().1, fingerprint);
+                        let Ok(context) = context else { return; };
                         let stream = DeadlineIo { inner: stream, deadline: deadline.clone() };
                         let requests = std::sync::atomic::AtomicUsize::new(0);
                         let service = service_fn(move |mut request| {
                             let last = requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 >= MAX_REQUESTS;
                             let state = state.clone();
                             let deadline = deadline.clone();
+                            let context = context.clone();
                             async move {
                                 deadline.request();
                                 request.extensions_mut().insert(deadline.clone());
+                                if let Some(context) = context.clone() { request.extensions_mut().insert(context); }
                                 let mut reply = state.dispatch(request, peer).await?;
                                 reply.body_mut().watch(deadline);
                                 // An upgrade hands ownership to the separately bounded
