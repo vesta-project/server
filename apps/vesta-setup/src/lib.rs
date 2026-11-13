@@ -15,3 +15,6 @@ pub mod visual_states;
 pub mod wizard;
 
 pub mod linux_install;
+
+#[cfg(target_os = "linux")]
+pub mod linux_acl;

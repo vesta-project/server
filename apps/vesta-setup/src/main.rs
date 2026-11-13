@@ -7,6 +7,9 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     #[cfg(target_os = "linux")]
     {
+        if args.first().is_some_and(|s| s == "linux-acl") {
+            return vesta_setup::linux_acl::run(&args[1..]);
+        }
         if args.first().is_some_and(|s| s == "linux-identity") {
             return vesta_setup::linux_install::identity(std::path::Path::new(args.get(1).ok_or("Missing root")?));
         }

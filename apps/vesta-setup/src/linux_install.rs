@@ -196,7 +196,7 @@ mod tests {
         assert!(SCRIPT.contains("import_action=${1:-}"));
         assert!(SCRIPT.contains("add|list|remove)"));
         assert!(SCRIPT.contains("No import folders registered."));
-        assert!(SCRIPT.contains("setfacl -R -P -x u:vesta"));
+        assert!(SCRIPT.contains("linux-acl remove"));
         assert!(SCRIPT.contains("Import root removed:"));
     }
     #[test]

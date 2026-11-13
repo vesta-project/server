@@ -129,7 +129,7 @@ else:
 PY
   exit
  fi
- source_dir=$(realpath -e -- "$source_dir")
+ # Preserve spelling: the descriptor adapter rejects links and non-normal components.
  [[ -d $source_dir && $source_dir != / ]] || fail 'Choose an existing import directory, not /.'
  if [[ $import_action == remove ]]; then
   python3 - "$roots_file" "$source_dir" <<'PY' || fail 'That path is not a registered import folder.'
@@ -145,21 +145,12 @@ PY
    read -r -p 'Revoke these permissions and unregister the folder? [y/N] ' answer
    [[ $answer == y || $answer == Y || $answer == yes ]] || fail 'No permissions changed.'
   fi
-  setfacl -R -P -x u:vesta -- "$source_dir" 2>/dev/null || true
+  /usr/local/lib/vesta/vesta-setup linux-acl remove "$source_dir" "$roots_file"
   python3 - "$roots_file" "$source_dir" <<'PY'
 import json,sys
 from pathlib import Path
 p=Path(sys.argv[1]); target=sys.argv[2]
 a=[r for r in (json.loads(p.read_text()) if p.exists() else []) if isinstance(r,str) and r!=target]
-# Drop traverse ACL on parents only when no remaining root still needs them.
-remaining=a
-parent=str(Path(target).parent)
-while parent!='/':
- need=any(r==parent or r.startswith(parent.rstrip('/')+'/') for r in remaining)
- if not need:
-  import subprocess
-  subprocess.run(['setfacl','-x','u:vesta',parent],check=False)
- parent=str(Path(parent).parent)
 t=p.with_suffix('.tmp'); t.write_text(json.dumps(a)); t.chmod(0o644); t.replace(p)
 sug=Path(sys.argv[1]).parent/'suggested-import.json'
 if sug.exists():
@@ -187,9 +178,7 @@ PY
   read -r -p 'Apply these permissions? [y/N] ' answer
   [[ $answer == y || $answer == Y || $answer == yes ]] || fail 'No permissions changed.'
  fi
- setfacl -R -P -m u:vesta:rX -- "$source_dir"
- parent=$(dirname -- "$source_dir")
- while [[ $parent != / ]]; do setfacl -m u:vesta:--x -- "$parent"; parent=$(dirname -- "$parent"); done
+ /usr/local/lib/vesta/vesta-setup linux-acl add "$source_dir" "$roots_file"
  python3 - "$root" "$source_dir" <<'PY'
 import json,sys
 from pathlib import Path
