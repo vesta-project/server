@@ -67,6 +67,7 @@ pub fn all() -> Vec<(&'static str, View)> {
             directory_picker::view(
                 &PathBuf::from(&game),
                 &Listing {
+                    readable: true,
                     entries: vec![
                         Entry {
                             path: PathBuf::from(&game).join("world"),

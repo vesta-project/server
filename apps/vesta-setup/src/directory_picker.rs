@@ -16,14 +16,19 @@ pub(crate) struct Entry {
     pub directory: bool,
 }
 pub(crate) struct Listing {
+    pub readable: bool,
     pub entries: Vec<Entry>,
     pub truncated: bool,
     pub skipped: usize,
 }
 pub(crate) fn list(path: &Path) -> engine::Result<Listing> {
-    engine::guard(path)?;
+    engine::guard(path).map_err(|code| if code=="setup_path_unavailable" {
+        "Cannot inspect this folder. Run setup as its owning OS account or use an accessible copy.".into()
+    } else {code})?;
     let entries = fs::read_dir(path)
-        .map_err(|_| "Cannot read this folder. Enter another path.")?
+        .map_err(|error| if error.kind()==std::io::ErrorKind::PermissionDenied {
+            "Permission denied. Run setup as the OS account that owns this server, or use an accessible copy."
+        } else {"Cannot read this folder. Go to its parent or enter another path."})?
         .map(|entry| {
             let entry = entry?;
             let file_type = entry.file_type()?;
@@ -54,6 +59,7 @@ fn collect_entries(entries: impl Iterator<Item = std::io::Result<Entry>>) -> Lis
             .then_with(|| a.path.file_name().cmp(&b.path.file_name()))
     });
     Listing {
+        readable: true,
         entries,
         truncated,
         skipped,
@@ -105,7 +111,7 @@ pub(crate) fn view(path: &Path, listing: &Listing, page: usize, error: Option<St
             ),
         });
     }
-    if listing.entries.is_empty() && listing.skipped == 0 {
+    if listing.readable && listing.entries.is_empty() && listing.skipped == 0 {
         rows.push(Row::Notice {
             tone: crate::ui::Tone::Info,
             text: "This folder is empty.".into(),
@@ -118,7 +124,7 @@ pub(crate) fn view(path: &Path, listing: &Listing, page: usize, error: Option<St
         });
     }
     for (label, disabled) in [
-        ("Select this folder".to_string(), false),
+        ("Select this folder".to_string(), !listing.readable),
         ("Go to parent folder".to_string(), path.parent().is_none()),
         ("Enter a different path".to_string(), false),
         (format!("Previous page ({}/{pages})", page + 1), page == 0),
@@ -164,9 +170,96 @@ pub(crate) fn view(path: &Path, listing: &Listing, page: usize, error: Option<St
     }
 }
 
+pub(crate) fn unavailable() -> Listing {
+    Listing {
+        readable: false,
+        entries: vec![],
+        truncated: false,
+        skipped: 0,
+    }
+}
+
+pub(crate) fn preview(path: &Path) -> Vec<Row> {
+    match list(path) {
+        Ok(listing) => {
+            let mut rows = vec![Row::Notice {
+                tone: crate::ui::Tone::Success,
+                text: "Readable folder. Press Enter to browse it.".into(),
+            }];
+            rows.extend(listing.entries.iter().take(PAGE_SIZE).map(|entry| {
+                Row::Detail {
+                    label: if entry.directory {
+                        "Folder"
+                    } else {
+                        "File/link"
+                    }
+                    .into(),
+                    value: visible_filename(
+                        &entry.path.file_name().unwrap_or_default().to_string_lossy(),
+                    ),
+                }
+            }));
+            rows
+        }
+        Err(message) => vec![Row::Notice {
+            tone: crate::ui::Tone::Warning,
+            text: message,
+        }],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unavailable_folder_keeps_parent_and_manual_entry_enabled_and_is_not_empty() {
+        let temp = tempfile::tempdir().unwrap();
+        let view = view(
+            temp.path(),
+            &unavailable(),
+            0,
+            Some("Permission denied".into()),
+        );
+        let choices: Vec<_> = view
+            .rows
+            .iter()
+            .filter_map(|row| {
+                if let Row::Choice { disabled, .. } = row {
+                    Some(*disabled)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(&choices[..3], &[true, false, false]);
+        let text = crate::ui::render(
+            &view,
+            crate::ui::Theme {
+                color: false,
+                unicode: false,
+                width: 100,
+            },
+        );
+        assert!(text.contains("Permission denied"));
+        assert!(!text.contains("folder is empty"));
+        assert!(
+            preview(&temp.path().join("missing"))
+                .iter()
+                .any(|row| matches!(
+                    row,
+                    Row::Notice {
+                        tone: crate::ui::Tone::Warning,
+                        ..
+                    }
+                ))
+        );
+        fs::write(temp.path().join("server.properties"), b"fixture").unwrap();
+        assert!(
+            preview(temp.path())
+                .iter()
+                .any(|row| matches!(row,Row::Detail{value,..} if value=="server.properties"))
+        );
+    }
     #[test]
     fn child_errors_keep_good_entries_visible_and_bound_all_attempts() {
         use std::{cell::Cell, io};

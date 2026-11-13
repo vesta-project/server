@@ -134,6 +134,12 @@ fn choose(terminal: &mut Terminal, mut view: View, initial: usize) -> Result<Ans
         return Err("setup_prompt_invalid".into());
     }
     let mut selected = initial.min(disabled.len().saturating_sub(1));
+    if disabled[selected] {
+        selected = disabled
+            .iter()
+            .position(|disabled| !disabled)
+            .ok_or("setup_prompt_invalid")?;
+    }
     let mut render = |terminal: &mut Terminal, selected: usize| {
         let mut i = 0;
         for row in &mut view.rows {
@@ -190,17 +196,34 @@ fn input(
     initial: String,
     validate: impl Fn(&str) -> Result<()>,
 ) -> Result<Answer<String>> {
+    input_editor(terminal, step, heading, label, initial, validate, false)
+}
+fn input_editor(
+    terminal: &mut Terminal,
+    step: usize,
+    heading: &str,
+    label: &str,
+    initial: String,
+    validate: impl Fn(&str) -> Result<()>,
+    preview: bool,
+) -> Result<Answer<String>> {
     let _raw = Raw::begin()?;
     let mut value = initial;
     let mut error = None;
     loop {
-        terminal.show(&input_view(
+        let mut screen = input_view(
             step,
             heading,
             label,
-            &format!("{value}▏"),
+            &format!("{value}\u{258f}"),
             error.clone(),
-        ))?;
+        );
+        if preview && !value.is_empty() {
+            screen
+                .rows
+                .extend(directory_picker::preview(&PathBuf::from(&value)));
+        }
+        terminal.show(&screen)?;
         match key()? {
             Event::Key(k) if k.kind != KeyEventKind::Release => match k.code {
                 KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -260,23 +283,9 @@ fn existing_directory(terminal: &mut Terminal) -> Result<Answer<PathBuf>> {
     loop {
         let listing = match directory_picker::list(&current) {
             Ok(listing) => listing,
-            Err(_) => {
-                match input(
-                    terminal,
-                    2,
-                    "Folder unavailable — enter another path",
-                    "Directory path",
-                    paths::display(&current),
-                    |text| directory_picker::list(&PathBuf::from(text)).map(|_| ()),
-                )? {
-                    Answer::Next(path) => {
-                        current = paths::normalize(&PathBuf::from(path));
-                        page = 0;
-                    }
-                    Answer::Back => return Ok(Answer::Back),
-                }
-                error = None;
-                continue;
+            Err(code) => {
+                error = Some(code);
+                directory_picker::unavailable()
             }
         };
         page = page.min(listing.entries.len().saturating_sub(1) / directory_picker::PAGE_SIZE);
@@ -296,13 +305,14 @@ fn existing_directory(terminal: &mut Terminal) -> Result<Answer<PathBuf>> {
                     page = 0;
                 }
             }
-            Answer::Next(2) => match input(
+            Answer::Next(2) => match input_editor(
                 terminal,
                 2,
                 "Open a folder",
-                "Directory path",
-                paths::display(&current),
+                "Absolute directory path (Ctrl+U clears)",
+                String::new(),
                 |text| directory_picker::list(&PathBuf::from(text)).map(|_| ()),
+                true,
             )? {
                 Answer::Next(path) => {
                     current = paths::normalize(&PathBuf::from(path));
@@ -318,9 +328,13 @@ fn existing_directory(terminal: &mut Terminal) -> Result<Answer<PathBuf>> {
                     .get(page * directory_picker::PAGE_SIZE + index - 5)
                     .filter(|entry| entry.directory)
                 {
-                    engine::guard(&entry.path)?;
-                    current = entry.path.clone();
-                    page = 0;
+                    match engine::guard(&entry.path) {
+                        Ok(()) => {
+                            current = entry.path.clone();
+                            page = 0;
+                        }
+                        Err(code) => error = Some(friendly(&code)),
+                    }
                 }
             }
         }
@@ -704,31 +718,41 @@ pub fn select_package(
     catalog: &[crate::release::official::Published],
 ) -> Result<String> {
     loop {
-        let stable = catalog.iter().any(|r| !r.nightly);
-        let nightly = catalog.iter().any(|r| r.nightly);
-        let initial = if stable {
+        let stable = crate::release::official::latest(catalog, false).ok();
+        let nightly = crate::release::official::latest(catalog, true).ok();
+        let initial = if stable.is_some() {
             0
-        } else if nightly {
+        } else if nightly.is_some() {
             1
         } else {
             2
         };
-        let channels = with_choices(
+        let screen = with_choices(
             view(
                 1,
                 "Which Vesta release should be installed?",
-                "Installer updates are independent of this selection.",
+                "Channel choices install the latest published build. Use an exact tag for older versions.",
             ),
             &[
-                ("Stable releases", "Recommended for regular use", !stable),
-                ("Nightly builds", "Development builds", !nightly),
+                (
+                    "Latest stable",
+                    stable.unwrap_or("No stable release published"),
+                    stable.is_none(),
+                ),
+                (
+                    "Latest nightly",
+                    nightly.unwrap_or("No nightly published"),
+                    nightly.is_none(),
+                ),
                 ("Enter an exact release tag", "", false),
             ],
             initial,
         );
-        let channel = match choose(terminal, channels, initial)? {
+        match choose(terminal, screen, initial)? {
             Answer::Back => return Err("setup_cancelled".into()),
-            Answer::Next(2) => match input(
+            Answer::Next(0) => return Ok(stable.ok_or("No stable release available")?.into()),
+            Answer::Next(1) => return Ok(nightly.ok_or("No nightly available")?.into()),
+            Answer::Next(_) => match input(
                 terminal,
                 1,
                 "Select an exact release",
@@ -745,35 +769,6 @@ pub fn select_package(
                 Answer::Next(tag) => return Ok(tag),
                 Answer::Back => continue,
             },
-            Answer::Next(index) => index == 1,
-        };
-        let releases: Vec<_> = catalog.iter().filter(|r| r.nightly == channel).collect();
-        let mut page = 0;
-        loop {
-            let start = page * 5;
-            let mut screen = view(
-                1,
-                "Choose a Vesta version",
-                "The selected package is verified before installation.",
-            );
-            let mut choices: Vec<_> = releases
-                .iter()
-                .skip(start)
-                .take(5)
-                .map(|r| (r.tag.as_str(), "", false))
-                .collect();
-            let visible = choices.len();
-            choices.push(("Previous page", "", page == 0));
-            choices.push(("Next page", "", start + visible >= releases.len()));
-            screen = with_choices(screen, &choices, 0);
-            match choose(terminal, screen, 0)? {
-                Answer::Back => break,
-                Answer::Next(index) if index < visible => {
-                    return Ok(releases[start + index].tag.clone());
-                }
-                Answer::Next(index) if index == visible => page = page.saturating_sub(1),
-                Answer::Next(_) => page += 1,
-            }
         }
     }
 }

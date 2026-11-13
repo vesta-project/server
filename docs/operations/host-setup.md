@@ -179,3 +179,11 @@ node scripts/setup-preview/capture.mjs `
 ```
 
 The capture script visits each exported state, waits for xterm's write and browser layout to settle, and writes PNG files, a hash manifest, and `gallery.html`. Screenshots should be generated from the compiled Rust export and this viewer so review evidence stays tied to production renderer output.
+
+## Existing server permissions
+
+The folder browser uses the current OS account's read permissions. If AMP owns the server under a different account, setup cannot browse that private directory as your login user. Start a shell as the actual owning account with `sudo -H -u <server-owner> bash`, then run the normal installer command there. The installation and startup registration will belong to that account. Do not substitute `root` just to get past the browser: it would create a root-owned installation. Alternatively use a separate, owner-approved readable copy.
+
+Setup does not change AMP permissions, ownership, services or source files and does not escalate itself. Permission errors leave parent navigation and manual path entry available. While entering a readable absolute path, a bounded contents preview updates before Enter. Channel choices show their latest published tag and install it directly; use an exact release tag to select an older version. Choosing Nightly does not silently enable automatic restarts or activation.
+
+For an interrupted installation, the same Vesta folder must resume with the same server release and settings recorded in its receipt. If a newer nightly has appeared, select the recorded exact tag with the updated independent installer, or choose a new empty Vesta installation folder. Do not remove or change the AMP source folder to resolve a Vesta resume mismatch.

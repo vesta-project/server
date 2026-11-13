@@ -144,6 +144,23 @@ pub fn load(tag: &str, release_key: &str) -> Result<Release, String> {
 mod tests {
     use super::*;
     use ring::signature::{Ed25519KeyPair, KeyPair};
+    #[test]
+    fn latest_channel_choice_uses_publication_order_not_input_or_tag_order() {
+        let releases = vec![
+            Published {
+                tag: "nightly-z-old".into(),
+                nightly: true,
+                published_at: "2026-01-01T00:00:00Z".into(),
+            },
+            Published {
+                tag: "nightly-a-new".into(),
+                nightly: true,
+                published_at: "2026-02-01T00:00:00Z".into(),
+            },
+        ];
+        assert_eq!(latest(&releases, true).unwrap(), "nightly-a-new");
+        assert!(latest(&releases, false).is_err());
+    }
 
     #[test]
     fn verified_selection_binds_version_signature_and_server_artifact_contract() {
