@@ -184,7 +184,8 @@ Blockers and job errors, with suggested wording:
 | Code | Tell the owner |
 |---|---|
 | `source_running` | The original server is still running. Stop it (and turn off auto-restart in AMP), then check again. |
-| `source_state_unknown` | Vesta Server can't tell whether the original server is running. Stop it, or import a stopped copy placed in an import folder. |
+| `source_process_unknown` (warning) | Vesta cannot inspect a possible Java server process. Confirm that you stopped the source server. |
+| `source_port_listening` / `source_recently_active` | Stop the server, wait a minute, then check again. |
 | `source_unreadable` | Vesta Server can't read this folder. Ask someone at the server to run the shown `vesta import-root add` command, or copy the folder into an import folder. |
 | `source_changed` | Files changed since the check. Make sure the original server is stopped, then check again. |
 | `source_too_large` | This folder has too many files to import (over 2 million, or a file over 16 GiB). |
