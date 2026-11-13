@@ -31,6 +31,8 @@ pub struct ServerSubject {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServerRole {
+    /// Host-owner expansion, confined to this worker's server services.
+    Owner,
     Admin,
     Moderator,
     Player,

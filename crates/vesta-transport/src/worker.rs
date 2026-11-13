@@ -346,4 +346,34 @@ mod tests {
         f.handle.sync_policy(policy).unwrap();
         assert_eq!(f.request(f.subject.clone(), "console", None).status(), 200);
     }
+
+    #[test]
+    fn trusted_worker_host_owner_expansion_preserves_backup_restore_without_host_identity_authority()
+     {
+        let mut f = Fixture::new();
+        f.subject.generation = 2;
+        f.subject.capabilities = BuiltinRole::Owner
+            .capabilities()
+            .iter()
+            .map(|c| c.id().into())
+            .collect();
+        let mut policy = f.policy.clone();
+        policy.generation = 2;
+        policy.grants[0].role = ServerRole::Owner;
+        policy.grants[0].capabilities = f.subject.capabilities.clone();
+        f.handle.sync_policy(policy).unwrap();
+        let facade = f.handle.authorize(f.subject.clone()).unwrap();
+        assert!(
+            facade
+                .management()
+                .authorize("trusted", Capability::BackupsRestore, None)
+                .is_ok()
+        );
+        assert!(
+            facade
+                .management()
+                .authorize("trusted", Capability::SecurityManage, None)
+                .is_err()
+        );
+    }
 }

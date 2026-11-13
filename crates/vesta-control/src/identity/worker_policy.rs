@@ -119,6 +119,7 @@ pub(crate) fn resolve(
         return Ok(Some(PolicySnapshot::none()));
     };
     let builtin = match grant.role {
+        ServerRole::Owner => BuiltinRole::Owner,
         ServerRole::Admin => BuiltinRole::Administrator,
         ServerRole::Moderator => BuiltinRole::Moderator,
         ServerRole::Player => BuiltinRole::PackUser,
@@ -145,10 +146,13 @@ pub(crate) fn resolve(
 /// bounds; every action must also appear in the host's effective grant snapshot.
 fn role_permits(role: &ServerRole, capability: Capability) -> bool {
     match role {
-        ServerRole::Admin => {
-            BuiltinRole::Administrator
-                .capabilities()
-                .contains(&capability)
+        ServerRole::Owner | ServerRole::Admin => {
+            let builtin = if matches!(role, ServerRole::Owner) {
+                BuiltinRole::Owner
+            } else {
+                BuiltinRole::Administrator
+            };
+            builtin.capabilities().contains(&capability)
                 && !matches!(
                     capability,
                     Capability::PrincipalsManage
