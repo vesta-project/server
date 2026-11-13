@@ -9,7 +9,7 @@ publish.workspace = true
 latency-probe = ["vesta-control/latency-probe"]
 
 [dependencies]
-vesta-host-client = { path = "../vesta-host-client" }
+vesta-host-client = { path = "../vesta-host-client", features = ["discovery"] }
 chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
 uuid.workspace = true
 vesta-control = { path = "../vesta-control" }
@@ -43,3 +43,7 @@ hex.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies.mdns-sd]
+version = "=0.21.7"
+default-features = false

@@ -251,3 +251,6 @@ impl ClientFinish {
         Ok(response.pake_token)
     }
 }
+
+#[cfg(feature = "discovery")]
+pub mod discovery;

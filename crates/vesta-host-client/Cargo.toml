@@ -19,3 +19,15 @@ zeroize = { version = "=1.9.1", features = ["alloc"] }
 [dev-dependencies]
 rand_chacha = "=0.3.1"
 hex = "=0.4.3"
+
+[features]
+discovery = ["dep:mdns-sd", "dep:uuid"]
+
+[dependencies.mdns-sd]
+version = "=0.21.7"
+optional = true
+default-features = false
+
+[dependencies.uuid]
+version = "=1.23.2"
+optional = true

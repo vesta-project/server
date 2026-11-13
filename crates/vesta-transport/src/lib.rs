@@ -1208,3 +1208,5 @@ fn with_retry_after(mut reply: Reply, retry_after: Duration) -> Reply {
 
 #[cfg(test)]
 mod tests;
+
+pub mod discovery;

@@ -586,3 +586,7 @@ The game-runtime crate now directly uses the workspace-pinned serde_json to vali
 - `rand_chacha = 0.3.1` (tests only): seeded deterministic transcript vectors, never production entropy.
 - `chrono = 0.4.45` (std only): reuse the already locked timestamp library for RFC3339 response expiry formatting; admission uses monotonic deadlines.
 - The new dependency-light `vesta-host-client` also directly pins the existing workspace serde/serde_json, sha2, base64 and zeroize versions so it can be consumed independently by path/git without server control/store dependencies. Transport adds the existing workspace uuid edge. The isolated conformance harness reuses existing rustls and certificate fixtures; it opens loopback sockets only in tests.
+
+## LAN DNS-SD (2026-11-13)
+
+- `mdns-sd = 0.21.7` (MIT OR Apache-2.0), default features disabled: maintained pure-Rust multicast DNS-SD advertiser/browser on Linux and Windows without Avahi or Bonjour; https://github.com/keepsimple1/mdns-sd . A vendored copy changes its PTR/TXT TTL default from 4500 to 120 seconds to satisfy host-v1; SRV/address TTL already is 120. Revisit this patch when upstream exposes TTL configuration. Explicit interface selection is required; discovery values are unauthenticated hints.
