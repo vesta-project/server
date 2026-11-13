@@ -257,6 +257,8 @@ fn fake_vanilla(host: &Host) {
     host.put("vanilla/minecraft_server.1.21.1.jar", b"jar");
     host.put("vanilla/world/level.dat", b"nbt");
     host.put("vanilla/world/region/r.0.0.mca", b"region");
+    std::fs::File::options().write(true).open(host.temp.path().join("imports/vanilla/world/region/r.0.0.mca")).unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()-Duration::from_secs(120))).unwrap();
     host.put("vanilla/eula.txt", b"eula=false\n");
 }
 fn fake_env() -> Arc<FakeEnv> {
