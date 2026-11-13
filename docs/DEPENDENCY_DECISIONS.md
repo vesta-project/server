@@ -591,3 +591,6 @@ The game-runtime crate now directly uses the workspace-pinned serde_json to vali
 ## LAN DNS-SD (2026-11-13)
 
 - `mdns-sd = 0.21.7` (MIT OR Apache-2.0), default features disabled: maintained pure-Rust multicast DNS-SD advertiser/browser on Linux and Windows without Avahi or Bonjour; https://github.com/keepsimple1/mdns-sd . A vendored copy changes its PTR/TXT TTL default from 4500 to 120 seconds to satisfy host-v1; SRV/address TTL already is 120. Revisit this patch when upstream exposes TTL configuration. Explicit interface selection is required; discovery values are unauthenticated hints.
+
+- H08/H10: vesta-agent reuses workspace toml to parse the host-only process configuration without inventing a game configuration.
+- H08: vesta-transport uses the existing pinned ring for Ed25519 verification of fresh signed owner mutations.

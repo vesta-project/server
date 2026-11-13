@@ -76,6 +76,8 @@ pub enum WorkerShutdown {
 /// the returned facade is the temporary in-process dispatch adapter.
 pub trait ServerWorker: Send + Sync {
     fn server_id(&self) -> Uuid;
+    /// Only the immutable published asset service; never management authority.
+    fn public_resource_packs(&self) -> Option<crate::resource_packs::hosting::Handle> {None}
     fn sync_policy(&self, policy: WorkerPolicy) -> Result<(), ManagementError>;
     fn authorize(&self, subject: ServerSubject) -> Result<NetworkHost, ManagementError>;
 }
@@ -133,6 +135,7 @@ impl Worker {
     }
 }
 impl ServerWorker for WorkerHandle {
+    fn public_resource_packs(&self)->Option<crate::resource_packs::hosting::Handle>{Some(self.network.resource_packs().clone())}
     fn server_id(&self) -> Uuid {
         self.server_id
     }
@@ -165,6 +168,8 @@ pub(crate) struct TrustedAuthorization {
     subject: ServerSubject,
 }
 impl TrustedAuthorization {
+    pub(crate) fn server_id(&self)->Uuid {self.server_id}
+    pub(crate) fn expires_at_ms(&self)->i64 {self.subject.expires_at_ms}
     pub(crate) fn authenticate(&self) -> Result<Subject, ManagementError> {
         let s = &self.subject;
         let now = self.db.clock().millis();

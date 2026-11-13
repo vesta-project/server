@@ -815,3 +815,10 @@ pub fn pairing_link(
         .append_pair("sid", server);
     Some(link.into())
 }
+
+impl ManagementAccess {
+    /// Public registry identity when serving through a host worker facade.
+    pub fn protocol_server_id(&self)->String {
+        self.trusted.as_ref().map(|t|t.server_id().to_string()).unwrap_or_else(||self.server_id().to_owned())
+    }
+}

@@ -5,6 +5,7 @@ mod cli;
 mod commands;
 mod control;
 mod host_local;
+mod host_mode;
 #[cfg(windows)]
 mod host_local_windows;
 #[cfg(test)]
@@ -72,6 +73,11 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         };
         return runtime.block_on(host_local::run(dispatch_args));
+    }
+    if dispatch_args.first().and_then(|s|s.to_str())==Some("host") {
+        if dispatch_args.len()!=2 {eprintln!("usage: vesta-agent host <host.toml>");return ExitCode::from(2)}
+        let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("host runtime");
+        return runtime.block_on(host_mode::run(std::path::Path::new(&dispatch_args[1])));
     }
     let command = match cli::parse(std::env::args_os().skip(1)) {
         Ok(command) => command,

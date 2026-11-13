@@ -500,7 +500,7 @@ pub(crate) fn json(value: serde_json::Value) -> Reply {
         "application/json",
     )
 }
-fn dispatch(
+pub(crate) fn dispatch(
     host: &NetworkHost,
     path: &str,
     query: Option<&str>,

@@ -474,6 +474,7 @@ impl ManagementAccess {
     }
 
     fn permission_session(&self, token: &str) -> AdminResult<(Subject, i64, std::time::Instant)> {
+        if let Some(t)=&self.trusted {let subject=t.authenticate()?;let ms=t.expires_at_ms();return Ok((subject,ms,std::time::Instant::now()+std::time::Duration::from_millis(ms.saturating_sub(self.now()).max(0) as u64)))}
         let subject = self.authenticate(token)?;
         let stores = self
             .stores

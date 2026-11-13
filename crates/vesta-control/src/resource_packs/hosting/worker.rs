@@ -174,13 +174,18 @@ fn execute(inner: &Inner, actor: &Subject, draft: &Draft, job: &mut Job) -> Resu
         Ok(())
     })?;
     let artifact = built.publish()?.compact_report();
+    let prefix=inner.db.read(|c| {
+        let exists:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='worker_policy')",[],|r|r.get(0))?;
+        if exists {let id:String=c.query_row("SELECT server FROM worker_policy WHERE singleton=1",[],|r|r.get(0))?;Ok(format!("/v1/servers/{id}"))}else{Ok(String::new())}
+    })?;
     let release = Release {
         id: job.id.clone(),
         draft_revision: draft.revision.clone(),
         pack_id: draft.pack_id.clone(),
         url: format!(
-            "{}/resource-packs/{}.zip",
+            "{}{}/resource-packs/{}.zip",
             origin(&settings.public_origin)?,
+            prefix,
             artifact.sha256()
         ),
         settings: settings.clone(),

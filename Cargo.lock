@@ -3478,6 +3478,7 @@ dependencies = [
  "socket2",
  "tempfile",
  "tokio",
+ "toml",
  "url",
  "uuid",
  "vesta-control",

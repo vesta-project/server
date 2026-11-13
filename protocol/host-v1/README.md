@@ -28,7 +28,7 @@ All new mutations require `Idempotency-Key` (UUID); persist actor+method+route+b
 | POST `/v1/host/links`, GET `/links/{linkId}`, POST `/links/{linkId}/approve` | Identity.md. GET is either owner-authenticated or authenticated with the link's PAKE capability. |
 | POST `/v1/servers/{serverId}/invitations` | Admin or owner `{role,expiresAt,maxUses}` -> `{inviteId,invite,expiresAt}`; only server roles, never owner. DELETE same path plus `/{inviteId}` revokes. |
 | POST `/v1/host/invites/redeem` | Verified account+device, `{invite,accountProofId,deviceKey,signature}` -> `{hostId,serverId,role,session}`; proof purpose binds hash of exact invite payload. Atomic usage count and grant; never execute pack installation on redemption. |
-| GET `/v1/host/realtime` | Authenticated WebSocket host stream, below. |
+| GET `/v1/host/realtime` | 501 `realtime_multiplexer_deferred` in the first slice; interim per-server streams below. |
 | `/v1/host/folders/*`, `/imports/*` | Owner-only import.md. |
 
 Owner mutation and transfer signatures use `Sign("vesta.host.owner.v1\0" || JCS({hostId,deviceId,action,targetAccountId,nonce,expiresAt,revision}))`. Nonce comes from POST `/v1/host/ownership/challenge` returning `{nonce,expiresAt}` (60s, single-use). Revoking a primary owner's other devices is restricted to that primary account or privileged local recovery. Owners cannot change owners, transfer ownership or impersonate the primary account.
@@ -44,14 +44,14 @@ Dispatch MUST select an authorized registry entry before invoking the existing h
 | `/api/v2/discovery` | `/v1/servers/{serverId}/discovery`, authenticated feature manifest, existing payload. |
 | `/api/v2/pack/{ticket,status,artifact}` | `/v1/servers/{serverId}/pack/{ticket,status,artifact}`; tickets bind host, server, account/device, artifact and generation. |
 | `/api/v3/manage/pack/{sync,artifact}` | Prefix rule above; retain digest/range and reconciliation semantics. |
-| `/api/v2/realtime/ticket`, `/api/v2/realtime` | Superseded by host realtime; no anonymous feed. |
-| `/api/v3/manage/{console/stream,files/follow,metrics/stream}` | Host realtime subscriptions; no per-server WebSocket required. |
+| `/api/v2/realtime/ticket`, `/api/v2/realtime` | Interim `/v1/servers/{serverId}/realtime?installed=N` accepts a host bearer directly; no public ticket route or anonymous feed. |
+| `/api/v3/manage/{console/stream,files/follow,metrics/stream}` | Interim `/v1/servers/{serverId}/manage/{console/stream,files/follow,metrics/stream}` WebSockets with host-session authentication. |
 | `/api/v3/auth/*`, management pair/enroll/Minecraft/session/password | Host identity endpoints replace them. Pack-password gating, if configured, is additional server policy, not host ownership or device enrollment. |
 | management devices/principals/roles/invitations | Host devices and owners use host routes; server role APIs may remain under manage but cannot create owner authority or revoke host devices. Canonical invite creation/redemption is above. |
 | `public_resource_packs.rs` `/resource-packs/{digest...}` published URLs | Host adds `/v1/servers/{serverId}` before the existing path; rewrite generated URLs and retain immutable digest policy, byte/range bounds and public exposure setting. Anonymous Minecraft asset delivery is an explicit exception, never file browsing. |
 | `/api/v3/setup/*` in `pending.rs` | Removed; claim/import stay on the persistent host listener. |
 
-Host realtime: native client sends bearer in upgrade header. Text messages max 64 KiB. Client `{type:"subscribe",requestId,serverId,channel,cursor}`; channels `console|files|metrics|pack|operations|players`. Host replies `{type:"subscribed",requestId,subscriptionId}` or error, then `{type:"event",subscriptionId,serverId,channel,cursor,payload}` using existing channel payloads. `{type:"unsubscribe",subscriptionId}` removes it. Scope cursors by server+channel+stream epoch; reconnect from cursor or receive `{type:"gap",subscriptionId,reason:"cursor_expired"}` and refetch snapshot. Max 32 subscriptions/host connection and 1 MiB queued; overflow sends gap then closes 1013. Reauthorize every event and operation; revocation closes affected subscriptions before barrier completion. Ping every 30s, close after 60s silence. One connection serves all accessible servers.
+Host realtime multiplexing is deferred. The implemented per-server WebSocket paths, limits and reconnect requirements are specified in the implemented-slice section below and [LAUNCHER_GUIDE.md](LAUNCHER_GUIDE.md).
 
 ## Anonymous exact-port lookup
 
@@ -74,3 +74,55 @@ DNS-SD `_vesta._tcp.local.` instance `Vesta-<hostId>`, SRV target machine `.loca
 ## Conformance gate
 
 Before implementation sign-off, both clients must share fixtures for route mapping, JCS signatures, PAKE confirmations, account-purpose binding, invite encoding and worker frames. Required negative cases: wrong host/server, unknown fields, TLS reconnect/exporter mismatch, simultaneous claim, revoked device/queued action, private-port lookup, ticket replay across servers and malformed IPv6. No implementation or security review is implied by this phase 0 document.
+
+## Implemented first slice (H08/H10)
+
+See [LAUNCHER_GUIDE.md](LAUNCHER_GUIDE.md) for runnable configuration and exact
+client calls. The listener is `Transport::start_host(HostRouter, &TlsListener)`;
+`vesta-agent host <host.toml>` owns it, the host identity/local CLI, zero or one
+registry worker, and optional explicitly selected LAN discovery interfaces.
+
+The host realtime multiplexer is deferred. Authenticated `/v1/host/realtime`
+returns 501 `realtime_multiplexer_deferred`. Interim native WebSocket paths,
+all authenticated directly by the host session in the upgrade header, are:
+
+- `/v1/servers/{serverId}/manage/console/stream`
+- `/v1/servers/{serverId}/manage/files/follow?path=<encoded-relative-path>[&cursor=<decimal>]`
+- `/v1/servers/{serverId}/manage/metrics/stream`
+- `/v1/servers/{serverId}/realtime?installed=<decimal>` for pack changes
+
+These supersede the multiplexer rows above for this slice. Existing channel
+frames are unchanged; no subscribe envelope. Streams close after at most 29s
+and must reconnect because trusted subjects have a 30s lifetime. Device/session
+revocation is polled at 250ms; full worker role/queued-action revocation barriers
+remain H07. No legacy session or realtime-ticket endpoint is exposed.
+
+Server discovery retains its existing **POST** method and request body. Pack
+status/artifact are GET. POST `pack/ticket` returns `{ticket,artifactUrl}`; ticket
+is single-use for 30s, bound to this server, host session/device and generation.
+Artifact GET also admits a current host session. All management suffixes retain
+existing methods/feature envelopes and validators. Legacy identity/security/SFTP
+suffixes are excluded. Published immutable resource packs retain anonymous access
+only at `/v1/servers/{serverId}/resource-packs/{digest}.zip`, gated by the existing
+published exposure policy. New worker resource-pack builds store that prefixed URL.
+
+First-slice limits: host JSON 64KiB; mapped bodies 4MiB (the H05 adapter bound);
+32 realtime streams/host, bounded HTTP connection/body/download admission. Host
+lists currently return the small complete set and `nextCursor:null`; cursors and
+100-item host pagination are deferred. Host mutation replay uses existing claim,
+link and session receipts/challenges; the blanket 24h HTTP `Idempotency-Key`
+receipt cache above is **not implemented** for new host/device/owner/browse calls.
+Inherited management idempotency is unchanged. Owner mutations require a fresh
+single-use signed confirmation and matching revision, so callers refetch after
+an ambiguous response. The host response advertises only implemented import
+capabilities. Invites, `/v1/here`, endpoint editing and host barrier operations
+remain their separate work packages and are not advertised by this router.
+
+Owner PUT/DELETE and transfer bodies contain
+`{targetAccountId,nonce,expiresAt,revision,signature}`; PUT additionally contains
+`role:"owner"`. `revision` is a decimal string and must equal `If-Match` (quoted
+or unquoted decimal). The signing value is the object specified above, with
+`action:"promote"|"demote"|"transfer"`. Both owner PUT/DELETE and transfer consume
+a challenge from POST `/v1/host/ownership/challenge`. Primary account protection
+is enforced again by the durable repository. Signature bytes come from
+`vesta_host_client::requests::signing_bytes`.

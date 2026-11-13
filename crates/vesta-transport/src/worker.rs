@@ -377,3 +377,54 @@ mod tests {
         );
     }
 }
+
+/// Host-only projection; the registry/session checks precede this call.
+pub(crate) fn dispatch_host(
+    worker: &dyn ServerWorker,
+    subject: ServerSubject,
+    mut request: WorkerRequest<'_>,
+    tls: std::sync::Arc<crate::tls::Material>,
+    peer: std::net::IpAddr,
+    downloads: std::sync::Arc<crate::Downloads<vesta_control::pack_access::RealtimeSession>>,
+) -> crate::Reply {
+    let server=subject.server_id;
+    let host=match worker.authorize(subject.clone()){Ok(h)=>h,Err(e)=>return crate::manage::management_error(e)};
+    let path=request.path;
+    let mut reply=if let Some(suffix)=path.strip_prefix("manage/") {
+        if matches!(suffix,"pack/sync"|"pack/artifact") {
+            crate::pack_sync::dispatch(&host,request.method,&format!("/api/v3/manage/{suffix}"),request.query,Some("trusted-worker"),crate::routes::Requester {downloads:downloads.clone(),peer},&tls)
+        }else {request.path=suffix;dispatch_inner(worker,subject,request)}
+    } else if (path.starts_with("pack/") || path=="status") && *request.method==Method::GET {
+        let mapped=if path=="status"{"/api/v3/status".to_owned()}else{format!("/api/v2/{path}")};
+        crate::routes::dispatch(&host,&mapped,request.query,Some("trusted-worker"),request.body,crate::routes::Requester{downloads:downloads.clone(),peer},tls.clone())
+    } else if path=="discovery" && *request.method==Method::POST {
+        match vesta_protocol::discovery::decode_request(request.body).and_then(|r|host.discover(&r)).and_then(|m|vesta_protocol::discovery::encode_manifest(&m)) {
+            Ok(bytes)=>crate::response(http::StatusCode::OK,bytes,"application/json"),Err(_)=>crate::manage::error(http::StatusCode::BAD_REQUEST,"invalid_request")
+        }
+    } else if path=="status" && *request.method==Method::GET {
+        let mut r=request;r.path="server/status";dispatch_inner(worker,subject,r)
+    } else {crate::manage::error(http::StatusCode::NOT_FOUND,"not_found")};
+    // Rewrite only JSON metadata, never artifact/file bodies. Preserve validators.
+    if path!="manage/files/content" && reply.headers().get("content-type").is_some_and(|v|v=="application/json") {
+    if let crate::ReplyBody::Bytes(bytes)=reply.body_mut() {
+        if let Ok(mut value)=serde_json::from_slice::<serde_json::Value>(bytes) {
+            fn rewrite(v:&mut serde_json::Value,server:uuid::Uuid) {
+                match v {
+                    serde_json::Value::Object(map)=>for (key,value) in map {if key=="server_id" {*value=serde_json::json!(server);}else{rewrite(value,server)}},
+                    serde_json::Value::Array(a)=>for v in a {rewrite(v,server)},
+                    serde_json::Value::String(s) if !s.contains("/v1/servers/")=>{
+                        for (old,new) in [("/api/v3/manage/","manage/"),("/api/v2/pack/","pack/"),("/resource-packs/","resource-packs/")] {
+                            if let Some(at)=s.find(old) {s.replace_range(at..at+old.len(),&format!("/v1/servers/{server}/{new}"));break;}
+                        }
+                    },_=>{}
+                }
+            }
+            rewrite(&mut value,server);
+            *bytes=serde_json::to_vec(&value).unwrap().into();
+            let len=bytes.len();
+            reply.headers_mut().insert("content-length",len.into());
+        }
+    }
+    }
+    reply
+}

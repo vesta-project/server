@@ -1211,3 +1211,4 @@ fn with_retry_after(mut reply: Reply, retry_after: Duration) -> Reply {
 mod tests;
 
 pub mod discovery;
+pub mod host_router;

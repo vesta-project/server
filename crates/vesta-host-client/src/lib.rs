@@ -254,3 +254,5 @@ impl ClientFinish {
 
 #[cfg(feature = "discovery")]
 pub mod discovery;
+
+pub mod requests;

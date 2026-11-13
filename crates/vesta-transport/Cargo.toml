@@ -11,6 +11,7 @@ latency-probe = ["vesta-control/latency-probe"]
 [dependencies]
 vesta-host-client = { path = "../vesta-host-client", features = ["discovery"] }
 chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
+ring = "=0.17.14"
 uuid.workspace = true
 vesta-control = { path = "../vesta-control" }
 vesta-server-install = { path = "../vesta-server-install" }
@@ -35,7 +36,6 @@ futures-util = { version = "=0.3.32", default-features = false, features = ["sin
 rand_chacha = "=0.3.1"
 zip.workspace = true
 flate2.workspace = true
-ring = "=0.17.14"
 tempfile.workspace = true
 vesta-state.workspace = true
 rusqlite.workspace = true
@@ -47,3 +47,8 @@ workspace = true
 [dependencies.mdns-sd]
 version = "=0.21.7"
 default-features = false
+
+
+[dev-dependencies.vesta-control]
+path = '../vesta-control'
+features = ['test-support']

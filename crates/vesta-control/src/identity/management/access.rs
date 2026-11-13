@@ -571,6 +571,10 @@ impl ManagementAccess {
         {
             return Err(ManagementError::SessionInvalid);
         }
+        if let Some(trusted)=&self.trusted {
+            trusted.authorize(capability,None)?;
+            return Ok(PackSession{grant:PackGrant::Role,expires_at:now+std::time::Duration::from_secs(29)});
+        }
         let observation = if reference.anonymous {
             None
         } else {

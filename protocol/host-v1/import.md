@@ -62,3 +62,20 @@ Manual acceptance: stop the selected AMP instance on people-server, import its M
 ## First-pass implementation notes (H16/H17)
 
 Rust APIs live in `vesta_control::machine::imports::jobs` (`ImportJobs`); H08 maps them to the routes above. Plan is `begin_plan` (202) then `run_plan`; apply is `apply` (202) then `run_apply`, which copies, configures and registers, ending in `ready`/phase `register`. Starting is `start` then `readiness` against the worker built by `create_worker` (H05 `Worker::from_registry`); `online` only follows runtime `Ready`. Additional owner route needed: POST `/v1/host/imports/jobs/{jobId}/resume` -> job, valid only for `interrupted`; it re-validates everything, reuses verified partial copies, and turns an interrupted `start` phase back into `ready` without spawning. Start conflicts and bind/start failures return the job to `ready` with `error` (`game_port_in_use`, `source_running`, `source_state_unknown`, `port_state_unknown`, `start_failed`), keeping copy and registration; each retry after such an error uses a new start idempotency key, a crash retry reuses the old one. Copy staging is `<servers>/<serverId>/staging`, renamed to `game` after verification; cancel and low disk remove only that unregistered staging, a mid-copy source change renames it to `quarantine-<ms>`. Deferred: rewriting RCON to loopback, destination ownership freeze (H11), registry state updates on online (needs H07-safe generation handling), and copies beyond the existing `CopiedExport` bounds (65,536 entries, 1 GiB per file), which report `source_too_large`.
+
+## H08 HTTP inspection surface
+
+Owner-only POST `/v1/host/imports/inspect` accepts
+`{folderToken,gamePort:null|integer}` and returns the existing H14 inspection
+report. Original source paths and destination paths are trusted local inputs,
+not accepted from HTTP. POST `/v1/host/imports/resources` accepts
+`{gamePort:null|integer,memoryMiB:null|integer}` and returns `{memory,port}` using
+H15 planning. Registered ports are reserved. If a server already exists but no
+heap reservation catalogue is available, memory is explicitly unresolved.
+Folders use the root/resolve/list shapes above. Tokens are bound to current
+host/account/device and owners are checked at every route call.
+
+H08 leaves plan/apply/jobs/cancel as owner-authenticated 501 responses with
+`error.code:"import_jobs_not_implemented"`; H16 can add the implementations in
+`vesta-transport/src/host_router/imports.rs` without changing authentication.
+Do not infer runnable import support solely from inspection capability flags.

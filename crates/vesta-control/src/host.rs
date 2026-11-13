@@ -1036,6 +1036,7 @@ impl Drop for AdmissionRefresh {
 impl NetworkHost {
     pub(crate) fn with_trusted(mut self, trusted: crate::worker::TrustedAuthorization) -> Self {
         self.management = self.management.with_trusted(trusted);
+        self.sessions = Arc::new(PackSessions::new(self.management.clone(), Default::default()));
         self
     }
     pub fn resource_packs(&self) -> &crate::resource_packs::hosting::Handle {

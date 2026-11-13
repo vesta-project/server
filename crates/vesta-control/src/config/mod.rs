@@ -513,6 +513,15 @@ pub struct TlsListener {
     session_requests_per_minute: u32,
 }
 impl TlsListener {
+    /// Machine listener: explicit TLS paths, LAN binds allowed, bounded defaults.
+    pub fn host(bind: IpAddr, port: u16, certificate: PathBuf, private_key: PathBuf) -> Result<Self> {
+        let mut listener=Self::pending_local(port,certificate,private_key)?;
+        listener.bind=bind;
+        listener.max_connections=64;
+        listener.max_request_bytes=4*1024*1024;
+        listener.request_timeout_seconds=30;
+        Ok(listener)
+    }
     /// Bounded loopback-only pending setup; no game configuration is invented.
     pub fn pending_local(port: u16, certificate: PathBuf, private_key: PathBuf) -> Result<Self> {
         check_absolute(&certificate)?;

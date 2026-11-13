@@ -407,3 +407,8 @@ impl HostIdentity {
         Ok(device.device_id)
     }
 }
+
+#[cfg(test)]
+impl HostIdentity {
+    pub(crate) fn test_account(&self,account:Uuid,name:&str){*self.accounts.lock().unwrap()=HostAccounts::test_profile(self.state.clone(),account,name);}
+}

@@ -7,6 +7,13 @@ use serde_json::{Value, json};
 impl ManagementAccess {
     pub fn session_projection(&self, token: &str, access: &PackAccessPolicy<'_>) -> Result<Value> {
         let subject = self.authenticate(token)?;
+        if let Some(trusted)=&self.trusted {
+            return self.read(|repo| {
+                let policy=repo.policy(Some(&subject))?;
+                let capabilities=Capability::ALL.iter().filter(|c|policy.has_effective_capability(**c)).map(|c|c.id()).collect::<Vec<_>>();
+                Ok(json!({"server_id":self.protocol_server_id(),"principal_id":subject.principal.as_str(),"device_id":subject.device.as_str(),"roles":policy.roles().iter().map(|r|json!({"id":r.as_str()})).collect::<Vec<_>>(),"capabilities":capabilities,"session_expires_at_ms":trusted.expires_at_ms()}))
+            });
+        }
         let stores = self
             .stores
             .lock()
