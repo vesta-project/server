@@ -34,7 +34,7 @@ fn review(path:&Path)->Result<Vec<Entry>,String>{
    for child in fs::read_dir(fdpath).map_err(|e|e.to_string())? {
     let child=child.map_err(|e|e.to_string())?;
     let file=open(&chain[index].file,&child.file_name())?;let m=file.metadata().map_err(|e|e.to_string())?;
-    if !m.is_dir() && !m.is_file(){return Err("Special file refused".into());}
+    if m.dev()!=chain[0].file.metadata().map_err(|e|e.to_string())?.dev() || (m.is_file() && m.nlink()!=1) || (!m.is_dir() && !m.is_file()){return Err("Special file refused".into());}
     if m.uid()!=owner && m.uid()!=0{return Err("Tree contains another owner's file".into());}
     chain.push(Entry{file,path:chain[index].path.join(child.file_name()),parent:false});
    }
@@ -71,6 +71,14 @@ pub fn run(args:&[String])->Result<(),String>{
 }
 #[cfg(test)] mod tests {
  use super::*;
+ #[test] fn linux_reviewed_ancestor_swap_refused() {
+  let home=std::env::var_os("HOME").unwrap();
+  let t=tempfile::tempdir_in(home).unwrap();let a=t.path().join("a");fs::create_dir_all(a.join("server")).unwrap();
+  let pinned=review(&a.join("server")).unwrap();
+  fs::rename(&a,t.path().join("old")).unwrap();
+  std::os::unix::fs::symlink("/etc",&a).unwrap();
+  assert!(unchanged(&pinned).is_err());
+ }
  #[test] fn linux_ancestor_swap_refused(){
   let t=tempfile::tempdir().unwrap();let a=t.path().join("a");fs::create_dir_all(a.join("server")).unwrap();
   // /tmp is intentionally refused because an unrelated writer can swap ancestors.

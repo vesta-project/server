@@ -2,7 +2,9 @@
 use std::path::{Path};
 pub(super) fn parse(game:&Path,file:&Path)->Result<Vec<String>, &'static str> {
  let fail="launch_arguments_unsupported";
- let text=std::fs::read_to_string(file).map_err(|_|fail)?;
+ use std::io::Read;
+ let opened=crate::files::native::import_open(file,false).map_err(|_|fail)?;
+ let mut text=String::new();opened.take(1024*1024+1).read_to_string(&mut text).map_err(|_|fail)?;
  if text.len()>1024*1024 {return Err(fail);}
  let mut tokens=Vec::new();let mut token=String::new();let mut quote=None;
  for line in text.lines() {

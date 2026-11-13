@@ -13,6 +13,7 @@ type Hook = Box<dyn Fn(u64) + Send>;
 /// Deterministic host observations.
 pub(super) struct FakeEnv {
     pub running: AtomicBool,
+    pub unknown: AtomicBool,
     pub busy_port: Mutex<Option<u16>>,
     /// Free bytes reported; after `low_after` calls, report zero.
     pub free: AtomicU64,
@@ -25,6 +26,7 @@ impl Default for FakeEnv {
     fn default() -> Self {
         Self {
             running: AtomicBool::new(false),
+            unknown: AtomicBool::new(false),
             busy_port: Mutex::new(None),
             free: AtomicU64::new(100 * GIB),
             free_calls: AtomicU64::new(0),
@@ -49,7 +51,7 @@ impl ImportEnvironment for FakeEnv {
                 "complete",
             )
         } else {
-            (Vec::new(), "complete")
+            (Vec::new(), if self.unknown.load(Ordering::SeqCst) {"unknown"} else {"complete"})
         }
     }
     fn port_state(&self, port: u16) -> &'static str {
@@ -596,3 +598,17 @@ fn crash_resume_with_clean_staging_completes() {
 
 #[path = "commit_tests.rs"]
 mod commit_tests;
+
+#[test] fn unknown_process_requires_owner_acknowledgement() {
+ let f=Fixture::new();f.vanilla();f.env.unknown.store(true,Ordering::SeqCst);
+ let job=f.plan("vanilla");assert!(job.review.as_ref().unwrap().blockers.is_empty());
+ assert!(job.review.as_ref().unwrap().warnings.contains(&"source_process_unknown".to_owned()));
+ let mut request=Fixture::apply_request(&job);request.source_stopped_confirmed=false;
+ assert_eq!(f.jobs.apply(&f.binding,&request,"unknown").unwrap_err(),JobError::SOURCE_STOP);
+ request.source_stopped_confirmed=true;request.acknowledged_warnings.retain(|v|v!="source_process_unknown");
+ assert_eq!(f.jobs.apply(&f.binding,&request,"unknown").unwrap_err(),JobError::WARNINGS);
+}
+#[test] fn escaping_world_blocks_and_bind_address_warns() {
+ let f=Fixture::new();f.vanilla();f.put("vanilla/server.properties","level-name=../outside\nserver-ip=192.0.2.1\n");
+ let job=f.plan("vanilla");let r=job.review.unwrap();assert!(r.blockers.contains(&"world_outside_source".into()));assert!(r.warnings.contains(&"bind_address_cleared".into()));
+}
