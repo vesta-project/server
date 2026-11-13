@@ -107,6 +107,12 @@ pub(crate) struct Deadline {
     mono: Instant,
 }
 impl Deadline {
+    pub(crate) fn until(now: i64, expires: i64) -> Self {
+        Self {
+            wall: expires,
+            mono: Instant::now() + Duration::from_millis(expires.saturating_sub(now).max(0) as u64),
+        }
+    }
     #[cfg(test)]
     pub(crate) fn expire_monotonic_for_test(&mut self) {
         self.mono = Instant::now();
@@ -128,6 +134,18 @@ impl Deadline {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionChallengeRequest {
     pub device_id: Uuid,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionKeyChallengeRequest {
+    pub device_key: String,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionKeyChallenge {
+    pub device_id: Uuid,
+    #[serde(flatten)]
+    pub challenge: SessionChallenge,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -171,6 +189,26 @@ pub struct HostSessions {
     window: Instant,
 }
 impl HostSessions {
+    /// Lost enrollment replies may hide the newly allocated device id. Look it
+    /// up by public key, then require the same fresh Ed25519 session proof. An
+    /// unknown/revoked key receives an indistinguishable challenge for a random id.
+    pub fn challenge_key(
+        &mut self,
+        request: SessionKeyChallengeRequest,
+    ) -> Result<SessionKeyChallenge> {
+        use rusqlite::OptionalExtension;
+        let key = decode::<32>(&request.device_key)?;
+        let id=self.state.read(|c|{let id:Option<String>=c.query_row("SELECT d.device_id FROM machine_devices d JOIN machine_accounts a USING(account_id) WHERE d.public_key=?1 AND d.revoked_at_ms IS NULL AND a.disabled=0",[key.as_slice()],|r|r.get(0)).optional()?;id.map(super::state::uuid).transpose()}).map_err(|_|UNAVAILABLE)?.unwrap_or_else(Uuid::new_v4);
+        let challenge = self.challenge(SessionChallengeRequest { device_id: id })?;
+        Ok(SessionKeyChallenge {
+            device_id: id,
+            challenge,
+        })
+    }
+    /// Only a committed claim callback can issue its initial enrollment bearer.
+    pub fn claimed(&mut self, commit: &super::claim::ClaimCommit<'_>) -> Result<SessionResponse> {
+        self.issue(&commit.device()?)
+    }
     pub fn new(state: HostState) -> Self {
         Self {
             state,

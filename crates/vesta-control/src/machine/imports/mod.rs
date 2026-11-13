@@ -1,10 +1,11 @@
 //! Host folder browsing, AMP candidate discovery and read-only inspection for
 //! the owner import flow (`protocol/host-v1/import.md`). Plain Rust APIs; HTTP
-//! routing, plan/apply jobs and copying belong to later packages. Nothing here
-//! executes, writes, locks or reads credentials from a source folder.
+//! routing belongs to H08. `jobs` plans and copies through `CopiedExport`. Nothing
+//! here executes, writes, locks or reads credentials from a source folder.
 pub mod amp;
 pub mod browse;
 pub mod inspection;
+pub mod jobs;
 
 pub use amp::{CandidateScan, CandidatesResponse, ImportCandidate, ImportWarning, Remediation};
 pub use browse::{

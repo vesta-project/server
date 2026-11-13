@@ -209,6 +209,118 @@ impl CopiedExport {
         Ok(())
     }
 }
+/// Running totals reported to [`CopiedExport::copy_to_directory`] boundaries.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct CopyProgress {
+    pub files: u64,
+    pub bytes: u64,
+}
+pub(crate) const PART_SUFFIX: &str = ".vesta-part";
+impl CopiedExport {
+    /// Resumable read-only copy into a fresh, host-managed, unregistered staging
+    /// directory (host-scope imports). No per-server journal exists yet, so each
+    /// file is written to a sibling part file, verified against the reviewed
+    /// digest, synced and renamed. Already-present files are kept only when their
+    /// digest matches, so a crash resumes without recopying verified content. The
+    /// source is reopened through the admitted root with identity checks and is
+    /// never written, locked or deleted. `boundary` runs before every entry.
+    pub(crate) fn copy_to_directory(
+        &self,
+        snapshot: &CopySnapshot,
+        target: &Path,
+        mut boundary: impl FnMut(&CopyEntry, CopyProgress) -> Result<()>,
+    ) -> Result<CopyProgress> {
+        let source = self.root.resolve(None)?.path;
+        let target = fs::canonicalize(target).map_err(io_error)?;
+        if source.starts_with(&target) || target.starts_with(&source) {
+            return Err(FileError::InvalidRoot);
+        }
+        let mut progress = CopyProgress::default();
+        for entry in &snapshot.entries {
+            boundary(entry, progress)?;
+            let relative = RelativePath::parse(&entry.path)?;
+            let mut path = target.clone();
+            path.extend(relative.as_str().split('/'));
+            let existing = fs::symlink_metadata(&path);
+            if let Ok(meta) = &existing
+                && (meta.file_type().is_symlink() || (meta.is_dir() != entry.directory))
+            {
+                return Err(FileError::Corrupt);
+            }
+            if entry.directory {
+                if existing.is_err() {
+                    fs::create_dir(&path).map_err(io_error)?;
+                }
+                continue;
+            }
+            if existing.is_ok() {
+                let mut file = File::open(&path).map_err(io_error)?;
+                if file.metadata().map_err(io_error)?.len() == entry.size
+                    && digest(&mut file, entry.size)? == entry.sha256
+                {
+                    progress.files += 1;
+                    progress.bytes += entry.size;
+                    continue;
+                }
+                drop(file);
+                fs::remove_file(&path).map_err(io_error)?;
+            }
+            let leaf = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or(FileError::InvalidPath)?;
+            let part = path.with_file_name(format!(".{leaf}{PART_SUFFIX}"));
+            let mut reader = self.file(entry)?;
+            reader.seek(SeekFrom::Start(0)).map_err(io_error)?;
+            let mut writer = File::create(&part).map_err(io_error)?;
+            let mut hash = Sha256::new();
+            let mut buffer = vec![0u8; 65536];
+            let mut written = 0u64;
+            loop {
+                let n = reader.read(&mut buffer).map_err(io_error)?;
+                if n == 0 {
+                    break;
+                }
+                written += n as u64;
+                if written > entry.size {
+                    return Err(FileError::Corrupt);
+                }
+                hash.update(&buffer[..n]);
+                std::io::Write::write_all(&mut writer, &buffer[..n]).map_err(write_error)?;
+            }
+            if written != entry.size || hex::encode(hash.finalize()) != entry.sha256 {
+                drop(writer);
+                let _ = fs::remove_file(&part);
+                return Err(FileError::Corrupt);
+            }
+            writer.sync_all().map_err(write_error)?;
+            drop(writer);
+            fs::rename(&part, &path).map_err(io_error)?;
+            progress.files += 1;
+            progress.bytes += entry.size;
+        }
+        // Membership and content must still match the reviewed source, and the
+        // destination must hold exactly the reviewed tree.
+        if self.snapshot()?.sha256 != snapshot.sha256 {
+            return Err(FileError::Corrupt);
+        }
+        let copied = Self::open(&target, &[])?.snapshot()?;
+        if !copied.same_content(snapshot) {
+            return Err(FileError::Corrupt);
+        }
+        Ok(progress)
+    }
+}
+fn write_error(error: std::io::Error) -> FileError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded
+    ) {
+        FileError::InsufficientSpace
+    } else {
+        io_error(error)
+    }
+}
 fn digest(file: &mut File, size: u64) -> Result<String> {
     file.seek(SeekFrom::Start(0)).map_err(io_error)?;
     let mut buffer = [0u8; 65536];
