@@ -1,0 +1,19 @@
+//! Host-owned persistence and authority. These are trusted in-process APIs:
+//! account ids and local-recovery actors must come from authenticated adapters,
+//! never directly from request bodies. Workers cannot mint these authorities.
+pub mod owners;
+pub mod registry;
+pub mod state;
+
+pub mod accounts;
+pub mod claim;
+pub mod imports;
+pub mod link;
+pub mod recovery;
+pub mod resources;
+pub mod sessions;
+
+pub use state::{HostSnapshot, HostState};
+
+#[cfg(test)]
+mod tests;

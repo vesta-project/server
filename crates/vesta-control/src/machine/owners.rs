@@ -1,0 +1,357 @@
+use super::{
+    HostSnapshot, HostState,
+    state::{account_exists, changed, expect_revision, reject, snapshot_in, uuid},
+};
+use crate::{IdentityErrorCode as Code, Result};
+use rusqlite::{Connection, OptionalExtension, params};
+use uuid::Uuid;
+
+/// Supplied only after session authentication or privileged local peer checks.
+/// Constructing this value is not authentication. Signature/freshness checks for
+/// owner changes and transfer belong to the calling host authority adapter.
+#[derive(Clone, Copy, Debug)]
+pub enum Actor {
+    Account(Uuid),
+    LocalRecovery,
+}
+impl Actor {
+    pub(crate) fn audit(self) -> String {
+        match self {
+            Self::Account(id) => id.to_string(),
+            Self::LocalRecovery => "local_recovery".into(),
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostRole {
+    PrimaryOwner,
+    Owner,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ServerRole {
+    Player,
+    Moderator,
+    Admin,
+}
+impl ServerRole {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Player => "player",
+            Self::Moderator => "moderator",
+            Self::Admin => "admin",
+        }
+    }
+    pub(crate) fn parse(s: &str) -> Result<Self> {
+        match s {
+            "player" => Ok(Self::Player),
+            "moderator" => Ok(Self::Moderator),
+            "admin" => Ok(Self::Admin),
+            _ => Err(reject(Code::RoleInvalid)),
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EffectiveRole {
+    PrimaryOwner,
+    Owner,
+    Server(ServerRole),
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Device {
+    pub device_id: Uuid,
+    pub account_id: Uuid,
+    pub name: String,
+    pub public_key: [u8; 32],
+    pub created_at_ms: i64,
+    pub revoked_at_ms: Option<i64>,
+}
+
+pub fn host_role_in(c: &Connection, account: Uuid) -> Result<Option<HostRole>> {
+    if !account_exists(c, account)? {
+        return Ok(None);
+    }
+    if snapshot_in(c)?.primary_account_id == Some(account) {
+        return Ok(Some(HostRole::PrimaryOwner));
+    }
+    Ok(c.query_row(
+        "SELECT 1 FROM machine_owners WHERE account_id=?1",
+        [account.to_string()],
+        |_| Ok(()),
+    )
+    .optional()?
+    .map(|_| HostRole::Owner))
+}
+pub(crate) fn require_owner(c: &Connection, actor: Actor) -> Result<()> {
+    match actor {
+        Actor::LocalRecovery => Ok(()),
+        Actor::Account(id) if host_role_in(c, id)?.is_some() => Ok(()),
+        _ => Err(reject(Code::Forbidden)),
+    }
+}
+fn require_primary(c: &Connection, actor: Actor) -> Result<()> {
+    match actor {
+        Actor::LocalRecovery => Ok(()),
+        Actor::Account(id) if host_role_in(c, id)? == Some(HostRole::PrimaryOwner) => Ok(()),
+        _ => Err(reject(Code::Forbidden)),
+    }
+}
+
+impl HostState {
+    pub fn host_role(&self, account: Uuid) -> Result<Option<HostRole>> {
+        self.read(|c| host_role_in(c, account))
+    }
+    /// Trusted enrollment primitive. H04 must consume current code/proof in the
+    /// SAME write callback using claim_in; this convenience is not a wire route.
+    pub fn claim(&self, account: Uuid, name: &str, key: [u8; 32]) -> Result<Device> {
+        self.write(|c| Self::claim_in(c, account, name, key, self.now_ms()))
+    }
+    pub fn claim_in(
+        c: &Connection,
+        account: Uuid,
+        name: &str,
+        key: [u8; 32],
+        now: i64,
+    ) -> Result<Device> {
+        if snapshot_in(c)?.primary_account_id.is_some() {
+            return Err(reject(Code::Conflict));
+        }
+        let device = enroll_device_in(c, account, name, key, now)?;
+        c.execute(
+            "UPDATE machine_host SET primary_account_id=?1,claimed=1 WHERE singleton=1",
+            [account.to_string()],
+        )?;
+        changed(
+            c,
+            true,
+            "claim",
+            &account.to_string(),
+            &device.device_id.to_string(),
+            now,
+        )?;
+        Ok(device)
+    }
+    /// Called after fresh account proof, key possession and exact link approval.
+    pub fn enroll_device_in(
+        c: &Connection,
+        account: Uuid,
+        name: &str,
+        key: [u8; 32],
+        now: i64,
+    ) -> Result<Device> {
+        let device = enroll_device_in(c, account, name, key, now)?;
+        changed(
+            c,
+            true,
+            "device_link",
+            &account.to_string(),
+            &device.device_id.to_string(),
+            now,
+        )?;
+        Ok(device)
+    }
+    pub fn set_owner(
+        &self,
+        actor: Actor,
+        target: Uuid,
+        owner: bool,
+        revision: u64,
+    ) -> Result<HostSnapshot> {
+        self.write(|c| {
+            require_primary(c, actor)?;
+            expect_revision(c, revision)?;
+            if snapshot_in(c)?.primary_account_id == Some(target) {
+                return Err(reject(Code::Forbidden));
+            }
+            if !account_exists(c, target)? {
+                return Err(reject(Code::NotFound));
+            }
+            if owner {
+                c.execute(
+                    "INSERT OR IGNORE INTO machine_owners(account_id) VALUES(?1)",
+                    [target.to_string()],
+                )?;
+            } else {
+                c.execute(
+                    "DELETE FROM machine_owners WHERE account_id=?1",
+                    [target.to_string()],
+                )?;
+            }
+            changed(
+                c,
+                true,
+                "owner_change",
+                &actor.audit(),
+                &target.to_string(),
+                self.now_ms(),
+            )
+        })
+    }
+    /// Remote caller must first verify the primary device's fresh signed transfer.
+    /// Old primary remains a promoted owner; target must already be an owner.
+    pub fn transfer_ownership(
+        &self,
+        actor: Actor,
+        target: Uuid,
+        revision: u64,
+    ) -> Result<HostSnapshot> {
+        self.write(|c| {
+            require_primary(c, actor)?;
+            expect_revision(c, revision)?;
+            if host_role_in(c, target)? != Some(HostRole::Owner) {
+                return Err(reject(Code::Conflict));
+            }
+            let old = snapshot_in(c)?
+                .primary_account_id
+                .ok_or_else(|| reject(Code::Conflict))?;
+            c.execute(
+                "INSERT OR IGNORE INTO machine_owners(account_id) VALUES(?1)",
+                [old.to_string()],
+            )?;
+            c.execute(
+                "DELETE FROM machine_owners WHERE account_id=?1",
+                [target.to_string()],
+            )?;
+            c.execute(
+                "UPDATE machine_host SET primary_account_id=?1 WHERE singleton=1",
+                [target.to_string()],
+            )?;
+            changed(
+                c,
+                true,
+                "ownership_transfer",
+                &actor.audit(),
+                &target.to_string(),
+                self.now_ms(),
+            )
+        })
+    }
+    pub fn device(&self, id: Uuid) -> Result<Option<Device>> {
+        self.read(|c| device_in(c, id))
+    }
+    pub fn active_device(&self, id: Uuid) -> Result<Option<Device>> {
+        self.read(|c| active_device_in(c, id))
+    }
+    pub fn devices(&self, actor: Actor) -> Result<Vec<Device>> {
+        self.read(|c| {
+            require_owner(c, actor)?;
+            let mut statement =
+                c.prepare("SELECT device_id FROM machine_devices ORDER BY device_id")?;
+            let ids = statement
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            ids.into_iter()
+                .map(|id| device_in(c, uuid(id)?)?.ok_or_else(|| reject(Code::NotFound)))
+                .collect()
+        })
+    }
+    pub fn revoke_device(&self, actor: Actor, id: Uuid) -> Result<HostSnapshot> {
+        self.write(|c| {
+            require_owner(c, actor)?;
+            let device = device_in(c, id)?.ok_or_else(|| reject(Code::NotFound))?;
+            if snapshot_in(c)?.primary_account_id == Some(device.account_id) {
+                require_primary(c, actor)?;
+            }
+            if device.revoked_at_ms.is_some() {
+                return snapshot_in(c);
+            }
+            c.execute(
+                "UPDATE machine_devices SET revoked_at_ms=?1 WHERE device_id=?2",
+                params![self.now_ms(), id.to_string()],
+            )?;
+            changed(
+                c,
+                true,
+                "device_revoke",
+                &actor.audit(),
+                &id.to_string(),
+                self.now_ms(),
+            )
+        })
+    }
+    pub fn set_server_role(
+        &self,
+        actor: Actor,
+        server: Uuid,
+        target: Uuid,
+        role: Option<ServerRole>,
+        revision: u64,
+    ) -> Result<HostSnapshot> {
+        self.write(|c| {
+            expect_revision(c,revision)?;
+            super::registry::require_server(c,server)?;
+            let authorized=match actor { Actor::LocalRecovery=>true,Actor::Account(id)=> host_role_in(c,id)?.is_some() || super::registry::effective_role_in(c,id,server)?==Some(EffectiveRole::Server(ServerRole::Admin)) };
+            if !authorized { return Err(reject(Code::Forbidden)); }
+            if !account_exists(c,target)? { return Err(reject(Code::NotFound)); }
+            if let Some(role)=role { c.execute("INSERT INTO machine_server_grants(server_id,account_id,role) VALUES(?1,?2,?3) ON CONFLICT(server_id,account_id) DO UPDATE SET role=excluded.role",params![server.to_string(),target.to_string(),role.as_str()])?; }
+            else { c.execute("DELETE FROM machine_server_grants WHERE server_id=?1 AND account_id=?2",params![server.to_string(),target.to_string()])?; }
+            changed(c,true,"server_role_change",&actor.audit(),&format!("{server}/{target}"),self.now_ms())
+        })
+    }
+}
+
+fn enroll_device_in(
+    c: &Connection,
+    account: Uuid,
+    name: &str,
+    key: [u8; 32],
+    now: i64,
+) -> Result<Device> {
+    if c.is_autocommit() {
+        return Err(reject(Code::InvalidRequest));
+    }
+    if name.trim().is_empty() || name.len() > 128 || account.is_nil() {
+        return Err(reject(Code::InvalidRequest));
+    }
+    if c.query_row(
+        "SELECT 1 FROM machine_devices WHERE public_key=?1",
+        [key.as_slice()],
+        |_| Ok(()),
+    )
+    .optional()?
+    .is_some()
+    {
+        return Err(reject(Code::CredentialConflict));
+    }
+    c.execute(
+        "INSERT OR IGNORE INTO machine_accounts(account_id) VALUES(?1)",
+        [account.to_string()],
+    )?;
+    if !account_exists(c, account)? {
+        return Err(reject(Code::Forbidden));
+    }
+    let device = Device {
+        device_id: Uuid::new_v4(),
+        account_id: account,
+        name: name.into(),
+        public_key: key,
+        created_at_ms: now,
+        revoked_at_ms: None,
+    };
+    c.execute("INSERT INTO machine_devices(device_id,account_id,name,public_key,created_at_ms) VALUES(?1,?2,?3,?4,?5)",params![device.device_id.to_string(),account.to_string(),name,key.as_slice(),now])?;
+    Ok(device)
+}
+/// Current device/account check on the caller's existing snapshot or write
+/// transaction. Sessions retain ids only and re-resolve this at request time.
+pub fn active_device_in(c: &Connection, id: Uuid) -> Result<Option<Device>> {
+    let Some(device) = device_in(c, id)? else {
+        return Ok(None);
+    };
+    if device.revoked_at_ms.is_some() || !account_exists(c, device.account_id)? {
+        return Ok(None);
+    }
+    Ok(Some(device))
+}
+pub fn device_in(c: &Connection, id: Uuid) -> Result<Option<Device>> {
+    let row:Option<(String,String,Vec<u8>,i64,Option<i64>)>=c.query_row("SELECT account_id,name,public_key,created_at_ms,revoked_at_ms FROM machine_devices WHERE device_id=?1",[id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
+    row.map(|(account, name, key, created, revoked)| {
+        Ok(Device {
+            device_id: id,
+            account_id: uuid(account)?,
+            name,
+            public_key: key.try_into().map_err(|_| reject(Code::InvalidRequest))?,
+            created_at_ms: created,
+            revoked_at_ms: revoked,
+        })
+    })
+    .transpose()
+}
