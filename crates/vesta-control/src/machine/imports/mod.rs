@@ -7,6 +7,7 @@ pub mod browse;
 pub mod inspection;
 pub mod jobs;
 mod properties;
+mod arguments;
 
 pub use amp::{CandidateScan, CandidatesResponse, ImportCandidate, ImportWarning, Remediation};
 pub use browse::{

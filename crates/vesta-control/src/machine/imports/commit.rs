@@ -47,7 +47,7 @@ pub(crate) fn trusted_launch(
     let text = path.to_str().ok_or(JobError::INVALID)?.to_owned();
     let args = match launch.kind.as_str() {
         "jar" => vec!["-jar".into(), text, "nogui".into()],
-        "java_argfile" => vec![format!("@{text}"), "nogui".into()],
+        "java_argfile" => { let mut args = super::super::arguments::parse(game, &path).map_err(JobError)?; args.push("nogui".into()); args },
         _ => return Err(JobError("launch_unresolved")),
     };
     Ok((
