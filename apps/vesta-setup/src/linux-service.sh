@@ -125,7 +125,8 @@ suggestion=Path(sys.argv[1])/"suggested-import.json"
 suggestion.write_text(json.dumps({"path":sys.argv[2]})); suggestion.chmod(0o644)
 t=p.with_suffix('.tmp'); t.write_text(json.dumps(a)); t.chmod(0o644); t.replace(p)
 PY
- echo 'Import root recorded. Restarting Vesta Server to load permitted roots.'
+ echo "Import root added: $source_dir"
+ echo 'Restarting Vesta Server so the launcher can use this folder.'
  if [[ -f /etc/systemd/system/vesta.service ]]; then systemctl try-restart vesta.service; fi
  exit
 fi
@@ -206,18 +207,16 @@ if [[ -n $source_dir ]]; then /usr/local/bin/vesta import-root add "$source_dir"
 if [[ $start == true ]]; then
  ready=false
  for ((i=0;i<100;i++)); do
-  if status=$(/usr/local/bin/vesta host-status 2>/dev/null); then ready=true; break; fi
+  if status=$(/usr/local/bin/vesta host-status --json 2>/dev/null); then ready=true; break; fi
   sleep .1
  done
  [[ $ready == true ]] || fail 'Local control channel unavailable; inspect journalctl -u vesta.'
  claimed=$(python3 -c 'import json,sys; print(str(json.loads(sys.argv[1])["claimed"]).lower())' "$status")
  if [[ $claimed == true ]]; then
-  echo 'Vesta Server is already claimed. Use your linked launcher.'
+  echo 'Vesta Server is already claimed. To add another device, run: sudo vesta link'
  else
-  code=$(/usr/local/bin/vesta setup-code) || fail 'Service could not issue a setup code.'
-  code=$(printf '%s' "$code" | python3 -c 'import json,sys; print(json.load(sys.stdin)["code"])')
-  echo "Vesta Server is running on $(hostname -s) (port $port). On your PC, open Servers -> Set up a Vesta Server."
-  echo "Setup code: $code"
+  echo "Vesta Server is running on $(hostname -s)."
+  /usr/local/bin/vesta setup-code || fail 'Service could not issue a setup code.'
  fi
 else echo "Vesta Server installed. Start with: systemctl start vesta (or runuser -u vesta -- /usr/local/lib/vesta/vesta-agent host $root/host.toml)."; fi
 echo 'Game ports need firewall rules when servers are created/imported; allow the selected game TCP port before players connect.'

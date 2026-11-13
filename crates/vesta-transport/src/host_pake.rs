@@ -125,13 +125,18 @@ impl HostPake {
             backoff: now,
         }
     }
-    pub fn rotate_setup(&mut self, authority: &impl ClaimAuthority) -> Result<SetupCode> {
+    pub fn rotate_setup(&mut self, authority: &impl ClaimAuthority) -> Result<(SetupCode, String)> {
         if !authority.is_unclaimed() {
             return Err(PairingFailed);
         }
         self.install_code(SetupCode::generate(), Purpose::Claim, None, Instant::now())
     }
-    pub fn rotate_link(&mut self, link_id: String) -> Result<SetupCode> {
+    /// True when an unexpired claim setup code is loaded in this process.
+    pub fn has_active_claim(&mut self) -> bool {
+        self.reap(Instant::now());
+        self.claim.is_some()
+    }
+    pub fn rotate_link(&mut self, link_id: String) -> Result<(SetupCode, String)> {
         self.install_code(
             SetupCode::generate(),
             Purpose::Link,
@@ -145,7 +150,7 @@ impl HostPake {
         purpose: Purpose,
         link_id: Option<String>,
         now: Instant,
-    ) -> Result<SetupCode> {
+    ) -> Result<(SetupCode, String)> {
         self.epoch = self.epoch.checked_add(1).ok_or(PairingFailed)?;
         self.exchanges
             .retain(|_, x| x.capability.purpose != purpose);
@@ -156,9 +161,11 @@ impl HostPake {
             self.completed_claims.clear();
         }
         let shown = SetupCode::parse(password.canonical())?;
+        let ttl = Duration::from_secs(if purpose == Purpose::Claim { 1800 } else { 600 });
+        let expires_at = timestamp(ttl);
         let code = Some(Code {
             password,
-            deadline: now + Duration::from_secs(if purpose == Purpose::Claim { 1800 } else { 600 }),
+            deadline: now + ttl,
             epoch: self.epoch,
             link_id,
         });
@@ -167,7 +174,7 @@ impl HostPake {
         } else {
             self.link = code
         }
-        Ok(shown)
+        Ok((shown, expires_at))
     }
     fn reap(&mut self, now: Instant) {
         self.exchanges

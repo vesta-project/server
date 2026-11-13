@@ -58,16 +58,29 @@ fn rotation_consumption_and_scope() {
         )
         .is_err()
     );
-    s.rotate_setup(&a).unwrap();
+    let (_rotated, expires) = s.rotate_setup(&a).unwrap();
+    assert!(expires.ends_with('Z'));
     assert!(s.authorize(&c, &token, Purpose::Claim, &key).is_err());
     s.install_code(code(), Purpose::Claim, None, Instant::now())
         .unwrap();
     assert!(pair(&mut s, &a, &c, &SetupCode::parse("ZZZZ-ZZZZ-ZZZZ").unwrap()).is_err());
     assert!(s.claim.is_some());
+    assert!(s.has_active_claim());
     let token = pair(&mut s, &a, &c, &code()).unwrap();
     s.consume_claim(&a, &c, &token, &key).unwrap();
     assert!(s.consume_claim(&a, &c, &token, &key).is_err());
     assert!(s.rotate_setup(&a).is_err());
+    assert!(!s.has_active_claim());
+}
+#[test]
+fn claim_code_absent_after_expiry_is_detectable() {
+    let mut s = HostPake::new(HOST.into());
+    assert!(!s.has_active_claim());
+    s.install_code(code(), Purpose::Claim, None, Instant::now())
+        .unwrap();
+    assert!(s.has_active_claim());
+    s.claim.as_mut().unwrap().deadline = Instant::now();
+    assert!(!s.has_active_claim());
 }
 #[test]
 fn bounds_expiry_disconnect_and_uniform_failure() {
@@ -386,7 +399,7 @@ fn link_code_uses_same_protocol_and_rotation_revokes_capability() {
     let c = Connection::new([3; 32], FP.into());
     let mut s = HostPake::new(HOST.into());
     let link = "22222222-2222-4222-8222-222222222222";
-    let password = s.rotate_link(link.into()).unwrap();
+    let (password, _) = s.rotate_link(link.into()).unwrap();
     let (client, start) = Client::start(&password, Purpose::Link, None, HOST.into(), [7; 32]);
     let started = s
         .start(&a, &c, "127.0.0.1".parse().unwrap(), start)
@@ -407,7 +420,7 @@ fn completed_link_capability_can_only_poll_same_connection_and_key() {
     let a = authority();
     let c = Connection::new([3; 32], FP.into());
     let mut s = HostPake::new(HOST.into());
-    let password = s.rotate_link("link-id".into()).unwrap();
+    let (password, _) = s.rotate_link("link-id".into()).unwrap();
     let (client, start) = Client::start(&password, Purpose::Link, None, HOST.into(), [7; 32]);
     let started = s
         .start(&a, &c, "127.0.0.1".parse().unwrap(), start)

@@ -8,7 +8,7 @@ curl -fsSL https://raw.githubusercontent.com/vesta-project/server/feat/host-mode
 
 The branch URL is a development entry point until this work ships. A published signed package must include the new host runtime; older nightlies contain the old onboarding runtime. The bootstrap retains pinned signature/hash verification for downloaded releases. It installs root-owned executables under `/usr/local/lib/vesta`, puts `vesta` on PATH in `/usr/local/bin`, creates the non-login `vesta` account and stores data in `/var/lib/vesta`. It enables the **system** `vesta.service` for boot, starts `vesta-agent host <host.toml>`, binds IPv4 LAN port 25500 and advertises `_vesta._tcp` on the non-loopback interfaces that had a global IPv4 address at install time. Reconfigure `discovery-interfaces` in `host.toml` if network interface selection changes.
 
-The installer prints the setup code obtained from the privileged local socket. On your PC open the launcher, Servers -> Set up a Vesta Server. To rotate an unclaimed machine's code: `sudo vesta setup-code`. Setup codes are not logged to journald. After claiming, use the linked launcher rather than issuing another setup code.
+The installer prints a human-readable setup code (how long it is valid, this machine's LAN address, and what to tap in the launcher). On your PC open the launcher, Servers -> Set up a Vesta Server. To issue a fresh code on an unclaimed machine: `sudo vesta setup-code`. Add `--json` for the compact script form (`{"code":"...","expiresAt":"..."}`). Setup codes are not logged to journald. They live in service memory until expiry: a restart clears them, so run `setup-code` again after restarting. After claiming, use the linked launcher or `sudo vesta link` to add another device.
 
 ## Options
 
@@ -60,6 +60,9 @@ This path prints **UNVERIFIED DEVELOPMENT** and intentionally bypasses release s
 systemctl status vesta
 sudo systemctl restart vesta
 sudo journalctl -u vesta
+sudo vesta host-status
+sudo vesta setup-code          # unclaimed machines
+sudo vesta link                # add a device after claiming
 sudo vesta uninstall --keep-data
 # Or permanently remove this installation's data:
 sudo vesta uninstall --remove-data
@@ -72,6 +75,6 @@ Signed-update host/worker trial health and rollback are not implemented. The upd
 
 ## Verification
 
-Exercised on Ubuntu 24.04 (WSL2, systemd running) from the development tarball: non-root refusal; fresh install creating the `vesta` system account, root-owned binaries/unit/config (the account cannot write them), enabled+active system unit running `vesta-agent host /var/lib/vesta/host.toml` as `vesta`; TLS on `0.0.0.0:25500` reachable via the eth0 address; `sudo vesta setup-code` printing a code (refused for other users) and no code in journald; `vesta import-root add` on another user's mode-700 folder granting read but not write; overlap refusal; rerun preserving identity, config, host id and import roots; uninstall refusing without a data choice, `--keep-data` then reinstall onto it, `--remove-data`.
+Exercised on Ubuntu 24.04 (WSL2, systemd running) from the development tarball: non-root refusal; fresh install creating the `vesta` system account, root-owned binaries/unit/config (the account cannot write them), enabled+active system unit running `vesta-agent host /var/lib/vesta/host.toml` as `vesta`; TLS on `0.0.0.0:25500` reachable via the eth0 address; `sudo vesta setup-code` printing a human-readable code with expiry and LAN address (refused for other users) and no code in journald; `vesta import-root add` on another user's mode-700 folder granting read but not write; overlap refusal; rerun preserving identity, config, host id and import roots; uninstall refusing without a data choice, `--keep-data` then reinstall onto it, `--remove-data`.
 
 Not established: an actual reboot (the unit is enabled for `multi-user.target`, but WSL was not restarted), mDNS reception from another machine, AMP import completion, active ufw/firewalld mutation, or a signed published-release install.

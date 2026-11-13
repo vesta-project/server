@@ -91,8 +91,13 @@ impl HostIdentity {
         peer: std::net::IpAddr,
         request: Start,
     ) -> Result<Started> {
-        lock(&self.pake)?
-            .start(&Advisory(&self.state), connection, peer, request)
+        let mut pake = lock(&self.pake)?;
+        // Setup codes live only in process memory. After a restart or expiry there
+        // is no active code; tell the launcher distinctly rather than pairing_failed.
+        if request.purpose == Purpose::Claim && !pake.has_active_claim() {
+            return Err(IdentityFailure("setup_code_expired_or_replaced"));
+        }
+        pake.start(&Advisory(&self.state), connection, peer, request)
             .map_err(|_| FAILED)
     }
     pub fn pake_finish(&self, connection: &Arc<Connection>, request: Finish) -> Result<Finished> {
@@ -244,8 +249,17 @@ impl HostIdentity {
         let state = self.state.snapshot().map_err(|_| FAILED)?;
         Ok(serde_json::json!({"hostId":state.host_id,"claimed":state.primary_account_id.is_some()}))
     }
-    pub fn setup_code(&self, _local: LocalPrivilege) -> Result<String> {
-        let code = lock(&self.pake)?
+    pub fn setup_code(&self, _local: LocalPrivilege) -> Result<serde_json::Value> {
+        if self
+            .state
+            .snapshot()
+            .map_err(|_| FAILED)?
+            .primary_account_id
+            .is_some()
+        {
+            return Err(IdentityFailure("already_claimed"));
+        }
+        let (code, expires_at) = lock(&self.pake)?
             .rotate_setup(&Advisory(&self.state))
             .map_err(|_| FAILED)?;
         self.state
@@ -257,13 +271,13 @@ impl HostIdentity {
                 )
             })
             .map_err(|_| FAILED)?;
-        Ok(code.display())
+        Ok(serde_json::json!({"code": code.display(), "expiresAt": expires_at}))
     }
     fn create_link(&self, actor: LinkApprover, target: Option<Uuid>) -> Result<LinkCodeResponse> {
         let mut pake = lock(&self.pake)?;
         let mut links = lock(&self.links)?;
         let id = links.create(actor, target)?;
-        let code = pake.rotate_link(id.to_string()).map_err(|_| FAILED)?;
+        let (code, _) = pake.rotate_link(id.to_string()).map_err(|_| FAILED)?;
         *lock(&self.link_cap)? = None;
         let expires_at = links.status(id, true)?.expires_at;
         Ok(LinkCodeResponse {

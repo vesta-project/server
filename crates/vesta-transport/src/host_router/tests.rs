@@ -135,9 +135,10 @@ fn host_end_to_end_claim_sessions_and_registry_mapping() {
     let public: [u8; 32] = key.public_key().as_ref().try_into().unwrap();
     let identity = Arc::new(HostIdentity::new(state.clone()).unwrap());
     identity.test_account(account, "TestOwner");
-    let code = identity
+    let issued = identity
         .setup_code(LocalPrivilege::from_privileged_local_channel())
         .unwrap();
+    let code = issued["code"].as_str().unwrap();
     std::fs::write(
         base.join("cert.pem"),
         include_bytes!("../../tests/fixtures/test-only-server.pem"),
@@ -169,7 +170,7 @@ fn host_end_to_end_claim_sessions_and_registry_mapping() {
         "unclaimed"
     );
     let (client, start) = Client::start(
-        &SetupCode::parse(&code).unwrap(),
+        &SetupCode::parse(code).unwrap(),
         Purpose::Claim,
         None,
         host.to_string(),

@@ -5,6 +5,7 @@ mod cli;
 mod commands;
 mod control;
 mod host_local;
+mod host_output;
 mod host_mode;
 #[cfg(windows)]
 mod host_local_windows;

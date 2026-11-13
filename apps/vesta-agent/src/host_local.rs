@@ -36,9 +36,7 @@ fn dispatch(identity: &HostIdentity, request: LocalRequest) -> Response {
             .snapshot()
             .map(|s| serde_json::json!({"hostId":s.host_id,"claimed":s.primary_account_id.is_some()}))
             .map_err(|_| vesta_control::machine::sessions::IdentityFailure("host_local_failed")),
-        LocalRequest::SetupCode => identity
-            .setup_code(local)
-            .map(|code| serde_json::json!({"code":code})),
+        LocalRequest::SetupCode => identity.setup_code(local),
         LocalRequest::Link => identity.local_link_code(local).and_then(|v| {
             serde_json::to_value(v)
                 .map_err(|_| vesta_control::machine::sessions::IdentityFailure("host_local_failed"))
@@ -291,8 +289,8 @@ pub async fn request(state: &Path, request: LocalRequest) -> Result<serde_json::
             .map_err(|_| "host_local_outcome_unknown")??;
         let response: Response =
             serde_json::from_slice(&bytes).map_err(|_| "host_local_invalid_response")?;
-        if response.error.is_some() {
-            return Err("host_local_request_refused");
+        if let Some(error) = response.error.as_deref() {
+            return Err(map_remote_error(error));
         }
         response.data.ok_or("host_local_invalid_response")
     }
@@ -302,8 +300,19 @@ pub async fn request(state: &Path, request: LocalRequest) -> Result<serde_json::
         Err("host_local_platform_unsupported")
     }
 }
-pub const USAGE: &str = "Vesta Server\n  vesta host-status [--state <host-state>]\n  vesta setup-code [--state <host-state>]\n  vesta link [--state <host-state>]\n  vesta link --approve [<link-id> [<request-hash>]] [--state <host-state>]\n  vesta link --recover <account-uuid> <device-key> <device-name> [--revoke-all] [--state <host-state>]\nOmit the approval hash to inspect the exact signed request first. Recovery keeps other devices unless --revoke-all is supplied.";
-fn parse(mut args: Vec<String>) -> Result<(PathBuf, LocalRequest)> {
+pub const USAGE: &str = "Vesta Server\n  vesta host-status [--json] [--state <host-state>]\n  vesta setup-code [--json] [--state <host-state>]\n  vesta link [--json] [--state <host-state>]\n  vesta link --approve [<link-id> [<request-hash>]] [--json] [--state <host-state>]\n  vesta link --recover <account-uuid> <device-key> <device-name> [--revoke-all] [--json] [--state <host-state>]\nOmit the approval hash to inspect the exact signed request first. Recovery keeps other devices unless --revoke-all is supplied.\nTerminal replies are formatted. Append --json for scripts.";
+fn map_remote_error(code: &str) -> &'static str {
+    match code {
+        "already_claimed" => "already_claimed",
+        "pairing_failed" => "pairing_failed",
+        "setup_code_expired_or_replaced" => "setup_code_expired_or_replaced",
+        "host_local_failed" => "host_local_failed",
+        "identity_unavailable" => "identity_unavailable",
+        "invalid_session" => "invalid_session",
+        _ => "host_local_request_refused",
+    }
+}
+fn parse(mut args: Vec<String>) -> Result<(PathBuf, LocalRequest, crate::output::Format)> {
     let mut state = std::env::var_os("VESTA_HOST_STATE")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -319,6 +328,14 @@ fn parse(mut args: Vec<String>) -> Result<(PathBuf, LocalRequest)> {
                 PathBuf::from("/var/lib/vesta/host")
             }
         });
+    let mut format = crate::output::Format::Human;
+    if let Some(i) = args.iter().position(|a| a == "--json") {
+        args.remove(i);
+        format = crate::output::Format::Json;
+    }
+    if args.iter().any(|a| a == "--json") {
+        return Err("host_local_invalid_arguments");
+    }
     if let Some(i) = args.iter().position(|a| a == "--state") {
         if i + 1 >= args.len() {
             return Err("host_local_invalid_arguments");
@@ -367,7 +384,17 @@ fn parse(mut args: Vec<String>) -> Result<(PathBuf, LocalRequest)> {
             }
         }
     };
-    Ok((state, r))
+    Ok((state, r, format))
+}
+fn kind(request: &LocalRequest) -> &'static str {
+    match request {
+        LocalRequest::SetupCode => "setup-code",
+        LocalRequest::Status => "host-status",
+        LocalRequest::Link => "link",
+        LocalRequest::InspectPending | LocalRequest::Inspect { .. } => "link-inspect",
+        LocalRequest::Approve { .. } => "link-approved",
+        LocalRequest::Recover { .. } => "link-recover",
+    }
 }
 pub async fn run(args: Vec<std::ffi::OsString>) -> std::process::ExitCode {
     let result = async {
@@ -375,37 +402,104 @@ pub async fn run(args: Vec<std::ffi::OsString>) -> std::process::ExitCode {
             .into_iter()
             .map(|a| a.into_string().map_err(|_| "host_local_invalid_arguments"))
             .collect::<Result<Vec<_>>>()?;
-        let (state, r) = parse(args)?;
+        let (state, r, format) = parse(args)?;
         let state = local_files::absolute(
             &state,
             &std::env::current_dir().map_err(|_| "host_local_invalid_arguments")?,
         )?;
-        let interactive_approval=matches!(r,LocalRequest::InspectPending);
-        let value=request(&state, r).await?;
+        let interactive_approval = matches!(r, LocalRequest::InspectPending);
+        let request_kind = kind(&r);
+        let value = request(&state, r).await?;
         if interactive_approval {
-            use std::io::{IsTerminal,Write};
-            let id=value["linkId"].as_str().and_then(|s|Uuid::parse_str(s).ok()).ok_or("host_local_invalid_response")?;
-            let hash=value["requestHash"].as_str().ok_or("host_local_no_request_to_approve")?.to_owned();
-            if !std::io::stdin().is_terminal(){
-                eprintln!("Review this request, then approve with: vesta link --approve {id} {hash}. Use the same --state value.");
-                return Ok(value);
+            use std::io::{IsTerminal, Write};
+            let id = value["linkId"]
+                .as_str()
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .ok_or("host_local_invalid_response")?;
+            let hash = value["requestHash"]
+                .as_str()
+                .ok_or("host_local_no_request_to_approve")?
+                .to_owned();
+            if format == crate::output::Format::Json || !std::io::stdin().is_terminal() {
+                if format != crate::output::Format::Json {
+                    eprintln!(
+                        "Review this request, then approve with: vesta link --approve {id} {hash}. Use the same --state value."
+                    );
+                }
+                return Ok((value, format, "link-inspect", state));
             }
-            println!("{}",serde_json::to_string_pretty(&value).map_err(|_|"host_local_invalid_response")?);
-            eprint!("Approve this exact device request? [y/N] ");std::io::stderr().flush().map_err(|_|"host_local_io_failed")?;
-            let mut answer=String::new();std::io::stdin().read_line(&mut answer).map_err(|_|"host_local_io_failed")?;
-            if !matches!(answer.trim(),"y"|"Y"|"yes"|"YES"){return Ok(serde_json::json!({"state":"not_approved"}));}
-            return request(&state,LocalRequest::Approve{link_id:id,request_hash:hash}).await;
+            let review = crate::host_output::format_reply(
+                crate::output::Format::Human,
+                "link-inspect",
+                &value,
+                std::time::SystemTime::now(),
+                &[],
+                crate::host_output::management_port(&state),
+            )?;
+            println!("{review}");
+            eprint!("Approve this exact device request? [y/N] ");
+            std::io::stderr()
+                .flush()
+                .map_err(|_| "host_local_io_failed")?;
+            let mut answer = String::new();
+            std::io::stdin()
+                .read_line(&mut answer)
+                .map_err(|_| "host_local_io_failed")?;
+            if !matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
+                return Ok((
+                    serde_json::json!({"state":"not_approved"}),
+                    format,
+                    "not-approved",
+                    state,
+                ));
+            }
+            let approved = request(
+                &state,
+                LocalRequest::Approve {
+                    link_id: id,
+                    request_hash: hash,
+                },
+            )
+            .await?;
+            return Ok((approved, format, "link-approved", state));
         }
-        Ok(value)
+        Ok((value, format, request_kind, state))
     }
     .await;
     match result {
-        Ok(value) => {
-            println!("{value}");
-            std::process::ExitCode::SUCCESS
+        Ok((value, format, kind, state)) => {
+            let addresses = if kind == "setup-code" {
+                crate::host_output::lan_addresses()
+            } else {
+                Vec::new()
+            };
+            let port = crate::host_output::management_port(&state);
+            match crate::host_output::format_reply(
+                format,
+                kind,
+                &value,
+                std::time::SystemTime::now(),
+                &addresses,
+                port,
+            ) {
+                Ok(text) => {
+                    println!("{text}");
+                    std::process::ExitCode::SUCCESS
+                }
+                Err(code) => {
+                    eprintln!("{}", crate::host_output::explain_error(code));
+                    std::process::ExitCode::FAILURE
+                }
+            }
         }
         Err(code) => {
-            eprintln!("{code}\n{USAGE}");
+            eprintln!("{}", crate::host_output::explain_error(code));
+            if matches!(
+                code,
+                "host_local_invalid_arguments"
+            ) {
+                eprintln!("{USAGE}");
+            }
             std::process::ExitCode::FAILURE
         }
     }
@@ -422,6 +516,10 @@ mod tests {
             parse_args(&["setup-code"]).unwrap().1,
             LocalRequest::SetupCode
         ));
+        assert_eq!(
+            parse_args(&["setup-code", "--json"]).unwrap().2,
+            crate::output::Format::Json
+        );
         assert!(matches!(
             parse_args(&["link"]).unwrap().1,
             LocalRequest::Link
@@ -452,6 +550,7 @@ mod tests {
             }
         }
         assert!(parse_args(&["setup-code", "--remote", "http://example.com"]).is_err());
+        assert!(parse_args(&["setup-code", "--json", "--json"]).is_err());
     }
     #[cfg(any(windows, target_os = "linux"))]
     #[tokio::test]
@@ -466,6 +565,7 @@ mod tests {
         let second = request(dir.path(), LocalRequest::SetupCode).await.unwrap();
         assert_ne!(first["code"], second["code"]);
         assert_eq!(first["code"].as_str().unwrap().len(), 14);
+        assert!(first["expiresAt"].as_str().unwrap().ends_with('Z'));
         assert!(request(dir.path(), LocalRequest::Link).await.is_err());
         state.claim(Uuid::new_v4(), "Owner", [5; 32]).unwrap();
         let link = request(dir.path(), LocalRequest::Link).await.unwrap();
