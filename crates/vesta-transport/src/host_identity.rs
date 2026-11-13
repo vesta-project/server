@@ -239,6 +239,11 @@ impl HostIdentity {
     pub fn logout(&self, token: &str) -> Result<()> {
         lock(&self.sessions)?.logout(token)
     }
+    /// Health/claim state for the privileged OS-local installer, without secrets.
+    pub fn local_status(&self, _local: LocalPrivilege) -> Result<serde_json::Value> {
+        let state = self.state.snapshot().map_err(|_| FAILED)?;
+        Ok(serde_json::json!({"hostId":state.host_id,"claimed":state.primary_account_id.is_some()}))
+    }
     pub fn setup_code(&self, _local: LocalPrivilege) -> Result<String> {
         let code = lock(&self.pake)?
             .rotate_setup(&Advisory(&self.state))

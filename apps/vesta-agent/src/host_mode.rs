@@ -10,7 +10,10 @@ use vesta_control::{
     config::{HostConfiguration, Supervision, TlsListener},
     machine::{
         HostState,
-        imports::{FolderBrowser, ImportRootConfig},
+        imports::{
+            FolderBrowser, ImportRootConfig,
+            jobs::{HostEnvironment, ImportJobs},
+        },
     },
     worker::{Worker, WorkerShutdown},
 };
@@ -38,6 +41,12 @@ struct Config {
     worker_config: Option<PathBuf>,
     #[serde(default)]
     import_roots: Vec<PathBuf>,
+    /// Managed storage for imported servers (`<servers>/<serverId>/game`).
+    #[serde(default = "servers")]
+    servers: PathBuf,
+    /// Shared checksum-verified managed Java runtimes.
+    #[serde(default = "java_cache")]
+    java_cache: PathBuf,
     #[serde(default)]
     discovery_interfaces: Vec<String>,
     #[serde(default = "hostname")]
@@ -54,6 +63,12 @@ fn name() -> String {
 }
 fn hostname() -> String {
     "vesta.local.".into()
+}
+fn servers() -> PathBuf {
+    "servers".into()
+}
+fn java_cache() -> PathBuf {
+    "java".into()
 }
 pub async fn run(source: &Path) -> ExitCode {
     match run_inner(source).await {
@@ -120,6 +135,12 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
             protected.push(parent.to_owned());
         }
     }
+    let servers_root = path(&config.servers);
+    let java_root = path(&config.java_cache);
+    for dir in [&servers_root, &java_root] {
+        std::fs::create_dir_all(dir).map_err(|_| "host_servers_unavailable")?;
+        protected.push(dir.clone());
+    }
     let folders = Arc::new(
         FolderBrowser::new(
             config
@@ -136,7 +157,20 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
         )
         .map_err(|_| "host_import_roots_invalid")?,
     );
-    let router = HostRouter::new(identity.clone(), config.name.clone(), folders);
+    let jobs = ImportJobs::open(
+        state.clone(),
+        folders.clone(),
+        &servers_root,
+        Arc::new(HostEnvironment {
+            java_cache: java_root,
+        }),
+    )
+    .map_err(|_| "host_imports_unavailable")?;
+    let factory = (jobs.clone(), clock.clone());
+    let router = HostRouter::new(identity.clone(), config.name.clone(), folders).with_imports(
+        jobs.clone(),
+        move |id| factory.0.create_worker(id, factory.1.clone()),
+    );
     let entries = state
         .snapshot()
         .map_err(|_| "host_state_unavailable")?
@@ -145,9 +179,20 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
         .transpose()
         .map_err(|_| "host_registry_unavailable")?
         .unwrap_or_default();
+    // Imported servers come back from their managed host.toml after a restart;
+    // a failure is reported and leaves the host (and other servers) running.
+    let imported = |id| jobs.server_dir(id).join("host.toml").is_file();
+    for (entry, _) in entries.iter().filter(|(e, _)| imported(e.server_id)) {
+        match jobs.create_worker(entry.server_id, clock.clone()) {
+            Ok(w) => {
+                router.adopt_worker(w);
+            }
+            Err(e) => eprintln!("Vesta Server could not open server {}: {e}", entry.server_id),
+        }
+    }
     let mut worker = None;
     let mut supervisor_release = None;
-    if let Some((entry, _)) = entries.first() {
+    if let Some((entry, _)) = entries.iter().find(|(e, _)| !imported(e.server_id)) {
         let worker_source = config
             .worker_config
             .as_ref()
@@ -194,8 +239,8 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
         path(&config.private_key),
     )
     .map_err(|_| "host_listener_invalid")?;
-    let transport =
-        Transport::start_host(router, &listener).map_err(|_| "host_listener_unavailable")?;
+    let transport = Transport::start_host(router.clone(), &listener)
+        .map_err(|_| "host_listener_unavailable")?;
     let local = crate::host_local::Server::start(&state_path, identity.clone())
         .await
         .map_err(|_| "host_local_unavailable")?;
@@ -257,7 +302,8 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
             TransportShutdown::TimedOut(remaining) => t = remaining,
         }
     }
-    if let Some(mut w) = worker {
+    let owned = router.take_owned_workers();
+    for mut w in worker.into_iter().chain(owned) {
         loop {
             match w
                 .shutdown(Duration::from_secs(5))
