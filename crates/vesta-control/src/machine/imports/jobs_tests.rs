@@ -715,6 +715,9 @@ fn two_servers_reserve_distinct_ports_and_shared_memory() {
     assert!(f.state.server(b.server_id).unwrap().is_some());
     let held = f.jobs.read(|c| reservations_in(c, None)).unwrap();
     assert_eq!(held.memory_mib, 4096);
+    let (memory, port) = f.jobs.resource_plans(None, None).unwrap();
+    assert_eq!(memory.reserved_mib, 4096);
+    assert_eq!(port.game_port, Some(25567));
     assert_eq!(
         resources::plan_memory(Some(16 * GIB), &held, Some(16 * 1024)).blocker,
         Some("memory_budget_exceeded")

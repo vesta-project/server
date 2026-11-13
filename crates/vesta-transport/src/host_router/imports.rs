@@ -94,6 +94,15 @@ pub(super) fn dispatch(
         }
         ("POST", "/v1/host/imports/resources") => {
             let request: Resources = input!();
+            if let Some(service) = &router.imports {
+                return match service
+                    .jobs
+                    .resource_plans(request.game_port, request.memory_mi_b)
+                {
+                    Ok((memory, port)) => routes::json(json!({"memory": memory, "port": port})),
+                    Err(e) => job_failure(e),
+                };
+            }
             let mut reservations = resources::Reservations::default();
             if let Ok(entries) = router.identity.state.visible_servers(device.account_id) {
                 for (e, _) in entries {

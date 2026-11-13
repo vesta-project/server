@@ -398,6 +398,18 @@ impl ImportJobs {
     pub fn servers_root(&self) -> &Path {
         &self.0.servers
     }
+    /// Shared committed and in-flight reservations, used by owner resource previews.
+    pub fn resource_plans(
+        &self,
+        game_port: Option<u16>,
+        memory_mib: Option<u64>,
+    ) -> JobResult<(resources::MemoryPlan, resources::PortPlan)> {
+        let held = self.read(|c| reservations_in(c, None))?;
+        Ok((
+            resources::plan_memory(self.0.env.memory_total_bytes(), &held, memory_mib),
+            resources::plan_port_with(&held, game_port, |p| self.0.env.port_state(p)),
+        ))
+    }
     pub fn server_dir(&self, server_id: Uuid) -> PathBuf {
         self.0.servers.join(server_id.to_string())
     }
