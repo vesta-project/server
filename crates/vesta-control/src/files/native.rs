@@ -114,6 +114,28 @@ pub(super) fn file_identity(file: &File) -> Result<String> {
 pub(super) fn file_identity(_file: &File) -> Result<String> {
     Err(FileError::Unavailable)
 }
+/// Directory identity observed without following a final link or reparse point.
+/// Host import browsing binds opaque folder tokens to this identity.
+#[cfg(unix)]
+pub(crate) fn directory_identity(path: &Path) -> Result<String> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path).map_err(io_error)?;
+    if metadata.file_type().is_symlink() {
+        return Err(FileError::LinkedPath);
+    }
+    if !metadata.is_dir() {
+        return Err(FileError::NotDirectory);
+    }
+    Ok(format!("{}:{}", metadata.dev(), metadata.ino()))
+}
+#[cfg(windows)]
+pub(crate) fn directory_identity(path: &Path) -> Result<String> {
+    windows::directory_identity(path)
+}
+#[cfg(not(any(windows, unix)))]
+pub(crate) fn directory_identity(_path: &Path) -> Result<String> {
+    Err(FileError::Unavailable)
+}
 
 #[cfg(windows)]
 pub(super) fn actual_path(file: &File, _path: &Path) -> Result<PathBuf> {
@@ -264,6 +286,34 @@ mod windows {
             info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow
         ))
     }
+    pub(super) fn directory_identity(path: &Path) -> Result<String> {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+            FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(io_error)?;
+        // SAFETY: the owned handle and initialized output remain live for the call.
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &mut info) } == 0 {
+            return Err(FileError::Unavailable);
+        }
+        if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(FileError::LinkedPath);
+        }
+        if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+            return Err(FileError::NotDirectory);
+        }
+        Ok(format!(
+            "{}:{}:{}",
+            info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow
+        ))
+    }
     pub(super) fn path(file: &File) -> Result<PathBuf> {
         check(file)?;
         let mut units = vec![0_u16; 32_768];
@@ -338,7 +388,7 @@ pub(super) fn rename_absent(_from: &Path, _to: &Path) -> Result<()> {
 /// Available and total bytes on the volume holding `path`.
 #[cfg(windows)]
 #[allow(unsafe_code)]
-pub(super) fn volume_space(path: &Path) -> Result<(u64, u64)> {
+pub(crate) fn volume_space(path: &Path) -> Result<(u64, u64)> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
@@ -360,7 +410,7 @@ pub(super) fn volume_space(path: &Path) -> Result<(u64, u64)> {
 }
 #[cfg(unix)]
 #[allow(unsafe_code)]
-pub(super) fn volume_space(path: &Path) -> Result<(u64, u64)> {
+pub(crate) fn volume_space(path: &Path) -> Result<(u64, u64)> {
     use std::os::unix::ffi::OsStrExt;
     let text =
         std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| FileError::InvalidPath)?;
@@ -377,7 +427,7 @@ pub(super) fn volume_space(path: &Path) -> Result<(u64, u64)> {
     ))
 }
 #[cfg(not(any(windows, unix)))]
-pub(super) fn volume_space(_path: &Path) -> Result<(u64, u64)> {
+pub(crate) fn volume_space(_path: &Path) -> Result<(u64, u64)> {
     Err(FileError::Unavailable)
 }
 

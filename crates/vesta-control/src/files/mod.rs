@@ -23,7 +23,7 @@ pub use startup_whitelist::StartupWhitelistPatch;
 mod mutation;
 pub(crate) use mutation::mutation_admission;
 pub(crate) use mutation::require_space;
-mod native;
+pub(crate) mod native;
 mod pack_root;
 mod path;
 mod protected;
