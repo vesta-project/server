@@ -167,6 +167,8 @@ impl Fixture {
         self.put("vanilla/minecraft_server.1.21.1.jar", "jar");
         self.put("vanilla/world/level.dat", "nbt");
         self.put("vanilla/world/region/r.0.0.mca", "region");
+        fs::File::options().write(true).open(self.source("vanilla").join("world/region/r.0.0.mca")).unwrap()
+            .set_times(fs::FileTimes::new().set_modified(std::time::SystemTime::now()-std::time::Duration::from_secs(120))).unwrap();
         self.put("vanilla/eula.txt", "eula=false\n");
     }
     pub fn fabric(&self) {

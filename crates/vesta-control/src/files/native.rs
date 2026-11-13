@@ -275,7 +275,6 @@ mod windows {
         Ok(())
     }
     pub(super) fn identity(file: &File) -> Result<String> {
-        check(file)?;
         // SAFETY: the owned handle and initialized output remain live for the call.
         let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
         if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &mut info) } == 0 {
@@ -520,7 +519,9 @@ pub(crate) fn import_open(path: &Path, directory: bool) -> Result<File> {
   let name=std::ffi::CString::new(name.as_bytes()).map_err(|_|FileError::InvalidPath)?;
   let is_dir=directory || i+1<components.len();
   // SAFETY: owned parent descriptor and stable NUL-terminated component.
-  let fd=unsafe {libc::openat(held.as_raw_fd(),name.as_ptr(),libc::O_RDONLY|libc::O_NOFOLLOW|libc::O_CLOEXEC|libc::O_NONBLOCK|if is_dir{libc::O_DIRECTORY}else{0})};
+  #[cfg(target_os="linux")] let access=if is_dir {libc::O_PATH|libc::O_DIRECTORY}else{libc::O_RDONLY};
+  #[cfg(not(target_os="linux"))] let access=libc::O_RDONLY|if is_dir{libc::O_DIRECTORY}else{0};
+  let fd=unsafe {libc::openat(held.as_raw_fd(),name.as_ptr(),access|libc::O_NOFOLLOW|libc::O_CLOEXEC|libc::O_NONBLOCK)};
   if fd<0{return Err(io_error(std::io::Error::last_os_error()));}
   // SAFETY: fresh successful descriptor transferred exactly once.
   held=unsafe {File::from_raw_fd(fd)};
