@@ -91,27 +91,7 @@ pub(crate) fn plain_drive_path(path: &Path) -> PathBuf {
 /// is left in the host-only file and is never returned by the API (the file is
 /// protected and the properties view redacts it).
 pub(crate) fn rewrite_properties(text: &str, port: u16) -> String {
-    let mut out = String::new();
-    let mut found = false;
-    for line in text.lines() {
-        let key = line.split_once(['=', ':']).map(|(k, _)| k.trim());
-        let active = !line.trim_start().starts_with('#');
-        if key == Some("enable-rcon") && active {
-            out.push_str("enable-rcon=false\n");
-        } else if key == Some("server-port") && active {
-            if !found {
-                out.push_str(&format!("server-port={port}\n"));
-            }
-            found = true;
-        } else {
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    if !found {
-        out.push_str(&format!("server-port={port}\n"));
-    }
-    out
+    super::super::properties::rewrite(text, port)
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> JobResult<()> {

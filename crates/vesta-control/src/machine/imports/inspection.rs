@@ -286,7 +286,11 @@ pub(crate) fn inspect_path(
     report.evidence.extend(evidence);
     if listing.files.contains("server.properties") {
         match read_properties(&path.join("server.properties")) {
-            Ok(properties) => report.server = ports_from(&properties),
+            Ok(properties) => {
+ report.server = ports_from(&properties);
+ if properties.get("server-ip").is_some_and(|v| !v.is_empty()) {warnings.insert("bind_address_cleared");}
+ if properties.get("level-name").is_some_and(|v| !super::properties::safe_world(v)) {blockers.insert("world_outside_source");}
+ },
             Err(ImportError::Unreadable) => {
                 blockers.insert("source_unreadable");
             }
@@ -669,29 +673,8 @@ pub(crate) fn read_properties(path: &Path) -> Result<BTreeMap<String, String>, I
         .read_to_end(&mut bytes)
         .map_err(read_error)?;
     let text = String::from_utf8_lossy(&bytes);
-    let mut out = BTreeMap::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.starts_with('#') || line.starts_with('!') {
-            continue;
-        }
-        let Some((key, value)) = line.split_once(['=', ':']) else {
-            continue;
-        };
-        let key = key.trim();
-        if matches!(
-            key,
-            "server-port"
-                | "server-ip"
-                | "query.port"
-                | "enable-query"
-                | "rcon.port"
-                | "enable-rcon"
-                | "level-name"
-        ) {
-            out.insert(key.to_owned(), value.trim().to_owned());
-        }
-    }
+    let out = super::properties::parse(&text).into_iter().filter(|(key,_)| matches!(key.as_str(),
+        "server-port" | "server-ip" | "query.port" | "enable-query" | "rcon.port" | "enable-rcon" | "level-name")).collect();
     Ok(out)
 }
 fn ports_from(properties: &BTreeMap<String, String>) -> ServerPorts {
