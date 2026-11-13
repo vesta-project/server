@@ -401,3 +401,78 @@ fn link_code_uses_same_protocol_and_rotation_revokes_capability() {
     assert!(s.authorize(&c, &token, Purpose::Link, &key).is_err());
     assert!(s.consume_link(&cap).is_err());
 }
+
+#[test]
+fn completed_link_capability_can_only_poll_same_connection_and_key() {
+    let a = authority();
+    let c = Connection::new([3; 32], FP.into());
+    let mut s = HostPake::new(HOST.into());
+    let password = s.rotate_link("link-id".into()).unwrap();
+    let (client, start) = Client::start(&password, Purpose::Link, None, HOST.into(), [7; 32]);
+    let started = s
+        .start(&a, &c, "127.0.0.1".parse().unwrap(), start)
+        .unwrap();
+    let (client, finish) = client.finish(&started, FP, c.exporter()).unwrap();
+    let token = client.verify(s.finish(&c, finish).unwrap()).unwrap();
+    let key = encode(&[7; 32]);
+    let cap = s.authorize(&c, &token, Purpose::Link, &key).unwrap();
+    s.validate_link_capability(&cap).unwrap();
+    s.consume_link(&cap).unwrap();
+    assert!(s.authorize(&c, &token, Purpose::Link, &key).is_err());
+    assert!(s.validate_link_capability(&cap).is_err());
+    assert!(s.consume_link(&cap).is_err());
+    assert_eq!(
+        s.authorize_link_status(&c, &token, &key)
+            .unwrap()
+            .link_id
+            .as_deref(),
+        Some("link-id")
+    );
+    assert!(
+        s.authorize_link_status(&Connection::new([3; 32], FP.into()), &token, &key)
+            .is_err()
+    );
+    assert!(
+        s.authorize_link_status(&c, &token, &encode(&[8; 32]))
+            .is_err()
+    );
+    s.completed_links
+        .get_mut(&token_hash(&token).unwrap())
+        .unwrap()
+        .deadline = Instant::now();
+    assert!(s.authorize_link_status(&c, &token, &key).is_err());
+    // A rotation discards even read-only completed results.
+    s.rotate_link("next-link".into()).unwrap();
+    assert!(s.completed_links.is_empty());
+    drop(c);
+    s.reap(Instant::now());
+    assert!(s.tokens.is_empty());
+}
+
+#[test]
+fn completed_claim_token_only_authorizes_same_connection_receipt_retry() {
+    let a = authority();
+    let c = Connection::new([3; 32], FP.into());
+    let mut s = HostPake::new(HOST.into());
+    s.install_code(code(), Purpose::Claim, None, Instant::now())
+        .unwrap();
+    let token = pair(&mut s, &a, &c, &code()).unwrap();
+    let key = encode(&[7; 32]);
+    let cap = s.account_capability(&c, &token).unwrap();
+    s.consume_claim(&a, &c, &token, &key).unwrap();
+    assert!(s.account_capability(&c, &token).is_err());
+    assert!(s.consume_claim(&a, &c, &token, &key).is_err());
+    assert_eq!(
+        s.claim_result_capability(&c, &token).unwrap().exchange_id,
+        cap.exchange_id
+    );
+    assert!(
+        s.claim_result_capability(&Connection::new([3; 32], FP.into()), &token)
+            .is_err()
+    );
+    s.completed_claims
+        .get_mut(&token_hash(&token).unwrap())
+        .unwrap()
+        .deadline = Instant::now();
+    assert!(s.claim_result_capability(&c, &token).is_err());
+}

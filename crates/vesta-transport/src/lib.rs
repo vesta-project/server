@@ -71,6 +71,7 @@ mod realtime;
 mod routes;
 pub use probe::LocalUpdateProbe;
 pub mod host_pake;
+pub mod host_identity;
 mod tls;
 type Reply = Response<ReplyBody>;
 const DOWNLOADS: usize = 2;
