@@ -366,14 +366,15 @@ impl ImportJobs {
         }
         if state == "ready" {
             let port = review.resources.game_port.ok_or(JobError::BLOCKED)?;
-            let (processes, observed) = self.0.env.processes(std::slice::from_ref(&private.source));
+            let (processes, _observed) = self.0.env.processes(std::slice::from_ref(&private.source));
             let conflict = if processes
                 .iter()
                 .any(|p| p.relation == "source" && p.state == "running")
             {
                 Some("source_running")
-            } else if observed != "complete" {
-                Some("source_state_unknown")
+            } else if let Some(code) = inspection::stopped_evidence(&private.source,
+                inspection::read_properties(&private.source.join("server.properties")).ok().and_then(|p| p.get("server-port").and_then(|v| v.parse().ok())).or(Some(25565))) {
+                Some(code)
             } else {
                 match self.0.env.port_state(port) {
                     "free" => None,

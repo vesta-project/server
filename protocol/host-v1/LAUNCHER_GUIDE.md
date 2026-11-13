@@ -238,3 +238,13 @@ installed. At startup every registered imported server (managed `<servers>/<serv
 gets its worker back; `worker-config` still serves one externally configured server.
 Optional keys: `servers = 'servers'` (managed import storage) and
 `java-cache = 'java'` (checksum-verified managed Java), both relative to host.toml.
+
+
+Import stopped-state codes and suggested text:
+- `source_process_unknown` is a warning requiring the existing explicit source-stopped confirmation and warning acknowledgement at apply: "Vesta cannot inspect a possible Java server process. Confirm that you stopped the source server."
+- `source_running` remains a blocker for a process positively correlated with the source.
+- `source_port_listening` blocks independently of the destination port: "Something is listening on the source game port. Stop the server, then check again."
+- `source_recently_active` blocks: "The world is locked or world/log files changed within the last 60 seconds. Stop the server, wait a minute, then check again."
+- `world_outside_source`: "Choose a folder containing the world and use a relative level-name inside that folder."
+- `bind_address_cleared` warns: "The imported server will bind to all interfaces; Vesta clears server-ip in the copy."
+- `launch_arguments_unsupported`: "The launch arguments contain unsupported options or paths. Use a self-contained server folder with supported Forge arguments, then check again."

@@ -619,7 +619,7 @@ fn unobservable_processes_are_unknown_not_clear() {
     let b = browser(temp.path());
     let report = inspect(&b, "s");
     assert_eq!(report.inspection.processes, "unknown");
-    assert!(report.blockers.contains(&"source_state_unknown"));
+    assert!(report.warnings.contains(&"source_process_unknown"));
     assert!(!report.blockers.contains(&"source_running"));
 }
 

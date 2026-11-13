@@ -11,6 +11,7 @@ test-support = []
 latency-probe = ["vesta-state/latency-probe"]
 
 [dependencies]
+fs2.workspace = true
 chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
 modpack-engine = { path = "../modpack-engine" }
 vesta-state.workspace = true

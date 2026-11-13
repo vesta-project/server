@@ -605,12 +605,13 @@ impl ImportJobs {
         {
             blockers.insert("source_running");
         } else if process_state != "complete" {
-            blockers.insert("source_state_unknown");
+            warnings.insert("source_process_unknown");
         }
         if processes.iter().any(|p| p.relation == "amp_controller") {
             warnings.insert("amp_controller_running");
         }
 
+        if let Some(code) = inspection::stopped_evidence(&source, report.server.game_port) { blockers.insert(code); }
         let reservations = self.read(|c| reservations_in(c, None))?;
         let env = self.0.env.clone();
         let port =
@@ -1079,9 +1080,10 @@ impl ImportJobs {
         {
             return Err(Outcome::Blocked("source_running"));
         }
-        if state != "complete" {
-            return Err(Outcome::Blocked("source_state_unknown"));
-        }
+        let _ = state; // Owner explicitly confirmed stopped-ness at apply.
+        let source_port = inspection::read_properties(&private.source.join("server.properties")).ok()
+            .and_then(|p| p.get("server-port").and_then(|v| v.parse().ok())).or(Some(25565));
+        if let Some(code) = inspection::stopped_evidence(&private.source, source_port) { return Err(Outcome::Blocked(code)); }
         let port = review
             .resources
             .game_port

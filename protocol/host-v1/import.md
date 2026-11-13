@@ -93,3 +93,13 @@ Commit rewrites only the managed copy: `eula.txt` from the owner's acceptance, `
 Start creates the server's in-process worker on first use and routes it immediately, so `/v1/servers/{serverId}/manage/...` (console, files, players, lifecycle, status) works without restarting the host. A start that has not spawned within 30 s and is observed stopped returns the job to `ready` with `start_failed` (or `game_port_in_use` when the port is then busy); readiness `Degraded` by startup timeout or fatal output also ends in `start_failed`. The host copies each worker's observed state into the registry (on `GET /v1/host/servers` and every 2 s): `starting`, `online`, `stopped`, `failed`; this changes the revision but not the authorization generation. After a host restart every registered server with a managed `<servers>/<serverId>/host.toml` gets its worker back automatically; a job that was `planning`, `applying` or `starting` becomes `interrupted`.
 
 Remaining deferred items: destination ownership freeze (H11), a separate revocation barrier for import jobs (H07), and process correlation on non-Linux hosts (reported `unknown`, so a Windows host blocks with `source_state_unknown`).
+
+
+Import stopped-state codes and suggested text:
+- `source_process_unknown` is a warning requiring the existing explicit source-stopped confirmation and warning acknowledgement at apply: "Vesta cannot inspect a possible Java server process. Confirm that you stopped the source server."
+- `source_running` remains a blocker for a process positively correlated with the source.
+- `source_port_listening` blocks independently of the destination port: "Something is listening on the source game port. Stop the server, then check again."
+- `source_recently_active` blocks: "The world is locked or world/log files changed within the last 60 seconds. Stop the server, wait a minute, then check again."
+- `world_outside_source`: "Choose a folder containing the world and use a relative level-name inside that folder."
+- `bind_address_cleared` warns: "The imported server will bind to all interfaces; Vesta clears server-ip in the copy."
+- `launch_arguments_unsupported`: "The launch arguments contain unsupported options or paths. Use a self-contained server folder with supported Forge arguments, then check again."
