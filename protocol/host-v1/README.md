@@ -72,7 +72,7 @@ Endpoint host is IP literal without brackets or DNS hostname, no scheme/path/use
 
 ## mDNS
 
-DNS-SD `_vesta._tcp.local.` instance `Vesta-<hostId>`, SRV target machine `.local` hostname, SRV port actual management port, A/AAAA only selected LAN interfaces. TXT keys: `v=1`, `id=<hostId>`, `fp=<fingerprint>`, `name=<display name>`, `state=unclaimed|claimed`, `tls=1`. Name <=63 UTF-8 bytes; each TXT string <=255 bytes, total <=900 bytes. No codes, account ids, paths, server lists or pack metadata. TTL 120s; announce changes and goodbye on shutdown. State advertised LAN only. Ignore TXT for trust; re-resolve after DHCP and confirm host identity over pinned TLS or PAKE. Disable advertising with LocalOnly; manual IP works if multicast is unavailable.
+DNS-SD `_vesta._tcp.local.` instance `Vesta-<hostId>`, SRV target machine `.local` hostname, SRV port actual management port, A/AAAA only selected LAN interfaces. TXT keys: `v=1`, `id=<hostId>`, `fp=<fingerprint>`, `name=<display name>`, `state=unclaimed|claimed`, `tls=1`. Name <=63 UTF-8 bytes; each TXT string <=255 bytes, total <=900 bytes. No codes, account ids, paths, server lists or pack metadata. TTL uses the stock advertiser defaults (record-dependent; currently 120s for host/SRV records and 4500s for PTR/TXT); announce changes and goodbye on shutdown. State advertised LAN only. Ignore TXT for trust; re-resolve after DHCP and confirm host identity over pinned TLS or PAKE. Disable advertising with LocalOnly; manual IP works if multicast is unavailable.
 
 ## Conformance gate
 

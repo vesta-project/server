@@ -64,5 +64,4 @@ unsafe_code = "deny"
 [workspace.lints.clippy]
 all = "warn"
 
-[patch.crates-io]
-mdns-sd = { path = "vendor/mdns-sd" }
+
