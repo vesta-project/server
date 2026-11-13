@@ -3,16 +3,16 @@
 //! routing belongs to H08. `jobs` plans and copies through `CopiedExport`. Nothing
 //! here executes, writes, locks or reads credentials from a source folder.
 pub mod amp;
+mod arguments;
 pub mod browse;
 pub mod inspection;
 pub mod jobs;
 mod properties;
-mod arguments;
 
 pub use amp::{CandidateScan, CandidatesResponse, ImportCandidate, ImportWarning, Remediation};
 pub use browse::{
-    CheckResponse, FolderBrowser, FolderEntry, FolderTokenResponse, ImportRootConfig, ListRequest, ListResponse,
-    OwnerBinding, ResolveRequest, RootInfo, RootsResponse,
+    CheckResponse, FolderBrowser, FolderEntry, FolderTokenResponse, ImportRootConfig, ListRequest,
+    ListResponse, OwnerBinding, ResolveRequest, RootInfo, RootsResponse,
 };
 pub use inspection::{InspectRequest, InspectionReport, Loader};
 

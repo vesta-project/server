@@ -134,7 +134,6 @@ fn launch_spec_uses_only_detected_facts() {
     let rewritten = commit::rewrite_properties("enable-rcon true\nserver-port 1\nmotd=x", 25570);
     assert!(rewritten.contains("enable-rcon=false\n"));
     assert!(rewritten.contains("server-port=25570\n"));
-
 }
 
 #[test]

@@ -188,7 +188,12 @@ mod tests {
     fn linux_host_update_never_enters_legacy_consumer_health() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join("host")).unwrap();
-        let error = crate::updates::run(&["activate".into(), "--root".into(), root.path().display().to_string()]).unwrap_err();
+        let error = crate::updates::run(&[
+            "activate".into(),
+            "--root".into(),
+            root.path().display().to_string(),
+        ])
+        .unwrap_err();
         assert!(error.contains("Host-mode signed update trials"));
     }
     #[test]

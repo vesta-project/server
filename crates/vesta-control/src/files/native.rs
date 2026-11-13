@@ -509,60 +509,105 @@ pub(super) fn remove_private_stage(path: &Path) -> Result<()> {
 #[cfg(unix)]
 #[allow(unsafe_code)]
 pub(crate) fn import_open(path: &Path, directory: bool) -> Result<File> {
- use std::os::{fd::{AsRawFd, FromRawFd},unix::ffi::OsStrExt};
- let mut held=File::open("/").map_err(io_error)?;
- let components:Vec<_>=path.components().collect();
- for (i,part) in components.iter().enumerate() {
-  let std::path::Component::Normal(name)=part else {
-   if matches!(part,std::path::Component::RootDir){continue;}return Err(FileError::InvalidPath);
-  };
-  let name=std::ffi::CString::new(name.as_bytes()).map_err(|_|FileError::InvalidPath)?;
-  let is_dir=directory || i+1<components.len();
-  // SAFETY: owned parent descriptor and stable NUL-terminated component.
-  #[cfg(target_os="linux")] let access=if is_dir {libc::O_PATH|libc::O_DIRECTORY}else{libc::O_RDONLY};
-  #[cfg(not(target_os="linux"))] let access=libc::O_RDONLY|if is_dir{libc::O_DIRECTORY}else{0};
-  let fd=unsafe {libc::openat(held.as_raw_fd(),name.as_ptr(),access|libc::O_NOFOLLOW|libc::O_CLOEXEC|libc::O_NONBLOCK)};
-  if fd<0{return Err(io_error(std::io::Error::last_os_error()));}
-  // SAFETY: fresh successful descriptor transferred exactly once.
-  held=unsafe {File::from_raw_fd(fd)};
- }
- let m=held.metadata().map_err(io_error)?;
- if directory && !m.is_dir() {return Err(FileError::NotDirectory);}
- if !directory && !m.is_file(){return Err(FileError::NotRegular);}
- Ok(held)
+    use std::os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::ffi::OsStrExt,
+    };
+    let mut held = File::open("/").map_err(io_error)?;
+    let components: Vec<_> = path.components().collect();
+    for (i, part) in components.iter().enumerate() {
+        let std::path::Component::Normal(name) = part else {
+            if matches!(part, std::path::Component::RootDir) {
+                continue;
+            }
+            return Err(FileError::InvalidPath);
+        };
+        let name = std::ffi::CString::new(name.as_bytes()).map_err(|_| FileError::InvalidPath)?;
+        let is_dir = directory || i + 1 < components.len();
+        // SAFETY: owned parent descriptor and stable NUL-terminated component.
+        #[cfg(target_os = "linux")]
+        let access = if is_dir {
+            libc::O_PATH | libc::O_DIRECTORY
+        } else {
+            libc::O_RDONLY
+        };
+        #[cfg(not(target_os = "linux"))]
+        let access = libc::O_RDONLY | if is_dir { libc::O_DIRECTORY } else { 0 };
+        let fd = unsafe {
+            libc::openat(
+                held.as_raw_fd(),
+                name.as_ptr(),
+                access | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+            )
+        };
+        if fd < 0 {
+            return Err(io_error(std::io::Error::last_os_error()));
+        }
+        // SAFETY: fresh successful descriptor transferred exactly once.
+        held = unsafe { File::from_raw_fd(fd) };
+    }
+    let m = held.metadata().map_err(io_error)?;
+    if directory && !m.is_dir() {
+        return Err(FileError::NotDirectory);
+    }
+    if !directory && !m.is_file() {
+        return Err(FileError::NotRegular);
+    }
+    Ok(held)
 }
 #[cfg(windows)]
 pub(crate) fn import_open(path: &Path, directory: bool) -> Result<File> {
- use std::os::windows::fs::OpenOptionsExt;
- use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS,FILE_FLAG_OPEN_REPARSE_POINT,FILE_SHARE_READ,FILE_SHARE_WRITE};
- let mut ancestors=Vec::new();let mut current=PathBuf::new();
- let components:Vec<_>=path.components().collect();
- for (i,part) in components.iter().enumerate(){
-  current.push(part.as_os_str());
-  if matches!(part,std::path::Component::Prefix(_)){continue;}
-  let file=OpenOptions::new().read(true).share_mode(FILE_SHARE_READ|FILE_SHARE_WRITE)
-   .custom_flags(FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT).open(&current).map_err(io_error)?;
-  let m=file.metadata().map_err(io_error)?;
-  use std::os::windows::fs::MetadataExt;
-  if m.file_attributes() & 0x400 != 0{return Err(FileError::LinkedPath);}
-  if i+1==components.len(){
-   if directory && !m.is_dir(){return Err(FileError::NotDirectory);}
-   if !directory && !m.is_file(){return Err(FileError::NotRegular);}
-   return Ok(file);
-  }
-  ancestors.push(file);
- }
- Err(FileError::InvalidPath)
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    let mut ancestors = Vec::new();
+    let mut current = PathBuf::new();
+    let components: Vec<_> = path.components().collect();
+    for (i, part) in components.iter().enumerate() {
+        current.push(part.as_os_str());
+        if matches!(part, std::path::Component::Prefix(_)) {
+            continue;
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(&current)
+            .map_err(io_error)?;
+        let m = file.metadata().map_err(io_error)?;
+        use std::os::windows::fs::MetadataExt;
+        if m.file_attributes() & 0x400 != 0 {
+            return Err(FileError::LinkedPath);
+        }
+        if i + 1 == components.len() {
+            if directory && !m.is_dir() {
+                return Err(FileError::NotDirectory);
+            }
+            if !directory && !m.is_file() {
+                return Err(FileError::NotRegular);
+            }
+            return Ok(file);
+        }
+        ancestors.push(file);
+    }
+    Err(FileError::InvalidPath)
 }
 
 #[cfg(unix)]
 #[allow(unsafe_code)]
 pub(crate) fn import_locked(file: &File) -> bool {
- use std::os::fd::AsRawFd;
- // Java FileChannel locks use POSIX record locks rather than flock.
- let mut lock:libc::flock=unsafe {std::mem::zeroed()};
- lock.l_type=libc::F_WRLCK as _;lock.l_whence=libc::SEEK_SET as _;
- unsafe {libc::fcntl(file.as_raw_fd(),libc::F_GETLK,&mut lock)<0 || lock.l_type!=libc::F_UNLCK as libc::c_short}
+    use std::os::fd::AsRawFd;
+    // Java FileChannel locks use POSIX record locks rather than flock.
+    let mut lock: libc::flock = unsafe { std::mem::zeroed() };
+    lock.l_type = libc::F_WRLCK as _;
+    lock.l_whence = libc::SEEK_SET as _;
+    unsafe {
+        libc::fcntl(file.as_raw_fd(), libc::F_GETLK, &mut lock) < 0
+            || lock.l_type != libc::F_UNLCK as libc::c_short
+    }
 }
 #[cfg(not(unix))]
-pub(crate) fn import_locked(file: &File) -> bool {fs2::FileExt::try_lock_exclusive(file).is_err()}
+pub(crate) fn import_locked(file: &File) -> bool {
+    fs2::FileExt::try_lock_exclusive(file).is_err()
+}

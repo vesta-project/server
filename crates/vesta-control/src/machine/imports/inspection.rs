@@ -160,7 +160,9 @@ pub fn inspect(
     if processes.iter().any(|p| p.relation == "amp_controller") {
         warnings.insert("amp_controller_running");
     }
-    if let Some(code) = stopped_evidence(&opened.path, report.server.game_port) { blockers.insert(code); }
+    if let Some(code) = stopped_evidence(&opened.path, report.server.game_port) {
+        blockers.insert(code);
+    }
     let source_pids: BTreeSet<u32> = processes
         .iter()
         .filter(|p| p.relation == "source")
@@ -288,10 +290,17 @@ pub(crate) fn inspect_path(
     if listing.files.contains("server.properties") {
         match read_properties(&path.join("server.properties")) {
             Ok(properties) => {
- report.server = ports_from(&properties);
- if properties.get("server-ip").is_some_and(|v| !v.is_empty()) {warnings.insert("bind_address_cleared");}
- if properties.get("level-name").is_some_and(|v| !super::properties::safe_world(v)) {blockers.insert("world_outside_source");}
- },
+                report.server = ports_from(&properties);
+                if properties.get("server-ip").is_some_and(|v| !v.is_empty()) {
+                    warnings.insert("bind_address_cleared");
+                }
+                if properties
+                    .get("level-name")
+                    .is_some_and(|v| !super::properties::safe_world(v))
+                {
+                    blockers.insert("world_outside_source");
+                }
+            }
             Err(ImportError::Unreadable) => {
                 blockers.insert("source_unreadable");
             }
@@ -668,20 +677,39 @@ pub(crate) fn read_properties(path: &Path) -> Result<BTreeMap<String, String>, I
     {
         return Err(ImportError::LinkedPath);
     }
-    let file = crate::files::native::import_open(path, false).map_err(|_| ImportError::LinkedPath)?;
+    let file =
+        crate::files::native::import_open(path, false).map_err(|_| ImportError::LinkedPath)?;
     let opened = file.metadata().map_err(read_error)?;
-    #[cfg(unix)] {
+    #[cfg(unix)]
+    {
         use std::os::unix::fs::MetadataExt;
-        if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() { return Err(ImportError::Changed); }
+        if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
+            return Err(ImportError::Changed);
+        }
     }
-    if opened.len() > MAX_PROPERTIES_BYTES { return Err(ImportError::TooManyEntries); }
+    if opened.len() > MAX_PROPERTIES_BYTES {
+        return Err(ImportError::TooManyEntries);
+    }
     let mut bytes = Vec::new();
     file.take(MAX_PROPERTIES_BYTES)
         .read_to_end(&mut bytes)
         .map_err(read_error)?;
     let text = String::from_utf8_lossy(&bytes);
-    let out = super::properties::parse(&text).into_iter().filter(|(key,_)| matches!(key.as_str(),
-        "server-port" | "server-ip" | "query.port" | "enable-query" | "rcon.port" | "enable-rcon" | "level-name")).collect();
+    let out = super::properties::parse(&text)
+        .into_iter()
+        .filter(|(key, _)| {
+            matches!(
+                key.as_str(),
+                "server-port"
+                    | "server-ip"
+                    | "query.port"
+                    | "enable-query"
+                    | "rcon.port"
+                    | "enable-rcon"
+                    | "level-name"
+            )
+        })
+        .collect();
     Ok(out)
 }
 fn ports_from(properties: &BTreeMap<String, String>) -> ServerPorts {
@@ -1023,48 +1051,94 @@ mod linux {
 
 /// Independent, unprivileged source-port probe, even when importing to another port.
 pub(crate) fn stopped_evidence(source: &Path, port: Option<u16>) -> Option<&'static str> {
-    if port.is_some_and(|port| ["127.0.0.1", "::1"].iter().any(|ip| {
-        let address = format!("{}:{port}", if *ip == "::1" { "[::1]" } else { ip });
-        address.parse().ok().is_some_and(|a| std::net::TcpStream::connect_timeout(&a, std::time::Duration::from_millis(100)).is_ok())
-    })) { return Some("source_port_listening"); }
-    let world = read_properties(&source.join("server.properties")).ok().and_then(|p| p.get("level-name").cloned()).unwrap_or_else(|| "world".into());
-    if !super::properties::safe_world(&world) { return Some("world_outside_source"); }
+    if port.is_some_and(|port| {
+        ["127.0.0.1", "::1"].iter().any(|ip| {
+            let address = format!("{}:{port}", if *ip == "::1" { "[::1]" } else { ip });
+            address.parse().ok().is_some_and(|a| {
+                std::net::TcpStream::connect_timeout(&a, std::time::Duration::from_millis(100))
+                    .is_ok()
+            })
+        })
+    }) {
+        return Some("source_port_listening");
+    }
+    let world = read_properties(&source.join("server.properties"))
+        .ok()
+        .and_then(|p| p.get("level-name").cloned())
+        .unwrap_or_else(|| "world".into());
+    if !super::properties::safe_world(&world) {
+        return Some("world_outside_source");
+    }
     let world = source.join(world);
     if let Ok(file) = crate::files::native::import_open(&world.join("session.lock"), false) {
-        if crate::files::native::import_locked(&file) { return Some("source_recently_active"); }
+        if crate::files::native::import_locked(&file) {
+            return Some("source_recently_active");
+        }
     }
-    for dir in [source.join("logs"), world.join("region"), world.join("DIM-1/region"), world.join("DIM1/region")] {
+    for dir in [
+        source.join("logs"),
+        world.join("region"),
+        world.join("DIM-1/region"),
+        world.join("DIM1/region"),
+    ] {
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.take(4096).flatten() {
-                if fs::symlink_metadata(entry.path()).ok().filter(|m|m.is_file() && !m.file_type().is_symlink()).and_then(|m|m.modified().ok())
-                    .is_some_and(|t| t.elapsed().unwrap_or_default() < std::time::Duration::from_secs(60)) { return Some("source_recently_active"); }
+                if fs::symlink_metadata(entry.path())
+                    .ok()
+                    .filter(|m| m.is_file() && !m.file_type().is_symlink())
+                    .and_then(|m| m.modified().ok())
+                    .is_some_and(|t| {
+                        t.elapsed().unwrap_or_default() < std::time::Duration::from_secs(60)
+                    })
+                {
+                    return Some("source_recently_active");
+                }
             }
         }
     }
     None
 }
-#[cfg(test)] mod stopped_tests {
+#[cfg(test)]
+mod stopped_tests {
     use super::*;
-    #[test] fn listening_clears_after_stop() {
-        let dir=tempfile::tempdir().unwrap();
-        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap(); let port=listener.local_addr().unwrap().port();
-        assert_eq!(stopped_evidence(dir.path(),Some(port)),Some("source_port_listening"));
-        drop(listener); assert_eq!(stopped_evidence(dir.path(),Some(port)),None);
-        fs::create_dir_all(dir.path().join("world/region")).unwrap();fs::write(dir.path().join("world/region/r.0.0.mca"),b"world").unwrap();
-        assert_eq!(stopped_evidence(dir.path(),None),Some("source_recently_active"));
+    #[test]
+    fn listening_clears_after_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert_eq!(
+            stopped_evidence(dir.path(), Some(port)),
+            Some("source_port_listening")
+        );
+        drop(listener);
+        assert_eq!(stopped_evidence(dir.path(), Some(port)), None);
+        fs::create_dir_all(dir.path().join("world/region")).unwrap();
+        fs::write(dir.path().join("world/region/r.0.0.mca"), b"world").unwrap();
+        assert_eq!(
+            stopped_evidence(dir.path(), None),
+            Some("source_recently_active")
+        );
     }
 }
 
-#[cfg(all(test,unix))] mod swap_tests {
- use super::*;
- #[test] fn properties_swap_to_link_is_refused() {
-  let t=tempfile::tempdir().unwrap();let source=t.path().join("source");fs::create_dir(&source).unwrap();
-  fs::write(source.join("server.properties"),"server-port=25565").unwrap();
-  let held=crate::files::native::import_open(&source.join("server.properties"),false).unwrap();
-  fs::rename(source.join("server.properties"),source.join("old")).unwrap();
-  fs::write(t.path().join("outside"),"server-port=1").unwrap();
-  std::os::unix::fs::symlink(t.path().join("outside"),source.join("server.properties")).unwrap();
-  assert!(read_properties(&source.join("server.properties")).is_err());
-  let mut text=String::new();held.take(1024).read_to_string(&mut text).unwrap();assert_eq!(text,"server-port=25565");
- }
+#[cfg(all(test, unix))]
+mod swap_tests {
+    use super::*;
+    #[test]
+    fn properties_swap_to_link_is_refused() {
+        let t = tempfile::tempdir().unwrap();
+        let source = t.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("server.properties"), "server-port=25565").unwrap();
+        let held =
+            crate::files::native::import_open(&source.join("server.properties"), false).unwrap();
+        fs::rename(source.join("server.properties"), source.join("old")).unwrap();
+        fs::write(t.path().join("outside"), "server-port=1").unwrap();
+        std::os::unix::fs::symlink(t.path().join("outside"), source.join("server.properties"))
+            .unwrap();
+        assert!(read_properties(&source.join("server.properties")).is_err());
+        let mut text = String::new();
+        held.take(1024).read_to_string(&mut text).unwrap();
+        assert_eq!(text, "server-port=25565");
+    }
 }

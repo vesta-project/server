@@ -11,10 +11,18 @@ fn run() -> Result<(), String> {
             return vesta_setup::linux_acl::run(&args[1..]);
         }
         if args.first().is_some_and(|s| s == "linux-identity") {
-            return vesta_setup::linux_install::identity(std::path::Path::new(args.get(1).ok_or("Missing root")?));
+            return vesta_setup::linux_install::identity(std::path::Path::new(
+                args.get(1).ok_or("Missing root")?,
+            ));
         }
-        if args.is_empty() || args.first().is_some_and(|s| s == "install" || s.starts_with("--") && s != "--help" && s != "--version") {
-            return vesta_setup::linux_install::run(&args[usize::from(args.first().is_some_and(|s| s == "install"))..]);
+        if args.is_empty()
+            || args.first().is_some_and(|s| {
+                s == "install" || s.starts_with("--") && s != "--help" && s != "--version"
+            })
+        {
+            return vesta_setup::linux_install::run(
+                &args[usize::from(args.first().is_some_and(|s| s == "install"))..],
+            );
         }
     }
     if args.is_empty() || args.first().is_some_and(|a| a == "install") {

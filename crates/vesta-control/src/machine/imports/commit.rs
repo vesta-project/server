@@ -47,7 +47,11 @@ pub(crate) fn trusted_launch(
     let text = path.to_str().ok_or(JobError::INVALID)?.to_owned();
     let args = match launch.kind.as_str() {
         "jar" => vec!["-jar".into(), text, "nogui".into()],
-        "java_argfile" => { let mut args = super::super::arguments::parse(game, &path).map_err(JobError)?; args.push("nogui".into()); args },
+        "java_argfile" => {
+            let mut args = super::super::arguments::parse(game, &path).map_err(JobError)?;
+            args.push("nogui".into());
+            args
+        }
         _ => return Err(JobError("launch_unresolved")),
     };
     Ok((
@@ -366,14 +370,20 @@ impl ImportJobs {
         }
         if state == "ready" {
             let port = review.resources.game_port.ok_or(JobError::BLOCKED)?;
-            let (processes, _observed) = self.0.env.processes(std::slice::from_ref(&private.source));
+            let (processes, _observed) =
+                self.0.env.processes(std::slice::from_ref(&private.source));
             let conflict = if processes
                 .iter()
                 .any(|p| p.relation == "source" && p.state == "running")
             {
                 Some("source_running")
-            } else if let Some(code) = inspection::stopped_evidence(&private.source,
-                inspection::read_properties(&private.source.join("server.properties")).ok().and_then(|p| p.get("server-port").and_then(|v| v.parse().ok())).or(Some(25565))) {
+            } else if let Some(code) = inspection::stopped_evidence(
+                &private.source,
+                inspection::read_properties(&private.source.join("server.properties"))
+                    .ok()
+                    .and_then(|p| p.get("server-port").and_then(|v| v.parse().ok()))
+                    .or(Some(25565)),
+            ) {
                 Some(code)
             } else {
                 match self.0.env.port_state(port) {

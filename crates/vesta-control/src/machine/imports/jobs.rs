@@ -594,7 +594,9 @@ impl ImportJobs {
         }
 
         if let Some(launch) = &detected.launch {
-            if launch.kind == "java_argfile" && super::arguments::parse(&source, &source.join(&launch.relative_path)).is_err() {
+            if launch.kind == "java_argfile"
+                && super::arguments::parse(&source, &source.join(&launch.relative_path)).is_err()
+            {
                 blockers.insert("launch_arguments_unsupported");
             }
         }
@@ -611,7 +613,9 @@ impl ImportJobs {
             warnings.insert("amp_controller_running");
         }
 
-        if let Some(code) = inspection::stopped_evidence(&source, report.server.game_port) { blockers.insert(code); }
+        if let Some(code) = inspection::stopped_evidence(&source, report.server.game_port) {
+            blockers.insert(code);
+        }
         let reservations = self.read(|c| reservations_in(c, None))?;
         let env = self.0.env.clone();
         let port =
@@ -653,9 +657,7 @@ impl ImportJobs {
             match CopiedExport::open(&source, &[&self.0.servers]).and_then(|export| {
                 export
                     .with_limits(CopyLimits::IMPORT)
-                    .snapshot_observed(|p| {
-                        self.report_hashing(job_id, p, files_total, bytes_total)
-                    })
+                    .snapshot_observed(|p| self.report_hashing(job_id, p, files_total, bytes_total))
             }) {
                 Ok(taken) => snapshot = Some(taken),
                 Err(error) => {
@@ -1081,9 +1083,13 @@ impl ImportJobs {
             return Err(Outcome::Blocked("source_running"));
         }
         let _ = state; // Owner explicitly confirmed stopped-ness at apply.
-        let source_port = inspection::read_properties(&private.source.join("server.properties")).ok()
-            .and_then(|p| p.get("server-port").and_then(|v| v.parse().ok())).or(Some(25565));
-        if let Some(code) = inspection::stopped_evidence(&private.source, source_port) { return Err(Outcome::Blocked(code)); }
+        let source_port = inspection::read_properties(&private.source.join("server.properties"))
+            .ok()
+            .and_then(|p| p.get("server-port").and_then(|v| v.parse().ok()))
+            .or(Some(25565));
+        if let Some(code) = inspection::stopped_evidence(&private.source, source_port) {
+            return Err(Outcome::Blocked(code));
+        }
         let port = review
             .resources
             .game_port

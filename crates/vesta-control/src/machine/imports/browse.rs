@@ -619,7 +619,11 @@ impl FolderBrowser {
                 return Err(ImportError::LinkedPath);
             }
             let handle = native::import_open(&child, true).map_err(file_error)?;
-            if native::file_identity(&handle).map_err(file_error)? != native::directory_identity(&actual).map_err(file_error)? { return Err(ImportError::Changed); }
+            if native::file_identity(&handle).map_err(file_error)?
+                != native::directory_identity(&actual).map_err(file_error)?
+            {
+                return Err(ImportError::Changed);
+            }
             pinned.push(handle);
             path = actual;
         }
@@ -734,7 +738,9 @@ pub(crate) fn system_tree(path: &Path) -> bool {
             first.starts_with('$') || SYSTEM_TREES.iter().any(|t| first.eq_ignore_ascii_case(t))
         });
     }
-    SYSTEM_TREES.iter().any(|tree| within(path, Path::new(tree)))
+    SYSTEM_TREES
+        .iter()
+        .any(|tree| within(path, Path::new(tree)))
 }
 
 /// Names-only probe of a directory: `None` when it cannot be read.
