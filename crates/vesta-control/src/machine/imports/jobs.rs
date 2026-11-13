@@ -18,7 +18,7 @@ use super::{
 use crate::{
     files::{
         self, FileError, RelativePath,
-        copied_export::{CopiedExport, CopyProgress, CopySnapshot},
+        copied_export::{CopiedExport, CopyLimits, CopyProgress, CopySnapshot},
         native,
     },
     java::HostJavaPlan,
@@ -182,6 +182,7 @@ pub struct PlanRequest {
     pub folder_token: String,
     pub name: String,
     pub game_port: Option<u16>,
+    #[serde(rename = "memoryMiB", alias = "memoryMib")]
     pub memory_mib: Option<u64>,
     pub launch_choice: Option<LaunchChoice>,
     pub minecraft_version: Option<String>,
@@ -290,6 +291,7 @@ pub struct ReviewDestination {
 #[serde(rename_all = "camelCase")]
 pub struct ReviewResources {
     pub game_port: Option<u16>,
+    #[serde(rename = "memoryMiB", alias = "memoryMib")]
     pub memory_mib: Option<u64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -498,7 +500,7 @@ impl ImportJobs {
             }
         })?;
         let request: PlanRequest = serde_json::from_str(&raw).map_err(|_| JobError::UNAVAILABLE)?;
-        match self.compute_plan(binding, &request) {
+        match self.compute_plan(binding, job_id, &request) {
             Ok((review, private)) => {
                 let state = if review.blockers.is_empty() {
                     "review"
@@ -537,6 +539,7 @@ impl ImportJobs {
     fn compute_plan(
         &self,
         binding: &OwnerBinding,
+        job_id: &str,
         request: &PlanRequest,
     ) -> JobResult<(Review, Private)> {
         let opened = self.0.browser.open(binding, &request.folder_token)?;
@@ -544,6 +547,11 @@ impl ImportJobs {
         let mut blockers = BTreeSet::new();
         let mut warnings = BTreeSet::new();
         let report = inspection::inspect_path(&source, &mut blockers, &mut warnings);
+        // Vanilla binds RCON to `server-ip` (the game address); there is no
+        // separate loopback bind, so the copy disables it and says so.
+        if report.server.rcon_port.is_some() {
+            warnings.insert("rcon_disabled");
+        }
         let mut detected = ReviewDetected {
             kind: report.detected.kind.into(),
             instance_name: report.detected.instance_name.clone(),
@@ -630,9 +638,14 @@ impl ImportJobs {
         // a live or unreadable source's inventory would be discarded anyway.
         let mut snapshot = None;
         if blockers.is_empty() {
-            match CopiedExport::open(&source, &[&self.0.servers])
-                .and_then(|export| export.snapshot())
-            {
+            let (files_total, bytes_total) = (report.size.files, report.size.bytes);
+            match CopiedExport::open(&source, &[&self.0.servers]).and_then(|export| {
+                export
+                    .with_limits(CopyLimits::IMPORT)
+                    .snapshot_observed(|p| {
+                        self.report_hashing(job_id, p, files_total, bytes_total)
+                    })
+            }) {
                 Ok(taken) => snapshot = Some(taken),
                 Err(error) => {
                     blockers.insert(snapshot_blocker(&error));
@@ -1070,9 +1083,11 @@ impl ImportJobs {
         self.set_phase(job_id, "applying", "snapshot")
             .map_err(Outcome::from)?;
         let export = CopiedExport::open(&private.source, &[&self.0.servers])
-            .map_err(|e| Outcome::Blocked(snapshot_blocker(&e)))?;
+            .map_err(|e| Outcome::Blocked(snapshot_blocker(&e)))?
+            .with_limits(CopyLimits::IMPORT);
+        let reviewed_files = reviewed.entries.iter().filter(|e| !e.directory).count() as u64;
         let current = export
-            .snapshot()
+            .snapshot_observed(|p| self.report_hashing(job_id, p, reviewed_files, reviewed.bytes))
             .map_err(|e| Outcome::Blocked(snapshot_blocker(&e)))?;
         if current.sha256 != reviewed.sha256 {
             return Err(Outcome::Blocked("source_changed"));
@@ -1145,6 +1160,18 @@ impl ImportJobs {
                 None,
             ) => Err(Outcome::SourceChangedDuringCopy),
             (Err(_), None) => Err(Outcome::Interrupted("copy_failed")),
+        }
+    }
+
+    /// Throttled progress while hashing the source (files and bytes read).
+    fn report_hashing(&self, job_id: &str, progress: CopyProgress, files: u64, bytes: u64) {
+        if progress.files.is_multiple_of(PROGRESS_EVERY) {
+            let _ = self.progress(
+                job_id,
+                progress,
+                files.max(progress.files),
+                bytes.max(progress.bytes),
+            );
         }
     }
 

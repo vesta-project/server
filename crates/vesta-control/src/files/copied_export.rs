@@ -14,6 +14,34 @@ use std::{
 #[derive(Clone)]
 pub(crate) struct CopiedExport {
     root: Root,
+    limits: CopyLimits,
+}
+/// Inventory bounds. The default keeps the pack catalogue bounds used by
+/// onboarding; host-scope imports use [`CopyLimits::IMPORT`], where the real
+/// bound is the destination free-space preflight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CopyLimits {
+    /// Files plus directories.
+    pub entries: usize,
+    pub file_bytes: u64,
+    pub total_bytes: u64,
+}
+impl Default for CopyLimits {
+    fn default() -> Self {
+        Self {
+            entries: super::MAX_DIRECTORY_ENTRIES,
+            file_bytes: super::mutation::MAX_INTENT_STAGED_BYTES,
+            total_bytes: vesta_protocol::pack::catalogue::MAX_TOTAL_SIZE,
+        }
+    }
+}
+impl CopyLimits {
+    /// Large modded servers: 2 million entries, 16 GiB per file, 16 TiB total.
+    pub const IMPORT: Self = Self {
+        entries: 2_000_000,
+        file_bytes: 16 * 1024 * 1024 * 1024,
+        total_bytes: 16 * 1024 * 1024 * 1024 * 1024,
+    };
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,7 +72,12 @@ impl CopiedExport {
     pub(crate) fn open(source: &Path, excluded: &[&Path]) -> Result<Self> {
         Ok(Self {
             root: Root::open(source, excluded)?,
+            limits: CopyLimits::default(),
         })
+    }
+    pub(crate) fn with_limits(mut self, limits: CopyLimits) -> Self {
+        self.limits = limits;
+        self
     }
     fn file(&self, entry: &CopyEntry) -> Result<File> {
         let relative = RelativePath::parse(&entry.path)?;
@@ -65,6 +98,14 @@ impl CopiedExport {
         Ok(file)
     }
     pub(crate) fn snapshot(&self) -> Result<CopySnapshot> {
+        self.snapshot_observed(|_| {})
+    }
+    /// Snapshot with running totals reported after every hashed file.
+    pub(crate) fn snapshot_observed(
+        &self,
+        mut observe: impl FnMut(CopyProgress),
+    ) -> Result<CopySnapshot> {
+        let mut progress = CopyProgress::default();
         let mut entries = Vec::new();
         let mut queue = vec![String::new()];
         let mut bytes = 0u64;
@@ -76,7 +117,7 @@ impl CopiedExport {
             };
             let checked = self.root.resolve(relative.as_ref())?;
             for item in fs::read_dir(&checked.path).map_err(io_error)? {
-                if entries.len() >= super::MAX_DIRECTORY_ENTRIES {
+                if entries.len() >= self.limits.entries {
                     return Err(FileError::TooLarge);
                 }
                 let item = item.map_err(io_error)?;
@@ -122,16 +163,19 @@ impl CopiedExport {
                         sha256: String::new(),
                         identity: String::new(),
                     };
-                    if entry.size > super::mutation::MAX_INTENT_STAGED_BYTES {
+                    if entry.size > self.limits.file_bytes {
                         return Err(FileError::TooLarge);
                     }
                     bytes = bytes.checked_add(entry.size).ok_or(FileError::TooLarge)?;
-                    if bytes > vesta_protocol::pack::catalogue::MAX_TOTAL_SIZE {
+                    if bytes > self.limits.total_bytes {
                         return Err(FileError::TooLarge);
                     }
                     let mut file = self.file(&entry)?;
                     entry.identity = native::file_identity(&file)?;
                     entry.sha256 = digest(&mut file, entry.size)?;
+                    progress.files += 1;
+                    progress.bytes += entry.size;
+                    observe(progress);
                     entries.push(entry);
                 } else {
                     return Err(FileError::NotRegular);
@@ -201,6 +245,7 @@ impl CopiedExport {
         }
         let copied = Self {
             root: destination.root.clone(),
+            limits: self.limits,
         }
         .snapshot()?;
         if !copied.same_content(snapshot) {
@@ -304,7 +349,9 @@ impl CopiedExport {
         if self.snapshot()?.sha256 != snapshot.sha256 {
             return Err(FileError::Corrupt);
         }
-        let copied = Self::open(&target, &[])?.snapshot()?;
+        let copied = Self::open(&target, &[])?
+            .with_limits(self.limits)
+            .snapshot()?;
         if !copied.same_content(snapshot) {
             return Err(FileError::Corrupt);
         }

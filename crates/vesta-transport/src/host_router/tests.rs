@@ -346,7 +346,7 @@ fn host_end_to_end_claim_sessions_and_registry_mapping() {
     assert_eq!(
         wire.request("POST", "/v1/host/imports/plan", json!({}), Some(&owner))
             .0,
-        501
+        503 // this router has no import service configured
     );
     drop(wire);
     let mut wire = Wire::connect(transport.local_addr());
@@ -490,3 +490,6 @@ fn host_end_to_end_claim_sessions_and_registry_mapping() {
         vesta_control::worker::WorkerShutdown::Complete
     ));
 }
+
+#[path = "import_tests.rs"]
+mod imports;

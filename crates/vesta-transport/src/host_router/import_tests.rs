@@ -1,0 +1,650 @@
+//! Import jobs through the host router: owner-only plan/apply/status/cancel
+//! with a tiny fake fixture, and one ignored real end-to-end import.
+use super::*;
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
+use vesta_control::{
+    java::HostJavaPlan,
+    machine::imports::{
+        ImportRootConfig,
+        inspection::ProcessEvidence,
+        jobs::{HostEnvironment, ImportEnvironment, ReviewRuntime},
+    },
+};
+
+const GIB: u64 = 1024 * 1024 * 1024;
+
+/// Deterministic observations: source stopped, ports free, plenty of disk.
+#[derive(Default)]
+struct FakeEnv {
+    /// Milliseconds to pause before each copied entry (slow copy for cancel).
+    delay_ms: AtomicU64,
+    java: PathBuf,
+}
+impl ImportEnvironment for FakeEnv {
+    fn processes(&self, _: &[PathBuf]) -> (Vec<ProcessEvidence>, &'static str) {
+        (Vec::new(), "complete")
+    }
+    fn port_state(&self, _: u16) -> &'static str {
+        "free"
+    }
+    fn free_bytes(&self, _: &Path) -> Option<u64> {
+        Some(100 * GIB)
+    }
+    fn memory_total_bytes(&self) -> Option<u64> {
+        Some(16 * GIB)
+    }
+    fn plan_java(&self, version: Option<&str>, _: &[PathBuf]) -> HostJavaPlan {
+        vesta_control::java::plan_from(&[], version)
+    }
+    fn ensure_java(&self, _: &ReviewRuntime, _: &[PathBuf]) -> Result<PathBuf, &'static str> {
+        Ok(self.java.clone())
+    }
+    fn before_copy_entry(&self, _: u64) {
+        let delay = self.delay_ms.load(Ordering::SeqCst);
+        if delay > 0 {
+            std::thread::sleep(Duration::from_millis(delay));
+        }
+    }
+}
+
+/// Real host observations except process correlation, which only Linux can
+/// observe; the fixture source is created by the test and never running.
+struct WindowsSafeEnv(HostEnvironment);
+impl ImportEnvironment for WindowsSafeEnv {
+    fn processes(&self, sources: &[PathBuf]) -> (Vec<ProcessEvidence>, &'static str) {
+        if cfg!(target_os = "linux") {
+            self.0.processes(sources)
+        } else {
+            (Vec::new(), "complete")
+        }
+    }
+    fn plan_java(&self, version: Option<&str>, excluded: &[PathBuf]) -> HostJavaPlan {
+        self.0.plan_java(version, excluded)
+    }
+    fn ensure_java(
+        &self,
+        runtime: &ReviewRuntime,
+        excluded: &[PathBuf],
+    ) -> Result<PathBuf, &'static str> {
+        self.0.ensure_java(runtime, excluded)
+    }
+}
+
+struct Host {
+    temp: tempfile::TempDir,
+    state: HostState,
+    router: HostRouter,
+    transport: Option<Transport>,
+    owner: String,
+    stranger: String,
+}
+impl Host {
+    fn new(env: Arc<dyn ImportEnvironment>) -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path();
+        for dir in ["host-state", "imports", "servers"] {
+            std::fs::create_dir_all(base.join(dir)).unwrap();
+        }
+        let state =
+            HostState::open(base.join("host-state"), Arc::new(vesta_state::SystemClock)).unwrap();
+        let host = state.snapshot().unwrap().host_id;
+        let key = Ed25519KeyPair::from_seed_unchecked(&[71; 32]).unwrap();
+        let device = state
+            .claim(
+                Uuid::new_v4(),
+                "Owner",
+                key.public_key().as_ref().try_into().unwrap(),
+            )
+            .unwrap();
+        let stranger_key = Ed25519KeyPair::from_seed_unchecked(&[72; 32]).unwrap();
+        let stranger = state
+            .write(|c| {
+                HostState::enroll_device_in(
+                    c,
+                    Uuid::new_v4(),
+                    "Stranger",
+                    stranger_key.public_key().as_ref().try_into().unwrap(),
+                    state.now_ms(),
+                )
+            })
+            .unwrap();
+        let identity = Arc::new(HostIdentity::new(state.clone()).unwrap());
+        std::fs::write(
+            base.join("cert.pem"),
+            include_bytes!("../../tests/fixtures/test-only-server.pem"),
+        )
+        .unwrap();
+        std::fs::write(
+            base.join("key.pem"),
+            include_bytes!("../../tests/fixtures/test-only-server-key.pem"),
+        )
+        .unwrap();
+        let listener = TlsListener::host(
+            "127.0.0.1".parse().unwrap(),
+            25500,
+            base.join("cert.pem"),
+            base.join("key.pem"),
+        )
+        .unwrap()
+        .on_ephemeral_port();
+        let folders = Arc::new(
+            FolderBrowser::new(
+                vec![ImportRootConfig {
+                    root_id: "r1".into(),
+                    label: "Imports".into(),
+                    path: base.join("imports"),
+                }],
+                vec![base.join("host-state"), base.join("servers")],
+            )
+            .unwrap(),
+        );
+        let jobs =
+            ImportJobs::open(state.clone(), folders.clone(), &base.join("servers"), env).unwrap();
+        let factory = jobs.clone();
+        let router = HostRouter::new(identity, "Test machine".into(), folders)
+            .with_imports(jobs, move |id| {
+                factory.create_worker(id, Arc::new(vesta_state::SystemClock))
+            });
+        let transport = Transport::start_host(router.clone(), &listener).unwrap();
+        let mut wire = Wire::connect(transport.local_addr());
+        let owner = format!(
+            "Bearer {}",
+            session(&mut wire, host, device.device_id, &key)
+        );
+        let stranger = format!(
+            "Bearer {}",
+            session(&mut wire, host, stranger.device_id, &stranger_key)
+        );
+        Self {
+            temp,
+            state,
+            router,
+            transport: Some(transport),
+            owner,
+            stranger,
+        }
+    }
+    fn wire(&self) -> Wire {
+        Wire::connect(self.transport.as_ref().unwrap().local_addr())
+    }
+    fn put(&self, relative: &str, bytes: &[u8]) {
+        let path = self.temp.path().join("imports").join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+    fn call(&self, method: &str, path: &str, body: Value, auth: &str) -> (u16, Value) {
+        self.wire().request(method, path, body, Some(auth))
+    }
+    fn token(&self, folder: &str) -> String {
+        let (status, r) = self.call(
+            "POST",
+            "/v1/host/folders/resolve",
+            json!({"rootId":"r1","relativePath":folder}),
+            &self.owner,
+        );
+        assert_eq!(status, 200, "{r}");
+        r["folderToken"].as_str().unwrap().to_owned()
+    }
+    /// Poll the job until `done` holds or the deadline passes.
+    fn wait(&self, job: &str, timeout: Duration, done: impl Fn(&Value) -> bool) -> Value {
+        let until = std::time::Instant::now() + timeout;
+        loop {
+            let (status, value) = self.call(
+                "GET",
+                &format!("/v1/host/imports/jobs/{job}"),
+                Value::Null,
+                &self.owner,
+            );
+            // Polling shares the per-peer request budget; back off when told.
+            if status == 429 {
+                std::thread::sleep(Duration::from_secs(2));
+                continue;
+            }
+            assert_eq!(status, 200, "{value}");
+            if done(&value) {
+                return value;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "job did not settle: {value}"
+            );
+            std::thread::sleep(if timeout > Duration::from_secs(60) {
+                Duration::from_secs(2)
+            } else {
+                Duration::from_millis(150)
+            });
+        }
+    }
+    fn plan(&self, folder: &str, extra: Value) -> Value {
+        let mut body = json!({"folderToken":self.token(folder),"name":"Survival","gamePort":null,"memoryMiB":1024,"launchChoice":null,"minecraftVersion":null});
+        for (k, v) in extra.as_object().unwrap() {
+            body[k] = v.clone();
+        }
+        let (status, accepted) = self.call("POST", "/v1/host/imports/plan", body, &self.owner);
+        assert_eq!(status, 202, "{accepted}");
+        assert_eq!(accepted["state"], "planning");
+        let id = accepted["jobId"].as_str().unwrap().to_owned();
+        self.wait(&id, Duration::from_secs(60), |j| j["state"] != "planning")
+    }
+    fn apply(&self, job: &Value, key: &str) -> (u16, Value) {
+        let review = &job["review"];
+        self.call(
+            "POST",
+            "/v1/host/imports/apply",
+            json!({"planId":review["planId"],"confirmation":review["confirmation"],"acknowledgedWarnings":review["warnings"],"eulaAccepted":true,"sourceStoppedConfirmed":true}),
+            &format!("{}\r\nIdempotency-Key: {key}", self.owner),
+        )
+    }
+}
+impl Drop for Host {
+    fn drop(&mut self) {
+        if let Some(t) = self.transport.take() {
+            let _ = t.shutdown(Duration::from_secs(5));
+        }
+        for w in self.router.take_owned_workers() {
+            let _ = w.shutdown(Duration::from_secs(30));
+        }
+    }
+}
+fn fake_vanilla(host: &Host) {
+    host.put(
+        "vanilla/server.properties",
+        b"server-port=25565\nmotd=hi\nenable-rcon=true\nrcon.password=hunter2\n",
+    );
+    host.put("vanilla/minecraft_server.1.21.1.jar", b"jar");
+    host.put("vanilla/world/level.dat", b"nbt");
+    host.put("vanilla/world/region/r.0.0.mca", b"region");
+    host.put("vanilla/eula.txt", b"eula=false\n");
+}
+fn fake_env() -> Arc<FakeEnv> {
+    Arc::new(FakeEnv {
+        java: std::env::temp_dir().join("vesta-test-java-not-run"),
+        ..FakeEnv::default()
+    })
+}
+
+#[test]
+fn owner_plans_applies_and_polls_import_jobs_through_the_router() {
+    let host = Host::new(fake_env());
+    fake_vanilla(&host);
+    let (_, info) = host.call("GET", "/v1/host", Value::Null, &host.owner);
+    assert!(
+        info["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("import-jobs"))
+    );
+    // Non-owners cannot plan, read, apply, cancel or start.
+    let token = host.token("vanilla");
+    let body = json!({"folderToken":token,"name":"x","gamePort":null,"memoryMiB":null,"launchChoice":null,"minecraftVersion":null});
+    assert_eq!(
+        host.call("POST", "/v1/host/imports/plan", body, &host.stranger)
+            .0,
+        403
+    );
+    let job = host.plan("vanilla", json!({}));
+    assert_eq!(job["state"], "review", "{job}");
+    let id = job["jobId"].as_str().unwrap();
+    let review = &job["review"];
+    assert!(review["confirmation"].is_string());
+    assert!(review["expiresAt"].as_str().unwrap().ends_with('Z'));
+    assert_eq!(review["resources"]["memoryMiB"], 1024);
+    assert_eq!(review["detected"]["minecraftVersion"], "1.21.1");
+    assert_eq!(
+        review["warnings"],
+        json!(["eula_not_inherited", "rcon_disabled"])
+    );
+    assert!(!job.to_string().contains("hunter2"));
+    for (method, path) in [
+        ("GET", format!("/v1/host/imports/jobs/{id}")),
+        ("POST", format!("/v1/host/imports/jobs/{id}/cancel")),
+        ("POST", format!("/v1/host/imports/jobs/{id}/start")),
+        ("POST", "/v1/host/imports/apply".into()),
+    ] {
+        let (status, _) = host.call(method, &path, Value::Null, &host.stranger);
+        assert_eq!(status, 403, "{method} {path}");
+    }
+    assert_eq!(
+        host.call(
+            "GET",
+            &format!("/v1/host/imports/jobs/{}", Uuid::new_v4()),
+            Value::Null,
+            &host.owner
+        )
+        .0,
+        404
+    );
+    // Apply needs an Idempotency-Key, explicit EULA and acknowledged warnings.
+    let (status, error) = host.call(
+        "POST",
+        "/v1/host/imports/apply",
+        json!({"planId":review["planId"],"confirmation":review["confirmation"],"acknowledgedWarnings":review["warnings"],"eulaAccepted":true,"sourceStoppedConfirmed":true}),
+        &host.owner,
+    );
+    assert_eq!(
+        (status, error["error"]["code"].clone()),
+        (400, json!("idempotency_key_required"))
+    );
+    let mut unacknowledged = job.clone();
+    unacknowledged["review"]["warnings"] = json!([]);
+    let (status, error) = host.apply(&unacknowledged, "apply-key-0");
+    assert_eq!(
+        (status, error["error"]["code"].clone()),
+        (400, json!("warnings_unacknowledged"))
+    );
+    let (status, accepted) = host.apply(&job, "apply-key-1");
+    assert_eq!(status, 202, "{accepted}");
+    assert_eq!(host.apply(&job, "apply-key-1").1, accepted);
+    let server = accepted["serverId"].as_str().unwrap().to_owned();
+    let done = host.wait(id, Duration::from_secs(60), |j| {
+        !matches!(j["state"].as_str(), Some("applying"))
+    });
+    assert_eq!(done["state"], "ready", "{done}");
+    assert_eq!(done["phase"], "register");
+    assert_eq!(done["serverId"], server);
+    assert!(done["review"]["confirmation"].is_null());
+    let progress = &done["progress"];
+    assert_eq!(progress["filesDone"], progress["filesTotal"]);
+    assert_eq!(progress["bytesDone"], progress["bytesTotal"]);
+    assert_eq!(progress["filesTotal"], 5);
+    let game = host.temp.path().join("servers").join(&server).join("game");
+    let properties = std::fs::read_to_string(game.join("server.properties")).unwrap();
+    assert!(properties.contains("enable-rcon=false") && !properties.contains("enable-rcon=true"));
+    // The registered server is listed for the owner and not for the stranger.
+    let (_, list) = host.call("GET", "/v1/host/servers", Value::Null, &host.owner);
+    assert_eq!(list["servers"][0]["serverId"], server);
+    assert_eq!(list["servers"][0]["state"], "registered");
+    assert_eq!(
+        host.call("GET", "/v1/host/servers", Value::Null, &host.stranger)
+            .1["servers"],
+        json!([])
+    );
+    // A finished job cannot be cancelled; the registry still holds one server.
+    let (status, error) = host.call(
+        "POST",
+        &format!("/v1/host/imports/jobs/{id}/cancel"),
+        Value::Null,
+        &host.owner,
+    );
+    assert_eq!(
+        (status, error["error"]["code"].clone()),
+        (409, json!("conflict"))
+    );
+    // Resume is only for interrupted jobs.
+    assert_eq!(
+        host.call(
+            "POST",
+            &format!("/v1/host/imports/jobs/{id}/resume"),
+            Value::Null,
+            &host.owner
+        )
+        .0,
+        409
+    );
+    // The source was never written.
+    assert_eq!(
+        std::fs::read(host.temp.path().join("imports/vanilla/eula.txt")).unwrap(),
+        b"eula=false\n"
+    );
+}
+
+#[test]
+fn owner_cancels_a_review_and_a_running_copy() {
+    let env = fake_env();
+    let host = Host::new(env.clone());
+    fake_vanilla(&host);
+    for i in 0..20 {
+        host.put(&format!("vanilla/world/data/chunk-{i}.dat"), b"data");
+    }
+    let job = host.plan("vanilla", json!({}));
+    let id = job["jobId"].as_str().unwrap();
+    let (status, cancelled) = host.call(
+        "POST",
+        &format!("/v1/host/imports/jobs/{id}/cancel"),
+        Value::Null,
+        &host.owner,
+    );
+    assert_eq!((status, cancelled), (200, json!({"state":"cancelled"})));
+    // A cancelled plan's confirmation can no longer be applied.
+    assert_eq!(host.apply(&job, "cancelled-key").0, 409);
+
+    env.delay_ms.store(150, Ordering::SeqCst);
+    let job = host.plan("vanilla", json!({}));
+    let id = job["jobId"].as_str().unwrap();
+    let (status, accepted) = host.apply(&job, "copy-key");
+    assert_eq!(status, 202, "{accepted}");
+    let server = accepted["serverId"].as_str().unwrap().to_owned();
+    host.wait(id, Duration::from_secs(30), |j| j["phase"] == "copy");
+    let (status, requested) = host.call(
+        "POST",
+        &format!("/v1/host/imports/jobs/{id}/cancel"),
+        Value::Null,
+        &host.owner,
+    );
+    assert_eq!(status, 200, "{requested}");
+    assert_eq!(requested["state"], "applying"); // safe boundary pending
+    let done = host.wait(id, Duration::from_secs(30), |j| j["state"] != "applying");
+    assert_eq!(done["state"], "cancelled", "{done}");
+    assert!(!host.temp.path().join("servers").join(&server).exists());
+    assert_eq!(
+        host.call("GET", "/v1/host/servers", Value::Null, &host.owner)
+            .1["servers"],
+        json!([])
+    );
+}
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind(("0.0.0.0", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// Real import: downloads the checksum-verified managed Java 21 runtime and a
+/// genuine vanilla 1.21.1 server jar through the verified installer, imports
+/// it through the router and runs it until online.
+#[test]
+#[ignore = "downloads Java and the vanilla server jar, then runs the server"]
+fn real_vanilla_import_reaches_online_and_is_managed_through_mapped_routes() {
+    let scratch = tempfile::tempdir().unwrap();
+    let java_cache = scratch.path().join("java");
+    let install = scratch.path().join("install");
+    std::fs::create_dir_all(&java_cache).unwrap();
+    std::fs::create_dir_all(&install).unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let java = runtime
+        .block_on(vesta_control::java::download_into(java_cache.clone(), 21))
+        .expect("managed Java 21 download");
+    let jar = runtime.block_on(async {
+        use vesta_server_install::*;
+        let installer = ServerInstaller::new(
+            InstallRoots::new(&install, &[]).unwrap(),
+            TransportConfig::direct(),
+        )
+        .unwrap();
+        let selection = Selection {
+            version: Some("1.21.1".into()),
+            loader_version: None,
+            build: None,
+            experimental: false,
+        };
+        let plan = installer
+            .plan(
+                Software::Vanilla,
+                &selection,
+                Path::new(&java.path),
+                &SilentProgressReporter,
+            )
+            .await
+            .expect("vanilla plan");
+        let approval = Approval::review(
+            &plan,
+            Acknowledgments {
+                legacy_checksum: true,
+                warnings: true,
+            },
+        )
+        .unwrap();
+        match installer
+            .install(&plan, approval, &SilentProgressReporter)
+            .await
+            .expect("vanilla install")
+        {
+            InstallOutcome::Installed(_) => {}
+            InstallOutcome::DryRun => panic!("dry run"),
+        }
+        plan.destination().join("software/vanilla.jar")
+    });
+
+    let env = Arc::new(WindowsSafeEnv(HostEnvironment {
+        java_cache: java_cache.clone(),
+    }));
+    let host = Host::new(env);
+    let port = free_port();
+    host.put(
+        "vanilla/server.properties",
+        format!("server-port={port}\nonline-mode=false\nview-distance=2\nsimulation-distance=2\nenable-rcon=true\nrcon.password=hunter2\n").as_bytes(),
+    );
+    host.put(
+        "vanilla/minecraft_server.1.21.1.jar",
+        &std::fs::read(&jar).unwrap(),
+    );
+    host.put("vanilla/eula.txt", b"eula=false\n");
+
+    // Browse to the fixture, inspect, plan.
+    let (status, roots) = host.call("GET", "/v1/host/folders/roots", Value::Null, &host.owner);
+    assert_eq!(status, 200, "{roots}");
+    let (status, root) = host.call(
+        "POST",
+        "/v1/host/folders/resolve",
+        json!({"rootId":"r1","relativePath":""}),
+        &host.owner,
+    );
+    assert_eq!(status, 200, "{root}");
+    let (status, listing) = host.call(
+        "POST",
+        "/v1/host/folders/list",
+        json!({"folderToken":root["folderToken"],"cursor":null}),
+        &host.owner,
+    );
+    assert_eq!(status, 200, "{listing}");
+    let entry = listing["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "vanilla")
+        .expect("fixture listed")
+        .clone();
+    let (status, inspected) = host.call(
+        "POST",
+        "/v1/host/imports/inspect",
+        json!({"folderToken":entry["folderToken"],"gamePort":port}),
+        &host.owner,
+    );
+    assert_eq!(status, 200, "{inspected}");
+    assert!(inspected["minecraft"].as_bool().unwrap(), "{inspected}");
+    let job = host.plan(
+        "vanilla",
+        json!({"gamePort":port,"minecraftVersion":"1.21.1"}),
+    );
+    assert_eq!(job["state"], "review", "{job}");
+    let id = job["jobId"].as_str().unwrap().to_owned();
+    let (status, accepted) = host.apply(&job, "real-apply");
+    assert_eq!(status, 202, "{accepted}");
+    let server = accepted["serverId"].as_str().unwrap().to_owned();
+    let ready = host.wait(&id, Duration::from_secs(300), |j| j["state"] != "applying");
+    assert_eq!(ready["state"], "ready", "{ready}");
+
+    // Start: the HTTP call returns at once; readiness is polled.
+    let (status, started) = host.call(
+        "POST",
+        &format!("/v1/host/imports/jobs/{id}/start"),
+        Value::Null,
+        &host.owner,
+    );
+    assert_eq!(status, 202, "{started}");
+    assert_eq!(started["state"], "starting", "{started}");
+    let online = host.wait(&id, Duration::from_secs(600), |j| j["state"] != "starting");
+    if online["state"] != "online" {
+        // Diagnostics: the game console and managed status through the
+        // mapped routes, plus the managed launch definition.
+        for suffix in ["manage/console?limit=200", "manage/server/status"] {
+            let (s, v) = host.call(
+                "GET",
+                &format!("/v1/servers/{server}/{suffix}"),
+                Value::Null,
+                &host.owner,
+            );
+            eprintln!("{suffix}: {s} {v:#}");
+        }
+        let dir = host.temp.path().join("servers").join(&server);
+        eprintln!(
+            "launch.toml:\n{}",
+            std::fs::read_to_string(dir.join("private/launch.toml")).unwrap_or_default()
+        );
+        for log in ["game/logs/latest.log"] {
+            eprintln!(
+                "{log}:\n{}",
+                std::fs::read_to_string(dir.join(log)).unwrap_or_default()
+            );
+        }
+    }
+    assert_eq!(online["state"], "online", "{online}");
+    let (_, list) = host.call("GET", "/v1/host/servers", Value::Null, &host.owner);
+    assert_eq!(list["servers"][0]["serverId"], server);
+    assert_eq!(list["servers"][0]["state"], "online", "{list}");
+
+    // Mapped management routes work for the imported server without restart.
+    let status_path = format!("/v1/servers/{server}/manage/server/status");
+    let (status, view) = host.call("GET", &status_path, Value::Null, &host.owner);
+    assert_eq!(status, 200, "{view}");
+    let data = if view["data"].is_object() {
+        &view["data"]
+    } else {
+        &view
+    };
+    let generation = data["generation"].as_str().expect("generation").to_owned();
+    let (status, sent) = host.call(
+        "POST",
+        &format!("/v1/servers/{server}/manage/console/command"),
+        json!({"expected_generation":generation,"line":"say imported by Vesta Server"}),
+        &format!("{}\r\nIdempotency-Key: import-console-say-0001", host.owner),
+    );
+    assert!((200..300).contains(&status), "{status} {sent}");
+    let (status, players) = host.call(
+        "GET",
+        &format!("/v1/servers/{server}/manage/players"),
+        Value::Null,
+        &host.owner,
+    );
+    assert!(status < 500, "{status} {players}");
+    let (status, stopped) = host.call(
+        "POST",
+        &format!("/v1/servers/{server}/manage/lifecycle/stop"),
+        json!({"expected_generation":generation}),
+        &format!(
+            "{}\r\nIdempotency-Key: import-lifecycle-stop-0001",
+            host.owner
+        ),
+    );
+    assert!((200..300).contains(&status), "{status} {stopped}");
+    let until = std::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        let (_, list) = host.call("GET", "/v1/host/servers", Value::Null, &host.owner);
+        if list["servers"][0]["state"] == "stopped" {
+            break;
+        }
+        assert!(std::time::Instant::now() < until, "not stopped: {list}");
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    assert!(
+        host.state
+            .server(server.parse().unwrap())
+            .unwrap()
+            .is_some()
+    );
+}

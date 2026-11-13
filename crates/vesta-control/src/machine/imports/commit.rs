@@ -22,6 +22,8 @@ use vesta_server_install::{ManagedArtifact, ManagedLaunch};
 use vesta_state::Clock;
 
 const MAX_PROPERTIES: u64 = 1024 * 1024;
+/// Time a queued start may take to spawn before `Stopped` means it failed.
+const START_GRACE_MS: i64 = 30_000;
 
 /// Launch built from detected facts: the trusted Java runtime, the detected
 /// jar or Java argument file inside the managed copy, `nogui` and a heap cap.
@@ -39,6 +41,7 @@ pub(crate) fn trusted_launch(
     if entry.directory || entry.path != relative.as_str() {
         return Err(JobError::INVALID);
     }
+    let game = &plain_drive_path(game);
     let mut path = game.to_path_buf();
     path.extend(relative.as_str().split('/'));
     let text = path.to_str().ok_or(JobError::INVALID)?.to_owned();
@@ -63,13 +66,39 @@ pub(crate) fn trusted_launch(
     ))
 }
 
-/// `server-port` set to the reserved port; every other line kept verbatim.
+/// Java resolves `-jar`/`@argfile` paths through its own class loader, which
+/// cannot open Windows verbatim (`\\?\C:\...`) spellings that canonicalization
+/// produces. Plain drive paths drop the prefix; UNC and other forms are kept.
+pub(crate) fn plain_drive_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest)
+            if cfg!(windows)
+                && rest.len() >= 3
+                && rest.as_bytes()[0].is_ascii_alphabetic()
+                && &rest.as_bytes()[1..3] == b":\\" =>
+        {
+            PathBuf::from(rest)
+        }
+        _ => path.to_path_buf(),
+    }
+}
+
+/// `server-port` set to the reserved port and RCON disabled; every other line
+/// kept verbatim. Vanilla and its common forks bind RCON to `server-ip`, the
+/// game address, so it cannot be confined to loopback without also hiding the
+/// game; the managed console uses the process console instead. `rcon.password`
+/// is left in the host-only file and is never returned by the API (the file is
+/// protected and the properties view redacts it).
 pub(crate) fn rewrite_properties(text: &str, port: u16) -> String {
     let mut out = String::new();
     let mut found = false;
     for line in text.lines() {
         let key = line.split_once(['=', ':']).map(|(k, _)| k.trim());
-        if key == Some("server-port") && !line.trim_start().starts_with('#') {
+        let active = !line.trim_start().starts_with('#');
+        if key == Some("enable-rcon") && active {
+            out.push_str("enable-rcon=false\n");
+        } else if key == Some("server-port") && active {
             if !found {
                 out.push_str(&format!("server-port={port}\n"));
             }
@@ -431,20 +460,37 @@ impl ImportJobs {
             .runtime()
             .readiness()
             .map_err(|_| JobError::UNAVAILABLE)?;
+        // The start operation is queued: until it spawns the game the runtime
+        // still reports `Stopped`. Only a stop observed after this grace window
+        // is a failed start. While the game runs it owns its own port, so a
+        // busy port is only meaningful once it has stopped.
+        let since: i64 = self.read(|c| {
+            Ok(c.query_row(
+                "SELECT updated_ms FROM machine_import_jobs WHERE job_id=?1",
+                [job_id],
+                |r| r.get(0),
+            )?)
+        })?;
+        let settled = self.0.host.now_ms().saturating_sub(since) >= START_GRACE_MS;
         match view.readiness {
             Readiness::Ready => self.resolvable(job_id, "online", "")?,
             Readiness::Starting => {}
-            Readiness::Stopped | Readiness::Degraded(_) => {
+            Readiness::Stopped if settled => {
                 let port = review.resources.game_port.unwrap_or(0);
                 let code = if self.0.env.port_state(port) == "occupied" {
                     "game_port_in_use"
                 } else {
                     "start_failed"
                 };
-                if matches!(view.readiness, Readiness::Stopped) || code == "game_port_in_use" {
-                    self.resolvable(job_id, "ready", code)?;
-                }
+                self.resolvable(job_id, "ready", code)?;
             }
+            Readiness::Stopped => {}
+            Readiness::Degraded(
+                vesta_game_runtime::readiness::DegradedReason::StartupTimeout
+                | vesta_game_runtime::readiness::DegradedReason::FatalOutput,
+            ) => self.resolvable(job_id, "ready", "start_failed")?,
+            // A failed status probe or console gap may recover; keep waiting.
+            Readiness::Degraded(_) => {}
         }
         self.status(binding, job_id)
     }

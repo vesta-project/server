@@ -17,7 +17,8 @@ use std::{
 };
 
 const MAX_TOP_LEVEL: usize = 4_096;
-const MAX_WALK_ENTRIES: u64 = 500_000;
+/// Matches the import copy bound (`CopyLimits::IMPORT`).
+const MAX_WALK_ENTRIES: u64 = 2_000_000;
 const MAX_PROPERTIES_BYTES: u64 = 64 * 1024;
 /// Free space required beyond the source size before a copy may start.
 pub const SPACE_MARGIN_BYTES: u64 = 512 * 1024 * 1024;

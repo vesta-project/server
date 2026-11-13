@@ -9,20 +9,33 @@ use uuid::Uuid;
 use vesta_control::{
     identity::BuiltinRole,
     machine::{
-        imports::{FolderBrowser, OwnerBinding},
+        imports::{
+            FolderBrowser, OwnerBinding,
+            jobs::{ImportJobs, JobError},
+        },
         owners::{Actor, Device, EffectiveRole, ServerRole},
     },
-    worker::{ServerSubject, ServerWorker, WorkerGrant, WorkerPolicy},
+    worker::{ServerSubject, ServerWorker, Worker, WorkerGrant, WorkerHandle, WorkerPolicy},
 };
 mod imports;
 mod owners;
 
+/// Builds the in-process worker for a registered imported server.
+pub type WorkerFactory = dyn Fn(Uuid) -> Result<Worker, JobError> + Send + Sync;
+/// Owner import jobs plus the worker factory used once a copy is committed.
+pub struct ImportService {
+    pub jobs: ImportJobs,
+    create: Box<WorkerFactory>,
+}
 #[derive(Clone)]
 pub struct HostRouter {
     pub identity: Arc<HostIdentity>,
     pub name: String,
     pub folders: Arc<FolderBrowser>,
     pub workers: Arc<Mutex<Vec<Arc<dyn ServerWorker>>>>,
+    /// Workers this router created or adopted; the host shuts them down.
+    owned: Arc<Mutex<Vec<Worker>>>,
+    imports: Option<Arc<ImportService>>,
 }
 impl HostRouter {
     pub fn new(identity: Arc<HostIdentity>, name: String, folders: Arc<FolderBrowser>) -> Self {
@@ -31,10 +44,98 @@ impl HostRouter {
             name,
             folders,
             workers: Default::default(),
+            owned: Default::default(),
+            imports: None,
         }
+    }
+    /// Enable the import job routes. `create` builds a registered server's
+    /// worker (normally `ImportJobs::create_worker` with the host clock).
+    pub fn with_imports(
+        mut self,
+        jobs: ImportJobs,
+        create: impl Fn(Uuid) -> Result<Worker, JobError> + Send + Sync + 'static,
+    ) -> Self {
+        self.imports = Some(Arc::new(ImportService {
+            jobs,
+            create: Box::new(create),
+        }));
+        self
+    }
+    pub fn imports(&self) -> Option<&ImportJobs> {
+        self.imports.as_deref().map(|i| &i.jobs)
     }
     pub fn add_worker(&self, worker: Arc<dyn ServerWorker>) {
         self.workers.lock().expect("worker registry").push(worker);
+    }
+    /// Route a worker the router owns from now on (registered at startup or
+    /// imported while running); its management routes work immediately.
+    pub fn adopt_worker(&self, worker: Worker) -> WorkerHandle {
+        let handle = worker.handle();
+        self.add_worker(Arc::new(handle.clone()));
+        self.owned.lock().expect("owned workers").push(worker);
+        handle
+    }
+    fn owned_handle(&self, server_id: Uuid) -> Option<WorkerHandle> {
+        self.owned
+            .lock()
+            .ok()?
+            .iter()
+            .map(Worker::handle)
+            .find(|h| h.server_id() == server_id)
+    }
+    /// The worker for an imported server, created on first use (for example
+    /// the first start after the copy was committed).
+    fn import_worker(&self, server_id: Uuid) -> Result<WorkerHandle, JobError> {
+        let imports = self.imports.as_ref().ok_or(JobError::UNAVAILABLE)?;
+        let mut owned = self.owned.lock().map_err(|_| JobError::UNAVAILABLE)?;
+        if let Some(handle) = owned
+            .iter()
+            .map(Worker::handle)
+            .find(|h| h.server_id() == server_id)
+        {
+            return Ok(handle);
+        }
+        if self
+            .workers
+            .lock()
+            .map_err(|_| JobError::UNAVAILABLE)?
+            .iter()
+            .any(|w| w.server_id() == server_id)
+        {
+            // Routed through an externally configured worker; not ours to start.
+            return Err(JobError("worker_unavailable"));
+        }
+        let worker = (imports.create)(server_id)?;
+        let handle = worker.handle();
+        self.add_worker(Arc::new(handle.clone()));
+        owned.push(worker);
+        Ok(handle)
+    }
+    /// Detach owned workers for shutdown, after the transport has stopped.
+    pub fn take_owned_workers(&self) -> Vec<Worker> {
+        let taken = std::mem::take(&mut *self.owned.lock().expect("owned workers"));
+        let ids: Vec<Uuid> = taken.iter().map(|w| w.handle().server_id()).collect();
+        self.workers
+            .lock()
+            .expect("worker registry")
+            .retain(|w| !ids.contains(&w.server_id()));
+        taken
+    }
+    /// Copy each worker's observed game state into the registry so
+    /// `GET /v1/host/servers` reflects starting/online/stopped/failed.
+    pub fn refresh_server_states(&self) {
+        let workers = match self.workers.lock() {
+            Ok(w) => w.clone(),
+            Err(_) => return,
+        };
+        for worker in workers {
+            if let Some(observed) = worker.observed_state() {
+                let _ = self
+                    .identity
+                    .state
+                    .observe_server_state(worker.server_id(), observed);
+            }
+        }
     }
 }
 struct Application {
@@ -57,7 +158,7 @@ struct Application {
 impl Transport {
     pub fn start_host(router: HostRouter, listener: &TlsListener) -> Result<Self, TransportError> {
         pending::start_small_application(listener, None, move |tls, config| {
-            Arc::new(Application {
+            let app = Arc::new(Application {
                 downloads: Arc::new(Downloads::new(DOWNLOADS)),
                 tickets: Default::default(),
                 streams: Default::default(),
@@ -76,7 +177,21 @@ impl Transport {
                     )
                     .expect("validated policy"),
                 )),
-            })
+            });
+            // Registry state follows observed worker state while the host runs.
+            let weak = Arc::downgrade(&app);
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(Duration::from_secs(2));
+                loop {
+                    tick.tick().await;
+                    let Some(router) = weak.upgrade().map(|a| a.router.clone()) else {
+                        break;
+                    };
+                    let _ = tokio::task::spawn_blocking(move || router.refresh_server_states())
+                        .await;
+                }
+            });
+            app
         })
     }
 }
@@ -472,6 +587,7 @@ impl Application {
             };
         }
         if method == Method::GET && path == "/v1/host/servers" {
+            self.router.refresh_server_states();
             return match state.visible_servers(device.account_id) {
                 Ok(entries) => routes::json(
                     json!({"servers":entries.into_iter().map(|(e,r)|json!({"serverId":e.server_id,"name":e.name,"gamePort":e.game_port,"state":format!("{:?}",e.state).to_lowercase(),"role":role_name(r)})).collect::<Vec<_>>(),"nextCursor":null}),
@@ -552,8 +668,12 @@ impl Application {
             let Ok(s) = state.snapshot() else {
                 return failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable");
             };
+            let mut capabilities = vec!["folders", "import-inspect", "resource-plan"];
+            if self.router.imports.is_some() {
+                capabilities.push("import-jobs");
+            }
             return routes::json(
-                json!({"hostId":s.host_id,"name":self.router.name,"fingerprint":self.tls.fingerprint().unwrap_or_default(),"endpoints":[],"authGeneration":s.auth_generation.to_string(),"revision":s.revision.to_string(),"role":owner.map(|r|if r==vesta_control::machine::owners::HostRole::PrimaryOwner{"primary_owner"}else{"owner"}),"capabilities":["folders","import-inspect","resource-plan"]}),
+                json!({"hostId":s.host_id,"name":self.router.name,"fingerprint":self.tls.fingerprint().unwrap_or_default(),"endpoints":[],"authGeneration":s.auth_generation.to_string(),"revision":s.revision.to_string(),"role":owner.map(|r|if r==vesta_control::machine::owners::HostRole::PrimaryOwner{"primary_owner"}else{"owner"}),"capabilities":capabilities}),
             );
         }
         if owner.is_none() {
@@ -566,7 +686,7 @@ impl Application {
             return reply;
         }
         if path.starts_with("/v1/host/folders/") || path.starts_with("/v1/host/imports/") {
-            return imports::dispatch(&self.router, &device, method, path, bytes);
+            return imports::dispatch(&self.router, &device, method, path, headers, bytes);
         }
         if method == Method::GET && path == "/v1/host/devices" {
             return match state.devices(Actor::Account(device.account_id)) {

@@ -19,7 +19,7 @@ Folder token random 32 bytes, expires 10min, bound to host/account/device/root a
 
 Typical AMP candidate `/home/amp/.ampdata/instances/<instance>/Minecraft`; inspect bounded metadata in `/home/amp/.ampdata/instances.json` only when explicitly readable and allowed. [CubeCoders](https://discourse.cubecoders.com/t/diagnosing-amp-application-startup-issues/2289) documents the default instance datastore; custom roots must be supplied locally. Candidate heuristics: `server.properties`, world directories, jar/loader metadata; AMP ancestry/config is evidence, not proof. Never read or return AMP passwords/tokens, execute AMP CLI, source scripts, execute candidate jars or recursively scan the whole filesystem.
 
-Dedicated Vesta account may not traverse AMP home. Return `source_unreadable` with owner-visible instructions to stop AMP, then export a read-only copy into the registered staging root, or have a local administrator grant narrowly scoped read/traverse ACLs on this instance. Do not run as amp/root, chown AMP files or open its whole datastore to Vesta. If using an exported copy, retain the original instance path/port as separately supplied inspection hints, and flag process correlation as unknown if unavailable. Existing `CopiedExport` protections remain mandatory.
+Dedicated Vesta account may not traverse AMP home. Return `source_unreadable` with owner-visible instructions to stop AMP, then export a read-only copy into the registered staging root, or have a local administrator run `sudo vesta import-root add <instance path>`, which registers the folder and grants narrowly scoped read/traverse access for the service account. Do not run as amp/root, chown AMP files or open its whole datastore to Vesta. If using an exported copy, retain the original instance path/port as separately supplied inspection hints, and flag process correlation as unknown if unavailable. Existing `CopiedExport` protections remain mandatory.
 
 ## Plan and review
 
@@ -59,23 +59,33 @@ Blockers include `source_unreadable`, `source_running`, `source_state_unknown`, 
 
 Manual acceptance: stop the selected AMP instance on people-server, import its Minecraft directory from the Windows launcher, resolve any reported conflict, use automatic Java and observe online; compare original file hashes, test console/files/players/packs/backups through port 25500, reboot without login, reconnect using the same host identity and server ref. Verify actual default/custom AMP layouts, unreadable metadata, AMP restart races, active source on a different port and low-disk failure. Do not modify the real source just to run a test; use disposable fixture worlds for destructive fault cases.
 
-## First-pass implementation notes (H16/H17)
+## Implemented HTTP routes (H08 + H16/H17 wiring)
 
-Rust APIs live in `vesta_control::machine::imports::jobs` (`ImportJobs`); H08 maps them to the routes above. Plan is `begin_plan` (202) then `run_plan`; apply is `apply` (202) then `run_apply`, which copies, configures and registers, ending in `ready`/phase `register`. Starting is `start` then `readiness` against the worker built by `create_worker` (H05 `Worker::from_registry`); `online` only follows runtime `Ready`. Additional owner route needed: POST `/v1/host/imports/jobs/{jobId}/resume` -> job, valid only for `interrupted`; it re-validates everything, reuses verified partial copies, and turns an interrupted `start` phase back into `ready` without spawning. Start conflicts and bind/start failures return the job to `ready` with `error` (`game_port_in_use`, `source_running`, `source_state_unknown`, `port_state_unknown`, `start_failed`), keeping copy and registration; each retry after such an error uses a new start idempotency key, a crash retry reuses the old one. Copy staging is `<servers>/<serverId>/staging`, renamed to `game` after verification; cancel and low disk remove only that unregistered staging, a mid-copy source change renames it to `quarantine-<ms>`. Deferred: rewriting RCON to loopback, destination ownership freeze (H11), registry state updates on online (needs H07-safe generation handling), and copies beyond the existing `CopiedExport` bounds (65,536 entries, 1 GiB per file), which report `source_too_large`.
+All routes below need `Authorization: Bearer <host session>` of a current primary owner/owner; anyone else gets 403 `forbidden` (inspection, folders and jobs alike). Long work never blocks the HTTP call: plan, apply and resume return 202 and run on a host background thread; the job row is durable and polled. Error bodies are `{error:{code,requestId}}`.
 
-## H08 HTTP inspection surface
+| Method/path | Body | Success |
+|---|---|---|
+| GET `/v1/host/folders/roots` | | 200 roots |
+| POST `/v1/host/folders/resolve` | `{rootId,relativePath}` | 200 `{folderToken,displayPath,expiresAt}` |
+| POST `/v1/host/folders/list` | `{folderToken,cursor}` | 200 listing |
+| GET `/v1/host/imports/candidates` | | 200 candidates/warnings |
+| POST `/v1/host/imports/inspect` | `{folderToken,gamePort}` | 200 inspection report (no job) |
+| POST `/v1/host/imports/resources` | `{gamePort,memoryMiB}` | 200 `{memory,port}` |
+| POST `/v1/host/imports/plan` | `{folderToken,name,gamePort,memoryMiB,launchChoice,minecraftVersion}` | 202 `{jobId,state:"planning"}` |
+| GET `/v1/host/imports/jobs/{jobId}` | | 200 job; while `starting` this call also observes readiness |
+| POST `/v1/host/imports/apply` | `{planId,confirmation,acknowledgedWarnings,eulaAccepted,sourceStoppedConfirmed}` + `Idempotency-Key` header | 202 `{jobId,serverId}` (same key + body returns the same reply) |
+| POST `/v1/host/imports/jobs/{jobId}/cancel` | empty or `{}` | 200 `{state}`: `cancelled`, or `applying` while a copy stops at its next safe boundary |
+| POST `/v1/host/imports/jobs/{jobId}/resume` | empty or `{}` | 202 job; only for `interrupted` |
+| POST `/v1/host/imports/jobs/{jobId}/start` | empty or `{}` | 202 job (`starting`, or `ready` with a resolvable `error`) |
 
-Owner-only POST `/v1/host/imports/inspect` accepts
-`{folderToken,gamePort:null|integer}` and returns the existing H14 inspection
-report. Original source paths and destination paths are trusted local inputs,
-not accepted from HTTP. POST `/v1/host/imports/resources` accepts
-`{gamePort:null|integer,memoryMiB:null|integer}` and returns `{memory,port}` using
-H15 planning. Registered ports are reserved. If a server already exists but no
-heap reservation catalogue is available, memory is explicitly unresolved.
-Folders use the root/resolve/list shapes above. Tokens are bound to current
-host/account/device and owners are checked at every route call.
+Job: `{jobId,state,phase,error,progress:{filesDone,filesTotal,bytesDone,bytesTotal},review,serverId}`; `review.expiresAt` is RFC 3339 UTC; `review.confirmation` is present only in state `review`. Progress counts source files/bytes hashed while planning and verifying (phases `inspect`, `snapshot`) and copied files/bytes in phase `copy`, updated every 64 files.
 
-H08 leaves plan/apply/jobs/cancel as owner-authenticated 501 responses with
-`error.code:"import_jobs_not_implemented"`; H16 can add the implementations in
-`vesta-transport/src/host_router/imports.rs` without changing authentication.
-Do not infer runnable import support solely from inspection capability flags.
+Route errors: 400 `invalid_request`, `idempotency_key_required`, `eula_required`, `warnings_unacknowledged`, `source_stop_confirmation_required`; 404 `import_job_not_found`; 409 `conflict` (wrong state for the action), `idempotency_conflict`, `plan_blocked`, `plan_expired`, `confirmation_invalid`, `server_capacity_reached`, `game_port_in_use`, `memory_budget_exceeded`; 503 `imports_unavailable` (host built without import storage), `import_jobs_saturated`, `worker_unavailable`, `unavailable`.
+
+Copy bounds: up to 2,000,000 entries, 16 GiB per file and 16 TiB total (`source_too_large` beyond), with the free-space preflight (source bytes + 512 MiB) and a running reserve during the copy as the practical bound. The snapshot inventory is held in host-private state, so very large trees cost proportional memory while planning.
+
+Commit rewrites only the managed copy: `eula.txt` from the owner's acceptance, `server-port`, and `enable-rcon=false`. Vanilla and its common forks bind RCON to `server-ip` (the game address), so RCON cannot be confined to loopback separately; a source with RCON enabled adds the acknowledgeable warning `rcon_disabled`. `rcon.password` stays in the host-only file, which the files API refuses to serve and the properties API redacts.
+
+Start creates the server's in-process worker on first use and routes it immediately, so `/v1/servers/{serverId}/manage/...` (console, files, players, lifecycle, status) works without restarting the host. A start that has not spawned within 30 s and is observed stopped returns the job to `ready` with `start_failed` (or `game_port_in_use` when the port is then busy); readiness `Degraded` by startup timeout or fatal output also ends in `start_failed`. The host copies each worker's observed state into the registry (on `GET /v1/host/servers` and every 2 s): `starting`, `online`, `stopped`, `failed`; this changes the revision but not the authorization generation. After a host restart every registered server with a managed `<servers>/<serverId>/host.toml` gets its worker back automatically; a job that was `planning`, `applying` or `starting` becomes `interrupted`.
+
+Remaining deferred items: destination ownership freeze (H11), a separate revocation barrier for import jobs (H07), and process correlation on non-Linux hosts (reported `unknown`, so a Windows host blocks with `source_state_unknown`).

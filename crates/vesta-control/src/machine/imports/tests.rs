@@ -290,12 +290,11 @@ fn remediation_is_narrow_and_never_changes_ownership() {
     let fix = amp::remediation(path, "vesta; rm -rf /");
     assert!(!fix.command.contains("chown") && !fix.command.contains(';'));
     if !cfg!(windows) {
-        assert!(fix.command.contains("u:vestarm-rf:--x '/home'"));
-        assert!(
-            fix.command.ends_with(
-                "-R -m u:vestarm-rf:rX '/home/amp/.ampdata/instances/Survival/Minecraft'"
-            )
+        assert_eq!(
+            fix.command,
+            "sudo vesta import-root add '/home/amp/.ampdata/instances/Survival/Minecraft'"
         );
+        assert!(!fix.command.contains("setfacl"));
     }
 }
 

@@ -80,6 +80,11 @@ pub trait ServerWorker: Send + Sync {
     fn public_resource_packs(&self) -> Option<crate::resource_packs::hosting::Handle> {None}
     fn sync_policy(&self, policy: WorkerPolicy) -> Result<(), ManagementError>;
     fn authorize(&self, subject: ServerSubject) -> Result<NetworkHost, ManagementError>;
+    /// Host-side observation of the game for the registry (no caller
+    /// authority involved). `None` when the worker cannot report it.
+    fn observed_state(&self) -> Option<crate::machine::registry::ServerState> {
+        None
+    }
 }
 impl Worker {
     pub fn open(
@@ -138,6 +143,16 @@ impl ServerWorker for WorkerHandle {
     fn public_resource_packs(&self)->Option<crate::resource_packs::hosting::Handle>{Some(self.network.resource_packs().clone())}
     fn server_id(&self) -> Uuid {
         self.server_id
+    }
+    fn observed_state(&self) -> Option<crate::machine::registry::ServerState> {
+        use crate::machine::registry::ServerState;
+        use vesta_game_runtime::readiness::Readiness;
+        Some(match self.network.runtime().readiness().ok()?.readiness {
+            Readiness::Stopped => ServerState::Stopped,
+            Readiness::Starting => ServerState::Starting,
+            Readiness::Ready => ServerState::Online,
+            Readiness::Degraded(_) => ServerState::Failed,
+        })
     }
     fn sync_policy(&self, policy: WorkerPolicy) -> Result<(), ManagementError> {
         if policy.host_id != self.host_id || policy.server_id != self.server_id {

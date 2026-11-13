@@ -391,8 +391,8 @@ fn unreadable(path: &Path, scan: &CandidateScan) -> ImportWarning {
     }
 }
 
-/// Narrow read access for one instance: traverse-only on ancestors and
-/// recursive read on the target. Never ownership changes or whole-datastore access.
+/// Narrow read access for one instance, granted by a local administrator.
+/// Never ownership changes or whole-datastore access.
 pub fn remediation(path: &Path, user: &str) -> Remediation {
     let user: String = user
         .chars()
@@ -405,23 +405,10 @@ pub fn remediation(path: &Path, user: &str) -> Remediation {
             alternative,
         };
     }
-    let mut ancestors: Vec<&Path> = path
-        .ancestors()
-        .skip(1)
-        .filter(|a| a.parent().is_some())
-        .collect();
-    ancestors.reverse();
-    let traverse: Vec<String> = ancestors.iter().map(|a| quote(a)).collect();
-    let mut command = String::new();
-    if !traverse.is_empty() {
-        command.push_str(&format!(
-            "sudo setfacl -m u:{user}:--x {} && ",
-            traverse.join(" ")
-        ));
-    }
-    command.push_str(&format!("sudo setfacl -R -m u:{user}:rX {}", quote(path)));
+    // The privileged local CLI registers the folder as an import root and
+    // grants the service account the narrow read/traverse access itself.
     Remediation {
-        command,
+        command: format!("sudo vesta import-root add {}", quote(path)),
         alternative,
     }
 }

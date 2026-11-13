@@ -95,6 +95,44 @@ impl HostState {
             changed(c,true,"server_update",&actor.audit(),&entry.server_id.to_string(),self.now_ms())
         })
     }
+    /// Host-observed runtime state (starting/online/stopped/failed) from the
+    /// server's own worker. Trusted host input only, never request data. This is
+    /// not an authority change: it advances the revision but not the
+    /// authorization generation, so live sessions and worker subjects stay
+    /// valid. Returns whether the stored state changed. Deleted entries and the
+    /// first-slice `registered` state before any start are left alone.
+    pub fn observe_server_state(&self, id: Uuid, observed: ServerState) -> Result<bool> {
+        if matches!(observed, ServerState::Deleted | ServerState::Registered) {
+            return Err(reject(Code::InvalidRequest));
+        }
+        let mut updated = false;
+        self.write(|c| {
+            let Some(entry) = server_in(c, id)? else {
+                return Ok(());
+            };
+            if entry.state == observed
+                || entry.state == ServerState::Deleted
+                || (entry.state == ServerState::Registered && observed == ServerState::Stopped)
+            {
+                return Ok(());
+            }
+            c.execute(
+                "UPDATE machine_servers SET state=?1 WHERE server_id=?2",
+                params![observed.as_str(), id.to_string()],
+            )?;
+            changed(
+                c,
+                false,
+                "server_state",
+                "host",
+                &id.to_string(),
+                self.now_ms(),
+            )?;
+            updated = true;
+            Ok(())
+        })?;
+        Ok(updated)
+    }
     /// Trusted registry lookup, not an authorization check for an HTTP caller.
     pub fn server(&self, id: Uuid) -> Result<Option<ServerEntry>> {
         self.read(|c| server_in(c, id))

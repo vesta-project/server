@@ -140,6 +140,42 @@ fn launch_spec_uses_only_detected_facts() {
         commit::rewrite_properties("# server-port=1\nserver-port=25565\nmotd=x", 25_570),
         "# server-port=1\nserver-port=25570\nmotd=x\n"
     );
+    // RCON cannot be bound to loopback separately from the game: always off.
+    assert_eq!(
+        commit::rewrite_properties(
+            "enable-rcon=true\nrcon.port=25575\nrcon.password=hunter2\n#enable-rcon=true",
+            25_565
+        ),
+        "enable-rcon=false\nrcon.port=25575\nrcon.password=hunter2\n#enable-rcon=true\nserver-port=25565\n"
+    );
+}
+
+#[test]
+fn rcon_enabled_source_is_disabled_with_an_acknowledged_warning() {
+    let f = Fixture::new();
+    f.vanilla();
+    f.put(
+        "vanilla/server.properties",
+        "server-port=25565\nenable-rcon=true\nrcon.password=hunter2\n",
+    );
+    let job = f.plan("vanilla");
+    let review = job.review.as_ref().unwrap();
+    assert!(review.warnings.contains(&"rcon_disabled".to_owned()));
+    assert!(!serde_json::to_string(&job).unwrap().contains("hunter2"));
+    let accepted = f
+        .jobs
+        .apply(&f.binding, &Fixture::apply_request(&job), &key(&job))
+        .unwrap();
+    let done = f.jobs.run_apply(&f.binding, &accepted.job_id).unwrap();
+    assert_eq!(done.state, "ready", "{:?}", done.error);
+    let text = fs::read_to_string(
+        f.jobs
+            .server_dir(accepted.server_id)
+            .join("game/server.properties"),
+    )
+    .unwrap();
+    assert!(text.contains("enable-rcon=false\n"));
+    assert!(!text.contains("enable-rcon=true"));
 }
 
 #[test]
@@ -193,4 +229,23 @@ fn worker_is_created_and_start_conflicts_keep_the_copy() {
         worker.shutdown(std::time::Duration::from_secs(10)).unwrap(),
         crate::worker::WorkerShutdown::Complete
     ));
+}
+
+#[test]
+fn launch_paths_avoid_windows_verbatim_spelling_java_cannot_load() {
+    let verbatim = Path::new(r"\\?\C:\vesta\servers\id\game");
+    let unc = Path::new(r"\\?\UNC\host\share\game");
+    if cfg!(windows) {
+        assert_eq!(
+            commit::plain_drive_path(verbatim),
+            PathBuf::from(r"C:\vesta\servers\id\game")
+        );
+    } else {
+        assert_eq!(commit::plain_drive_path(verbatim), verbatim);
+    }
+    assert_eq!(commit::plain_drive_path(unc), unc);
+    assert_eq!(
+        commit::plain_drive_path(Path::new("/var/lib/vesta/servers")),
+        Path::new("/var/lib/vesta/servers")
+    );
 }

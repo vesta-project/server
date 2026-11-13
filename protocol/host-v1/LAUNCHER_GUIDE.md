@@ -80,6 +80,88 @@ intervals; the H07 full role-revocation/queued-action barrier remains deferred.
 Cap is 32 host streams. Pack channels use an internal single-use ticket; launchers
 only supply the host session. No `/realtime/ticket` call is needed.
 
+## Import wizard (owner only)
+
+Every call uses the host bearer. Show the wizard only when GET `/v1/host` lists
+`import-jobs` in `capabilities` and `role` is `primary_owner` or `owner`. Poll at
+most every 2 seconds: the host allows 60 requests per minute per address and
+answers 429 `rate_limited` (with `Retry-After`) beyond that.
+
+1. Pick a folder. GET `/v1/host/imports/candidates` for detected AMP or
+   Minecraft folders (each with a `folderToken`), or browse: GET
+   `/v1/host/folders/roots`, POST `/v1/host/folders/resolve`
+   `{rootId,relativePath:""}`, then POST `/v1/host/folders/list`
+   `{folderToken,cursor:null}` and descend with each entry's `folderToken`.
+   Tokens expire after 10 minutes; resolve again on `folder_token_expired`.
+   Candidate warnings with a `remediation.command` (for example
+   `sudo vesta import-root add '<path>'`) are for someone at the server's own
+   terminal: show the command with a copy button, never run it.
+2. Optional preview: POST `/v1/host/imports/inspect` `{folderToken,gamePort:null}`
+   returns what was detected without starting a job.
+3. Plan: POST `/v1/host/imports/plan`
+   `{folderToken,name,gamePort:null,memoryMiB:null,launchChoice:null,minecraftVersion:null}`
+   gives 202 `{jobId,state:"planning"}`. Poll GET `/v1/host/imports/jobs/{jobId}`
+   until `state` is not `planning`. Show `progress` (files and bytes read) while
+   it hashes a large folder.
+   - `review`: show `review` (detected software, Java, port, memory, destination,
+     size) and every `review.warnings` entry as a checkbox. Ask the owner to
+     accept the Minecraft EULA and to confirm the original server is stopped
+     and will not auto-restart.
+   - `blocked`: show `review.blockers` (table below). Every fix needs a new plan:
+     go back to step 3 with the same or a fresh `folderToken`.
+   - `failed`: show `error` (usually a folder token problem); start over.
+4. Apply: POST `/v1/host/imports/apply` with header `Idempotency-Key: <random>`
+   and `{planId,confirmation,acknowledgedWarnings:<all review.warnings>,eulaAccepted:true,sourceStoppedConfirmed:true}`.
+   202 `{jobId,serverId}`. Retry a lost reply with the same key and body. Poll
+   the job: `applying` with `phase` `conflicts`, `snapshot`, `copy`,
+   `configure`, `register`; show `progress` as a bar (bytesDone/bytesTotal).
+   A Cancel button calls POST `/v1/host/imports/jobs/{jobId}/cancel`; `applying`
+   in the reply means it stops at the next file, keep polling until `cancelled`.
+   The original folder is never changed.
+5. When the job is `ready` (phase `register`) the server already appears in
+   GET `/v1/host/servers`. Start: POST `/v1/host/imports/jobs/{jobId}/start`
+   (202). If the reply is `ready` with an `error`, show it and offer Start
+   again after the owner fixes it. Otherwise poll the job while `starting`
+   (startup can take minutes) until `online`, or `ready` with `start_failed`.
+6. From `online` on, manage the server through the normal
+   `/v1/servers/{serverId}/manage/...` routes (console, files, players,
+   lifecycle). GET `/v1/host/servers` shows `state` `starting`, `online`,
+   `stopped` or `failed` as the host observes it.
+
+If a job is `interrupted` (the host restarted), offer Resume: POST
+`/v1/host/imports/jobs/{jobId}/resume` (202) and keep polling; a job interrupted
+while planning comes back `failed` with `replan_required`.
+
+Blockers and job errors, with suggested wording:
+
+| Code | Tell the owner |
+|---|---|
+| `source_running` | The original server is still running. Stop it (and turn off auto-restart in AMP), then check again. |
+| `source_state_unknown` | Vesta Server can't tell whether the original server is running. Stop it, or import a stopped copy placed in an import folder. |
+| `source_unreadable` | Vesta Server can't read this folder. Ask someone at the server to run the shown `vesta import-root add` command, or copy the folder into an import folder. |
+| `source_changed` | Files changed since the check. Make sure the original server is stopped, then check again. |
+| `source_too_large` | This folder has too many files to import (over 2 million, or a file over 16 GiB). |
+| `unsafe_path` | The folder contains links or special files that can't be copied safely. Remove them from a copy and try that copy. |
+| `not_minecraft_server` | This doesn't look like a Minecraft server folder. Pick the folder that contains `server.properties`. |
+| `software_unresolved` / `launch_unresolved` | Vesta Server couldn't tell which server jar to run. Choose the jar (and Minecraft version), then check again (`launchChoice`, `minecraftVersion`). |
+| `java_unresolved` | No matching Java was found. Choose the Minecraft version so the right Java can be downloaded. |
+| `insufficient_space` | Not enough free disk space on the host for the copy. Free some space and check again. |
+| `game_port_in_use` / `port_state_unknown` / `port_unresolved` | The game port is busy or couldn't be checked. Pick another port or stop whatever uses it. |
+| `memory_budget_exceeded` / `memory_invalid` / `memory_unresolved` | That memory amount doesn't fit this machine (at least 512 MiB). Pick a smaller amount. |
+| `server_capacity_reached` | This Vesta Server already manages a server. |
+| `plan_expired` / `confirmation_invalid` / `plan_blocked` | The check is out of date. Check again. |
+| `copy_failed` / `state_unavailable` | The copy was interrupted. Resume to continue where it stopped. |
+| `destination_conflict` | A previous attempt left files in the way. Start a new import. |
+| `configure_failed` | Vesta Server couldn't prepare the copied server. Resume to retry. |
+| `start_failed` | The server stopped while starting. Check the console for the reason, then Start again. |
+| `replan_required` | The check was interrupted. Check again. |
+
+Warnings (all must be acknowledged): `eula_not_inherited` (the owner accepts the
+EULA here, the original's answer is not reused), `rcon_disabled` (remote console
+is turned off in the copy; the Vesta console works), `amp_controller_running`
+(AMP itself may keep running), `disable_amp_auto_restart` (turn off AMP's
+auto-start for this instance), `auxiliary_port_in_use` (a query port is busy).
+
 ## Host process configuration
 
 Run `vesta-agent host /path/to/host.toml`. Minimal configuration (paths relative
@@ -105,5 +187,7 @@ required for mDNS; an empty list leaves manual IP connections available. The
 same HostIdentity serves HTTPS and the protected local CLI channel. The process
 prints a fresh setup code while unclaimed. SIGINT/Ctrl-C shuts down discovery,
 local control, HTTPS, then the retained worker/supervisor owner. No service is
-installed. Registry-to-worker composition at startup currently admits one server;
-H16 wiring must call `HostRouter::add_worker` for a server imported while running.
+installed. At startup every registered imported server (managed `<servers>/<serverId>/host.toml`)
+gets its worker back; `worker-config` still serves one externally configured server.
+Optional keys: `servers = 'servers'` (managed import storage) and
+`java-cache = 'java'` (checksum-verified managed Java), both relative to host.toml.
