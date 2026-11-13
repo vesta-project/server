@@ -639,3 +639,72 @@ fn destination_space_is_reported() {
         free < inspection::SPACE_MARGIN_BYTES
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires python3 and TCP port 25599"]
+fn real_amp_process_and_listener_block_then_clear() {
+    use std::{
+        net::TcpStream,
+        process::{Command, Stdio},
+        thread,
+        time::Duration,
+    };
+    struct ChildGuard(std::process::Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let relative = ".ampdata/instances/Test01/Minecraft";
+    let source = temp.path().join(relative);
+    write(source.join("server.properties"), "server-port=25599\n");
+    write(source.join("server.jar"), "");
+    world(&source);
+    let mut child = ChildGuard(
+        Command::new("python3")
+            .args(["-m", "http.server", "25599", "--bind", "127.0.0.1"])
+            .current_dir(&source)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let mut ready = false;
+    for _ in 0..100 {
+        if child.0.try_wait().unwrap().is_some() {
+            panic!("server exited before listening");
+        }
+        if TcpStream::connect(("127.0.0.1", 25599)).is_ok() {
+            ready = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(ready, "server did not start listening");
+    let b = browser(temp.path());
+    let report = inspect(&b, relative);
+    assert_eq!(report.detected.kind, "amp");
+    assert!(report.blockers.contains(&"source_running"), "{report:?}");
+    assert!(report.blockers.contains(&"game_port_in_use"), "{report:?}");
+    assert!(
+        report
+            .processes
+            .iter()
+            .any(|p| p.pid == child.0.id() && p.relation == "source")
+    );
+    assert!(
+        report
+            .ports
+            .iter()
+            .any(|p| p.port == 25599 && p.state == "occupied" && p.owner == Some("source")),
+        "{report:?}"
+    );
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    let report = inspect(&b, relative);
+    assert!(!report.blockers.contains(&"source_running"), "{report:?}");
+    assert!(!report.blockers.contains(&"game_port_in_use"), "{report:?}");
+}
