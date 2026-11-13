@@ -605,6 +605,7 @@ impl FolderBrowser {
             return Err(ImportError::InvalidPath);
         }
         let mut path = root.canonical.clone();
+        let mut pinned = vec![native::import_open(&path, true).map_err(file_error)?];
         for part in parts {
             segment(part)?;
             let child = path.join(part);
@@ -617,6 +618,9 @@ impl FolderBrowser {
             if actual.parent() != Some(path.as_path()) {
                 return Err(ImportError::LinkedPath);
             }
+            let handle = native::import_open(&child, true).map_err(file_error)?;
+            if native::file_identity(&handle).map_err(file_error)? != native::directory_identity(&actual).map_err(file_error)? { return Err(ImportError::Changed); }
+            pinned.push(handle);
             path = actual;
         }
         if self.hidden(&path) {
