@@ -714,15 +714,7 @@ impl Provisioning {
         {
             value["pack"]["loader"] = serde_json::json!({"kind":software.id(),"version":loader});
         }
-        let table = toml::Value::try_from(value).map_err(unavailable)?;
-        let document = toml::to_string(&table).map_err(unavailable)?;
-        crate::config::HostConfiguration::parse_toml(
-            document.as_bytes(),
-            &self.0.root,
-            Path::new("host.toml"),
-        )
-        .map_err(unavailable)?;
-        Ok(document)
+        host_document_toml(value, &self.0.root)
     }
     fn audit(
         &self,
@@ -749,6 +741,19 @@ impl Provisioning {
         self.0.setup.audit.append(c, &record).map_err(unavailable)?;
         Ok(())
     }
+}
+/// Serialize a generated host document through TOML (values are never
+/// interpolated into text) and validate it against its installation base.
+/// Shared by first-server setup and host imports.
+pub(crate) fn host_document_toml(
+    value: serde_json::Value,
+    base: &Path,
+) -> std::result::Result<String, Error> {
+    let table = toml::Value::try_from(value).map_err(unavailable)?;
+    let document = toml::to_string(&table).map_err(unavailable)?;
+    crate::config::HostConfiguration::parse_toml(document.as_bytes(), base, Path::new("host.toml"))
+        .map_err(unavailable)?;
+    Ok(document)
 }
 fn job(c: &rusqlite::Connection, id: &str) -> Result<Job> {
     let row = c

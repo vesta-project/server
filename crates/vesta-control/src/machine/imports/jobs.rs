@@ -116,12 +116,44 @@ pub trait ImportEnvironment: Send + Sync {
     fn plan_java(&self, minecraft_version: Option<&str>, excluded: &[PathBuf]) -> HostJavaPlan;
     /// Test seam: called before each copied entry.
     fn before_copy_entry(&self, _index: u64) {}
+    /// Make the planned trusted runtime available; returns its executable.
+    fn ensure_java(
+        &self,
+        runtime: &ReviewRuntime,
+        excluded: &[PathBuf],
+    ) -> Result<PathBuf, &'static str>;
 }
 /// Live host environment with the shared managed Java cache.
 pub struct HostEnvironment {
     pub java_cache: PathBuf,
 }
 impl ImportEnvironment for HostEnvironment {
+    fn ensure_java(
+        &self,
+        runtime: &ReviewRuntime,
+        excluded: &[PathBuf],
+    ) -> Result<PathBuf, &'static str> {
+        let plan = HostJavaPlan {
+            required_major: runtime.required_major,
+            selected_runtime_id: runtime.selected_runtime_id.clone(),
+            download_required: runtime.download_required,
+            verified: runtime.verified,
+            status: "resolved",
+            blocker: None,
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| "java_unresolved")?;
+        runtime
+            .block_on(crate::java::ensure_host_java(
+                &self.java_cache,
+                &plan,
+                excluded,
+            ))
+            .map(|java| PathBuf::from(java.path))
+            .map_err(|_| "java_unresolved")
+    }
     fn plan_java(&self, minecraft_version: Option<&str>, excluded: &[PathBuf]) -> HostJavaPlan {
         match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -744,6 +776,7 @@ impl ImportJobs {
                     .ok_or(JobError::UNAVAILABLE)?;
                 return Ok(ApplyAccepted { job_id, server_id });
             }
+            #[allow(clippy::type_complexity)]
             let row: Option<(String, String, String, String, Option<String>, Option<String>)> = c
                 .query_row(
                     "SELECT job_id,state,account_id,device_id,review,private FROM machine_import_jobs WHERE plan_id=?1",
@@ -849,14 +882,16 @@ impl ImportJobs {
                 )?;
                 return Ok(());
             }
-            let phase = if matches!(phase.as_str(), "conflicts" | "snapshot" | "copy") {
-                "conflicts".to_owned()
-            } else {
-                phase
+            let (state, phase) = match phase.as_str() {
+                "conflicts" | "snapshot" | "copy" => ("applying", "conflicts".to_owned()),
+                // A start may already be in flight: never spawn again here; the
+                // owner retries start, which reuses its idempotency key.
+                "start" => ("ready", phase),
+                _ => ("applying", phase),
             };
             c.execute(
-                "UPDATE machine_import_jobs SET state='applying',phase=?1,error=NULL,cancel_requested=0,updated_ms=?2 WHERE job_id=?3",
-                params![phase, now, job_id],
+                "UPDATE machine_import_jobs SET state=?4,phase=?1,error=NULL,cancel_requested=0,updated_ms=?2 WHERE job_id=?3",
+                params![phase, now, job_id, state],
             )?;
             audit(c, "import.resume", &binding.account_id, job_id, now)?;
             Ok(())
@@ -966,13 +1001,18 @@ impl ImportJobs {
                 }
             }
         }
-        self.after_copy(binding, job_id, &review)?;
+        if let Err(error) = self.commit(job_id, &review) {
+            // The verified copy stays; the owner resolves the error and resumes.
+            let now = self.0.host.now_ms();
+            self.write(|c| {
+                c.execute(
+                    "UPDATE machine_import_jobs SET state='interrupted',error=?1,updated_ms=?2 WHERE job_id=?3",
+                    params![error.code(), now, job_id],
+                )?;
+                Ok(())
+            })?;
+        }
         self.status(binding, job_id)
-    }
-
-    /// Copied and verified; the commit/start lifecycle continues from here.
-    fn after_copy(&self, _binding: &OwnerBinding, job_id: &str, _review: &Review) -> JobResult<()> {
-        self.set_phase(job_id, "ready", "configure")
     }
 
     fn set_phase(&self, job_id: &str, state: &str, phase: &str) -> JobResult<()> {
@@ -1073,7 +1113,7 @@ impl ImportJobs {
                 stop = Some(Stop::LowDisk);
                 return Err(FileError::InsufficientSpace);
             }
-            if index % PROGRESS_EVERY == 0 {
+            if index.is_multiple_of(PROGRESS_EVERY) {
                 let _ = self.progress(job_id, progress, files_total, reviewed.bytes);
             }
             Ok(())
@@ -1426,7 +1466,7 @@ CREATE TABLE IF NOT EXISTS machine_import_jobs(
  state TEXT NOT NULL CHECK(state IN ('planning','review','applying','ready','starting','online','blocked','failed','cancelled','interrupted')),
  phase TEXT NOT NULL, error TEXT, request TEXT NOT NULL, review TEXT, private TEXT,
  server_id TEXT UNIQUE, apply_key TEXT, apply_hash TEXT, eula_accepted_ms INTEGER, eula_account TEXT,
- cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK(cancel_requested IN (0,1)),
+ cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK(cancel_requested IN (0,1)), start_attempt INTEGER NOT NULL DEFAULT 0,
  files_done INTEGER NOT NULL DEFAULT 0, files_total INTEGER NOT NULL DEFAULT 0,
  bytes_done INTEGER NOT NULL DEFAULT 0, bytes_total INTEGER NOT NULL DEFAULT 0,
  created_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL);
@@ -1436,6 +1476,10 @@ CREATE TABLE IF NOT EXISTS machine_import_reservations(server_id TEXT PRIMARY KE
  released INTEGER NOT NULL DEFAULT 0 CHECK(released IN (0,1)));
 CREATE UNIQUE INDEX IF NOT EXISTS machine_import_reserved_port ON machine_import_reservations(game_port) WHERE released=0;
 ";
+
+#[path = "commit.rs"]
+mod commit;
+pub use commit::owner_policy;
 
 #[cfg(test)]
 #[path = "jobs_tests.rs"]

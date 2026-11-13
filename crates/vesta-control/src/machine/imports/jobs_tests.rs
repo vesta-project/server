@@ -8,6 +8,8 @@ use vesta_state::SystemClock;
 
 const GIB: u64 = 1024 * 1024 * 1024;
 
+type Hook = Box<dyn Fn(u64) + Send>;
+
 /// Deterministic host observations.
 pub(super) struct FakeEnv {
     pub running: AtomicBool,
@@ -16,7 +18,8 @@ pub(super) struct FakeEnv {
     pub free: AtomicU64,
     pub free_calls: AtomicU64,
     pub low_after: AtomicU64,
-    pub hook: Mutex<Option<Box<dyn Fn(u64) + Send>>>,
+    pub hook: Mutex<Option<Hook>>,
+    pub java: Mutex<PathBuf>,
 }
 impl Default for FakeEnv {
     fn default() -> Self {
@@ -27,6 +30,7 @@ impl Default for FakeEnv {
             free_calls: AtomicU64::new(0),
             low_after: AtomicU64::new(u64::MAX),
             hook: Mutex::new(None),
+            java: Mutex::new(PathBuf::new()),
         }
     }
 }
@@ -69,6 +73,10 @@ impl ImportEnvironment for FakeEnv {
     fn plan_java(&self, version: Option<&str>, _: &[PathBuf]) -> HostJavaPlan {
         crate::java::plan_from(&[], version)
     }
+    fn ensure_java(&self, runtime: &ReviewRuntime, _: &[PathBuf]) -> Result<PathBuf, &'static str> {
+        runtime.required_major.ok_or("java_unresolved")?;
+        Ok(self.java.lock().unwrap().clone())
+    }
     fn before_copy_entry(&self, index: u64) {
         if let Some(hook) = &*self.hook.lock().unwrap_or_else(|e| e.into_inner()) {
             hook(index);
@@ -76,7 +84,7 @@ impl ImportEnvironment for FakeEnv {
     }
 }
 impl FakeEnv {
-    pub fn set_hook(&self, hook: Option<Box<dyn Fn(u64) + Send>>) {
+    pub fn set_hook(&self, hook: Option<Hook>) {
         *self.hook.lock().unwrap_or_else(|e| e.into_inner()) = hook;
     }
 }
@@ -116,6 +124,9 @@ impl Fixture {
             .unwrap(),
         );
         let env = Arc::new(FakeEnv::default());
+        fs::create_dir_all(base.join("runtime/bin")).unwrap();
+        fs::write(base.join("runtime/bin/java"), b"").unwrap();
+        *env.java.lock().unwrap() = fs::canonicalize(base.join("runtime/bin/java")).unwrap();
         let jobs = ImportJobs::open(
             state.clone(),
             browser.clone(),
@@ -225,6 +236,12 @@ impl Fixture {
     }
 }
 
+/// The copy minus the two files the commit rewrites (EULA and port).
+fn configured(tree: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
+    tree.into_iter()
+        .filter(|(p, _)| p != "eula.txt" && p != "server.properties")
+        .collect()
+}
 fn key(job: &ImportJob) -> String {
     format!("key-{}", job.review.as_ref().unwrap().plan_id)
 }
@@ -280,7 +297,7 @@ fn vanilla_and_fabric_plan_apply_copy_preserving_source() {
         assert_eq!(done.progress.files_done, done.progress.files_total);
         assert_eq!(done.progress.bytes_done, review.source.bytes);
         let game = f.jobs.server_dir(accepted.server_id).join("game");
-        assert_eq!(Fixture::tree(&game), before);
+        assert_eq!(configured(Fixture::tree(&game)), configured(before.clone()));
         assert_eq!(Fixture::tree(&f.source(folder)), before);
         // The destination path is per-server, never a singleton.
         assert!(
@@ -530,7 +547,7 @@ fn crash_mid_copy_resumes_without_recopying_or_duplicating() {
     let job = f.jobs.run_apply(&f.binding, &accepted.job_id).unwrap();
     assert_eq!(job.state, "ready", "{:?}", job.error);
     let game = f.jobs.server_dir(accepted.server_id).join("game");
-    assert_eq!(Fixture::tree(&game), before);
+    assert_eq!(configured(Fixture::tree(&game)), configured(before));
 }
 
 #[test]
@@ -559,7 +576,7 @@ fn crash_resume_with_clean_staging_completes() {
     let job = f.jobs.run_apply(&f.binding, &accepted.job_id).unwrap();
     assert_eq!(job.state, "ready", "{:?}", job.error);
     let game = f.jobs.server_dir(accepted.server_id).join("game");
-    assert_eq!(Fixture::tree(&game), before);
+    assert_eq!(configured(Fixture::tree(&game)), configured(before));
     // Interrupted then cancelled jobs clean up their unregistered copy.
     let f2 = Fixture::new();
     f2.vanilla();
@@ -576,3 +593,6 @@ fn crash_resume_with_clean_staging_completes() {
         "cancelled"
     );
 }
+
+#[path = "commit_tests.rs"]
+mod commit_tests;
