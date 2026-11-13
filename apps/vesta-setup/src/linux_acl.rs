@@ -51,6 +51,7 @@ fn unchanged(entries:&[Entry])->Result<(),String>{
  Ok(())
 }
 pub fn run(args:&[String])->Result<(),String>{
+ if unsafe {libc::geteuid()}!=0{return Err("ACL changes require root".into());}
  let [action,path,roots] = args else{return Err("Expected ACL action, path and roots file".into());};
  if action!="add" && action!="remove"{return Err("Unknown ACL action".into());}
  let entries=review(Path::new(path))?;
@@ -62,7 +63,8 @@ pub fn run(args:&[String])->Result<(),String>{
   if action=="remove" && e.parent && remaining.iter().any(|r|r!=path && Path::new(r).starts_with(&e.path)){continue;}
   let rule=if action=="remove" {"u:vesta"}else if e.parent{"u:vesta:--x"}else if e.file.metadata().map_err(|e|e.to_string())?.is_dir(){"u:vesta:r-x"}else{"u:vesta:r--"};
   let fdpath=format!("/proc/{}/fd/{}",std::process::id(),e.file.as_raw_fd());
-  let status=std::process::Command::new("setfacl").args([if action=="remove"{"-x"}else{"-m"},rule,"--",&fdpath]).status().map_err(|e|e.to_string())?;
+  let mask_rule=if action=="add" {format!("{rule},m::r-x")}else{rule.into()};
+  let status=std::process::Command::new("setfacl").args(["--no-mask",if action=="remove"{"-x"}else{"-m"},&mask_rule,"--",&fdpath]).status().map_err(|e|e.to_string())?;
   if !status.success(){return Err("Descriptor ACL operation failed".into());}
  }
  unchanged(&entries)

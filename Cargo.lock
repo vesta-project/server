@@ -1590,6 +1590,8 @@ checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 [[package]]
 name = "mdns-sd"
 version = "0.21.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6743ed743ff2bada2b8651ef298d3f98addb0b74844f19cdd57137d8bd0219e"
 dependencies = [
  "fastrand",
  "flume",
@@ -3502,6 +3504,7 @@ dependencies = [
  "chrono",
  "dotenvy",
  "flate2",
+ "fs2",
  "getrandom 0.4.3",
  "hex",
  "ipnet",
@@ -3640,6 +3643,7 @@ dependencies = [
  "crossterm",
  "fs2",
  "hex",
+ "libc",
  "rcgen",
  "ring",
  "rustls",

@@ -13,7 +13,8 @@ fn decode(s: &str) -> String {
 }
 pub(super) fn parse(text:&str)->BTreeMap<String,String> {
  let mut lines=Vec::new();let mut line=String::new();
- for part in text.lines() {
+ let normalized=text.replace("\r\n","\n").replace('\r',"\n");
+ for part in normalized.lines() {
   let part=part.trim_start_matches([' ','\t','\u{c}']);
   if line.is_empty() && (part.starts_with(['#','!']) || part.is_empty()) {continue;}
   line.push_str(part);

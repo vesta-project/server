@@ -886,11 +886,11 @@ mod linux {
             };
             let base = proc.join(pid.to_string());
             let mut related = false;
-            let mut observed = false;
+            let mut observed = 0;
             for link in ["cwd", "exe"] {
                 // Unreadable links (other users' processes) leave `observed` false.
                 if let Ok(target) = fs::read_link(base.join(link)) {
-                    observed = true;
+                    observed += 1;
                     related |= inside(&target, sources);
                 }
             }
@@ -920,7 +920,7 @@ mod linux {
                     relation: "source",
                     state: "running",
                 });
-            } else if !observed && kind == "java" {
+            } else if observed < 2 && kind == "java" {
                 complete = false;
                 out.push(ProcessEvidence {
                     kind,
