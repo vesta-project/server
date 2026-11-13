@@ -11,7 +11,6 @@ use vesta_control::{
     machine::{
         HostState,
         imports::{FolderBrowser, ImportRootConfig},
-        recovery::LocalPrivilege,
     },
     worker::{Worker, WorkerShutdown},
 };
@@ -72,9 +71,15 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
     if bytes.len() > 64 * 1024 {
         return Err("host_config_invalid");
     }
-    let config: Config =
+    let mut config: Config =
         toml::from_str(std::str::from_utf8(&bytes).map_err(|_| "host_config_invalid")?)
             .map_err(|_| "host_config_invalid")?;
+    // Root-owned catalogue maintained by the local privileged CLI.
+    let roots_file = base.join("import-roots.json");
+    if roots_file.exists() {
+        let roots: Vec<PathBuf> = serde_json::from_slice(&std::fs::read(roots_file).map_err(|_| "host_import_roots_unreadable")?).map_err(|_| "host_import_roots_invalid")?;
+        config.import_roots.extend(roots);
+    }
     let path = |p: &Path| {
         if p.is_absolute() {
             p.to_owned()
@@ -195,14 +200,6 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
         .await
         .map_err(|_| "host_local_unavailable")?;
     let snap = state.snapshot().map_err(|_| "host_state_unavailable")?;
-    if snap.primary_account_id.is_none() {
-        println!(
-            "Setup code: {}",
-            identity
-                .setup_code(LocalPrivilege::from_privileged_local_channel())
-                .map_err(|_| "setup_code_unavailable")?
-        );
-    }
     println!("Vesta Server is running on {}", transport.local_addr());
     let claim_state = || {
         if state

@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-usage() { echo 'Usage: install.sh [--latest-nightly | --channel stable|nightly | --tag RELEASE_TAG] [--answers PATH --yes]. Without a selection, choose the package inside the installer. Explicit --setup-url/--setup-sha256/--bundle-url/--manifest-sha256/--release-key pins and existing uninstall options remain supported.' >&2; exit "${1:-2}"; }
+usage() { echo 'Usage: install.sh [--latest-nightly | --channel stable|nightly | --tag RELEASE_TAG] [--root /var/lib/vesta] [--port 25500] [--server-dir PATH] [--local-only] [--no-start|--no-service] [--answers PATH] [--from-dir LOCAL_BINARIES]. Requires root/sudo. Local binaries are UNVERIFIED DEVELOPMENT input. Explicit --setup-url/--setup-sha256/--bundle-url/--manifest-sha256/--release-key pins and existing uninstall options remain supported.' >&2; exit "${1:-2}"; }
 setup_url= setup_sha= bundle_url= manifest_sha= release_key= asset_prefix= answers= root= servers_root= server= yes=false uninstall=false plan=false
 selection= tag= channel= independent=false
+linux_args=()
+from_dir=
 while (($#)); do
   case "$1" in
+    --from-dir) (($# >= 2)) || usage; from_dir=$2; shift 2;;
+    --port|--server-dir) (($# >= 2)) || usage; linux_args+=("$1" "$2"); shift 2;;
+    --local-only|--no-start|--no-service) linux_args+=("$1"); shift;;
     --help|-h) usage 0;;
     --latest-nightly) [[ -z $selection ]] || usage; selection=nightly; shift;;
     --channel) (($# >= 2)) && [[ -z $selection && ( $2 == stable || $2 == nightly ) ]] || usage; selection=channel; channel=$2; shift 2;;
@@ -26,6 +31,17 @@ while (($#)); do
     *) usage;;
   esac
 done
+[[ $(id -u) == 0 ]] || { echo 'Installing Vesta Server requires root. Run: sudo bash install.sh [options]' >&2; exit 2; }
+if [[ -n $from_dir ]]; then
+  [[ $uninstall == false ]] || { echo 'Use sudo vesta uninstall --keep-data or --remove-data for a system installation.' >&2; exit 2; }
+  [[ -z $selection && -z $setup_url && -z $bundle_url && -z $setup_sha && -z $manifest_sha && -z $release_key && -z $asset_prefix ]] || { echo 'Do not mix development binaries with signed release selection/pins.' >&2; exit 2; }
+  echo 'WARNING: UNVERIFIED DEVELOPMENT binaries; no signature verification.' >&2
+  args=(install --from-dir "$from_dir" "${linux_args[@]}")
+  [[ -z $root ]] || args+=(--root "$root")
+  [[ -z $answers ]] || args+=(--answers "$answers")
+  [[ $yes == false ]] || args+=(--yes)
+  exec "$from_dir/vesta-setup" "${args[@]}"
+fi
 if [[ -z $selection && -z $setup_url && -z $bundle_url && -z $setup_sha && -z $manifest_sha && -z $release_key && -z $asset_prefix ]]; then selection=choose; fi
 if [[ -n $selection ]]; then
   [[ -z $setup_url && -z $bundle_url && -z $setup_sha && -z $manifest_sha && -z $release_key && -z $asset_prefix ]] || { echo 'Release selection cannot be mixed with explicit release pins.' >&2; exit 2; }
@@ -47,7 +63,7 @@ if [[ $uninstall == true ]]; then
   if [[ -n $server ]]; then [[ -n $servers_root ]] || { echo '--server requires --servers-root.' >&2; exit 2; }
   else [[ -n $root ]] || { echo 'Full Vesta uninstall requires --root.' >&2; exit 2; }; fi
 else
-  [[ -z $root && -z $servers_root && -z $server && $plan == false ]] || { echo 'Uninstall options require --uninstall.' >&2; exit 2; }
+  [[ -z $servers_root && -z $server && $plan == false ]] || { echo 'Uninstall options require --uninstall.' >&2; exit 2; }
 fi
 command -v curl >/dev/null || { echo 'curl is required.' >&2; exit 2; }
 command -v sha256sum >/dev/null || { echo 'sha256sum is required.' >&2; exit 2; }
@@ -161,6 +177,8 @@ if [[ $uninstall == true ]]; then
   [[ -z $server ]] || args+=(--server "$server")
   [[ $plan == false ]] || args+=(--plan)
 else
+  args+=("${linux_args[@]}")
+  [[ -z $root ]] || args+=(--root "$root")
   [[ -z $answers ]] || args+=(--answers "$answers")
   [[ $yes == false ]] || args+=(--yes)
 fi

@@ -60,10 +60,19 @@ fn main() -> ExitCode {
         }
         Ok(None) => (),
     }
+    #[cfg(target_os = "linux")]
+    if dispatch_args.first().and_then(|s| s.to_str()).is_some_and(|s| {
+        s == "import-root"
+            || s == "uninstall"
+                && (dispatch_args.iter().any(|a| a == "--keep-data" || a == "--remove-data")
+                    || std::path::Path::new(vesta_setup::linux_install::DATA_ROOT_RECORD).exists())
+    }) {
+        return vesta_setup::linux_install::admin(&dispatch_args);
+    }
     if dispatch_args
         .first()
         .and_then(|a| a.to_str())
-        .is_some_and(|a| matches!(a, "setup-code" | "link"))
+        .is_some_and(|a| matches!(a, "setup-code" | "link" | "host-status"))
     {
         let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
             .enable_all()

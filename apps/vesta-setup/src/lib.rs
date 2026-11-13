@@ -13,3 +13,5 @@ pub mod ui;
 pub mod updates;
 pub mod visual_states;
 pub mod wizard;
+
+pub mod linux_install;

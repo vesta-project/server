@@ -15,6 +15,7 @@ use vesta_transport::host_identity::HostIdentity;
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum LocalRequest {
     SetupCode,
+    Status,
     Link,
     InspectPending,
     Inspect { link_id: Uuid },
@@ -30,6 +31,11 @@ struct Response {
 fn dispatch(identity: &HostIdentity, request: LocalRequest) -> Response {
     let local = LocalPrivilege::from_privileged_local_channel();
     let result = match request {
+        LocalRequest::Status => identity
+            .state
+            .snapshot()
+            .map(|s| serde_json::json!({"hostId":s.host_id,"claimed":s.primary_account_id.is_some()}))
+            .map_err(|_| vesta_control::machine::sessions::IdentityFailure("host_local_failed")),
         LocalRequest::SetupCode => identity
             .setup_code(local)
             .map(|code| serde_json::json!({"code":code})),
@@ -219,6 +225,23 @@ impl Server {
         self.task.await.map_err(|_| "host_local_failed")?
     }
 }
+/// Preserve the supervisor's same-uid rule; this separate host-admin channel
+/// additionally admits root while retaining an fd-pinned, owner-checked directory.
+#[cfg(target_os = "linux")]
+fn privileged_socket_address(endpoint: &Path, owner: u32) -> Result<(std::fs::File, PathBuf)> {
+    use std::os::{fd::AsRawFd, unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt}};
+    let directory = std::fs::OpenOptions::new().read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(endpoint.parent().ok_or("host_local_acl_refused")?)
+        .map_err(|_| "host_local_acl_refused")?;
+    let metadata = directory.metadata().map_err(|_| "host_local_acl_refused")?;
+    if metadata.uid() != owner || !allowed_peer(uid(), owner) || metadata.permissions().mode() & 0o077 != 0 {
+        return Err("host_local_acl_refused");
+    }
+    let address = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()))
+        .join(endpoint.file_name().ok_or("host_local_acl_refused")?);
+    Ok((directory, address))
+}
 pub async fn request(state: &Path, request: LocalRequest) -> Result<serde_json::Value> {
     let endpoint = endpoint(state)?;
     #[cfg(windows)]
@@ -243,7 +266,7 @@ pub async fn request(state: &Path, request: LocalRequest) -> Result<serde_json::
         {
             return Err("host_local_acl_refused");
         }
-        let (_dir, address) = vesta_supervisor::native::socket_address(&endpoint)
+        let (_dir, address) = privileged_socket_address(&endpoint, parent.uid())
             .map_err(|_| "host_local_acl_refused")?;
         let stream = tokio::net::UnixStream::connect(address)
             .await
@@ -279,7 +302,7 @@ pub async fn request(state: &Path, request: LocalRequest) -> Result<serde_json::
         Err("host_local_platform_unsupported")
     }
 }
-pub const USAGE: &str = "Vesta Server\n  vesta setup-code [--state <host-state>]\n  vesta link [--state <host-state>]\n  vesta link --approve [<link-id> [<request-hash>]] [--state <host-state>]\n  vesta link --recover <account-uuid> <device-key> <device-name> [--revoke-all] [--state <host-state>]\nOmit the approval hash to inspect the exact signed request first. Recovery keeps other devices unless --revoke-all is supplied.";
+pub const USAGE: &str = "Vesta Server\n  vesta host-status [--state <host-state>]\n  vesta setup-code [--state <host-state>]\n  vesta link [--state <host-state>]\n  vesta link --approve [<link-id> [<request-hash>]] [--state <host-state>]\n  vesta link --recover <account-uuid> <device-key> <device-name> [--revoke-all] [--state <host-state>]\nOmit the approval hash to inspect the exact signed request first. Recovery keeps other devices unless --revoke-all is supplied.";
 fn parse(mut args: Vec<String>) -> Result<(PathBuf, LocalRequest)> {
     let mut state = std::env::var_os("VESTA_HOST_STATE")
         .map(PathBuf::from)
@@ -305,6 +328,7 @@ fn parse(mut args: Vec<String>) -> Result<(PathBuf, LocalRequest)> {
     }
     let r = match args.as_slice() {
         [c] if c == "setup-code" => LocalRequest::SetupCode,
+        [c] if c == "host-status" => LocalRequest::Status,
         [c] if c == "link" => LocalRequest::Link,
         [c, a] if c == "link" && a == "--approve" => LocalRequest::InspectPending,
         [c, a, id] if c == "link" && a == "--approve" => LocalRequest::Inspect {
