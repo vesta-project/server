@@ -308,6 +308,14 @@ mod tests {
                 );
             }
         }
+        for (i, device) in devices.iter().enumerate() {
+            let input=serde_json::to_vec(&json!({"add":["player"],"remove":[],"expected_version":state.snapshot().unwrap().revision.to_string()})).unwrap();
+            let path=format!("manage/users/{}/roles",devices[3].account_id);
+            assert_eq!(dispatch(&router,device,servers[0],&Method::PUT,&path,None,&input,&fp).unwrap().status(),if i<2 {StatusCode::OK}else{StatusCode::FORBIDDEN});
+            let issued=vesta_control::machine::invites::issue(&state,Actor::Account(owner.account_id),servers[0],&fp,vesta_control::machine::invites::CreateInvite{role:"player".into(),expires_minutes:60,multi_use:false,max_uses:None}).unwrap();
+            let path=format!("manage/invitations/{}",issued["id"].as_str().unwrap());
+            assert_eq!(dispatch(&router,device,servers[0],&Method::DELETE,&path,None,&[],&fp).unwrap().status(),if i<2 {StatusCode::NO_CONTENT}else{StatusCode::FORBIDDEN});
+        }
         assert!(
             state
                 .server_access(Actor::Account(devices[1].account_id), servers[1])
