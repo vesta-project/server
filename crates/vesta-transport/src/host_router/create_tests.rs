@@ -2543,13 +2543,37 @@ fn real_vanilla_backup_restores_as_a_new_server_and_reaches_online() {
         free_port(),
     ));
     assert_eq!(job["state"], "review", "{job}");
-    assert_eq!(job["review"]["warnings"], json!([]));
+    // A created server's software lives outside its backup: the restore
+    // installs exactly that software and reviews it exactly like `new`.
+    let summary = &job["review"]["summary"];
+    assert_eq!(summary["restore"]["installSoftware"], true, "{job}");
+    assert_eq!(
+        summary["software"],
+        json!({"kind":"vanilla","version":latest,"build":null,"loaderVersion":null})
+    );
+    let new = host.create_plan(
+        json!({"kind":"new","name":"Compare","minecraftVersion":latest,
+        "software":{"kind":"vanilla","build":null,"loaderVersion":null},
+        "gamePort":free_port(),"memoryMiB":1024,"eulaAccepted":false}),
+    );
+    assert_eq!(job["review"]["warnings"], new["review"]["warnings"]);
+    assert_eq!(
+        host.job_action(new["jobId"].as_str().unwrap(), "cancel").0,
+        200
+    );
     let id = job["jobId"].as_str().unwrap().to_owned();
     let (status, accepted) = host.create_apply(&job, "real-restore", json!({}));
     assert_eq!(status, 202, "{accepted}");
     let restored = accepted["serverId"].as_str().unwrap().to_owned();
     let ready = host.create_wait(&id, Duration::from_secs(900), |j| j["state"] != "applying");
     assert_eq!(ready["state"], "ready", "{ready}");
+    let restored_dir = host.temp.path().join("servers").join(&restored);
+    assert_eq!(
+        std::fs::read(restored_dir.join("game/world/level.dat")).unwrap(),
+        std::fs::read(dir.join("game/world/level.dat")).unwrap(),
+        "the backed-up world"
+    );
+    assert!(restored_dir.join("install").is_dir());
     assert_eq!(host.job_action(&id, "start").0, 202);
     let online = host.create_wait(&id, Duration::from_secs(600), |j| j["state"] != "starting");
     if online["state"] != "online" {
