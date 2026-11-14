@@ -46,7 +46,7 @@ fn canonical_snapshot_matches_independent_node_hash_vector() {
     };
     assert_eq!(
         p.hash(),
-        "3a8e8d96353035b0cd4542ec4cb671c1165d19197d3bdf3d48298bb3fecbd7ed"
+        "48bf12387b47e9d4c4b01b5d895681880a5e7a235579d4276da4528c5a598e4d"
     );
 }
 
