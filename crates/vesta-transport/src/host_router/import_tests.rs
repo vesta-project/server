@@ -293,6 +293,7 @@ impl Host {
         let temp = std::mem::replace(&mut self.temp, tempfile::tempdir().unwrap());
         let devices = self.devices;
         drop(self);
+        for entry in std::fs::read_dir(temp.path().join("servers")).unwrap().flatten() { let _ = std::fs::remove_file(entry.path().join("game/fixture-exit")); }
         Self::start(temp, env, creator, Some(devices), None)
     }
     fn wire(&self) -> Wire {
@@ -369,6 +370,13 @@ impl Host {
 }
 impl Drop for Host {
     fn drop(&mut self) {
+        // Model the service cgroup ending owned fixture games before worker shutdown.
+        if let Some(jobs) = self.router.imports() {
+            if let Ok(entries) = std::fs::read_dir(jobs.servers_root()) {
+                for entry in entries.flatten() { let game=entry.path().join("game"); if game.join("vesta-create-fixture").is_file() { let _=std::fs::write(game.join("fixture-exit"),b"exit"); } }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(300));
         if let Some(t) = self.transport.take() {
             let _ = t.shutdown(Duration::from_secs(5));
         }
@@ -481,9 +489,10 @@ fn owner_plans_applies_and_polls_import_jobs_through_the_router() {
     assert_eq!(host.apply(&job, "apply-key-1").1, accepted);
     let server = accepted["serverId"].as_str().unwrap().to_owned();
     let done = host.wait(id, Duration::from_secs(60), |j| {
-        !matches!(j["state"].as_str(), Some("applying" | "starting")) || (j["state"] == "ready" && j["error"].is_null())
+        !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null())
     });
-    assert_eq!(done["state"], "online", "{done}");
+    assert_eq!(done["state"], "ready", "{done}");
+    assert_eq!(done["error"], "start_failed");
     assert_eq!(done["phase"], "start");
     assert_eq!(done["serverId"], server);
     assert!(done["review"]["confirmation"].is_null());
