@@ -149,6 +149,9 @@ pub(super) fn dispatch(
         };
         match state.set_server_role(actor, server, target, role, revision) {
             Ok(s) => {
+                // Revoke the old policy in the worker before returning success.
+                let worker=router.workers.lock().ok().and_then(|w|w.iter().find(|w|w.server_id()==server).cloned());
+                if let Some(worker)=worker { if subject(router,worker.as_ref(),device).is_err() { return Some(failure(StatusCode::SERVICE_UNAVAILABLE,"worker_unavailable")); } }
                 let name = rows
                     .into_iter()
                     .find(|(id, _, _)| *id == target)

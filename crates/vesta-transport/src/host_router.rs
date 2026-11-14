@@ -1092,11 +1092,12 @@ impl Application {
                         failure(StatusCode::SERVICE_UNAVAILABLE, "worker_unavailable")
                     })?;
                 let s = subject(&router, w.as_ref(), &d)?;
-                w.authorize(s)
+                let generation=s.generation;
+                w.authorize(s).map(|host|(host,generation))
                     .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE, "worker_unavailable"))
             })
             .await;
-        let host = match admitted {
+        let (host, generation) = match admitted {
             Ok(Ok(h)) => h,
             Ok(Err(e)) => return e,
             _ => return failure(StatusCode::SERVICE_UNAVAILABLE, "host_busy"),
@@ -1179,7 +1180,7 @@ impl Application {
             let until = tokio::time::Instant::now() + Duration::from_secs(29);
             loop {
                 tick.tick().await;
-                if tokio::time::Instant::now() >= until || identity.authenticate(&token).is_err() {
+                if tokio::time::Instant::now() >= until || identity.authenticate(&token).is_err() || !identity.state.snapshot().is_ok_and(|s|s.auth_generation==generation) {
                     let _ = stop.send(true);
                     break;
                 }
