@@ -22,6 +22,7 @@ use super::create::CreatePrivate;
 use super::*;
 use crate::backups::{engine::Engine as BackupEngine, store::LocalStore};
 use crate::config::{BackupRepository, BackupSettings, HostConfiguration};
+use vesta_server_install::Software;
 
 /// Space kept for a managed Java download (archive plus extraction).
 const JAVA_RESERVE_BYTES: u64 = 512 * 1024 * 1024;
@@ -87,11 +88,65 @@ pub struct RestorePrivate {
     pub files: u64,
 }
 
+/// What a software-installing restore adds to the shared create plan.
+pub(super) struct RestoreCore {
+    pub private: RestorePrivate,
+    pub summary: serde_json::Value,
+}
+
 /// A listed source with its private identity and the reviewable facts.
 struct Candidate {
     public: RestoreSource,
     private: RestorePrivate,
     launchable: bool,
+    facts: Option<ServerFacts>,
+}
+
+/// Whether a restore installs software, and exactly which: always for a
+/// server whose software Vesta installed (its game directory alone cannot
+/// run), and for any other server (an import keeps its own jar in the game
+/// directory) only when the snapshot holds no launch of its own.
+fn restore_install_choice(
+    facts: Option<&ServerFacts>,
+    launchable: bool,
+) -> Option<(Software, String, SoftwareChoice)> {
+    let facts = facts?;
+    if !facts.installed && launchable {
+        return None;
+    }
+    install_choice(facts)
+}
+
+/// The exact software to install for a backup whose server's facts are known:
+/// `None` when they do not determine it (unknown kind or Minecraft version, or
+/// a loader without its recorded loader version).
+fn install_choice(facts: &ServerFacts) -> Option<(Software, String, SoftwareChoice)> {
+    let (kind, _) = facts.software.as_ref()?;
+    let software = super::create::software_kind(kind)?;
+    let minecraft = facts.minecraft_version.clone()?;
+    let loader = matches!(
+        software,
+        Software::Fabric | Software::Quilt | Software::Forge | Software::NeoForge
+    );
+    if loader && facts.loader_version.is_none() {
+        return None;
+    }
+    let build = matches!(
+        software,
+        Software::Paper | Software::Folia | Software::Purpur
+    )
+    .then_some(facts.build)
+    .flatten()
+    .filter(|b| *b > 0);
+    Some((
+        software,
+        minecraft,
+        SoftwareChoice {
+            kind: software.id().to_owned(),
+            build,
+            loader_version: loader.then(|| facts.loader_version.clone()).flatten(),
+        },
+    ))
 }
 
 /// `<origin simple uuid><snapshot id>`: 64 lowercase hex characters.
@@ -224,6 +279,7 @@ impl ImportJobs {
                         files: files.len() as u64,
                     },
                     launchable: launchable(&files),
+                    facts: fact.cloned(),
                 });
             }
         }
@@ -262,10 +318,18 @@ impl ImportJobs {
         self.insert_planning(binding, Kind::Create, "resolving", &raw)
     }
 
+    /// Plan a restore. When the backed-up server's software is known exactly
+    /// and its game directory alone cannot run (Vesta installed it under
+    /// `<server>/install`, which backups do not cover) or holds no launch, the
+    /// restore installs that software through the same verified installer as
+    /// `new` and publishes the snapshot as the game directory. Otherwise the
+    /// launch comes from the restored files, like an import.
     pub(super) fn compute_restore_plan(
         &self,
         binding: &OwnerBinding,
         request: &RestoreServerRequest,
+        installer: &dyn crate::machine::creates::CreateInstaller,
+        catalogue: &dyn crate::machine::creates::Catalogue,
     ) -> JobResult<(CreateReview, CreatePrivate)> {
         validate_restore(request)?;
         let RestoreSourceRequest::Snapshot { source_id } = &request.source else {
@@ -277,6 +341,38 @@ impl ImportJobs {
             .restore_candidates()?
             .into_iter()
             .find(|c| &c.public.source_id == source_id);
+        if let Some(c) = &candidate
+            && let Some((software, minecraft, choice)) =
+                restore_install_choice(c.facts.as_ref(), c.launchable)
+        {
+            let new = NewServerRequest {
+                kind: "new".into(),
+                name: request.name.trim().to_owned(),
+                minecraft_version: minecraft,
+                software: choice,
+                game_port: request.game_port,
+                memory_mib: request.memory_mib,
+                eula_accepted: false,
+            };
+            let core = RestoreCore {
+                private: c.private.clone(),
+                summary: serde_json::json!({
+                    "sourceId": source_id,
+                    "label": c.public.label,
+                    "createdAt": c.public.created_at,
+                    "installSoftware": true,
+                }),
+            };
+            return self.compute_create_core(
+                binding,
+                &new,
+                Some(software),
+                None,
+                Some(core),
+                installer,
+                catalogue,
+            );
+        }
         if candidate.is_none() {
             blockers.insert("restore_source_unavailable");
         }
@@ -368,6 +464,7 @@ impl ImportJobs {
                     "sourceId": source_id,
                     "label": candidate.as_ref().map(|c| &c.public.label),
                     "createdAt": candidate.as_ref().map(|c| &c.public.created_at),
+                    "installSoftware": false,
                 })),
             },
             blockers: blockers.iter().map(|b| (*b).to_owned()).collect(),
@@ -440,14 +537,7 @@ impl ImportJobs {
         }
         // Anything an interrupted attempt left is ours and is discarded.
         self.remove_unregistered(server_id);
-        // The opaque source is revalidated: still exactly the reviewed
-        // snapshot, still not attached to a live server.
-        let candidates = self
-            .restore_candidates()
-            .map_err(|_| Outcome::Interrupted("state_unavailable"))?;
-        if !candidates.iter().any(|c| &c.private == restore) {
-            return Err(Outcome::Failed("restore_source_unavailable"));
-        }
+        self.restore_source_current(restore)?;
         let dir = self.server_dir(server_id);
         files::create_local_directory(&dir, true)
             .and_then(|()| files::create_local_directory(&dir.join("private"), true))
@@ -459,40 +549,7 @@ impl ImportJobs {
         self.set_phase(job_id, "applying", "installing")?;
         self.progress(job_id, CopyProgress::default(), 0, restore.bytes)?;
         let staging = dir.join("staging");
-        let _ = fs::remove_dir_all(&staging);
-        files::create_local_directory(&staging, true)
-            .map_err(|_| Outcome::Failed("install_failed"))?;
-        let engine = BackupEngine::new(Box::new(LocalStore::new(restore.repository.clone())));
-        let mut last: Option<std::time::Instant> = None;
-        let restored =
-            engine.restore_cancellable(&restore.snapshot, &staging, &stop, &mut |done, total| {
-                let now = std::time::Instant::now();
-                if done < total && last.is_some_and(|l| now.duration_since(l) < PROGRESS_INTERVAL) {
-                    return;
-                }
-                last = Some(now);
-                let _ = self.progress(
-                    job_id,
-                    CopyProgress {
-                        files: 0,
-                        bytes: done,
-                    },
-                    0,
-                    total,
-                );
-            });
-        match restored {
-            Ok(true) => {}
-            Ok(false) => return Err(Outcome::Cancelled),
-            Err(
-                crate::backups::engine::EngineError::Corrupt
-                | crate::backups::engine::EngineError::Missing
-                | crate::backups::engine::EngineError::Failed
-                | crate::backups::engine::EngineError::Invalid
-                | crate::backups::engine::EngineError::TooLarge,
-            ) => return Err(Outcome::Failed("integrity_conflict")),
-            Err(_) => return Err(Outcome::Failed("install_failed")),
-        }
+        self.restore_snapshot(job_id, restore, &staging, &stop)?;
 
         // The trusted launch comes from the restored files, exactly as for an
         // import: the detected jar or Java argument file, never a script.
@@ -558,33 +615,7 @@ impl ImportJobs {
         if stop() {
             return Err(Outcome::Cancelled);
         }
-        // EULA consent comes from the owner's apply, never from the backup.
-        let (ms, account) = eula;
-        commit::write_atomic(
-            &staging.join("eula.txt"),
-            format!(
-                "# Accepted by Vesta Server owner {account} at {ms} (https://aka.ms/MinecraftEULA)\neula=true\n"
-            )
-            .as_bytes(),
-        )
-        .map_err(|_| Outcome::Failed("install_failed"))?;
-        let properties = staging.join("server.properties");
-        let current = match fs::symlink_metadata(&properties) {
-            Ok(meta)
-                if meta.is_file()
-                    && !meta.file_type().is_symlink()
-                    && meta.len() <= 1024 * 1024 =>
-            {
-                fs::read_to_string(&properties).map_err(|_| Outcome::Failed("install_failed"))?
-            }
-            Ok(_) => return Err(Outcome::Failed("install_failed")),
-            Err(_) => String::new(),
-        };
-        commit::write_atomic(
-            &properties,
-            commit::rewrite_properties(&current, port).as_bytes(),
-        )
-        .map_err(|_| Outcome::Failed("install_failed"))?;
+        stage_owner_files(&staging, port, eula).map_err(Outcome::Failed)?;
         // Last safe boundary before anything is published.
         if stop() {
             return Err(Outcome::Cancelled);
@@ -640,5 +671,193 @@ impl ImportJobs {
             return Err(Outcome::Cancelled);
         }
         Ok(())
+    }
+}
+
+/// Record the owner's EULA (from the apply, never from the backup) and the
+/// reserved port (RCON and query off) in a staged game directory, keeping the
+/// rest of its restored `server.properties`.
+fn stage_owner_files(staging: &Path, port: u16, eula: (i64, &str)) -> Result<(), &'static str> {
+    let (ms, account) = eula;
+    commit::write_atomic(
+        &staging.join("eula.txt"),
+        format!(
+            "# Accepted by Vesta Server owner {account} at {ms} (https://aka.ms/MinecraftEULA)\neula=true\n"
+        )
+        .as_bytes(),
+    )
+    .map_err(|_| "install_failed")?;
+    let properties = staging.join("server.properties");
+    let current = match fs::symlink_metadata(&properties) {
+        Ok(meta)
+            if meta.is_file() && !meta.file_type().is_symlink() && meta.len() <= 1024 * 1024 =>
+        {
+            fs::read_to_string(&properties).map_err(|_| "install_failed")?
+        }
+        Ok(_) => return Err("install_failed"),
+        Err(_) => String::new(),
+    };
+    commit::write_atomic(
+        &properties,
+        commit::rewrite_properties(&current, port).as_bytes(),
+    )
+    .map_err(|_| "install_failed")
+}
+
+impl ImportJobs {
+    /// The opaque source is revalidated: still exactly the reviewed snapshot,
+    /// still not attached to a live server.
+    pub(super) fn restore_source_current(&self, restore: &RestorePrivate) -> Result<(), Outcome> {
+        let candidates = self
+            .restore_candidates()
+            .map_err(|_| Outcome::Interrupted("state_unavailable"))?;
+        if candidates.iter().any(|c| &c.private == restore) {
+            Ok(())
+        } else {
+            Err(Outcome::Failed("restore_source_unavailable"))
+        }
+    }
+
+    /// Restore the reviewed snapshot into a fresh private `staging` with every
+    /// chunk re-hashed and every size checked, reporting byte progress. A
+    /// snapshot that does not verify is `integrity_conflict`.
+    fn restore_snapshot(
+        &self,
+        job_id: &str,
+        restore: &RestorePrivate,
+        staging: &Path,
+        stop: &dyn Fn() -> bool,
+    ) -> Result<(), Outcome> {
+        let _ = fs::remove_dir_all(staging);
+        files::create_local_directory(staging, true)
+            .map_err(|_| Outcome::Failed("install_failed"))?;
+        let engine = BackupEngine::new(Box::new(LocalStore::new(restore.repository.clone())));
+        let mut last: Option<std::time::Instant> = None;
+        let restored =
+            engine.restore_cancellable(&restore.snapshot, staging, stop, &mut |done, total| {
+                let now = std::time::Instant::now();
+                if done < total && last.is_some_and(|l| now.duration_since(l) < PROGRESS_INTERVAL) {
+                    return;
+                }
+                last = Some(now);
+                let _ = self.progress(
+                    job_id,
+                    CopyProgress {
+                        files: 0,
+                        bytes: done,
+                    },
+                    0,
+                    total,
+                );
+            });
+        match restored {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(Outcome::Cancelled),
+            Err(
+                crate::backups::engine::EngineError::Corrupt
+                | crate::backups::engine::EngineError::Missing
+                | crate::backups::engine::EngineError::Failed
+                | crate::backups::engine::EngineError::Invalid
+                | crate::backups::engine::EngineError::TooLarge,
+            ) => Err(Outcome::Failed("integrity_conflict")),
+            Err(_) => Err(Outcome::Failed("install_failed")),
+        }
+    }
+
+    /// The installer's publish step for a software-installing restore: the
+    /// verified snapshot, with the owner's EULA and the reserved port, becomes
+    /// `<server>/game` with one rename. The installed software stays under
+    /// `<server>/install`, exactly as for `new`.
+    pub(super) fn publish_restored(
+        &self,
+        job_id: &str,
+        dir: &Path,
+        port: u16,
+        eula: (i64, &str),
+        restore: &RestorePrivate,
+        stop: &dyn Fn() -> bool,
+    ) -> Result<PathBuf, &'static str> {
+        let game = dir.join("game");
+        if fs::symlink_metadata(&game).is_ok() {
+            return Err("destination_conflict");
+        }
+        let staging = dir.join("staging");
+        self.progress(job_id, CopyProgress::default(), 0, restore.bytes)
+            .map_err(|_| "install_failed")?;
+        self.restore_snapshot(job_id, restore, &staging, stop)
+            .map_err(|outcome| match outcome {
+                Outcome::Cancelled => "cancelled",
+                Outcome::Failed(code) | Outcome::Interrupted(code) | Outcome::Blocked(code) => code,
+                Outcome::SourceChangedDuringCopy => "install_failed",
+            })?;
+        if stop() {
+            return Err("cancelled");
+        }
+        stage_owner_files(&staging, port, eula)?;
+        fs::rename(&staging, &game).map_err(|_| "install_failed")?;
+        Ok(game)
+    }
+}
+
+#[cfg(test)]
+mod install_choice_tests {
+    use super::*;
+
+    fn facts(kind: &str, version: Option<&str>, installed: bool) -> ServerFacts {
+        ServerFacts {
+            software: Some((kind.into(), version.map(Into::into))),
+            minecraft_version: Some("1.21.1".into()),
+            build: None,
+            loader_version: None,
+            installed,
+        }
+    }
+
+    #[test]
+    fn vesta_installed_software_is_reinstalled_even_when_a_jar_was_backed_up() {
+        let created = facts("vanilla", Some("1.21.1"), true);
+        for launchable in [false, true] {
+            let (software, minecraft, choice) =
+                restore_install_choice(Some(&created), launchable).unwrap();
+            assert_eq!(
+                (software, minecraft.as_str()),
+                (Software::Vanilla, "1.21.1")
+            );
+            assert_eq!((choice.kind.as_str(), choice.build), ("vanilla", None));
+            assert_eq!(choice.loader_version, None);
+        }
+    }
+
+    #[test]
+    fn imported_servers_keep_their_own_launch_and_install_only_when_it_is_missing() {
+        let imported = ServerFacts {
+            build: Some(196),
+            ..facts("paper", Some("196"), false)
+        };
+        assert!(restore_install_choice(Some(&imported), true).is_none());
+        let (software, _, choice) = restore_install_choice(Some(&imported), false).unwrap();
+        assert_eq!((software, choice.build), (Software::Paper, Some(196)));
+    }
+
+    #[test]
+    fn software_that_cannot_be_determined_installs_nothing() {
+        // No facts, an unknown kind, an unknown Minecraft version, or a loader
+        // whose exact version was never recorded.
+        assert!(restore_install_choice(None, false).is_none());
+        assert!(restore_install_choice(Some(&facts("magma", None, false)), false).is_none());
+        let unknown_version = ServerFacts {
+            minecraft_version: None,
+            ..facts("vanilla", None, true)
+        };
+        assert!(restore_install_choice(Some(&unknown_version), false).is_none());
+        assert!(restore_install_choice(Some(&facts("fabric", None, true)), false).is_none());
+        let fabric = ServerFacts {
+            loader_version: Some("0.16.10".into()),
+            ..facts("fabric", Some("0.16.10"), true)
+        };
+        let (software, _, choice) = restore_install_choice(Some(&fabric), false).unwrap();
+        assert_eq!(software, Software::Fabric);
+        assert_eq!(choice.loader_version.as_deref(), Some("0.16.10"));
+        assert_eq!(choice.build, None);
     }
 }

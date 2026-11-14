@@ -466,6 +466,6 @@ impl ImportJobs {
         } else {
             software
         };
-        self.compute_create_core(binding, &new, software, Some(pack), installer, catalogue)
+        self.compute_create_core(binding, &new, software, Some(pack), None, installer, catalogue)
     }
 }

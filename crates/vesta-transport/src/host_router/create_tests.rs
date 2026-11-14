@@ -1968,7 +1968,7 @@ fn restore_lists_detached_backups_and_restores_one_as_a_new_server() {
     assert_eq!(review["summary"]["software"]["kind"], "unknown");
     assert_eq!(
         review["summary"]["restore"],
-        json!({"sourceId":detached["sourceId"],"label":"Recovered server","createdAt":detached["createdAt"]})
+        json!({"sourceId":detached["sourceId"],"label":"Recovered server","createdAt":detached["createdAt"],"installSoftware":false})
     );
     assert!(review["summary"]["pack"].is_null());
     let (status, error) =
@@ -2034,6 +2034,124 @@ fn restore_lists_detached_backups_and_restores_one_as_a_new_server() {
             .iter()
             .all(|s| !s["sourceId"].as_str().unwrap().starts_with(&prefix))
     );
+}
+
+/// Mark a registered server deleted (its folder and backups remain).
+fn delete_server(host: &Host, server: Uuid) {
+    let owner = host
+        .state
+        .device(host.devices.0)
+        .unwrap()
+        .unwrap()
+        .account_id;
+    let mut entry = host.state.server(server).unwrap().unwrap();
+    entry.state = vesta_control::machine::registry::ServerState::Deleted;
+    let revision = host.state.snapshot().unwrap().revision;
+    host.state
+        .update_server(
+            vesta_control::machine::owners::Actor::Account(owner),
+            &entry,
+            revision,
+        )
+        .unwrap();
+}
+
+/// A server Vesta created keeps its software under `<server>/install`, which
+/// its backups do not cover (exactly like the live installer's layout): the
+/// game directory alone has no server to run. Restoring such a backup
+/// installs the recorded software through the same installer as `new`,
+/// publishes the verified snapshot as the game directory and reaches online.
+#[test]
+fn restore_of_a_created_server_reinstalls_its_software_and_reaches_online() {
+    let installer = Arc::new(FakeInstaller::default());
+    let host = create_host(installer.clone());
+    let job = host.create_plan(new_body("Original", Some(25710), Some(1024)));
+    let (status, accepted) = host.create_apply(&job, "original-key", json!({}));
+    assert_eq!(status, 202, "{accepted}");
+    let ready = host.create_wait(
+        accepted["jobId"].as_str().unwrap(),
+        Duration::from_secs(60),
+        |j| j["state"] != "applying",
+    );
+    assert_eq!(ready["state"], "ready", "{ready}");
+    let origin: Uuid = accepted["serverId"].as_str().unwrap().parse().unwrap();
+    let dir = host.temp.path().join("servers").join(origin.to_string());
+    // The real layout: the software lives in install/, game/ has no jar.
+    assert!(dir.join("install/software").is_dir());
+    assert!(
+        std::fs::read_dir(dir.join("game"))
+            .unwrap()
+            .flatten()
+            .all(|e| !e.file_name().to_string_lossy().ends_with(".jar"))
+    );
+    std::fs::create_dir_all(dir.join("game/world")).unwrap();
+    std::fs::write(dir.join("game/world/level.dat"), b"original world").unwrap();
+    std::fs::write(
+        dir.join("game/server.properties"),
+        "server-port=25710\nmotd=Kept\n",
+    )
+    .unwrap();
+    let snapshot = backup_folder(&dir);
+    delete_server(&host, origin);
+    let source = restore_sources(&host)
+        .into_iter()
+        .find(|s| s["sourceId"] == format!("{}{snapshot}", origin.simple()))
+        .expect("the deleted server's backup");
+
+    let job = host.create_plan(restore_body(
+        "Reborn",
+        source["sourceId"].as_str().unwrap(),
+        25711,
+    ));
+    assert_eq!(job["state"], "review", "{job}");
+    let summary = &job["review"]["summary"];
+    assert_eq!(summary["kind"], "restore");
+    assert_eq!(summary["minecraftVersion"], "26.1");
+    // The review says exactly what will be installed.
+    assert_eq!(
+        summary["software"],
+        json!({"kind":"vanilla","version":"26.1","build":null,"loaderVersion":null})
+    );
+    assert_eq!(summary["runtime"]["requiredMajor"], 21);
+    assert_eq!(
+        summary["restore"],
+        json!({"sourceId":source["sourceId"],"label":"Original","createdAt":source["createdAt"],"installSoftware":true})
+    );
+    let id = job["jobId"].as_str().unwrap().to_owned();
+    let (status, accepted) = host.create_apply(&job, "reborn-key", json!({}));
+    assert_eq!(status, 202, "{accepted}");
+    let ready = host.create_wait(&id, Duration::from_secs(60), |j| j["state"] != "applying");
+    assert_eq!(ready["state"], "ready", "{ready}");
+    assert_eq!(installer.installs.load(Ordering::SeqCst), 2);
+    let server = accepted["serverId"].as_str().unwrap().to_owned();
+    let dir = host.temp.path().join("servers").join(&server);
+    assert!(dir.join("install/software").is_dir());
+    assert!(!dir.join("staging").exists());
+    assert_eq!(
+        std::fs::read(dir.join("game/world/level.dat")).unwrap(),
+        b"original world"
+    );
+    let properties = std::fs::read_to_string(dir.join("game/server.properties")).unwrap();
+    assert!(
+        properties.contains("server-port=25711") && properties.contains("motd=Kept"),
+        "{properties}"
+    );
+    assert!(
+        std::fs::read_to_string(dir.join("game/eula.txt"))
+            .unwrap()
+            .contains("eula=true")
+    );
+    assert_eq!(host.job_action(&id, "start").0, 202);
+    let online = host.create_wait(&id, Duration::from_secs(60), |j| j["state"] != "starting");
+    assert_eq!(online["state"], "online", "{online}");
+    let card = host
+        .servers()
+        .into_iter()
+        .find(|s| s["serverId"] == server.as_str())
+        .unwrap();
+    assert_eq!(card["software"]["kind"], "vanilla");
+    assert_eq!(card["minecraftVersion"], "26.1");
+    stop_server(&host, &server, "reborn-stop-0001");
 }
 
 /// A snapshot whose stored data no longer verifies is refused: the job fails

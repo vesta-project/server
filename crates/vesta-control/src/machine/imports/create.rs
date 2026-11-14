@@ -156,6 +156,14 @@ pub struct ServerFacts {
     /// `(kind, version)`; the version may be unknown for imports.
     pub software: Option<(String, Option<String>)>,
     pub minecraft_version: Option<String>,
+    /// Exact build (Paper, Folia, Purpur) when known.
+    pub build: Option<u32>,
+    /// Exact loader version (Fabric, Quilt, Forge, NeoForge) when known.
+    pub loader_version: Option<String>,
+    /// The software was installed by Vesta under `<server>/install` (a `new`,
+    /// `modpack` or software-installing `restore` create): the game directory
+    /// alone holds no runnable server.
+    pub installed: bool,
 }
 
 /// The software's own version for an imported server, from the facts its
@@ -385,7 +393,7 @@ impl ImportJobs {
         let outcome = if value["kind"] == "restore" {
             let request: super::restore::RestoreServerRequest =
                 serde_json::from_value(value).map_err(|_| JobError::UNAVAILABLE)?;
-            self.compute_restore_plan(binding, &request)
+            self.compute_restore_plan(binding, &request, installer, catalogue)
         } else if value["kind"] == "modpack" {
             let request: super::modpack::ModpackServerRequest =
                 serde_json::from_value(value).map_err(|_| JobError::UNAVAILABLE)?;
@@ -436,17 +444,28 @@ impl ImportJobs {
         catalogue: &dyn Catalogue,
     ) -> JobResult<(CreateReview, CreatePrivate)> {
         let software = validate_new(request)?;
-        self.compute_create_core(binding, request, Some(software), None, installer, catalogue)
+        self.compute_create_core(
+            binding,
+            request,
+            Some(software),
+            None,
+            None,
+            installer,
+            catalogue,
+        )
     }
 
-    /// Shared planning core for `new` and `modpack`. `software` is `None`
-    /// only for a pack that could not be read (the pack's blockers explain it).
+    /// Shared planning core for `new`, `modpack` and a `restore` that installs
+    /// the backup's software. `software` is `None` only for a pack that could
+    /// not be read (the pack's blockers explain it).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn compute_create_core(
         &self,
         binding: &OwnerBinding,
         request: &NewServerRequest,
         software: Option<Software>,
         pack: Option<super::modpack::PackPlan>,
+        restore: Option<super::restore::RestoreCore>,
         installer: &dyn CreateInstaller,
         catalogue: &dyn Catalogue,
     ) -> JobResult<(CreateReview, CreatePrivate)> {
@@ -582,6 +601,7 @@ impl ImportJobs {
             .and_then(|p| p.download_bytes)
             .unwrap_or(0)
             .saturating_add(pack.as_ref().map_or(0, |p| p.content_bytes))
+            .saturating_add(restore.as_ref().map_or(0, |r| r.private.bytes))
             .saturating_add(if java.download_required {
                 if source_built { JDK_RESERVE_BYTES } else { JAVA_RESERVE_BYTES }
             } else {
@@ -599,7 +619,14 @@ impl ImportJobs {
             confirmation: None,
             expires_at: now.saturating_add(PLAN_TTL_MS),
             summary: CreateSummary {
-                kind: if pack.is_some() { "modpack" } else { "new" }.into(),
+                kind: if pack.is_some() {
+                    "modpack"
+                } else if restore.is_some() {
+                    "restore"
+                } else {
+                    "new"
+                }
+                .into(),
                 name: request.name.trim().to_owned(),
                 minecraft_version: minecraft.clone(),
                 software: SummarySoftware {
@@ -623,7 +650,7 @@ impl ImportJobs {
                     free_bytes: free,
                 },
                 pack: pack.as_ref().map(|p| p.summary.clone()),
-                restore: None,
+                restore: restore.as_ref().map(|r| r.summary.clone()),
             },
             blockers: blockers.iter().map(|b| (*b).to_owned()).collect(),
             warnings: warnings.iter().map(|w| (*w).to_owned()).collect(),
@@ -643,7 +670,7 @@ impl ImportJobs {
                 jdk: source_built,
             },
             pack: pack.map(|p| p.private),
-            restore: None,
+            restore: restore.map(|r| r.private),
             plan_hash: String::new(),
         };
         let private = CreatePrivate {
@@ -792,7 +819,9 @@ impl ImportJobs {
         })?;
         let server_id = review.summary.destination.server_id;
         if Kind::Create.cancellable(&phase)
-            && let Err(outcome) = if private.restore.is_some() {
+            // A restore without a software preview runs its own restored
+            // files; one with a preview installs that software like `new`.
+            && let Err(outcome) = if private.restore.is_some() && private.preview.is_none() {
                 self.restore_install(job_id, &review, &private, (eula_ms, &eula_account), &flag)
             } else {
                 self.create_install(
@@ -869,6 +898,10 @@ impl ImportJobs {
             .and_then(|()| files::create_local_directory(&install, true))
             .and_then(|()| files::create_local_directory(&dir.join("private"), true))
             .map_err(|_| Outcome::Failed("install_failed"))?;
+        // A restore's opaque source is revalidated before anything is fetched.
+        if let Some(restore) = &private.restore {
+            self.restore_source_current(restore)?;
+        }
         if stop() {
             return Err(Outcome::Cancelled);
         }
@@ -901,7 +934,11 @@ impl ImportJobs {
             experimental: private.experimental,
         };
         let game = dir.join("game");
-        let mut publish = || self.publish_game(&dir, port, eula);
+        // A restore publishes the verified snapshot as the game directory.
+        let mut publish = || match &private.restore {
+            Some(restore) => self.publish_restored(job_id, &dir, port, eula, restore, &stop),
+            None => self.publish_game(&dir, port, eula),
+        };
         let launch = installer
             .install(
                 &InstallRequest {
@@ -1180,20 +1217,42 @@ impl ImportJobs {
                         continue;
                     };
                     let s = review.summary;
+                    let installed = match s.kind.as_str() {
+                        "new" | "modpack" => true,
+                        "restore" => s.restore.as_ref().is_some_and(|r| {
+                            r["installSoftware"] == serde_json::Value::Bool(true)
+                        }),
+                        _ => false,
+                    };
                     // A restore of a backup whose facts were unknown says so.
                     ServerFacts {
                         software: (s.software.kind != "unknown")
                             .then_some((s.software.kind, s.software.version)),
                         minecraft_version: Some(s.minecraft_version).filter(|v| !v.is_empty()),
+                        build: s.software.build,
+                        loader_version: s.software.loader_version,
+                        installed,
                     }
                 } else {
                     let Ok(review) = serde_json::from_str::<Review>(&review) else {
                         continue;
                     };
                     let version = imported_software_version(&review.detected);
+                    // Same meaning as a create's summary: build for the Paper
+                    // family, loader version for loaders.
+                    let (build, loader_version) = match review.detected.loader.as_deref() {
+                        Some("paper" | "folia" | "purpur") => {
+                            (version.as_deref().and_then(|v| v.parse().ok()), None)
+                        }
+                        Some("fabric" | "quilt" | "forge" | "neoforge") => (None, version.clone()),
+                        _ => (None, None),
+                    };
                     ServerFacts {
                         software: review.detected.loader.map(|l| (l, version)),
                         minecraft_version: review.detected.minecraft_version,
+                        build,
+                        loader_version,
+                        installed: false,
                     }
                 };
                 facts.insert(server, fact);
