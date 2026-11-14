@@ -280,3 +280,7 @@ Import stopped-state codes and suggested text:
 - `world_outside_source`: "Choose a folder containing the world and use a relative level-name inside that folder."
 - `bind_address_cleared` warns: "The imported server will bind to all interfaces; Vesta clears server-ip in the copy."
 - `launch_arguments_unsupported`: "The launch arguments contain unsupported options or paths. Use a self-contained server folder with supported Forge arguments, then check again."
+
+### Effective startup policy
+
+Server status `on_agent_start` is `restore_previous` when no stored or host.toml policy was explicitly chosen. This means resume the server's last lifecycle state after an agent restart. Explicit `stay_stopped`, `sleep`, and `start` choices and the local stay-stopped override retain their meaning.
