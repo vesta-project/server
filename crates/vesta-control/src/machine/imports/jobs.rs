@@ -55,6 +55,7 @@ pub struct JobError(pub &'static str);
 impl JobError {
     pub const FORBIDDEN: Self = Self("forbidden");
     pub const NOT_FOUND: Self = Self("import_job_not_found");
+    pub const CREATE_NOT_FOUND: Self = Self("create_job_not_found");
     pub const INVALID: Self = Self("invalid_request");
     pub const CONFLICT: Self = Self("conflict");
     pub const IDEMPOTENCY: Self = Self("idempotency_conflict");
@@ -220,18 +221,59 @@ pub struct Progress {
     pub bytes_done: u64,
     pub bytes_total: u64,
 }
+/// Durable job envelope shared by imports and creates; only the review differs.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct ImportJob {
+pub struct Job<R> {
     pub job_id: String,
     /// `planning|review|applying|ready|starting|online|blocked|failed|cancelled|interrupted`.
     pub state: String,
-    /// `inspect|conflicts|java|snapshot|copy|configure|register|start`.
+    /// Import: `inspect|conflicts|java|snapshot|copy|configure|register|start`.
+    /// Create: `resolving|downloading_java|downloading_software|installing|registering|starting`.
     pub phase: String,
     pub error: Option<String>,
     pub progress: Progress,
-    pub review: Option<Review>,
+    pub review: Option<R>,
     pub server_id: Option<Uuid>,
+}
+pub type ImportJob = Job<Review>;
+
+/// Which flow owns a row of the shared job store. Every lookup is filtered by
+/// kind, so an import id is unknown to the create routes and vice versa.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Import,
+    Create,
+}
+impl Kind {
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Self::Import => "import",
+            Self::Create => "create",
+        }
+    }
+    pub(crate) fn not_found(self) -> JobError {
+        match self {
+            Self::Import => JobError::NOT_FOUND,
+            Self::Create => JobError::CREATE_NOT_FOUND,
+        }
+    }
+    fn saturated(self) -> JobError {
+        match self {
+            Self::Import => JobError("import_jobs_saturated"),
+            Self::Create => JobError("create_jobs_saturated"),
+        }
+    }
+    /// Phases before anything is committed: cancel releases the reservation.
+    fn cancellable(self, phase: &str) -> bool {
+        match self {
+            Self::Import => matches!(phase, "inspect" | "conflicts" | "snapshot" | "copy"),
+            Self::Create => matches!(
+                phase,
+                "resolving" | "downloading_java" | "downloading_software" | "installing"
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -380,6 +422,17 @@ impl ImportJobs {
         let servers = fs::canonicalize(servers).map_err(|_| JobError::UNAVAILABLE)?;
         host.write(|c| {
             c.execute_batch(SCHEMA)?;
+            // Creates share the store (H19); rows from before carry the import kind.
+            let has_kind: bool = c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('machine_import_jobs') WHERE name='kind')",
+                [],
+                |r| r.get(0),
+            )?;
+            if !has_kind {
+                c.execute_batch(
+                    "ALTER TABLE machine_import_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'import' CHECK(kind IN ('import','create'))",
+                )?;
+            }
             c.execute(
                 "UPDATE machine_import_jobs SET state='interrupted',updated_ms=?1 WHERE state IN ('planning','applying','starting')",
                 [host.now_ms()],
@@ -482,9 +535,20 @@ impl ImportJobs {
         request: PlanRequest,
     ) -> JobResult<PlanAccepted> {
         validate_request(&request)?;
+        let raw = serde_json::to_string(&request).map_err(|_| JobError::INVALID)?;
+        self.insert_planning(binding, Kind::Import, "inspect", &raw)
+    }
+
+    /// Record a `planning` job of either kind, pruning stale attempts first.
+    pub(crate) fn insert_planning(
+        &self,
+        binding: &OwnerBinding,
+        kind: Kind,
+        phase: &str,
+        raw: &str,
+    ) -> JobResult<PlanAccepted> {
         let id = Uuid::new_v4().to_string();
         let now = self.0.host.now_ms();
-        let raw = serde_json::to_string(&request).map_err(|_| JobError::INVALID)?;
         self.write(|c| {
             self.owner(c, binding)?;
             // Prune stale reviews and finished attempts before enforcing the cap.
@@ -495,13 +559,13 @@ impl ImportJobs {
             let total: i64 =
                 c.query_row("SELECT count(*) FROM machine_import_jobs", [], |r| r.get(0))?;
             if total >= MAX_JOBS {
-                return Err(JobError("import_jobs_saturated"));
+                return Err(kind.saturated());
             }
             c.execute(
-                "INSERT INTO machine_import_jobs(job_id,account_id,device_id,state,phase,request,created_ms,updated_ms) VALUES(?1,?2,?3,'planning','inspect',?4,?5,?5)",
-                params![id, binding.account_id, binding.device_id, raw, now],
+                "INSERT INTO machine_import_jobs(job_id,account_id,device_id,state,phase,request,created_ms,updated_ms,kind) VALUES(?1,?2,?3,'planning',?6,?4,?5,?5,?7)",
+                params![id, binding.account_id, binding.device_id, raw, now, phase, kind.id()],
             )?;
-            audit(c, "import.plan", &binding.account_id, &id, now)?;
+            audit(c, &format!("{}.plan", kind.id()), &binding.account_id, &id, now)?;
             Ok(())
         })?;
         Ok(PlanAccepted {
@@ -516,7 +580,7 @@ impl ImportJobs {
             self.owner(c, binding)?;
             let row: Option<(String, String, String)> = c
                 .query_row(
-                    "SELECT request,state,account_id FROM machine_import_jobs WHERE job_id=?1",
+                    "SELECT request,state,account_id FROM machine_import_jobs WHERE job_id=?1 AND kind='import'",
                     [job_id],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
@@ -809,6 +873,67 @@ impl ImportJobs {
         })
     }
 
+    /// Exact retry of an earlier apply with this key (any state since), or a
+    /// conflict when the key was used for a different body or job kind.
+    pub(crate) fn apply_retry(
+        c: &Connection,
+        binding: &OwnerBinding,
+        kind: Kind,
+        idempotency_key: &str,
+        body_hash: &str,
+    ) -> JobResult<Option<ApplyAccepted>> {
+        let retry: Option<(String, Option<String>, Option<String>, String)> = c
+            .query_row(
+                "SELECT job_id,server_id,apply_hash,kind FROM machine_import_jobs WHERE apply_key=?1 AND account_id=?2",
+                params![idempotency_key, binding.account_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
+        let Some((job_id, server, hash, used_by)) = retry else {
+            return Ok(None);
+        };
+        if hash.as_deref() != Some(body_hash) || used_by != kind.id() {
+            return Err(JobError::IDEMPOTENCY);
+        }
+        let server_id = server
+            .and_then(|s| Uuid::parse_str(&s).ok())
+            .ok_or(JobError::UNAVAILABLE)?;
+        Ok(Some(ApplyAccepted { job_id, server_id }))
+    }
+
+    /// Re-check name, port and memory against every live reservation and
+    /// registered server, then reserve them for `job_id` in the caller's
+    /// transaction. Racing plans for one port cannot both pass: the second
+    /// sees the first's reservation (and the unique port index backs this up).
+    pub(crate) fn reserve_in(
+        &self,
+        c: &Connection,
+        job_id: &str,
+        name: &str,
+        server_id: Uuid,
+        port: u16,
+        memory: u64,
+    ) -> JobResult<()> {
+        let held = reservations_in(c, None)?;
+        if name_in_use(c, name)? {
+            return Err(JobError("name_in_use"));
+        }
+        if held.ports.contains(&port) {
+            return Err(JobError("game_port_in_use"));
+        }
+        if resources::plan_memory(self.0.env.memory_total_bytes(), &held, Some(memory))
+            .blocker
+            .is_some()
+        {
+            return Err(JobError("memory_budget_exceeded"));
+        }
+        c.execute(
+            "INSERT INTO machine_import_reservations(server_id,job_id,game_port,memory_mib) VALUES(?1,?2,?3,?4)",
+            params![server_id.to_string(), job_id, port, memory as i64],
+        )?;
+        Ok(())
+    }
+
     /// Owner confirms the exact reviewed plan. Reserves the destination server
     /// id, port and memory in one transaction; the same idempotency key and
     /// body returns the same job, a different body with that key conflicts.
@@ -832,26 +957,15 @@ impl ImportJobs {
         self.write(|c| {
             let account = self.owner(c, binding)?;
             // Exact retries first, whatever state the job has reached since.
-            let retry: Option<(String, Option<String>, Option<String>)> = c
-                .query_row(
-                    "SELECT job_id,server_id,apply_hash FROM machine_import_jobs WHERE apply_key=?1 AND account_id=?2",
-                    params![idempotency_key, binding.account_id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
-                .optional()?;
-            if let Some((job_id, server, hash)) = retry {
-                if hash.as_deref() != Some(&body_hash) {
-                    return Err(JobError::IDEMPOTENCY);
-                }
-                let server_id = server
-                    .and_then(|s| Uuid::parse_str(&s).ok())
-                    .ok_or(JobError::UNAVAILABLE)?;
-                return Ok(ApplyAccepted { job_id, server_id });
+            if let Some(accepted) =
+                Self::apply_retry(c, binding, Kind::Import, idempotency_key, &body_hash)?
+            {
+                return Ok(accepted);
             }
             #[allow(clippy::type_complexity)]
             let row: Option<(String, String, String, String, Option<String>, Option<String>)> = c
                 .query_row(
-                    "SELECT job_id,state,account_id,device_id,review,private FROM machine_import_jobs WHERE plan_id=?1",
+                    "SELECT job_id,state,account_id,device_id,review,private FROM machine_import_jobs WHERE plan_id=?1 AND kind='import'",
                     [&request.plan_id],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
                 )
@@ -893,28 +1007,9 @@ impl ImportJobs {
             let server_id = review.destination.server_id;
             let port = review.resources.game_port.ok_or(JobError::BLOCKED)?;
             let memory = review.resources.memory_mib.ok_or(JobError::BLOCKED)?;
-            let held = reservations_in(c, None)?;
             let raw: String = c.query_row("SELECT request FROM machine_import_jobs WHERE job_id=?1", [&job_id], |r| r.get(0))?;
             let requested: PlanRequest = serde_json::from_str(&raw).map_err(|_| JobError::UNAVAILABLE)?;
-            let name_used: bool = c.query_row(
-                "SELECT EXISTS(SELECT 1 FROM machine_servers WHERE state!='deleted' AND lower(name)=lower(?1))
-                 OR EXISTS(SELECT 1 FROM machine_import_jobs j JOIN machine_import_reservations r ON r.job_id=j.job_id
-                           WHERE r.released=0 AND lower(trim(json_extract(j.request,'$.name')))=lower(?1))",
-                [requested.name.trim()], |r| r.get(0))?;
-            if name_used { return Err(JobError("name_in_use")); }
-            if held.ports.contains(&port) {
-                return Err(JobError("game_port_in_use"));
-            }
-            if resources::plan_memory(self.0.env.memory_total_bytes(), &held, Some(memory))
-                .blocker
-                .is_some()
-            {
-                return Err(JobError("memory_budget_exceeded"));
-            }
-            c.execute(
-                "INSERT INTO machine_import_reservations(server_id,job_id,game_port,memory_mib) VALUES(?1,?2,?3,?4)",
-                params![server_id.to_string(), job_id, port, memory as i64],
-            )?;
+            self.reserve_in(c, &job_id, requested.name.trim(), server_id, port, memory)?;
             c.execute(
                 "UPDATE machine_import_jobs SET state='applying',phase='conflicts',error=NULL,server_id=?1,apply_key=?2,apply_hash=?3,eula_accepted_ms=?4,eula_account=?5,updated_ms=?4 WHERE job_id=?6",
                 params![server_id.to_string(), idempotency_key, body_hash, now, account.to_string(), job_id],
@@ -927,17 +1022,21 @@ impl ImportJobs {
     /// Resume an `interrupted` apply after a crash/restart. Everything is
     /// re-validated; a changed source blocks and requires a new plan.
     pub fn resume(&self, binding: &OwnerBinding, job_id: &str) -> JobResult<ImportJob> {
+        self.resume_kind(binding, job_id, Kind::Import)?;
+        self.status(binding, job_id)
+    }
+    pub(crate) fn resume_kind(&self, binding: &OwnerBinding, job_id: &str, kind: Kind) -> JobResult<()> {
         let now = self.0.host.now_ms();
         self.write(|c| {
             self.owner(c, binding)?;
             let (state, phase, server): (String, String, Option<String>) = c
                 .query_row(
-                    "SELECT state,phase,server_id FROM machine_import_jobs WHERE job_id=?1",
-                    [job_id],
+                    "SELECT state,phase,server_id FROM machine_import_jobs WHERE job_id=?1 AND kind=?2",
+                    params![job_id, kind.id()],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()?
-                .ok_or(JobError::NOT_FOUND)?;
+                .ok_or(kind.not_found())?;
             if state != "interrupted" {
                 return Err(JobError::CONFLICT);
             }
@@ -949,38 +1048,50 @@ impl ImportJobs {
                 )?;
                 return Ok(());
             }
-            let (state, phase) = match phase.as_str() {
-                "conflicts" | "snapshot" | "copy" => ("applying", "conflicts".to_owned()),
+            let (state, phase) = match (kind, phase.as_str()) {
+                (Kind::Import, "conflicts" | "snapshot" | "copy") => {
+                    ("applying", "conflicts".to_owned())
+                }
+                // Every uncommitted install step restarts from a clean,
+                // never-registered destination; artifacts are re-verified.
+                (Kind::Create, p) if kind.cancellable(p) => ("applying", "resolving".to_owned()),
                 // A start may already be in flight: never spawn again here; the
                 // owner retries start, which reuses its idempotency key.
-                "start" => ("ready", phase),
+                (_, "start" | "starting") => ("ready", phase),
                 _ => ("applying", phase),
             };
             c.execute(
                 "UPDATE machine_import_jobs SET state=?4,phase=?1,error=NULL,cancel_requested=0,updated_ms=?2 WHERE job_id=?3",
                 params![phase, now, job_id, state],
             )?;
-            audit(c, "import.resume", &binding.account_id, job_id, now)?;
+            audit(c, &format!("{}.resume", kind.id()), &binding.account_id, job_id, now)?;
             Ok(())
-        })?;
-        self.status(binding, job_id)
+        })
     }
 
     /// Cancel at a safe boundary. Never touches the source or other processes.
     /// An incomplete, unregistered destination is removed (audited).
     pub fn cancel(&self, binding: &OwnerBinding, job_id: &str) -> JobResult<CancelResponse> {
+        self.cancel_kind(binding, job_id, Kind::Import)
+    }
+    pub(crate) fn cancel_kind(
+        &self,
+        binding: &OwnerBinding,
+        job_id: &str,
+        kind: Kind,
+    ) -> JobResult<CancelResponse> {
         let now = self.0.host.now_ms();
         let (state, server) = self.write(|c| {
             self.owner(c, binding)?;
             let (state, phase, server): (String, String, Option<String>) = c
                 .query_row(
-                    "SELECT state,phase,server_id FROM machine_import_jobs WHERE job_id=?1",
-                    [job_id],
+                    "SELECT state,phase,server_id FROM machine_import_jobs WHERE job_id=?1 AND kind=?2",
+                    params![job_id, kind.id()],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()?
-                .ok_or(JobError::NOT_FOUND)?;
-            let copy_phase = matches!(phase.as_str(), "inspect" | "conflicts" | "snapshot" | "copy");
+                .ok_or(kind.not_found())?;
+            let copy_phase = kind.cancellable(&phase);
             let next = match state.as_str() {
                 "cancelled" => return Ok(("cancelled".to_owned(), None)),
                 "planning" | "review" | "blocked" => "cancelled",
@@ -990,7 +1101,7 @@ impl ImportJobs {
                         "UPDATE machine_import_jobs SET cancel_requested=1,updated_ms=?1 WHERE job_id=?2",
                         params![now, job_id],
                     )?;
-                    audit(c, "import.cancel_request", &binding.account_id, job_id, now)?;
+                    audit(c, &format!("{}.cancel_request", kind.id()), &binding.account_id, job_id, now)?;
                     return Ok(("applying".to_owned(), None));
                 }
                 _ => return Err(JobError::CONFLICT),
@@ -1003,7 +1114,7 @@ impl ImportJobs {
                 "UPDATE machine_import_reservations SET released=1 WHERE job_id=?1",
                 [job_id],
             )?;
-            audit(c, "import.cancel", &binding.account_id, job_id, now)?;
+            audit(c, &format!("{}.cancel", kind.id()), &binding.account_id, job_id, now)?;
             Ok((next.to_owned(), server))
         })?;
         if state == "applying"
@@ -1017,7 +1128,10 @@ impl ImportJobs {
             flag.store(true, Ordering::Release);
         }
         if let Some(server) = server.and_then(|s| Uuid::parse_str(&s).ok()) {
-            self.remove_staging(server);
+            match kind {
+                Kind::Import => self.remove_staging(server),
+                Kind::Create => self.remove_unregistered(server),
+            }
         }
         Ok(CancelResponse { state })
     }
@@ -1044,7 +1158,7 @@ impl ImportJobs {
             self.owner(c, binding)?;
             let (state, phase, review, private): (String, String, Option<String>, Option<String>) =
                 c.query_row(
-                    "SELECT state,phase,review,private FROM machine_import_jobs WHERE job_id=?1",
+                    "SELECT state,phase,review,private FROM machine_import_jobs WHERE job_id=?1 AND kind='import'",
                     [job_id],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
@@ -1314,6 +1428,18 @@ impl ImportJobs {
         let _ = fs::remove_dir_all(dir.join("staging"));
         let _ = fs::remove_dir(&dir);
     }
+    /// Remove a created server's directory while nothing references it: the
+    /// id is not registered, so no worker, file API or launch can use it.
+    pub(crate) fn remove_unregistered(&self, server_id: Uuid) {
+        let dir = self.server_dir(server_id);
+        if !dir.starts_with(&self.0.servers)
+            || dir == self.0.servers
+            || !matches!(self.0.host.server(server_id), Ok(None))
+        {
+            return;
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
     fn quarantine_staging(&self, server_id: Uuid, now: i64) {
         let dir = self.server_dir(server_id);
         let _ = fs::rename(dir.join("staging"), dir.join(format!("quarantine-{now}")));
@@ -1459,6 +1585,18 @@ fn decode<T: serde::de::DeserializeOwned>(raw: Option<String>) -> JobResult<T> {
         .map_err(|_| JobError::UNAVAILABLE)
 }
 
+/// Names of registered servers and of unreleased reservations (imports and
+/// creates alike) share one case-insensitive namespace.
+pub(crate) fn name_in_use(c: &Connection, name: &str) -> JobResult<bool> {
+    Ok(c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM machine_servers WHERE state!='deleted' AND lower(name)=lower(?1))
+         OR EXISTS(SELECT 1 FROM machine_import_jobs j JOIN machine_import_reservations r ON r.job_id=j.job_id
+                   WHERE r.released=0 AND lower(trim(json_extract(j.request,'$.name')))=lower(?1))",
+        [name.trim()],
+        |r| r.get(0),
+    )?)
+}
+
 /// Ports and memory held by registered servers and unreleased import
 /// reservations, optionally excluding one job.
 pub(crate) fn reservations_in(
@@ -1492,6 +1630,18 @@ fn audit(c: &Connection, action: &str, actor: &str, target: &str, now: i64) -> J
 }
 
 pub(crate) fn job_in(c: &Connection, job_id: &str) -> JobResult<ImportJob> {
+    job_in_kind(c, job_id, Kind::Import)
+}
+/// A review that carries a one-time confirmation, shown only while in `review`.
+pub(crate) trait Reviewed: serde::de::DeserializeOwned {
+    fn clear_confirmation(&mut self);
+}
+impl Reviewed for Review {
+    fn clear_confirmation(&mut self) {
+        self.confirmation = None;
+    }
+}
+pub(crate) fn job_in_kind<R: Reviewed>(c: &Connection, job_id: &str, kind: Kind) -> JobResult<Job<R>> {
     type Row = (
         String,
         String,
@@ -1502,8 +1652,8 @@ pub(crate) fn job_in(c: &Connection, job_id: &str) -> JobResult<ImportJob> {
     );
     let row: Option<Row> = c
         .query_row(
-            "SELECT state,phase,error,review,server_id,files_done,files_total,bytes_done,bytes_total FROM machine_import_jobs WHERE job_id=?1",
-            [job_id],
+            "SELECT state,phase,error,review,server_id,files_done,files_total,bytes_done,bytes_total FROM machine_import_jobs WHERE job_id=?1 AND kind=?2",
+            params![job_id, kind.id()],
             |r| {
                 Ok((
                     r.get(0)?,
@@ -1516,15 +1666,15 @@ pub(crate) fn job_in(c: &Connection, job_id: &str) -> JobResult<ImportJob> {
             },
         )
         .optional()?;
-    let (state, phase, error, review, server, counts) = row.ok_or(JobError::NOT_FOUND)?;
-    let mut review: Option<Review> = review.map(|r| decode(Some(r))).transpose()?;
+    let (state, phase, error, review, server, counts) = row.ok_or(kind.not_found())?;
+    let mut review: Option<R> = review.map(|r| decode(Some(r))).transpose()?;
     if state != "review"
         && let Some(review) = &mut review
     {
-        review.confirmation = None;
+        review.clear_confirmation();
     }
     let n = |v: i64| v.max(0) as u64;
-    Ok(ImportJob {
+    Ok(Job {
         job_id: job_id.to_owned(),
         state,
         phase,
@@ -1566,6 +1716,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS machine_import_reserved_port ON machine_import
 #[path = "commit.rs"]
 mod commit;
 pub use commit::owner_policy;
+
+#[path = "create.rs"]
+mod create;
+pub use create::{
+    CreateApplyRequest, CreateJob, CreateReview, CreateRuntime, CreateSummary, NewServerRequest,
+    ServerFacts, SoftwareChoice, SummarySoftware,
+};
 
 #[cfg(test)]
 #[path = "jobs_tests.rs"]

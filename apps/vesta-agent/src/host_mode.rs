@@ -214,7 +214,7 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
         folders.clone(),
         &servers_root,
         Arc::new(HostEnvironment {
-            java_cache: java_root,
+            java_cache: java_root.clone(),
         }),
     )
     .map_err(|_| "host_imports_unavailable")?;
@@ -222,7 +222,13 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
     let router = HostRouter::new(identity.clone(), config.name.clone(), folders)
         .with_imports(jobs.clone(), move |id| {
             factory.0.create_worker(id, factory.1.clone())
-        });
+        })
+        .with_create_installer(Arc::new(
+            vesta_control::machine::creates::LiveCreateInstaller::new(
+                java_root,
+                jobs.servers_root().to_owned(),
+            ),
+        ));
     let entries = state
         .snapshot()
         .map_err(|_| "host_state_unavailable")?
@@ -231,19 +237,12 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
         .transpose()
         .map_err(|_| "host_registry_unavailable")?
         .unwrap_or_default();
-    // Imported servers come back from their managed host.toml after a restart;
-    // a failure is reported and leaves the host (and other servers) running.
+    // Created and imported servers come back from their managed host.toml after
+    // a restart; a failure is reported and leaves the host (and other servers)
+    // running.
     let imported = |id| jobs.server_dir(id).join("host.toml").is_file();
-    for (entry, _) in entries.iter().filter(|(e, _)| imported(e.server_id)) {
-        match jobs.create_worker(entry.server_id, clock.clone()) {
-            Ok(w) => {
-                router.adopt_worker(w);
-            }
-            Err(e) => eprintln!(
-                "Vesta Server could not open server {}: {e}",
-                entry.server_id
-            ),
-        }
+    for (id, e) in router.restore_registered_workers() {
+        eprintln!("Vesta Server could not open server {id}: {e}");
     }
     let mut worker = None;
     let mut supervisor_release = None;

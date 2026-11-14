@@ -638,7 +638,12 @@ pub fn select_compatible(runtimes: &[JavaRuntime], required: u32) -> Option<&Jav
 }
 
 pub fn plan_from(runtimes: &[JavaRuntime], minecraft_version: Option<&str>) -> HostJavaPlan {
-    let Some(required) = minecraft_version.and_then(minecraft_java_major) else {
+    plan_for_major(runtimes, minecraft_version.and_then(minecraft_java_major))
+}
+
+/// Like [`plan_from`] for a Java major the installer itself declared.
+pub fn plan_for_major(runtimes: &[JavaRuntime], required: Option<u32>) -> HostJavaPlan {
+    let Some(required) = required.filter(|m| (8..=99).contains(m)) else {
         return HostJavaPlan {
             required_major: None,
             selected_runtime_id: None,
@@ -676,6 +681,20 @@ pub async fn plan_host_java(
     minecraft_version: Option<&str>,
     excluded: &[PathBuf],
 ) -> HostJavaPlan {
+    plan_host_java_major(
+        cache_root,
+        minecraft_version.and_then(minecraft_java_major),
+        excluded,
+    )
+    .await
+}
+
+/// Plan Java for an installer-declared major at host scope (server creation).
+pub async fn plan_host_java_major(
+    cache_root: &Path,
+    required: Option<u32>,
+    excluded: &[PathBuf],
+) -> HostJavaPlan {
     let managed = fs::canonicalize(cache_root).ok();
     let excluded: Vec<PathBuf> = excluded
         .iter()
@@ -683,7 +702,7 @@ pub async fn plan_host_java(
         .collect();
     let mut runtimes = Vec::new();
     let mut seen = BTreeSet::new();
-    if minecraft_version.and_then(minecraft_java_major).is_some() {
+    if required.is_some() {
         for path in candidates_in(cache_root, None) {
             let Ok(path) = canonical(&path) else { continue };
             if excluded.iter().any(|e| path.starts_with(e)) || !seen.insert(path.clone()) {
@@ -695,7 +714,7 @@ pub async fn plan_host_java(
             }
         }
     }
-    plan_from(&runtimes, minecraft_version)
+    plan_for_major(&runtimes, required)
 }
 
 /// Make the planned runtime available, downloading into the shared cache when

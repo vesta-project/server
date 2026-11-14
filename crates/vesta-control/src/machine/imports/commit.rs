@@ -98,7 +98,7 @@ pub(crate) fn rewrite_properties(text: &str, port: u16) -> String {
     super::super::properties::rewrite(text, port)
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> JobResult<()> {
+pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> JobResult<()> {
     let leaf = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -247,7 +247,29 @@ impl ImportJobs {
         write_atomic(&dir.join("host.toml"), host_toml.as_bytes())?;
 
         self.set_phase(job_id, "applying", "register")?;
-        let account = Uuid::parse_str(&eula_account).map_err(|_| JobError::UNAVAILABLE)?;
+        self.register_once(job_id, server_id, name, port, &eula_account)?;
+        let now = self.0.host.now_ms();
+        self.write(|c| {
+            c.execute(
+                "UPDATE machine_import_jobs SET state='ready',phase='register',error=NULL,updated_ms=?1 WHERE job_id=?2",
+                params![now, job_id],
+            )?;
+            audit(c, "import.registered", &eula_account, job_id, now)?;
+            Ok(())
+        })
+    }
+
+    /// Register the committed server exactly once under its reserved id and
+    /// port; a retry after a crash finds the existing entry and stops.
+    pub(super) fn register_once(
+        &self,
+        job_id: &str,
+        server_id: Uuid,
+        name: String,
+        port: u16,
+        account: &str,
+    ) -> JobResult<()> {
+        let account = Uuid::parse_str(account).map_err(|_| JobError::UNAVAILABLE)?;
         let entry = ServerEntry {
             server_id,
             name,
@@ -286,15 +308,7 @@ impl ImportJobs {
         if self.0.host.server(server_id)?.is_none() {
             return Err(JobError::CAPACITY);
         }
-        let now = self.0.host.now_ms();
-        self.write(|c| {
-            c.execute(
-                "UPDATE machine_import_jobs SET state='ready',phase='register',error=NULL,updated_ms=?1 WHERE job_id=?2",
-                params![now, job_id],
-            )?;
-            audit(c, "import.registered", &eula_account, job_id, now)?;
-            Ok(())
-        })
+        Ok(())
     }
 
     /// Build the registered server's worker through the H05 composition entry
@@ -349,52 +363,82 @@ impl ImportJobs {
         job_id: &str,
         worker: &WorkerHandle,
     ) -> JobResult<ImportJob> {
-        let (state, review, private, attempt) = self.read(|c| {
+        self.start_kind(binding, job_id, worker, Kind::Import)?;
+        self.status(binding, job_id)
+    }
+
+    /// The committed server's id and reserved game port, from the durable
+    /// job row and its reservation (the same for imports and creates).
+    fn committed(&self, c: &Connection, job_id: &str, kind: Kind) -> JobResult<Committed> {
+        let row: Option<(String, Option<String>, Option<String>, i64, Option<u16>)> = c
+            .query_row(
+                "SELECT j.state,j.server_id,j.private,j.start_attempt,r.game_port FROM machine_import_jobs j
+                 LEFT JOIN machine_import_reservations r ON r.job_id=j.job_id AND r.released=0
+                 WHERE j.job_id=?1 AND j.kind=?2",
+                params![job_id, kind.id()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()?;
+        let (state, server, private, attempt, port) = row.ok_or(kind.not_found())?;
+        Ok(Committed {
+            state,
+            server_id: server.and_then(|s| Uuid::parse_str(&s).ok()),
+            private,
+            attempt,
+            port,
+        })
+    }
+
+    pub(crate) fn start_kind(
+        &self,
+        binding: &OwnerBinding,
+        job_id: &str,
+        worker: &WorkerHandle,
+        kind: Kind,
+    ) -> JobResult<()> {
+        let job = self.read(|c| {
             self.owner(c, binding)?;
-            let (state, review, private, attempt): (String, Option<String>, Option<String>, i64) = c
-                .query_row(
-                    "SELECT state,review,private,start_attempt FROM machine_import_jobs WHERE job_id=?1",
-                    [job_id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-                )
-                .optional()?
-                .ok_or(JobError::NOT_FOUND)?;
-            Ok((state, decode::<Review>(review)?, decode::<Private>(private)?, attempt))
+            self.committed(c, job_id, kind)
         })?;
-        if !matches!(state.as_str(), "ready" | "starting" | "online") {
+        let (state, attempt) = (job.state.as_str(), job.attempt);
+        if !matches!(state, "ready" | "starting" | "online") {
             return Err(JobError::CONFLICT);
         }
-        let server_id = review.destination.server_id;
+        let server_id = job.server_id.ok_or(JobError::CONFLICT)?;
         if worker.server_id() != server_id || self.0.host.server(server_id)?.is_none() {
             return Err(JobError::CONFLICT);
         }
         if state == "ready" {
-            let port = review.resources.game_port.ok_or(JobError::BLOCKED)?;
-            let (processes, _observed) =
-                self.0.env.processes(std::slice::from_ref(&private.source));
-            let conflict = if processes
-                .iter()
-                .any(|p| p.relation == "source" && p.state == "running")
-            {
-                Some("source_running")
-            } else if let Some(code) = inspection::stopped_evidence(
-                &private.source,
-                inspection::read_properties(&private.source.join("server.properties"))
-                    .ok()
-                    .and_then(|p| p.get("server-port").and_then(|v| v.parse().ok()))
-                    .or(Some(25565)),
-            ) {
-                Some(code)
-            } else {
-                match self.0.env.port_state(port) {
-                    "free" => None,
-                    "occupied" => Some("game_port_in_use"),
-                    _ => Some("port_state_unknown"),
-                }
+            let port = job.port.ok_or(JobError::BLOCKED)?;
+            // An imported source must still be stopped; a created server has none.
+            let source = match kind {
+                Kind::Import => Some(decode::<Private>(job.private)?.source),
+                Kind::Create => None,
             };
+            let source_conflict = source.and_then(|source| {
+                let (processes, _observed) = self.0.env.processes(std::slice::from_ref(&source));
+                if processes
+                    .iter()
+                    .any(|p| p.relation == "source" && p.state == "running")
+                {
+                    Some("source_running")
+                } else {
+                    inspection::stopped_evidence(
+                        &source,
+                        inspection::read_properties(&source.join("server.properties"))
+                            .ok()
+                            .and_then(|p| p.get("server-port").and_then(|v| v.parse().ok()))
+                            .or(Some(25565)),
+                    )
+                }
+            });
+            let conflict = source_conflict.or(match self.0.env.port_state(port) {
+                "free" => None,
+                "occupied" => Some("game_port_in_use"),
+                _ => Some("port_state_unknown"),
+            });
             if let Some(code) = conflict {
-                self.resolvable(job_id, "ready", code)?;
-                return self.status(binding, job_id);
+                return self.resolvable(job_id, "ready", code);
             }
         }
         let policy = owner_policy(&self.0.host, server_id)?;
@@ -413,20 +457,20 @@ impl ImportJobs {
             .submit_game(
                 &subject,
                 GameCommand::Start,
-                &format!("import-start-{job_id}-{attempt}"),
+                &format!("{}-start-{job_id}-{attempt}", kind.id()),
             )
             .map_err(|_| JobError("start_failed"))?;
         if state == "ready" {
             let now = self.0.host.now_ms();
             self.write(|c| {
                 c.execute(
-                    "UPDATE machine_import_jobs SET state='starting',phase='start',error=NULL,updated_ms=?1 WHERE job_id=?2",
+                    "UPDATE machine_import_jobs SET state='starting',phase=CASE kind WHEN 'create' THEN 'starting' ELSE 'start' END,error=NULL,updated_ms=?1 WHERE job_id=?2",
                     params![now, job_id],
                 )?;
                 Ok(())
             })?;
         }
-        self.status(binding, job_id)
+        Ok(())
     }
 
     /// Observe readiness: `online` only after the runtime reports the game
@@ -437,12 +481,34 @@ impl ImportJobs {
         job_id: &str,
         worker: &WorkerHandle,
     ) -> JobResult<ImportJob> {
-        let job = self.status(binding, job_id)?;
+        self.readiness_kind(binding, job_id, worker, Kind::Import)?;
+        self.status(binding, job_id)
+    }
+
+    pub(crate) fn readiness_kind(
+        &self,
+        binding: &OwnerBinding,
+        job_id: &str,
+        worker: &WorkerHandle,
+        kind: Kind,
+    ) -> JobResult<()> {
+        let (job, since) = self.read(|c| {
+            self.owner(c, binding)?;
+            let job = self.committed(c, job_id, kind)?;
+            let since: i64 = c.query_row(
+                "SELECT updated_ms FROM machine_import_jobs WHERE job_id=?1",
+                [job_id],
+                |r| r.get(0),
+            )?;
+            Ok((job, since))
+        })?;
         if job.state != "starting" {
-            return Ok(job);
+            return Ok(());
         }
-        let review = job.review.as_ref().ok_or(JobError::UNAVAILABLE)?;
-        let server_id = review.destination.server_id;
+        let server_id = job.server_id.ok_or(JobError::UNAVAILABLE)?;
+        if worker.server_id() != server_id {
+            return Err(JobError::CONFLICT);
+        }
         let (server_subject, _) = self.subject(binding, server_id, Vec::new())?;
         let network = worker
             .authorize(server_subject)
@@ -455,19 +521,12 @@ impl ImportJobs {
         // still reports `Stopped`. Only a stop observed after this grace window
         // is a failed start. While the game runs it owns its own port, so a
         // busy port is only meaningful once it has stopped.
-        let since: i64 = self.read(|c| {
-            Ok(c.query_row(
-                "SELECT updated_ms FROM machine_import_jobs WHERE job_id=?1",
-                [job_id],
-                |r| r.get(0),
-            )?)
-        })?;
         let settled = self.0.host.now_ms().saturating_sub(since) >= START_GRACE_MS;
         match view.readiness {
             Readiness::Ready => self.resolvable(job_id, "online", "")?,
             Readiness::Starting => {}
             Readiness::Stopped if settled => {
-                let port = review.resources.game_port.unwrap_or(0);
+                let port = job.port.unwrap_or(0);
                 let code = if self.0.env.port_state(port) == "occupied" {
                     "game_port_in_use"
                 } else {
@@ -483,7 +542,7 @@ impl ImportJobs {
             // A failed status probe or console gap may recover; keep waiting.
             Readiness::Degraded(_) => {}
         }
-        self.status(binding, job_id)
+        Ok(())
     }
 
     fn resolvable(&self, job_id: &str, state: &str, code: &str) -> JobResult<()> {
@@ -491,10 +550,19 @@ impl ImportJobs {
         let error = (!code.is_empty()).then_some(code);
         self.write(|c| {
             c.execute(
-                "UPDATE machine_import_jobs SET state=?1,phase='start',error=?2,updated_ms=?3,start_attempt=start_attempt+(?2 IS NOT NULL) WHERE job_id=?4",
+                "UPDATE machine_import_jobs SET state=?1,phase=CASE kind WHEN 'create' THEN 'starting' ELSE 'start' END,error=?2,updated_ms=?3,start_attempt=start_attempt+(?2 IS NOT NULL) WHERE job_id=?4",
                 params![state, error, now, job_id],
             )?;
             Ok(())
         })
     }
+}
+
+/// Durable facts a start needs, whichever flow committed the server.
+struct Committed {
+    state: String,
+    server_id: Option<Uuid>,
+    private: Option<String>,
+    attempt: i64,
+    port: Option<u16>,
 }

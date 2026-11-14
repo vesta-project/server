@@ -85,6 +85,11 @@ pub trait ServerWorker: Send + Sync {
     fn observed_state(&self) -> Option<crate::machine::registry::ServerState> {
         None
     }
+    /// Host-side observation: the quoted SHA-256 ETag of the server's branding
+    /// icon, `None` when there is none or the worker cannot report it.
+    fn icon_etag(&self) -> Option<String> {
+        None
+    }
 }
 impl Worker {
     pub fn open(
@@ -140,6 +145,11 @@ impl Worker {
     }
 }
 impl ServerWorker for WorkerHandle {
+    fn icon_etag(&self) -> Option<String> {
+        crate::identity::management::permissions::branding::stored_icon_etag(
+            self.network.database(),
+        )
+    }
     fn public_resource_packs(&self)->Option<crate::resource_packs::hosting::Handle>{Some(self.network.resource_packs().clone())}
     fn server_id(&self) -> Uuid {
         self.server_id

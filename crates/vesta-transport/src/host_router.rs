@@ -38,6 +38,7 @@ pub struct HostRouter {
     owned: Arc<Mutex<Vec<Worker>>>,
     imports: Option<Arc<ImportService>>,
     catalogue: Option<Arc<dyn vesta_control::machine::creates::Catalogue>>,
+    creator: Option<Arc<dyn vesta_control::machine::creates::CreateInstaller>>,
 }
 impl HostRouter {
     pub fn new(identity: Arc<HostIdentity>, name: String, folders: Arc<FolderBrowser>) -> Self {
@@ -49,6 +50,7 @@ impl HostRouter {
             owned: Default::default(),
             imports: None,
             catalogue: None,
+            creator: None,
         }
     }
     /// Enable the import job routes. `create` builds a registered server's
@@ -73,6 +75,15 @@ impl HostRouter {
         catalogue: Arc<dyn vesta_control::machine::creates::Catalogue>,
     ) -> Self {
         self.catalogue = Some(catalogue);
+        self
+    }
+    /// Enable `new` server creation jobs with this installer (normally
+    /// [`vesta_control::machine::creates::LiveCreateInstaller`]).
+    pub fn with_create_installer(
+        mut self,
+        installer: Arc<dyn vesta_control::machine::creates::CreateInstaller>,
+    ) -> Self {
+        self.creator = Some(installer);
         self
     }
     /// The owner-chosen machine name, or the configured one until renamed.
@@ -133,6 +144,65 @@ impl HostRouter {
         self.add_worker(Arc::new(handle.clone()));
         owned.push(worker);
         Ok(handle)
+    }
+    /// Owner/role-filtered server cards: registry facts plus the software and
+    /// Minecraft version recorded by the job that created or imported the
+    /// server, and the branding icon ETag observed from its worker. Unknown
+    /// values are null.
+    fn server_cards(
+        &self,
+        entries: Vec<(vesta_control::machine::registry::ServerEntry, EffectiveRole)>,
+    ) -> Vec<serde_json::Value> {
+        let facts = self
+            .imports()
+            .and_then(|jobs| jobs.server_facts().ok())
+            .unwrap_or_default();
+        let workers = self.workers.lock().map(|w| w.clone()).unwrap_or_default();
+        entries
+            .into_iter()
+            .map(|(e, r)| {
+                let fact = facts.get(&e.server_id).cloned().unwrap_or_default();
+                let icon = workers
+                    .iter()
+                    .find(|w| w.server_id() == e.server_id)
+                    .and_then(|w| w.icon_etag());
+                json!({"serverId":e.server_id,"name":e.name,"gamePort":e.game_port,
+                    "state":format!("{:?}",e.state).to_lowercase(),"role":role_name(r),
+                    "software":fact.software.map(|(kind,version)|json!({"kind":kind,"version":version})),
+                    "minecraftVersion":fact.minecraft_version,"iconEtag":icon})
+            })
+            .collect()
+    }
+    /// After a host restart, give every registered server that has a managed
+    /// `<servers>/<serverId>/host.toml` (created or imported) its worker back.
+    /// Servers already routed are skipped; failures are returned, not fatal.
+    pub fn restore_registered_workers(&self) -> Vec<(Uuid, JobError)> {
+        let Some(imports) = self.imports.as_ref() else {
+            return Vec::new();
+        };
+        let state = &self.identity.state;
+        let entries = match state.snapshot().map(|s| s.primary_account_id) {
+            Ok(Some(primary)) => state.visible_servers(primary).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let mut failed = Vec::new();
+        for (entry, _) in entries {
+            let id = entry.server_id;
+            let routed = self
+                .workers
+                .lock()
+                .is_ok_and(|w| w.iter().any(|w| w.server_id() == id));
+            if routed || !imports.jobs.server_dir(id).join("host.toml").is_file() {
+                continue;
+            }
+            match (imports.create)(id) {
+                Ok(worker) => {
+                    self.adopt_worker(worker);
+                }
+                Err(e) => failed.push((id, e)),
+            }
+        }
+        failed
     }
     /// Detach owned workers for shutdown, after the transport has stopped.
     pub fn take_owned_workers(&self) -> Vec<Worker> {
@@ -639,9 +709,7 @@ impl Application {
         if method == Method::GET && path == "/v1/host/servers" {
             self.router.refresh_server_states();
             return match state.visible_servers(device.account_id) {
-                Ok(entries) => routes::json(
-                    json!({"servers":entries.into_iter().map(|(e,r)|json!({"serverId":e.server_id,"name":e.name,"gamePort":e.game_port,"state":format!("{:?}",e.state).to_lowercase(),"role":role_name(r)})).collect::<Vec<_>>(),"nextCursor":null}),
-                ),
+                Ok(entries) => routes::json(json!({"servers":self.router.server_cards(entries),"nextCursor":null})),
                 Err(_) => failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable"),
             };
         }
@@ -721,6 +789,9 @@ impl Application {
             let mut capabilities = vec!["folders", "import-inspect", "resource-plan"];
             if self.router.imports.is_some() {
                 capabilities.push("import-jobs");
+                if self.router.creator.is_some() && self.router.catalogue.is_some() {
+                    capabilities.push("create-jobs");
+                }
             }
             let mut value = json!({"hostId":s.host_id,"name":self.router.display_name(),"fingerprint":self.tls.fingerprint().unwrap_or_default(),"endpoints":[],"authGeneration":s.auth_generation.to_string(),"revision":s.revision.to_string(),"role":owner.map(host_role_name),"capabilities":capabilities});
             if owner.is_some() {
@@ -735,7 +806,7 @@ impl Application {
             return failure(StatusCode::FORBIDDEN, "forbidden");
         }
         if path.starts_with("/v1/host/catalogue/") || path.starts_with("/v1/host/creates/") {
-            return creates::dispatch(&self.router, method, path, query);
+            return creates::dispatch(&self.router, &device, method, path, query, &headers, bytes);
         }
         if method == Method::PATCH && path == "/v1/host" {
             return match state.update_settings(Actor::Account(device.account_id), input!()) {

@@ -91,6 +91,46 @@ impl Wire {
         self.0.read_exact(&mut body).unwrap();
         (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
     }
+    /// Raw body exchange; `headers` are complete `Name: value\r\n` lines.
+    /// Returns the status, the raw body and any ETag.
+    fn raw(
+        &mut self,
+        method: &str,
+        path: &str,
+        headers: &str,
+        body: &[u8],
+    ) -> (u16, Vec<u8>, Option<String>) {
+        write!(
+            self.0.get_mut(),
+            "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n{headers}\r\n",
+            body.len()
+        )
+        .unwrap();
+        self.0.get_mut().write_all(body).unwrap();
+        self.0.get_mut().flush().unwrap();
+        let mut line = String::new();
+        self.0.read_line(&mut line).unwrap();
+        let status = line.split_whitespace().nth(1).unwrap().parse().unwrap();
+        let (mut len, mut etag) = (0, None);
+        loop {
+            line.clear();
+            self.0.read_line(&mut line).unwrap();
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((k, v)) = line.split_once(':') {
+                if k.eq_ignore_ascii_case("etag") {
+                    etag = Some(v.trim().to_owned());
+                }
+                if k.eq_ignore_ascii_case("content-length") {
+                    len = v.trim().parse().unwrap();
+                }
+            }
+        }
+        let mut out = vec![0; len];
+        self.0.read_exact(&mut out).unwrap();
+        (status, out, etag)
+    }
 }
 use serde_json::Value;
 fn signed(key: &Ed25519KeyPair, domain: &str, payload: Value) -> String {

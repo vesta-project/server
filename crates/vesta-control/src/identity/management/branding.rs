@@ -92,6 +92,21 @@ pub(super) fn icon(repo: &Repository<'_>) -> AdminResult<Option<Vec<u8>>> {
         })
         .transpose()
 }
+/// Host-side observation for server cards: the stored icon's ETag, read
+/// directly from the server's own database without any caller authority.
+pub fn stored_icon_etag(db: &vesta_state::StateDatabase) -> Option<String> {
+    let encoded: String = db
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT s.desired_value FROM settings s JOIN server_identity i ON i.server_id=s.server_id WHERE i.singleton=1 AND s.key=?1",
+                [ICON],
+                |r| r.get(0),
+            )
+            .optional()?)
+        })
+        .ok()??;
+    URL_SAFE_NO_PAD.decode(encoded).ok().map(|b| icon_etag(&b))
+}
 pub fn icon_etag(bytes: &[u8]) -> String {
     format!(
         "\"{}\"",

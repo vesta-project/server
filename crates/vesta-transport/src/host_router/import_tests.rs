@@ -42,6 +42,9 @@ impl vesta_control::machine::creates::Catalogue for FakeCatalogue {
         if kind == vesta_server_install::Software::Spigot {
             return Err(JobError("provider_unavailable"));
         }
+        if kind == vesta_server_install::Software::Bukkit {
+            return Ok(Vec::new());
+        }
         Ok(vec![vesta_server_install::SoftwareRelease {
             id: "42".into(),
             build: Some(42),
@@ -114,10 +117,21 @@ struct Host {
     transport: Option<Transport>,
     owner: String,
     stranger: String,
+    /// Owner and stranger device ids, reused when the host restarts.
+    devices: (Uuid, Uuid),
 }
 impl Host {
     fn new(env: Arc<dyn ImportEnvironment>) -> Self {
-        let temp = tempfile::tempdir().unwrap();
+        Self::start(tempfile::tempdir().unwrap(), env, None, None, None)
+    }
+    /// Build (or, with `devices`, rebuild after a restart) a host on `temp`.
+    fn start(
+        temp: tempfile::TempDir,
+        env: Arc<dyn ImportEnvironment>,
+        creator: Option<Arc<dyn vesta_control::machine::creates::CreateInstaller>>,
+        devices: Option<(Uuid, Uuid)>,
+        catalogue: Option<Arc<dyn vesta_control::machine::creates::Catalogue>>,
+    ) -> Self {
         let base = temp.path();
         for dir in ["host-state", "imports", "servers"] {
             std::fs::create_dir_all(base.join(dir)).unwrap();
@@ -126,25 +140,28 @@ impl Host {
             HostState::open(base.join("host-state"), Arc::new(vesta_state::SystemClock)).unwrap();
         let host = state.snapshot().unwrap().host_id;
         let key = Ed25519KeyPair::from_seed_unchecked(&[71; 32]).unwrap();
-        let device = state
-            .claim(
-                Uuid::new_v4(),
-                "Owner",
-                key.public_key().as_ref().try_into().unwrap(),
-            )
-            .unwrap();
         let stranger_key = Ed25519KeyPair::from_seed_unchecked(&[72; 32]).unwrap();
-        let stranger = state
-            .write(|c| {
-                HostState::enroll_device_in(
-                    c,
+        let (device, stranger) = devices.unwrap_or_else(|| {
+            let device = state
+                .claim(
                     Uuid::new_v4(),
-                    "Stranger",
-                    stranger_key.public_key().as_ref().try_into().unwrap(),
-                    state.now_ms(),
+                    "Owner",
+                    key.public_key().as_ref().try_into().unwrap(),
                 )
-            })
-            .unwrap();
+                .unwrap();
+            let stranger = state
+                .write(|c| {
+                    HostState::enroll_device_in(
+                        c,
+                        Uuid::new_v4(),
+                        "Stranger",
+                        stranger_key.public_key().as_ref().try_into().unwrap(),
+                        state.now_ms(),
+                    )
+                })
+                .unwrap();
+            (device.device_id, stranger.device_id)
+        });
         let identity = Arc::new(HostIdentity::new(state.clone()).unwrap());
         std::fs::write(
             base.join("cert.pem"),
@@ -178,20 +195,24 @@ impl Host {
         let jobs =
             ImportJobs::open(state.clone(), folders.clone(), &base.join("servers"), env).unwrap();
         let factory = jobs.clone();
-        let router = HostRouter::new(identity, "Test machine".into(), folders)
+        let mut router = HostRouter::new(identity, "Test machine".into(), folders)
             .with_imports(jobs, move |id| {
                 factory.create_worker(id, Arc::new(vesta_state::SystemClock))
             })
-            .with_create_catalogue(Arc::new(FakeCatalogue));
+            .with_create_catalogue(catalogue.unwrap_or_else(|| Arc::new(FakeCatalogue)));
+        if let Some(creator) = creator {
+            router = router.with_create_installer(creator);
+        }
+        let devices = (device, stranger);
         let transport = Transport::start_host(router.clone(), &listener).unwrap();
         let mut wire = Wire::connect(transport.local_addr());
         let owner = format!(
             "Bearer {}",
-            session(&mut wire, host, device.device_id, &key)
+            session(&mut wire, host, device, &key)
         );
         let stranger = format!(
             "Bearer {}",
-            session(&mut wire, host, stranger.device_id, &stranger_key)
+            session(&mut wire, host, stranger, &stranger_key)
         );
         Self {
             temp,
@@ -200,7 +221,20 @@ impl Host {
             transport: Some(transport),
             owner,
             stranger,
+            devices,
         }
+    }
+    /// Stop this host (transport and workers, like a service stop) and start
+    /// a new process on the same state, servers and identity.
+    fn restart(
+        mut self,
+        env: Arc<dyn ImportEnvironment>,
+        creator: Option<Arc<dyn vesta_control::machine::creates::CreateInstaller>>,
+    ) -> Self {
+        let temp = std::mem::replace(&mut self.temp, tempfile::tempdir().unwrap());
+        let devices = self.devices;
+        drop(self);
+        Self::start(temp, env, creator, Some(devices), None)
     }
     fn wire(&self) -> Wire {
         Wire::connect(self.transport.as_ref().unwrap().local_addr())
@@ -730,6 +764,10 @@ fn create_catalogue_and_defaults_are_machine_level_and_owner_only() {
     assert_eq!(kinds[0]["available"], true);
     assert_eq!(kinds[0]["builds"][0]["recommended"], true);
     assert_eq!(kinds[9]["available"], false);
+    assert_eq!(kinds[9]["unavailableReason"], "provider_unavailable");
+    assert_eq!(kinds[8]["available"], false);
+    assert_eq!(kinds[8]["unavailableReason"], "unsupported_version");
+    assert!(kinds[0]["unavailableReason"].is_null());
     assert_eq!(kinds[2]["builds"][0]["recommended"], false);
     let (status, value) = host.call("GET", "/v1/host/creates/defaults", Value::Null, &host.owner);
     assert_eq!(status, 200, "{value}");
@@ -774,3 +812,6 @@ fn create_catalogue_validates_query_and_does_not_recommend_experimental() {
         }
     }
 }
+
+#[path = "create_tests.rs"]
+mod creates;
