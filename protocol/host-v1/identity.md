@@ -79,4 +79,4 @@ Certificate rotation is separate: new leaf fingerprint is signed by the old TLS 
 
 ### Server invite account proof
 
-Without PAKE, the account challenge/complete routes also accept purpose `invite`. The binding is lowercase SHA-256 hex of the decoded canonical invite payload. The proof remains bound to the live TLS connection and the device key, and is consumed atomically with invite usage, enrollment and the server grant. The redeem signature uses `vesta.host.invite.v1\0` and JCS({hostId,inviteHash,accountProofId,deviceKey}); no access token is accepted. See README Server access.
+Without PAKE, the account challenge/complete routes also accept purpose `invite`. The binding is lowercase SHA-256 hex of the decoded canonical invite payload. The proof remains bound to the live TLS connection and the device key, and is consumed atomically with invite usage, enrollment and the server grant. The redeem signature uses `vesta.host.invite.v1\0` and JCS({hostId,serverId,inviteHash,accountProofId,deviceKey}); no access token is accepted. See README Server access.

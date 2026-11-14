@@ -183,7 +183,7 @@ pub fn redeem(
         &input.device_key,
         &input.signature,
         "vesta.host.invite.v1",
-        &json!({"hostId":host,"inviteHash":hash,"accountProofId":input.account_proof_id,"deviceKey":input.device_key}),
+        &json!({"hostId":host,"serverId":server,"inviteHash":hash,"accountProofId":input.account_proof_id,"deviceKey":input.device_key}),
     )?;
     accounts.consume_checked(&input.account_proof_id,scope,|account,verified_name,live|state.write(|c| {
   ensure(c)?;super::registry::require_server(c,server)?;

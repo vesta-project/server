@@ -374,7 +374,7 @@ fn machine_invite_redeems_only_on_its_server_and_replay_does_not_spend_a_use() {
  let scope=AccountScope{connection_id:Uuid::new_v4(),device_key:B64.encode(key.public_key().as_ref()),purpose:AccountPurpose::Invite,binding:hash.clone()};
  for proof in ["proof1","proof2"] {
   f.accounts.seed_test_proof(proof,&scope,account);
-  let signature=B64.encode(key.sign(&signed_bytes("vesta.host.invite.v1",&json!({"hostId":f.host(),"inviteHash":hash,"accountProofId":proof,"deviceKey":scope.device_key}))).as_ref());
+  let signature=B64.encode(key.sign(&signed_bytes("vesta.host.invite.v1",&json!({"hostId":f.host(),"serverId":servers[0],"inviteHash":hash,"accountProofId":proof,"deviceKey":scope.device_key}))).as_ref());
   let request=RedeemInvite{invite:invite.into(),account_proof_id:proof.into(),device_key:scope.device_key.clone(),device_name:"Guest".into(),signature};
   redeem(&f.state,&mut f.accounts,&scope,FP,&request).unwrap();
  }
