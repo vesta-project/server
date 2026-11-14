@@ -546,8 +546,14 @@ impl PackWorkspace {
                 .into(),
             loader_version: current.as_ref().and_then(|c| c.loader_version.clone()),
         };
+        // A loader-less pack runs on Vanilla, exactly as the detailed plan says.
         let to = SoftwareSwitchTarget {
-            software: manifest.loader.id().into(),
+            software: if manifest.loader == ClientLoader::None {
+                "vanilla"
+            } else {
+                manifest.loader.id()
+            }
+            .into(),
             minecraft_version: manifest.minecraft_version.clone(),
             loader_version: manifest.loader_version.clone(),
         };
@@ -708,6 +714,7 @@ impl PackWorkspace {
         };
         let transferred = std::cell::Cell::new(0u64);
         let download_archive = |p: &str, project: &str, version: &str| -> Result<_> {
+            self.check_cancelled()?;
             let source = providers
                 .resolve_with_deadline(platform(p)?, project, version, deadline)
                 .map_err(|e| {
@@ -926,6 +933,7 @@ impl PackWorkspace {
         let mut selected_artifacts = BTreeMap::new();
         progress.report("metadata", 0, manifest.entries.len())?;
         for (metadata_index, e) in manifest.entries.iter().enumerate() {
+            self.check_cancelled()?;
             if metadata_index % 8 == 0 {
                 progress.report("metadata", metadata_index, manifest.entries.len())?;
             }
@@ -996,6 +1004,7 @@ impl PackWorkspace {
             providers.metadata_requests()
         );
         for (index, chunk) in manifest.entries.chunks(2).enumerate() {
+            self.check_cancelled()?;
             if index % 32 == 0 {
                 progress.report("review", index * 2, manifest.entries.len())?;
             }
@@ -1805,7 +1814,19 @@ impl PackWorkspace {
             .collect();
         let mut policy = downloads::AdaptiveDownloads::new(self.download_settings);
         let mut offset = 0;
+        let cancel = self.cancel.clone();
+        let cancelled = || {
+            if cancel
+                .as_ref()
+                .is_some_and(|f| f.load(std::sync::atomic::Ordering::Acquire))
+            {
+                Err(ReleaseError::from(super::super::PackError::Unavailable))
+            } else {
+                Ok(())
+            }
+        };
         while offset < pending.len() {
+            cancelled()?;
             let pressure = if self.download_settings.max_concurrent.is_none() {
                 self.db.read(|c| {
                     c.query_row("SELECT host_cpu_percent,host_memory_used_bytes,host_memory_total_bytes FROM metrics_raw WHERE sampled_at>=? ORDER BY sampled_at DESC LIMIT 1", [self.db.clock().millis() - 30_000], |row| {
@@ -1819,6 +1840,8 @@ impl PackWorkspace {
             let started = Instant::now();
             let before = counters.lock().map_err(|_| invalid())?.0;
             let results = downloads::batch_map(&pending[offset..offset + count], &|&index| {
+                // A queued download of this batch does not start after cancellation.
+                cancelled()?;
                 let reference = stored.providers[index].as_ref().ok_or_else(invalid)?;
                 let pin = stored
                     .artifact_pins
@@ -1960,6 +1983,7 @@ impl PackWorkspace {
         #[cfg(test)]
         let audit_hydrate = Instant::now();
         self.hydrate_install(s, input, &payload_store, files)?;
+        self.check_cancelled()?;
         #[cfg(test)]
         let audit_stage = Instant::now();
         let _guard = files.pack_admission().map_err(file_error)?;
@@ -2036,6 +2060,11 @@ impl PackWorkspace {
         };
         files
             .apply_pack_ids_with_progress(&outcome.pending_ids, |index, total| {
+                // Only a host-owned install of a server being created (and then
+                // removed) sets this: stop before the next file.
+                if index < total && self.cancelled() {
+                    return Err(FileError::Unavailable);
+                }
                 if index % 16 == 0 || index == total {
                     progress
                         .report("writing", index, total)

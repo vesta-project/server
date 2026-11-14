@@ -915,7 +915,16 @@ impl ImportJobs {
             return Err(Outcome::Cancelled);
         }
         if let Some(pack) = &private.pack {
-            self.create_pack_content(binding, job_id, server_id, &dir, pack, installer, &progress)?;
+            let installed = crate::machine::creates::CreatedSoftware {
+                software: preview.software,
+                version: preview.version.clone(),
+                build: preview.build,
+                loader_version: preview.loader_version.clone(),
+                artifacts: launch.artifacts.clone(),
+            };
+            self.create_pack_content(
+                binding, job_id, server_id, &dir, pack, &installed, installer, &progress,
+            )?;
         }
         // Last safe boundary: after this the server is registered.
         if stop() {
@@ -934,6 +943,7 @@ impl ImportJobs {
         server_id: Uuid,
         dir: &Path,
         pack: &super::modpack::PackPrivate,
+        installed: &crate::machine::creates::CreatedSoftware,
         installer: &dyn CreateInstaller,
         progress: &dyn CreateProgress,
     ) -> Result<(), Outcome> {
@@ -976,6 +986,7 @@ impl ImportJobs {
                     source: &pack.source,
                     upload: upload.as_deref(),
                     review,
+                    installed,
                 },
                 progress,
             )

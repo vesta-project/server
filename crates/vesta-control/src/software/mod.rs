@@ -317,6 +317,71 @@ impl SoftwareHandle {
         Ok(job)
     }
 
+    /// Record what a host server creation installed before this server's
+    /// software service first opened: the trusted launch document is already the
+    /// current one, so only the installation facts (software, versions and
+    /// verified artifacts) are filled in. Accepted only on a fresh service
+    /// (revision 0, no jobs, still the anonymous `original` installation) and
+    /// only for that exact document; anything else is a conflict.
+    pub(crate) fn record_created_installation(
+        &self,
+        subject: &Subject,
+        installation: Installation,
+        artifacts: Vec<vesta_server_install::ManagedArtifact>,
+    ) -> Result<()> {
+        if installation.software.is_none()
+            || installation.version.is_none()
+            || installation.custom_jar.is_some()
+            || installation.installation_id == "original"
+        {
+            return Err(SoftwareError::InvalidRequest);
+        }
+        let queue = self
+            .inner
+            .queue
+            .lock()
+            .map_err(|_| SoftwareError::StateUnavailable)?;
+        if queue.stop || !queue.work.is_empty() {
+            return Err(SoftwareError::RevisionConflict);
+        }
+        self.inner.db.write_with(|tx| -> Result<()> {
+            let c = tx.connection();
+            store::authorize(c, &self.inner.db, subject)?;
+            let state = store::state(c)?;
+            let jobs: i64 = c.query_row("SELECT count(*) FROM software_jobs", [], |r| r.get(0))?;
+            let current = &state.current.installation;
+            if state.revision != 0
+                || state.recovery
+                || state.previous.is_some()
+                || jobs != 0
+                || current.installation_id != "original"
+                || current.software.is_some()
+            {
+                return Err(SoftwareError::RevisionConflict);
+            }
+            let recorded = model::StoredLaunch {
+                warnings: Vec::new(),
+                installation,
+                document: state.current.document.clone(),
+                artifacts,
+            };
+            c.execute(
+                "UPDATE software_state SET current_launch=? WHERE singleton=1 AND revision=0",
+                [store::encode(&recorded)?],
+            )?;
+            store::audit(
+                c,
+                &self.inner.audit,
+                subject,
+                "software.record_created",
+                &recorded.installation.installation_id,
+                "success",
+            )
+        })?;
+        drop(queue);
+        Ok(())
+    }
+
     fn authorize(&self, subject: &Subject) -> Result<()> {
         self.inner
             .db

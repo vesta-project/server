@@ -82,6 +82,13 @@ struct FakeInstaller {
     jdk_plans: std::sync::Mutex<Vec<bool>>,
     /// Pack content installs performed (the reviewed pack of each).
     pack_installs: std::sync::Mutex<Vec<CreatePackReview>>,
+    /// Review uploads and install packs with the live pack engine (in the
+    /// new server's own worker), on top of this fake's base software.
+    live_packs: AtomicBool,
+    /// With `live_packs`: the pack install waits until the job is cancelled.
+    pack_hold: AtomicBool,
+    /// Set once a live pack install began (base software published).
+    pack_started: AtomicBool,
 }
 /// Fixture packs by project id: a Fabric pack whose Minecraft version and
 /// loader come from the pack; `client-only`, `notices`, `blocking` and
@@ -96,6 +103,7 @@ fn fixture_pack(project: &str) -> Result<CreatePackReview, &'static str> {
         issues: Vec::new(),
         content_bytes: Some(2048),
         source_digest: format!("provider:{project}"),
+        mods_without_loader: false,
     };
     match project {
         "offline" => return Err("provider_unavailable"),
@@ -122,6 +130,9 @@ impl CreateInstaller for FakeInstaller {
     ) -> Result<CreatePackReview, &'static str> {
         match (source, upload) {
             (PackSourceRequest::Provider { project_id, .. }, None) => fixture_pack(project_id),
+            (PackSourceRequest::Upload { .. }, Some(path)) if self.live_packs.load(Ordering::SeqCst) => {
+                vesta_control::packs::workspace::review_create_uploaded_pack(path)
+            }
             (PackSourceRequest::Upload { .. }, Some(path)) => {
                 // The real upload review parses the archive; the fixture only
                 // binds its digest like the live review does.
@@ -142,6 +153,23 @@ impl CreateInstaller for FakeInstaller {
         request: &vesta_control::machine::creates::PackInstallRequest<'_>,
         progress: &dyn CreateProgress,
     ) -> Result<(), &'static str> {
+        if self.live_packs.load(Ordering::SeqCst) {
+            progress.phase("installing");
+            self.pack_started.store(true, Ordering::SeqCst);
+            let until = std::time::Instant::now() + Duration::from_secs(60);
+            while self.pack_hold.load(Ordering::SeqCst) && !progress.cancelled() {
+                assert!(std::time::Instant::now() < until, "never cancelled");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let servers = request.server_dir.parent().unwrap().to_path_buf();
+            let java = servers.join(".unused-java-cache");
+            let result = vesta_control::machine::creates::LiveCreateInstaller::new(java, servers)
+                .install_pack(request, progress);
+            if result.is_ok() {
+                self.pack_installs.lock().unwrap().push(request.review.clone());
+            }
+            return result;
+        }
         // Unregistered, with the base software already published.
         assert!(request.server_dir.join("game/server.properties").is_file());
         assert!(request.server_dir.join("private/launch.toml").is_file());
@@ -234,10 +262,14 @@ impl CreateInstaller for FakeInstaller {
         // The "server software" is an owned copy of this test executable.
         let software = request.install_root.join("software");
         std::fs::create_dir_all(&software).unwrap();
-        let exe = software.join(if cfg!(windows) {
-            "fixture.exe"
-        } else {
-            "fixture"
+        // Live pack installs need the server's software service, which only
+        // manages launches whose executable is named `java`.
+        let live = self.live_packs.load(Ordering::SeqCst);
+        let exe = software.join(match (live, cfg!(windows)) {
+            (true, true) => "java.exe",
+            (true, false) => "java",
+            (false, true) => "fixture.exe",
+            (false, false) => "fixture",
         });
         std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
         let game = publish()?;
@@ -1418,6 +1450,157 @@ fn modpack_routes_are_owner_only() {
         &host.stranger,
     );
     assert_eq!(status, 403);
+}
+
+
+/// An uploaded `.mrpack` with only overrides (nothing to download).
+fn mrpack(dependencies: Value, files: Value) -> Vec<u8> {
+    let index = serde_json::to_vec(&json!({
+        "formatVersion": 1, "game": "minecraft", "versionId": "1.0", "name": "Local Pack",
+        "dependencies": dependencies, "files": files,
+    }))
+    .unwrap();
+    zip_bytes(&[
+        ("modrinth.index.json", &index),
+        ("overrides/config/local-pack.txt", b"from the pack"),
+    ])
+}
+fn upload_body(name: &str, port: u16, upload: &Value) -> Value {
+    json!({"kind":"modpack","name":name,"source":{"kind":"upload","uploadId":upload["uploadId"]},
+        "gamePort":port,"memoryMiB":1024,"eulaAccepted":false})
+}
+/// The created server's own software status (`manage/software`).
+fn software_status(host: &Host, server: &str) -> Value {
+    // Registered servers get their worker on first use (start).
+    host.router
+        .import_worker(server.parse().unwrap())
+        .expect("worker");
+    let (status, view) = host.call(
+        "GET",
+        &format!("/v1/servers/{server}/manage/software"),
+        Value::Null,
+        &host.owner,
+    );
+    assert_eq!(status, 200, "{view}");
+    if view["data"].is_object() {
+        view["data"].clone()
+    } else {
+        view
+    }
+}
+
+/// Loader-less (Vanilla) and loader packs through the live pack engine: the
+/// base software is installed exactly once (by the create), recorded as the
+/// server's software, and the pack install adds only the pack's files.
+#[test]
+fn modpack_creates_install_software_once_for_vanilla_and_loader_packs() {
+    let installer = Arc::new(FakeInstaller::default());
+    installer.live_packs.store(true, Ordering::SeqCst);
+    let host = create_host(installer.clone());
+    for (name, dependencies, kind, loader) in [
+        ("Plain Pack", json!({"minecraft":"26.1"}), "vanilla", None),
+        (
+            "Fabric Pack",
+            json!({"minecraft":"26.1","fabric-loader":"0.16.9"}),
+            "fabric",
+            Some("0.16.9"),
+        ),
+    ] {
+        let before = installer.installs.load(Ordering::SeqCst);
+        let (status, upload) = host.upload(&host.owner, "modpack", &mrpack(dependencies, json!([])));
+        assert_eq!(status, 201, "{upload}");
+        let job = host.create_plan(upload_body(name, free_port(), &upload));
+        assert_eq!(job["state"], "review", "{job}");
+        let summary = &job["review"]["summary"];
+        assert_eq!(summary["minecraftVersion"], "26.1");
+        assert_eq!(summary["software"]["kind"], kind);
+        assert_eq!(summary["software"]["loaderVersion"], json!(loader));
+        assert_eq!(summary["pack"]["loader"], kind);
+        let (status, accepted) = host.create_apply(&job, &format!("once-{kind}"), json!({}));
+        assert_eq!(status, 202, "{accepted}");
+        let id = accepted["jobId"].as_str().unwrap();
+        let ready = host.create_wait(id, Duration::from_secs(120), |j| j["state"] != "applying");
+        assert_eq!(ready["state"], "ready", "{ready}");
+        // One software install per create: the base install, nothing else.
+        assert_eq!(installer.installs.load(Ordering::SeqCst), before + 1);
+        let server = accepted["serverId"].as_str().unwrap();
+        let game = host.temp.path().join("servers").join(server).join("game");
+        assert_eq!(
+            std::fs::read(game.join("config/local-pack.txt")).unwrap(),
+            b"from the pack"
+        );
+        // The software service recorded the create's install and never
+        // activated another one (revision 0, no previous installation).
+        let software = software_status(&host, server);
+        assert_eq!(software["revision"], 0, "{software}");
+        assert!(software["previous"].is_null(), "{software}");
+        assert_eq!(software["current"]["software"], kind, "{software}");
+        assert_eq!(software["current"]["version"], "26.1", "{software}");
+        assert_eq!(software["current"]["loader_version"], json!(loader), "{software}");
+        let card = host
+            .servers()
+            .into_iter()
+            .find(|s| s["serverId"] == server)
+            .unwrap();
+        assert_eq!(card["software"]["kind"], kind);
+    }
+    assert_eq!(installer.pack_installs.lock().unwrap().len(), 2);
+}
+
+/// A loader-less pack that lists mods could only run on Vanilla, which cannot
+/// load them: refused at planning, never at apply.
+#[test]
+fn loader_less_packs_with_mods_are_blocked_at_planning() {
+    let installer = Arc::new(FakeInstaller::default());
+    installer.live_packs.store(true, Ordering::SeqCst);
+    let host = create_host(installer.clone());
+    let files = json!([{"path":"mods/a.jar","hashes":{"sha1":"a","sha512":"b"},
+        "env":{"client":"required","server":"required"},
+        "downloads":["https://cdn.modrinth.com/data/x/a.jar"],"fileSize":1}]);
+    let (_, upload) = host.upload(&host.owner, "modpack", &mrpack(json!({"minecraft":"26.1"}), files));
+    let job = host.create_plan(upload_body("Mods", 25650, &upload));
+    assert_eq!(job["state"], "blocked", "{job}");
+    assert_eq!(job["review"]["blockers"], json!(["pack_loader_missing"]));
+    assert!(job["review"]["confirmation"].is_null());
+    assert_eq!(installer.installs.load(Ordering::SeqCst), 0);
+}
+
+/// Cancel while the pack content installs: the live pack install stops at
+/// its next safe boundary, the job settles cancelled, nothing is registered
+/// and the reservation and destination are released.
+#[test]
+fn cancel_during_pack_install_releases_everything() {
+    let installer = Arc::new(FakeInstaller::default());
+    installer.live_packs.store(true, Ordering::SeqCst);
+    installer.pack_hold.store(true, Ordering::SeqCst);
+    let host = create_host(installer.clone());
+    let (_, upload) = host.upload(
+        &host.owner,
+        "modpack",
+        &mrpack(json!({"minecraft":"26.1"}), json!([])),
+    );
+    let job = host.create_plan(upload_body("Halted", 25651, &upload));
+    assert_eq!(job["state"], "review", "{job}");
+    let (status, accepted) = host.create_apply(&job, "halted-key", json!({}));
+    assert_eq!(status, 202, "{accepted}");
+    let id = accepted["jobId"].as_str().unwrap().to_owned();
+    let server = accepted["serverId"].as_str().unwrap().to_owned();
+    // The base software is installed; the pack install is under way.
+    host.create_wait(&id, Duration::from_secs(60), |j| {
+        j["phase"] == "installing" && installer.pack_started.load(Ordering::SeqCst)
+    });
+    assert!(host.temp.path().join("servers").join(&server).join("game").exists());
+    let (status, requested) = host.job_action(&id, "cancel");
+    assert_eq!((status, requested), (200, json!({"state":"applying"})));
+    let done = host.create_wait(&id, Duration::from_secs(60), |j| j["state"] != "applying");
+    assert_eq!(done["state"], "cancelled", "{done}");
+    assert!(!host.temp.path().join("servers").join(&server).exists());
+    assert!(host.servers().is_empty());
+    assert!(installer.pack_installs.lock().unwrap().is_empty());
+    // Released: the same name and port plan cleanly again.
+    installer.pack_hold.store(false, Ordering::SeqCst);
+    let again = host.create_plan(upload_body("Halted", 25651, &upload));
+    assert_eq!(again["state"], "review", "{again}");
 }
 
 /// A small real Modrinth Fabric server pack ("Smooth Server", Minecraft

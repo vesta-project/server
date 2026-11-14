@@ -55,6 +55,19 @@ pub struct PackInstallRequest<'a> {
     pub source: &'a PackSourceRequest,
     pub upload: Option<&'a Path>,
     pub review: &'a CreatePackReview,
+    /// The base software this create just installed (the pack's own loader).
+    /// It is recorded as the server's current software so the pack install
+    /// finds it already in place and never installs it a second time.
+    pub installed: &'a CreatedSoftware,
+}
+/// The verified base software of a new server, as its installer reported it.
+#[derive(Clone, Debug)]
+pub struct CreatedSoftware {
+    pub software: Software,
+    pub version: String,
+    pub build: Option<u32>,
+    pub loader_version: Option<String>,
+    pub artifacts: Vec<vesta_server_install::ManagedArtifact>,
 }
 /// Install progress and cooperative cancellation, owned by the create job.
 pub trait CreateProgress: Send + Sync {
@@ -107,9 +120,11 @@ pub trait CreateInstaller: Send + Sync {
         upload: Option<&Path>,
     ) -> Result<CreatePackReview, &'static str>;
     /// Install the reviewed pack's content into the new (unregistered) server
-    /// through the server's own pack install engine. Fails with
+    /// through the server's own pack install engine, on top of the base
+    /// software already installed (never installing software again). Fails with
     /// `integrity_conflict` when the pack no longer matches the review, else
-    /// `download_failed`, `install_failed` or `cancelled`.
+    /// `download_failed`, `install_failed` or `cancelled` (cooperative: checked
+    /// between downloads and between written files).
     fn install_pack(
         &self,
         request: &PackInstallRequest<'_>,

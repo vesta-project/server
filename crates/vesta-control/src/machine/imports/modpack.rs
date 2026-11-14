@@ -388,6 +388,10 @@ impl ImportJobs {
             if review.client_only {
                 blockers.push("pack_client_only");
             }
+            // Loader-less packs run on Vanilla, which cannot load mods.
+            if review.mods_without_loader {
+                blockers.push("pack_loader_missing");
+            }
             if review.issues.iter().any(|i| i.blocking) {
                 blockers.push("pack_review_blocked");
             } else if !review.issues.is_empty() {

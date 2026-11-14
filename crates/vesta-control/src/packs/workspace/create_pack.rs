@@ -39,6 +39,10 @@ pub struct CreatePackReview {
     /// Identity of the reviewed archive: SHA-256 of an uploaded file, or of the
     /// provider's exact file binding (name and published hash).
     pub source_digest: String,
+    /// The pack names no mod loader but lists mods: its server could only be
+    /// Vanilla, which cannot load them (planning blocks it).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mods_without_loader: bool,
 }
 
 fn loader_id(loader: &ClientLoader) -> &'static str {
@@ -88,7 +92,29 @@ fn manifest_review(
         issues,
         content_bytes,
         source_digest,
+        mods_without_loader: false,
     }
+}
+
+/// Whether a loader-less Modrinth pack lists mods in its index (the same path
+/// rule the server's pack engine uses for mod entries). Such a pack cannot run
+/// on Vanilla, and the pack install would refuse it, so planning blocks it.
+fn lists_mods(file: impl Read + std::io::Seek) -> std::result::Result<bool, &'static str> {
+    let mut zip = zip::ZipArchive::new(file).map_err(|_| "pack_invalid")?;
+    let mut index = Vec::new();
+    zip.by_name("modrinth.index.json")
+        .map_err(|_| "pack_invalid")?
+        .take(1024 * 1024)
+        .read_to_end(&mut index)
+        .map_err(|_| "pack_invalid")?;
+    let index: serde_json::Value = serde_json::from_slice(&index).map_err(|_| "pack_invalid")?;
+    Ok(index["files"].as_array().is_some_and(|files| {
+        files.iter().any(|f| {
+            f["path"]
+                .as_str()
+                .is_some_and(|p| matches!(super::import::kind(p), Ok(EntryKind::Mod)))
+        })
+    }))
 }
 fn notice(warning: InstallWarning) -> CreatePackIssue {
     CreatePackIssue {
@@ -159,13 +185,19 @@ pub fn review_create_provider_pack(
         "{provider}\0{project_id}\0{version_id}\0{}\0{:?}",
         source.filename, source.expected_hash
     );
-    Ok(manifest_review(
-        manifest,
-        client_only,
-        issues,
-        Some(size),
-        digest(binding.as_bytes()),
-    ))
+    let mods_without_loader = manifest.loader == ClientLoader::None
+        && platform == Provider::Modrinth
+        && lists_mods(content::RemoteZip::open(&source).map_err(content_failure)?)?;
+    Ok(CreatePackReview {
+        mods_without_loader,
+        ..manifest_review(
+            manifest,
+            client_only,
+            issues,
+            Some(size),
+            digest(binding.as_bytes()),
+        )
+    })
 }
 
 /// Review an uploaded pack archive (`.mrpack` or a CurseForge pack zip) that
@@ -215,7 +247,11 @@ pub fn review_create_uploaded_pack(
                     .all(|f| f["env"]["server"].as_str() == Some("unsupported"))
         })
     };
-    Ok(manifest_review(manifest, client_only, issues, None, source_digest))
+    let mods_without_loader = modrinth && manifest.loader == ClientLoader::None && lists_mods(open()?)?;
+    Ok(CreatePackReview {
+        mods_without_loader,
+        ..manifest_review(manifest, client_only, issues, None, source_digest)
+    })
 }
 
 /// Archive limits for an uploaded server pack (create.md).
@@ -318,6 +354,34 @@ mod tests {
         // Neither a Modrinth nor a CurseForge pack.
         let plain = archive(&[("mods/a.jar", b"x")], None);
         assert_eq!(review_create_uploaded_pack(plain.path()), Err("pack_invalid"));
+    }
+
+    #[test]
+    fn loader_less_packs_review_as_vanilla_and_flag_listed_mods() {
+        let index = |path: &str| {
+            serde_json::to_vec(&serde_json::json!({
+                "formatVersion": 1, "game": "minecraft", "versionId": "1.0", "name": "Plain",
+                "dependencies": {"minecraft": "1.21.1"},
+                "files": [{"path": path, "hashes": {"sha1": "a", "sha512": "b"},
+                    "env": {"client": "required", "server": "required"},
+                    "downloads": ["https://cdn.modrinth.com/data/x/a.zip"], "fileSize": 1}]
+            }))
+            .unwrap()
+        };
+        let datapacks = archive(
+            &[
+                ("modrinth.index.json", &index("world/datapacks/pack.zip")),
+                ("overrides/config/a.txt", b"a"),
+            ],
+            None,
+        );
+        let review = review_create_uploaded_pack(datapacks.path()).unwrap();
+        assert_eq!((review.loader.as_str(), review.loader_version.as_deref()), ("vanilla", None));
+        assert!(!review.mods_without_loader);
+        // The flag is omitted when false, so earlier reviewed plans keep their hash.
+        assert!(!serde_json::to_string(&review).unwrap().contains("modsWithoutLoader"));
+        let mods = archive(&[("modrinth.index.json", &index("mods/a.jar"))], None);
+        assert!(review_create_uploaded_pack(mods.path()).unwrap().mods_without_loader);
     }
 
     #[test]

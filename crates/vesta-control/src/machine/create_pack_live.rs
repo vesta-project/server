@@ -1,10 +1,13 @@
 //! Live pack content install for a modpack create. The new server is not
 //! registered yet: its own worker is opened briefly from the trusted
-//! `host.toml`, the owner's policy is synchronized to it, and the server's own
-//! pack engine runs exactly as for an existing server (install plan, then
-//! `apply_pack`, which installs the pack's loader through the server's software
-//! service and verifies every pack file). The worker is shut down before the
-//! create job registers the server.
+//! `host.toml`, the owner's policy is synchronized to it, the base software the
+//! create just installed is recorded as the server's current software (so the
+//! pack install finds its loader in place and installs no software again), and
+//! the server's own pack engine runs exactly as for an existing server (install
+//! plan, then `apply_pack`, which verifies every pack file). Cancellation is
+//! cooperative at the pack engine's safe boundaries: between downloads and
+//! between written files. The worker is shut down before the create job
+//! registers (or, on failure or cancellation, removes) the server.
 use super::{CreateProgress, PackInstallRequest, PackSourceRequest};
 use crate::{
     config::HostConfiguration,
@@ -13,7 +16,15 @@ use crate::{
     worker::{ServerWorker, Worker},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use std::{io::Read, path::Path, sync::Arc, time::Duration};
+use std::{
+    io::Read,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 pub(super) fn install(
     request: &PackInstallRequest<'_>,
@@ -32,15 +43,32 @@ pub(super) fn install(
     )
     .map_err(|_| "install_failed")?;
     let handle = worker.handle();
-    let result = handle
-        .sync_policy(request.policy.clone())
-        .map_err(|_| "install_failed")
-        .and_then(|()| {
-            handle
-                .authorize(request.server_subject.clone())
-                .map_err(|_| "install_failed")
-        })
-        .and_then(|network| run(&network, request, progress));
+    // The pack engine checks this flag at its safe boundaries; a watcher turns
+    // the job's cancellation request into it while the install runs.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let finished = AtomicBool::new(false);
+    let result = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !finished.load(Ordering::Acquire) {
+                if progress.cancelled() {
+                    cancel.store(true, Ordering::Release);
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        let result = handle
+            .sync_policy(request.policy.clone())
+            .map_err(|_| "install_failed")
+            .and_then(|()| {
+                handle
+                    .authorize(request.server_subject.clone())
+                    .map_err(|_| "install_failed")
+            })
+            .and_then(|network| run(&network, request, progress, &cancel));
+        finished.store(true, Ordering::Release);
+        result
+    });
     // The registered server gets its own worker later; this one must be gone.
     if !matches!(
         worker.shutdown(Duration::from_secs(60)),
@@ -48,7 +76,32 @@ pub(super) fn install(
     ) {
         return Err("install_failed");
     }
-    result
+    // Whatever stopped after cancellation was requested is a cancellation.
+    match result {
+        Err(_) if cancel.load(Ordering::Acquire) || progress.cancelled() => Err("cancelled"),
+        result => result,
+    }
+}
+
+/// The installation id the software service would record: the installer's
+/// instance directory, when the trusted artifacts show it.
+fn installation_id(request: &PackInstallRequest<'_>) -> String {
+    let instances = request.server_dir.join("install").join("instances");
+    request
+        .installed
+        .artifacts
+        .iter()
+        .find_map(|a| {
+            let rest = a.path.strip_prefix(&instances).ok()?;
+            let id = rest.components().next()?.as_os_str().to_str()?;
+            (!id.is_empty()
+                && id.len() <= 128
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)))
+            .then(|| id.to_owned())
+        })
+        .unwrap_or_else(|| "created".into())
 }
 
 fn failed(error: &crate::packs::ReleaseError) -> &'static str {
@@ -65,11 +118,35 @@ fn run(
     network: &crate::host::NetworkHost,
     request: &PackInstallRequest<'_>,
     progress: &dyn CreateProgress,
+    cancel: &Arc<AtomicBool>,
 ) -> Result<(), &'static str> {
     let subject = &request.subject;
     let review = request.review;
+    let stopped = || cancel.load(Ordering::Acquire);
     let workspace = PackWorkspace::open(network.database())
-        .map(|w| w.with_download_settings(network.configuration().downloads()))
+        .map(|w| {
+            w.with_download_settings(network.configuration().downloads())
+                .with_cancel(cancel.clone())
+        })
+        .map_err(|_| "install_failed")?;
+    let software = network.software().cloned().ok_or("install_failed")?;
+    // The base software is the pack's own loader, already verified and
+    // installed by this create: record it exactly as the software service
+    // would, so the pack install needs no software switch.
+    let installed = request.installed;
+    software
+        .record_created_installation(
+            subject,
+            crate::software::Installation {
+                custom_jar: None,
+                loader_version: installed.loader_version.clone(),
+                software: Some(installed.software),
+                version: Some(installed.version.clone()),
+                build: installed.build,
+                installation_id: installation_id(request),
+            },
+            installed.artifacts.clone(),
+        )
         .map_err(|_| "install_failed")?;
     let tag = request.server_id.simple().to_string();
     progress.phase("downloading_software");
@@ -93,7 +170,7 @@ fn run(
         }
         _ => return Err("install_failed"),
     };
-    if progress.cancelled() {
+    if stopped() {
         return Err("cancelled");
     }
     let providers = UreqProviderClient::configured();
@@ -123,14 +200,19 @@ fn run(
     {
         return Err("integrity_conflict");
     }
-    if !plan.valid {
+    // The recorded base software is exactly the pack's: a switch would install
+    // software a second time, which a create never does.
+    if !plan.valid || plan.software_switch_required {
         return Err("install_failed");
     }
-    let software = network.software().cloned().ok_or("install_failed")?;
+    if stopped() {
+        return Err("cancelled");
+    }
     let input = PackInstallApply {
         // The owner acknowledged the pack review's notices at create apply.
         acknowledge_warnings: true,
-        acknowledge_software_switch: true,
+        // Never a software switch: the base software is already the pack's.
+        acknowledge_software_switch: false,
         plan_id: plan.plan_id.clone(),
         confirmation_token: plan.confirmation_token.clone(),
         choices: Vec::new(),
@@ -151,7 +233,10 @@ fn run(
         .block_on(software.apply_pack(subject, pack))
         .map_err(|_| "install_failed")?;
     let _ = workspace.track_install_job(subject, &job.id);
-    // The software service runs the job on its own worker thread.
+    // The software service runs the job on its own worker thread. After a
+    // cancellation request the job stops at the pack engine's next safe
+    // boundary; wait for it to settle so nothing writes into the server after
+    // the create removes it.
     let deadline = std::time::Instant::now() + Duration::from_secs(3600);
     loop {
         let state = software
