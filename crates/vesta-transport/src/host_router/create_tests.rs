@@ -312,6 +312,9 @@ impl CreateInstaller for FakeInstaller {
     }
 }
 
+thread_local! { static PORTS: std::cell::RefCell<std::collections::HashMap<u16,u16>> = std::cell::RefCell::new(std::collections::HashMap::new()); }
+fn test_port(port: u16) -> u16 { PORTS.with(|ports| *ports.borrow_mut().entry(port).or_insert_with(free_port)) }
+
 impl Host {
     fn create_wait(&self, job: &str, timeout: Duration, done: impl Fn(&Value) -> bool) -> Value {
         let until = std::time::Instant::now() + timeout;
@@ -343,7 +346,8 @@ impl Host {
             ));
         }
     }
-    fn create_plan(&self, body: Value) -> Value {
+    fn create_plan(&self, mut body: Value) -> Value {
+        if let Some(port)=body["gamePort"].as_u64().filter(|p|*p>0 && *p<=65535) { body["gamePort"]=json!(test_port(port as u16)); } else if body["gamePort"].is_null() { body["gamePort"]=json!(free_port()); }
         let (status, accepted) = self.call("POST", "/v1/host/creates/plan", body, &self.owner);
         assert_eq!(status, 202, "{accepted}");
         assert_eq!(accepted["state"], "planning");
@@ -2088,7 +2092,7 @@ fn restore_lists_detached_backups_and_restores_one_as_a_new_server() {
     );
     let properties = std::fs::read_to_string(dir.join("game/server.properties")).unwrap();
     assert!(
-        properties.contains("server-port=25672") && properties.contains("motd=Old"),
+        properties.contains(&format!("server-port={}",test_port(25672))) && properties.contains("motd=Old"),
         "{properties}"
     );
     assert!(
@@ -2108,7 +2112,7 @@ fn restore_lists_detached_backups_and_restores_one_as_a_new_server() {
         .find(|s| s["serverId"] == server)
         .unwrap();
     assert_eq!(card["name"], "Restored");
-    assert_eq!(card["gamePort"], 25672);
+    assert_eq!(card["gamePort"], test_port(25672));
     // The source stays, and is still offered (a backup can be restored again).
     let source_dir = host.temp.path().join("servers").join(origin.to_string());
     assert!(source_dir.join("game/world/level.dat").exists());
