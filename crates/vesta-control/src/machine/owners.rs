@@ -342,15 +342,35 @@ impl HostState {
             )
         })
     }
-    pub fn server_access(&self, actor: Actor, server: Uuid) -> Result<Vec<(Uuid, EffectiveRole, Option<String>)>> {
+    pub fn server_access(
+        &self,
+        actor: Actor,
+        server: Uuid,
+    ) -> Result<Vec<(Uuid, EffectiveRole, Option<String>)>> {
         self.read(|c| {
             super::registry::require_server(c, server)?;
-            let allowed = match actor { Actor::LocalRecovery => true, Actor::Account(id) => host_role_in(c,id)?.is_some() || super::registry::effective_role_in(c,id,server)? == Some(EffectiveRole::Server(ServerRole::Admin)) };
-            if !allowed { return Err(reject(Code::Forbidden)); }
+            let allowed = match actor {
+                Actor::LocalRecovery => true,
+                Actor::Account(id) => {
+                    host_role_in(c, id)?.is_some()
+                        || super::registry::effective_role_in(c, id, server)?
+                            == Some(EffectiveRole::Server(ServerRole::Admin))
+                }
+            };
+            if !allowed {
+                return Err(reject(Code::Forbidden));
+            }
             let mut q = c.prepare("SELECT account_id FROM machine_accounts ORDER BY account_id")?;
-            let ids = q.query_map([], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let ids = q
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
             let mut out = Vec::new();
-            for id in ids { let id = uuid(id)?; if let Some(role) = super::registry::effective_role_in(c,id,server)? { out.push((id,role,account_name_in(c,id)?)); } }
+            for id in ids {
+                let id = uuid(id)?;
+                if let Some(role) = super::registry::effective_role_in(c, id, server)? {
+                    out.push((id, role, account_name_in(c, id)?));
+                }
+            }
             Ok(out)
         })
     }
@@ -459,4 +479,15 @@ pub fn device_in(c: &Connection, id: Uuid) -> Result<Option<Device>> {
         })
     })
     .transpose()
+}
+
+impl HostState {
+    /// Trusted host adapter data: aggregate counts only, never device identity.
+    pub fn active_device_counts(&self) -> Result<std::collections::BTreeMap<String, u32>> {
+        self.read(|c| {
+            let mut stmt = c.prepare("SELECT d.account_id,count(*) FROM machine_devices d JOIN machine_accounts a ON a.account_id=d.account_id WHERE d.revoked_at_ms IS NULL AND a.disabled=0 GROUP BY d.account_id")?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)))?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })
+    }
 }

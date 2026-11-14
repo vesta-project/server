@@ -419,3 +419,27 @@ fn removed_servers_revoke_grants_replay_restore_and_expire() {
     removed::purge(&root, record.restore_until_ms + 1).unwrap();
     assert!(removed::list(&root).unwrap().is_empty());
 }
+#[test]
+fn host_device_counts_exclude_revoked_devices() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = open(temp.path());
+    let owner = Uuid::new_v4();
+    let device = state.claim(owner, "Owner", [1; 32]).unwrap();
+    assert_eq!(state.active_device_counts().unwrap()[&owner.to_string()], 1);
+    state
+        .write(|c| {
+            c.execute(
+                "UPDATE machine_devices SET revoked_at_ms=1 WHERE account_id=?",
+                [owner.to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        !state
+            .active_device_counts()
+            .unwrap()
+            .contains_key(&owner.to_string())
+    );
+    let _ = device;
+}

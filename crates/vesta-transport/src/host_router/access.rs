@@ -9,9 +9,15 @@ fn role_value(role: EffectiveRole) -> serde_json::Value {
     };
     json!({"id":id,"name":name,"rank":rank,"builtin":true,"capabilities":[]})
 }
-fn user(id: Uuid, role: EffectiveRole, name: Option<String>, revision: u64) -> serde_json::Value {
+fn user(
+    id: Uuid,
+    role: EffectiveRole,
+    name: Option<String>,
+    revision: u64,
+    device_count: u64,
+) -> serde_json::Value {
     let r = role_value(role);
-    json!({"id":id,"display_name":name.clone().unwrap_or_else(||id.to_string()),"minecraft_accounts":[{"uuid":id,"name":name}],"roles":[{"role":r,"expires_at_ms":null}],"rank":r["rank"],"device_count":0,"version":revision.to_string()})
+    json!({"id":id,"display_name":name.clone().unwrap_or_else(||id.to_string()),"minecraft_accounts":[{"uuid":id,"name":name}],"roles":[{"role":r,"expires_at_ms":null}],"rank":r["rank"],"device_count":device_count,"machine_owner":matches!(role, EffectiveRole::PrimaryOwner | EffectiveRole::Owner),"version":revision.to_string()})
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -52,6 +58,11 @@ pub(super) fn dispatch(
         Ok(r) => r,
         Err(e) => return Some(access_error(e)),
     };
+    let counts = match state.active_device_counts() {
+        Ok(v) => v,
+        Err(e) => return Some(access_error(e)),
+    };
+    let count = |id: Uuid| counts.get(&id.to_string()).copied().unwrap_or(0);
     let revision = match state.snapshot() {
         Ok(s) => s.revision,
         Err(e) => return Some(access_error(e)),
@@ -113,7 +124,7 @@ pub(super) fn dispatch(
         }
         let next = (rows.len() > offset.saturating_add(limit)).then_some(offset + limit);
         crate::manage::ok(
-            json!({"users":rows.into_iter().skip(offset).take(limit).map(|(id,r,n)|user(id,r,n,revision)).collect::<Vec<_>>(),"next_offset":next}),
+            json!({"users":rows.into_iter().skip(offset).take(limit).map(|(id,r,n)|user(id,r,n,revision,u64::from(count(id)))).collect::<Vec<_>>(),"next_offset":next}),
         )
     } else if method == Method::PUT
         && path.starts_with("users/")
@@ -150,18 +161,33 @@ pub(super) fn dispatch(
         match state.set_server_role(actor, server, target, role, revision) {
             Ok(s) => {
                 // Revoke the old policy in the worker before returning success.
-                let worker=router.workers.lock().ok().and_then(|w|w.iter().find(|w|w.server_id()==server).cloned());
-                if let Some(worker)=worker { if subject(router,worker.as_ref(),device).is_err() { return Some(failure(StatusCode::SERVICE_UNAVAILABLE,"worker_unavailable")); } }
+                let worker = router
+                    .workers
+                    .lock()
+                    .ok()
+                    .and_then(|w| w.iter().find(|w| w.server_id() == server).cloned());
+                if let Some(worker) = worker {
+                    if subject(router, worker.as_ref(), device).is_err() {
+                        return Some(failure(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "worker_unavailable",
+                        ));
+                    }
+                }
                 let name = rows
                     .into_iter()
                     .find(|(id, _, _)| *id == target)
                     .and_then(|(_, _, n)| n);
                 match role {
-                    Some(r) => {
-                        crate::manage::ok(user(target, EffectiveRole::Server(r), name, s.revision))
-                    }
+                    Some(r) => crate::manage::ok(user(
+                        target,
+                        EffectiveRole::Server(r),
+                        name,
+                        s.revision,
+                        u64::from(count(target)),
+                    )),
                     None => crate::manage::ok(
-                        json!({"id":target,"display_name":name.unwrap_or_else(||target.to_string()),"minecraft_accounts":[{"uuid":target,"name":null}],"roles":[],"rank":0,"device_count":0,"version":s.revision.to_string()}),
+                        json!({"id":target,"display_name":name.unwrap_or_else(||target.to_string()),"minecraft_accounts":[{"uuid":target,"name":null}],"roles":[],"rank":0,"device_count":count(target),"machine_owner":false,"version":s.revision.to_string()}),
                     ),
                 }
             }
@@ -313,11 +339,59 @@ mod tests {
         }
         for (i, device) in devices.iter().enumerate() {
             let input=serde_json::to_vec(&json!({"add":["player"],"remove":[],"expected_version":state.snapshot().unwrap().revision.to_string()})).unwrap();
-            let path=format!("manage/users/{}/roles",devices[3].account_id);
-            assert_eq!(dispatch(&router,device,servers[0],&Method::PUT,&path,None,&input,&fp).unwrap().status(),if i<2 {StatusCode::OK}else{StatusCode::FORBIDDEN});
-            let issued=vesta_control::machine::invites::issue(&state,Actor::Account(owner.account_id),servers[0],&fp,vesta_control::machine::invites::CreateInvite{role:"player".into(),expires_minutes:60,multi_use:false,max_uses:None}).unwrap();
-            let path=format!("manage/invitations/{}",issued["id"].as_str().unwrap());
-            assert_eq!(dispatch(&router,device,servers[0],&Method::DELETE,&path,None,&[],&fp).unwrap().status(),if i<2 {StatusCode::NO_CONTENT}else{StatusCode::FORBIDDEN});
+            let path = format!("manage/users/{}/roles", devices[3].account_id);
+            assert_eq!(
+                dispatch(
+                    &router,
+                    device,
+                    servers[0],
+                    &Method::PUT,
+                    &path,
+                    None,
+                    &input,
+                    &fp
+                )
+                .unwrap()
+                .status(),
+                if i < 2 {
+                    StatusCode::OK
+                } else {
+                    StatusCode::FORBIDDEN
+                }
+            );
+            let issued = vesta_control::machine::invites::issue(
+                &state,
+                Actor::Account(owner.account_id),
+                servers[0],
+                &fp,
+                vesta_control::machine::invites::CreateInvite {
+                    role: "player".into(),
+                    expires_minutes: 60,
+                    multi_use: false,
+                    max_uses: None,
+                },
+            )
+            .unwrap();
+            let path = format!("manage/invitations/{}", issued["id"].as_str().unwrap());
+            assert_eq!(
+                dispatch(
+                    &router,
+                    device,
+                    servers[0],
+                    &Method::DELETE,
+                    &path,
+                    None,
+                    &[],
+                    &fp
+                )
+                .unwrap()
+                .status(),
+                if i < 2 {
+                    StatusCode::NO_CONTENT
+                } else {
+                    StatusCode::FORBIDDEN
+                }
+            );
         }
         assert!(
             state
