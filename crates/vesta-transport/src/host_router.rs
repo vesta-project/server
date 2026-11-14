@@ -17,6 +17,7 @@ use vesta_control::{
     },
     worker::{ServerSubject, ServerWorker, Worker, WorkerGrant, WorkerHandle, WorkerPolicy},
 };
+mod access;
 mod creates;
 mod imports;
 mod owners;
@@ -144,6 +145,23 @@ impl HostRouter {
         self.add_worker(Arc::new(handle.clone()));
         owned.push(worker);
         Ok(handle)
+    }
+    /// Finish installation without requiring another launcher action.
+    fn start_installed(&self, owner: &OwnerBinding, id: &str, create: bool) {
+        let Some(jobs) = self.imports() else { return };
+        let status = if create { jobs.create_status(owner, id).map(|j| (j.state, j.error, j.server_id)) } else { jobs.status(owner, id).map(|j| (j.state, j.error, j.server_id)) };
+        let Ok((state, error, server)) = status else { return };
+        if state != "ready" || error.is_some() { return; }
+        let Some(server) = server else { return };
+        let Ok(handle) = self.import_worker(server) else { let _ = jobs.installed_start_failed(id); return };
+        let started = if create { jobs.create_start(owner, id, &handle).map(|_| ()) } else { jobs.start(owner, id, &handle).map(|_| ()) };
+        if started.is_err() { let _ = jobs.installed_start_failed(id); return; }
+        loop {
+            let next = if create { jobs.create_readiness(owner, id, &handle).map(|j| j.state) } else { jobs.readiness(owner, id, &handle).map(|j| j.state) };
+            self.refresh_server_states();
+            if !next.is_ok_and(|state| state == "starting") { break; }
+            std::thread::sleep(Duration::from_millis(250));
+        }
     }
     /// Owner/role-filtered server cards: registry facts plus the software and
     /// Minecraft version recorded by the job that created or imported the
@@ -824,6 +842,7 @@ impl Application {
             {
                 return failure(StatusCode::NOT_FOUND, "not_found");
             }
+            if let Some(reply) = access::dispatch(&self.router, &device, id, method, suffix, query, bytes) { return reply; }
             let worker = self
                 .router
                 .workers

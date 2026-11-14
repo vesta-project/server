@@ -168,7 +168,7 @@ fn job_routes(
             Err(e) => return e,
         };
         let accepted = tryjob!(jobs.create_apply(&binding, &request, key));
-        spawn_apply(&service, &binding, &accepted.job_id);
+        spawn_apply(router, &service, &binding, &accepted.job_id);
         return accepted_reply(serde_json::to_value(accepted).expect("wire"));
     }
     let rest = path.trim_start_matches("/v1/host/creates/jobs/");
@@ -203,7 +203,7 @@ fn job_routes(
         "resume" => {
             let job = tryjob!(jobs.create_resume(&binding, id));
             if job.state == "applying" {
-                spawn_apply(&service, &binding, id);
+                spawn_apply(router, &service, &binding, id);
             }
             accepted_reply(job_json(&job))
         }
@@ -230,13 +230,15 @@ fn service(router: &HostRouter) -> Option<Service> {
         catalogue: router.catalogue.clone()?,
     })
 }
-fn spawn_apply(service: &Service, binding: &OwnerBinding, id: &str) {
+fn spawn_apply(router: &HostRouter, service: &Service, binding: &OwnerBinding, id: &str) {
     let (worker, owner, id) = (service.clone(), binding.clone(), id.to_owned());
+    let router = router.clone();
     // A second runner for the same job is refused by `run_create_apply` itself.
     background(move || {
         let _ = worker
             .jobs
             .run_create_apply(&owner, &id, worker.installer.as_ref());
+        router.start_installed(&owner, &id, true);
     });
 }
 fn background(work: impl FnOnce() + Send + 'static) {

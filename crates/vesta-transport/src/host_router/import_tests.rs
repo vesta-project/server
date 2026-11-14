@@ -120,8 +120,8 @@ impl ImportEnvironment for FakeEnv {
     fn processes(&self, _: &[PathBuf]) -> (Vec<ProcessEvidence>, &'static str) {
         (Vec::new(), "complete")
     }
-    fn port_state(&self, _: u16) -> &'static str {
-        "free"
+    fn port_state(&self, port: u16) -> &'static str {
+        if std::net::TcpListener::bind(("0.0.0.0", port)).is_ok() { "free" } else { "occupied" }
     }
     fn free_bytes(&self, _: &Path) -> Option<u64> {
         Some(100 * GIB)
@@ -380,7 +380,7 @@ impl Drop for Host {
 fn fake_vanilla(host: &Host) {
     host.put(
         "vanilla/server.properties",
-        b"server-port=25565\nmotd=hi\nenable-rcon=true\nrcon.password=hunter2\n",
+        format!("server-port={}\nmotd=hi\nenable-rcon=true\nrcon.password=hunter2\n", free_port()).as_bytes(),
     );
     host.put("vanilla/minecraft_server.1.21.1.jar", b"jar");
     host.put("vanilla/world/level.dat", b"nbt");
@@ -481,10 +481,10 @@ fn owner_plans_applies_and_polls_import_jobs_through_the_router() {
     assert_eq!(host.apply(&job, "apply-key-1").1, accepted);
     let server = accepted["serverId"].as_str().unwrap().to_owned();
     let done = host.wait(id, Duration::from_secs(60), |j| {
-        !matches!(j["state"].as_str(), Some("applying"))
+        !matches!(j["state"].as_str(), Some("applying" | "starting")) || (j["state"] == "ready" && j["error"].is_null())
     });
-    assert_eq!(done["state"], "ready", "{done}");
-    assert_eq!(done["phase"], "register");
+    assert_eq!(done["state"], "online", "{done}");
+    assert_eq!(done["phase"], "start");
     assert_eq!(done["serverId"], server);
     assert!(done["review"]["confirmation"].is_null());
     let progress = &done["progress"];
@@ -573,7 +573,7 @@ fn owner_cancels_a_review_and_a_running_copy() {
     );
     assert_eq!(status, 200, "{requested}");
     assert_eq!(requested["state"], "applying"); // safe boundary pending
-    let done = host.wait(id, Duration::from_secs(30), |j| j["state"] != "applying");
+    let done = host.wait(id, Duration::from_secs(30), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
     assert_eq!(done["state"], "cancelled", "{done}");
     assert!(!host.temp.path().join("servers").join(&server).exists());
     assert_eq!(
@@ -703,8 +703,8 @@ fn real_vanilla_import_reaches_online_and_is_managed_through_mapped_routes() {
     let (status, accepted) = host.apply(&job, "real-apply");
     assert_eq!(status, 202, "{accepted}");
     let server = accepted["serverId"].as_str().unwrap().to_owned();
-    let ready = host.wait(&id, Duration::from_secs(300), |j| j["state"] != "applying");
-    assert_eq!(ready["state"], "ready", "{ready}");
+    let ready = host.wait(&id, Duration::from_secs(300), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
+    assert_eq!(ready["state"], "online", "{ready}");
 
     // Start: the HTTP call returns at once; readiness is polled.
     let (status, started) = host.call(
@@ -714,7 +714,7 @@ fn real_vanilla_import_reaches_online_and_is_managed_through_mapped_routes() {
         &host.owner,
     );
     assert_eq!(status, 202, "{started}");
-    assert_eq!(started["state"], "starting", "{started}");
+    assert_eq!(started["state"], "online", "{started}");
     let online = host.wait(&id, Duration::from_secs(600), |j| j["state"] != "starting");
     if online["state"] != "online" {
         // Diagnostics: the game console and managed status through the

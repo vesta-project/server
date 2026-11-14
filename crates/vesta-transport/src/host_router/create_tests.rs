@@ -519,9 +519,9 @@ fn owner_creates_vanilla_reviews_applies_starts_and_reaches_online() {
     assert_eq!(downloading["progress"]["bytesTotal"], 1024);
     assert!(downloading["review"]["confirmation"].is_null());
     installer.hold.store(false, Ordering::SeqCst);
-    let ready = host.create_wait(&id, Duration::from_secs(60), |j| j["state"] != "applying");
-    assert_eq!(ready["state"], "ready", "{ready}");
-    assert_eq!(ready["phase"], "registering");
+    let ready = host.create_wait(&id, Duration::from_secs(60), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
+    assert_eq!(ready["state"], "online", "{ready}");
+    assert_eq!(ready["phase"], "starting");
     assert!(ready["error"].is_null());
     assert_eq!(ready["serverId"], server);
     assert_eq!(installer.installs.load(Ordering::SeqCst), 1);
@@ -547,7 +547,7 @@ fn owner_creates_vanilla_reviews_applies_starts_and_reaches_online() {
     assert_eq!(servers.len(), 1);
     assert_eq!(servers[0]["serverId"], server);
     assert_eq!(servers[0]["name"], "Survival");
-    assert_eq!(servers[0]["state"], "registered");
+    assert_eq!(servers[0]["state"], "online");
     assert_eq!(
         servers[0]["software"],
         json!({"kind":"vanilla","version":"26.1"})
@@ -561,7 +561,7 @@ fn owner_creates_vanilla_reviews_applies_starts_and_reaches_online() {
     // Start returns at once; readiness is polled until the game is online.
     let (status, started) = host.job_action(&id, "start");
     assert_eq!(status, 202, "{started}");
-    assert_eq!(started["state"], "starting", "{started}");
+    assert_eq!(started["state"], "online", "{started}");
     assert_eq!(started["phase"], "starting");
     let online = host.create_wait(&id, Duration::from_secs(120), |j| j["state"] != "starting");
     assert_eq!(online["state"], "online", "{online}");
@@ -808,7 +808,7 @@ fn cancel_mid_install_releases_the_reservation_and_destination() {
     );
     let (status, requested) = host.job_action(&id, "cancel");
     assert_eq!((status, requested), (200, json!({"state":"applying"})));
-    let done = host.create_wait(&id, Duration::from_secs(30), |j| j["state"] != "applying");
+    let done = host.create_wait(&id, Duration::from_secs(30), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
     assert_eq!(done["state"], "cancelled", "{done}");
     assert!(!host.temp.path().join("servers").join(&server).exists());
     assert!(host.servers().is_empty());
@@ -839,8 +839,8 @@ fn back_to_back_creates_get_distinct_resources_and_survive_a_restart() {
         let (status, accepted) = host.create_apply(&job, key, json!({}));
         assert_eq!(status, 202, "{accepted}");
         let id = accepted["jobId"].as_str().unwrap().to_owned();
-        let ready = host.create_wait(&id, Duration::from_secs(60), |j| j["state"] != "applying");
-        assert_eq!(ready["state"], "ready", "{ready}");
+        let ready = host.create_wait(&id, Duration::from_secs(60), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
+        assert_eq!(ready["state"], "online", "{ready}");
         created.push((id, defaults));
     }
     let (first, second) = (&created[0].1, &created[1].1);
@@ -918,8 +918,8 @@ fn running_servers_come_back_after_a_restart_and_stopped_ones_stay_stopped() {
         let (status, accepted) = host.create_apply(&job, &format!("{name}-key"), json!({}));
         assert_eq!(status, 202, "{accepted}");
         let id = accepted["jobId"].as_str().unwrap().to_owned();
-        let ready = host.create_wait(&id, Duration::from_secs(60), |j| j["state"] != "applying");
-        assert_eq!(ready["state"], "ready", "{ready}");
+        let ready = host.create_wait(&id, Duration::from_secs(60), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
+        assert_eq!(ready["state"], "online", "{ready}");
         if name != "Never" {
             assert_eq!(host.job_action(&id, "start").0, 202);
             let online =
@@ -1031,8 +1031,8 @@ fn interrupted_create_resumes_after_a_restart_without_duplicates() {
     assert_eq!(status, 202, "{resumed}");
     assert_eq!(resumed["state"], "applying");
     assert_eq!(resumed["phase"], "resolving");
-    let ready = host.create_wait(&id, Duration::from_secs(60), |j| j["state"] != "applying");
-    assert_eq!(ready["state"], "ready", "{ready}");
+    let ready = host.create_wait(&id, Duration::from_secs(60), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
+    assert_eq!(ready["state"], "online", "{ready}");
     assert_eq!(installer.installs.load(Ordering::SeqCst), 1);
     let servers = host.servers();
     assert_eq!(servers.len(), 1);
@@ -1083,8 +1083,8 @@ fn real_vanilla_and_fabric_creates_run_together() {
         let (status, accepted) = host.create_apply(&job, &format!("real-{kind}"), json!({}));
         assert_eq!(status, 202, "{accepted}");
         let server = accepted["serverId"].as_str().unwrap().to_owned();
-        let ready = host.create_wait(&id, Duration::from_secs(900), |j| j["state"] != "applying");
-        assert_eq!(ready["state"], "ready", "{ready}");
+        let ready = host.create_wait(&id, Duration::from_secs(900), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
+        assert_eq!(ready["state"], "online", "{ready}");
         let (status, started) = host.job_action(&id, "start");
         assert_eq!(status, 202, "{started}");
         let online = host.create_wait(&id, Duration::from_secs(600), |j| j["state"] != "starting");
@@ -1307,8 +1307,8 @@ fn provider_modpack_reviews_installs_its_content_and_reaches_online() {
     assert_eq!(status, 202, "{accepted}");
     let id = accepted["jobId"].as_str().unwrap().to_owned();
     let server = accepted["serverId"].as_str().unwrap().to_owned();
-    let ready = host.create_wait(&id, Duration::from_secs(60), |j| j["state"] != "applying");
-    assert_eq!(ready["state"], "ready", "{ready}");
+    let ready = host.create_wait(&id, Duration::from_secs(60), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
+    assert_eq!(ready["state"], "online", "{ready}");
     // Base software once, then the reviewed pack's content, then registration.
     assert_eq!(installer.installs.load(Ordering::SeqCst), 1);
     let installed = installer.pack_installs.lock().unwrap().clone();
@@ -1497,7 +1497,7 @@ fn uploaded_packs_are_owner_bound_checked_and_expire() {
     let failed = host.create_wait(
         accepted["jobId"].as_str().unwrap(),
         Duration::from_secs(60),
-        |j| j["state"] != "applying",
+        |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()),
     );
     assert_eq!(failed["state"], "failed", "{failed}");
     assert_eq!(failed["error"], "upload_unavailable");
@@ -1625,8 +1625,8 @@ fn modpack_creates_install_software_once_for_vanilla_and_loader_packs() {
         let (status, accepted) = host.create_apply(&job, &format!("once-{kind}"), json!({}));
         assert_eq!(status, 202, "{accepted}");
         let id = accepted["jobId"].as_str().unwrap();
-        let ready = host.create_wait(id, Duration::from_secs(120), |j| j["state"] != "applying");
-        assert_eq!(ready["state"], "ready", "{ready}");
+        let ready = host.create_wait(id, Duration::from_secs(120), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
+        assert_eq!(ready["state"], "online", "{ready}");
         // One software install per create: the base install, nothing else.
         assert_eq!(installer.installs.load(Ordering::SeqCst), before + 1);
         let server = accepted["serverId"].as_str().unwrap();
@@ -1713,7 +1713,7 @@ fn cancel_during_pack_install_releases_everything() {
     );
     let (status, requested) = host.job_action(&id, "cancel");
     assert_eq!((status, requested), (200, json!({"state":"applying"})));
-    let done = host.create_wait(&id, Duration::from_secs(60), |j| j["state"] != "applying");
+    let done = host.create_wait(&id, Duration::from_secs(60), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
     assert_eq!(done["state"], "cancelled", "{done}");
     assert!(!host.temp.path().join("servers").join(&server).exists());
     assert!(host.servers().is_empty());
@@ -1761,8 +1761,8 @@ fn real_modrinth_fabric_modpack_create_reaches_online() {
     assert_eq!(status, 202, "{accepted}");
     let server = accepted["serverId"].as_str().unwrap().to_owned();
     let dir = host.temp.path().join("servers").join(&server);
-    let ready = host.create_wait(&id, Duration::from_secs(1800), |j| j["state"] != "applying");
-    assert_eq!(ready["state"], "ready", "{ready}");
+    let ready = host.create_wait(&id, Duration::from_secs(1800), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
+    assert_eq!(ready["state"], "online", "{ready}");
     let mods: Vec<_> = std::fs::read_dir(dir.join("game/mods"))
         .unwrap()
         .flatten()
@@ -1826,8 +1826,8 @@ fn server_session_projects_the_callers_roles_and_capabilities() {
     let (status, accepted) = host.create_apply(&job, "projected-key", json!({}));
     assert_eq!(status, 202, "{accepted}");
     let id = accepted["jobId"].as_str().unwrap();
-    let ready = host.create_wait(id, Duration::from_secs(60), |j| j["state"] != "applying");
-    assert_eq!(ready["state"], "ready", "{ready}");
+    let ready = host.create_wait(id, Duration::from_secs(60), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
+    assert_eq!(ready["state"], "online", "{ready}");
     let server: Uuid = accepted["serverId"].as_str().unwrap().parse().unwrap();
     host.router.import_worker(server).expect("worker");
     let path = format!("/v1/servers/{server}/manage/session");
@@ -1982,9 +1982,9 @@ fn restore_lists_detached_backups_and_restores_one_as_a_new_server() {
     let ready = host.create_wait(
         accepted["jobId"].as_str().unwrap(),
         Duration::from_secs(60),
-        |j| j["state"] != "applying",
+        |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()),
     );
-    assert_eq!(ready["state"], "ready", "{ready}");
+    assert_eq!(ready["state"], "online", "{ready}");
     let live: Uuid = accepted["serverId"].as_str().unwrap().parse().unwrap();
     let live_dir = host.temp.path().join("servers").join(live.to_string());
     std::fs::write(live_dir.join("game/server.jar"), version_jar("26.1")).unwrap();
@@ -2075,8 +2075,8 @@ fn restore_lists_detached_backups_and_restores_one_as_a_new_server() {
     let (status, accepted) = host.create_apply(&job, "restore-key", json!({}));
     assert_eq!(status, 202, "{accepted}");
     let id = accepted["jobId"].as_str().unwrap();
-    let ready = host.create_wait(id, Duration::from_secs(60), |j| j["state"] != "applying");
-    assert_eq!(ready["state"], "ready", "{ready}");
+    let ready = host.create_wait(id, Duration::from_secs(60), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
+    assert_eq!(ready["state"], "online", "{ready}");
     let server = accepted["serverId"].as_str().unwrap();
     let dir = host.temp.path().join("servers").join(server);
     assert_eq!(
@@ -2166,9 +2166,9 @@ fn restore_of_a_created_server_reinstalls_its_software_and_reaches_online() {
     let ready = host.create_wait(
         accepted["jobId"].as_str().unwrap(),
         Duration::from_secs(60),
-        |j| j["state"] != "applying",
+        |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()),
     );
-    assert_eq!(ready["state"], "ready", "{ready}");
+    assert_eq!(ready["state"], "online", "{ready}");
     let origin: Uuid = accepted["serverId"].as_str().unwrap().parse().unwrap();
     let dir = host.temp.path().join("servers").join(origin.to_string());
     // The real layout: the software lives in install/, game/ has no jar.
@@ -2215,8 +2215,8 @@ fn restore_of_a_created_server_reinstalls_its_software_and_reaches_online() {
     let id = job["jobId"].as_str().unwrap().to_owned();
     let (status, accepted) = host.create_apply(&job, "reborn-key", json!({}));
     assert_eq!(status, 202, "{accepted}");
-    let ready = host.create_wait(&id, Duration::from_secs(60), |j| j["state"] != "applying");
-    assert_eq!(ready["state"], "ready", "{ready}");
+    let ready = host.create_wait(&id, Duration::from_secs(60), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
+    assert_eq!(ready["state"], "online", "{ready}");
     assert_eq!(installer.installs.load(Ordering::SeqCst), 2);
     let server = accepted["serverId"].as_str().unwrap().to_owned();
     let dir = host.temp.path().join("servers").join(&server);
@@ -2281,7 +2281,7 @@ fn corrupted_snapshots_are_refused_before_anything_is_published() {
     let done = host.create_wait(
         accepted["jobId"].as_str().unwrap(),
         Duration::from_secs(60),
-        |j| j["state"] != "applying",
+        |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()),
     );
     assert_eq!(
         (done["state"].clone(), done["error"].clone()),
@@ -2388,7 +2388,7 @@ fn restore_cancel_and_resume_leave_no_duplicates() {
     let (status, requested) = host.job_action(&id, "cancel");
     assert_eq!((status, requested), (200, json!({"state":"applying"})));
     env.java_gate.store(false, Ordering::SeqCst);
-    let done = host.create_wait(&id, Duration::from_secs(30), |j| j["state"] != "applying");
+    let done = host.create_wait(&id, Duration::from_secs(30), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
     assert_eq!(done["state"], "cancelled", "{done}");
     assert!(!host.temp.path().join("servers").join(&server).exists());
     assert!(host.servers().is_empty());
@@ -2413,8 +2413,8 @@ fn restore_cancel_and_resume_leave_no_duplicates() {
     assert_eq!(interrupted["state"], "interrupted", "{interrupted}");
     let (status, resumed) = host.job_action(&id, "resume");
     assert_eq!(status, 202, "{resumed}");
-    let ready = host.create_wait(&id, Duration::from_secs(60), |j| j["state"] != "applying");
-    assert_eq!(ready["state"], "ready", "{ready}");
+    let ready = host.create_wait(&id, Duration::from_secs(60), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
+    assert_eq!(ready["state"], "online", "{ready}");
     let servers = host.servers();
     assert_eq!(servers.len(), 1);
     assert_eq!(servers[0]["serverId"], accepted["serverId"]);
@@ -2498,8 +2498,8 @@ fn real_vanilla_backup_restores_as_a_new_server_and_reaches_online() {
     let (status, accepted) = host.create_apply(&job, "real-original", json!({}));
     assert_eq!(status, 202, "{accepted}");
     let original = accepted["serverId"].as_str().unwrap().to_owned();
-    let ready = host.create_wait(&id, Duration::from_secs(900), |j| j["state"] != "applying");
-    assert_eq!(ready["state"], "ready", "{ready}");
+    let ready = host.create_wait(&id, Duration::from_secs(900), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
+    assert_eq!(ready["state"], "online", "{ready}");
     assert_eq!(host.job_action(&id, "start").0, 202);
     let online = host.create_wait(&id, Duration::from_secs(600), |j| j["state"] != "starting");
     assert_eq!(online["state"], "online", "{online}");
@@ -2565,8 +2565,8 @@ fn real_vanilla_backup_restores_as_a_new_server_and_reaches_online() {
     let (status, accepted) = host.create_apply(&job, "real-restore", json!({}));
     assert_eq!(status, 202, "{accepted}");
     let restored = accepted["serverId"].as_str().unwrap().to_owned();
-    let ready = host.create_wait(&id, Duration::from_secs(900), |j| j["state"] != "applying");
-    assert_eq!(ready["state"], "ready", "{ready}");
+    let ready = host.create_wait(&id, Duration::from_secs(900), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
+    assert_eq!(ready["state"], "online", "{ready}");
     let restored_dir = host.temp.path().join("servers").join(&restored);
     assert_eq!(
         std::fs::read(restored_dir.join("game/world/level.dat")).unwrap(),
@@ -2627,8 +2627,8 @@ fn real_loader_less_modrinth_pack_creates_on_vanilla_and_reaches_online() {
     let (status, accepted) = host.create_apply(&job, "real-vanilla-pack", json!({}));
     assert_eq!(status, 202, "{accepted}");
     let server = accepted["serverId"].as_str().unwrap().to_owned();
-    let ready = host.create_wait(&id, Duration::from_secs(1800), |j| j["state"] != "applying");
-    assert_eq!(ready["state"], "ready", "{ready}");
+    let ready = host.create_wait(&id, Duration::from_secs(1800), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
+    assert_eq!(ready["state"], "online", "{ready}");
     host.router
         .import_worker(server.parse().unwrap())
         .expect("worker");
