@@ -619,6 +619,7 @@ fn owner_creates_vanilla_reviews_applies_starts_and_reaches_online() {
     } else {
         &view
     };
+    assert_eq!(data["on_agent_start"], "restore_previous");
     let generation = data["generation"].as_str().expect("generation").to_owned();
     let (status, sent) = host.call(
         "POST",
