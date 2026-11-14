@@ -30,7 +30,8 @@ pub use install::{InstallOutcome, InstallRoots, Receipt};
 pub use managed::{ManagedArtifact, ManagedLaunch, verify_managed_artifacts};
 pub use model::{
     Acknowledgments, Approval, ArtifactReview, DigestAlgorithm, GeneratedFile, InstallError,
-    InstallPlan, JavaRequirement, LaunchRecipe, Limits, PublishedDigest, Result, Software,
+    InstallPlan, JavaRequirement, LaunchRecipe, Limits, PublishedDigest, ResolvedPreview, Result,
+    Software,
     SoftwareDescriptor, SourceFamily, Warning,
 };
 pub use progress::{ProgressReporter, SilentProgressReporter};
@@ -235,6 +236,25 @@ impl ServerInstaller {
             );
         }
         self.http.catalogues.commit(job.pending_cache);
+    }
+    /// Fresh provider resolution of the exact artifacts for a selection, without
+    /// a Java runtime: no artifact download, install write or execution. Hosts
+    /// review this before Java exists, then bind a later [`Self::plan`] to it
+    /// through [`InstallPlan::artifacts_sha256`].
+    pub async fn resolve_preview(
+        &self,
+        software: Software,
+        selection: &Selection,
+        reporter: &dyn ProgressReporter,
+    ) -> Result<ResolvedPreview> {
+        if reporter.is_dry_run() {
+            return Err(InstallError::InvalidInput);
+        }
+        let mut job = transfer::Job::new(self.limits, 0);
+        let resolved =
+            providers::resolve(&self.http, software, selection, &mut job, reporter).await?;
+        job.ready(reporter).await?;
+        Ok(ResolvedPreview::from_resolved(software, &resolved))
     }
     /// Resolves an exact artifact and probes the caller-selected existing Java; no install writes.
     pub async fn plan(
