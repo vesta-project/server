@@ -2511,6 +2511,7 @@ fn real_vanilla_backup_restores_as_a_new_server_and_reaches_online() {
         dir.join("game/world/level.dat").is_file(),
         "world generated"
     );
+    std::fs::write(dir.join("game/world/vesta-restore-proof.txt"), b"backed-up world").unwrap();
     let snapshot = backup_folder(&dir);
     let origin: Uuid = original.parse().unwrap();
     let owner = host
@@ -2570,8 +2571,8 @@ fn real_vanilla_backup_restores_as_a_new_server_and_reaches_online() {
     assert_eq!(ready["state"], "online", "{ready}");
     let restored_dir = host.temp.path().join("servers").join(&restored);
     assert_eq!(
-        std::fs::read(restored_dir.join("game/world/level.dat")).unwrap(),
-        std::fs::read(dir.join("game/world/level.dat")).unwrap(),
+        std::fs::read(restored_dir.join("game/world/vesta-restore-proof.txt")).unwrap(),
+        b"backed-up world",
         "the backed-up world"
     );
     assert!(restored_dir.join("install").is_dir());
