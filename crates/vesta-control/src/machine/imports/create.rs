@@ -603,7 +603,11 @@ impl ImportJobs {
             .saturating_add(pack.as_ref().map_or(0, |p| p.content_bytes))
             .saturating_add(restore.as_ref().map_or(0, |r| r.private.bytes))
             .saturating_add(if java.download_required {
-                if source_built { JDK_RESERVE_BYTES } else { JAVA_RESERVE_BYTES }
+                if source_built {
+                    JDK_RESERVE_BYTES
+                } else {
+                    JAVA_RESERVE_BYTES
+                }
             } else {
                 0
             })
@@ -993,6 +997,20 @@ impl ImportJobs {
         if stop() {
             return Err(Outcome::Cancelled);
         }
+        crate::software::created::seed(
+            &dir,
+            document.clone(),
+            crate::software::Installation {
+                software: Some(preview.software),
+                version: Some(preview.version.clone()),
+                build: preview.build,
+                loader_version: preview.loader_version.clone(),
+                custom_jar: None,
+                installation_id: "created".into(),
+            },
+            launch.artifacts.clone(),
+        )
+        .map_err(|_| Outcome::Failed("install_failed"))?;
         if let Some(pack) = &private.pack {
             let installed = crate::machine::creates::CreatedSoftware {
                 software: preview.software,
@@ -1026,7 +1044,10 @@ impl ImportJobs {
         installer: &dyn CreateInstaller,
         progress: &dyn CreateProgress,
     ) -> Result<(), Outcome> {
-        let review = pack.review.as_ref().ok_or(Outcome::Failed("plan_blocked"))?;
+        let review = pack
+            .review
+            .as_ref()
+            .ok_or(Outcome::Failed("plan_blocked"))?;
         let upload = match &pack.source {
             super::modpack::PackSourceRequest::Upload { upload_id } => {
                 let (path, sha) = self
@@ -1052,7 +1073,8 @@ impl ImportJobs {
         let (server_subject, subject) = self
             .subject(binding, server_id, capabilities)
             .map_err(|_| Outcome::Failed("install_failed"))?;
-        let host_id = Uuid::parse_str(&binding.host_id).map_err(|_| Outcome::Failed("install_failed"))?;
+        let host_id =
+            Uuid::parse_str(&binding.host_id).map_err(|_| Outcome::Failed("install_failed"))?;
         installer
             .install_pack(
                 &crate::machine::creates::PackInstallRequest {

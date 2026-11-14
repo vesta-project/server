@@ -3,6 +3,7 @@
 //! Downloads never run on the urgent lifecycle worker. Activation never stops or
 //! starts Minecraft, and an ambiguous activation blocks starts until rollback.
 pub(crate) mod catalogue_store;
+pub(crate) mod created;
 mod custom;
 mod model;
 mod runtime;
@@ -350,6 +351,9 @@ impl SoftwareHandle {
             let state = store::state(c)?;
             let jobs: i64 = c.query_row("SELECT count(*) FROM software_jobs", [], |r| r.get(0))?;
             let current = &state.current.installation;
+            if current == &installation {
+                return Ok(());
+            }
             if state.revision != 0
                 || state.recovery
                 || state.previous.is_some()

@@ -667,6 +667,26 @@ impl ImportJobs {
             .map_err(|_| Outcome::Failed("install_failed"))?;
         commit::write_atomic(&dir.join("host.toml"), host_toml.as_bytes())
             .map_err(|_| Outcome::Failed("install_failed"))?;
+        if let Ok(software) =
+            serde_json::from_value::<Software>(serde_json::json!(summary.software.kind))
+        {
+            if !minecraft.is_empty() {
+                crate::software::created::seed(
+                    &dir,
+                    document.clone(),
+                    crate::software::Installation {
+                        software: Some(software),
+                        version: Some(minecraft),
+                        build: summary.software.build,
+                        loader_version: summary.software.loader_version.clone(),
+                        custom_jar: None,
+                        installation_id: "created".into(),
+                    },
+                    managed.artifacts.clone(),
+                )
+                .map_err(|_| Outcome::Failed("install_failed"))?;
+            }
+        }
         if stop() {
             return Err(Outcome::Cancelled);
         }

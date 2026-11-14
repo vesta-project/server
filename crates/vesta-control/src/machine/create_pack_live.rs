@@ -85,24 +85,6 @@ pub(super) fn install(
 
 /// The installation id the software service would record: the installer's
 /// instance directory, when the trusted artifacts show it.
-fn installation_id(request: &PackInstallRequest<'_>) -> String {
-    let instances = request.server_dir.join("install").join("instances");
-    request
-        .installed
-        .artifacts
-        .iter()
-        .find_map(|a| {
-            let rest = a.path.strip_prefix(&instances).ok()?;
-            let id = rest.components().next()?.as_os_str().to_str()?;
-            (!id.is_empty()
-                && id.len() <= 128
-                && id
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)))
-            .then(|| id.to_owned())
-        })
-        .unwrap_or_else(|| "created".into())
-}
 
 fn failed(error: &crate::packs::ReleaseError) -> &'static str {
     match error.code() {
@@ -143,7 +125,7 @@ fn run(
                 software: Some(installed.software),
                 version: Some(installed.version.clone()),
                 build: installed.build,
-                installation_id: installation_id(request),
+                installation_id: "created".into(),
             },
             installed.artifacts.clone(),
         )
@@ -165,7 +147,9 @@ fn run(
         },
         (PackSourceRequest::Upload { .. }, Some(path)) => {
             let upload_id = format!("create-{tag}");
-            upload(&workspace, subject, path, &upload_id, &tag, review, progress)?;
+            upload(
+                &workspace, subject, path, &upload_id, &tag, review, progress,
+            )?;
             InstallSource::UploadedArchive { upload_id }
         }
         _ => return Err("install_failed"),

@@ -259,6 +259,7 @@ pub(crate) fn open(
         jvm_args,
         recovery: Mutex::new(None),
     });
+    software::created::backfill(config, db, &original)?;
     software::SoftwareService::open(
         db.clone(),
         Arc::new(installer),

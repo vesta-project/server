@@ -105,3 +105,5 @@ Import stopped-state codes and suggested text:
 - `launch_arguments_unsupported`: "The launch arguments contain unsupported options or paths. Use a self-contained server folder with supported Forge arguments, then check again."
 
 Installed servers start automatically after registration. Jobs advance through `starting` to `online`; `ready` is an internal registration checkpoint or a recoverable start failure with `error: start_failed|game_port_in_use`. A failed start retains the installed server; POST jobs/{jobId}/start retries. Launchers show View server after successful installation.
+
+Imports record confidently identified software and Minecraft versions in per-server software state with the trusted generated launch; unresolved software remains unknown.

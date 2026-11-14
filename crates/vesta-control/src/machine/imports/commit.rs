@@ -246,6 +246,28 @@ impl ImportJobs {
             .map_err(|_| JobError("configure_failed"))?;
         write_atomic(&dir.join("host.toml"), host_toml.as_bytes())?;
 
+        if let (Some(version), Some(kind)) =
+            (&review.detected.minecraft_version, &review.detected.loader)
+        {
+            if let Ok(software) =
+                serde_json::from_value::<vesta_server_install::Software>(serde_json::json!(kind))
+            {
+                crate::software::created::seed(
+                    &dir,
+                    document.clone(),
+                    crate::software::Installation {
+                        software: Some(software),
+                        version: Some(version.clone()),
+                        build: None,
+                        loader_version: None,
+                        custom_jar: None,
+                        installation_id: "created".into(),
+                    },
+                    managed.artifacts.clone(),
+                )
+                .map_err(|_| JobError("configure_failed"))?;
+            }
+        }
         self.set_phase(job_id, "applying", "register")?;
         self.register_once(job_id, server_id, name, port, &eula_account)?;
         let now = self.0.host.now_ms();
