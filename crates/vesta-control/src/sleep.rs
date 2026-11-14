@@ -114,6 +114,12 @@ struct Record {
     wake_key: Option<String>,
     cooldown_until_ms: i64,
     sequence: u64,
+    /// The game was left running (or starting): the last successful lifecycle
+    /// operation was a start or restart, not a stop, sleep or kill, and no
+    /// crash loop was observed since. Survives Vesta restarts; drives the
+    /// default startup policy (see [`Sleep::resume_on_agent_start`]).
+    #[serde(default)]
+    resume: bool,
 }
 #[derive(Clone)]
 pub struct Sleep {
@@ -274,6 +280,56 @@ impl Sleep {
         self.db
             .read(|c| load_policy(c, &self.db))
             .map(|(_, p)| p.and_then(|p| p.policy.on_agent_start).unwrap_or(fallback))
+            .map_err(|_| "sleep_state_unavailable")
+    }
+    /// The explicitly chosen startup policy: the trusted local stay-stopped
+    /// override, else the stored policy's `on_agent_start`, else `config`
+    /// (host.toml `[process]`). `None` when nothing chose one: the server then
+    /// resumes the state it was left in ([`Self::resume_on_agent_start`]).
+    pub fn on_agent_start_explicit(
+        &self,
+        config: Option<crate::config::OnAgentStart>,
+    ) -> Result<Option<crate::config::OnAgentStart>, &'static str> {
+        if std::env::var_os("VESTA_AGENT_STAY_STOPPED").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            return Ok(Some(crate::config::OnAgentStart::StayStopped));
+        }
+        self.db
+            .read(|c| load_policy(c, &self.db))
+            .map(|(_, p)| p.and_then(|p| p.policy.on_agent_start).or(config))
+            .map_err(|_| "sleep_state_unavailable")
+    }
+    /// The default startup policy: what the server was left doing when this
+    /// Vesta Server stopped. `Sleep` when it was sleeping and can sleep again,
+    /// `Start` when it was running or starting (the last successful lifecycle
+    /// operation was a start, restart or wake, and no crash loop was seen
+    /// since), else `StayStopped` (the owner stopped it, or it never ran).
+    pub fn resume_on_agent_start(&self) -> Result<crate::config::OnAgentStart, &'static str> {
+        let record = self
+            .db
+            .read(|c| load_record(c, &self.db))
+            .map_err(|_| "sleep_state_unavailable")?;
+        Ok(if record.sleeping && self.available() {
+            crate::config::OnAgentStart::Sleep
+        } else if record.resume {
+            crate::config::OnAgentStart::Start
+        } else {
+            crate::config::OnAgentStart::StayStopped
+        })
+    }
+    /// A crash loop suspended automatic restarts: the server is left stopped,
+    /// and a later Vesta restart must not start it again either.
+    pub(crate) fn crash_loop_observed(&self) -> Result<(), &'static str> {
+        self.db
+            .write(|c| {
+                let mut record = load_record(c, &self.db)?;
+                if record.resume {
+                    record.resume = false;
+                    put(c, &self.db, RUNTIME_KEY, &record)?;
+                }
+                Ok(())
+            })
             .map_err(|_| "sleep_state_unavailable")
     }
     pub(crate) fn initialize(
@@ -1197,11 +1253,13 @@ pub(crate) fn lifecycle_finished_in(
     now: i64,
     kind: &str,
 ) -> vesta_state::Result<()> {
-    let sleeping = match kind {
-        "game.sleep" | "game.manual_sleep" => true,
-        "game.stop" | "game.stop_sleeping" | "game.start" | "game.restart" | "game.force_kill" => {
-            false
-        }
+    // `game.stop_sleeping` only leaves the sleeping state (startup policy);
+    // it says nothing about whether the owner wants the game running.
+    let (sleeping, resume) = match kind {
+        "game.sleep" | "game.manual_sleep" => (true, Some(false)),
+        "game.stop" | "game.force_kill" => (false, Some(false)),
+        "game.start" | "game.restart" => (false, Some(true)),
+        "game.stop_sleeping" => (false, None),
         _ => return Ok(()),
     };
     let raw: Option<String> = c
@@ -1217,6 +1275,9 @@ pub(crate) fn lifecycle_finished_in(
         .map_err(|_| StateError::new("state_sleep_state_invalid"))?
         .unwrap_or_default();
     record.sleeping = sleeping;
+    if let Some(resume) = resume {
+        record.resume = resume;
+    }
     record.sleep_key = None;
     record.wake_key = None;
     let value =

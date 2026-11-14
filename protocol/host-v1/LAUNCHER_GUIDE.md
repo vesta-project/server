@@ -119,6 +119,25 @@ invitations, credentials) is never a server capability; it lives on host
 routes. A caller with no role on the server gets 404 `not_found`. Use this
 instead of client-side role presets.
 
+### After the Vesta Server restarts
+
+A Vesta Server machine brings its servers back by itself after a reboot or an
+in-place update. By default a server that was running (or starting) when the
+Vesta Server stopped is started again when it comes back; a server the owner
+stopped stays stopped; a sleeping server sleeps again (when it can still
+sleep). "Running" means the last successful start, restart or wake was not
+followed by a stop, sleep or kill. A server whose crash loop suspended
+automatic restarts is not started again. Nothing is started twice: a server
+whose game is still running is left alone.
+
+An explicit startup policy always wins over this default: the sleep policy's
+`on_agent_start` (`stay_stopped`, `sleep` or `start`, set through the existing
+sleep/policy document) or the server's host.toml `[process]` setting. Status
+keeps reporting `on_agent_start` as before (`stay_stopped` when nothing is set
+explicitly), so show the default as "Comes back as it was" when the sleep
+policy's `onAgentStart` is null, rather than as "Stay stopped". Clients need no
+action after a restart: poll the server list or status as usual.
+
 ## Realtime for this slice
 
 The host multiplexer is deferred (authenticated GET `/v1/host/realtime` returns

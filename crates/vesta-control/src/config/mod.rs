@@ -650,6 +650,9 @@ pub struct HostConfiguration {
     isolation: Option<IsolationSettings>,
     downloads: DownloadSettings,
     on_agent_start: OnAgentStart,
+    /// Whether `[process]` names the startup policy; otherwise the server
+    /// resumes the state it was left in (see [`Self::on_agent_start_explicit`]).
+    on_agent_start_explicit: bool,
     java_allowlist: Vec<PathBuf>,
 }
 impl fmt::Debug for HostConfiguration {
@@ -881,6 +884,10 @@ impl HostConfiguration {
                 })
             })
             .transpose()?;
+        let on_agent_start_explicit = document
+            .process
+            .as_ref()
+            .is_some_and(|Table(p)| p.on_agent_start.is_some() || p.start_on_agent_start.is_some());
         let on_agent_start = document
             .process
             .as_ref()
@@ -990,6 +997,7 @@ impl HostConfiguration {
                 .unwrap_or_default()
                 .validated()?,
             on_agent_start,
+            on_agent_start_explicit,
             java_allowlist: document
                 .java
                 .map(|t| {
@@ -1072,6 +1080,12 @@ impl HostConfiguration {
     }
     pub fn on_agent_start(&self) -> OnAgentStart {
         self.on_agent_start
+    }
+    /// The startup policy `[process]` sets explicitly, `None` when it is not
+    /// set: then a server that was running (or starting) when Vesta stopped is
+    /// started again and one the owner stopped stays stopped.
+    pub fn on_agent_start_explicit(&self) -> Option<OnAgentStart> {
+        self.on_agent_start_explicit.then_some(self.on_agent_start)
     }
     pub fn start_on_agent_start(&self) -> bool {
         self.on_agent_start == OnAgentStart::Start

@@ -208,3 +208,14 @@ is rechecked against the policy actor on agent startup; refusal leaves it stoppe
 and raises a notification. `sleep` requires offline_status. The trusted local
 environment override `VESTA_AGENT_STAY_STOPPED=1` forces stay-stopped at startup;
 the dev shell sets it for staged agents so a restart never boots Minecraft.
+
+When no startup policy is chosen (sleep policy `on_agent_start` null, no
+`[process]` `on-agent-start`/`start-on-agent-start`, no
+`VESTA_AGENT_STAY_STOPPED=1`), the agent resumes the state the server was left
+in: the persisted sleep runtime record also keeps `resume`, set by a successful
+`game.start`/`game.restart` (including wakes and local starts) and cleared by
+`game.stop`, `game.sleep`, `game.manual_sleep`, `game.force_kill` and an
+observed crash loop. On agent start with nothing running: sleeping and able to
+sleep -> sleep; `resume` -> start through the normal start path; otherwise stay
+stopped. `on_agent_start` in status still reports the explicit or configured
+value (`stay_stopped` by default).

@@ -148,7 +148,7 @@ impl AutomationDriver {
         automation: Arc<Automation>,
         runtime: Arc<std::sync::OnceLock<crate::operations::RuntimeHandle>>,
         backup_events: mpsc::Receiver<BackupEvent>,
-        startup: (crate::config::OnAgentStart, crate::sleep::Sleep),
+        startup: (Option<crate::config::OnAgentStart>, crate::sleep::Sleep),
         actions: Arc<HostActions>,
         telemetry: DriverTelemetry,
     ) -> Result<Self, HostError> {
@@ -180,7 +180,15 @@ impl AutomationDriver {
                 let _ = automation.publish(AutomationEvent::AgentStarted);
                 let mut joins = crate::automation::joins::JoinTracker::new(game_directory.clone(), &runtime);
                 let mut generation = runtime.game_snapshot().ok().and_then(|s| s.generation);
-                let startup_policy = startup.1.on_agent_start(startup.0).unwrap_or(crate::config::OnAgentStart::StayStopped);
+                // An explicit policy (local override, stored policy, host.toml)
+                // wins; otherwise the server resumes what it was left doing:
+                // running (or starting) starts again, sleeping sleeps again,
+                // stopped by the owner (or crash looped) stays stopped.
+                let startup_policy = match startup.1.on_agent_start_explicit(startup.0) {
+                    Ok(Some(policy)) => policy,
+                    Ok(None) => startup.1.resume_on_agent_start().unwrap_or(crate::config::OnAgentStart::StayStopped),
+                    Err(_) => crate::config::OnAgentStart::StayStopped,
+                };
                 let mut startup_allowed = true;
                 if generation.is_none() && let Err(code) = startup.1.initialize(startup_policy) {
                     startup_allowed = false;
@@ -227,6 +235,8 @@ impl AutomationDriver {
                     }
                     if let Ok(Some(health)) = runtime.supervision() {
                         if health.crash_loop && !crash_loop {
+                            // Never brought back by a later Vesta restart either.
+                            let _ = startup.1.crash_loop_observed();
                             let _ = automation.notify(
                                 Severity::Critical,
                                 "Crash loop: automatic restarts suspended",
@@ -747,7 +757,7 @@ fn compose(
         automation.clone(),
         cell.clone(),
         backup_events,
-        (config.on_agent_start(), sleep.clone()),
+        (config.on_agent_start_explicit(), sleep.clone()),
         actions,
         DriverTelemetry {
             game_directory: config.game().to_path_buf(),

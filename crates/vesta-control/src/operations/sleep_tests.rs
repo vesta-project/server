@@ -602,3 +602,85 @@ fn explicit_wake_effect_gate_cannot_start_after_a_stop_or_replay_a_new_intent() 
             .is_err()
     );
 }
+
+/// With no explicit startup policy a server resumes what it was left doing:
+/// started (or restarted, or woken) comes back, stopped or killed by the owner
+/// stays stopped, sleeping sleeps again, a crash loop is never restarted.
+#[test]
+fn default_startup_resumes_the_state_the_server_was_left_in() {
+    use crate::config::OnAgentStart;
+    let h = Harness::new(false);
+    let s = service(&h, address(), StartGate::default());
+    let finish = |kind: &str| {
+        h.db.write(|c| {
+            crate::sleep::lifecycle_finished_in(c, h.db.server_id(), h.db.clock().millis(), kind)
+        })
+        .unwrap()
+    };
+    // Never started: stays stopped.
+    assert_eq!(s.on_agent_start_explicit(None).unwrap(), None);
+    assert_eq!(
+        s.resume_on_agent_start().unwrap(),
+        OnAgentStart::StayStopped
+    );
+    for kind in ["game.start", "game.restart"] {
+        finish("game.stop");
+        finish(kind);
+        assert_eq!(s.resume_on_agent_start().unwrap(), OnAgentStart::Start);
+        // Leaving sleep at startup says nothing about the owner's intent.
+        s.initialize(OnAgentStart::StayStopped).unwrap();
+        assert_eq!(s.resume_on_agent_start().unwrap(), OnAgentStart::Start);
+    }
+    for kind in ["game.stop", "game.force_kill"] {
+        finish("game.start");
+        finish(kind);
+        assert_eq!(
+            s.resume_on_agent_start().unwrap(),
+            OnAgentStart::StayStopped
+        );
+    }
+    // Sleeping sleeps again while the offline listener is on; a wake (a
+    // start) is running again.
+    let view = s
+        .configure(
+            &h.subject,
+            0,
+            Policy {
+                offline_status: true,
+                ..Policy::default()
+            },
+        )
+        .unwrap();
+    finish("game.start");
+    finish("game.sleep");
+    assert_eq!(s.resume_on_agent_start().unwrap(), OnAgentStart::Sleep);
+    finish("game.start");
+    assert_eq!(s.resume_on_agent_start().unwrap(), OnAgentStart::Start);
+    // A crash loop suspended restarts: a Vesta restart does not hammer it.
+    s.crash_loop_observed().unwrap();
+    assert_eq!(
+        s.resume_on_agent_start().unwrap(),
+        OnAgentStart::StayStopped
+    );
+    // Any explicit policy wins: host.toml, then the stored policy over it.
+    finish("game.start");
+    assert_eq!(
+        s.on_agent_start_explicit(Some(OnAgentStart::StayStopped))
+            .unwrap(),
+        Some(OnAgentStart::StayStopped)
+    );
+    s.configure(
+        &h.subject,
+        view.revision,
+        Policy {
+            on_agent_start: Some(OnAgentStart::Start),
+            ..Policy::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        s.on_agent_start_explicit(Some(OnAgentStart::StayStopped))
+            .unwrap(),
+        Some(OnAgentStart::Start)
+    );
+}

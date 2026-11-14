@@ -14,6 +14,7 @@ use vesta_server_install::{
 const FIXTURE_MARKER: &str = "vesta-create-fixture";
 const FIXTURE_ENABLE: &[u8] = b"vesta-owned-inert-create-fixture-v1";
 const FIXTURE_TEST: &str = "host_router::tests::imports::creates::inert_game_fixture";
+const FIXTURE_EXIT: &str = "fixture-exit";
 
 /// Inert stand-in for a Minecraft server, run by the worker as the launch
 /// executable inside a created game directory. Outside such a directory (a
@@ -40,6 +41,16 @@ fn inert_game_fixture() {
         },
     )
     .unwrap();
+    // A service stop ends the game with the service (systemd stops the whole
+    // unit): tests model that by creating `fixture-exit` in the game directory.
+    std::thread::spawn(|| {
+        loop {
+            if std::path::Path::new(FIXTURE_EXIT).exists() {
+                std::process::exit(0);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    });
     // libtest has printed "test <name> ... " without a newline: start a line.
     println!();
     println!("[12:00:00] [Server thread/INFO]: Done (1.234s)! For help, type \"help\"");
@@ -883,6 +894,90 @@ fn back_to_back_creates_get_distinct_resources_and_survive_a_restart() {
     // Restoring twice adopts nothing new.
     assert!(host.router.restore_registered_workers().is_empty());
     assert_eq!(host.router.workers.lock().unwrap().len(), 2);
+}
+
+/// Card state of one server.
+fn card_state(host: &Host, server: &str) -> Value {
+    host.servers()
+        .into_iter()
+        .find(|s| s["serverId"] == server)
+        .map(|s| s["state"].clone())
+        .unwrap_or(Value::Null)
+}
+
+/// With the default startup policy a dedicated machine brings servers back
+/// after the Vesta Server restarts (a reboot or an in-place update): one left
+/// running is started again; one the owner stopped and one never started stay
+/// stopped, and once the owner stops it the next restart leaves it stopped.
+#[test]
+fn running_servers_come_back_after_a_restart_and_stopped_ones_stay_stopped() {
+    let host = create_host(Arc::new(FakeInstaller::default()));
+    let mut servers = Vec::new();
+    for (name, port) in [("Running", 25720), ("Stopped", 25721), ("Never", 25722)] {
+        let job = host.create_plan(new_body(name, Some(port), Some(1024)));
+        let (status, accepted) = host.create_apply(&job, &format!("{name}-key"), json!({}));
+        assert_eq!(status, 202, "{accepted}");
+        let id = accepted["jobId"].as_str().unwrap().to_owned();
+        let ready = host.create_wait(&id, Duration::from_secs(60), |j| j["state"] != "applying");
+        assert_eq!(ready["state"], "ready", "{ready}");
+        if name != "Never" {
+            assert_eq!(host.job_action(&id, "start").0, 202);
+            let online =
+                host.create_wait(&id, Duration::from_secs(60), |j| j["state"] != "starting");
+            assert_eq!(online["state"], "online", "{online}");
+        }
+        servers.push(accepted["serverId"].as_str().unwrap().to_owned());
+    }
+    stop_server(&host, &servers[1], "stopped-stop-0001");
+    assert_eq!(card_state(&host, &servers[0]), "online");
+
+    // The Vesta Server stops: the OS ends its game with it (no lifecycle
+    // operation is involved), then the service comes back.
+    let game = host
+        .temp
+        .path()
+        .join("servers")
+        .join(&servers[0])
+        .join("game");
+    std::fs::write(game.join(FIXTURE_EXIT), b"").unwrap();
+    let until = std::time::Instant::now() + Duration::from_secs(60);
+    while card_state(&host, &servers[0]) == "online" {
+        assert!(std::time::Instant::now() < until, "game did not end");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    std::fs::remove_file(game.join(FIXTURE_EXIT)).unwrap();
+    let host = host.restart(
+        Arc::new(FakeEnv::default()),
+        Some(Arc::new(FakeInstaller::default())),
+    );
+    assert!(host.router.restore_registered_workers().is_empty());
+    let until = std::time::Instant::now() + Duration::from_secs(60);
+    while card_state(&host, &servers[0]) != "online" {
+        assert!(
+            std::time::Instant::now() < until,
+            "not started again: {:?}",
+            host.servers()
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(host.router.restore_registered_workers().is_empty());
+    // Give a wrongly started server time to show up.
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(card_state(&host, &servers[1]), "stopped");
+    // Never started: still only registered.
+    assert_eq!(card_state(&host, &servers[2]), "registered");
+    stop_server(&host, &servers[0], "running-stop-0001");
+
+    // Stopped by the owner before this restart: stays stopped too.
+    let host = host.restart(
+        Arc::new(FakeEnv::default()),
+        Some(Arc::new(FakeInstaller::default())),
+    );
+    assert!(host.router.restore_registered_workers().is_empty());
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(card_state(&host, &servers[0]), "stopped");
+    assert_eq!(card_state(&host, &servers[1]), "stopped");
+    assert_eq!(card_state(&host, &servers[2]), "registered");
 }
 
 #[test]

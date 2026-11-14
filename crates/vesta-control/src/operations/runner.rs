@@ -979,7 +979,13 @@ impl Driver {
                     c,
                     db.server_id(),
                     db.clock().millis(),
-                    "game.stop",
+                    // Every local action leaves sleep; a start or restart also
+                    // records that the game should come back after a restart.
+                    match action {
+                        LocalAction::Start => "game.start",
+                        LocalAction::Stop => "game.stop",
+                        LocalAction::Restart => "game.restart",
+                    },
                 )
             })
             .map_err(|_| "local_outcome_uncertain")?;
