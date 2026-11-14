@@ -480,7 +480,8 @@ impl ImportJobs {
             let Ok(server) = Uuid::parse_str(&server) else {
                 continue;
             };
-            if !self.server_dir(server).exists() || !matches!(self.0.host.server(server), Ok(None)) {
+            if !self.server_dir(server).exists() || !matches!(self.0.host.server(server), Ok(None))
+            {
                 continue;
             }
             if kind == "create" {
@@ -496,14 +497,23 @@ impl ImportJobs {
     /// Names held by committed servers and pending imports share one namespace.
     pub fn suggested_create_name(&self) -> JobResult<String> {
         self.read(|c| {
-            let mut stmt = c.prepare("SELECT name FROM machine_servers WHERE state!='deleted'
+            let mut stmt = c.prepare(
+                "SELECT name FROM machine_servers WHERE state!='deleted'
                 UNION SELECT json_extract(j.request,'$.name') FROM machine_import_jobs j
-                JOIN machine_import_reservations r ON r.job_id=j.job_id WHERE r.released=0")?;
-            let names = stmt.query_map([], |r| r.get::<_, String>(0))?
+                JOIN machine_import_reservations r ON r.job_id=j.job_id WHERE r.released=0",
+            )?;
+            let names = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             for n in 1..=100_000 {
-                let name = if n == 1 { "Minecraft Server".into() } else { format!("Minecraft Server {n}") };
-                if !names.iter().any(|v| v.trim().eq_ignore_ascii_case(&name)) { return Ok(name); }
+                let name = if n == 1 {
+                    "Minecraft Server".into()
+                } else {
+                    format!("Minecraft Server {n}")
+                };
+                if !names.iter().any(|v| v.trim().eq_ignore_ascii_case(&name)) {
+                    return Ok(name);
+                }
             }
             Err(JobError::CAPACITY)
         })
@@ -747,7 +757,8 @@ impl ImportJobs {
         }
 
         let managed = self.managed_ports()?;
-        if let Some(code) = inspection::stopped_evidence(&source, report.server.game_port, &managed) {
+        if let Some(code) = inspection::stopped_evidence(&source, report.server.game_port, &managed)
+        {
             blockers.insert(code);
         }
         let reservations = self.read(|c| reservations_in(c, None))?;
@@ -772,6 +783,7 @@ impl ImportJobs {
             &reservations,
             request.memory_mib,
         );
+        warnings.extend(memory.warnings.iter().copied());
         if let Some(blocker) = memory.blocker {
             blockers.insert(blocker);
         }
@@ -1069,7 +1081,12 @@ impl ImportJobs {
         self.resume_kind(binding, job_id, Kind::Import)?;
         self.status(binding, job_id)
     }
-    pub(crate) fn resume_kind(&self, binding: &OwnerBinding, job_id: &str, kind: Kind) -> JobResult<()> {
+    pub(crate) fn resume_kind(
+        &self,
+        binding: &OwnerBinding,
+        job_id: &str,
+        kind: Kind,
+    ) -> JobResult<()> {
         let now = self.0.host.now_ms();
         self.write(|c| {
             self.owner(c, binding)?;
@@ -1284,7 +1301,9 @@ impl ImportJobs {
             .ok()
             .and_then(|p| p.get("server-port").and_then(|v| v.parse().ok()))
             .or(Some(25565));
-        let managed = self.managed_ports().map_err(|_| Outcome::Interrupted("state_unavailable"))?;
+        let managed = self
+            .managed_ports()
+            .map_err(|_| Outcome::Interrupted("state_unavailable"))?;
         if let Some(code) = inspection::stopped_evidence(&private.source, source_port, &managed) {
             return Err(Outcome::Blocked(code));
         }
@@ -1702,7 +1721,11 @@ impl Reviewed for Review {
         self.confirmation = None;
     }
 }
-pub(crate) fn job_in_kind<R: Reviewed>(c: &Connection, job_id: &str, kind: Kind) -> JobResult<Job<R>> {
+pub(crate) fn job_in_kind<R: Reviewed>(
+    c: &Connection,
+    job_id: &str,
+    kind: Kind,
+) -> JobResult<Job<R>> {
     type Row = (
         String,
         String,

@@ -409,6 +409,7 @@ impl ImportJobs {
         }
         let memory =
             resources::plan_memory(self.0.env.memory_total_bytes(), &held, request.memory_mib);
+        warnings.extend(memory.warnings.iter().copied());
         if let Some(blocker) = memory.blocker {
             blockers.insert(blocker);
         }

@@ -11,8 +11,8 @@ pub const DEFAULT_GAME_PORT: u16 = 25_565;
 /// Ports examined after the start port before giving up.
 pub const PORT_SEARCH_LIMIT: u16 = 100;
 pub const MIN_SERVER_MIB: u64 = 512;
-const DEFAULT_FLOOR_MIB: u64 = 1_024;
-const DEFAULT_CEILING_MIB: u64 = 8_192;
+pub const DEFAULT_MEMORY_MIB: u64 = 2_048;
+pub const MODDED_MEMORY_MIB: u64 = 4_096;
 const STEP_MIB: u64 = 256;
 const MIB: u64 = 1024 * 1024;
 
@@ -37,6 +37,7 @@ pub struct MemoryPlan {
     pub status: &'static str,
     /// `memory_unresolved`, `memory_invalid` or `memory_budget_exceeded`.
     pub blocker: Option<&'static str>,
+    pub warnings: Vec<&'static str>,
 }
 
 /// Operating system reserve: a quarter of RAM, between 1 GiB and 4 GiB.
@@ -44,8 +45,8 @@ pub fn os_reserve_mib(total_mib: u64) -> u64 {
     (total_mib / 4).clamp(1_024, 4_096)
 }
 
-/// Plan memory for one more server from host RAM. With no request, suggest half
-/// the budget within 1-8 GiB, never more than what remains unreserved.
+/// Plan a 2 GiB default. Only the per-server budget is a hard limit;
+/// reservations from other servers produce an advisory warning.
 pub fn plan_memory(
     total_bytes: Option<u64>,
     reservations: &Reservations,
@@ -60,6 +61,7 @@ pub fn plan_memory(
         memory_mib: None,
         status: "unresolved",
         blocker: Some(blocker),
+        warnings: Vec::new(),
     };
     let Some(total_mib) = total_bytes.map(|b| b / MIB).filter(|m| *m > 0) else {
         return unresolved("memory_unresolved");
@@ -76,15 +78,14 @@ pub fn plan_memory(
         memory_mib: None,
         status: "unresolved",
         blocker: None,
+        warnings: Vec::new(),
     };
     let chosen = match requested_mib {
         Some(requested) if requested < MIN_SERVER_MIB => Err("memory_invalid"),
-        Some(requested) if requested > available => Err("memory_budget_exceeded"),
+        Some(requested) if requested > budget => Err("memory_budget_exceeded"),
         Some(requested) => Ok(requested),
         None => {
-            let suggested = (budget / 2)
-                .clamp(DEFAULT_FLOOR_MIB, DEFAULT_CEILING_MIB)
-                .min(available);
+            let suggested = DEFAULT_MEMORY_MIB.min(budget);
             let suggested = suggested / STEP_MIB * STEP_MIB;
             if suggested < MIN_SERVER_MIB {
                 Err("memory_budget_exceeded")
@@ -97,6 +98,9 @@ pub fn plan_memory(
         Ok(mib) => {
             plan.memory_mib = Some(mib);
             plan.status = "resolved";
+            if mib > available {
+                plan.warnings.push("memory_overcommitted");
+            }
         }
         Err(blocker) => plan.blocker = Some(blocker),
     }
@@ -181,7 +185,7 @@ mod tests {
         let plan = plan_memory(Some(16 * GIB), &none, None);
         assert_eq!(plan.os_reserve_mib, Some(4_096));
         assert_eq!(plan.budget_mib, Some(12_288));
-        assert_eq!(plan.memory_mib, Some(6_144));
+        assert_eq!(plan.memory_mib, Some(2_048));
         assert_eq!(plan.status, "resolved");
         // Small hosts keep the 1 GiB OS floor.
         let plan = plan_memory(Some(2 * GIB), &none, None);
@@ -193,14 +197,15 @@ mod tests {
         };
         let plan = plan_memory(Some(16 * GIB), &busy, None);
         assert_eq!(plan.available_mib, Some(1_288));
-        assert_eq!(plan.memory_mib, Some(1_280));
+        assert_eq!(plan.memory_mib, Some(2_048));
         let full = Reservations {
             ports: BTreeSet::new(),
             memory_mib: 12_000,
         };
         let plan = plan_memory(Some(16 * GIB), &full, None);
-        assert_eq!(plan.blocker, Some("memory_budget_exceeded"));
-        assert_eq!(plan.memory_mib, None);
+        assert_eq!(plan.blocker, None);
+        assert_eq!(plan.memory_mib, Some(2_048));
+        assert_eq!(plan.warnings, vec!["memory_overcommitted"]);
     }
 
     #[test]

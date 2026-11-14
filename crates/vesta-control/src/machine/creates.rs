@@ -1,19 +1,18 @@
 //! Machine-level creation metadata. Catalogue access never needs a worker or
 //! executes a runtime. Installer plans must independently resolve fresh evidence.
+pub use super::imports::jobs::{
+    CreateApplyRequest, CreateJob, CreateReview, CreateRuntime, CreateSummary, CreateUpload,
+    ModpackServerRequest, NewServerRequest, PackSourceRequest, RestoreServerRequest, RestoreSource,
+    ReviewRuntime, ServerFacts, SoftwareChoice, SummarySoftware, UploadAccepted,
+};
 use super::{
     HostState,
     imports::jobs::{ImportJobs, JobError, JobResult},
 };
 use crate::java::HostJavaPlan;
+pub use crate::packs::workspace::{CreatePackIssue, CreatePackReview};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-pub use super::imports::jobs::{
-    CreateApplyRequest, CreateJob, CreateReview, CreateRuntime, CreateSummary, CreateUpload,
-    ModpackServerRequest, NewServerRequest, PackSourceRequest, RestoreServerRequest, RestoreSource,
-    ReviewRuntime, ServerFacts,
-    SoftwareChoice, SummarySoftware, UploadAccepted,
-};
-pub use crate::packs::workspace::{CreatePackIssue, CreatePackReview};
 use vesta_server_install::{
     Acknowledgments, Approval, InstallError, InstallOutcome, InstallRoots, ManagedLaunch,
     MinecraftVersion, ProgressReporter, ResolvedPreview, Selection, ServerInstaller,
@@ -83,8 +82,11 @@ pub trait CreateProgress: Send + Sync {
 pub trait CreateInstaller: Send + Sync {
     /// Fresh metadata-only resolution of the exact artifacts:
     /// `software_unresolved` or `provider_unavailable` on failure.
-    fn resolve(&self, software: Software, selection: &Selection)
-    -> Result<ResolvedPreview, &'static str>;
+    fn resolve(
+        &self,
+        software: Software,
+        selection: &Selection,
+    ) -> Result<ResolvedPreview, &'static str>;
     /// Confirm against Mojang's own manifest (piston-meta) that every SHA-1-only
     /// Mojang object in the preview is exactly what Mojang publishes for that
     /// version. Only then does the host accept those digests automatically.
@@ -501,14 +503,14 @@ pub fn defaults(
     let name = jobs.suggested_create_name()?;
     // Check availability using the same reservations and observations as apply.
     let (memory, port) = jobs.resource_plans(None, None)?;
-    if let Some(code) = memory.blocker.or(port.blocker) {
-        return Err(JobError(code));
-    }
+    let mut warnings = memory.warnings.clone();
+    warnings.extend(memory.blocker);
+    warnings.extend(port.blocker);
     let _ = host.snapshot()?;
     let versions = minecraft(catalogue)?;
     Ok(
         json!({"name":name,"minecraftVersion":versions["latestStable"],
         "software":{"kind":"vanilla","build":null,"loaderVersion":null},
-        "gamePort":port.game_port,"memoryMiB":memory.memory_mib,"java":"automatic"}),
+        "gamePort":port.game_port,"memoryMiB":memory.memory_mib,"java":"automatic", "warnings":warnings}),
     )
 }

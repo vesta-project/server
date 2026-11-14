@@ -781,7 +781,7 @@ fn create_defaults_include_pending_import_name_port_and_memory_reservations() {
     assert_eq!(f.jobs.suggested_create_name().unwrap(), "Minecraft Server 2");
     let (memory, port) = f.jobs.resource_plans(None, None).unwrap();
     assert_eq!(port.game_port, Some(25566));
-    assert_eq!(memory.memory_mib, Some(4096));
+    assert_eq!(memory.memory_mib, Some(2048));
     assert_eq!(memory.reserved_mib, 8192);
     f.jobs.cancel(&f.binding, &accepted.job_id).unwrap();
     f.jobs.run_apply(&f.binding, &accepted.job_id).unwrap();
