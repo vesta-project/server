@@ -305,8 +305,16 @@ impl Host {
         std::fs::write(path, bytes).unwrap();
     }
     fn call(&self, method: &str, path: &str, body: Value, auth: &str) -> (u16, Value) {
-        let until=std::time::Instant::now()+Duration::from_secs(65);
-        loop { let reply=self.wire().request(method,path,body.clone(),Some(auth)); if reply.0!=429 || std::time::Instant::now()>=until {return reply;} std::thread::sleep(Duration::from_secs(2)); }
+        self.call_until(method, path, body, auth, std::time::Instant::now() + Duration::from_secs(65))
+    }
+    // Headers are discarded by the wire helper; back off within the caller's deadline.
+    fn call_until(&self, method: &str, path: &str, body: Value, auth: &str, until: std::time::Instant) -> (u16, Value) {
+        loop {
+            let reply = self.wire().request(method, path, body.clone(), Some(auth));
+            let remaining = until.saturating_duration_since(std::time::Instant::now());
+            if reply.0 != 429 || remaining.is_zero() { return reply; }
+            std::thread::sleep(Duration::from_secs(2).min(remaining));
+        }
     }
     fn token(&self, folder: &str) -> String {
         let (status, r) = self.call(
@@ -322,17 +330,14 @@ impl Host {
     fn wait(&self, job: &str, timeout: Duration, done: impl Fn(&Value) -> bool) -> Value {
         let until = std::time::Instant::now() + timeout;
         loop {
-            let (status, value) = self.call(
+            let (status, value) = self.call_until(
                 "GET",
                 &format!("/v1/host/imports/jobs/{job}"),
                 Value::Null,
                 &self.owner,
+                until,
             );
             // Polling shares the per-peer request budget; back off when told.
-            if status == 429 {
-                std::thread::sleep(Duration::from_secs(2));
-                continue;
-            }
             assert_eq!(status, 200, "{value}");
             if done(&value) {
                 return value;
@@ -341,13 +346,10 @@ impl Host {
                 std::time::Instant::now() < until,
                 "job did not settle: {value}"
             );
-            std::thread::sleep(if timeout > Duration::from_secs(60) {
-                Duration::from_secs(2)
-            } else {
-                Duration::from_millis(150)
-            });
+            std::thread::sleep(Duration::from_secs(1).min(until.saturating_duration_since(std::time::Instant::now())));
         }
     }
+
     fn plan(&self, folder: &str, extra: Value) -> Value {
         let mut body = json!({"folderToken":self.token(folder),"name":"Survival","gamePort":free_port(),"memoryMiB":1024,"launchChoice":null,"minecraftVersion":null});
         for (k, v) in extra.as_object().unwrap() {

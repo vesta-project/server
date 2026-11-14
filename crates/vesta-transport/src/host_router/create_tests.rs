@@ -319,16 +319,13 @@ impl Host {
     fn create_wait(&self, job: &str, timeout: Duration, done: impl Fn(&Value) -> bool) -> Value {
         let until = std::time::Instant::now() + timeout;
         loop {
-            let (status, value) = self.call(
+            let (status, value) = self.call_until(
                 "GET",
                 &format!("/v1/host/creates/jobs/{job}"),
                 Value::Null,
                 &self.owner,
+                until,
             );
-            if status == 429 {
-                std::thread::sleep(Duration::from_secs(2));
-                continue;
-            }
             assert_eq!(status, 200, "{value}");
             if done(&value) {
                 return value;
@@ -337,15 +334,10 @@ impl Host {
                 std::time::Instant::now() < until,
                 "job did not settle: {value}"
             );
-            std::thread::sleep(Duration::from_millis(
-                if timeout > Duration::from_secs(60) {
-                    1000
-                } else {
-                    100
-                },
-            ));
+            std::thread::sleep(Duration::from_secs(1).min(until.saturating_duration_since(std::time::Instant::now())));
         }
     }
+
     fn create_plan(&self, mut body: Value) -> Value {
         if let Some(port)=body["gamePort"].as_u64().filter(|p|*p>0 && *p<=65535) { body["gamePort"]=json!(if (25570..=25999).contains(&port) { test_port(port as u16) } else {port as u16}); } else if body["gamePort"].is_null() { body["gamePort"]=json!(free_port()); }
         let (status, accepted) = self.call("POST", "/v1/host/creates/plan", body, &self.owner);
