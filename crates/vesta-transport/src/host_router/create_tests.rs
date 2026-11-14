@@ -130,7 +130,9 @@ impl CreateInstaller for FakeInstaller {
     ) -> Result<CreatePackReview, &'static str> {
         match (source, upload) {
             (PackSourceRequest::Provider { project_id, .. }, None) => fixture_pack(project_id),
-            (PackSourceRequest::Upload { .. }, Some(path)) if self.live_packs.load(Ordering::SeqCst) => {
+            (PackSourceRequest::Upload { .. }, Some(path))
+                if self.live_packs.load(Ordering::SeqCst) =>
+            {
                 vesta_control::packs::workspace::review_create_uploaded_pack(path)
             }
             (PackSourceRequest::Upload { .. }, Some(path)) => {
@@ -166,7 +168,10 @@ impl CreateInstaller for FakeInstaller {
             let result = vesta_control::machine::creates::LiveCreateInstaller::new(java, servers)
                 .install_pack(request, progress);
             if result.is_ok() {
-                self.pack_installs.lock().unwrap().push(request.review.clone());
+                self.pack_installs
+                    .lock()
+                    .unwrap()
+                    .push(request.review.clone());
             }
             return result;
         }
@@ -365,7 +370,10 @@ impl Host {
             ),
             body,
         );
-        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
     }
     fn servers(&self) -> Vec<Value> {
         let (status, list) = self.call("GET", "/v1/host/servers", Value::Null, &self.owner);
@@ -382,7 +390,7 @@ fn new_body(name: &str, port: Option<u16>, memory: Option<u64>) -> Value {
 fn create_host(installer: Arc<FakeInstaller>) -> Host {
     Host::start(
         tempfile::tempdir().unwrap(),
-        Arc::new(FakeEnv::default()),
+        fake_env(),
         Some(installer),
         None,
         None,
@@ -668,7 +676,7 @@ fn create_routes_are_owner_only_and_unbuilt_modes_answer_not_supported() {
             "{method} {path}"
         );
     }
-    // Restore is the next package: 501 for owners (modpack is built).
+    // Restore is built: a malformed source id is refused, the listing works.
     let (status, value) = host.call(
         "POST",
         "/v1/host/creates/plan",
@@ -677,7 +685,7 @@ fn create_routes_are_owner_only_and_unbuilt_modes_answer_not_supported() {
     );
     assert_eq!(
         (status, value["error"]["code"].clone()),
-        (501, json!("not_supported_yet"))
+        (400, json!("invalid_request"))
     );
     let (status, value) = host.call(
         "GET",
@@ -685,10 +693,8 @@ fn create_routes_are_owner_only_and_unbuilt_modes_answer_not_supported() {
         Value::Null,
         &host.owner,
     );
-    assert_eq!(
-        (status, value["error"]["code"].clone()),
-        (501, json!("not_supported_yet"))
-    );
+    assert_eq!((status, value), (200, json!({"sources":[]})));
+    // Uploaded recovery exports remain 501.
     let (status, value) = host.upload(&host.owner, "restore", b"PK");
     assert_eq!(
         (status, value["error"]["code"].clone()),
@@ -1228,7 +1234,10 @@ fn provider_modpack_reviews_installs_its_content_and_reaches_online() {
         .into_iter()
         .find(|s| s["serverId"] == server)
         .unwrap();
-    assert_eq!(card["software"], json!({"kind":"fabric","version":"0.16.9"}));
+    assert_eq!(
+        card["software"],
+        json!({"kind":"fabric","version":"0.16.9"})
+    );
     assert_eq!(card["minecraftVersion"], "26.1");
 
     let (status, started) = host.job_action(&id, "start");
@@ -1255,7 +1264,10 @@ fn provider_modpack_reviews_installs_its_content_and_reaches_online() {
         "POST",
         &format!("/v1/servers/{server}/manage/lifecycle/stop"),
         json!({"expected_generation":generation}),
-        &format!("{}\r\nIdempotency-Key: modpack-lifecycle-stop-0001", host.owner),
+        &format!(
+            "{}\r\nIdempotency-Key: modpack-lifecycle-stop-0001",
+            host.owner
+        ),
     );
     assert!((200..300).contains(&status), "{status} {stopped}");
     let until = std::time::Instant::now() + Duration::from_secs(60);
@@ -1298,8 +1310,7 @@ fn pack_review_issues_are_surfaced_verbatim() {
         json!([{"code":"pack_size_warning","message":"pack_size_warning:2048","blocking":false}])
     );
     // The owner must acknowledge the pack notices.
-    let (status, error) =
-        host.create_apply(&job, "notice-key", json!({"acknowledgedWarnings":[]}));
+    let (status, error) = host.create_apply(&job, "notice-key", json!({"acknowledgedWarnings":[]}));
     assert_eq!(
         (status, error["error"]["code"].clone()),
         (400, json!("warnings_unacknowledged"))
@@ -1452,7 +1463,6 @@ fn modpack_routes_are_owner_only() {
     assert_eq!(status, 403);
 }
 
-
 /// An uploaded `.mrpack` with only overrides (nothing to download).
 fn mrpack(dependencies: Value, files: Value) -> Vec<u8> {
     let index = serde_json::to_vec(&json!({
@@ -1507,7 +1517,8 @@ fn modpack_creates_install_software_once_for_vanilla_and_loader_packs() {
         ),
     ] {
         let before = installer.installs.load(Ordering::SeqCst);
-        let (status, upload) = host.upload(&host.owner, "modpack", &mrpack(dependencies, json!([])));
+        let (status, upload) =
+            host.upload(&host.owner, "modpack", &mrpack(dependencies, json!([])));
         assert_eq!(status, 201, "{upload}");
         let job = host.create_plan(upload_body(name, free_port(), &upload));
         assert_eq!(job["state"], "review", "{job}");
@@ -1536,7 +1547,11 @@ fn modpack_creates_install_software_once_for_vanilla_and_loader_packs() {
         assert!(software["previous"].is_null(), "{software}");
         assert_eq!(software["current"]["software"], kind, "{software}");
         assert_eq!(software["current"]["version"], "26.1", "{software}");
-        assert_eq!(software["current"]["loader_version"], json!(loader), "{software}");
+        assert_eq!(
+            software["current"]["loader_version"],
+            json!(loader),
+            "{software}"
+        );
         let card = host
             .servers()
             .into_iter()
@@ -1557,7 +1572,11 @@ fn loader_less_packs_with_mods_are_blocked_at_planning() {
     let files = json!([{"path":"mods/a.jar","hashes":{"sha1":"a","sha512":"b"},
         "env":{"client":"required","server":"required"},
         "downloads":["https://cdn.modrinth.com/data/x/a.jar"],"fileSize":1}]);
-    let (_, upload) = host.upload(&host.owner, "modpack", &mrpack(json!({"minecraft":"26.1"}), files));
+    let (_, upload) = host.upload(
+        &host.owner,
+        "modpack",
+        &mrpack(json!({"minecraft":"26.1"}), files),
+    );
     let job = host.create_plan(upload_body("Mods", 25650, &upload));
     assert_eq!(job["state"], "blocked", "{job}");
     assert_eq!(job["review"]["blockers"], json!(["pack_loader_missing"]));
@@ -1589,7 +1608,14 @@ fn cancel_during_pack_install_releases_everything() {
     host.create_wait(&id, Duration::from_secs(60), |j| {
         j["phase"] == "installing" && installer.pack_started.load(Ordering::SeqCst)
     });
-    assert!(host.temp.path().join("servers").join(&server).join("game").exists());
+    assert!(
+        host.temp
+            .path()
+            .join("servers")
+            .join(&server)
+            .join("game")
+            .exists()
+    );
     let (status, requested) = host.job_action(&id, "cancel");
     assert_eq!((status, requested), (200, json!({"state":"applying"})));
     let done = host.create_wait(&id, Duration::from_secs(60), |j| j["state"] != "applying");
@@ -1737,9 +1763,16 @@ fn server_session_projects_the_callers_roles_and_capabilities() {
     let check = |auth: &str, role: BuiltinRole| {
         let (status, view) = host.call("GET", &path, Value::Null, auth);
         assert_eq!(status, 200, "{view}");
-        let view = if view["data"].is_object() { view["data"].clone() } else { view };
+        let view = if view["data"].is_object() {
+            view["data"].clone()
+        } else {
+            view
+        };
         assert_eq!(view["server_id"], json!(server), "{view}");
-        assert!(view["principal_id"].as_str().is_some_and(|p| !p.is_empty()), "{view}");
+        assert!(
+            view["principal_id"].as_str().is_some_and(|p| !p.is_empty()),
+            "{view}"
+        );
         let roles: Vec<&str> = view["roles"]
             .as_array()
             .unwrap()
@@ -1760,7 +1793,12 @@ fn server_session_projects_the_callers_roles_and_capabilities() {
     // No role on this server: the server does not exist for this caller.
     let (status, _) = host.call("GET", &path, Value::Null, &host.stranger);
     assert_eq!(status, 404);
-    let stranger = host.state.device(host.devices.1).unwrap().unwrap().account_id;
+    let stranger = host
+        .state
+        .device(host.devices.1)
+        .unwrap()
+        .unwrap()
+        .account_id;
     for (role, builtin) in [
         (HostServerRole::Admin, BuiltinRole::Administrator),
         (HostServerRole::Player, BuiltinRole::PackUser),
@@ -1773,4 +1811,602 @@ fn server_session_projects_the_callers_roles_and_capabilities() {
     }
     // Only GET, with no query or body.
     assert_eq!(host.call("POST", &path, json!({}), &host.owner).0, 400);
+}
+
+/// A Mojang-style `server.jar` declaring its own version.
+fn version_jar(version: &str) -> Vec<u8> {
+    zip_bytes(&[(
+        "version.json",
+        format!("{{\"id\":\"{version}\"}}").as_bytes(),
+    )])
+}
+/// Back up `<dir>/game` into the folder's default repository as a promoted
+/// restore point, as the server's backup service does.
+fn backup_folder(dir: &Path) -> String {
+    use vesta_control::backups::{engine::Engine, ignore::Ignore, store::LocalStore};
+    let engine = Engine::new(Box::new(LocalStore::new(dir.join("backups/repository"))));
+    engine.init().unwrap();
+    engine
+        .backup(
+            &dir.join("game"),
+            &Ignore::parse("").unwrap(),
+            &["vesta".into(), "profile=manual".into()],
+            None,
+        )
+        .unwrap()
+        .snapshot_id
+}
+/// A server folder the registry does not know, holding one backup of a
+/// Vanilla game (world, properties, its own jar).
+fn detached_folder(host: &Host) -> (Uuid, String) {
+    let origin = Uuid::new_v4();
+    let dir = host.temp.path().join("servers").join(origin.to_string());
+    let game = dir.join("game");
+    std::fs::create_dir_all(game.join("world/region")).unwrap();
+    std::fs::write(game.join("world/level.dat"), b"level").unwrap();
+    std::fs::write(
+        game.join("world/region/r.0.0.mca"),
+        vec![7u8; 3 * 1024 * 1024],
+    )
+    .unwrap();
+    std::fs::write(
+        game.join("server.properties"),
+        "server-port=25599\nmotd=Old\n",
+    )
+    .unwrap();
+    std::fs::write(game.join("server.jar"), version_jar("26.1")).unwrap();
+    let snapshot = backup_folder(&dir);
+    (origin, snapshot)
+}
+fn restore_body(name: &str, source: &str, port: u16) -> Value {
+    json!({"kind":"restore","name":name,"source":{"kind":"snapshot","sourceId":source},
+        "gamePort":port,"memoryMiB":1024,"eulaAccepted":false})
+}
+fn restore_sources(host: &Host) -> Vec<Value> {
+    let (status, list) = host.call(
+        "GET",
+        "/v1/host/creates/restore-sources",
+        Value::Null,
+        &host.owner,
+    );
+    assert_eq!(status, 200, "{list}");
+    list["sources"].as_array().unwrap().clone()
+}
+
+/// Restore sources are backups of deleted servers and of folders no server
+/// owns, never a live server's; a restore plans with the known facts (or
+/// warns when unknown), restores the verified snapshot as a new server and
+/// keeps the source.
+#[test]
+fn restore_lists_detached_backups_and_restores_one_as_a_new_server() {
+    let host = create_host(Arc::new(FakeInstaller::default()));
+    // A live server with its own backup: never a restore source.
+    let job = host.create_plan(new_body("Live", Some(25670), Some(1024)));
+    let (status, accepted) = host.create_apply(&job, "live-key", json!({}));
+    assert_eq!(status, 202, "{accepted}");
+    let ready = host.create_wait(
+        accepted["jobId"].as_str().unwrap(),
+        Duration::from_secs(60),
+        |j| j["state"] != "applying",
+    );
+    assert_eq!(ready["state"], "ready", "{ready}");
+    let live: Uuid = accepted["serverId"].as_str().unwrap().parse().unwrap();
+    let live_dir = host.temp.path().join("servers").join(live.to_string());
+    std::fs::write(live_dir.join("game/server.jar"), version_jar("26.1")).unwrap();
+    let live_snapshot = backup_folder(&live_dir);
+    assert!(restore_sources(&host).is_empty());
+
+    // An unknown folder: listed without facts.
+    let (origin, snapshot) = detached_folder(&host);
+    let sources = restore_sources(&host);
+    assert_eq!(sources.len(), 1, "{sources:?}");
+    let detached = sources[0].clone();
+    assert_eq!(
+        detached["sourceId"],
+        format!("{}{snapshot}", origin.simple())
+    );
+    assert_eq!(detached["label"], "Recovered server");
+    assert!(detached["minecraftVersion"].is_null() && detached["software"].is_null());
+    assert!(detached["bytes"].as_u64().unwrap() > 3 * 1024 * 1024);
+    assert!(detached["createdAt"].as_str().unwrap().ends_with('Z'));
+
+    // Deleting the live server makes its backup a source, with its facts.
+    let owner = host
+        .state
+        .device(host.devices.0)
+        .unwrap()
+        .unwrap()
+        .account_id;
+    let mut entry = host.state.server(live).unwrap().unwrap();
+    entry.state = vesta_control::machine::registry::ServerState::Deleted;
+    let revision = host.state.snapshot().unwrap().revision;
+    host.state
+        .update_server(
+            vesta_control::machine::owners::Actor::Account(owner),
+            &entry,
+            revision,
+        )
+        .unwrap();
+    let sources = restore_sources(&host);
+    let deleted = sources
+        .iter()
+        .find(|s| s["sourceId"] == format!("{}{live_snapshot}", live.simple()))
+        .expect("deleted server's backup")
+        .clone();
+    assert_eq!(deleted["label"], "Live");
+    assert_eq!(deleted["minecraftVersion"], "26.1");
+    assert_eq!(
+        deleted["software"],
+        json!({"kind":"vanilla","version":"26.1"})
+    );
+    let known = host.create_plan(restore_body(
+        "Back",
+        deleted["sourceId"].as_str().unwrap(),
+        25671,
+    ));
+    assert_eq!(known["state"], "review", "{known}");
+    assert_eq!(known["review"]["warnings"], json!([]));
+    assert_eq!(known["review"]["summary"]["software"]["kind"], "vanilla");
+    assert_eq!(known["review"]["summary"]["minecraftVersion"], "26.1");
+    assert_eq!(
+        host.job_action(known["jobId"].as_str().unwrap(), "cancel")
+            .0,
+        200
+    );
+
+    // Restore the unknown folder's backup.
+    let job = host.create_plan(restore_body(
+        "Restored",
+        detached["sourceId"].as_str().unwrap(),
+        25672,
+    ));
+    assert_eq!(job["state"], "review", "{job}");
+    let review = &job["review"];
+    assert_eq!(review["warnings"], json!(["restore_version_unknown"]));
+    assert_eq!(review["summary"]["kind"], "restore");
+    assert_eq!(review["summary"]["minecraftVersion"], "");
+    assert_eq!(review["summary"]["software"]["kind"], "unknown");
+    assert_eq!(
+        review["summary"]["restore"],
+        json!({"sourceId":detached["sourceId"],"label":"Recovered server","createdAt":detached["createdAt"]})
+    );
+    assert!(review["summary"]["pack"].is_null());
+    let (status, error) =
+        host.create_apply(&job, "restore-key", json!({"acknowledgedWarnings":[]}));
+    assert_eq!(
+        (status, error["error"]["code"].clone()),
+        (400, json!("warnings_unacknowledged"))
+    );
+    let (status, accepted) = host.create_apply(&job, "restore-key", json!({}));
+    assert_eq!(status, 202, "{accepted}");
+    let id = accepted["jobId"].as_str().unwrap();
+    let ready = host.create_wait(id, Duration::from_secs(60), |j| j["state"] != "applying");
+    assert_eq!(ready["state"], "ready", "{ready}");
+    let server = accepted["serverId"].as_str().unwrap();
+    let dir = host.temp.path().join("servers").join(server);
+    assert_eq!(
+        std::fs::read(dir.join("game/world/level.dat")).unwrap(),
+        b"level"
+    );
+    assert_eq!(
+        std::fs::read(dir.join("game/world/region/r.0.0.mca"))
+            .unwrap()
+            .len(),
+        3 * 1024 * 1024
+    );
+    let properties = std::fs::read_to_string(dir.join("game/server.properties")).unwrap();
+    assert!(
+        properties.contains("server-port=25672") && properties.contains("motd=Old"),
+        "{properties}"
+    );
+    assert!(
+        std::fs::read_to_string(dir.join("game/eula.txt"))
+            .unwrap()
+            .contains("eula=true")
+    );
+    let launch = std::fs::read_to_string(dir.join("private/launch.toml")).unwrap();
+    assert!(
+        launch.contains("server.jar") && launch.contains("nogui"),
+        "{launch}"
+    );
+    assert!(!dir.join("staging").exists());
+    let card = host
+        .servers()
+        .into_iter()
+        .find(|s| s["serverId"] == server)
+        .unwrap();
+    assert_eq!(card["name"], "Restored");
+    assert_eq!(card["gamePort"], 25672);
+    // The source stays, and is still offered (a backup can be restored again).
+    let source_dir = host.temp.path().join("servers").join(origin.to_string());
+    assert!(source_dir.join("game/world/level.dat").exists());
+    assert!(
+        restore_sources(&host)
+            .iter()
+            .any(|s| s["sourceId"] == detached["sourceId"])
+    );
+    // The restored server is live: its own backups are never listed.
+    let restored: Uuid = server.parse().unwrap();
+    backup_folder(&dir);
+    let prefix = restored.simple().to_string();
+    assert!(
+        restore_sources(&host)
+            .iter()
+            .all(|s| !s["sourceId"].as_str().unwrap().starts_with(&prefix))
+    );
+}
+
+/// A snapshot whose stored data no longer verifies is refused: the job fails
+/// with `integrity_conflict`, nothing is published or registered.
+#[test]
+fn corrupted_snapshots_are_refused_before_anything_is_published() {
+    let host = create_host(Arc::new(FakeInstaller::default()));
+    let (origin, _) = detached_folder(&host);
+    let source = restore_sources(&host)[0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = host.create_plan(restore_body("Damaged", &source, 25680));
+    assert_eq!(job["state"], "review", "{job}");
+    // Flip the last byte of every stored chunk after the review.
+    let chunks = host
+        .temp
+        .path()
+        .join("servers")
+        .join(origin.to_string())
+        .join("backups/repository/chunks");
+    for prefix in std::fs::read_dir(&chunks).unwrap().flatten() {
+        for chunk in std::fs::read_dir(prefix.path()).unwrap().flatten() {
+            let mut bytes = std::fs::read(chunk.path()).unwrap();
+            let last = bytes.len() - 1;
+            bytes[last] ^= 0xff;
+            std::fs::write(chunk.path(), bytes).unwrap();
+        }
+    }
+    let (status, accepted) = host.create_apply(&job, "damaged-key", json!({}));
+    assert_eq!(status, 202, "{accepted}");
+    let done = host.create_wait(
+        accepted["jobId"].as_str().unwrap(),
+        Duration::from_secs(60),
+        |j| j["state"] != "applying",
+    );
+    assert_eq!(
+        (done["state"].clone(), done["error"].clone()),
+        (json!("failed"), json!("integrity_conflict")),
+        "{done}"
+    );
+    let server = accepted["serverId"].as_str().unwrap();
+    assert!(!host.temp.path().join("servers").join(server).exists());
+    assert!(host.servers().is_empty());
+}
+
+/// Restore routes are owner-only; uploaded recovery exports are not a source
+/// yet; unknown or malformed sources are refused.
+#[test]
+fn restore_routes_are_owner_only_and_uploads_are_not_supported_yet() {
+    let host = create_host(Arc::new(FakeInstaller::default()));
+    detached_folder(&host);
+    let source = restore_sources(&host)[0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (status, value) = host.call(
+        "GET",
+        "/v1/host/creates/restore-sources",
+        Value::Null,
+        &host.stranger,
+    );
+    assert_eq!(
+        (status, value["error"]["code"].clone()),
+        (403, json!("forbidden"))
+    );
+    let (status, value) = host.call(
+        "POST",
+        "/v1/host/creates/plan",
+        restore_body("Mine", &source, 25690),
+        &host.stranger,
+    );
+    assert_eq!(
+        (status, value["error"]["code"].clone()),
+        (403, json!("forbidden"))
+    );
+    let job = host.create_plan(restore_body("Mine", &source, 25690));
+    let (status, _) = host.call(
+        "GET",
+        &format!("/v1/host/creates/jobs/{}", job["jobId"].as_str().unwrap()),
+        Value::Null,
+        &host.stranger,
+    );
+    assert_eq!(status, 403);
+    let (status, value) = host.call(
+        "POST",
+        "/v1/host/creates/plan",
+        json!({"kind":"restore","name":"Up","source":{"kind":"upload","uploadId":Uuid::new_v4()},"gamePort":25691,"memoryMiB":1024}),
+        &host.owner,
+    );
+    assert_eq!(
+        (status, value["error"]["code"].clone()),
+        (501, json!("not_supported_yet"))
+    );
+    assert_eq!(host.upload(&host.owner, "restore", b"PK").0, 501);
+    let (status, _) = host.call(
+        "POST",
+        "/v1/host/creates/plan",
+        restore_body("Bad", "nothex", 25692),
+        &host.owner,
+    );
+    assert_eq!(status, 400);
+    // Well-formed but unknown: planned and blocked.
+    let unknown = host.create_plan(restore_body("Gone", &"0".repeat(64), 25693));
+    assert_eq!(unknown["state"], "blocked", "{unknown}");
+    assert_eq!(
+        unknown["review"]["blockers"],
+        json!(["restore_source_unavailable"])
+    );
+}
+
+/// Cancel while the restored server's Java is made available (after the
+/// snapshot is staged) releases everything; a restore interrupted by a host
+/// restart resumes from a clean destination to exactly one server.
+#[test]
+fn restore_cancel_and_resume_leave_no_duplicates() {
+    let env = fake_env();
+    env.java_gate.store(true, Ordering::SeqCst);
+    let host = Host::start(
+        tempfile::tempdir().unwrap(),
+        env.clone(),
+        Some(Arc::new(FakeInstaller::default())),
+        None,
+        None,
+    );
+    detached_folder(&host);
+    let source = restore_sources(&host)[0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = host.create_plan(restore_body("Paused", &source, 25700));
+    let (status, accepted) = host.create_apply(&job, "paused-key", json!({}));
+    assert_eq!(status, 202, "{accepted}");
+    let id = accepted["jobId"].as_str().unwrap().to_owned();
+    let server = accepted["serverId"].as_str().unwrap().to_owned();
+    host.create_wait(&id, Duration::from_secs(30), |j| {
+        j["phase"] == "downloading_java"
+    });
+    let (status, requested) = host.job_action(&id, "cancel");
+    assert_eq!((status, requested), (200, json!({"state":"applying"})));
+    env.java_gate.store(false, Ordering::SeqCst);
+    let done = host.create_wait(&id, Duration::from_secs(30), |j| j["state"] != "applying");
+    assert_eq!(done["state"], "cancelled", "{done}");
+    assert!(!host.temp.path().join("servers").join(&server).exists());
+    assert!(host.servers().is_empty());
+
+    // Interrupted by a restart while waiting for Java, then resumed.
+    env.java_gate.store(true, Ordering::SeqCst);
+    let job = host.create_plan(restore_body("Paused", &source, 25700));
+    assert_eq!(job["state"], "review", "{job}");
+    let (status, accepted) = host.create_apply(&job, "resume-key", json!({}));
+    assert_eq!(status, 202, "{accepted}");
+    let id = accepted["jobId"].as_str().unwrap().to_owned();
+    host.create_wait(&id, Duration::from_secs(30), |j| {
+        j["phase"] == "downloading_java"
+    });
+    let host = host.restart(fake_env(), Some(Arc::new(FakeInstaller::default())));
+    let (_, interrupted) = host.call(
+        "GET",
+        &format!("/v1/host/creates/jobs/{id}"),
+        Value::Null,
+        &host.owner,
+    );
+    assert_eq!(interrupted["state"], "interrupted", "{interrupted}");
+    let (status, resumed) = host.job_action(&id, "resume");
+    assert_eq!(status, 202, "{resumed}");
+    let ready = host.create_wait(&id, Duration::from_secs(60), |j| j["state"] != "applying");
+    assert_eq!(ready["state"], "ready", "{ready}");
+    let servers = host.servers();
+    assert_eq!(servers.len(), 1);
+    assert_eq!(servers[0]["serverId"], accepted["serverId"]);
+    let dir = host
+        .temp
+        .path()
+        .join("servers")
+        .join(accepted["serverId"].as_str().unwrap());
+    assert!(dir.join("game/world/level.dat").exists() && !dir.join("staging").exists());
+}
+
+/// Stop a running server through its lifecycle route and wait until stopped.
+fn stop_server(host: &Host, server: &str, key: &str) {
+    let (status, view) = host.call(
+        "GET",
+        &format!("/v1/servers/{server}/manage/server/status"),
+        Value::Null,
+        &host.owner,
+    );
+    assert_eq!(status, 200, "{view}");
+    let data = if view["data"].is_object() {
+        &view["data"]
+    } else {
+        &view
+    };
+    let generation = data["generation"].as_str().unwrap().to_owned();
+    let (status, stopped) = host.call(
+        "POST",
+        &format!("/v1/servers/{server}/manage/lifecycle/stop"),
+        json!({"expected_generation":generation}),
+        &format!("{}\r\nIdempotency-Key: {key}", host.owner),
+    );
+    assert!((200..300).contains(&status), "{status} {stopped}");
+    let until = std::time::Instant::now() + Duration::from_secs(180);
+    while host
+        .servers()
+        .iter()
+        .any(|s| s["serverId"] == server && s["state"] != "stopped")
+    {
+        assert!(std::time::Instant::now() < until, "not stopped");
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// Real restore: create latest stable Vanilla, reach online, stop, back it up
+/// into its own repository (the backup engine, as the server's backup service
+/// writes it), delete the server through the registry, then restore that
+/// backup as a new server through the router and reach online again.
+#[test]
+#[ignore = "downloads Java and Vanilla, runs the server twice"]
+fn real_vanilla_backup_restores_as_a_new_server_and_reaches_online() {
+    let scratch = tempfile::tempdir().unwrap();
+    let java_cache = scratch.path().join("java");
+    std::fs::create_dir_all(&java_cache).unwrap();
+    let env = Arc::new(WindowsSafeEnv(HostEnvironment {
+        java_cache: java_cache.clone(),
+    }));
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("servers")).unwrap();
+    let servers = std::fs::canonicalize(temp.path().join("servers")).unwrap();
+    let installer = Arc::new(vesta_control::machine::creates::LiveCreateInstaller::new(
+        java_cache, servers,
+    ));
+    let live =
+        Arc::new(vesta_control::machine::creates::LiveCatalogue::open(scratch.path()).unwrap());
+    let host = Host::start(temp, env, Some(installer), None, Some(live));
+    let (_, catalogue) = host.call(
+        "GET",
+        "/v1/host/catalogue/minecraft",
+        Value::Null,
+        &host.owner,
+    );
+    let latest = catalogue["latestStable"].as_str().unwrap().to_owned();
+    let job = host.create_plan(
+        json!({"kind":"new","name":"Original","minecraftVersion":latest,
+        "software":{"kind":"vanilla","build":null,"loaderVersion":null},
+        "gamePort":free_port(),"memoryMiB":1024,"eulaAccepted":false}),
+    );
+    assert_eq!(job["state"], "review", "{job}");
+    let id = job["jobId"].as_str().unwrap().to_owned();
+    let (status, accepted) = host.create_apply(&job, "real-original", json!({}));
+    assert_eq!(status, 202, "{accepted}");
+    let original = accepted["serverId"].as_str().unwrap().to_owned();
+    let ready = host.create_wait(&id, Duration::from_secs(900), |j| j["state"] != "applying");
+    assert_eq!(ready["state"], "ready", "{ready}");
+    assert_eq!(host.job_action(&id, "start").0, 202);
+    let online = host.create_wait(&id, Duration::from_secs(600), |j| j["state"] != "starting");
+    assert_eq!(online["state"], "online", "{online}");
+    stop_server(&host, &original, "real-original-stop-0001");
+
+    let dir = host.temp.path().join("servers").join(&original);
+    assert!(
+        dir.join("game/world/level.dat").is_file(),
+        "world generated"
+    );
+    let snapshot = backup_folder(&dir);
+    let origin: Uuid = original.parse().unwrap();
+    let owner = host
+        .state
+        .device(host.devices.0)
+        .unwrap()
+        .unwrap()
+        .account_id;
+    let mut entry = host.state.server(origin).unwrap().unwrap();
+    entry.state = vesta_control::machine::registry::ServerState::Deleted;
+    let revision = host.state.snapshot().unwrap().revision;
+    host.state
+        .update_server(
+            vesta_control::machine::owners::Actor::Account(owner),
+            &entry,
+            revision,
+        )
+        .unwrap();
+
+    let sources = restore_sources(&host);
+    let source = sources
+        .iter()
+        .find(|s| s["sourceId"] == format!("{}{snapshot}", origin.simple()))
+        .expect("the deleted server's backup")
+        .clone();
+    assert_eq!(source["label"], "Original");
+    assert_eq!(source["minecraftVersion"], latest.as_str());
+    let job = host.create_plan(restore_body(
+        "Restored Real",
+        source["sourceId"].as_str().unwrap(),
+        free_port(),
+    ));
+    assert_eq!(job["state"], "review", "{job}");
+    assert_eq!(job["review"]["warnings"], json!([]));
+    let id = job["jobId"].as_str().unwrap().to_owned();
+    let (status, accepted) = host.create_apply(&job, "real-restore", json!({}));
+    assert_eq!(status, 202, "{accepted}");
+    let restored = accepted["serverId"].as_str().unwrap().to_owned();
+    let ready = host.create_wait(&id, Duration::from_secs(900), |j| j["state"] != "applying");
+    assert_eq!(ready["state"], "ready", "{ready}");
+    assert_eq!(host.job_action(&id, "start").0, 202);
+    let online = host.create_wait(&id, Duration::from_secs(600), |j| j["state"] != "starting");
+    if online["state"] != "online" {
+        let dir = host.temp.path().join("servers").join(&restored);
+        eprintln!(
+            "launch.toml:\n{}\nlatest.log:\n{}",
+            std::fs::read_to_string(dir.join("private/launch.toml")).unwrap_or_default(),
+            std::fs::read_to_string(dir.join("game/logs/latest.log")).unwrap_or_default()
+        );
+    }
+    assert_eq!(online["state"], "online", "{online}");
+    let card = host
+        .servers()
+        .into_iter()
+        .find(|s| s["serverId"] == restored.as_str())
+        .unwrap();
+    assert_eq!(card["software"]["kind"], "vanilla");
+    stop_server(&host, &restored, "real-restore-stop-0001");
+}
+
+/// A real loader-less Modrinth pack ("Miami Beach", a server-only map pack
+/// for Vanilla 1.21.11, about 94 MB): created on Vanilla with its files, one
+/// software install, then online.
+#[test]
+#[ignore = "downloads Java, Vanilla and a real Modrinth map pack, then runs the server"]
+fn real_loader_less_modrinth_pack_creates_on_vanilla_and_reaches_online() {
+    let scratch = tempfile::tempdir().unwrap();
+    let java_cache = scratch.path().join("java");
+    std::fs::create_dir_all(&java_cache).unwrap();
+    let env = Arc::new(WindowsSafeEnv(HostEnvironment {
+        java_cache: java_cache.clone(),
+    }));
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("servers")).unwrap();
+    let servers = std::fs::canonicalize(temp.path().join("servers")).unwrap();
+    let installer = Arc::new(vesta_control::machine::creates::LiveCreateInstaller::new(
+        java_cache, servers,
+    ));
+    let live =
+        Arc::new(vesta_control::machine::creates::LiveCatalogue::open(scratch.path()).unwrap());
+    let host = Host::start(temp, env, Some(installer), None, Some(live));
+    let job = host.create_plan(json!({"kind":"modpack","name":"Beach Real",
+        "source":{"kind":"provider","provider":"modrinth","projectId":"IswAxbxA","versionId":"cI7lkHeh"},
+        "gamePort":free_port(),"memoryMiB":2048,"eulaAccepted":false}));
+    assert_eq!(job["state"], "review", "{job}");
+    let summary = &job["review"]["summary"];
+    assert_eq!(summary["software"]["kind"], "vanilla");
+    assert_eq!(summary["pack"]["loader"], "vanilla");
+    assert_eq!(summary["minecraftVersion"], "1.21.11");
+    let id = job["jobId"].as_str().unwrap().to_owned();
+    let (status, accepted) = host.create_apply(&job, "real-vanilla-pack", json!({}));
+    assert_eq!(status, 202, "{accepted}");
+    let server = accepted["serverId"].as_str().unwrap().to_owned();
+    let ready = host.create_wait(&id, Duration::from_secs(1800), |j| j["state"] != "applying");
+    assert_eq!(ready["state"], "ready", "{ready}");
+    host.router
+        .import_worker(server.parse().unwrap())
+        .expect("worker");
+    let software = software_status(&host, &server);
+    assert_eq!(software["revision"], 0, "{software}");
+    assert_eq!(software["current"]["software"], "vanilla", "{software}");
+    assert_eq!(host.job_action(&id, "start").0, 202);
+    let online = host.create_wait(&id, Duration::from_secs(600), |j| j["state"] != "starting");
+    if online["state"] != "online" {
+        let dir = host.temp.path().join("servers").join(&server);
+        eprintln!(
+            "latest.log:\n{}",
+            std::fs::read_to_string(dir.join("game/logs/latest.log")).unwrap_or_default()
+        );
+    }
+    assert_eq!(online["state"], "online", "{online}");
+    stop_server(&host, &server, "real-vanilla-pack-stop-0001");
 }

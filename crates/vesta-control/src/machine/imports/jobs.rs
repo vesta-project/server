@@ -1795,6 +1795,12 @@ pub use modpack::{
     UPLOAD_TTL_MS, UploadAccepted,
 };
 
+#[path = "restore.rs"]
+mod restore;
+pub use restore::{
+    RestorePrivate, RestoreServerRequest, RestoreSoftware, RestoreSource, RestoreSourceRequest,
+};
+
 #[cfg(test)]
 #[path = "jobs_tests.rs"]
 mod tests;

@@ -9,7 +9,8 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 pub use super::imports::jobs::{
     CreateApplyRequest, CreateJob, CreateReview, CreateRuntime, CreateSummary, CreateUpload,
-    ModpackServerRequest, NewServerRequest, PackSourceRequest, ReviewRuntime, ServerFacts,
+    ModpackServerRequest, NewServerRequest, PackSourceRequest, RestoreServerRequest, RestoreSource,
+    ReviewRuntime, ServerFacts,
     SoftwareChoice, SummarySoftware, UploadAccepted,
 };
 pub use crate::packs::workspace::{CreatePackIssue, CreatePackReview};

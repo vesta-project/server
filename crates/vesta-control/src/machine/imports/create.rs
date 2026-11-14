@@ -117,7 +117,37 @@ pub(super) struct CreatePrivate {
     /// The reviewed pack (modpack plans only).
     #[serde(default)]
     pack: Option<super::modpack::PackPrivate>,
+    /// The reviewed backup snapshot (restore plans only).
+    #[serde(default)]
+    pub(super) restore: Option<super::restore::RestorePrivate>,
     plan_hash: String,
+}
+impl CreatePrivate {
+    /// A sealed restore plan: no software preview, the planned Java and the
+    /// reviewed snapshot, bound to the review by the plan hash.
+    pub(super) fn sealed_restore(
+        binding: &OwnerBinding,
+        review: &CreateReview,
+        java: ReviewRuntime,
+        restore: super::restore::RestorePrivate,
+    ) -> JobResult<Self> {
+        let private = Self {
+            preview: None,
+            experimental: false,
+            mojang_sha1_accepted: false,
+            java,
+            pack: None,
+            restore: Some(restore),
+            plan_hash: String::new(),
+        };
+        Ok(Self {
+            plan_hash: create_plan_hash(binding, review, &private)?,
+            ..private
+        })
+    }
+    pub(super) fn java(&self) -> &ReviewRuntime {
+        &self.java
+    }
 }
 
 /// Facts about a committed server for the owner's server list.
@@ -260,6 +290,9 @@ fn create_plan_hash(
         // Only modpack plans carry it, so earlier plans keep their hash.
         bound["pack"] = serde_json::to_value(pack).map_err(|_| JobError::UNAVAILABLE)?;
     }
+    if let Some(restore) = &private.restore {
+        bound["restore"] = serde_json::to_value(restore).map_err(|_| JobError::UNAVAILABLE)?;
+    }
     Ok(hex::encode(Sha256::digest(
         serde_json::to_vec(&bound).map_err(|_| JobError::UNAVAILABLE)?,
     )))
@@ -349,7 +382,11 @@ impl ImportJobs {
         })?;
         let value: serde_json::Value =
             serde_json::from_str(&raw).map_err(|_| JobError::UNAVAILABLE)?;
-        let outcome = if value["kind"] == "modpack" {
+        let outcome = if value["kind"] == "restore" {
+            let request: super::restore::RestoreServerRequest =
+                serde_json::from_value(value).map_err(|_| JobError::UNAVAILABLE)?;
+            self.compute_restore_plan(binding, &request)
+        } else if value["kind"] == "modpack" {
             let request: super::modpack::ModpackServerRequest =
                 serde_json::from_value(value).map_err(|_| JobError::UNAVAILABLE)?;
             self.compute_modpack_plan(binding, &request, installer, catalogue)
@@ -606,6 +643,7 @@ impl ImportJobs {
                 jdk: source_built,
             },
             pack: pack.map(|p| p.private),
+            restore: None,
             plan_hash: String::new(),
         };
         let private = CreatePrivate {
@@ -754,15 +792,19 @@ impl ImportJobs {
         })?;
         let server_id = review.summary.destination.server_id;
         if Kind::Create.cancellable(&phase)
-            && let Err(outcome) = self.create_install(
-                binding,
-                job_id,
-                &review,
-                &private,
-                (eula_ms, &eula_account),
-                installer,
-                &flag,
-            )
+            && let Err(outcome) = if private.restore.is_some() {
+                self.restore_install(job_id, &review, &private, (eula_ms, &eula_account), &flag)
+            } else {
+                self.create_install(
+                    binding,
+                    job_id,
+                    &review,
+                    &private,
+                    (eula_ms, &eula_account),
+                    installer,
+                    &flag,
+                )
+            }
         {
             self.settle_create(job_id, server_id, outcome)?;
             return self.create_status(binding, job_id);
@@ -1138,9 +1180,11 @@ impl ImportJobs {
                         continue;
                     };
                     let s = review.summary;
+                    // A restore of a backup whose facts were unknown says so.
                     ServerFacts {
-                        software: Some((s.software.kind, s.software.version)),
-                        minecraft_version: Some(s.minecraft_version),
+                        software: (s.software.kind != "unknown")
+                            .then_some((s.software.kind, s.software.version)),
+                        minecraft_version: Some(s.minecraft_version).filter(|v| !v.is_empty()),
                     }
                 } else {
                     let Ok(review) = serde_json::from_str::<Review>(&review) else {

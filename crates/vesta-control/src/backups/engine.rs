@@ -370,6 +370,84 @@ impl Engine {
             .collect())
     }
 
+    /// Restore points: snapshots promoted into a profile or kept as pre-restore
+    /// safety snapshots (never unpromoted candidates or rejected ones), oldest
+    /// first, with their time in milliseconds.
+    pub fn restore_points(&self) -> Result<Vec<(Snapshot, i64)>> {
+        self.require_initialized()?;
+        Ok(self
+            .all()?
+            .into_iter()
+            .filter(|(_, record)| {
+                record
+                    .tags
+                    .iter()
+                    .any(|t| t.starts_with(PROFILE_PREFIX) || t.starts_with(SAFETY_PREFIX))
+            })
+            .map(|(id, record)| {
+                (
+                    Snapshot {
+                        id,
+                        time: rfc3339(record.time_ms),
+                        tags: record.tags,
+                    },
+                    record.time_ms,
+                )
+            })
+            .collect())
+    }
+
+    /// Every file of a snapshot (`/`-separated path and size) from its manifest.
+    pub fn snapshot_files(&self, snapshot: &str) -> Result<Vec<(String, u64)>> {
+        Ok(self
+            .manifest(snapshot)?
+            .files
+            .into_iter()
+            .map(|f| (f.path, f.size))
+            .collect())
+    }
+
+    /// [`Self::restore`] of a whole snapshot into an empty `target`, stopping
+    /// cooperatively before any file once `stop` answers true (`Ok(false)`),
+    /// and reporting restored bytes. Every chunk is re-hashed and every size
+    /// checked: a corrupt or incomplete repository is `Corrupt`.
+    pub fn restore_cancellable(
+        &self,
+        snapshot: &str,
+        target: &Path,
+        stop: &dyn Fn() -> bool,
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<bool> {
+        let manifest = self.manifest(snapshot)?;
+        let total = manifest
+            .files
+            .iter()
+            .fold(0u64, |sum, f| sum.saturating_add(f.size));
+        for dir in &manifest.dirs {
+            fs::create_dir_all(safe_join(target, dir)?).map_err(|_| EngineError::Failed)?;
+        }
+        let mut done = 0u64;
+        for file in &manifest.files {
+            if stop() {
+                return Ok(false);
+            }
+            let path = safe_join(target, &file.path)?;
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|_| EngineError::Failed)?;
+            }
+            let mut out = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map_err(|_| EngineError::Failed)?;
+            self.write_restored_file(file, &mut out)?;
+            out.sync_all().map_err(|_| EngineError::Failed)?;
+            done = done.saturating_add(file.size);
+            progress(done, total);
+        }
+        Ok(true)
+    }
+
     /// Back up `root`. Files unchanged since the newest snapshot tagged `parent_tag`
     /// (same size and modification time) reuse its chunks without being read.
     pub fn backup(

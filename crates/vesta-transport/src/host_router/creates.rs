@@ -17,9 +17,21 @@ pub(super) fn dispatch(
     headers: &http::HeaderMap,
     bytes: &[u8],
 ) -> Reply {
-    // Restore is not built yet: 501 so the launcher can hide it.
     if path == "/v1/host/creates/restore-sources" {
-        return failure(StatusCode::NOT_IMPLEMENTED, "not_supported_yet");
+        if method != Method::GET || query.is_some() {
+            return failure(StatusCode::NOT_FOUND, "not_found");
+        }
+        let Some(jobs) = router.imports() else {
+            return failure(StatusCode::SERVICE_UNAVAILABLE, "creates_unavailable");
+        };
+        let binding = match owner_binding(router, device) {
+            Ok(b) => b,
+            Err(e) => return e,
+        };
+        return match jobs.restore_sources(&binding) {
+            Ok(sources) => routes::json(json!({"sources": sources})),
+            Err(e) => job_failure(e),
+        };
     }
     // POST uploads stream through `Application::create_upload`.
     if path == "/v1/host/creates/uploads" {
@@ -84,13 +96,9 @@ fn job_routes(
     headers: &http::HeaderMap,
     bytes: &[u8],
 ) -> Reply {
-    let binding = OwnerBinding {
-        host_id: match router.identity.state.snapshot() {
-            Ok(s) => s.host_id.to_string(),
-            Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
-        },
-        account_id: device.account_id.to_string(),
-        device_id: device.device_id.to_string(),
+    let binding = match owner_binding(router, device) {
+        Ok(b) => b,
+        Err(e) => return e,
     };
     macro_rules! tryjob {
         ($v:expr) => {
@@ -111,16 +119,18 @@ fn job_routes(
         };
         let kind = value.get("kind").and_then(serde_json::Value::as_str);
         match kind {
-            Some("new" | "modpack") => {}
-            Some("restore") => {
-                return failure(StatusCode::NOT_IMPLEMENTED, "not_supported_yet");
-            }
+            Some("new" | "modpack" | "restore") => {}
             _ => return failure(StatusCode::BAD_REQUEST, "invalid_request"),
         }
         let Some(service) = service(router) else {
             return failure(StatusCode::SERVICE_UNAVAILABLE, "creates_unavailable");
         };
-        let accepted = if kind == Some("modpack") {
+        let accepted = if kind == Some("restore") {
+            let Ok(request) = serde_json::from_value::<jobs::RestoreServerRequest>(value) else {
+                return failure(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            tryjob!(service.jobs.begin_create_restore(&binding, &request))
+        } else if kind == Some("modpack") {
             let Ok(request) = serde_json::from_value::<jobs::ModpackServerRequest>(value) else {
                 return failure(StatusCode::BAD_REQUEST, "invalid_request");
             };
@@ -257,6 +267,7 @@ fn job_json(job: &jobs::CreateJob) -> serde_json::Value {
 }
 fn job_failure(error: JobError) -> Reply {
     let status = match error.code() {
+        "not_supported_yet" => StatusCode::NOT_IMPLEMENTED,
         "forbidden" => StatusCode::FORBIDDEN,
         "create_job_not_found" => StatusCode::NOT_FOUND,
         "invalid_request" | "eula_required" | "warnings_unacknowledged" => StatusCode::BAD_REQUEST,
@@ -266,4 +277,15 @@ fn job_failure(error: JobError) -> Reply {
         _ => StatusCode::CONFLICT,
     };
     failure(status, error.code())
+}
+
+fn owner_binding(router: &HostRouter, device: &Device) -> Result<OwnerBinding, Reply> {
+    Ok(OwnerBinding {
+        host_id: match router.identity.state.snapshot() {
+            Ok(s) => s.host_id.to_string(),
+            Err(_) => return Err(failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable")),
+        },
+        account_id: device.account_id.to_string(),
+        device_id: device.device_id.to_string(),
+    })
 }

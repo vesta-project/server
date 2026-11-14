@@ -113,6 +113,8 @@ struct FakeEnv {
     /// Milliseconds to pause before each copied entry (slow copy for cancel).
     delay_ms: AtomicU64,
     java: PathBuf,
+    /// While set, making Java available waits (restore cancel/restart tests).
+    java_gate: std::sync::atomic::AtomicBool,
 }
 impl ImportEnvironment for FakeEnv {
     fn processes(&self, _: &[PathBuf]) -> (Vec<ProcessEvidence>, &'static str) {
@@ -131,6 +133,9 @@ impl ImportEnvironment for FakeEnv {
         vesta_control::java::plan_from(&[], version)
     }
     fn ensure_java(&self, _: &ReviewRuntime, _: &[PathBuf]) -> Result<PathBuf, &'static str> {
+        while self.java_gate.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         Ok(self.java.clone())
     }
     fn before_copy_entry(&self, _: u64) {
