@@ -1,4 +1,4 @@
-# Host protocol v1
+ The read-only projection GET `/api/v3/manage/session` remains as GET `/v1/servers/{serverId}/manage/session` (the caller's server id, principal, roles and capabilities from the trusted server subject; see LAUNCHER_GUIDE).# Host protocol v1
 
 Phase 0 contract, 2026-11-13. Normative words MUST/SHOULD apply to new implementations, not claims about existing code. Freeze this document with [identity](identity.md), [worker](worker.md), and [import](import.md). No migration or old route compatibility is required. Feature payloads continue using existing protocol versions; host routing version is independent.
 

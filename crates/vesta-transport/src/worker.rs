@@ -58,6 +58,25 @@ fn dispatch_inner(
     {
         return crate::manage::error(StatusCode::FORBIDDEN, "management_forbidden");
     }
+    // The caller's own projection on this server (server, principal, roles and
+    // granted capabilities), computed from the trusted subject the host just
+    // authorized, in the same shape as the per-server session projection.
+    if suffix == "session" {
+        if *request.method != http::Method::GET
+            || request.query.is_some()
+            || !request.body.is_empty()
+        {
+            return crate::manage::error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        return match host.with_policy(|policy| {
+            host.management()
+                .session_projection("trusted-worker", policy)
+        }) {
+            Ok(Ok(value)) => crate::manage::ok(value),
+            Ok(Err(e)) => crate::manage::management_error(e),
+            Err(_) => crate::manage::error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
+        };
+    }
     let path = format!("/api/v3/manage/{suffix}");
     if !crate::manage::implemented(&path) {
         return crate::manage::error(StatusCode::NOT_FOUND, "not_found");

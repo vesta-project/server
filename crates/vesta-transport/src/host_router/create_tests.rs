@@ -1691,3 +1691,86 @@ fn real_modrinth_fabric_modpack_create_reaches_online() {
         std::thread::sleep(Duration::from_secs(1));
     }
 }
+
+/// The caller's own projection on one server under the host model
+/// (`manage/session`), from the trusted server subject: owners get every
+/// grantable capability, server roles exactly their role's grants, and a
+/// caller without a role on the server gets 404.
+#[test]
+fn server_session_projects_the_callers_roles_and_capabilities() {
+    use vesta_control::identity::BuiltinRole;
+    use vesta_control::machine::owners::{Actor, ServerRole as HostServerRole};
+    let host = create_host(Arc::new(FakeInstaller::default()));
+    let job = host.create_plan(new_body("Projected", Some(25660), Some(1024)));
+    let (status, accepted) = host.create_apply(&job, "projected-key", json!({}));
+    assert_eq!(status, 202, "{accepted}");
+    let id = accepted["jobId"].as_str().unwrap();
+    let ready = host.create_wait(id, Duration::from_secs(60), |j| j["state"] != "applying");
+    assert_eq!(ready["state"], "ready", "{ready}");
+    let server: Uuid = accepted["serverId"].as_str().unwrap().parse().unwrap();
+    host.router.import_worker(server).expect("worker");
+    let path = format!("/v1/servers/{server}/manage/session");
+    let expected = |role: BuiltinRole| -> Vec<String> {
+        let mut caps: Vec<String> = role
+            .capabilities()
+            .iter()
+            .filter(|c| !c.local_only())
+            .map(|c| c.id().to_owned())
+            // Identity administration belongs to the host, never to a server.
+            .filter(|c| {
+                ![
+                    "roles.",
+                    "invitations.",
+                    "devices.",
+                    "credentials.",
+                    "security.",
+                    "access-sources.",
+                    "principals.manage",
+                ]
+                .iter()
+                .any(|p| c.starts_with(p))
+            })
+            .collect();
+        caps.sort();
+        caps
+    };
+    let check = |auth: &str, role: BuiltinRole| {
+        let (status, view) = host.call("GET", &path, Value::Null, auth);
+        assert_eq!(status, 200, "{view}");
+        let view = if view["data"].is_object() { view["data"].clone() } else { view };
+        assert_eq!(view["server_id"], json!(server), "{view}");
+        assert!(view["principal_id"].as_str().is_some_and(|p| !p.is_empty()), "{view}");
+        let roles: Vec<&str> = view["roles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert!(roles.contains(&role.id()), "{view}");
+        let mut caps: Vec<String> = view["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c.as_str().unwrap().to_owned())
+            .collect();
+        caps.sort();
+        assert_eq!(caps, expected(role), "{view}");
+    };
+    check(&host.owner, BuiltinRole::Owner);
+    // No role on this server: the server does not exist for this caller.
+    let (status, _) = host.call("GET", &path, Value::Null, &host.stranger);
+    assert_eq!(status, 404);
+    let stranger = host.state.device(host.devices.1).unwrap().unwrap().account_id;
+    for (role, builtin) in [
+        (HostServerRole::Admin, BuiltinRole::Administrator),
+        (HostServerRole::Player, BuiltinRole::PackUser),
+    ] {
+        let revision = host.state.snapshot().unwrap().revision;
+        host.state
+            .set_server_role(Actor::LocalRecovery, server, stranger, Some(role), revision)
+            .unwrap();
+        check(&host.stranger, builtin);
+    }
+    // Only GET, with no query or body.
+    assert_eq!(host.call("POST", &path, json!({}), &host.owner).0, 400);
+}

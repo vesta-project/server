@@ -107,6 +107,18 @@ POST `/v1/servers/{serverId}/pack/ticket` returns a 30-second, single-use ticket
 and prefixed artifactUrl; GET that URL with `Authorization: Bearer <ticket>`.
 A current host session may also authenticate the artifact GET directly.
 
+Your own permissions on one server: GET `/v1/servers/{serverId}/manage/session`
+(no body or query) returns
+`{server_id,principal_id,device_id,roles:[{id}],capabilities:[id],session_expires_at_ms}`,
+the same shape as the old per-server session projection, computed from the
+trusted server subject the host authorized for this request. Owners and the
+primary owner hold role `owner` with every capability of the server's services;
+server roles get exactly their grants (Admin as `administrator`, Moderator as
+`moderator`, Player as `pack-user`). Identity administration (roles, devices,
+invitations, credentials) is never a server capability; it lives on host
+routes. A caller with no role on the server gets 404 `not_found`. Use this
+instead of client-side role presets.
+
 ## Realtime for this slice
 
 The host multiplexer is deferred (authenticated GET `/v1/host/realtime` returns
