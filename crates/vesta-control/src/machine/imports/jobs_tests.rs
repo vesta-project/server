@@ -786,3 +786,47 @@ fn create_defaults_include_pending_import_name_port_and_memory_reservations() {
     assert_eq!(port.game_port, Some(25565));
     assert_eq!(memory.reserved_mib, 0);
 }
+
+/// Startup removes what settled, never-committed jobs left on disk, and
+/// nothing else: not interrupted jobs (resume needs them), not registered
+/// servers, not folders no job knows.
+#[test]
+fn startup_sweeps_destinations_of_abandoned_jobs_only() {
+    let mut f = Fixture::new();
+    let servers = f.temp.path().join("servers");
+    let mut ids = Vec::new();
+    for (index, (kind, state)) in [
+        ("create", "failed"),
+        ("create", "cancelled"),
+        ("import", "failed"),
+        ("create", "interrupted"),
+        ("create", "ready"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let server = Uuid::new_v4();
+        fs::create_dir_all(servers.join(server.to_string()).join("staging/world")).unwrap();
+        fs::create_dir_all(servers.join(server.to_string()).join("install")).unwrap();
+        f.state
+            .write(|c| {
+                c.execute(
+                    "INSERT INTO machine_import_jobs(job_id,account_id,device_id,state,phase,request,server_id,kind,created_ms,updated_ms) VALUES(?1,'a','d',?2,'resolving','{}',?3,?4,0,0)",
+                    params![format!("job-{index}"), state, server.to_string(), kind],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        ids.push(server);
+    }
+    let unknown = servers.join(Uuid::new_v4().to_string());
+    fs::create_dir_all(&unknown).unwrap();
+    f.reopen();
+    let dir = |i: usize| servers.join(ids[i].to_string());
+    assert!(!dir(0).exists() && !dir(1).exists(), "abandoned creates removed");
+    // The import's staging copy goes; anything else it holds stays.
+    assert!(!dir(2).join("staging").exists() && dir(2).join("install").exists());
+    assert!(dir(3).join("staging").exists(), "interrupted kept for resume");
+    assert!(dir(4).exists(), "a committed job keeps its server");
+    assert!(unknown.exists(), "unknown folders are never touched");
+}

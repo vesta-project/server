@@ -445,7 +445,7 @@ impl ImportJobs {
             )?;
             Ok(())
         })?;
-        Ok(Self(Arc::new(Inner {
+        let jobs = Self(Arc::new(Inner {
             host,
             browser,
             servers,
@@ -453,7 +453,42 @@ impl ImportJobs {
             cancels: Mutex::new(HashMap::new()),
             running: Mutex::new(HashSet::new()),
             uploading: Mutex::new(HashSet::new()),
-        })))
+        }));
+        jobs.sweep_abandoned();
+        Ok(jobs)
+    }
+
+    /// Startup: a job that settled without committing (failed, cancelled or
+    /// blocked) owns nothing on disk any more. Its destination is removed if a
+    /// crash or I/O error left it behind: a create's whole never-registered
+    /// directory, an import's staging copy (a quarantined copy is kept for the
+    /// owner). Only directories named by such a job and never registered are
+    /// touched; interrupted jobs keep theirs for resume, unknown folders stay.
+    fn sweep_abandoned(&self) {
+        let Ok(rows) = self.read(|c| {
+            let mut stmt = c.prepare(
+                "SELECT kind,server_id FROM machine_import_jobs WHERE server_id IS NOT NULL AND state IN ('failed','cancelled','blocked')",
+            )?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }) else {
+            return;
+        };
+        for (kind, server) in rows {
+            let Ok(server) = Uuid::parse_str(&server) else {
+                continue;
+            };
+            if !self.server_dir(server).exists() || !matches!(self.0.host.server(server), Ok(None)) {
+                continue;
+            }
+            if kind == "create" {
+                self.remove_unregistered(server);
+            } else {
+                self.remove_staging(server);
+            }
+        }
     }
     pub fn servers_root(&self) -> &Path {
         &self.0.servers
