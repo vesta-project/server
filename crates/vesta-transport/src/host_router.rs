@@ -149,17 +149,43 @@ impl HostRouter {
     /// Finish installation without requiring another launcher action.
     fn start_installed(&self, owner: &OwnerBinding, id: &str, create: bool) {
         let Some(jobs) = self.imports() else { return };
-        let status = if create { jobs.create_status(owner, id).map(|j| (j.state, j.error, j.server_id)) } else { jobs.status(owner, id).map(|j| (j.state, j.error, j.server_id)) };
-        let Ok((state, error, server)) = status else { return };
-        if state != "ready" || error.is_some() { return; }
+        let status = if create {
+            jobs.create_status(owner, id)
+                .map(|j| (j.state, j.error, j.server_id))
+        } else {
+            jobs.status(owner, id)
+                .map(|j| (j.state, j.error, j.server_id))
+        };
+        let Ok((state, error, server)) = status else {
+            return;
+        };
+        if state != "ready" || error.is_some() {
+            return;
+        }
         let Some(server) = server else { return };
-        let Ok(handle) = self.import_worker(server) else { let _ = jobs.installed_start_failed(id); return };
-        let started = if create { jobs.create_start(owner, id, &handle).map(|_| ()) } else { jobs.start(owner, id, &handle).map(|_| ()) };
-        if started.is_err() { let _ = jobs.installed_start_failed(id); return; }
+        let Ok(handle) = self.import_worker(server) else {
+            let _ = jobs.installed_start_failed(id);
+            return;
+        };
+        let started = if create {
+            jobs.create_start(owner, id, &handle).map(|_| ())
+        } else {
+            jobs.start(owner, id, &handle).map(|_| ())
+        };
+        if started.is_err() {
+            let _ = jobs.installed_start_failed(id);
+            return;
+        }
         loop {
-            let next = if create { jobs.create_readiness(owner, id, &handle).map(|j| j.state) } else { jobs.readiness(owner, id, &handle).map(|j| j.state) };
+            let next = if create {
+                jobs.create_readiness(owner, id, &handle).map(|j| j.state)
+            } else {
+                jobs.readiness(owner, id, &handle).map(|j| j.state)
+            };
             self.refresh_server_states();
-            if !next.is_ok_and(|state| state == "starting") { break; }
+            if !next.is_ok_and(|state| state == "starting") {
+                break;
+            }
             std::thread::sleep(Duration::from_millis(250));
         }
     }
@@ -742,6 +768,7 @@ impl Application {
                     | "/v1/host/accounts/complete"
                     | "/v1/host/claim"
                     | "/v1/host/links"
+                    | "/v1/host/invites/redeem"
                     | "/v1/host/sign-in"
             ) {
                 let Some(c) = connection.as_ref() else {
@@ -752,6 +779,9 @@ impl Application {
                         output(identity.pake_start(c, peer.ip(), input!()))
                     }
                     ("/v1/host/pake/finish", _) => output(identity.pake_finish(c, input!())),
+                    ("/v1/host/invites/redeem", None) => {
+                        output(identity.redeem_invite(c, peer.ip(), input!()))
+                    }
                     ("/v1/host/sign-in", None) => output(identity.sign_in(c, input!())),
                     ("/v1/host/accounts/challenge", None) => {
                         output(identity.sign_in_challenge(c, peer.ip(), input!()))
@@ -825,7 +855,9 @@ impl Application {
         if method == Method::GET && path == "/v1/host/servers" {
             self.router.refresh_server_states();
             return match state.visible_servers(device.account_id) {
-                Ok(entries) => routes::json(json!({"servers":self.router.server_cards(entries),"nextCursor":null})),
+                Ok(entries) => routes::json(
+                    json!({"servers":self.router.server_cards(entries),"nextCursor":null}),
+                ),
                 Err(_) => failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable"),
             };
         }
@@ -842,7 +874,18 @@ impl Application {
             {
                 return failure(StatusCode::NOT_FOUND, "not_found");
             }
-            if let Some(reply) = access::dispatch(&self.router, &device, id, method, suffix, query, bytes) { return reply; }
+            if let Some(reply) = access::dispatch(
+                &self.router,
+                &device,
+                id,
+                method,
+                suffix,
+                query,
+                bytes,
+                &self.tls.fingerprint().unwrap_or_default(),
+            ) {
+                return reply;
+            }
             let worker = self
                 .router
                 .workers
