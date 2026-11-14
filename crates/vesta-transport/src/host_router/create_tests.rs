@@ -1841,13 +1841,12 @@ fn server_session_projects_the_callers_roles_and_capabilities() {
             // Identity administration belongs to the host, never to a server.
             .filter(|c| {
                 ![
-                    "roles.",
-                    "invitations.",
+                    "roles.create",
+                    "roles.manage",
                     "devices.",
                     "credentials.",
                     "security.",
                     "access-sources.",
-                    "principals.manage",
                 ]
                 .iter()
                 .any(|p| c.starts_with(p))
@@ -1985,7 +1984,8 @@ fn restore_lists_detached_backups_and_restores_one_as_a_new_server() {
         Duration::from_secs(60),
         |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()),
     );
-    assert_eq!(ready["state"], "online", "{ready}");
+    assert_eq!(ready["state"], "ready", "{ready}");
+    assert_eq!(ready["error"], "start_failed");
     let live: Uuid = accepted["serverId"].as_str().unwrap().parse().unwrap();
     let live_dir = host.temp.path().join("servers").join(live.to_string());
     std::fs::write(live_dir.join("game/server.jar"), version_jar("26.1")).unwrap();
@@ -2077,7 +2077,8 @@ fn restore_lists_detached_backups_and_restores_one_as_a_new_server() {
     assert_eq!(status, 202, "{accepted}");
     let id = accepted["jobId"].as_str().unwrap();
     let ready = host.create_wait(id, Duration::from_secs(60), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
-    assert_eq!(ready["state"], "online", "{ready}");
+    assert_eq!(ready["state"], "ready", "{ready}");
+    assert_eq!(ready["error"], "start_failed");
     let server = accepted["serverId"].as_str().unwrap();
     let dir = host.temp.path().join("servers").join(server);
     assert_eq!(
@@ -2415,7 +2416,8 @@ fn restore_cancel_and_resume_leave_no_duplicates() {
     let (status, resumed) = host.job_action(&id, "resume");
     assert_eq!(status, 202, "{resumed}");
     let ready = host.create_wait(&id, Duration::from_secs(60), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
-    assert_eq!(ready["state"], "online", "{ready}");
+    assert_eq!(ready["state"], "ready", "{ready}");
+    assert_eq!(ready["error"], "start_failed");
     let servers = host.servers();
     assert_eq!(servers.len(), 1);
     assert_eq!(servers[0]["serverId"], accepted["serverId"]);

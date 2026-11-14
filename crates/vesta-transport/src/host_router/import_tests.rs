@@ -305,7 +305,8 @@ impl Host {
         std::fs::write(path, bytes).unwrap();
     }
     fn call(&self, method: &str, path: &str, body: Value, auth: &str) -> (u16, Value) {
-        self.wire().request(method, path, body, Some(auth))
+        let until=std::time::Instant::now()+Duration::from_secs(65);
+        loop { let reply=self.wire().request(method,path,body.clone(),Some(auth)); if reply.0!=429 || std::time::Instant::now()>=until {return reply;} std::thread::sleep(Duration::from_secs(2)); }
     }
     fn token(&self, folder: &str) -> String {
         let (status, r) = self.call(
@@ -348,7 +349,7 @@ impl Host {
         }
     }
     fn plan(&self, folder: &str, extra: Value) -> Value {
-        let mut body = json!({"folderToken":self.token(folder),"name":"Survival","gamePort":null,"memoryMiB":1024,"launchChoice":null,"minecraftVersion":null});
+        let mut body = json!({"folderToken":self.token(folder),"name":"Survival","gamePort":free_port(),"memoryMiB":1024,"launchChoice":null,"minecraftVersion":null});
         for (k, v) in extra.as_object().unwrap() {
             body[k] = v.clone();
         }
