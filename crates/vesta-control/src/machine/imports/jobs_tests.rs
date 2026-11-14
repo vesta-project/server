@@ -168,6 +168,10 @@ impl Fixture {
     pub fn put(&self, relative: &str, text: &str) {
         let path = self.temp.path().join("imports").join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let text = if relative.ends_with("server.properties") {
+            let port = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap().local_addr().unwrap().port();
+            text.replace("server-port=25565", &format!("server-port={port}"))
+        } else { text.to_owned() };
         fs::write(path, text).unwrap();
     }
     pub fn vanilla(&self) {
