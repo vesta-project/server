@@ -229,7 +229,7 @@ impl HostAccounts {
         self.pending
             .get(challenge_id)
             .filter(|p| {
-                p.scope.purpose == AccountPurpose::Signin && p.deadline.live(self.state.now_ms())
+                matches!(p.scope.purpose, AccountPurpose::Signin | AccountPurpose::Invite) && p.deadline.live(self.state.now_ms())
             })
             .map(|p| p.scope.clone())
     }

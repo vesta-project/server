@@ -342,6 +342,18 @@ impl HostState {
             )
         })
     }
+    pub fn server_access(&self, actor: Actor, server: Uuid) -> Result<Vec<(Uuid, EffectiveRole, Option<String>)>> {
+        self.read(|c| {
+            super::registry::require_server(c, server)?;
+            let allowed = match actor { Actor::LocalRecovery => true, Actor::Account(id) => host_role_in(c,id)?.is_some() || super::registry::effective_role_in(c,id,server)? == Some(EffectiveRole::Server(ServerRole::Admin)) };
+            if !allowed { return Err(reject(Code::Forbidden)); }
+            let mut q = c.prepare("SELECT account_id FROM machine_accounts ORDER BY account_id")?;
+            let ids = q.query_map([], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut out = Vec::new();
+            for id in ids { let id = uuid(id)?; if let Some(role) = super::registry::effective_role_in(c,id,server)? { out.push((id,role,account_name_in(c,id)?)); } }
+            Ok(out)
+        })
+    }
     pub fn set_server_role(
         &self,
         actor: Actor,
@@ -356,6 +368,12 @@ impl HostState {
             let authorized=match actor { Actor::LocalRecovery=>true,Actor::Account(id)=> host_role_in(c,id)?.is_some() || super::registry::effective_role_in(c,id,server)?==Some(EffectiveRole::Server(ServerRole::Admin)) };
             if !authorized { return Err(reject(Code::Forbidden)); }
             if !account_exists(c,target)? { return Err(reject(Code::NotFound)); }
+            // Machine ownership cannot be changed through server access, even by owners.
+            if host_role_in(c,target)?.is_some() { return Err(reject(Code::Forbidden)); }
+            let owner = match actor { Actor::LocalRecovery => true, Actor::Account(id) => host_role_in(c,id)?.is_some() };
+            if !owner && (role == Some(ServerRole::Admin) || super::registry::effective_role_in(c,target,server)? == Some(EffectiveRole::Server(ServerRole::Admin))) {
+                return Err(reject(Code::Forbidden));
+            }
             if let Some(role)=role { c.execute("INSERT INTO machine_server_grants(server_id,account_id,role) VALUES(?1,?2,?3) ON CONFLICT(server_id,account_id) DO UPDATE SET role=excluded.role",params![server.to_string(),target.to_string(),role.as_str()])?; }
             else { c.execute("DELETE FROM machine_server_grants WHERE server_id=?1 AND account_id=?2",params![server.to_string(),target.to_string()])?; }
             changed(c,true,"server_role_change",&actor.audit(),&format!("{server}/{target}"),self.now_ms())

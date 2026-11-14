@@ -155,16 +155,12 @@ fn role_permits(role: &ServerRole, capability: Capability) -> bool {
             builtin.capabilities().contains(&capability)
                 && !matches!(
                     capability,
-                    Capability::PrincipalsManage
-                        | Capability::DevicesRevoke
+                    Capability::DevicesRevoke
                         | Capability::RolesCreate
-                        | Capability::RolesAssign
-                        | Capability::RolesRevoke
                         | Capability::CredentialsManage
                         | Capability::SecurityManage
                         | Capability::RolesManage
                         | Capability::AccessSourcesManage
-                        | Capability::InvitationsCreate
                 )
         }
         ServerRole::Moderator => matches!(

@@ -286,3 +286,7 @@ Import stopped-state codes and suggested text:
 Server status `on_agent_start` is `restore_previous` when no stored or host.toml policy was explicitly chosen. This means resume the server's last lifecycle state after an agent restart. Explicit `stay_stopped`, `sleep`, and `start` choices and the local stay-stopped override retain their meaning.
 
 Provider transfers use a 3s connect timeout, 120s idle read timeout, and a bounded overall job deadline. Idempotent metadata GETs retry transient transport/429/5xx failures with backoff. Installer catalogue queries retain their existing sub-15s total budget and persisted catalogue cache; installation metadata and artifacts use the longer job budget. Pack downloads retain destination validation, byte limits and their caller deadline.
+
+### Server access / Vesta Server access
+
+Use per-server manage/users, manage/roles and manage/invitations for the Access tab. Owners listed there cannot be demoted or removed there. Manage users with PUT users/{accountId}/roles using {add:[roleId],remove:[oldRoleId],expected_version:user.version}. Built-in ids are owner, administrator, moderator and player. Devices and access-sources are not_supported at this level; use host device routes in Vesta Server access. Invite proof and redemption details are in README. Generated invites currently need an out-of-band host address (endpoints are empty).

@@ -283,7 +283,7 @@ impl HostIdentity {
         peer: std::net::IpAddr,
         request: AccountChallengeRequest,
     ) -> Result<AccountChallengeResponse> {
-        if request.purpose != AccountPurpose::Signin || request.binding != connection.fingerprint
+        if !matches!(request.purpose, AccountPurpose::Signin | AccountPurpose::Invite) || (request.purpose == AccountPurpose::Signin && request.binding != connection.fingerprint) || (request.purpose == AccountPurpose::Invite && (request.binding.len()!=64 || !request.binding.bytes().all(|b|b.is_ascii_hexdigit())))
         {
             return Err(FAILED);
         }
@@ -291,8 +291,8 @@ impl HostIdentity {
         let scope = AccountScope {
             connection_id: connection.identity_id,
             device_key: request.device_key.clone(),
-            purpose: AccountPurpose::Signin,
-            binding: connection.fingerprint.clone(),
+            purpose: request.purpose,
+            binding: request.binding.clone(),
         };
         lock(&self.accounts)?.challenge(&scope, request)
     }
@@ -305,11 +305,19 @@ impl HostIdentity {
         let scope = accounts
             .pending_sign_in_scope(&request.challenge_id)
             .ok_or(FAILED)?;
-        if scope.connection_id != connection.identity_id || scope.binding != connection.fingerprint
+        if scope.connection_id != connection.identity_id || (scope.purpose == AccountPurpose::Signin && scope.binding != connection.fingerprint)
         {
             return Err(FAILED);
         }
         accounts.complete(&scope, request)
+    }
+    pub fn redeem_invite(&self, connection: &Arc<Connection>, peer: std::net::IpAddr, request: vesta_control::machine::invites::RedeemInvite) -> Result<serde_json::Value> {
+        lock(&self.sign_in_limits)?.admit(peer)?;
+        let (_, binding) = vesta_control::machine::invites::binding(&request.invite)?;
+        let scope=AccountScope { connection_id:connection.identity_id,device_key:request.device_key.clone(),purpose:AccountPurpose::Invite,binding };
+        let (enrollment,server,role)=vesta_control::machine::invites::redeem(&self.state,&mut *lock(&self.accounts)?,&scope,&connection.fingerprint,&request)?;
+        let session=lock(&self.sessions)?.signed_in(&enrollment)?;
+        Ok(serde_json::json!({"hostId":session.host_id,"serverId":server,"role":role,"session":session.session,"expiresAt":session.expires_at,"authGeneration":session.auth_generation}))
     }
     /// Enrolls (or re-confirms) this device for the verified account when the
     /// account already holds a role here, then issues its first session.

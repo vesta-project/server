@@ -363,3 +363,25 @@ fn machine_device_names_are_bounded_and_sanitised() {
     assert_eq!(machine_name(&"\u{e9}".repeat(31)).unwrap().len(), 62);
     assert_eq!(machine_name(&"\u{e9}".repeat(32)), None);
 }
+
+#[test]
+fn machine_invite_redeems_only_on_its_server_and_replay_does_not_spend_a_use() {
+ use super::invites::*;
+ let mut f=fixture(); let mut servers=Vec::new();
+ for port in [32001,32002] {let id=Uuid::new_v4();f.state.register_server(Actor::Account(f.owner),&ServerEntry{server_id:id,name:format!("S {port}"),game_port:port,state:ServerState::Stopped,visibility:Visibility::Private},f.state.snapshot().unwrap().revision).unwrap();servers.push(id);}
+ let issued=issue(&f.state,Actor::Account(f.owner),servers[0],FP,CreateInvite{role:"moderator".into(),expires_minutes:60,multi_use:false,max_uses:None}).unwrap();
+ let invite=issued["invite"].as_str().unwrap();let (_,hash)=binding(invite).unwrap();let key=key(11);let account=Uuid::new_v4();
+ let scope=AccountScope{connection_id:Uuid::new_v4(),device_key:B64.encode(key.public_key().as_ref()),purpose:AccountPurpose::Invite,binding:hash.clone()};
+ for proof in ["proof1","proof2"] {
+  f.accounts.seed_test_proof(proof,&scope,account);
+  let signature=B64.encode(key.sign(&signed_bytes("vesta.host.invite.v1",&json!({"hostId":f.host(),"inviteHash":hash,"accountProofId":proof,"deviceKey":scope.device_key}))).as_ref());
+  let request=RedeemInvite{invite:invite.into(),account_proof_id:proof.into(),device_key:scope.device_key.clone(),device_name:"Guest".into(),signature};
+  redeem(&f.state,&mut f.accounts,&scope,FP,&request).unwrap();
+ }
+ assert_eq!(f.state.effective_role(account,servers[0]).unwrap(),Some(super::owners::EffectiveRole::Server(ServerRole::Moderator)));
+ assert_eq!(f.state.effective_role(account,servers[1]).unwrap(),None);
+ assert!(f.state.host_role(account).unwrap().is_none());
+ revoke(&f.state,Actor::Account(f.owner),servers[1],Uuid::parse_str(issued["id"].as_str().unwrap()).unwrap()).unwrap_err();
+ revoke(&f.state,Actor::Account(f.owner),servers[0],Uuid::parse_str(issued["id"].as_str().unwrap()).unwrap()).unwrap();
+ assert!(list(&f.state,Actor::Account(f.owner),servers[0]).unwrap()["invitations"].as_array().unwrap().is_empty());
+}

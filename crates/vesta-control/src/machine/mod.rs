@@ -10,6 +10,7 @@ pub mod claim;
 pub mod creates;
 pub mod imports;
 pub mod link;
+pub mod invites;
 pub mod recovery;
 pub mod resources;
 pub mod sessions;

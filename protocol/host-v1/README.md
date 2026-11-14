@@ -129,3 +129,11 @@ or unquoted decimal). The signing value is the object specified above, with
 a challenge from POST `/v1/host/ownership/challenge`. Primary account protection
 is enforced again by the durable repository. Signature bytes come from
 `vesta_host_client::requests::signing_bytes`.
+
+## Server access and Vesta Server access
+
+Server access is the per-server users, roles and invitations surface under /v1/servers/{serverId}/manage. Vesta Server access is host ownership and device enrollment/revocation under /v1/host. Machine owners appear as immutable owners of every server. Owners can assign administrator, moderator and player; server administrators can manage only moderators and players, on their server. Moderators, players and strangers cannot administer access. A role removal increments authGeneration; subsequent requests resolve current grants.
+
+GET manage/users, GET manage/roles, PUT manage/users/{accountId}/roles, GET/POST manage/invitations and DELETE manage/invitations/{inviteId} use the inherited api_version 3 envelopes and snake_case fields. User versions are the host revision; stale expected_version fails 412. Roles are fixed; custom role creation is unsupported. Devices, users/{accountId}/devices and access-sources return 404 not_supported and are not advertised. Host devices remain owner-only.
+
+Invite redemption uses POST /v1/host/invites/redeem with invite, accountProofId, deviceKey, signature and optional deviceName. First obtain an account proof with purpose invite and binding SHA-256 hex of exact decoded canonical invite payload. Sign vesta.host.invite.v1\0 plus JCS({hostId,inviteHash,accountProofId,deviceKey}). Proofs bind the TLS connection and device key. Redemption atomically enrolls the account/device, consumes a use and grants only the stored server role. Repeating redemption on the same device does not consume another use. Revoking an invite prevents future redemption; remove a user's server role separately to end an existing grant. Current generated invites have endpoints:[] because endpoint configuration is deferred; the recipient must retain the separately supplied pinned host address. No pack execution occurs on redemption.
