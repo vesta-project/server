@@ -76,3 +76,7 @@ GET `/links/{linkId}` -> `{state,requestHash,deviceName,accountId,expiresAt}` un
 Invites use fresh account proof and the same device-key possession signature, prefix `vesta.host.invite.v1\0` over JCS({hostId,serverId,inviteHash,accountProofId,deviceKey}); no PAKE needed for a 256-bit invite code. Code authorization `Authorization: Invite <code>` allows only its account challenge/complete and redemption. Resolve invite code before using its endpoints or pack metadata as authority; anonymous misses are uniform.
 
 Certificate rotation is separate: new leaf fingerprint is signed by the old TLS identity key with hostId and monotonic rotation revision; linked devices require old-pin proof or local re-link. Discovery alone never updates a pin. Exact rotation wire profile is deferred; v1 acceptance does not expose remote rotation.
+
+### Server invite account proof
+
+Without PAKE, the account challenge/complete routes also accept purpose `invite`. The binding is lowercase SHA-256 hex of the decoded canonical invite payload. The proof remains bound to the live TLS connection and the device key, and is consumed atomically with invite usage, enrollment and the server grant. The redeem signature uses `vesta.host.invite.v1\0` and JCS({hostId,inviteHash,accountProofId,deviceKey}); no access token is accepted. See README Server access.
