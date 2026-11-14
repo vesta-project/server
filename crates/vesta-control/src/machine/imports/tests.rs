@@ -933,3 +933,65 @@ fn root_loader_observes_local_changes_without_restart() {
             .any(|r| r.display_path == display(&child))
     );
 }
+
+/// A small jar with the given entries.
+fn jar(path: PathBuf, entries: &[(&str, &[u8])]) {
+    use std::io::Write;
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
+    for (name, body) in entries {
+        zip.start_file(*name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(body).unwrap();
+    }
+    zip.finish().unwrap();
+}
+
+/// A Vanilla folder with a plain `server.jar` reports the version the jar
+/// declares about itself (`version.json`, or a bundler's `versions.list`),
+/// read in memory without running or extracting anything.
+#[test]
+fn vanilla_server_jar_reports_its_embedded_version() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path();
+    let cases: [(&str, Vec<(&str, &[u8])>, Option<&str>); 5] = [
+        (
+            "modern",
+            vec![
+                ("version.json", br#"{"id":"1.21.1","name":"1.21.1","world_version":3955}"#),
+                ("META-INF/versions.list", b"abc\t1.21.1\t1.21.1/server-1.21.1.jar\n"),
+            ],
+            Some("1.21.1"),
+        ),
+        (
+            "bundler",
+            vec![("META-INF/versions.list", b"abc\t1.20.4\t1.20.4/server-1.20.4.jar\n")],
+            Some("1.20.4"),
+        ),
+        ("snapshot", vec![("version.json", br#"{"id":"24w14a"}"#)], Some("24w14a")),
+        // Unsafe or missing ids say nothing.
+        ("hostile", vec![("version.json", br#"{"id":"../../etc"}"#)], None),
+        ("bare", vec![("net/minecraft/Main.class", b"x")], None),
+    ];
+    for (name, entries, _) in &cases {
+        let dir = base.join(name);
+        write(dir.join("server.properties"), "");
+        world(&dir);
+        jar(dir.join("server.jar"), entries);
+    }
+    // Not a zip at all.
+    write(base.join("junk/server.properties"), "");
+    write(base.join("junk/server.jar"), "not a jar");
+    let b = browser(base);
+    for (name, _, expected) in &cases {
+        let report = inspect(&b, name);
+        assert_eq!(report.detected.loader, Some(Loader::Vanilla), "{name}");
+        assert_eq!(report.detected.minecraft_version.as_deref(), *expected, "{name}");
+        assert_eq!(
+            report.blockers.contains(&"software_unresolved"),
+            expected.is_none(),
+            "{name}"
+        );
+    }
+    assert_eq!(inspect(&b, "junk").detected.minecraft_version, None);
+}

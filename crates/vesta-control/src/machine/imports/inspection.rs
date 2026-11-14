@@ -657,9 +657,68 @@ fn detect_software(path: &Path, listing: &Listing) -> (Option<Loader>, Option<St
             || listing.files.contains("server.jar")
             || listing.files.contains("minecraft_server.jar"))
     {
-        return (Some(Loader::Vanilla), vanilla_jar.or(general));
+        let embedded = || {
+            ["server.jar", "minecraft_server.jar"]
+                .into_iter()
+                .filter(|name| listing.files.contains(*name))
+                .find_map(|name| jar_minecraft_version(&path.join(name)))
+        };
+        return (
+            Some(Loader::Vanilla),
+            vanilla_jar.or(general).or_else(embedded),
+        );
     }
     (None, general)
+}
+
+/// Largest jar inspected for its embedded version (Mojang's are ~60 MiB).
+const MAX_VERSION_JAR_BYTES: u64 = 512 * 1024 * 1024;
+/// Largest `version.json` / `META-INF/versions.list` entry read.
+const MAX_VERSION_ENTRY_BYTES: u64 = 64 * 1024;
+
+/// The Minecraft version a Mojang server jar declares about itself: its
+/// `version.json` `id` (every jar since 1.14, including 1.18+ bundlers), else a
+/// bundler's single `META-INF/versions.list` entry. Reads one small zip entry
+/// in memory; nothing is executed or extracted.
+fn jar_minecraft_version(jar: &Path) -> Option<String> {
+    use std::io::Read;
+    if !plain_file(jar) || fs::metadata(jar).ok()?.len() > MAX_VERSION_JAR_BYTES {
+        return None;
+    }
+    let mut zip = zip::ZipArchive::new(fs::File::open(jar).ok()?).ok()?;
+    let mut read = |name: &str| -> Option<String> {
+        let entry = zip.by_name(name).ok()?;
+        if entry.size() > MAX_VERSION_ENTRY_BYTES {
+            return None;
+        }
+        let mut text = String::new();
+        entry
+            .take(MAX_VERSION_ENTRY_BYTES)
+            .read_to_string(&mut text)
+            .ok()?;
+        Some(text)
+    };
+    let valid = |id: &str| {
+        (!id.is_empty()
+            && id.len() <= 64
+            && id.bytes().any(|b| b.is_ascii_digit())
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-+".contains(&b)))
+        .then(|| id.to_owned())
+    };
+    if let Some(text) = read("version.json") {
+        let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+        return value["id"].as_str().and_then(valid);
+    }
+    // Bundler: `<sha256>\t<id>\t<path>` per bundled version; exactly one.
+    let list = read("META-INF/versions.list")?;
+    let mut ids = list
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.split('\t').nth(1));
+    let id = ids.next()??;
+    ids.next().is_none().then(|| valid(id))?
 }
 
 fn detect_launch(path: &Path, listing: &Listing, loader: Option<Loader>) -> Option<Launch> {
