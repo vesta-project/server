@@ -325,7 +325,7 @@ impl ImportJobs {
             .ok_or(JobError::NOT_FOUND)
     }
 
-    fn subject(
+    pub(super) fn subject(
         &self,
         binding: &OwnerBinding,
         server_id: Uuid,

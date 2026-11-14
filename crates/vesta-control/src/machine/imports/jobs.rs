@@ -386,6 +386,8 @@ struct Inner {
     env: Arc<dyn ImportEnvironment>,
     cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
     running: Mutex<HashSet<String>>,
+    /// Create uploads still streaming (their partial files are live).
+    uploading: Mutex<HashSet<String>>,
 }
 /// Owner import job service. Construct once per host process.
 #[derive(Clone)]
@@ -450,6 +452,7 @@ impl ImportJobs {
             env,
             cancels: Mutex::new(HashMap::new()),
             running: Mutex::new(HashSet::new()),
+            uploading: Mutex::new(HashSet::new()),
         })))
     }
     pub fn servers_root(&self) -> &Path {
@@ -1716,6 +1719,9 @@ CREATE TABLE IF NOT EXISTS machine_import_reservations(server_id TEXT PRIMARY KE
  game_port INTEGER NOT NULL CHECK(game_port BETWEEN 1 AND 65535), memory_mib INTEGER NOT NULL CHECK(memory_mib>0),
  released INTEGER NOT NULL DEFAULT 0 CHECK(released IN (0,1)));
 CREATE UNIQUE INDEX IF NOT EXISTS machine_import_reserved_port ON machine_import_reservations(game_port) WHERE released=0;
+CREATE TABLE IF NOT EXISTS machine_create_uploads(upload_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, device_id TEXT NOT NULL,
+ kind TEXT NOT NULL CHECK(kind IN ('modpack')), bytes INTEGER NOT NULL, sha256 TEXT NOT NULL,
+ created_ms INTEGER NOT NULL, expires_ms INTEGER NOT NULL);
 ";
 
 #[path = "commit.rs"]
@@ -1727,6 +1733,13 @@ mod create;
 pub use create::{
     CreateApplyRequest, CreateJob, CreateReview, CreateRuntime, CreateSummary, NewServerRequest,
     ServerFacts, SoftwareChoice, SummarySoftware,
+};
+
+#[path = "modpack.rs"]
+mod modpack;
+pub use modpack::{
+    CreateUpload, ModpackServerRequest, PackPrivate, PackSourceRequest, UPLOAD_MAX_BYTES,
+    UPLOAD_TTL_MS, UploadAccepted,
 };
 
 #[cfg(test)]

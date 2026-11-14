@@ -450,6 +450,14 @@ impl Application {
         if request.headers().contains_key("cookie") {
             return failure(StatusCode::BAD_REQUEST, "invalid_request");
         }
+        // Server pack uploads stream to a host-private file (up to 2 GiB)
+        // instead of the bounded in-memory request body.
+        if request.method() == Method::POST
+            && request.uri().path() == "/v1/host/creates/uploads"
+            && request.uri().query().is_none()
+        {
+            return self.create_upload(request).await;
+        }
         if request.method() == Method::GET
             && request.uri().path().starts_with("/v1/servers/")
             && [
@@ -514,6 +522,96 @@ impl Application {
                 )
             })
             .await
+    }
+    /// `POST /v1/host/creates/uploads`: owner-only raw server pack archive.
+    async fn create_upload(self: &Arc<Self>, request: Request<Incoming>) -> Reply {
+        let headers = request.headers();
+        if headers.get_all("authorization").iter().count() > 1 {
+            return failure(StatusCode::UNAUTHORIZED, "invalid_session");
+        }
+        let Some(token) = routes::bearer(headers) else {
+            return failure(StatusCode::UNAUTHORIZED, "invalid_session");
+        };
+        let identity = &self.router.identity;
+        let Ok(device) = identity.authenticate(token) else {
+            return failure(StatusCode::UNAUTHORIZED, "invalid_session");
+        };
+        if identity
+            .state
+            .host_role(device.account_id)
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            return failure(StatusCode::FORBIDDEN, "forbidden");
+        }
+        let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+        if header("content-type") != Some("application/octet-stream") {
+            return failure(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        let Some(kind) = header("x-upload-kind").map(str::to_owned) else {
+            return failure(StatusCode::BAD_REQUEST, "invalid_request");
+        };
+        if header("content-length")
+            .and_then(|v| v.parse::<u64>().ok())
+            .is_some_and(|n| n > vesta_control::machine::imports::jobs::UPLOAD_MAX_BYTES)
+        {
+            return failure(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large");
+        }
+        let (Some(jobs), Some(_)) = (self.router.imports(), self.router.creator.as_ref()) else {
+            return failure(StatusCode::SERVICE_UNAVAILABLE, "creates_unavailable");
+        };
+        let Ok(snapshot) = identity.state.snapshot() else {
+            return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+        };
+        let binding = OwnerBinding {
+            host_id: snapshot.host_id.to_string(),
+            account_id: device.account_id.to_string(),
+            device_id: device.device_id.to_string(),
+        };
+        let mut upload = match jobs.begin_create_upload(&binding, &kind) {
+            Ok(upload) => upload,
+            Err(e) => {
+                return failure(
+                    match e.code() {
+                        "not_supported_yet" => StatusCode::NOT_IMPLEMENTED,
+                        "invalid_request" => StatusCode::BAD_REQUEST,
+                        "forbidden" => StatusCode::FORBIDDEN,
+                        _ => StatusCode::SERVICE_UNAVAILABLE,
+                    },
+                    e.code(),
+                );
+            }
+        };
+        let mut body = request.into_body();
+        while let Some(frame) = body.frame().await {
+            let Ok(frame) = frame else {
+                return failure(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            let Ok(data) = frame.into_data() else {
+                continue;
+            };
+            if let Err(e) = upload.write(&data) {
+                return if e.code() == "request_too_large" {
+                    failure(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large")
+                } else {
+                    failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable")
+                };
+            }
+        }
+        match upload.finish() {
+            Ok(accepted) => {
+                let mut reply = routes::json(json!({
+                    "uploadId": accepted.upload_id,
+                    "expiresAt": chrono::DateTime::from_timestamp_millis(accepted.expires_at as i64)
+                        .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+                }));
+                *reply.status_mut() = StatusCode::CREATED;
+                reply
+            }
+            Err(e) if e == JobError::INVALID => failure(StatusCode::BAD_REQUEST, "invalid_request"),
+            Err(_) => failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        }
     }
     fn dispatch_sync(
         &self,

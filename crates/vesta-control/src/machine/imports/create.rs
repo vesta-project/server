@@ -106,7 +106,7 @@ pub type CreateJob = Job<CreateReview>;
 
 /// Host-private half of a create plan; never returned to callers.
 #[derive(Clone, Serialize, Deserialize)]
-struct CreatePrivate {
+pub(super) struct CreatePrivate {
     preview: Option<ResolvedPreview>,
     experimental: bool,
     /// Mojang publishes SHA-1 only for its official objects; the host accepts
@@ -114,6 +114,9 @@ struct CreatePrivate {
     #[serde(default)]
     mojang_sha1_accepted: bool,
     java: ReviewRuntime,
+    /// The reviewed pack (modpack plans only).
+    #[serde(default)]
+    pack: Option<super::modpack::PackPrivate>,
     plan_hash: String,
 }
 
@@ -195,7 +198,7 @@ pub(crate) fn software_kind(id: &str) -> Option<Software> {
     Software::ALL.into_iter().find(|s| s.id() == id)
 }
 
-fn validate_new(request: &NewServerRequest) -> JobResult<Software> {
+pub(super) fn validate_new(request: &NewServerRequest) -> JobResult<Software> {
     let name = request.name.trim();
     let version = &request.minecraft_version;
     if request.kind != "new"
@@ -244,7 +247,7 @@ fn create_plan_hash(
     review: &CreateReview,
     private: &CreatePrivate,
 ) -> JobResult<String> {
-    let bound = serde_json::json!({
+    let mut bound = serde_json::json!({
         "kind": "create",
         "host": binding.host_id, "account": binding.account_id, "device": binding.device_id,
         "planId": review.plan_id, "expiresAt": review.expires_at,
@@ -253,6 +256,10 @@ fn create_plan_hash(
         "artifacts": private.preview.as_ref().map(|p| &p.artifacts_sha256),
         "experimental": private.experimental, "mojangSha1": private.mojang_sha1_accepted, "java": private.java,
     });
+    if let Some(pack) = &private.pack {
+        // Only modpack plans carry it, so earlier plans keep their hash.
+        bound["pack"] = serde_json::to_value(pack).map_err(|_| JobError::UNAVAILABLE)?;
+    }
     Ok(hex::encode(Sha256::digest(
         serde_json::to_vec(&bound).map_err(|_| JobError::UNAVAILABLE)?,
     )))
@@ -340,9 +347,17 @@ impl ImportJobs {
                 None => Err(JobError::CREATE_NOT_FOUND),
             }
         })?;
-        let request: NewServerRequest =
+        let value: serde_json::Value =
             serde_json::from_str(&raw).map_err(|_| JobError::UNAVAILABLE)?;
-        let outcome = self.compute_create_plan(binding, &request, installer, catalogue);
+        let outcome = if value["kind"] == "modpack" {
+            let request: super::modpack::ModpackServerRequest =
+                serde_json::from_value(value).map_err(|_| JobError::UNAVAILABLE)?;
+            self.compute_modpack_plan(binding, &request, installer, catalogue)
+        } else {
+            let request: NewServerRequest =
+                serde_json::from_value(value).map_err(|_| JobError::UNAVAILABLE)?;
+            self.compute_create_plan(binding, &request, installer, catalogue)
+        };
         let now = self.0.host.now_ms();
         self.write(|c| {
             match &outcome {
@@ -384,33 +399,52 @@ impl ImportJobs {
         catalogue: &dyn Catalogue,
     ) -> JobResult<(CreateReview, CreatePrivate)> {
         let software = validate_new(request)?;
+        self.compute_create_core(binding, request, Some(software), None, installer, catalogue)
+    }
+
+    /// Shared planning core for `new` and `modpack`. `software` is `None`
+    /// only for a pack that could not be read (the pack's blockers explain it).
+    pub(super) fn compute_create_core(
+        &self,
+        binding: &OwnerBinding,
+        request: &NewServerRequest,
+        software: Option<Software>,
+        pack: Option<super::modpack::PackPlan>,
+        installer: &dyn CreateInstaller,
+        catalogue: &dyn Catalogue,
+    ) -> JobResult<(CreateReview, CreatePrivate)> {
         let minecraft = request.minecraft_version.clone();
-        let mut blockers = BTreeSet::new();
-        let mut warnings = BTreeSet::new();
+        let mut blockers: BTreeSet<&'static str> = BTreeSet::new();
+        let mut warnings: BTreeSet<&'static str> = BTreeSet::new();
+        if let Some(pack) = &pack {
+            blockers.extend(pack.blockers.iter().copied());
+            warnings.extend(pack.warnings.iter().copied());
+        }
         // Only versions the catalogue offers; snapshots are explicit experiments.
-        let experimental = match catalogue.minecraft() {
-            Ok(versions) => match versions.iter().find(|v| v.id == minecraft) {
+        let experimental = match software.map(|_| catalogue.minecraft()) {
+            None => None,
+            Some(Ok(versions)) => match versions.iter().find(|v| v.id == minecraft) {
                 Some(v) => Some(v.experimental),
                 None => {
                     blockers.insert("software_unresolved");
                     None
                 }
             },
-            Err(_) => {
+            Some(Err(_)) => {
                 blockers.insert("provider_unavailable");
                 None
             }
         };
         // CraftBukkit/Spigot are compiled by BuildTools, which needs git and a
         // POSIX shell from this machine: block now rather than fail the install.
-        let source_built = crate::machine::creates::source_built(software);
+        let source_built = software.is_some_and(crate::machine::creates::source_built);
         let tools_missing = source_built && !installer.source_build_tools();
         if tools_missing {
             blockers.insert("requires_git");
         }
-        let preview = match experimental {
+        let preview = match (experimental, software) {
             _ if tools_missing => None,
-            Some(experimental) => {
+            (Some(experimental), Some(software)) => {
                 let selection = Selection {
                     version: Some(minecraft.clone()),
                     loader_version: request.software.loader_version.clone(),
@@ -441,7 +475,7 @@ impl ImportJobs {
                     }
                 }
             }
-            None => None,
+            _ => None,
         };
         if let Some(p) = &preview {
             if experimental == Some(true)
@@ -510,6 +544,7 @@ impl ImportJobs {
             .as_ref()
             .and_then(|p| p.download_bytes)
             .unwrap_or(0)
+            .saturating_add(pack.as_ref().map_or(0, |p| p.content_bytes))
             .saturating_add(if java.download_required {
                 if source_built { JDK_RESERVE_BYTES } else { JAVA_RESERVE_BYTES }
             } else {
@@ -527,11 +562,11 @@ impl ImportJobs {
             confirmation: None,
             expires_at: now.saturating_add(PLAN_TTL_MS),
             summary: CreateSummary {
-                kind: "new".into(),
+                kind: if pack.is_some() { "modpack" } else { "new" }.into(),
                 name: request.name.trim().to_owned(),
                 minecraft_version: minecraft.clone(),
                 software: SummarySoftware {
-                    kind: software.id().into(),
+                    kind: software.map_or_else(|| request.software.kind.clone(), |s| s.id().into()),
                     version: preview.as_ref().map(|p| summary_version(&minecraft, p)),
                     build: preview.as_ref().and_then(|p| p.build),
                     loader_version: preview.as_ref().and_then(|p| p.loader_version.clone()),
@@ -550,7 +585,7 @@ impl ImportJobs {
                     display_path: display(&self.server_dir(server_id).join("game")),
                     free_bytes: free,
                 },
-                pack: None,
+                pack: pack.as_ref().map(|p| p.summary.clone()),
                 restore: None,
             },
             blockers: blockers.iter().map(|b| (*b).to_owned()).collect(),
@@ -570,6 +605,7 @@ impl ImportJobs {
                 verified: java.verified,
                 jdk: source_built,
             },
+            pack: pack.map(|p| p.private),
             plan_hash: String::new(),
         };
         let private = CreatePrivate {
@@ -719,6 +755,7 @@ impl ImportJobs {
         let server_id = review.summary.destination.server_id;
         if Kind::Create.cancellable(&phase)
             && let Err(outcome) = self.create_install(
+                binding,
                 job_id,
                 &review,
                 &private,
@@ -744,8 +781,10 @@ impl ImportJobs {
         self.create_status(binding, job_id)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_install(
         &self,
+        binding: &OwnerBinding,
         job_id: &str,
         review: &CreateReview,
         private: &CreatePrivate,
@@ -872,11 +911,78 @@ impl ImportJobs {
             .map_err(|_| Outcome::Failed("install_failed"))?;
         commit::write_atomic(&dir.join("host.toml"), host_toml.as_bytes())
             .map_err(|_| Outcome::Failed("install_failed"))?;
+        if stop() {
+            return Err(Outcome::Cancelled);
+        }
+        if let Some(pack) = &private.pack {
+            self.create_pack_content(binding, job_id, server_id, &dir, pack, installer, &progress)?;
+        }
         // Last safe boundary: after this the server is registered.
         if stop() {
             return Err(Outcome::Cancelled);
         }
         Ok(())
+    }
+
+    /// Install the reviewed pack's content into the still unregistered server
+    /// through the server's own pack engine (see [`CreateInstaller::install_pack`]).
+    #[allow(clippy::too_many_arguments)]
+    fn create_pack_content(
+        &self,
+        binding: &OwnerBinding,
+        job_id: &str,
+        server_id: Uuid,
+        dir: &Path,
+        pack: &super::modpack::PackPrivate,
+        installer: &dyn CreateInstaller,
+        progress: &dyn CreateProgress,
+    ) -> Result<(), Outcome> {
+        let review = pack.review.as_ref().ok_or(Outcome::Failed("plan_blocked"))?;
+        let upload = match &pack.source {
+            super::modpack::PackSourceRequest::Upload { upload_id } => {
+                let (path, sha) = self
+                    .read(|c| self.create_upload_in(c, &binding.account_id, upload_id))
+                    .map_err(|_| Outcome::Failed("upload_unavailable"))?;
+                if sha != review.source_digest {
+                    return Err(Outcome::Failed("integrity_conflict"));
+                }
+                Some(path)
+            }
+            super::modpack::PackSourceRequest::Provider { .. } => None,
+        };
+        self.set_phase(job_id, "applying", "downloading_software")?;
+        self.progress(job_id, CopyProgress::default(), 0, 0)?;
+        let policy = commit::owner_policy(&self.0.host, server_id)
+            .map_err(|_| Outcome::Interrupted("state_unavailable"))?;
+        let capabilities = policy
+            .grants
+            .iter()
+            .find(|g| g.account_id.to_string() == binding.account_id)
+            .map(|g| g.capabilities.clone())
+            .ok_or(Outcome::Failed("install_failed"))?;
+        let (server_subject, subject) = self
+            .subject(binding, server_id, capabilities)
+            .map_err(|_| Outcome::Failed("install_failed"))?;
+        let host_id = Uuid::parse_str(&binding.host_id).map_err(|_| Outcome::Failed("install_failed"))?;
+        installer
+            .install_pack(
+                &crate::machine::creates::PackInstallRequest {
+                    server_id,
+                    host_id,
+                    server_dir: dir,
+                    policy,
+                    server_subject,
+                    subject,
+                    source: &pack.source,
+                    upload: upload.as_deref(),
+                    review,
+                },
+                progress,
+            )
+            .map_err(|code| match code {
+                "cancelled" => Outcome::Cancelled,
+                code => Outcome::Failed(code),
+            })
     }
 
     /// Stage the new game directory (owner EULA record, reserved port with RCON

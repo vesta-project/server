@@ -8,14 +8,19 @@ use crate::java::HostJavaPlan;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 pub use super::imports::jobs::{
-    CreateApplyRequest, CreateJob, CreateReview, CreateRuntime, CreateSummary, NewServerRequest,
-    ReviewRuntime, ServerFacts, SoftwareChoice, SummarySoftware,
+    CreateApplyRequest, CreateJob, CreateReview, CreateRuntime, CreateSummary, CreateUpload,
+    ModpackServerRequest, NewServerRequest, PackSourceRequest, ReviewRuntime, ServerFacts,
+    SoftwareChoice, SummarySoftware, UploadAccepted,
 };
+pub use crate::packs::workspace::{CreatePackIssue, CreatePackReview};
 use vesta_server_install::{
     Acknowledgments, Approval, InstallError, InstallOutcome, InstallRoots, ManagedLaunch,
     MinecraftVersion, ProgressReporter, ResolvedPreview, Selection, ServerInstaller,
     SilentProgressReporter, Software, SoftwareRelease, TransportConfig,
 };
+
+#[path = "create_pack_live.rs"]
+mod live_pack;
 
 /// Narrow deterministic seam for host catalogue/router tests.
 pub trait Catalogue: Send + Sync {
@@ -36,6 +41,20 @@ pub struct InstallRequest<'a> {
     /// The owner acknowledged a legacy checksum at review, or the host accepted
     /// Mojang's SHA-1-only official objects automatically (audited).
     pub legacy_checksum_acknowledged: bool,
+}
+/// What the pack content install of a modpack create needs: the new server's
+/// directory (already holding the base software, `host.toml` and launch), the
+/// owner's server authority and the reviewed pack.
+pub struct PackInstallRequest<'a> {
+    pub server_id: uuid::Uuid,
+    pub host_id: uuid::Uuid,
+    pub server_dir: &'a Path,
+    pub policy: crate::worker::WorkerPolicy,
+    pub server_subject: crate::worker::ServerSubject,
+    pub subject: crate::identity::Subject,
+    pub source: &'a PackSourceRequest,
+    pub upload: Option<&'a Path>,
+    pub review: &'a CreatePackReview,
 }
 /// Install progress and cooperative cancellation, owned by the create job.
 pub trait CreateProgress: Send + Sync {
@@ -78,6 +97,24 @@ pub trait CreateInstaller: Send + Sync {
         progress: &dyn CreateProgress,
         publish: &mut dyn FnMut() -> Result<PathBuf, &'static str>,
     ) -> Result<ManagedLaunch, &'static str>;
+    /// Review a modpack before any server exists (the same provider resolution,
+    /// manifest parsing and archive policy as a server's own pack install).
+    /// `upload` is the checked archive for upload sources. `pack_invalid`,
+    /// `provider_unavailable` or `provider_not_configured` on failure.
+    fn review_pack(
+        &self,
+        source: &PackSourceRequest,
+        upload: Option<&Path>,
+    ) -> Result<CreatePackReview, &'static str>;
+    /// Install the reviewed pack's content into the new (unregistered) server
+    /// through the server's own pack install engine. Fails with
+    /// `integrity_conflict` when the pack no longer matches the review, else
+    /// `download_failed`, `install_failed` or `cancelled`.
+    fn install_pack(
+        &self,
+        request: &PackInstallRequest<'_>,
+        progress: &dyn CreateProgress,
+    ) -> Result<(), &'static str>;
     /// JVM options Vesta adds for the reserved memory.
     fn heap_args(&self, memory_mib: u64) -> Vec<String> {
         vec![format!("-Xmx{memory_mib}M")]
@@ -183,6 +220,38 @@ impl CreateInstaller for LiveCreateInstaller {
     }
     fn source_build_tools(&self) -> bool {
         vesta_server_install::source_build_tools_available()
+    }
+    fn review_pack(
+        &self,
+        source: &PackSourceRequest,
+        upload: Option<&Path>,
+    ) -> Result<CreatePackReview, &'static str> {
+        match (source, upload) {
+            (
+                PackSourceRequest::Provider {
+                    provider,
+                    project_id,
+                    version_id,
+                },
+                None,
+            ) => crate::packs::workspace::review_create_provider_pack(
+                provider,
+                project_id,
+                version_id,
+                &crate::content::UreqProviderClient::configured(),
+            ),
+            (PackSourceRequest::Upload { .. }, Some(path)) => {
+                crate::packs::workspace::review_create_uploaded_pack(path)
+            }
+            _ => Err("pack_invalid"),
+        }
+    }
+    fn install_pack(
+        &self,
+        request: &PackInstallRequest<'_>,
+        progress: &dyn CreateProgress,
+    ) -> Result<(), &'static str> {
+        live_pack::install(request, progress)
     }
     fn plan_java(&self, required_major: u32, jdk: bool) -> HostJavaPlan {
         match runtime() {

@@ -3,7 +3,10 @@
 //! and one ignored real end-to-end creation of Vanilla plus Fabric.
 use super::*;
 use std::sync::atomic::AtomicBool;
-use vesta_control::machine::creates::{CreateInstaller, CreateProgress, InstallRequest};
+use vesta_control::machine::creates::{
+    CreateInstaller, CreatePackIssue, CreatePackReview, CreateProgress, InstallRequest,
+    PackSourceRequest,
+};
 use vesta_server_install::{
     JavaRequirement, ManagedLaunch, MojangObject, ResolvedPreview, Selection, Software, Warning,
 };
@@ -77,8 +80,82 @@ struct FakeInstaller {
     no_git: AtomicBool,
     /// `jdk` of every Java plan requested.
     jdk_plans: std::sync::Mutex<Vec<bool>>,
+    /// Pack content installs performed (the reviewed pack of each).
+    pack_installs: std::sync::Mutex<Vec<CreatePackReview>>,
+}
+/// Fixture packs by project id: a Fabric pack whose Minecraft version and
+/// loader come from the pack; `client-only`, `notices`, `blocking` and
+/// `offline` vary the review.
+fn fixture_pack(project: &str) -> Result<CreatePackReview, &'static str> {
+    let mut review = CreatePackReview {
+        name: "Fixture Pack".into(),
+        minecraft_version: "26.1".into(),
+        loader: "fabric".into(),
+        loader_version: Some("0.16.9".into()),
+        client_only: false,
+        issues: Vec::new(),
+        content_bytes: Some(2048),
+        source_digest: format!("provider:{project}"),
+    };
+    match project {
+        "offline" => return Err("provider_unavailable"),
+        "client-only" => review.client_only = true,
+        "notices" => review.issues.push(CreatePackIssue {
+            code: "pack_size_warning".into(),
+            message: "pack_size_warning:2048".into(),
+            blocking: false,
+        }),
+        "blocking" => review.issues.push(CreatePackIssue {
+            code: "pack_path_invalid".into(),
+            message: "executable_directory: start.sh".into(),
+            blocking: true,
+        }),
+        _ => {}
+    }
+    Ok(review)
 }
 impl CreateInstaller for FakeInstaller {
+    fn review_pack(
+        &self,
+        source: &PackSourceRequest,
+        upload: Option<&Path>,
+    ) -> Result<CreatePackReview, &'static str> {
+        match (source, upload) {
+            (PackSourceRequest::Provider { project_id, .. }, None) => fixture_pack(project_id),
+            (PackSourceRequest::Upload { .. }, Some(path)) => {
+                // The real upload review parses the archive; the fixture only
+                // binds its digest like the live review does.
+                use sha2::Digest;
+                let bytes = std::fs::read(path).unwrap();
+                Ok(CreatePackReview {
+                    name: "Uploaded Pack".into(),
+                    source_digest: hex::encode(sha2::Sha256::digest(&bytes)),
+                    content_bytes: None,
+                    ..fixture_pack("uploaded").unwrap()
+                })
+            }
+            _ => panic!("source and upload disagree"),
+        }
+    }
+    fn install_pack(
+        &self,
+        request: &vesta_control::machine::creates::PackInstallRequest<'_>,
+        progress: &dyn CreateProgress,
+    ) -> Result<(), &'static str> {
+        // Unregistered, with the base software already published.
+        assert!(request.server_dir.join("game/server.properties").is_file());
+        assert!(request.server_dir.join("private/launch.toml").is_file());
+        assert_eq!(request.policy.server_id, request.server_id);
+        progress.phase("installing");
+        let mods = request.server_dir.join("game/config");
+        std::fs::create_dir_all(&mods).unwrap();
+        std::fs::write(mods.join("fixture-pack.txt"), b"pack content").unwrap();
+        self.pack_installs
+            .lock()
+            .unwrap()
+            .push(request.review.clone());
+        Ok(())
+    }
     fn verify_mojang(&self, preview: &ResolvedPreview) -> Result<(), &'static str> {
         assert!(preview.legacy_checksum && preview.legacy_checksum_mojang_only);
         assert!(!preview.mojang_objects.is_empty());
@@ -245,6 +322,18 @@ impl Host {
             Value::Null,
             &self.owner,
         )
+    }
+    /// Raw server pack upload with `X-Upload-Kind`.
+    fn upload(&self, auth: &str, kind: &str, body: &[u8]) -> (u16, Value) {
+        let (status, bytes, _) = self.wire().raw(
+            "POST",
+            "/v1/host/creates/uploads",
+            &format!(
+                "Content-Type: application/octet-stream\r\nX-Upload-Kind: {kind}\r\nAuthorization: {auth}\r\n"
+            ),
+            body,
+        );
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
     }
     fn servers(&self) -> Vec<Value> {
         let (status, list) = self.call("GET", "/v1/host/servers", Value::Null, &self.owner);
@@ -547,28 +636,32 @@ fn create_routes_are_owner_only_and_unbuilt_modes_answer_not_supported() {
             "{method} {path}"
         );
     }
-    // Modpack and restore are the next packages: 501 for owners.
-    for body in [
-        json!({"kind":"modpack","name":"Adventure","source":{"kind":"provider","provider":"modrinth","projectId":"p","versionId":"v"},"gamePort":25566,"memoryMiB":4096,"eulaAccepted":false}),
+    // Restore is the next package: 501 for owners (modpack is built).
+    let (status, value) = host.call(
+        "POST",
+        "/v1/host/creates/plan",
         json!({"kind":"restore","name":"Back","source":{"kind":"snapshot","sourceId":"s"},"gamePort":25566,"memoryMiB":4096,"eulaAccepted":false}),
-    ] {
-        let (status, value) = host.call("POST", "/v1/host/creates/plan", body, &host.owner);
-        assert_eq!(
-            (status, value["error"]["code"].clone()),
-            (501, json!("not_supported_yet"))
-        );
-    }
-    for (method, path) in [
-        ("GET", "/v1/host/creates/restore-sources"),
-        ("POST", "/v1/host/creates/uploads"),
-    ] {
-        let (status, value) = host.call(method, path, Value::Null, &host.owner);
-        assert_eq!(
-            (status, value["error"]["code"].clone()),
-            (501, json!("not_supported_yet")),
-            "{path}"
-        );
-    }
+        &host.owner,
+    );
+    assert_eq!(
+        (status, value["error"]["code"].clone()),
+        (501, json!("not_supported_yet"))
+    );
+    let (status, value) = host.call(
+        "GET",
+        "/v1/host/creates/restore-sources",
+        Value::Null,
+        &host.owner,
+    );
+    assert_eq!(
+        (status, value["error"]["code"].clone()),
+        (501, json!("not_supported_yet"))
+    );
+    let (status, value) = host.upload(&host.owner, "restore", b"PK");
+    assert_eq!(
+        (status, value["error"]["code"].clone()),
+        (501, json!("not_supported_yet"))
+    );
     // Invalid shapes are 400; unknown jobs 404 with the create code.
     for body in [
         json!({"kind":"other"}),
@@ -1023,4 +1116,395 @@ fn bukkit_without_git_blocks_at_planning_and_with_git_plans_a_managed_jdk() {
     let job = host.create_plan(new_body("Plain", Some(25611), Some(1024)));
     assert_eq!(job["state"], "review", "{job}");
     assert_eq!(*installer.jdk_plans.lock().unwrap(), vec![true, false]);
+}
+
+fn modpack_body(name: &str, project: &str, port: u16) -> Value {
+    json!({"kind":"modpack","name":name,
+        "source":{"kind":"provider","provider":"modrinth","projectId":project,"versionId":"v1"},
+        "gamePort":port,"memoryMiB":1024,"eulaAccepted":false})
+}
+/// A small zip with the given entry names.
+fn zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    use std::io::Write;
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, body) in entries {
+        zip.start_file(*name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(body).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
+#[test]
+fn provider_modpack_reviews_installs_its_content_and_reaches_online() {
+    let installer = Arc::new(FakeInstaller::default());
+    let host = create_host(installer.clone());
+    let port = free_port();
+    // Minecraft version and loader come from the pack, never the client.
+    let mut guessed = modpack_body("Adventure", "pack", port);
+    guessed["minecraftVersion"] = json!("1.20.1");
+    let (status, error) = host.call("POST", "/v1/host/creates/plan", guessed, &host.owner);
+    assert_eq!(
+        (status, error["error"]["code"].clone()),
+        (400, json!("invalid_request"))
+    );
+
+    let job = host.create_plan(modpack_body(" Adventure ", "pack", port));
+    assert_eq!(job["state"], "review", "{job}");
+    let review = &job["review"];
+    assert_eq!(review["blockers"], json!([]));
+    assert_eq!(review["warnings"], json!([]));
+    let summary = &review["summary"];
+    assert_eq!(summary["kind"], "modpack");
+    assert_eq!(summary["name"], "Adventure");
+    assert_eq!(summary["minecraftVersion"], "26.1");
+    assert_eq!(
+        summary["software"],
+        json!({"kind":"fabric","version":"0.16.9","build":null,"loaderVersion":"0.16.9"})
+    );
+    assert_eq!(
+        summary["pack"],
+        json!({"name":"Fixture Pack","provider":"modrinth","projectId":"pack","versionId":"v1",
+            "minecraftVersion":"26.1","loader":"fabric","issues":[]})
+    );
+    assert!(summary["restore"].is_null());
+    assert_eq!(summary["runtime"]["automatic"], true);
+
+    let (status, accepted) = host.create_apply(&job, "modpack-key-1", json!({}));
+    assert_eq!(status, 202, "{accepted}");
+    let id = accepted["jobId"].as_str().unwrap().to_owned();
+    let server = accepted["serverId"].as_str().unwrap().to_owned();
+    let ready = host.create_wait(&id, Duration::from_secs(60), |j| j["state"] != "applying");
+    assert_eq!(ready["state"], "ready", "{ready}");
+    // Base software once, then the reviewed pack's content, then registration.
+    assert_eq!(installer.installs.load(Ordering::SeqCst), 1);
+    let installed = installer.pack_installs.lock().unwrap().clone();
+    assert_eq!(installed.len(), 1);
+    assert_eq!(installed[0].name, "Fixture Pack");
+    let game = host.temp.path().join("servers").join(&server).join("game");
+    assert_eq!(
+        std::fs::read(game.join("config/fixture-pack.txt")).unwrap(),
+        b"pack content"
+    );
+    assert!(
+        std::fs::read_to_string(game.join("eula.txt"))
+            .unwrap()
+            .contains("eula=true")
+    );
+    let card = host
+        .servers()
+        .into_iter()
+        .find(|s| s["serverId"] == server)
+        .unwrap();
+    assert_eq!(card["software"], json!({"kind":"fabric","version":"0.16.9"}));
+    assert_eq!(card["minecraftVersion"], "26.1");
+
+    let (status, started) = host.job_action(&id, "start");
+    assert_eq!(status, 202, "{started}");
+    let online = host.create_wait(&id, Duration::from_secs(90), |j| {
+        matches!(j["state"].as_str(), Some("online" | "ready" | "failed"))
+    });
+    assert_eq!(online["state"], "online", "{online}");
+    // Stop the fixture game before the host shuts down.
+    let (status, view) = host.call(
+        "GET",
+        &format!("/v1/servers/{server}/manage/server/status"),
+        Value::Null,
+        &host.owner,
+    );
+    assert_eq!(status, 200, "{view}");
+    let data = if view["data"].is_object() {
+        &view["data"]
+    } else {
+        &view
+    };
+    let generation = data["generation"].as_str().expect("generation").to_owned();
+    let (status, stopped) = host.call(
+        "POST",
+        &format!("/v1/servers/{server}/manage/lifecycle/stop"),
+        json!({"expected_generation":generation}),
+        &format!("{}\r\nIdempotency-Key: modpack-lifecycle-stop-0001", host.owner),
+    );
+    assert!((200..300).contains(&status), "{status} {stopped}");
+    let until = std::time::Instant::now() + Duration::from_secs(60);
+    while host
+        .servers()
+        .iter()
+        .any(|s| s["serverId"] == server && s["state"] != "stopped")
+    {
+        assert!(std::time::Instant::now() < until, "not stopped");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[test]
+fn client_only_and_unreadable_packs_are_blocked() {
+    let installer = Arc::new(FakeInstaller::default());
+    let host = create_host(installer.clone());
+    let job = host.create_plan(modpack_body("Client", "client-only", 25620));
+    assert_eq!(job["state"], "blocked", "{job}");
+    assert_eq!(job["review"]["blockers"], json!(["pack_client_only"]));
+    assert!(job["review"]["confirmation"].is_null());
+    assert_eq!(job["review"]["summary"]["pack"]["name"], "Fixture Pack");
+
+    let job = host.create_plan(modpack_body("Offline", "offline", 25621));
+    assert_eq!(job["state"], "blocked", "{job}");
+    assert_eq!(job["review"]["blockers"], json!(["provider_unavailable"]));
+    assert!(job["review"]["summary"]["pack"]["name"].is_null());
+    assert!(installer.pack_installs.lock().unwrap().is_empty());
+}
+
+#[test]
+fn pack_review_issues_are_surfaced_verbatim() {
+    let installer = Arc::new(FakeInstaller::default());
+    let host = create_host(installer.clone());
+    let job = host.create_plan(modpack_body("Notices", "notices", 25622));
+    assert_eq!(job["state"], "review", "{job}");
+    assert_eq!(job["review"]["warnings"], json!(["pack_review_warning"]));
+    assert_eq!(
+        job["review"]["summary"]["pack"]["issues"],
+        json!([{"code":"pack_size_warning","message":"pack_size_warning:2048","blocking":false}])
+    );
+    // The owner must acknowledge the pack notices.
+    let (status, error) =
+        host.create_apply(&job, "notice-key", json!({"acknowledgedWarnings":[]}));
+    assert_eq!(
+        (status, error["error"]["code"].clone()),
+        (400, json!("warnings_unacknowledged"))
+    );
+
+    let job = host.create_plan(modpack_body("Blocking", "blocking", 25623));
+    assert_eq!(job["state"], "blocked", "{job}");
+    assert_eq!(job["review"]["blockers"], json!(["pack_review_blocked"]));
+    assert_eq!(
+        job["review"]["summary"]["pack"]["issues"][0],
+        json!({"code":"pack_path_invalid","message":"executable_directory: start.sh","blocking":true})
+    );
+}
+
+#[test]
+fn uploaded_packs_are_owner_bound_checked_and_expire() {
+    let installer = Arc::new(FakeInstaller::default());
+    let host = create_host(installer.clone());
+    let pack = zip_bytes(&[
+        ("modrinth.index.json", b"{}"),
+        ("overrides/config/a.txt", b"a"),
+    ]);
+    // Owner only, raw octet-stream with a known kind.
+    assert_eq!(host.upload(&host.stranger, "modpack", &pack).0, 403);
+    assert_eq!(host.upload(&host.owner, "other", &pack).0, 400);
+    assert_eq!(host.upload(&host.owner, "modpack", b"").0, 400);
+    let (status, _, _) = host.wire().raw(
+        "POST",
+        "/v1/host/creates/uploads",
+        &format!(
+            "Content-Type: application/json\r\nX-Upload-Kind: modpack\r\nAuthorization: {}\r\n",
+            host.owner
+        ),
+        &pack,
+    );
+    assert_eq!(status, 400);
+
+    let (status, accepted) = host.upload(&host.owner, "modpack", &pack);
+    assert_eq!(status, 201, "{accepted}");
+    let upload = accepted["uploadId"].as_str().unwrap().to_owned();
+    assert!(accepted["expiresAt"].as_str().unwrap().ends_with('Z'));
+    let body = |name: &str, port: u16, id: &str| {
+        json!({"kind":"modpack","name":name,"source":{"kind":"upload","uploadId":id},
+            "gamePort":port,"memoryMiB":1024,"eulaAccepted":false})
+    };
+    let job = host.create_plan(body("Uploaded", 25630, &upload));
+    assert_eq!(job["state"], "review", "{job}");
+    let pack_summary = &job["review"]["summary"]["pack"];
+    assert_eq!(pack_summary["name"], "Uploaded Pack");
+    assert!(pack_summary["provider"].is_null() && pack_summary["projectId"].is_null());
+    // Unknown upload ids are refused.
+    let (status, _) = host.call(
+        "POST",
+        "/v1/host/creates/plan",
+        body("Unknown", 25631, &Uuid::new_v4().to_string()),
+        &host.owner,
+    );
+    assert_eq!(status, 400);
+
+    // Unsafe archives (traversal) are refused at review.
+    let (_, unsafe_upload) = host.upload(
+        &host.owner,
+        "modpack",
+        &zip_bytes(&[("modrinth.index.json", b"{}"), ("../escape.txt", b"x")]),
+    );
+    let job = host.create_plan(body(
+        "Unsafe",
+        25632,
+        unsafe_upload["uploadId"].as_str().unwrap(),
+    ));
+    assert_eq!(job["state"], "blocked", "{job}");
+    assert_eq!(job["review"]["blockers"], json!(["unsafe_archive"]));
+    // Not a zip at all.
+    let (_, junk) = host.upload(&host.owner, "modpack", b"not a zip");
+    let job = host.create_plan(body("Junk", 25633, junk["uploadId"].as_str().unwrap()));
+    assert_eq!(job["review"]["blockers"], json!(["unsafe_archive"]));
+
+    // An upload that expires after review fails apply without registering.
+    let reviewed = host.create_plan(body("Expiring", 25634, &upload));
+    assert_eq!(reviewed["state"], "review", "{reviewed}");
+    host.state
+        .write(|c| {
+            c.execute("UPDATE machine_create_uploads SET expires_ms=0", [])?;
+            Ok(())
+        })
+        .unwrap();
+    let (status, accepted) = host.create_apply(&reviewed, "expiring-key", json!({}));
+    assert_eq!(status, 202, "{accepted}");
+    let failed = host.create_wait(
+        accepted["jobId"].as_str().unwrap(),
+        Duration::from_secs(60),
+        |j| j["state"] != "applying",
+    );
+    assert_eq!(failed["state"], "failed", "{failed}");
+    assert_eq!(failed["error"], "upload_unavailable");
+    let server = accepted["serverId"].as_str().unwrap();
+    assert!(!host.temp.path().join("servers").join(server).exists());
+    assert!(host.servers().iter().all(|s| s["serverId"] != server));
+    // Expired uploads cannot be planned again.
+    let (status, _) = host.call(
+        "POST",
+        "/v1/host/creates/plan",
+        body("Again", 25635, &upload),
+        &host.owner,
+    );
+    assert_eq!(status, 400);
+    assert!(installer.pack_installs.lock().unwrap().is_empty());
+}
+
+#[test]
+fn oversized_uploads_are_refused_before_reading_the_body() {
+    use std::io::{BufRead, Write};
+    let host = create_host(Arc::new(FakeInstaller::default()));
+    let mut wire = host.wire();
+    write!(
+        wire.0.get_mut(),
+        "POST /v1/host/creates/uploads HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/octet-stream\r\nX-Upload-Kind: modpack\r\nAuthorization: {}\r\nContent-Length: {}\r\n\r\n",
+        host.owner,
+        vesta_control::machine::imports::jobs::UPLOAD_MAX_BYTES + 1
+    )
+    .unwrap();
+    wire.0.get_mut().flush().unwrap();
+    let mut line = String::new();
+    wire.0.read_line(&mut line).unwrap();
+    assert!(line.contains(" 413 "), "{line}");
+}
+
+#[test]
+fn modpack_routes_are_owner_only() {
+    let host = create_host(Arc::new(FakeInstaller::default()));
+    let (status, value) = host.call(
+        "POST",
+        "/v1/host/creates/plan",
+        modpack_body("Stranger", "pack", 25640),
+        &host.stranger,
+    );
+    assert_eq!(
+        (status, value["error"]["code"].clone()),
+        (403, json!("forbidden"))
+    );
+    // A planned modpack job is not visible to other devices.
+    let job = host.create_plan(modpack_body("Mine", "pack", 25641));
+    let id = job["jobId"].as_str().unwrap();
+    let (status, _) = host.call(
+        "GET",
+        &format!("/v1/host/creates/jobs/{id}"),
+        Value::Null,
+        &host.stranger,
+    );
+    assert_eq!(status, 403);
+}
+
+/// A small real Modrinth Fabric server pack ("Smooth Server", Minecraft
+/// 1.21.11) created through the router with the live installer and the
+/// server's own pack engine, then started until online and stopped.
+#[test]
+#[ignore = "downloads Java, Fabric and a real Modrinth pack, then runs the server"]
+fn real_modrinth_fabric_modpack_create_reaches_online() {
+    let scratch = tempfile::tempdir().unwrap();
+    let java_cache = scratch.path().join("java");
+    std::fs::create_dir_all(&java_cache).unwrap();
+    let env = Arc::new(WindowsSafeEnv(HostEnvironment {
+        java_cache: java_cache.clone(),
+    }));
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("servers")).unwrap();
+    let servers = std::fs::canonicalize(temp.path().join("servers")).unwrap();
+    let installer = Arc::new(vesta_control::machine::creates::LiveCreateInstaller::new(
+        java_cache, servers,
+    ));
+    let live =
+        Arc::new(vesta_control::machine::creates::LiveCatalogue::open(scratch.path()).unwrap());
+    let host = Host::start(temp, env, Some(installer), None, Some(live));
+    let port = free_port();
+    let job = host.create_plan(json!({"kind":"modpack","name":"Smooth Real",
+        "source":{"kind":"provider","provider":"modrinth","projectId":"NnAGuoCJ","versionId":"sYyD6ODr"},
+        "gamePort":port,"memoryMiB":2048,"eulaAccepted":false}));
+    assert_eq!(job["state"], "review", "{job}");
+    let summary = &job["review"]["summary"];
+    assert_eq!(summary["kind"], "modpack");
+    assert_eq!(summary["minecraftVersion"], "1.21.11");
+    assert_eq!(summary["software"]["kind"], "fabric");
+    assert_eq!(summary["pack"]["minecraftVersion"], "1.21.11");
+    assert_eq!(summary["pack"]["loader"], "fabric");
+    let id = job["jobId"].as_str().unwrap().to_owned();
+    let (status, accepted) = host.create_apply(&job, "real-modpack", json!({}));
+    assert_eq!(status, 202, "{accepted}");
+    let server = accepted["serverId"].as_str().unwrap().to_owned();
+    let dir = host.temp.path().join("servers").join(&server);
+    let ready = host.create_wait(&id, Duration::from_secs(1800), |j| j["state"] != "applying");
+    assert_eq!(ready["state"], "ready", "{ready}");
+    let mods: Vec<_> = std::fs::read_dir(dir.join("game/mods"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(!mods.is_empty(), "pack mods installed");
+    let (status, started) = host.job_action(&id, "start");
+    assert_eq!(status, 202, "{started}");
+    let online = host.create_wait(&id, Duration::from_secs(600), |j| j["state"] != "starting");
+    if online["state"] != "online" {
+        eprintln!(
+            "launch.toml:\n{}\nlatest.log:\n{}",
+            std::fs::read_to_string(dir.join("private/launch.toml")).unwrap_or_default(),
+            std::fs::read_to_string(dir.join("game/logs/latest.log")).unwrap_or_default()
+        );
+    }
+    assert_eq!(online["state"], "online", "{online}");
+    let card = host
+        .servers()
+        .into_iter()
+        .find(|s| s["serverId"] == server)
+        .unwrap();
+    assert_eq!(card["software"]["kind"], "fabric");
+    let (status, view) = host.call(
+        "GET",
+        &format!("/v1/servers/{server}/manage/server/status"),
+        Value::Null,
+        &host.owner,
+    );
+    assert_eq!(status, 200, "{view}");
+    let data = if view["data"].is_object() {
+        &view["data"]
+    } else {
+        &view
+    };
+    let generation = data["generation"].as_str().unwrap().to_owned();
+    let (status, stopped) = host.call(
+        "POST",
+        &format!("/v1/servers/{server}/manage/lifecycle/stop"),
+        json!({"expected_generation":generation}),
+        &format!("{}\r\nIdempotency-Key: real-modpack-stop-0001", host.owner),
+    );
+    assert!((200..300).contains(&status), "{status} {stopped}");
+    let until = std::time::Instant::now() + Duration::from_secs(180);
+    while host.servers().iter().any(|s| s["state"] != "stopped") {
+        assert!(std::time::Instant::now() < until, "not stopped");
+        std::thread::sleep(Duration::from_secs(1));
+    }
 }

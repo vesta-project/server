@@ -15,6 +15,8 @@ pub use files::*;
 mod providers;
 mod publication;
 mod uploads;
+mod create_pack;
+pub use create_pack::*;
 pub use uploads::{UploadBegin, UploadChunk, UploadReceipt};
 mod suggestions;
 use super::ReleaseError;

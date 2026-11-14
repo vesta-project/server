@@ -17,9 +17,13 @@ pub(super) fn dispatch(
     headers: &http::HeaderMap,
     bytes: &[u8],
 ) -> Reply {
-    // Modes that are not built yet answer 501 so the launcher can hide them.
-    if path == "/v1/host/creates/restore-sources" || path == "/v1/host/creates/uploads" {
+    // Restore is not built yet: 501 so the launcher can hide it.
+    if path == "/v1/host/creates/restore-sources" {
         return failure(StatusCode::NOT_IMPLEMENTED, "not_supported_yet");
+    }
+    // POST uploads stream through `Application::create_upload`.
+    if path == "/v1/host/creates/uploads" {
+        return failure(StatusCode::NOT_FOUND, "not_found");
     }
     if path == "/v1/host/creates/plan"
         || path == "/v1/host/creates/apply"
@@ -100,25 +104,33 @@ fn job_routes(
         if method != Method::POST {
             return failure(StatusCode::NOT_FOUND, "not_found");
         }
-        // The kind decides the shape; only `new` exists so far.
+        // The kind decides the shape.
         let value: serde_json::Value = match parse(bytes) {
             Ok(v) => v,
             Err(e) => return e,
         };
-        match value.get("kind").and_then(serde_json::Value::as_str) {
-            Some("new") => {}
-            Some("modpack" | "restore") => {
+        let kind = value.get("kind").and_then(serde_json::Value::as_str);
+        match kind {
+            Some("new" | "modpack") => {}
+            Some("restore") => {
                 return failure(StatusCode::NOT_IMPLEMENTED, "not_supported_yet");
             }
             _ => return failure(StatusCode::BAD_REQUEST, "invalid_request"),
         }
-        let Ok(request) = serde_json::from_value::<jobs::NewServerRequest>(value) else {
-            return failure(StatusCode::BAD_REQUEST, "invalid_request");
-        };
         let Some(service) = service(router) else {
             return failure(StatusCode::SERVICE_UNAVAILABLE, "creates_unavailable");
         };
-        let accepted = tryjob!(service.jobs.begin_create(&binding, &request));
+        let accepted = if kind == Some("modpack") {
+            let Ok(request) = serde_json::from_value::<jobs::ModpackServerRequest>(value) else {
+                return failure(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            tryjob!(service.jobs.begin_create_modpack(&binding, &request))
+        } else {
+            let Ok(request) = serde_json::from_value::<jobs::NewServerRequest>(value) else {
+                return failure(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            tryjob!(service.jobs.begin_create(&binding, &request))
+        };
         let (worker, owner, id) = (service, binding, accepted.job_id.clone());
         background(move || {
             let _ = worker.jobs.run_create_plan(
