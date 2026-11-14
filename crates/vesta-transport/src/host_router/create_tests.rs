@@ -1903,6 +1903,17 @@ fn server_session_projects_the_callers_roles_and_capabilities() {
             .unwrap();
         check(&host.stranger, builtin);
     }
+    let previous=host.state.snapshot().unwrap();
+    let device=host.state.device(host.devices.1).unwrap().unwrap();
+    let stale=vesta_control::worker::ServerSubject {host_id:previous.host_id,server_id:server,account_id:stranger,device_id:device.device_id,generation:previous.auth_generation,issued_at_ms:host.state.now_ms(),expires_at_ms:host.state.now_ms()+30000,capabilities:vec!["status.view".into()]};
+    let (status,users)=host.call("GET",&format!("/v1/servers/{server}/manage/users"),Value::Null,&host.owner);
+    assert_eq!(status,200,"{users}");
+    let user=users["data"]["users"].as_array().unwrap().iter().find(|u|u["id"]==stranger.to_string()).unwrap();
+    let (status,revoked)=host.call("PUT",&format!("/v1/servers/{server}/manage/users/{stranger}/roles"),json!({"add":[],"remove":["player"],"expected_version":user["version"]}),&host.owner);
+    assert_eq!(status,200,"{revoked}");
+    assert!(host.state.snapshot().unwrap().auth_generation>previous.auth_generation);
+    assert_eq!(host.call("GET",&path,Value::Null,&host.stranger).0,404);
+    assert!(host.router.owned_handle(server).unwrap().authorize(stale).is_err(),"old worker subject survived revocation");
     // Only GET, with no query or body.
     assert_eq!(host.call("POST", &path, json!({}), &host.owner).0, 400);
 }
