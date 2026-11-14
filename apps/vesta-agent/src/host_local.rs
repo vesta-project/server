@@ -14,6 +14,8 @@ use vesta_transport::host_identity::HostIdentity;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum LocalRequest {
+    RemovedServers,
+    RestoreServer { server_id: Uuid },
     SetupCode,
     Status,
     Link,
@@ -31,6 +33,14 @@ struct Response {
 fn dispatch(identity: &HostIdentity, request: LocalRequest) -> Response {
     let local = LocalPrivilege::from_privileged_local_channel();
     let result = match request {
+        LocalRequest::RemovedServers => {
+            let root=identity.state.database().directory().path().parent().unwrap().join("removed");
+            vesta_control::machine::removed::list(&root).and_then(|v| serde_json::to_value(v).map_err(|_| vesta_control::machine::imports::jobs::JobError::UNAVAILABLE)).map_err(|e| vesta_control::machine::sessions::IdentityFailure(e.0))
+        },
+        LocalRequest::RestoreServer {server_id} => {
+            let root=identity.state.database().directory().path().parent().unwrap().join("servers");
+            vesta_control::machine::removed::restore(&identity.state,&root,server_id).map(|v| serde_json::json!({"serverId":v.server_id,"name":v.name,"restored":true})).map_err(|e| vesta_control::machine::sessions::IdentityFailure(e.0))
+        },
         LocalRequest::Status => identity
             .state
             .snapshot()
@@ -162,19 +172,23 @@ impl Server {
             }
             crate::control::bind_control(&endpoint)?
         };
+        let removed_root = state.parent().ok_or("host_local_failed")?.join("removed");
+        vesta_control::machine::removed::purge(&removed_root, identity.state.now_ms())
+            .map_err(|_| "host_local_failed")?;
         let (stop, mut stopped) = tokio::sync::oneshot::channel();
         #[cfg(any(windows, target_os = "linux"))]
         let task = tokio::spawn(async move {
+            let mut janitor = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
             loop {
                 #[cfg(windows)]
                 let mut stream = {
-                    tokio::select! {_= &mut stopped=>break,result=listener.connect()=>result.map_err(|_|"host_local_accept_failed")?}
+                    tokio::select! {_= &mut stopped=>break,_=janitor.tick()=>{let _=vesta_control::machine::removed::purge(&removed_root,identity.state.now_ms());continue;},result=listener.connect()=>result.map_err(|_|"host_local_accept_failed")?}
                     let next = crate::host_local_windows::create(&endpoint, false, 2)?;
                     std::mem::replace(&mut listener, next)
                 };
                 #[cfg(target_os = "linux")]
                 let mut stream = {
-                    let (stream, _) = tokio::select! {_= &mut stopped=>break,result=listener.accept()=>result.map_err(|_|"host_local_accept_failed")?};
+                    let (stream, _) = tokio::select! {_= &mut stopped=>break,_=janitor.tick()=>{let _=vesta_control::machine::removed::purge(&removed_root,identity.state.now_ms());continue;},result=listener.accept()=>result.map_err(|_|"host_local_accept_failed")?};
                     if !allowed_peer(
                         stream
                             .peer_cred()
@@ -227,13 +241,20 @@ impl Server {
 /// additionally admits root while retaining an fd-pinned, owner-checked directory.
 #[cfg(target_os = "linux")]
 fn privileged_socket_address(endpoint: &Path, owner: u32) -> Result<(std::fs::File, PathBuf)> {
-    use std::os::{fd::AsRawFd, unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt}};
-    let directory = std::fs::OpenOptions::new().read(true)
+    use std::os::{
+        fd::AsRawFd,
+        unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    };
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
         .open(endpoint.parent().ok_or("host_local_acl_refused")?)
         .map_err(|_| "host_local_acl_refused")?;
     let metadata = directory.metadata().map_err(|_| "host_local_acl_refused")?;
-    if metadata.uid() != owner || !allowed_peer(uid(), owner) || metadata.permissions().mode() & 0o077 != 0 {
+    if metadata.uid() != owner
+        || !allowed_peer(uid(), owner)
+        || metadata.permissions().mode() & 0o077 != 0
+    {
         return Err("host_local_acl_refused");
     }
     let address = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()))
@@ -344,6 +365,10 @@ fn parse(mut args: Vec<String>) -> Result<(PathBuf, LocalRequest, crate::output:
         args.remove(i);
     }
     let r = match args.as_slice() {
+        [c, a] if c == "servers" && a == "removed" => LocalRequest::RemovedServers,
+        [c, a, id] if c == "servers" && a == "restore" => LocalRequest::RestoreServer {
+            server_id: Uuid::parse_str(id).map_err(|_| "host_local_invalid_arguments")?,
+        },
         [c] if c == "setup-code" => LocalRequest::SetupCode,
         [c] if c == "host-status" => LocalRequest::Status,
         [c] if c == "link" => LocalRequest::Link,
@@ -388,6 +413,8 @@ fn parse(mut args: Vec<String>) -> Result<(PathBuf, LocalRequest, crate::output:
 }
 fn kind(request: &LocalRequest) -> &'static str {
     match request {
+        LocalRequest::RemovedServers => "servers-removed",
+        LocalRequest::RestoreServer { .. } => "servers-restored",
         LocalRequest::SetupCode => "setup-code",
         LocalRequest::Status => "host-status",
         LocalRequest::Link => "link",
@@ -494,10 +521,7 @@ pub async fn run(args: Vec<std::ffi::OsString>) -> std::process::ExitCode {
         }
         Err(code) => {
             eprintln!("{}", crate::host_output::explain_error(code));
-            if matches!(
-                code,
-                "host_local_invalid_arguments"
-            ) {
+            if matches!(code, "host_local_invalid_arguments") {
                 eprintln!("{USAGE}");
             }
             std::process::ExitCode::FAILURE

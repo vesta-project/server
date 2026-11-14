@@ -2775,3 +2775,40 @@ fn real_loader_less_modrinth_pack_creates_on_vanilla_and_reaches_online() {
     stop_server(&host, &server, "real-vanilla-pack-stop-0001");
 }
 
+#[test]
+fn owners_remove_running_and_stopped_servers_and_replay() {
+    for stop_first in [false,true] {
+        let host=create_host(Arc::new(FakeInstaller::default()));
+        let job=host.create_plan(new_body("Remove me",Some(free_port()),Some(1024)));
+        let id=job["jobId"].as_str().unwrap();
+        let (status,accepted)=host.create_apply(&job,"remove-create",json!({}));assert_eq!(status,202,"{accepted}");
+        let server=accepted["serverId"].as_str().unwrap();
+        let ready=host.create_wait(id,Duration::from_secs(120),|j| j["state"]=="online" || j["state"]=="failed");assert_eq!(ready["state"],"online","{ready}");
+        if stop_first {
+            let worker=host.router.owned_handle(server.parse().unwrap()).unwrap();
+            let device=host.state.devices(Actor::LocalRecovery).unwrap().into_iter().find(|d| d.device_id==host.devices.0).unwrap();
+            let subject=subject(&host.router,&worker,&device).unwrap();let network=worker.authorize(subject).unwrap();
+            let generation=network.runtime().game_snapshot().unwrap().generation.unwrap();
+            let actor=vesta_control::identity::Subject {principal:vesta_control::identity::PrincipalId::parse(&device.account_id.to_string()).unwrap(),device:vesta_control::identity::DeviceId::parse(&device.device_id.to_string()).unwrap()};
+            network.runtime().submit_game(&actor,vesta_control::operations::GameCommand::Stop {expected_generation:generation},"remove-pre-stop").unwrap();
+            let until=std::time::Instant::now()+Duration::from_secs(30);
+            while network.runtime().game_snapshot().unwrap().phase!=vesta_control::operations::ProcessPhase::Stopped {assert!(std::time::Instant::now()<until);std::thread::sleep(Duration::from_millis(50));}
+        }
+        let path=format!("/v1/host/servers/{server}");
+        let body=json!({"confirmName":"Remove me","idempotencyKey":Uuid::new_v4()});
+        let stranger=host.state.devices(Actor::LocalRecovery).unwrap().into_iter().find(|d| d.device_id==host.devices.1).unwrap();
+        let owner=host.state.snapshot().unwrap().primary_account_id.unwrap();
+        for role in [None,Some(ServerRole::Admin),Some(ServerRole::Moderator),Some(ServerRole::Player)] {
+            host.state.set_server_role(Actor::Account(owner),server.parse().unwrap(),stranger.account_id,role,host.state.snapshot().unwrap().revision).unwrap();
+            let (status,reply)=host.call("DELETE",&path,body.clone(),&host.stranger);assert_eq!(status,403,"{reply}");
+        }
+        let (status,wrong)=host.call("DELETE",&path,json!({"confirmName":"wrong","idempotencyKey":Uuid::new_v4()}),&host.owner);assert_eq!(status,422,"{wrong}");
+        let (status,removed)=host.call("DELETE",&path,body.clone(),&host.owner);assert_eq!(status,200,"{removed}");
+        assert!(host.servers().is_empty());
+        let (status,replay)=host.call("DELETE",&path,body,&host.owner);assert_eq!(status,200,"{replay}");assert_eq!(removed,replay);
+        assert_eq!(host.call("GET",&format!("/v1/servers/{server}/manage/users"),Value::Null,&host.owner).0,404);
+        vesta_control::machine::removed::restore(&host.state,&host.temp.path().join("servers"),server.parse().unwrap()).unwrap();
+        assert_eq!(host.servers().len(),1);
+        assert_eq!(host.call("GET",&format!("/v1/servers/{server}/manage/server/status"),Value::Null,&host.owner).0,200);
+    }
+}

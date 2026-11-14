@@ -21,6 +21,7 @@ mod access;
 mod creates;
 mod imports;
 mod owners;
+mod removed;
 
 /// Builds the in-process worker for a registered imported server.
 pub type WorkerFactory = dyn Fn(Uuid) -> Result<Worker, JobError> + Send + Sync;
@@ -40,6 +41,7 @@ pub struct HostRouter {
     imports: Option<Arc<ImportService>>,
     catalogue: Option<Arc<dyn vesta_control::machine::creates::Catalogue>>,
     creator: Option<Arc<dyn vesta_control::machine::creates::CreateInstaller>>,
+    removal_lock: Arc<Mutex<()>>,
 }
 impl HostRouter {
     pub fn new(identity: Arc<HostIdentity>, name: String, folders: Arc<FolderBrowser>) -> Self {
@@ -52,6 +54,7 @@ impl HostRouter {
             imports: None,
             catalogue: None,
             creator: None,
+            removal_lock: Default::default(),
         }
     }
     /// Enable the import job routes. `create` builds a registered server's
@@ -861,6 +864,9 @@ impl Application {
                 Err(_) => failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable"),
             };
         }
+        if method == Method::DELETE && path.starts_with("/v1/host/servers/") && query.is_none() {
+            return removed::dispatch(&self.router, &device, path, bytes);
+        }
         if let Some(rest) = path.strip_prefix("/v1/servers/") {
             let Some((id, suffix)) = rest.split_once('/') else {
                 return failure(StatusCode::NOT_FOUND, "not_found");
@@ -892,6 +898,12 @@ impl Application {
                 .lock()
                 .ok()
                 .and_then(|w| w.iter().find(|w| w.server_id() == id).cloned());
+            let worker = worker.or_else(|| {
+                self.router
+                    .import_worker(id)
+                    .ok()
+                    .map(|w| Arc::new(w) as Arc<dyn ServerWorker>)
+            });
             let Some(worker) = worker else {
                 return failure(StatusCode::SERVICE_UNAVAILABLE, "worker_unavailable");
             };
@@ -1092,8 +1104,9 @@ impl Application {
                         failure(StatusCode::SERVICE_UNAVAILABLE, "worker_unavailable")
                     })?;
                 let s = subject(&router, w.as_ref(), &d)?;
-                let generation=s.generation;
-                w.authorize(s).map(|host|(host,generation))
+                let generation = s.generation;
+                w.authorize(s)
+                    .map(|host| (host, generation))
                     .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE, "worker_unavailable"))
             })
             .await;
@@ -1180,7 +1193,13 @@ impl Application {
             let until = tokio::time::Instant::now() + Duration::from_secs(29);
             loop {
                 tick.tick().await;
-                if tokio::time::Instant::now() >= until || identity.authenticate(&token).is_err() || !identity.state.snapshot().is_ok_and(|s|s.auth_generation==generation) {
+                if tokio::time::Instant::now() >= until
+                    || identity.authenticate(&token).is_err()
+                    || !identity
+                        .state
+                        .snapshot()
+                        .is_ok_and(|s| s.auth_generation == generation)
+                {
                     let _ = stop.send(true);
                     break;
                 }

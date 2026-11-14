@@ -338,3 +338,84 @@ fn machine_counter_exhaustion_and_failed_enrollment_are_atomic() {
         })
         .unwrap();
 }
+
+#[test]
+fn removed_servers_revoke_grants_replay_restore_and_expire() {
+    use super::removed::{self, RemoveRequest};
+    let temp = tempfile::tempdir().unwrap();
+    let state = open(&temp.path().join("host"));
+    let owner = Uuid::new_v4();
+    state.claim(owner, "Owner", [1; 32]).unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let server = register(&state, owner, port);
+    let player = Uuid::new_v4();
+    enroll(&state, player, 2);
+    state
+        .set_server_role(
+            Actor::Account(owner),
+            server.server_id,
+            player,
+            Some(ServerRole::Player),
+            state.snapshot().unwrap().revision,
+        )
+        .unwrap();
+    let servers = temp.path().join("servers");
+    std::fs::create_dir_all(servers.join(server.server_id.to_string())).unwrap();
+    let bad = RemoveRequest {
+        confirm_name: "wrong".into(),
+        idempotency_key: Uuid::new_v4(),
+    };
+    assert_eq!(
+        removed::prepare(&state, owner, server.server_id, &bad)
+            .err()
+            .unwrap()
+            .0,
+        "confirm_name_mismatch"
+    );
+    assert_eq!(
+        removed::prepare(&state, player, server.server_id, &bad)
+            .err()
+            .unwrap()
+            .0,
+        "forbidden"
+    );
+    let req = RemoveRequest {
+        confirm_name: server.name.clone(),
+        idempotency_key: Uuid::new_v4(),
+    };
+    let (record, done) = removed::prepare(&state, owner, server.server_id, &req).unwrap();
+    assert!(!done);
+    removed::finish(&state, &servers, &record, &req).unwrap();
+    assert!(state.visible_servers(owner).unwrap().is_empty());
+    assert!(
+        state
+            .effective_role(player, server.server_id)
+            .unwrap()
+            .is_none()
+    );
+    let (replay, done) = removed::prepare(&state, owner, server.server_id, &req).unwrap();
+    assert!(done);
+    assert_eq!(record.removed_at, replay.removed_at);
+    let root = temp.path().join("removed");
+    assert_eq!(removed::list(&root).unwrap().len(), 1);
+    removed::restore(&state, &servers, server.server_id).unwrap();
+    assert_eq!(state.visible_servers(owner).unwrap().len(), 1);
+    assert!(
+        state
+            .effective_role(player, server.server_id)
+            .unwrap()
+            .is_none()
+    );
+    let req = RemoveRequest {
+        confirm_name: server.name,
+        idempotency_key: Uuid::new_v4(),
+    };
+    let (record, _) = removed::prepare(&state, owner, server.server_id, &req).unwrap();
+    removed::finish(&state, &servers, &record, &req).unwrap();
+    removed::purge(&root, record.restore_until_ms + 1).unwrap();
+    assert!(removed::list(&root).unwrap().is_empty());
+}

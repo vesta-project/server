@@ -18,6 +18,24 @@ pub fn format_reply(
     }
     Ok(match command {
         "setup-code" => setup_code(data, now, addresses, port)?,
+        "servers-removed" => {
+            let mut text = String::from("Removed servers (recoverable for 7 days):\n");
+            for r in data.as_array().into_iter().flatten() {
+                text.push_str(&format!(
+                    "{}  {}  removed {}  restore until {}\n",
+                    r["serverId"].as_str().unwrap_or("?"),
+                    r["name"].as_str().unwrap_or("?"),
+                    r["removedAt"].as_str().unwrap_or("?"),
+                    r["restoreUntil"].as_str().unwrap_or("?")
+                ));
+            }
+            text
+        }
+        "servers-restored" => format!(
+            "Restored {} ({}). The server is stopped and ready to start.\n",
+            data["name"].as_str().unwrap_or("server"),
+            data["serverId"].as_str().unwrap_or("?")
+        ),
         "host-status" => host_status(data),
         "link" => link_code(data, now)?,
         "link-approve" | "link-inspect" => link_review(data),
@@ -115,21 +133,14 @@ fn host_status(data: &Value) -> String {
     let _ = writeln!(out, "Vesta Server status");
     out.push('\n');
     let _ = writeln!(out, "  Host ID:    {host}");
-    let _ = writeln!(
-        out,
-        "  Claimed:    {}",
-        if claimed { "Yes" } else { "No" }
-    );
+    let _ = writeln!(out, "  Claimed:    {}", if claimed { "Yes" } else { "No" });
     if claimed {
         let _ = write!(
             out,
             "\nThis machine is claimed. To add another device, run: sudo vesta link"
         );
     } else {
-        let _ = write!(
-            out,
-            "\nNot claimed yet. Run: sudo vesta setup-code"
-        );
+        let _ = write!(out, "\nNot claimed yet. Run: sudo vesta setup-code");
     }
     out
 }
@@ -181,10 +192,7 @@ fn link_review(data: &Value) -> String {
             "\nWaiting for a device to use the link code. Keep this terminal ready for approval."
         );
     } else {
-        let _ = write!(
-            out,
-            "\nApprove only if this matches the device you expect."
-        );
+        let _ = write!(out, "\nApprove only if this matches the device you expect.");
     }
     out
 }
@@ -379,14 +387,8 @@ mod tests {
             25500,
         )
         .unwrap();
-        assert!(
-            text.contains("Setup code:  K7Q4-MX29-P3"),
-            "{text}"
-        );
-        assert!(
-            text.contains("Valid for:   30 minutes (until "),
-            "{text}"
-        );
+        assert!(text.contains("Setup code:  K7Q4-MX29-P3"), "{text}");
+        assert!(text.contains("Valid for:   30 minutes (until "), "{text}");
         assert!(text.contains("pick this machine or type 192.168.1.67"));
         assert!(text.contains("Need a new code? Run: sudo vesta setup-code"));
         assert!(!text.contains('{'));
@@ -425,7 +427,8 @@ mod tests {
             "code": "K7Q4-MX29-P3",
             "expiresAt": "2025-11-16T13:02:00Z"
         });
-        let json = format_reply(Format::Json, "setup-code", &data, now_fixed(), &[], 25500).unwrap();
+        let json =
+            format_reply(Format::Json, "setup-code", &data, now_fixed(), &[], 25500).unwrap();
         assert_eq!(json, serde_json::to_string(&data).unwrap());
         assert_eq!(
             json,
@@ -439,13 +442,29 @@ mod tests {
 
     #[test]
     fn host_status_and_link_json_stay_compact() {
-        let status = serde_json::json!({"hostId":"11111111-1111-4111-8111-111111111111","claimed":false});
+        let status =
+            serde_json::json!({"hostId":"11111111-1111-4111-8111-111111111111","claimed":false});
         assert_eq!(
-            format_reply(Format::Json, "host-status", &status, now_fixed(), &[], 25500).unwrap(),
+            format_reply(
+                Format::Json,
+                "host-status",
+                &status,
+                now_fixed(),
+                &[],
+                25500
+            )
+            .unwrap(),
             serde_json::to_string(&status).unwrap()
         );
-        let human = format_reply(Format::Human, "host-status", &status, now_fixed(), &[], 25500)
-            .unwrap();
+        let human = format_reply(
+            Format::Human,
+            "host-status",
+            &status,
+            now_fixed(),
+            &[],
+            25500,
+        )
+        .unwrap();
         assert!(human.contains("Claimed:    No"));
         assert!(human.contains("sudo vesta setup-code"));
 
@@ -466,9 +485,17 @@ mod tests {
 
     #[test]
     fn claimed_status_points_to_link() {
-        let status = serde_json::json!({"hostId":"11111111-1111-4111-8111-111111111111","claimed":true});
-        let text = format_reply(Format::Human, "host-status", &status, now_fixed(), &[], 25500)
-            .unwrap();
+        let status =
+            serde_json::json!({"hostId":"11111111-1111-4111-8111-111111111111","claimed":true});
+        let text = format_reply(
+            Format::Human,
+            "host-status",
+            &status,
+            now_fixed(),
+            &[],
+            25500,
+        )
+        .unwrap();
         assert!(text.contains("Claimed:    Yes"));
         assert!(text.contains("sudo vesta link"));
     }
