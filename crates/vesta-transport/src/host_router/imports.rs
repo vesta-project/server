@@ -81,6 +81,14 @@ pub(super) fn dispatch(
         )),
         ("POST", "/v1/host/imports/inspect") => {
             let r: Inspect = input!();
+            // This host's own servers' ports never count as the source running.
+            let managed_ports = match &router.imports {
+                Some(service) => match service.jobs.managed_ports() {
+                    Ok(ports) => ports,
+                    Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+                },
+                None => Default::default(),
+            };
             result!(domain::inspection::inspect(
                 &router.folders,
                 &binding,
@@ -88,7 +96,8 @@ pub(super) fn dispatch(
                     folder_token: r.folder_token,
                     original_path: None,
                     destination: None,
-                    game_port: r.game_port
+                    game_port: r.game_port,
+                    managed_ports,
                 }
             ))
         }

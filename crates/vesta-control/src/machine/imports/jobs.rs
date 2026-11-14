@@ -711,7 +711,8 @@ impl ImportJobs {
             warnings.insert("amp_controller_running");
         }
 
-        if let Some(code) = inspection::stopped_evidence(&source, report.server.game_port) {
+        let managed = self.managed_ports()?;
+        if let Some(code) = inspection::stopped_evidence(&source, report.server.game_port, &managed) {
             blockers.insert(code);
         }
         let reservations = self.read(|c| reservations_in(c, None))?;
@@ -1248,7 +1249,8 @@ impl ImportJobs {
             .ok()
             .and_then(|p| p.get("server-port").and_then(|v| v.parse().ok()))
             .or(Some(25565));
-        if let Some(code) = inspection::stopped_evidence(&private.source, source_port) {
+        let managed = self.managed_ports().map_err(|_| Outcome::Interrupted("state_unavailable"))?;
+        if let Some(code) = inspection::stopped_evidence(&private.source, source_port, &managed) {
             return Err(Outcome::Blocked(code));
         }
         let port = review
@@ -1607,6 +1609,22 @@ pub(crate) fn name_in_use(c: &Connection, name: &str) -> JobResult<bool> {
 
 /// Ports and memory held by registered servers and unreleased import
 /// reservations, optionally excluding one job.
+impl ImportJobs {
+    /// Game ports of every server this host manages (registered, not deleted).
+    /// An import source can never be one of these servers, so their ports are
+    /// never evidence that a source is still running.
+    pub fn managed_ports(&self) -> JobResult<BTreeSet<u16>> {
+        self.read(|c| {
+            let mut stmt =
+                c.prepare("SELECT game_port FROM machine_servers WHERE state!='deleted'")?;
+            let ports = stmt
+                .query_map([], |r| r.get::<_, u16>(0))?
+                .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+            Ok(ports)
+        })
+    }
+}
+
 pub(crate) fn reservations_in(
     c: &Connection,
     exclude_job: Option<&str>,

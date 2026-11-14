@@ -415,6 +415,7 @@ impl ImportJobs {
                 Kind::Import => Some(decode::<Private>(job.private)?.source),
                 Kind::Create => None,
             };
+            let managed = self.managed_ports()?;
             let source_conflict = source.and_then(|source| {
                 let (processes, _observed) = self.0.env.processes(std::slice::from_ref(&source));
                 if processes
@@ -429,6 +430,7 @@ impl ImportJobs {
                             .ok()
                             .and_then(|p| p.get("server-port").and_then(|v| v.parse().ok()))
                             .or(Some(25565)),
+                        &managed,
                     )
                 }
             });

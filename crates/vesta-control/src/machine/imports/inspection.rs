@@ -45,6 +45,10 @@ pub struct InspectRequest {
     pub original_path: Option<PathBuf>,
     /// Game port override from the plan request; null means server.properties.
     pub game_port: Option<u16>,
+    /// Game ports of servers this Vesta Server already manages (host-supplied,
+    /// never from a request). A source cannot be one of them, so one of these
+    /// ports answering is never evidence that the source is running.
+    pub managed_ports: BTreeSet<u16>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -216,7 +220,7 @@ pub fn inspect(
     if processes.iter().any(|p| p.relation == "amp_controller") {
         warnings.insert("amp_controller_running");
     }
-    if let Some(code) = stopped_evidence(&opened.path, report.server.game_port) {
+    if let Some(code) = stopped_evidence(&opened.path, report.server.game_port, &request.managed_ports) {
         blockers.insert(code);
     }
     let source_pids: BTreeSet<u32> = processes
@@ -1164,7 +1168,13 @@ mod linux {
 }
 
 /// Independent, unprivileged source-port probe, even when importing to another port.
-pub(crate) fn stopped_evidence(source: &Path, port: Option<u16>) -> Option<&'static str> {
+/// Ports in `managed` belong to this Vesta Server's own registered servers;
+/// they are not probed (the source folder can never be a managed server).
+pub(crate) fn stopped_evidence(
+    source: &Path,
+    port: Option<u16>,
+    managed: &BTreeSet<u16>,
+) -> Option<&'static str> {
     let properties = read_properties(&source.join("server.properties")).ok();
     let mut addresses = vec![
         IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -1180,9 +1190,11 @@ pub(crate) fn stopped_evidence(source: &Path, port: Option<u16>) -> Option<&'sta
             addresses.push(ip);
         }
     }
-    if addresses.into_iter().any(|ip| {
+    let port = port.unwrap_or(25565);
+    if !managed.contains(&port)
+        && addresses.into_iter().any(|ip| {
         std::net::TcpStream::connect_timeout(
-            &std::net::SocketAddr::new(ip, port.unwrap_or(25565)),
+            &std::net::SocketAddr::new(ip, port),
             std::time::Duration::from_millis(100),
         )
         .is_ok()
@@ -1227,21 +1239,36 @@ pub(crate) fn stopped_evidence(source: &Path, port: Option<u16>) -> Option<&'sta
 #[cfg(test)]
 mod stopped_tests {
     use super::*;
+    /// A port held by one of this Vesta Server's own servers is not the
+    /// source still running; any other listener on it still is.
+    #[test]
+    fn ports_of_managed_servers_are_not_source_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let managed = BTreeSet::from([port]);
+        assert_eq!(stopped_evidence(dir.path(), Some(port), &managed), None);
+        let other = BTreeSet::from([port.wrapping_add(1).max(1)]);
+        assert_eq!(
+            stopped_evidence(dir.path(), Some(port), &other),
+            Some("source_port_listening")
+        );
+    }
     #[test]
     fn listening_clears_after_stop() {
         let dir = tempfile::tempdir().unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         assert_eq!(
-            stopped_evidence(dir.path(), Some(port)),
+            stopped_evidence(dir.path(), Some(port), &BTreeSet::new()),
             Some("source_port_listening")
         );
         drop(listener);
-        assert_eq!(stopped_evidence(dir.path(), Some(port)), None);
+        assert_eq!(stopped_evidence(dir.path(), Some(port), &BTreeSet::new()), None);
         fs::create_dir_all(dir.path().join("world/region")).unwrap();
         fs::write(dir.path().join("world/region/r.0.0.mca"), b"world").unwrap();
         assert_eq!(
-            stopped_evidence(dir.path(), None),
+            stopped_evidence(dir.path(), None, &BTreeSet::new()),
             Some("source_recently_active")
         );
     }
