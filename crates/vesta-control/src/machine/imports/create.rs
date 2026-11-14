@@ -125,6 +125,72 @@ pub struct ServerFacts {
     pub minecraft_version: Option<String>,
 }
 
+/// The software's own version for an imported server, from the facts its
+/// import review recorded (detected loader, Minecraft version and the exact
+/// launch file), with the same meaning as `summary.software.version`: the
+/// loader version for loaders, the build for Paper/Purpur, the Minecraft
+/// version for Vanilla. `None` when those facts do not say.
+pub(crate) fn imported_software_version(detected: &ReviewDetected) -> Option<String> {
+    let minecraft = detected.minecraft_version.as_deref();
+    let launch = detected.launch.as_ref().map(|l| l.relative_path.as_str());
+    let version = |s: &str| {
+        (!s.is_empty()
+            && s.len() <= 64
+            && s.bytes().any(|b| b.is_ascii_digit())
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-+".contains(&b)))
+        .then(|| s.to_owned())
+    };
+    // `libraries/<group path>/<version dir>/<argfile>`.
+    let library_dir = |group: &str| {
+        let rest = launch?.strip_prefix(group)?;
+        let (dir, file) = rest.split_once('/')?;
+        matches!(file, "unix_args.txt" | "win_args.txt").then_some(dir)
+    };
+    match detected.loader.as_deref()? {
+        "vanilla" => minecraft.and_then(version),
+        "paper" | "purpur" => {
+            let prefix = format!("{}-", detected.loader.as_deref()?);
+            let (mc, build) = launch?
+                .strip_prefix(&prefix)?
+                .strip_suffix(".jar")?
+                .rsplit_once('-')?;
+            (minecraft.is_none_or(|m| m == mc)
+                && !build.is_empty()
+                && build.len() <= 9
+                && build.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| build.trim_start_matches('0').to_owned())
+            .filter(|b| !b.is_empty())
+        }
+        "fabric" => {
+            let rest = launch?.strip_prefix("fabric-server-mc.")?;
+            let (mc, rest) = rest.split_once("-loader.")?;
+            let loader = rest
+                .split_once("-launcher.")
+                .map_or(rest.strip_suffix(".jar")?, |(l, _)| l);
+            minecraft.is_none_or(|m| m == mc).then_some(())?;
+            version(loader)
+        }
+        "forge" => {
+            let coordinate = library_dir("libraries/net/minecraftforge/forge/").or_else(|| {
+                let stem = launch?.strip_prefix("forge-")?.strip_suffix(".jar")?;
+                Some(
+                    stem.strip_suffix("-shim")
+                        .or_else(|| stem.strip_suffix("-universal"))
+                        .unwrap_or(stem),
+                )
+            })?;
+            let (mc, loader) = coordinate.split_once('-')?;
+            minecraft.is_none_or(|m| m == mc).then_some(())?;
+            version(loader)
+        }
+        "neoforge" => library_dir("libraries/net/neoforged/neoforge/")
+            .or_else(|| library_dir("libraries/net/neoforged/forge/"))
+            .and_then(version),
+        _ => None,
+    }
+}
+
 pub(crate) fn software_kind(id: &str) -> Option<Software> {
     Software::ALL.into_iter().find(|s| s.id() == id)
 }
@@ -963,8 +1029,9 @@ impl ImportJobs {
                     let Ok(review) = serde_json::from_str::<Review>(&review) else {
                         continue;
                     };
+                    let version = imported_software_version(&review.detected);
                     ServerFacts {
-                        software: review.detected.loader.map(|l| (l, None)),
+                        software: review.detected.loader.map(|l| (l, version)),
                         minecraft_version: review.detected.minecraft_version,
                     }
                 };
@@ -972,5 +1039,84 @@ impl ImportJobs {
             }
             Ok(facts)
         })
+    }
+}
+
+#[cfg(test)]
+mod imported_version_tests {
+    use super::*;
+
+    fn detected(loader: &str, minecraft: Option<&str>, launch: Option<&str>) -> ReviewDetected {
+        ReviewDetected {
+            kind: "minecraft".into(),
+            instance_name: None,
+            minecraft_version: minecraft.map(Into::into),
+            loader: Some(loader.into()),
+            launch: launch.map(|path| LaunchChoice {
+                kind: if path.ends_with(".txt") {
+                    "java_argfile"
+                } else {
+                    "jar"
+                }
+                .into(),
+                relative_path: path.into(),
+            }),
+        }
+    }
+
+    #[test]
+    fn imported_servers_report_the_software_version_their_facts_show() {
+        let mc = Some("1.21.1");
+        for (loader, minecraft, launch, expected) in [
+            ("vanilla", mc, Some("server.jar"), Some("1.21.1")),
+            ("vanilla", None, Some("server.jar"), None),
+            ("paper", mc, Some("paper-1.21.1-130.jar"), Some("130")),
+            ("purpur", mc, Some("purpur-1.21.1-2329.jar"), Some("2329")),
+            // Jar and detected Minecraft version disagree: unknown.
+            ("paper", mc, Some("paper-1.20.4-499.jar"), None),
+            ("paper", mc, Some("paper.jar"), None),
+            (
+                "fabric",
+                mc,
+                Some("fabric-server-mc.1.21.1-loader.0.16.10-launcher.1.0.1.jar"),
+                Some("0.16.10"),
+            ),
+            ("fabric", mc, Some("fabric-server-launch.jar"), None),
+            (
+                "forge",
+                Some("1.20.1"),
+                Some("libraries/net/minecraftforge/forge/1.20.1-47.3.0/unix_args.txt"),
+                Some("47.3.0"),
+            ),
+            (
+                "forge",
+                Some("1.12.2"),
+                Some("forge-1.12.2-14.23.5.2860.jar"),
+                Some("14.23.5.2860"),
+            ),
+            (
+                "neoforge",
+                mc,
+                Some("libraries/net/neoforged/neoforge/21.1.77/win_args.txt"),
+                Some("21.1.77"),
+            ),
+            (
+                "neoforge",
+                Some("1.20.1"),
+                Some("libraries/net/neoforged/forge/1.20.1-47.1.106/unix_args.txt"),
+                Some("1.20.1-47.1.106"),
+            ),
+            ("quilt", mc, Some("quilt-server-launch.jar"), None),
+            ("forge", mc, None, None),
+        ] {
+            assert_eq!(
+                imported_software_version(&detected(loader, minecraft, launch)).as_deref(),
+                expected,
+                "{loader} {launch:?}"
+            );
+        }
+        let mut none = detected("vanilla", mc, None);
+        none.loader = None;
+        assert_eq!(imported_software_version(&none), None);
     }
 }

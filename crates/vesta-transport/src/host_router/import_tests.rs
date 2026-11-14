@@ -493,6 +493,12 @@ fn owner_plans_applies_and_polls_import_jobs_through_the_router() {
     let (_, list) = host.call("GET", "/v1/host/servers", Value::Null, &host.owner);
     assert_eq!(list["servers"][0]["serverId"], server);
     assert_eq!(list["servers"][0]["state"], "registered");
+    // Imported Vanilla's own version is its Minecraft version.
+    assert_eq!(
+        list["servers"][0]["software"],
+        json!({"kind":"vanilla","version":"1.21.1"})
+    );
+    assert_eq!(list["servers"][0]["minecraftVersion"], "1.21.1");
     assert_eq!(
         host.call("GET", "/v1/host/servers", Value::Null, &host.stranger)
             .1["servers"],
