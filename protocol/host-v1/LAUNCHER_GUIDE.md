@@ -284,3 +284,5 @@ Import stopped-state codes and suggested text:
 ### Effective startup policy
 
 Server status `on_agent_start` is `restore_previous` when no stored or host.toml policy was explicitly chosen. This means resume the server's last lifecycle state after an agent restart. Explicit `stay_stopped`, `sleep`, and `start` choices and the local stay-stopped override retain their meaning.
+
+Provider transfers use a 3s connect timeout, 120s idle read timeout, and a bounded overall job deadline. Idempotent metadata GETs retry transient transport/429/5xx failures with backoff. Installer catalogue queries retain their existing sub-15s total budget and persisted catalogue cache; installation metadata and artifacts use the longer job budget. Pack downloads retain destination validation, byte limits and their caller deadline.

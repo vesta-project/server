@@ -296,8 +296,8 @@ impl Default for Limits {
             max_entries: 10_000,
             attempts: 3,
             redirects: 3,
-            connect_ms: 15_000,
-            idle_ms: 30_000,
+            connect_ms: 3_000,
+            idle_ms: 120_000,
             total_ms: 600_000,
         }
     }
