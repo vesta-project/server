@@ -385,6 +385,20 @@ impl ImportJobs {
                 warnings.insert("unsupported_upstream");
             }
         }
+        // The host accepts Mojang's SHA-1-only objects on the owner's behalf
+        // only when Mojang's own manifest publishes exactly those objects.
+        let mut mojang_sha1_accepted = false;
+        if let Some(p) = &preview
+            && p.legacy_checksum
+            && !warnings.contains("legacy_checksum")
+        {
+            match installer.verify_mojang(p) {
+                Ok(()) => mojang_sha1_accepted = true,
+                Err(code) => {
+                    blockers.insert(code);
+                }
+            }
+        }
         let java = match &preview {
             Some(p) => installer.plan_java(p.required_java.major),
             None => crate::java::HostJavaPlan {
@@ -469,8 +483,6 @@ impl ImportJobs {
         if review.blockers.is_empty() {
             review.confirmation = Some(random_token()?);
         }
-        let mojang_sha1_accepted = preview.as_ref().is_some_and(|p| p.legacy_checksum)
-            && !warnings.contains("legacy_checksum");
         let private = CreatePrivate {
             preview,
             experimental: experimental.unwrap_or(false),

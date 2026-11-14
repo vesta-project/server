@@ -49,6 +49,12 @@ pub trait CreateInstaller: Send + Sync {
     /// `software_unresolved` or `provider_unavailable` on failure.
     fn resolve(&self, software: Software, selection: &Selection)
     -> Result<ResolvedPreview, &'static str>;
+    /// Confirm against Mojang's own manifest (piston-meta) that every SHA-1-only
+    /// Mojang object in the preview is exactly what Mojang publishes for that
+    /// version. Only then does the host accept those digests automatically.
+    /// `integrity_conflict` on any difference, `provider_unavailable` when
+    /// Mojang cannot be reached or answers badly.
+    fn verify_mojang(&self, preview: &ResolvedPreview) -> Result<(), &'static str>;
     /// Choose a trusted runtime of exactly this major (existing or to download).
     fn plan_java(&self, required_major: u32) -> HostJavaPlan;
     /// Make the planned runtime available: `java_unresolved` on failure.
@@ -77,12 +83,19 @@ pub struct LiveCreateInstaller {
     java_cache: PathBuf,
     /// Managed server storage; Java found there is never executed.
     excluded: Vec<PathBuf>,
+    /// Long-lived metadata client so Mojang's manifest is cached briefly
+    /// between plans, like the other catalogues. Never installs.
+    metadata: Option<ServerInstaller>,
 }
 impl LiveCreateInstaller {
     pub fn new(java_cache: PathBuf, servers_root: PathBuf) -> Self {
+        let metadata = InstallRoots::new(&servers_root, &[])
+            .and_then(|roots| ServerInstaller::new(roots, TransportConfig::direct()))
+            .ok();
         Self {
             java_cache,
             excluded: vec![servers_root],
+            metadata,
         }
     }
 }
@@ -142,6 +155,22 @@ impl CreateInstaller for LiveCreateInstaller {
                 InstallError::Unavailable
                 | InstallError::InvalidInput
                 | InstallError::RuntimeUnknown => "software_unresolved",
+                _ => "provider_unavailable",
+            })
+    }
+    fn verify_mojang(&self, preview: &ResolvedPreview) -> Result<(), &'static str> {
+        runtime()
+            .map_err(|_| "provider_unavailable")?
+            .block_on(
+                self.metadata
+                    .as_ref()
+                    .ok_or("provider_unavailable")?
+                    .verify_mojang_objects(preview, &SilentProgressReporter),
+            )
+            .map_err(|e| match e {
+                InstallError::IntegrityConflict | InstallError::ArtifactChanged => {
+                    "integrity_conflict"
+                }
                 _ => "provider_unavailable",
             })
     }

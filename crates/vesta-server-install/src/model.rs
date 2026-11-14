@@ -445,6 +445,17 @@ pub struct ResolvedPreview {
     /// Sum of published artifact sizes when every size is known.
     pub download_bytes: Option<u64>,
     pub artifacts_sha256: String,
+    /// Every SHA-1-only artifact from Mojang's objects host, exactly as
+    /// reviewed, for [`crate::ServerInstaller::verify_mojang_objects`].
+    #[serde(default)]
+    pub mojang_objects: Vec<MojangObject>,
+}
+/// One reviewed artifact that Mojang's objects host pins only by SHA-1.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MojangObject {
+    pub url: String,
+    pub sha1: String,
 }
 impl ResolvedPreview {
     pub(crate) fn from_resolved(software: Software, r: &super::providers::Resolved) -> Self {
@@ -480,6 +491,20 @@ impl ResolvedPreview {
                 .map(|a| a.size)
                 .try_fold(0_u64, |sum, size| sum.checked_add(size?)),
             artifacts_sha256: artifacts_sha256(&artifacts),
+            mojang_objects: artifacts
+                .iter()
+                .filter(|a| {
+                    a.digest.algorithm == DigestAlgorithm::Sha1
+                        && match a.family {
+                            Some(family) => family == SourceFamily::MojangObjects,
+                            None => software == Software::Vanilla,
+                        }
+                })
+                .map(|a| MojangObject {
+                    url: a.url.to_owned(),
+                    sha1: a.digest.hex.clone(),
+                })
+                .collect(),
         }
     }
 }
@@ -717,6 +742,9 @@ pub enum SourceFamily {
     SpigotVersions,
     SpigotBuildTools,
     MojangObjects,
+    /// Mojang's own launcher metadata (`piston-meta.mojang.com`), read only to
+    /// confirm SHA-1-only Mojang objects resolved through a mirror.
+    MojangMeta,
     ModrinthFabric,
     ModrinthQuilt,
     FabricMeta,

@@ -5,7 +5,7 @@ use super::*;
 use std::sync::atomic::AtomicBool;
 use vesta_control::machine::creates::{CreateInstaller, CreateProgress, InstallRequest};
 use vesta_server_install::{
-    JavaRequirement, ManagedLaunch, ResolvedPreview, Selection, Software, Warning,
+    JavaRequirement, ManagedLaunch, MojangObject, ResolvedPreview, Selection, Software, Warning,
 };
 
 const FIXTURE_MARKER: &str = "vesta-create-fixture";
@@ -69,8 +69,21 @@ struct FakeInstaller {
     /// Never return from an install (simulates a crash for restart tests).
     hang: AtomicBool,
     installs: AtomicU64,
+    /// What Mojang's own manifest says about the reviewed objects (None: they match).
+    mojang: std::sync::Mutex<Option<&'static str>>,
+    /// Mojang verifications requested.
+    mojang_checks: AtomicU64,
 }
 impl CreateInstaller for FakeInstaller {
+    fn verify_mojang(&self, preview: &ResolvedPreview) -> Result<(), &'static str> {
+        assert!(preview.legacy_checksum && preview.legacy_checksum_mojang_only);
+        assert!(!preview.mojang_objects.is_empty());
+        self.mojang_checks.fetch_add(1, Ordering::SeqCst);
+        match *self.mojang.lock().unwrap() {
+            Some(code) => Err(code),
+            None => Ok(()),
+        }
+    }
     fn resolve(
         &self,
         software: Software,
@@ -99,6 +112,14 @@ impl CreateInstaller for FakeInstaller {
             legacy_checksum: matches!(software, Software::Vanilla | Software::Purpur),
             legacy_checksum_mojang_only: software != Software::Purpur,
             download_bytes: Some(1024),
+            mojang_objects: if software == Software::Vanilla {
+                vec![MojangObject {
+                    url: "https://piston-data.mojang.com/v1/objects/0123456789abcdef0123456789abcdef01234567/server.jar".into(),
+                    sha1: "0123456789abcdef0123456789abcdef01234567".into(),
+                }]
+            } else {
+                Vec::new()
+            },
         })
     }
     fn plan_java(&self, required_major: u32) -> vesta_control::java::HostJavaPlan {
@@ -920,4 +941,50 @@ fn vanilla_plan_has_no_warnings_and_the_host_accepts_mojang_sha1() {
         })
         .unwrap();
     assert_eq!(recorded, 1);
+}
+
+#[test]
+fn mojang_sha1_is_accepted_only_when_mojang_publishes_exactly_those_objects() {
+    // Match: verified once, accepted by the host, no owner warning.
+    let installer = Arc::new(FakeInstaller::default());
+    let host = create_host(installer.clone());
+    let job = host.create_plan(new_body("Verified", Some(25601), Some(1024)));
+    assert_eq!(job["state"], "review", "{job}");
+    assert_eq!(job["review"]["warnings"], json!([]));
+    assert_eq!(installer.mojang_checks.load(Ordering::SeqCst), 1);
+
+    // Mismatch: the mirror differs from Mojang's own data.
+    *installer.mojang.lock().unwrap() = Some("integrity_conflict");
+    let job = host.create_plan(new_body("Mismatch", Some(25602), Some(1024)));
+    assert_eq!(job["state"], "blocked", "{job}");
+    assert_eq!(job["review"]["blockers"], json!(["integrity_conflict"]));
+    assert!(job["review"]["confirmation"].is_null());
+
+    // Unreachable: never silent acceptance, the owner tries again.
+    *installer.mojang.lock().unwrap() = Some("provider_unavailable");
+    let job = host.create_plan(new_body("Offline", Some(25603), Some(1024)));
+    assert_eq!(job["state"], "blocked", "{job}");
+    assert_eq!(job["review"]["blockers"], json!(["provider_unavailable"]));
+    let (status, error) =
+        host.create_apply(&job, "offline-key", json!({"confirmation":"anything"}));
+    assert_eq!(
+        (status, error["error"]["code"].clone()),
+        (409, json!("plan_blocked"))
+    );
+    assert_eq!(installer.mojang_checks.load(Ordering::SeqCst), 3);
+
+    // Purpur's third-party MD5 is never verified against Mojang: the owner
+    // acknowledges it instead.
+    *installer.mojang.lock().unwrap() = None;
+    let mut body = new_body("Purpur", Some(25604), Some(1024));
+    body["software"] = json!({"kind":"purpur","build":null,"loaderVersion":null});
+    let job = host.create_plan(body);
+    assert!(
+        job["review"]["warnings"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("legacy_checksum")),
+        "{job}"
+    );
+    assert_eq!(installer.mojang_checks.load(Ordering::SeqCst), 3);
 }

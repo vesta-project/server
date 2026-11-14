@@ -30,7 +30,8 @@ pub use install::{InstallOutcome, InstallRoots, Receipt};
 pub use managed::{ManagedArtifact, ManagedLaunch, verify_managed_artifacts};
 pub use model::{
     Acknowledgments, Approval, ArtifactReview, DigestAlgorithm, GeneratedFile, InstallError,
-    InstallPlan, JavaRequirement, LaunchRecipe, Limits, PublishedDigest, ResolvedPreview, Result,
+    InstallPlan, JavaRequirement, LaunchRecipe, Limits, MojangObject, PublishedDigest, ResolvedPreview,
+    Result,
     Software,
     SoftwareDescriptor, SourceFamily, Warning,
 };
@@ -255,6 +256,37 @@ impl ServerInstaller {
             providers::resolve(&self.http, software, selection, &mut job, reporter).await?;
         job.ready(reporter).await?;
         Ok(ResolvedPreview::from_resolved(software, &resolved))
+    }
+    /// Confirms against Mojang's own version manifest (cached briefly, like the
+    /// other catalogues) that every SHA-1-only Mojang object in `preview` is
+    /// exactly the `url` and `sha1` Mojang publishes for that version. Only then
+    /// may a host accept those legacy digests on the owner's behalf.
+    /// `IntegrityConflict` on any difference; transport errors when Mojang is
+    /// unreachable; `InvalidInput` when the preview has no such objects.
+    pub async fn verify_mojang_objects(
+        &self,
+        preview: &ResolvedPreview,
+        reporter: &dyn ProgressReporter,
+    ) -> Result<()> {
+        if reporter.is_dry_run()
+            || !preview.legacy_checksum
+            || !preview.legacy_checksum_mojang_only
+            || preview.mojang_objects.is_empty()
+        {
+            return Err(InstallError::InvalidInput);
+        }
+        let mut job = self.catalogue_job();
+        job.ready(reporter).await?;
+        providers::mojang::verify(
+            &self.http,
+            &preview.version,
+            &preview.mojang_objects,
+            &mut job,
+            reporter,
+        )
+        .await?;
+        self.http.catalogues.commit(job.pending_cache);
+        Ok(())
     }
     /// Resolves an exact artifact and probes the caller-selected existing Java; no install writes.
     pub async fn plan(

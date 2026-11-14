@@ -844,6 +844,30 @@ pub(crate) fn validate_family_url(
             Err(InstallError::SourceRefused)
         };
     }
+    if family == SourceFamily::MojangMeta {
+        // Exactly the version manifest or a content-addressed version document.
+        let path = u.path();
+        let package = path
+            .strip_prefix("/v1/packages/")
+            .and_then(|rest| rest.split_once('/'))
+            .is_some_and(|(sha1, name)| {
+                sha1.len() == 40
+                    && sha1.bytes().all(|b| b.is_ascii_hexdigit())
+                    && name.strip_suffix(".json").is_some_and(identifier)
+            });
+        return if matches!(role, Role::Metadata)
+            && !head
+            && u.host_str() == Some("piston-meta.mojang.com")
+            && (path == "/mc/game/version_manifest_v2.json" || package)
+            && !raw
+                .split('/')
+                .any(|part| part == "." || part.contains(".."))
+        {
+            Ok(u)
+        } else {
+            Err(InstallError::SourceRefused)
+        };
+    }
     if family == SourceFamily::ModrinthForge {
         return if matches!(role, Role::Metadata)
             && !head
@@ -866,6 +890,7 @@ pub(crate) fn validate_family_url(
         SourceFamily::ModrinthForge => return Err(InstallError::SourceRefused),
         SourceFamily::SpigotVersions => return Err(InstallError::SourceRefused),
         SourceFamily::SpigotBuildTools => return Err(InstallError::SourceRefused),
+        SourceFamily::MojangMeta => return Err(InstallError::SourceRefused),
         SourceFamily::MojangObjects => ("piston-data.mojang.com", "/v1/objects/"),
         SourceFamily::ModrinthFabric => ("launcher-meta.modrinth.com", "/fabric/v0/"),
         SourceFamily::ModrinthQuilt => ("launcher-meta.modrinth.com", "/quilt/v1/"),

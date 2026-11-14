@@ -16,6 +16,7 @@ use std::{
 pub(crate) mod buildtools;
 pub(crate) mod forge;
 pub(super) mod loaders;
+pub(crate) mod mojang;
 pub(crate) mod releases;
 
 const MAX_ENTRIES: usize = 10_000;

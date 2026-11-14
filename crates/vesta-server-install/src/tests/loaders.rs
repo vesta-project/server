@@ -1545,6 +1545,22 @@ async fn preview_without_java_pins_exactly_the_planned_artifacts() {
     assert_eq!(preview.warnings, plan.warnings());
     // Fabric's only legacy digest is the Vanilla jar from Mojang's objects host.
     assert!(preview.legacy_checksum_mojang_only);
+    // ...and it is the one object a host must confirm against Mojang.
+    let mojang: Vec<_> = plan
+        .artifacts()
+        .iter()
+        .filter(|a| a.family == Some(SourceFamily::MojangObjects))
+        .map(|a| (a.url.to_owned(), a.digest.hex().to_owned()))
+        .collect();
+    assert_eq!(mojang.len(), 1);
+    assert_eq!(
+        preview
+            .mojang_objects
+            .iter()
+            .map(|o| (o.url.clone(), o.sha1.clone()))
+            .collect::<Vec<_>>(),
+        mojang
+    );
     assert_eq!(
         preview.legacy_checksum,
         plan.artifacts().iter().any(|a| a.digest.algorithm().legacy())
