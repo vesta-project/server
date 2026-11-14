@@ -19,6 +19,8 @@ use vesta_server_install::{ResolvedPreview, Selection, Software, Warning};
 
 /// Space kept for a managed Java download (archive plus extraction).
 const JAVA_RESERVE_BYTES: u64 = 512 * 1024 * 1024;
+/// A managed JDK (CraftBukkit/Spigot builds) is larger than the JRE.
+const JDK_RESERVE_BYTES: u64 = 1024 * 1024 * 1024;
 /// Minimum interval between durable byte-progress writes.
 const PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
@@ -333,7 +335,15 @@ impl ImportJobs {
                 None
             }
         };
+        // CraftBukkit/Spigot are compiled by BuildTools, which needs git and a
+        // POSIX shell from this machine: block now rather than fail the install.
+        let source_built = crate::machine::creates::source_built(software);
+        let tools_missing = source_built && !installer.source_build_tools();
+        if tools_missing {
+            blockers.insert("requires_git");
+        }
         let preview = match experimental {
+            _ if tools_missing => None,
             Some(experimental) => {
                 let selection = Selection {
                     version: Some(minecraft.clone()),
@@ -400,7 +410,7 @@ impl ImportJobs {
             }
         }
         let java = match &preview {
-            Some(p) => installer.plan_java(p.required_java.major),
+            Some(p) => installer.plan_java(p.required_java.major, source_built),
             None => crate::java::HostJavaPlan {
                 required_major: None,
                 selected_runtime_id: None,
@@ -435,7 +445,7 @@ impl ImportJobs {
             .and_then(|p| p.download_bytes)
             .unwrap_or(0)
             .saturating_add(if java.download_required {
-                JAVA_RESERVE_BYTES
+                if source_built { JDK_RESERVE_BYTES } else { JAVA_RESERVE_BYTES }
             } else {
                 0
             })
@@ -492,6 +502,7 @@ impl ImportJobs {
                 selected_runtime_id: java.selected_runtime_id.clone(),
                 download_required: java.download_required,
                 verified: java.verified,
+                jdk: source_built,
             },
             plan_hash: String::new(),
         };

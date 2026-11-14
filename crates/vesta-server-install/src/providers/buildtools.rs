@@ -69,24 +69,9 @@ impl BuildPlan {
             RuntimeBinding::snapshot(&compiler, java.major)
                 .map_err(|_| InstallError::BuildToolsMissing)?,
         );
-        self.git = Some(find_tool(if cfg!(windows) { "git.exe" } else { "git" })?);
-        self.shell = Some(
-            find_tool(if cfg!(windows) { "sh.exe" } else { "sh" }).or_else(|_| {
-                if !cfg!(windows) {
-                    return Err(InstallError::RuntimeUnknown);
-                }
-                // Git for Windows exposes git.exe on PATH, but not its POSIX tools.
-                let root = self
-                    .git
-                    .as_ref()
-                    .ok_or(InstallError::RuntimeUnknown)?
-                    .path
-                    .parent()
-                    .and_then(Path::parent)
-                    .ok_or(InstallError::RuntimeUnknown)?;
-                RuntimeBinding::snapshot(&root.join("usr/bin/sh.exe"), 0)
-            })?,
-        );
+        let (git, shell) = host_tools()?;
+        self.git = Some(git);
+        self.shell = Some(shell);
         for tool in [&self.git, &self.shell, &self.compiler]
             .into_iter()
             .flatten()
@@ -106,6 +91,25 @@ impl BuildPlan {
             family: Some(SourceFamily::SpigotBuildTools),
         }
     }
+}
+/// The machine tools BuildTools runs besides Java: git and a POSIX shell
+/// (Git for Windows' own `sh.exe` when `sh` is not on PATH).
+pub(crate) fn host_tools() -> Result<(RuntimeBinding, RuntimeBinding)> {
+    let git = find_tool(if cfg!(windows) { "git.exe" } else { "git" })?;
+    let shell = find_tool(if cfg!(windows) { "sh.exe" } else { "sh" }).or_else(|_| {
+        if !cfg!(windows) {
+            return Err(InstallError::BuildToolsMissing);
+        }
+        // Git for Windows exposes git.exe on PATH, but not its POSIX tools.
+        let root = git
+            .path
+            .parent()
+            .and_then(Path::parent)
+            .ok_or(InstallError::BuildToolsMissing)?;
+        RuntimeBinding::snapshot(&root.join("usr/bin/sh.exe"), 0)
+            .map_err(|_| InstallError::BuildToolsMissing)
+    })?;
+    Ok((git, shell))
 }
 fn find_tool(name: &str) -> Result<RuntimeBinding> {
     for directory in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {

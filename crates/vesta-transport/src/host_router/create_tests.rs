@@ -73,6 +73,10 @@ struct FakeInstaller {
     mojang: std::sync::Mutex<Option<&'static str>>,
     /// Mojang verifications requested.
     mojang_checks: AtomicU64,
+    /// The machine has no git (CraftBukkit/Spigot cannot be built).
+    no_git: AtomicBool,
+    /// `jdk` of every Java plan requested.
+    jdk_plans: std::sync::Mutex<Vec<bool>>,
 }
 impl CreateInstaller for FakeInstaller {
     fn verify_mojang(&self, preview: &ResolvedPreview) -> Result<(), &'static str> {
@@ -122,8 +126,12 @@ impl CreateInstaller for FakeInstaller {
             },
         })
     }
-    fn plan_java(&self, required_major: u32) -> vesta_control::java::HostJavaPlan {
-        vesta_control::java::plan_for_major(&[], Some(required_major))
+    fn source_build_tools(&self) -> bool {
+        !self.no_git.load(Ordering::SeqCst)
+    }
+    fn plan_java(&self, required_major: u32, jdk: bool) -> vesta_control::java::HostJavaPlan {
+        self.jdk_plans.lock().unwrap().push(jdk);
+        vesta_control::java::plan_for_major_image(&[], Some(required_major), jdk)
     }
     fn ensure_java(&self, runtime: &ReviewRuntime) -> Result<PathBuf, &'static str> {
         assert_eq!(runtime.required_major, Some(21));
@@ -987,4 +995,32 @@ fn mojang_sha1_is_accepted_only_when_mojang_publishes_exactly_those_objects() {
         "{job}"
     );
     assert_eq!(installer.mojang_checks.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn bukkit_without_git_blocks_at_planning_and_with_git_plans_a_managed_jdk() {
+    let installer = Arc::new(FakeInstaller::default());
+    installer.no_git.store(true, Ordering::SeqCst);
+    let host = create_host(installer.clone());
+    let mut body = new_body("Bukkit", Some(25610), Some(1024));
+    body["software"] = json!({"kind":"bukkit","build":null,"loaderVersion":null});
+    let job = host.create_plan(body.clone());
+    assert_eq!(job["state"], "blocked", "{job}");
+    assert_eq!(job["review"]["blockers"], json!(["requires_git"]));
+    assert!(job["review"]["confirmation"].is_null());
+    // Nothing was resolved or installed: it never fails late.
+    assert!(job["review"]["summary"]["software"]["version"].is_null());
+    assert_eq!(installer.installs.load(Ordering::SeqCst), 0);
+
+    // With git, a source build plans a JDK (Vesta's managed one here).
+    installer.no_git.store(false, Ordering::SeqCst);
+    let job = host.create_plan(body);
+    assert_eq!(job["state"], "review", "{job}");
+    assert_eq!(*installer.jdk_plans.lock().unwrap(), vec![true]);
+    let runtime = &job["review"]["summary"]["runtime"];
+    assert_eq!(runtime["downloadRequired"], true);
+    // Plain servers keep the JRE.
+    let job = host.create_plan(new_body("Plain", Some(25611), Some(1024)));
+    assert_eq!(job["state"], "review", "{job}");
+    assert_eq!(*installer.jdk_plans.lock().unwrap(), vec![true, false]);
 }

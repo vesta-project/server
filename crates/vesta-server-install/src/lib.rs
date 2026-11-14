@@ -409,6 +409,19 @@ impl ServerInstaller {
         install::disk_space(&self.roots.base)
     }
 }
+/// Whether this process can run a CraftBukkit/Spigot source build: git and a
+/// POSIX shell found on its own PATH, exactly as installation looks them up.
+/// The JDK (`javac` beside the selected Java) is the caller's to provide.
+pub fn source_build_tools_available() -> bool {
+    providers::buildtools::host_tools().is_ok()
+}
+/// Whether `java` has the `javac` compiler BuildTools needs beside it.
+pub fn source_build_compiler_available(java: &Path) -> bool {
+    java.parent()
+        .map(|bin| bin.join(if cfg!(windows) { "javac.exe" } else { "javac" }))
+        .is_some_and(|javac| javac.is_file())
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MinecraftVersion {
     pub id: String,

@@ -326,6 +326,10 @@ pub struct ReviewRuntime {
     pub selected_runtime_id: Option<String>,
     pub download_required: bool,
     pub verified: bool,
+    /// A JDK (with `javac`) is required: CraftBukkit/Spigot source builds.
+    /// Host-private; absent from responses unless set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub jdk: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -809,6 +813,7 @@ impl ImportJobs {
                 selected_runtime_id: java.selected_runtime_id.clone(),
                 download_required: java.download_required,
                 verified: java.verified,
+                jdk: false,
             },
             destination: ReviewDestination {
                 server_id,

@@ -51,6 +51,60 @@ impl vesta_control::machine::creates::Catalogue for FakeCatalogue {
             loader_version: None,
         }])
     }
+    fn source_build_tools(&self) -> bool {
+        true
+    }
+}
+/// A machine without git: CraftBukkit and Spigot cannot be built.
+struct NoGitCatalogue;
+impl vesta_control::machine::creates::Catalogue for NoGitCatalogue {
+    fn minecraft(&self) -> Result<Vec<vesta_server_install::MinecraftVersion>, JobError> {
+        FakeCatalogue.minecraft()
+    }
+    fn releases(
+        &self,
+        kind: vesta_server_install::Software,
+        _: &str,
+    ) -> Result<Vec<vesta_server_install::SoftwareRelease>, JobError> {
+        assert!(
+            !matches!(
+                kind,
+                vesta_server_install::Software::Bukkit | vesta_server_install::Software::Spigot
+            ),
+            "providers are not asked for software this machine cannot build"
+        );
+        FakeCatalogue.releases(kind, "26.1")
+    }
+    fn source_build_tools(&self) -> bool {
+        false
+    }
+}
+
+#[test]
+fn catalogue_marks_source_built_kinds_requires_git_without_git() {
+    let host = Host::start(
+        tempfile::tempdir().unwrap(),
+        Arc::new(FakeEnv::default()),
+        None,
+        None,
+        Some(Arc::new(NoGitCatalogue)),
+    );
+    let (status, value) = host.call(
+        "GET",
+        "/v1/host/catalogue/software?minecraftVersion=26.1",
+        Value::Null,
+        &host.owner,
+    );
+    assert_eq!(status, 200, "{value}");
+    for kind in value["kinds"].as_array().unwrap() {
+        if kind["kind"] == "bukkit" || kind["kind"] == "spigot" {
+            assert_eq!(kind["available"], false, "{kind}");
+            assert_eq!(kind["unavailableReason"], "requires_git", "{kind}");
+            assert_eq!(kind["builds"], json!([]));
+        } else {
+            assert_ne!(kind["unavailableReason"], "requires_git", "{kind}");
+        }
+    }
 }
 
 /// Deterministic observations: source stopped, ports free, plenty of disk.

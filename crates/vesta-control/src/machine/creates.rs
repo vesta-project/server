@@ -21,6 +21,9 @@ use vesta_server_install::{
 pub trait Catalogue: Send + Sync {
     fn minecraft(&self) -> JobResult<Vec<MinecraftVersion>>;
     fn releases(&self, kind: Software, minecraft: &str) -> JobResult<Vec<SoftwareRelease>>;
+    /// Whether CraftBukkit/Spigot source builds can run on this machine (git
+    /// and a POSIX shell available to the service).
+    fn source_build_tools(&self) -> bool;
 }
 
 /// What an install needs: the reviewed resolution, the exact selection that
@@ -55,8 +58,12 @@ pub trait CreateInstaller: Send + Sync {
     /// `integrity_conflict` on any difference, `provider_unavailable` when
     /// Mojang cannot be reached or answers badly.
     fn verify_mojang(&self, preview: &ResolvedPreview) -> Result<(), &'static str>;
-    /// Choose a trusted runtime of exactly this major (existing or to download).
-    fn plan_java(&self, required_major: u32) -> HostJavaPlan;
+    /// Whether this service can run CraftBukkit/Spigot source builds: git and
+    /// a POSIX shell on its own PATH (the JDK is managed by Vesta).
+    fn source_build_tools(&self) -> bool;
+    /// Choose a trusted runtime of exactly this major (existing or to
+    /// download); `jdk` requires `javac` (managed JDK when none is installed).
+    fn plan_java(&self, required_major: u32, jdk: bool) -> HostJavaPlan;
     /// Make the planned runtime available: `java_unresolved` on failure.
     fn ensure_java(&self, runtime: &ReviewRuntime) -> Result<PathBuf, &'static str>;
     /// Install the reviewed artifacts under `install_root` (refusing anything
@@ -174,12 +181,16 @@ impl CreateInstaller for LiveCreateInstaller {
                 _ => "provider_unavailable",
             })
     }
-    fn plan_java(&self, required_major: u32) -> HostJavaPlan {
+    fn source_build_tools(&self) -> bool {
+        vesta_server_install::source_build_tools_available()
+    }
+    fn plan_java(&self, required_major: u32, jdk: bool) -> HostJavaPlan {
         match runtime() {
-            Ok(rt) => rt.block_on(crate::java::plan_host_java_major(
+            Ok(rt) => rt.block_on(crate::java::plan_host_java_image(
                 &self.java_cache,
                 Some(required_major),
                 &self.excluded,
+                jdk,
             )),
             Err(_) => crate::java::plan_for_major(&[], None),
         }
@@ -195,10 +206,11 @@ impl CreateInstaller for LiveCreateInstaller {
         };
         runtime()
             .map_err(|_| "java_unresolved")?
-            .block_on(crate::java::ensure_host_java(
+            .block_on(crate::java::ensure_host_java_image(
                 &self.java_cache,
                 &plan,
                 &self.excluded,
+                runtime_plan.jdk,
             ))
             .map(|java| PathBuf::from(java.path))
             .map_err(|_| "java_unresolved")
@@ -288,6 +300,13 @@ impl Catalogue for LiveCatalogue {
             Err(_) => Err(JobError("provider_unavailable")),
         }
     }
+    fn source_build_tools(&self) -> bool {
+        vesta_server_install::source_build_tools_available()
+    }
+}
+/// CraftBukkit and Spigot are built from source by BuildTools.
+pub fn source_built(kind: Software) -> bool {
+    matches!(kind, Software::Bukkit | Software::Spigot)
 }
 
 pub fn minecraft(catalogue: &dyn Catalogue) -> JobResult<Value> {
@@ -310,6 +329,7 @@ pub fn software(catalogue: &dyn Catalogue, version: &str) -> JobResult<Value> {
     }
     // Query providers concurrently, including Minecraft, so the independent
     // 12-second provider deadlines fit the launcher's 15-second request budget.
+    let build_tools = catalogue.source_build_tools();
     let (versions, releases) = std::thread::scope(|scope| {
         let minecraft = scope.spawn(|| catalogue.minecraft());
         let pending: Vec<_> = Software::ALL
@@ -318,7 +338,10 @@ pub fn software(catalogue: &dyn Catalogue, version: &str) -> JobResult<Value> {
                 (
                     kind,
                     scope.spawn(move || {
-                        if kind == Software::Vanilla {
+                        if source_built(kind) && !build_tools {
+                            // Not offered: the machine cannot build it.
+                            Err(JobError("requires_git"))
+                        } else if kind == Software::Vanilla {
                             Ok(vec![SoftwareRelease {
                                 id: version.to_owned(),
                                 build: None,
@@ -354,6 +377,7 @@ pub fn software(catalogue: &dyn Catalogue, version: &str) -> JobResult<Value> {
             let (releases, unavailable) = match releases {
                 Ok(r) if r.is_empty() => (r, Some("unsupported_version")),
                 Ok(r) => (r, None),
+                Err(JobError("requires_git")) => (Vec::new(), Some("requires_git")),
                 Err(_) => (Vec::new(), Some("provider_unavailable")),
             };
             // Every provider returns its choices newest first (sorted explicitly

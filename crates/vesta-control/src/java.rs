@@ -521,15 +521,37 @@ pub async fn download(config: &HostConfiguration, major: u32) -> Result<JavaRunt
 /// Same verified download into an explicit cache root, e.g. the host-level
 /// shared cache from [`host_managed_root`].
 pub async fn download_into(root: PathBuf, major: u32) -> Result<JavaRuntime> {
+    download_image_into(root, major, false).await
+}
+/// Managed cache folder (and planned runtime id) for a runtime image.
+fn managed_dir(major: u32, jdk: bool) -> String {
+    if jdk {
+        format!("temurin-{major}-jdk")
+    } else {
+        format!("temurin-{major}")
+    }
+}
+/// Whether `javac` sits beside this `java` executable (a JDK, not a JRE).
+pub fn has_compiler(java: &Path) -> bool {
+    vesta_server_install::source_build_compiler_available(java)
+}
+/// Like [`download_into`]; `jdk` downloads Adoptium's checksum-verified JDK
+/// image (with `javac`, which CraftBukkit/Spigot source builds need).
+pub async fn download_image_into(root: PathBuf, major: u32, jdk: bool) -> Result<JavaRuntime> {
     if !(8..=99).contains(&major) {
         return Err(SoftwareError::InvalidRequest);
     }
     plain_tree(&root)?;
     fs::create_dir_all(&root).map_err(|_| SoftwareError::RuntimeUnavailable)?;
-    let final_dir = root.join(format!("temurin-{major}"));
+    let image = if jdk { "jdk" } else { "jre" };
+    let final_dir = root.join(managed_dir(major, jdk));
     if final_dir.exists() {
         plain_tree(&final_dir)?;
-        return find_runtime(&final_dir, major).await;
+        let runtime = find_runtime(&final_dir, major).await?;
+        if jdk && !has_compiler(Path::new(&runtime.path)) {
+            return Err(SoftwareError::RuntimeUnavailable);
+        }
+        return Ok(runtime);
     }
     let stage = root.join(format!(".download-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&stage).map_err(|_| SoftwareError::RuntimeUnavailable)?;
@@ -537,7 +559,7 @@ pub async fn download_into(root: PathBuf, major: u32) -> Result<JavaRuntime> {
     let transfer=tokio::task::spawn_blocking(move||->Result<()> {
         let os=if cfg!(windows){"windows"}else if cfg!(target_os="macos"){"mac"}else{"linux"};
         let arch=match std::env::consts::ARCH {"x86_64"=>"x64","aarch64"=>"aarch64",_=>return Err(SoftwareError::InvalidRequest)};
-        let url=format!("https://api.adoptium.net/v3/assets/latest/{major}/hotspot?architecture={arch}&image_type=jre&os={os}&vendor=eclipse&release_type=ga");
+        let url=format!("https://api.adoptium.net/v3/assets/latest/{major}/hotspot?architecture={arch}&image_type={image}&os={os}&vendor=eclipse&release_type=ga");
         let metadata=fetch(&url,1024*1024)?;let value:serde_json::Value=serde_json::from_slice(&metadata).map_err(|_|SoftwareError::RuntimeUnavailable)?;
         let package=&value[0]["binary"]["package"];let checksum=package["checksum"].as_str().filter(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_hexdigit())).ok_or(SoftwareError::RuntimeUnavailable)?;
         let link=package["link"].as_str().ok_or(SoftwareError::RuntimeUnavailable)?;let archive=fetch(link,256*1024*1024)?;
@@ -643,6 +665,29 @@ pub fn plan_from(runtimes: &[JavaRuntime], minecraft_version: Option<&str>) -> H
 
 /// Like [`plan_from`] for a Java major the installer itself declared.
 pub fn plan_for_major(runtimes: &[JavaRuntime], required: Option<u32>) -> HostJavaPlan {
+    plan_for_major_image(runtimes, required, false)
+}
+/// Like [`plan_for_major`]; with `jdk` only runtimes that carry `javac` are
+/// eligible and a missing one is planned as the managed JDK download.
+pub fn plan_for_major_image(
+    runtimes: &[JavaRuntime],
+    required: Option<u32>,
+    jdk: bool,
+) -> HostJavaPlan {
+    if jdk {
+        let eligible: Vec<JavaRuntime> = runtimes
+            .iter()
+            .filter(|r| has_compiler(Path::new(&r.path)))
+            .cloned()
+            .collect();
+        let mut plan = plan_for_major_image(&eligible, required, false);
+        if plan.download_required
+            && let Some(major) = plan.required_major
+        {
+            plan.selected_runtime_id = Some(managed_dir(major, true));
+        }
+        return plan;
+    }
     let Some(required) = required.filter(|m| (8..=99).contains(m)) else {
         return HostJavaPlan {
             required_major: None,
@@ -695,6 +740,15 @@ pub async fn plan_host_java_major(
     required: Option<u32>,
     excluded: &[PathBuf],
 ) -> HostJavaPlan {
+    plan_host_java_image(cache_root, required, excluded, false).await
+}
+/// Like [`plan_host_java_major`]; `jdk` requires a runtime with `javac`.
+pub async fn plan_host_java_image(
+    cache_root: &Path,
+    required: Option<u32>,
+    excluded: &[PathBuf],
+    jdk: bool,
+) -> HostJavaPlan {
     let managed = fs::canonicalize(cache_root).ok();
     let excluded: Vec<PathBuf> = excluded
         .iter()
@@ -714,7 +768,7 @@ pub async fn plan_host_java_major(
             }
         }
     }
-    plan_for_major(&runtimes, required)
+    plan_for_major_image(&runtimes, required, jdk)
 }
 
 /// Make the planned runtime available, downloading into the shared cache when
@@ -723,6 +777,27 @@ pub async fn ensure_host_java(
     cache_root: &Path,
     plan: &HostJavaPlan,
     excluded: &[PathBuf],
+) -> Result<JavaRuntime> {
+    ensure_host_java_image(cache_root, plan, excluded, false).await
+}
+/// Like [`ensure_host_java`]; `jdk` requires (or downloads) a runtime with `javac`.
+pub async fn ensure_host_java_image(
+    cache_root: &Path,
+    plan: &HostJavaPlan,
+    excluded: &[PathBuf],
+    jdk: bool,
+) -> Result<JavaRuntime> {
+    let runtime = ensure_planned(cache_root, plan, excluded, jdk).await?;
+    if jdk && !has_compiler(Path::new(&runtime.path)) {
+        return Err(SoftwareError::RuntimeUnavailable);
+    }
+    Ok(runtime)
+}
+async fn ensure_planned(
+    cache_root: &Path,
+    plan: &HostJavaPlan,
+    excluded: &[PathBuf],
+    jdk: bool,
 ) -> Result<JavaRuntime> {
     let required = plan.required_major.ok_or(SoftwareError::RuntimeUnavailable)?;
     if !plan.download_required {
@@ -742,7 +817,7 @@ pub async fn ensure_host_java(
         }
         return Err(SoftwareError::RuntimeUnavailable);
     }
-    download_into(cache_root.to_path_buf(), required).await
+    download_image_into(cache_root.to_path_buf(), required, jdk).await
 }
 
 #[cfg(test)]
@@ -812,6 +887,41 @@ mod host_plan_tests {
         let plan = plan_host_java(&cache, None, &[]).await;
         assert_eq!(plan.blocker, Some("java_unresolved"));
         assert!(ensure_host_java(&cache, &plan, &[]).await.is_err());
+    }
+    #[test]
+    fn source_builds_need_a_jdk_and_plan_the_managed_jdk_otherwise() {
+        let temp = tempfile::tempdir().unwrap();
+        let with = |id: &str, javac: bool, managed: bool| {
+            let bin = temp.path().join(id).join("bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            let java = bin.join(java_leaf());
+            std::fs::write(&java, b"").unwrap();
+            if javac {
+                let name = if cfg!(windows) { "javac.exe" } else { "javac" };
+                std::fs::write(bin.join(name), b"").unwrap();
+            }
+            JavaRuntime {
+                path: java.to_string_lossy().into_owned(),
+                ..runtime(id, 21, managed)
+            }
+        };
+        let jre = with("jre", false, true);
+        let jdk = with("jdk", true, false);
+        // A plain server prefers the managed JRE.
+        let plain = plan_for_major_image(&[jre.clone(), jdk.clone()], Some(21), false);
+        assert_eq!(plain.selected_runtime_id.as_deref(), Some("jre"));
+        // A source build takes only a runtime with javac.
+        let build = plan_for_major_image(&[jre.clone(), jdk], Some(21), true);
+        assert_eq!(build.selected_runtime_id.as_deref(), Some("jdk"));
+        assert!(!build.download_required);
+        // With no JDK at all, Vesta plans its verified managed JDK download.
+        let download = plan_for_major_image(&[jre], Some(21), true);
+        assert!(download.download_required && download.verified);
+        assert_eq!(
+            download.selected_runtime_id.as_deref(),
+            Some("temurin-21-jdk")
+        );
+        assert_eq!(download.blocker, None);
     }
 }
 
