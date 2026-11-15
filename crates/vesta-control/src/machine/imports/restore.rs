@@ -407,6 +407,7 @@ impl ImportJobs {
         if let Some(blocker) = port.blocker {
             blockers.insert(blocker);
         }
+        let software = candidate.as_ref().and_then(|c| c.public.software.clone());
         let memory = resources::plan_software_memory(self.0.env.memory_total_bytes(), &held, request.memory_mib,
             software.as_ref().map(|s| s.kind.as_str()));
         warnings.extend(memory.warnings.iter().copied());
@@ -429,7 +430,6 @@ impl ImportJobs {
 
         let server_id = Uuid::new_v4();
         let now = super::super::browse::now_ms();
-        let software = candidate.as_ref().and_then(|c| c.public.software.clone());
         let mut review = CreateReview {
             plan_id: Uuid::new_v4().to_string(),
             confirmation: None,
