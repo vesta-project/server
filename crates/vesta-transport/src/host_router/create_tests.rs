@@ -2803,6 +2803,9 @@ fn owners_remove_running_and_stopped_servers_and_replay() {
         }
         let path=format!("/v1/host/servers/{server}");
         let body=json!({"confirmName":"Remove me","idempotencyKey":Uuid::new_v4()});
+        host.state.write(|c| {c.execute("UPDATE machine_import_jobs SET state='applying' WHERE server_id=?",[server])?;Ok(())}).unwrap();
+        let (status,busy)=host.call("DELETE",&path,body.clone(),&host.owner);assert_eq!(status,409,"{busy}");assert_eq!(busy["error"]["code"],"server_busy");
+        host.state.write(|c| {c.execute("UPDATE machine_import_jobs SET state='online' WHERE server_id=?",[server])?;Ok(())}).unwrap();
         let stranger=host.state.devices(Actor::LocalRecovery).unwrap().into_iter().find(|d| d.device_id==host.devices.1).unwrap();
         let owner=host.state.snapshot().unwrap().primary_account_id.unwrap();
         for role in [None,Some(ServerRole::Admin),Some(ServerRole::Moderator),Some(ServerRole::Player)] {
