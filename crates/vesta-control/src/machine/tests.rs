@@ -389,6 +389,13 @@ fn removed_servers_revoke_grants_replay_restore_and_expire() {
     };
     let (record, done) = removed::prepare(&state, owner, server.server_id, &req).unwrap();
     assert!(!done);
+    let mut renamed=server.clone();renamed.name="Renamed".into();
+    state.update_server(Actor::Account(owner),&renamed,state.snapshot().unwrap().revision).unwrap();
+    assert_eq!(removed::prepare(&state,owner,server.server_id,&req).err().unwrap().0,"confirm_name_mismatch");
+    state.update_server(Actor::Account(owner),&server,state.snapshot().unwrap().revision).unwrap();
+    state.write(|c| {c.execute_batch("CREATE TABLE machine_import_jobs(server_id TEXT,state TEXT)")?;c.execute("INSERT INTO machine_import_jobs VALUES(?,'applying')",[server.server_id.to_string()])?;Ok(())}).unwrap();
+    assert_eq!(removed::prepare(&state,owner,server.server_id,&req).err().unwrap().0,"server_busy");
+    state.write(|c| {c.execute("DELETE FROM machine_import_jobs",[])?;Ok(())}).unwrap();
     removed::finish(&state, &servers, &record, &req).unwrap();
     assert!(state.visible_servers(owner).unwrap().is_empty());
     assert!(

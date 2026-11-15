@@ -50,16 +50,20 @@ pub fn prepare(
         require_owner(c, Actor::Account(account))?;
         schema(c)?;
         let receipt: Option<(String,String,String,bool)> = c.query_row("SELECT server,name,record,complete FROM machine_removal_receipts WHERE account=? AND key=?", params![account.to_string(), req.idempotency_key.to_string()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
-        if let Some((id,name,record,complete)) = receipt {
-            if id != server.to_string() || name != req.confirm_name { result=Some(Err(JobError("idempotency_conflict"))); }
-            else { result=Some(serde_json::from_str(&record).map(|r| (r,complete)).map_err(|_| JobError::UNAVAILABLE)); }
-            return Ok(());
-        }
+        let pending = if let Some((id,name,record,complete)) = receipt {
+            if id != server.to_string() || name != req.confirm_name {
+                result=Some(Err(JobError("idempotency_conflict"))); return Ok(());
+            }
+            let record: Removed=serde_json::from_str(&record).map_err(|_| super::state::reject(crate::IdentityErrorCode::InvalidRequest))?;
+            if complete { result=Some(Ok((record,true))); return Ok(()); }
+            Some(record)
+        } else { None };
         let entry: Option<(String,String)> = c.query_row("SELECT name,state FROM machine_servers WHERE server_id=? AND state!='deleted'", [server.to_string()], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
         let Some((name,_)) = entry else { result=Some(Err(JobError("not_found"))); return Ok(()); };
         if name != req.confirm_name { result=Some(Err(JobError("confirm_name_mismatch"))); return Ok(()); }
         let imports: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='machine_import_jobs')", [], |r| r.get(0))?;
         if imports && c.query_row("SELECT EXISTS(SELECT 1 FROM machine_import_jobs WHERE server_id=? AND state IN ('planning','applying','starting','interrupted'))", [server.to_string()], |r| r.get::<_,bool>(0))? { result=Some(Err(JobError("server_busy"))); return Ok(()); }
+        if let Some(record)=pending { result=Some(Ok((record,false))); return Ok(()); }
         let now=host.now_ms();
         let record=Removed { server_id: server, name, removed_at: super::sessions::timestamp(now), removed_by: account, restore_until: super::sessions::timestamp(now.saturating_add(RETENTION)), removed_ms: now, restore_until_ms: now.saturating_add(RETENTION) };
         let raw=serde_json::to_string(&record).map_err(|_| super::state::reject(crate::IdentityErrorCode::InvalidRequest))?;
