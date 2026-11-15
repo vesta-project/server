@@ -1125,6 +1125,13 @@ fn real_vanilla_and_fabric_creates_run_together() {
         let software = software_status(&host, &server);
         assert_eq!(software["current"]["software"], kind, "{software}");
         assert_eq!(software["current"]["version"], latest, "{software}");
+        let target = if kind == "vanilla" { "fabric" } else { "vanilla" };
+        let (status, plan) = host.call("POST", &format!("/v1/servers/{server}/manage/software/plan"),
+            json!({"software":target,"version":latest,"build":null,"loader_version":null}), &host.owner);
+        assert_eq!(status, 200, "{plan}");
+        let plan=if plan["data"].is_object() {&plan["data"]} else {&plan};
+        assert_eq!(plan["software"],target,"{plan}");
+        assert!(plan["plan_id"].is_string(),"{plan}");
         running.push(server);
     }
     // Both online together, on distinct ports.
