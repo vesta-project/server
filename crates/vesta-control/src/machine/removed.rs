@@ -182,7 +182,11 @@ pub fn restore(host: &HostState, servers: &Path, id: Uuid) -> JobResult<Removed>
         .ok_or(JobError::NOT_FOUND)?;
     let entry = host.server(id)?.ok_or(JobError::NOT_FOUND)?;
     let conflict=host.read(|c| Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM machine_servers WHERE state!='deleted' AND (game_port=? OR lower(name)=lower(?)))",params![entry.game_port,entry.name],|r|r.get::<_,bool>(0))?))?;
-    if conflict
+    let reserved = host.read(|c| {
+        let exists:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='machine_import_reservations')",[],|r|r.get(0))?;
+        Ok(exists && c.query_row("SELECT EXISTS(SELECT 1 FROM machine_import_reservations WHERE game_port=? AND released=0 AND server_id!=?)",params![entry.game_port,id.to_string()],|r|r.get::<_,bool>(0))?)
+    })?;
+    if conflict || reserved
         || super::resources::plan_port(&Default::default(), Some(entry.game_port))
             .blocker
             .is_some()
