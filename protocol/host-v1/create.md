@@ -116,3 +116,5 @@ Successful creates (including restore) persist the installed software family, Mi
 Memory policy: `budgetMib` (total minus OS reserve) is the per-server hard ceiling. Values below 512 MiB are `memory_invalid`; above budget are `memory_budget_exceeded`. Other reservations reduce `availableMib` but only add `memory_overcommitted` to memory/review `warnings`. Defaults suggest 2048 MiB (4096 for modded loaders), capped by budget and rounded down to 256 MiB. Explicit choices are preserved. Create defaults return warnings instead of failing on resource blockers; port suggestions still seek a free port.
 
 Host-backed workers bind async software planning and management to the host transport runtime; no per-server HTTPS listener is required.
+
+The host listener reserves blocking capacity for async provider/cache work used by software planning, independently of admitted HTTP request slots.

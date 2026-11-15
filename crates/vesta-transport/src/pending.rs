@@ -271,7 +271,10 @@ where
     let address = socket.local_addr().map_err(|_| TransportError::Bind)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
-        .max_blocking_threads(1)
+        // Host management may await async provider work from an admitted
+        // blocking request. Catalogue persistence itself uses spawn_blocking;
+        // leave bounded headroom so it cannot queue behind its own caller.
+        .max_blocking_threads(2 * WORKERS + 2)
         .enable_all()
         .thread_name("vesta-pending-https")
         .build()
