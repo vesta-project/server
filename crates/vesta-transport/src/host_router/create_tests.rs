@@ -2788,7 +2788,7 @@ fn owners_remove_running_and_stopped_servers_and_replay() {
         if stop_first {
             let worker=host.router.owned_handle(server.parse().unwrap()).unwrap();
             let device=host.state.devices(Actor::LocalRecovery).unwrap().into_iter().find(|d| d.device_id==host.devices.0).unwrap();
-            let subject=subject(&host.router,&worker,&device).unwrap();let network=worker.authorize(subject).unwrap();
+            let subject=subject(&host.router,&worker,&device).ok().expect("owner subject");let network=worker.authorize(subject).unwrap();
             let generation=network.runtime().game_snapshot().unwrap().generation.unwrap();
             let actor=vesta_control::identity::Subject {principal:vesta_control::identity::PrincipalId::parse(&device.account_id.to_string()).unwrap(),device:vesta_control::identity::DeviceId::parse(&device.device_id.to_string()).unwrap()};
             network.runtime().submit_game(&actor,vesta_control::operations::GameCommand::Stop {expected_generation:generation},"remove-pre-stop").unwrap();
