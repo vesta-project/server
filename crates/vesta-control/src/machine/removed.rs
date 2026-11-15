@@ -56,7 +56,7 @@ pub fn prepare(
             return Ok(());
         }
         let entry: Option<(String,String)> = c.query_row("SELECT name,state FROM machine_servers WHERE server_id=? AND state!='deleted'", [server.to_string()], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
-        let Some((name,_)) = entry else { result=Some(Err(JobError::NOT_FOUND)); return Ok(()); };
+        let Some((name,_)) = entry else { result=Some(Err(JobError("not_found"))); return Ok(()); };
         if name != req.confirm_name { result=Some(Err(JobError("confirm_name_mismatch"))); return Ok(()); }
         let imports: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='machine_import_jobs')", [], |r| r.get(0))?;
         if imports && c.query_row("SELECT EXISTS(SELECT 1 FROM machine_import_jobs WHERE server_id=? AND state IN ('planning','applying','starting','interrupted'))", [server.to_string()], |r| r.get::<_,bool>(0))? { result=Some(Err(JobError("server_busy"))); return Ok(()); }
@@ -87,7 +87,7 @@ pub fn finish(
         std::fs::write(source.join("removed.json"), bytes).map_err(|_| JobError::UNAVAILABLE)?;
         std::fs::rename(&source, &target).map_err(|_| JobError::UNAVAILABLE)?;
     } else if !target.is_dir() {
-        return Err(JobError::NOT_FOUND);
+        return Err(JobError("not_found"));
     }
     host.write(|c| {
         require_owner(c, Actor::Account(record.removed_by))?;
@@ -179,8 +179,8 @@ pub fn restore(host: &HostState, servers: &Path, id: Uuid) -> JobResult<Removed>
         .into_iter()
         .rev()
         .find(|r| r.server_id == id && r.restore_until_ms >= host.now_ms())
-        .ok_or(JobError::NOT_FOUND)?;
-    let entry = host.server(id)?.ok_or(JobError::NOT_FOUND)?;
+        .ok_or(JobError("not_found"))?;
+    let entry = host.server(id)?.ok_or(JobError("not_found"))?;
     let conflict=host.read(|c| Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM machine_servers WHERE state!='deleted' AND (game_port=? OR lower(name)=lower(?)))",params![entry.game_port,entry.name],|r|r.get::<_,bool>(0))?))?;
     let reserved = host.read(|c| {
         let exists:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='machine_import_reservations')",[],|r|r.get(0))?;

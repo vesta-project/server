@@ -2804,6 +2804,8 @@ fn owners_remove_running_and_stopped_servers_and_replay() {
         }
         let path=format!("/v1/host/servers/{server}");
         let body=json!({"confirmName":"Remove me","idempotencyKey":Uuid::new_v4()});
+        let (status,missing)=host.call("DELETE",&format!("/v1/host/servers/{}",Uuid::new_v4()),body.clone(),&host.owner);
+        assert_eq!(status,404,"{missing}");assert_eq!(missing["error"]["code"],"not_found");
         host.state.write(|c| {c.execute("UPDATE machine_import_jobs SET state='applying' WHERE server_id=?",[server])?;Ok(())}).unwrap();
         let (status,busy)=host.call("DELETE",&path,body.clone(),&host.owner);assert_eq!(status,409,"{busy}");assert_eq!(busy["error"]["code"],"server_busy");
         host.state.write(|c| {c.execute("UPDATE machine_import_jobs SET state='online' WHERE server_id=?",[server])?;Ok(())}).unwrap();
