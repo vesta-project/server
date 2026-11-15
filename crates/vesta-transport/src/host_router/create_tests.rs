@@ -875,12 +875,11 @@ fn back_to_back_creates_get_distinct_resources_and_survive_a_restart() {
     let servers = host.servers();
     assert_eq!(servers.len(), 2);
     assert_ne!(servers[0]["gamePort"], servers[1]["gamePort"]);
-    // The budget is spent: another server is refused at review.
-    let third = host.create_plan(new_body("Third", None, Some(1024)));
-    assert_eq!(
-        third["review"]["blockers"],
-        json!(["memory_budget_exceeded"])
-    );
+    // The full per-server budget remains usable, with an advisory warning.
+    let third = host.create_plan(new_body("Third", None, Some(12 * 1024)));
+    assert_eq!(third["review"]["blockers"], json!([]));
+    assert_eq!(third["review"]["warnings"], json!(["memory_overcommitted"]));
+    assert_eq!(host.call("GET", "/v1/host/creates/defaults", Value::Null, &host.owner).0, 200);
 
     // Two plans racing for one free port: only the first apply wins.
     let host = host.restart(
