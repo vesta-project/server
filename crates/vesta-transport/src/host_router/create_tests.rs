@@ -1622,11 +1622,12 @@ fn software_status(host: &Host, server: &str) -> Value {
         &host.owner,
     );
     assert_eq!(status, 200, "{view}");
-    if view["data"].is_object() {
-        view["data"].clone()
-    } else {
-        view
-    }
+    let software = if view["data"].is_object() { view["data"].clone() } else { view };
+    let (status, inventory) = host.call("GET", &format!("/v1/servers/{server}/manage/content"), Value::Null, &host.owner);
+    assert_eq!(status, 200, "{inventory}");
+    let inventory = if inventory["data"].is_object() { &inventory["data"] } else { &inventory };
+    assert_eq!(inventory["software"], software["current"]["software"], "{inventory}");
+    software
 }
 
 /// Loader-less (Vanilla) and loader packs through the live pack engine: the
