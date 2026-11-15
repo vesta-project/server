@@ -107,6 +107,16 @@ pub fn plan_memory(
     plan
 }
 
+/// Apply the family default while preserving an explicit owner heap choice.
+pub fn plan_software_memory(total_bytes: Option<u64>, reservations: &Reservations, requested_mib: Option<u64>, family: Option<&str>) -> MemoryPlan {
+    let default=plan_memory(total_bytes,reservations,None);
+    let requested=requested_mib.or_else(|| {
+        matches!(family,Some("fabric"|"quilt"|"forge"|"neoforge"))
+            .then(|| default.budget_mib.map(|b| MODDED_MEMORY_MIB.min(b)/STEP_MIB*STEP_MIB)).flatten()
+    });
+    plan_memory(total_bytes,reservations,requested)
+}
+
 /// Plan memory using this host's physical RAM.
 pub fn plan_host_memory(reservations: &Reservations, requested_mib: Option<u64>) -> MemoryPlan {
     plan_memory(
@@ -232,6 +242,19 @@ mod tests {
         assert_eq!(plan_memory(Some(16*GIB),&held,Some(12_289)).blocker,Some("memory_budget_exceeded"));
         assert_eq!(plan_memory(Some(16*GIB),&held,Some(511)).blocker,Some("memory_invalid"));
         assert_eq!(plan_memory(Some(16*GIB),&held,Some(512)).memory_mib,Some(512));
+    }
+
+    #[test]
+    fn family_defaults_are_capped_stepped_and_preserve_owner_choices() {
+        let held=Reservations::default();
+        for family in ["fabric","quilt","forge","neoforge"] {
+            assert_eq!(plan_software_memory(Some(16*GIB),&held,None,Some(family)).memory_mib,Some(4096));
+            assert_eq!(plan_software_memory(Some(16*GIB),&held,Some(1536),Some(family)).memory_mib,Some(1536));
+            assert_eq!(plan_software_memory(Some(2*GIB),&held,None,Some(family)).memory_mib,Some(1024));
+        }
+        for family in ["vanilla","paper","folia","purpur","bukkit","spigot"] {
+            assert_eq!(plan_software_memory(Some(16*GIB),&held,None,Some(family)).memory_mib,Some(2048));
+        }
     }
 
     #[test]

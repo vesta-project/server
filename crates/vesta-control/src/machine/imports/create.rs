@@ -590,24 +590,8 @@ impl ImportJobs {
         if let Some(blocker) = port.blocker {
             blockers.insert(blocker);
         }
-        let memory = resources::plan_memory(
-            self.0.env.memory_total_bytes(),
-            &held,
-            request.memory_mib.or_else(|| {
-                matches!(
-                    software,
-                    Some(Software::Fabric | Software::Quilt | Software::Forge | Software::NeoForge)
-                )
-                .then(|| {
-                    resources::plan_memory(self.0.env.memory_total_bytes(), &held, None)
-                        .budget_mib
-                        .unwrap_or(0)
-                        .min(resources::MODDED_MEMORY_MIB)
-                        / 256
-                        * 256
-                })
-            }),
-        );
+        let memory = resources::plan_software_memory(self.0.env.memory_total_bytes(), &held, request.memory_mib,
+            software.map(|s| s.id()));
         warnings.extend(memory.warnings.iter().copied());
         if let Some(blocker) = memory.blocker {
             blockers.insert(blocker);

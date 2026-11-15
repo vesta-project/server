@@ -778,10 +778,8 @@ impl ImportJobs {
                 owner: (state == "occupied").then(|| "unknown".into()),
             });
         }
-        let memory = resources::plan_memory(
-            self.0.env.memory_total_bytes(),
-            &reservations,
-            request.memory_mib,
+        let memory = resources::plan_software_memory(
+            self.0.env.memory_total_bytes(), &reservations, request.memory_mib, detected.loader.as_deref(),
         );
         warnings.extend(memory.warnings.iter().copied());
         if let Some(blocker) = memory.blocker {

@@ -407,8 +407,8 @@ impl ImportJobs {
         if let Some(blocker) = port.blocker {
             blockers.insert(blocker);
         }
-        let memory =
-            resources::plan_memory(self.0.env.memory_total_bytes(), &held, request.memory_mib);
+        let memory = resources::plan_software_memory(self.0.env.memory_total_bytes(), &held, request.memory_mib,
+            software.as_ref().map(|s| s.kind.as_str()));
         warnings.extend(memory.warnings.iter().copied());
         if let Some(blocker) = memory.blocker {
             blockers.insert(blocker);
