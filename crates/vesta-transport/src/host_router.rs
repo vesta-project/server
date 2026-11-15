@@ -868,6 +868,12 @@ impl Application {
             return removed::dispatch(&self.router, &device, path, bytes);
         }
         if let Some(rest) = path.strip_prefix("/v1/servers/") {
+            // Serialize admission with removal: no request can re-expand worker
+            // grants or enqueue a new job while its worker is being stopped.
+            let _removal = match self.router.removal_lock.lock() {
+                Ok(lock) => lock,
+                Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+            };
             let Some((id, suffix)) = rest.split_once('/') else {
                 return failure(StatusCode::NOT_FOUND, "not_found");
             };
