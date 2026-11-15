@@ -22,6 +22,7 @@ All new mutations require `Idempotency-Key` (UUID); persist actor+method+route+b
 | GET `/v1/host` | Bearer -> `{hostId,name,fingerprint,endpoints,authGeneration,capabilities,role,revision}`; owners also get `newDeviceSignIn:"account"|"approval"`. |
 | PATCH `/v1/host` | Owner `{name?,newDeviceSignIn?}` (at least one) -> `{hostId,name,newDeviceSignIn,revision}`. Name: control/bidi characters removed, whitespace collapsed, 1..63 UTF-8 bytes, else 400 `invalid_request`. Audited; renaming re-announces mDNS within seconds and changes discovery/`GET /v1/host` names. |
 | GET `/v1/host/owners` | Owner -> `{owners:[{accountId,role:"primary_owner"|"owner",name}]}`, primary first; `name` is the last Minecraft name verified on this host by claim or sign-in, or null. |
+| DELETE `/v1/host/servers/{serverId}` | Machine owner `{confirmName,idempotencyKey}` -> `{serverId,removedAt,restoreUntil}`; graceful stop and recoverable removal for 7 days. |
 | GET `/v1/host/servers?cursor=...` | Bearer -> `{servers:[{serverId,name,gamePort,state,role}],nextCursor}`; owners see all, others only current server grants. |
 | GET `/v1/host/devices` | Owner -> `{devices:[{deviceId,name,accountId,revoked,createdAt}],nextCursor}`; accountId is Minecraft UUID. |
 | DELETE `/v1/host/devices/{deviceId}` | Owner -> 204; primary-owner protection and barrier in identity.md. Self-revoke allowed. |
