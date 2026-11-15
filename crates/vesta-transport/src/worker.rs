@@ -408,6 +408,12 @@ pub(crate) fn dispatch_host(
 ) -> crate::Reply {
     let server=subject.server_id;
     let host=match worker.authorize(subject.clone()){Ok(h)=>h,Err(e)=>return crate::manage::management_error(e)};
+    // Imported/created workers have no per-server HTTPS listener to bind this
+    // handle. Async management (software plans, Java and hosting) runs on the
+    // owning host transport runtime for the lifetime of the host listener.
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        host.sftp().set_owner_runtime(runtime);
+    }
     let path=request.path;
     let mut reply=if let Some(suffix)=path.strip_prefix("manage/") {
         if matches!(suffix,"pack/sync"|"pack/artifact") {

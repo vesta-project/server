@@ -1128,6 +1128,7 @@ fn real_vanilla_and_fabric_creates_run_together() {
         let target = if kind == "vanilla" { "fabric" } else { "vanilla" };
         let (status, plan) = host.call("POST", &format!("/v1/servers/{server}/manage/software/plan"),
             json!({"software":target,"version":latest,"build":null,"loader_version":null}), &host.owner);
+        if status != 200 { stop_server(&host, &server, &format!("failed-plan-stop-{i}", i=running.len())); }
         assert_eq!(status, 200, "{plan}");
         let plan=if plan["data"].is_object() {&plan["data"]} else {&plan};
         assert_eq!(plan["software"],target,"{plan}");
