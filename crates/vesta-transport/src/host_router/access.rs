@@ -451,3 +451,17 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod user_metadata_tests {
+    use super::*;
+    #[test]
+    fn owner_rows_expose_only_aggregate_machine_device_metadata() {
+        let id=Uuid::new_v4();
+        let row=user(id,EffectiveRole::PrimaryOwner,Some("Owner".into()),1,2);
+        assert_eq!(row["device_count"],2);assert_eq!(row["machine_owner"],true);
+        assert!(row.get("devices").is_none());
+        let row=user(id,EffectiveRole::Server(ServerRole::Admin),None,1,3);
+        assert_eq!(row["device_count"],3);assert_eq!(row["machine_owner"],false);
+    }
+}
