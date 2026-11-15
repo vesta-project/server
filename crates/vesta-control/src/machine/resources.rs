@@ -224,6 +224,17 @@ mod tests {
     }
 
     #[test]
+    fn explicit_memory_can_overcommit_but_never_exceed_single_server_budget() {
+        let held=Reservations {memory_mib:12_288,ports:BTreeSet::new()};
+        let plan=plan_memory(Some(16*GIB),&held,Some(12_288));
+        assert_eq!(plan.memory_mib,Some(12_288));assert_eq!(plan.available_mib,Some(0));
+        assert_eq!(plan.blocker,None);assert_eq!(plan.warnings,vec!["memory_overcommitted"]);
+        assert_eq!(plan_memory(Some(16*GIB),&held,Some(12_289)).blocker,Some("memory_budget_exceeded"));
+        assert_eq!(plan_memory(Some(16*GIB),&held,Some(511)).blocker,Some("memory_invalid"));
+        assert_eq!(plan_memory(Some(16*GIB),&held,Some(512)).memory_mib,Some(512));
+    }
+
+    #[test]
     fn ports_start_at_25565_and_skip_reserved_busy_and_unknown() {
         let reserved = Reservations {
             ports: BTreeSet::from([25_565]),
