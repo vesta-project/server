@@ -175,7 +175,7 @@ impl Fixture {
 }
 
 struct Running {
-    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    stop: Option<tokio::sync::oneshot::Sender<bool>>,
     thread: Option<thread::JoinHandle<vesta_supervisor::Result<()>>>,
 }
 impl Running {
@@ -194,15 +194,15 @@ impl Running {
         )
     }
     fn start_config(fixture: &Fixture, config: SupervisorConfig) -> Self {
-        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<bool>();
         let thread = thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
                 .enable_all()
                 .build()
                 .unwrap();
-            runtime.block_on(vesta_supervisor::run(config, async {
-                let _ = stopped.await;
+            runtime.block_on(vesta_supervisor::run_with_shutdown(config, async {
+                stopped.await.unwrap_or(false)
             }))
         });
         let client = SupervisorClient::new(&fixture.state).unwrap();
@@ -219,7 +219,7 @@ impl Running {
     }
     fn join(mut self) -> vesta_supervisor::Result<()> {
         if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
+            let _ = stop.send(false);
         }
         self.thread.take().unwrap().join().unwrap()
     }
@@ -1481,4 +1481,93 @@ fn hold_keeps_crash_restart_pending_until_expiry() {
     );
     assert!(vesta_supervisor::save::release_hold(&raw, &token).is_err());
     finish(&fixture, running, remote);
+}
+
+#[test]
+fn system_shutdown_saves_stops_owned_game_and_clears_generation() {
+    fn replace_receipt(
+        directory: &vesta_state::artifacts::ArtifactDirectory,
+        receipt: &record::ShutdownReceipt,
+    ) {
+        let name = vesta_state::artifacts::ArtifactName::new("system-shutdown.json").unwrap();
+        directory.remove(&name).unwrap();
+        let mut file = directory.create_new(&name).unwrap();
+        file.write_all(&serde_json::to_vec(receipt).unwrap())
+            .unwrap();
+        file.sync_all().unwrap();
+        directory.sync().unwrap();
+    }
+    let fixture = Fixture::new();
+    let mut running = Running::start(&fixture);
+    let mut remote = RemoteProcess::attach(client(&fixture), IDENTITY.into()).unwrap();
+    // This second observer has never seen a live generation: the final proof
+    // must not let it infer that an unrelated game stopped.
+    let mut stale = RemoteProcess::attach(client(&fixture), IDENTITY.into()).unwrap();
+    let generation = remote.start_guarded(|_| Ok::<(), ()>(())).unwrap();
+    eventually(
+        || console_contains(&mut remote, "inert-supervised-ready"),
+        "system shutdown game ready",
+    );
+    running.stop.take().unwrap().send(true).unwrap();
+    eventually(
+        || running.thread.as_ref().unwrap().is_finished(),
+        "system supervisor graceful exit",
+    );
+    assert!(running.thread.take().unwrap().join().unwrap().is_ok());
+    assert!(fixture.commands().lines().any(|line| line == "stop"));
+    let directory = fixture.state.supervisor().unwrap();
+    assert!(record::read(&directory).unwrap().is_none());
+    let proof = record::read_shutdown(&directory)
+        .unwrap()
+        .expect("actual final exit proof");
+    assert_eq!(proof.exit.as_ref().unwrap().generation, generation.to_hex());
+    assert!(proof.offline_released);
+    thread::sleep(Duration::from_millis(75));
+    // Delayed observer: the IPC endpoint is already gone, not merely paused
+    // for a scheduling grace period. Mismatched launch/supervisor/generation
+    // identities must all remain an observation failure.
+    for wrong in [
+        record::ShutdownReceipt {
+            launch_identity: "ff".repeat(32),
+            ..proof.clone()
+        },
+        record::ShutdownReceipt {
+            supervisor_pid: proof.supervisor_pid.wrapping_add(1),
+            ..proof.clone()
+        },
+        record::ShutdownReceipt {
+            exit: Some(vesta_supervisor::wire::WireExit {
+                generation: "ff".repeat(16),
+                ..proof.exit.clone().unwrap()
+            }),
+            ..proof.clone()
+        },
+    ] {
+        replace_receipt(&directory, &wrong);
+        assert!(remote.poll().is_err());
+    }
+    replace_receipt(&directory, &proof);
+    assert!(
+        stale.poll().is_err(),
+        "unobserved generation is not adopted from a shutdown receipt"
+    );
+    let stopped = remote.poll().unwrap();
+    assert!(stopped.generation.is_none());
+    assert_eq!(stopped.last_exit.unwrap().generation, generation);
+    thread::sleep(Duration::from_millis(75));
+    assert!(remote.poll().unwrap().generation.is_none());
+    assert!(remote.configure_offline(None).unwrap().is_empty());
+    assert!(
+        remote.start_guarded(|_| Ok::<(), ()>(())).is_err(),
+        "a closed supervisor session cannot launch again"
+    );
+    // A new supervisor retires prior session proof, and every new native launch
+    // also retires any old proof before publishing its launch intent.
+    let next = Running::start(&fixture);
+    assert!(record::read_shutdown(&directory).unwrap().is_none());
+    replace_receipt(&directory, &proof);
+    let mut current = RemoteProcess::attach(client(&fixture), IDENTITY.into()).unwrap();
+    current.start_guarded(|_| Ok::<(), ()>(())).unwrap();
+    assert!(record::read_shutdown(&directory).unwrap().is_none());
+    finish(&fixture, next, current);
 }

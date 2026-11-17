@@ -433,14 +433,21 @@ pub(crate) mod linux {
             // The host resolves every path from its absolute --root. WorkingDirectory
             // is a path setting, not an ExecStart argument: shell quotes become literal
             // path bytes here. A fixed directory avoids path-specific parsing entirely.
-            "[Unit]\nDescription=Vesta host for current user\n\n[Service]\nType=simple\nWorkingDirectory=/\nExecStart={} host --root {}\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n",
+            "[Unit]\nDescription=Vesta host for current user\n\n[Service]\nType=simple\nWorkingDirectory=/\nExecStart={} host --root {}\nRestart=on-failure\nKillSignal=SIGTERM\nKillMode=mixed\nSendSIGKILL=yes\nTimeoutStopSec=90\n\n[Install]\nWantedBy=default.target\n",
             systemd_quote(&exe_s),
             systemd_quote(&root_s)
         )
     }
 
-    fn legacy_unit_contents(root: &Path, executable: &Path) -> String {
+    pub(super) fn previous_unit_contents(root: &Path, executable: &Path) -> String {
         unit_contents(root, executable).replacen(
+            "KillSignal=SIGTERM\nKillMode=mixed\nSendSIGKILL=yes\nTimeoutStopSec=90\n",
+            "",
+            1,
+        )
+    }
+    pub(super) fn legacy_unit_contents(root: &Path, executable: &Path) -> String {
+        previous_unit_contents(root, executable).replacen(
             "WorkingDirectory=/\n",
             &format!(
                 "WorkingDirectory={}\n",
@@ -510,11 +517,16 @@ pub(crate) mod linux {
                     .read_to_end(&mut existing)
                     .map_err(|_| "startup unit name is already in use")?;
                 if !unit_is_owned(&existing, &contents) {
-                    // These exact legacy units cannot start because their quoted
-                    // WorkingDirectory is invalid. Repair only an inactive, owned
-                    // registration, without stopping any running host or game.
-                    let legacy = legacy_unit_contents(root, executable);
-                    if allow_legacy_repair && unit_is_owned(&existing, &legacy) {
+                    // Migrate only exact known registrations, while inactive.
+                    // Operator edits are preserved; enabling startup never stops
+                    // a running host or game merely to replace its unit policy.
+                    let legacy = [
+                        previous_unit_contents(root, executable),
+                        legacy_unit_contents(root, executable),
+                    ]
+                    .into_iter()
+                    .find(|candidate| unit_is_owned(&existing, candidate));
+                    if let Some(legacy) = legacy.filter(|_| allow_legacy_repair) {
                         if systemctl(&["is-active", &format!("{name}.service")]).is_ok() {
                             return Err("legacy startup unit is active; stop it deliberately before repairing startup".into());
                         }
@@ -581,12 +593,13 @@ pub(crate) mod linux {
             None => return Ok(()),
         };
         let current = unit_contents(root, executable);
-        let legacy = legacy_unit_contents(root, executable);
-        let expected = if read_owned_unit(&path, &legacy).is_ok_and(|owned| owned) {
-            legacy
-        } else {
-            current
-        };
+        let expected = [
+            previous_unit_contents(root, executable),
+            legacy_unit_contents(root, executable),
+        ]
+        .into_iter()
+        .find(|candidate| read_owned_unit(&path, candidate).is_ok_and(|owned| owned))
+        .unwrap_or(current);
         if !read_owned_unit(&path, &expected)? {
             return Ok(());
         }
@@ -747,8 +760,27 @@ mod tests {
         let executable = root.join("bin/vesta-setup");
         let expected = linux::unit_contents(root, &executable);
         assert!(expected.contains("WorkingDirectory=/\n"));
+        assert!(
+            expected.contains(
+                "KillSignal=SIGTERM\nKillMode=mixed\nSendSIGKILL=yes\nTimeoutStopSec=90\n"
+            )
+        );
         assert!(expected.contains("--root \"/opt/Vesta root\""));
         assert!(linux::unit_is_owned(expected.as_bytes(), &expected));
+        let previous = linux::previous_unit_contents(root, &executable);
+        assert!(!previous.contains("KillMode="));
+        assert!(!linux::unit_is_owned(previous.as_bytes(), &expected));
+        assert!(linux::unit_is_owned(
+            previous.as_bytes(),
+            &linux::previous_unit_contents(root, &executable)
+        ));
+        assert!(!linux::unit_is_owned(
+            format!("{previous}# operator edit").as_bytes(),
+            &previous
+        ));
+        let legacy = linux::legacy_unit_contents(root, &executable);
+        assert!(legacy.contains("WorkingDirectory=\"/opt/Vesta root\""));
+        assert!(!legacy.contains("KillMode="));
 
         let other_root = Path::new("/opt/Other root");
         let foreign = linux::unit_contents(other_root, &other_root.join("bin/vesta-setup"));

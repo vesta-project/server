@@ -13,13 +13,13 @@ pub(super) fn run(inner: Arc<Inner>) {
             let Ok(mut queue) = inner.queue.lock() else {
                 return;
             };
-            while queue.jobs.is_empty() && !queue.stop {
-                queue = match inner.wake.wait(queue) {
-                    Ok(q) => q,
+            while queue.jobs.is_empty() && !queue.stop && !inner.cancel.load(Ordering::Acquire) {
+                queue = match inner.wake.wait_timeout(queue, Duration::from_millis(100)) {
+                    Ok((q, _)) => q,
                     Err(_) => return,
                 };
             }
-            if queue.stop {
+            if queue.stop || inner.cancel.load(Ordering::Acquire) {
                 return;
             }
             queue.jobs.pop_front().expect("nonempty queue")

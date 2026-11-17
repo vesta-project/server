@@ -386,6 +386,7 @@ struct Inner {
     env: Arc<dyn ImportEnvironment>,
     cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
     running: Mutex<HashSet<String>>,
+    stopping: AtomicBool,
     /// Create uploads still streaming (their partial files are live).
     uploading: Mutex<HashSet<String>>,
 }
@@ -399,6 +400,14 @@ struct Running<'a> {
 }
 impl Drop for Running<'_> {
     fn drop(&mut self) {
+        if self.jobs.is_stopping() {
+            // Keep partial content and reservations for explicit resume. This is
+            // an interrupted owner operation, never an owner's destructive Cancel.
+            let _ = self.jobs.write(|c| {
+                c.execute("UPDATE machine_import_jobs SET state='interrupted',error='host_shutdown_interrupted',updated_ms=? WHERE job_id=? AND state IN ('planning','applying','starting')", params![self.jobs.0.host.now_ms(), self.id])?;
+                Ok(())
+            });
+        }
         if let Ok(mut running) = self.jobs.0.running.lock() {
             running.remove(&self.id);
         }
@@ -452,6 +461,7 @@ impl ImportJobs {
             env,
             cancels: Mutex::new(HashMap::new()),
             running: Mutex::new(HashSet::new()),
+            stopping: AtomicBool::new(false),
             uploading: Mutex::new(HashSet::new()),
         }));
         jobs.sweep_abandoned();
@@ -491,6 +501,49 @@ impl ImportJobs {
             }
         }
     }
+    /// Close job admission and interrupt copy/download work at its existing safe
+    /// boundaries. Critical registration/activation retains its durable journal.
+    pub fn request_shutdown(&self) {
+        self.0.stopping.store(true, Ordering::Release);
+        if let Ok(flags) = self.0.cancels.try_lock() {
+            for flag in flags.values() {
+                flag.store(true, Ordering::Release);
+            }
+        }
+    }
+    pub fn is_stopping(&self) -> bool {
+        self.0.stopping.load(Ordering::Acquire)
+    }
+    pub fn is_shutdown_complete(&self) -> bool {
+        self.0
+            .running
+            .try_lock()
+            .is_ok_and(|running| running.is_empty())
+            && self
+                .0
+                .uploading
+                .try_lock()
+                .is_ok_and(|uploads| uploads.is_empty())
+    }
+    fn ensure_accepting(&self) -> JobResult<()> {
+        if self.is_stopping() {
+            Err(JobError("host_shutting_down"))
+        } else {
+            Ok(())
+        }
+    }
+    fn enter_running(&self, job_id: &str) -> JobResult<Running<'_>> {
+        let mut running = self.0.running.lock().map_err(|_| JobError::UNAVAILABLE)?;
+        self.ensure_accepting()?;
+        if !running.insert(job_id.to_owned()) {
+            return Err(JobError::CONFLICT);
+        }
+        Ok(Running {
+            jobs: self,
+            id: job_id.to_owned(),
+        })
+    }
+
     pub fn servers_root(&self) -> &Path {
         &self.0.servers
     }
@@ -599,6 +652,7 @@ impl ImportJobs {
         phase: &str,
         raw: &str,
     ) -> JobResult<PlanAccepted> {
+        self.ensure_accepting()?;
         let id = Uuid::new_v4().to_string();
         let now = self.0.host.now_ms();
         self.write(|c| {
@@ -628,6 +682,7 @@ impl ImportJobs {
 
     /// Inspect, plan resources/Java and snapshot; ends in `review` or `blocked`.
     pub fn run_plan(&self, binding: &OwnerBinding, job_id: &str) -> JobResult<ImportJob> {
+        let _running = self.enter_running(job_id)?;
         let raw: String = self.read(|c| {
             self.owner(c, binding)?;
             let row: Option<(String, String, String)> = c
@@ -779,7 +834,10 @@ impl ImportJobs {
             });
         }
         let memory = resources::plan_software_memory(
-            self.0.env.memory_total_bytes(), &reservations, request.memory_mib, detected.loader.as_deref(),
+            self.0.env.memory_total_bytes(),
+            &reservations,
+            request.memory_mib,
+            detected.loader.as_deref(),
         );
         warnings.extend(memory.warnings.iter().copied());
         if let Some(blocker) = memory.blocker {
@@ -998,6 +1056,7 @@ impl ImportJobs {
         request: &ApplyRequest,
         idempotency_key: &str,
     ) -> JobResult<ApplyAccepted> {
+        self.ensure_accepting()?;
         if idempotency_key.is_empty()
             || idempotency_key.len() > 128
             || idempotency_key.chars().any(char::is_control)
@@ -1085,6 +1144,7 @@ impl ImportJobs {
         job_id: &str,
         kind: Kind,
     ) -> JobResult<()> {
+        self.ensure_accepting()?;
         let now = self.0.host.now_ms();
         self.write(|c| {
             self.owner(c, binding)?;
@@ -1197,16 +1257,7 @@ impl ImportJobs {
 
     /// Run (or continue) an accepted apply until the copy is verified. Blocking.
     pub fn run_apply(&self, binding: &OwnerBinding, job_id: &str) -> JobResult<ImportJob> {
-        let _running = {
-            let mut running = self.0.running.lock().map_err(|_| JobError::UNAVAILABLE)?;
-            if !running.insert(job_id.to_owned()) {
-                return Err(JobError::CONFLICT);
-            }
-            Running {
-                jobs: self,
-                id: job_id.to_owned(),
-            }
-        };
+        let _running = self.enter_running(job_id)?;
         let flag = Arc::new(AtomicBool::new(false));
         self.0
             .cancels
@@ -1240,6 +1291,14 @@ impl ImportJobs {
                     return self.status(binding, job_id);
                 }
             }
+        }
+        if self.is_stopping() {
+            self.settle(
+                job_id,
+                review.destination.server_id,
+                Outcome::Interrupted("host_shutdown_interrupted"),
+            )?;
+            return self.status(binding, job_id);
         }
         if let Err(error) = self.commit(job_id, &review) {
             // The verified copy stays; the owner resolves the error and resumes.
@@ -1411,6 +1470,9 @@ impl ImportJobs {
     }
 
     fn cancel_requested(&self, job_id: &str) -> bool {
+        if self.is_stopping() {
+            return true;
+        }
         self.0
             .host
             .read(|c| {
@@ -1449,6 +1511,11 @@ impl ImportJobs {
 
     /// Record a non-success copy outcome and its destination disposition.
     fn settle(&self, job_id: &str, server_id: Uuid, outcome: Outcome) -> JobResult<()> {
+        let outcome = if self.is_stopping() && matches!(outcome, Outcome::Cancelled) {
+            Outcome::Interrupted("host_shutdown_interrupted")
+        } else {
+            outcome
+        };
         let now = self.0.host.now_ms();
         let (state, error, release) = match outcome {
             Outcome::Cancelled => ("cancelled", None, true),

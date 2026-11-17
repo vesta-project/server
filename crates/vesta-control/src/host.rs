@@ -5,7 +5,8 @@
 //! never binds a listener, bootstraps an owner, mints credentials or starts Minecraft:
 //! the operation runtime only executes Start operations that were already admitted
 //! and are still authorized. Failures before the runtime starts release everything
-//! opened so far; shutdown is observation-only and keeps ownership on timeout.
+//! opened so far; ordinary shutdown is observation-only. Explicit system shutdown
+//! quiesces jobs and gracefully stops the game, retaining ownership on timeout.
 use crate::ControlError;
 use crate::automation::{Automation, AutomationEvent, Severity};
 use crate::automation_host::HostActions;
@@ -266,7 +267,7 @@ impl AutomationDriver {
                         }
                         generation = snapshot.generation;
                     }
-                    thread::sleep(Duration::from_secs(1));
+                    thread::park_timeout(Duration::from_secs(1));
                 }
             })
             .map_err(|_| HostError::Supervisor("host_automation_unavailable"))?;
@@ -279,6 +280,24 @@ impl AutomationDriver {
     }
     fn attach(&self, local: crate::operations::LocalRuntime) {
         let _ = self.local.set(local);
+    }
+    fn request_shutdown(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(thread) = &self.thread {
+            thread.thread().unpark();
+        }
+        if let Some(alerts) = &self.alerts {
+            alerts.request_shutdown();
+        }
+    }
+    fn is_shutdown_complete(&self) -> bool {
+        self.thread
+            .as_ref()
+            .is_none_or(thread::JoinHandle::is_finished)
+            && self
+                .alerts
+                .as_ref()
+                .is_none_or(|worker| worker.is_shutdown_complete())
     }
     fn stop(mut self) {
         self.halt();
@@ -553,6 +572,94 @@ impl Host {
     }
     pub fn automation(&self) -> &Arc<Automation> {
         &self.automation
+    }
+
+    /// Begin an explicit machine/service stop without joining background work.
+    /// All admission closes immediately; native stop waits for job safe points.
+    pub fn request_system_shutdown(&self) -> Result<(), HostError> {
+        self.runtime.request_system_quiescence();
+        if let Some(driver) = &self.sleep_driver {
+            driver.request_shutdown();
+        }
+        if let Some(driver) = &self.driver {
+            driver.request_shutdown();
+        }
+        if let Some(backups) = &self.backups {
+            backups.request_shutdown();
+        }
+        if let Some(software) = &self.software {
+            software.request_shutdown();
+        }
+        if let Some(packs) = &self.resource_packs {
+            packs.request_shutdown();
+        }
+        Ok(())
+    }
+
+    /// Advance native stopping without closing state still used by in-flight HTTP
+    /// requests. Coordinators poll this while transport drains so an unrelated
+    /// slow request cannot postpone every idle server's Minecraft save.
+    pub fn advance_system_shutdown(&self) -> bool {
+        let ready = self
+            .sleep_driver
+            .as_ref()
+            .is_none_or(|w| w.is_shutdown_complete())
+            && self
+                .driver
+                .as_ref()
+                .is_none_or(|w| w.is_shutdown_complete())
+            && self
+                .backups
+                .as_ref()
+                .is_none_or(|w| w.is_shutdown_complete())
+            && self
+                .software
+                .as_ref()
+                .is_none_or(|w| w.is_shutdown_complete())
+            && self
+                .resource_packs
+                .as_ref()
+                .is_none_or(|w| w.is_shutdown_complete());
+        if ready {
+            self.runtime.request_system_shutdown();
+        }
+        ready
+    }
+
+    /// Observe explicit machine/service stop. A timeout retains the same native
+    /// owner and workers; it is never proof of a clean stop or permission to
+    /// detach them. Callers use one process-wide OS deadline, not one per host.
+    pub fn shutdown_system(mut self, timeout: Duration) -> Result<HostShutdown, HostError> {
+        self.request_system_shutdown()?;
+        let until = std::time::Instant::now() + timeout.min(Duration::from_secs(300));
+        loop {
+            let background_finished = self.advance_system_shutdown();
+            if background_finished {
+                // Each join below is of a worker already observed finished.
+                drop(self.sleep_driver.take());
+                drop(self.driver.take());
+                drop(self.resource_packs.take());
+                drop(self.software.take());
+                self.runtime.request_system_shutdown();
+                if self.runtime.is_shutdown_complete() {
+                    match self.runtime.shutdown(Duration::ZERO) {
+                        Ok(ShutdownOutcome::Complete) => {
+                            self.db.close().map_err(HostError::State)?;
+                            return Ok(HostShutdown::Complete);
+                        }
+                        // An error after actual driver completion owns no local
+                        // native child; returning it cannot abandon a live owner.
+                        Err(error) => return Err(HostError::Operation(error)),
+                        Ok(ShutdownOutcome::TimedOut(_)) => (),
+                    }
+                }
+            }
+            let now = std::time::Instant::now();
+            if now >= until {
+                return Ok(HostShutdown::TimedOut(Box::new(self)));
+            }
+            thread::sleep(Duration::from_millis(5).min(until.saturating_duration_since(now)));
+        }
     }
 
     /// Stop dispatch and wait up to `timeout` for the runtime to finish. The database
@@ -1046,7 +1153,10 @@ impl Drop for AdmissionRefresh {
 impl NetworkHost {
     pub(crate) fn with_trusted(mut self, trusted: crate::worker::TrustedAuthorization) -> Self {
         self.management = self.management.with_trusted(trusted);
-        self.sessions = Arc::new(PackSessions::new(self.management.clone(), Default::default()));
+        self.sessions = Arc::new(PackSessions::new(
+            self.management.clone(),
+            Default::default(),
+        ));
         self
     }
     pub fn resource_packs(&self) -> &crate::resource_packs::hosting::Handle {

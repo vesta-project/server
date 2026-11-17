@@ -667,3 +667,17 @@ fn ambiguous_activation_leaves_management_available_and_can_be_explicitly_abando
     assert_eq!(h.abandon_recovery(&f.actor, "abandon", &input), Ok(true));
     assert!(f.hooks.recovery.load(Ordering::Acquire));
 }
+
+#[test]
+fn shutdown_request_stops_idle_hosting_worker_without_detaching_it() {
+    let f = Fixture::new();
+    let service = f.service.as_ref().unwrap();
+    service.request_shutdown();
+    service.request_shutdown();
+    let until = Instant::now() + Duration::from_secs(5);
+    while !service.is_shutdown_complete() {
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(service.inner.cancel.load(Ordering::Acquire));
+}

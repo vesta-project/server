@@ -18,6 +18,14 @@ use vesta_update::{
     activation::{ACTIVATION_PROTOCOL, ActivationHost, Health, Scope},
 };
 type Result<T> = std::result::Result<T, String>;
+use vesta_control::{process_shutdown::wait_owned_child, shutdown_signal::ShutdownObserver};
+pub(crate) fn ensure_host_running(shutdown: &ShutdownObserver) -> Result<()> {
+    if shutdown.current_request().is_some() {
+        Err("setup_host_stopping".into())
+    } else {
+        Ok(())
+    }
+}
 
 pub(crate) struct NativeHost<'a> {
     root: std::path::PathBuf,
@@ -187,7 +195,12 @@ fn now() -> Result<i64> {
 }
 /// Stable host handoff; active bytes are never overwritten. Only the exact
 /// child's protected readiness plus its real pinned endpoint commits selection.
-pub(crate) fn run_registered(root: &Path, lease: &host::HostLease) -> Result<Option<()>> {
+pub(crate) fn run_registered(
+    root: &Path,
+    lease: &host::HostLease,
+    shutdown: &ShutdownObserver,
+) -> Result<Option<()>> {
+    ensure_host_running(shutdown)?;
     if !root.join("private/update-state").exists() {
         return Ok(None);
     }
@@ -229,10 +242,12 @@ pub(crate) fn run_registered(root: &Path, lease: &host::HostLease) -> Result<Opt
         command.creation_flags(0x08000000);
     }
     drop(native); // The child takes these same consumer/runtime leases.
+    ensure_host_running(shutdown)?;
     let mut child = command.spawn().map_err(|_| "update_agent_start_failed")?;
     let deadline = Instant::now() + Duration::from_secs(20);
     let startup = (|| {
         loop {
+            ensure_host_running(shutdown)?;
             if child
                 .try_wait()
                 .map_err(|_| "update_agent_wait_failed")?
@@ -280,6 +295,14 @@ pub(crate) fn run_registered(root: &Path, lease: &host::HostLease) -> Result<Opt
             std::thread::sleep(Duration::from_millis(25));
         }
     })();
+    if shutdown.current_request().is_some() {
+        let exit = wait_owned_child(&mut child, shutdown);
+        return if exit.success() {
+            Ok(Some(()))
+        } else {
+            Err("update_agent_shutdown_unclean".into())
+        };
+    }
     if let Err(error) = startup {
         // Never kill a service/game or select a fallback while stop is unknown.
         // A live child keeps its consumer lease and unclean-session witness.
@@ -290,14 +313,16 @@ pub(crate) fn run_registered(root: &Path, lease: &host::HostLease) -> Result<Opt
             && let Some(id) = &intent
         {
             let mut stopped = NativeHost::open(root, lease)?;
+            ensure_host_running(shutdown)?;
             store.recover_activation(id, &mut stopped, now()?)?;
             drop(stopped);
             drop(payload);
-            return run_registered(root, lease); // Recovered intents are no longer selected.
+            ensure_host_running(shutdown)?;
+            return run_registered(root, lease, shutdown); // Recovered intents are no longer selected.
         }
         return Err(error);
     }
-    let exit = child.wait().map_err(|_| "update_agent_wait_failed")?;
+    let exit = wait_owned_child(&mut child, shutdown);
     if exit.success() {
         Ok(Some(()))
     } else {
@@ -363,7 +388,8 @@ pub(crate) fn probe(root: &Path, manifest: &str, nonce: &str) -> Result<()> {
 
 /// The original installation remains an immutable bootstrap. Execute the selected
 /// setup component before it starts the selected agent; never mix release components.
-pub(crate) fn delegate_host(root: &Path) -> Result<Option<()>> {
+pub(crate) fn delegate_host(root: &Path, shutdown: &ShutdownObserver) -> Result<Option<()>> {
+    ensure_host_running(shutdown)?;
     if !root.join("private/update-state").exists() {
         return Ok(None);
     }
@@ -404,16 +430,20 @@ pub(crate) fn delegate_host(root: &Path) -> Result<Option<()>> {
     }
     drop(native);
     drop(lease);
-    let exit = command.status().map_err(|_| "update_host_start_failed")?;
+    ensure_host_running(shutdown)?;
+    let mut child = command.spawn().map_err(|_| "update_host_start_failed")?;
+    let exit = wait_owned_child(&mut child, shutdown);
     if exit.success() {
         return Ok(Some(()));
     }
+    ensure_host_running(shutdown)?;
     if let Some(id) = intent {
         let status = store.activation_status(&id)?;
         if status.state == "restart_pending" {
             // Child exit alone is insufficient: acquire all stopped fences again.
             let lease = host::acquire_host_lease(root)?;
             let mut stopped = NativeHost::open(root, &lease)?;
+            ensure_host_running(shutdown)?;
             store.recover_activation(&id, &mut stopped, now()?)?;
             return Ok(None);
         }

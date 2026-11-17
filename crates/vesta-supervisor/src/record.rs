@@ -21,6 +21,8 @@ const GENERATION: &str = "generation.json";
 const GENERATION_STAGED: &str = "generation.staged";
 const INTENT: &str = "launch-intent.json";
 const INTENT_STAGED: &str = "launch-intent.staged";
+const SHUTDOWN: &str = "system-shutdown.json";
+const SHUTDOWN_STAGED: &str = "system-shutdown.staged";
 const MAX_RECORD_BYTES: u64 = 4096;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -55,6 +57,47 @@ impl GenerationRecord {
 pub struct LaunchIntent {
     pub version: u8,
     pub launch_identity: String,
+}
+
+/// Final native ownership proof, published only after an OS stop observed every
+/// child/IO exit and released the offline responder. It is not a PID-liveness
+/// inference and cannot prove an unrelated generation stopped.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ShutdownReceipt {
+    pub version: u8,
+    pub supervisor_pid: u32,
+    pub launch_identity: String,
+    pub exit: Option<crate::wire::WireExit>,
+    pub offline_released: bool,
+}
+pub fn read_shutdown(directory: &ArtifactDirectory) -> Result<Option<ShutdownReceipt>> {
+    let receipt: Option<ShutdownReceipt> = read_json(directory, SHUTDOWN)?;
+    if receipt.as_ref().is_some_and(|r| {
+        r.version != 1
+            || !r.offline_released
+            || r.supervisor_pid == 0
+            || r.exit
+                .as_ref()
+                .is_some_and(|e| crate::wire::exit_from_wire(e).is_err())
+    }) {
+        return Err("supervisor_record_invalid");
+    }
+    Ok(receipt)
+}
+pub(crate) fn write_shutdown(
+    directory: &ArtifactDirectory,
+    receipt: &ShutdownReceipt,
+) -> Result<()> {
+    publish(directory, SHUTDOWN_STAGED, SHUTDOWN, receipt)
+}
+pub(crate) fn clear_shutdown(directory: &ArtifactDirectory) -> Result<()> {
+    directory
+        .remove(&name(SHUTDOWN)?)
+        .map_err(|_| "supervisor_record_unavailable")?;
+    directory
+        .sync()
+        .map_err(|_| "supervisor_record_unavailable")
 }
 
 pub(crate) fn name(text: &str) -> Result<ArtifactName> {
@@ -210,6 +253,39 @@ mod tests {
         );
         clear_intent(&directory).unwrap();
         assert_eq!(read_intent(&directory).unwrap(), None);
+    }
+
+    #[test]
+    fn shutdown_receipts_publish_atomically_validate_and_clear_before_reuse() {
+        let (_temp, directory) = directory();
+        let receipt = ShutdownReceipt {
+            version: 1,
+            supervisor_pid: std::process::id(),
+            launch_identity: "ab".repeat(32),
+            exit: Some(crate::wire::WireExit {
+                generation: "0123456789abcdef0123456789abcdef".into(),
+                success: true,
+                code: Some(0),
+                output_failed: false,
+                stdin_failed: false,
+            }),
+            offline_released: true,
+        };
+        assert_eq!(read_shutdown(&directory).unwrap(), None);
+        write_shutdown(&directory, &receipt).unwrap();
+        assert_eq!(read_shutdown(&directory).unwrap(), Some(receipt.clone()));
+        assert_eq!(
+            write_shutdown(&directory, &receipt),
+            Err("supervisor_record_exists")
+        );
+        clear_shutdown(&directory).unwrap();
+        assert!(read_shutdown(&directory).unwrap().is_none());
+        let invalid = ShutdownReceipt {
+            offline_released: false,
+            ..receipt
+        };
+        write_shutdown(&directory, &invalid).unwrap();
+        assert_eq!(read_shutdown(&directory), Err("supervisor_record_invalid"));
     }
 
     #[test]

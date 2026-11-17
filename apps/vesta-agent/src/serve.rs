@@ -9,6 +9,20 @@ use vesta_state::SystemClock;
 use vesta_transport::{Transport, TransportShutdown};
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 pub async fn run(source: &Path, base: &Path, local_only: bool, allow_local: bool) -> ExitCode {
+    let mut signals = match crate::shutdown_signal::ShutdownSignal::register() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let watchdog = match crate::shutdown::ExitWatchdog::arm(signals.observer()) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let configuration = match HostConfiguration::load_file(source, base) {
         Ok(c) => c,
         Err(e) => {
@@ -233,47 +247,105 @@ pub async fn run(source: &Path, base: &Path, local_only: bool, allow_local: bool
         println!("serving; local_control_only; remote_management_refused");
     }
     let mut shutdown = control.shutdown_signal();
-    let already_requested = *shutdown.borrow();
-    let signal_failed = if already_requested {
-        false
+    let (request, signal_failed) = if *shutdown.borrow() {
+        (None, false)
     } else {
         tokio::select! {
-            result = wait_for_ctrl_c(transport.as_ref()) => result.is_err(),
-            _ = shutdown.changed() => false,
+            request=wait_for_shutdown(&mut signals,transport.as_ref())=>match request {Ok(r)=>(Some(r),false),Err(())=>(None,true)},
+            _=shutdown.changed()=>(None,false),
         }
     };
-    if signal_failed {
-        eprintln!("signal_wait_failed");
+    if let Some(request) = request {
+        watchdog.begin(request);
+    } else {
+        watchdog.begin_local();
     }
-    let control_failed = control.shutdown().await.is_err();
-    if control_failed {
-        eprintln!("local_control_shutdown_failed");
+    let system = request.is_some_and(|r| r.reason.is_system()) || !supervised;
+    if system {
+        if let Err(e) = host.request_system_shutdown() {
+            eprintln!("system_shutdown_request_failed: {}", e.code());
+        }
     }
-    sftp.shutdown().await;
-    shutdown_transport(transport);
-    let result = shutdown_host(host, sessions);
+    let stop_endpoints = async {
+        let failed = control.shutdown().await.is_err();
+        sftp.shutdown().await;
+        failed
+    };
+    tokio::pin!(stop_endpoints);
+    let mut progress = tokio::time::interval(Duration::from_millis(10));
+    let control_failed = loop {
+        tokio::select! {
+            failed=&mut stop_endpoints=>break failed,
+            _=progress.tick()=>if system {host.advance_system_shutdown();}
+        }
+    };
+    if system {
+        if let Some(mut owner) = transport {
+            loop {
+                host.advance_system_shutdown();
+                match owner.shutdown(watchdog.remaining().min(Duration::from_millis(25))) {
+                    Ok(TransportShutdown::Complete) => break,
+                    Ok(TransportShutdown::TimedOut(remaining)) => owner = remaining,
+                    Err(_) => {
+                        eprintln!("transport_shutdown_failed");
+                        break;
+                    }
+                }
+            }
+        }
+    } else {
+        shutdown_transport(transport);
+    }
+    let result = if system {
+        shutdown_host_system(host, sessions).await
+    } else {
+        shutdown_host(host, sessions)
+    };
     supervised_state.finish();
+    signals.complete();
+    watchdog.finish();
     if signal_failed || control_failed {
         ExitCode::FAILURE
     } else {
         result
     }
 }
-async fn wait_for_ctrl_c(transport: Option<&Transport>) -> Result<(), ()> {
-    let signal = tokio::signal::ctrl_c();
-    tokio::pin!(signal);
+async fn wait_for_shutdown(
+    signals: &mut crate::shutdown_signal::ShutdownSignal,
+    transport: Option<&Transport>,
+) -> Result<crate::shutdown_signal::ShutdownRequest, ()> {
     let mut poll = tokio::time::interval(Duration::from_secs(5));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     poll.tick().await;
     loop {
         tokio::select! {
-            result = &mut signal => return result.map_err(|_| ()),
-            _ = poll.tick() => if let Some(t) = transport {
-                match t.reload_tls() { Ok(true) => println!("tls_material_reloaded"), Ok(false) => {}, Err(e) => eprintln!("tls_reload_failed: {}", e.code()) }
-            }
+            request=signals.wait()=>return request.map_err(|_|()),
+            _=poll.tick()=>if let Some(t)=transport {match t.reload_tls(){Ok(true)=>println!("tls_material_reloaded"),Ok(false)=>(),Err(e)=>eprintln!("tls_reload_failed: {}",e.code())}},
         }
     }
 }
+async fn shutdown_host_system(mut host: Host, sessions: crate::sessions::Sessions) -> ExitCode {
+    loop {
+        match host.shutdown_system(Duration::ZERO) {
+            Ok(HostShutdown::Complete) => {
+                return match sessions.stopped() {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        ExitCode::FAILURE
+                    }
+                };
+            }
+            Ok(HostShutdown::TimedOut(owner)) => host = *owner,
+            Err(e) => {
+                eprintln!("host_system_shutdown_failed: {}", e.code());
+                return ExitCode::FAILURE;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 fn shutdown_transport(transport: Option<Transport>) {
     let Some(mut transport) = transport else {
         return;

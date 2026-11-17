@@ -369,6 +369,7 @@ impl ImportJobs {
         installer: &dyn CreateInstaller,
         catalogue: &dyn Catalogue,
     ) -> JobResult<CreateJob> {
+        let _running = self.enter_running(job_id)?;
         let raw: String = self.read(|c| {
             self.owner(c, binding)?;
             let row: Option<(String, String, String)> = c
@@ -590,8 +591,12 @@ impl ImportJobs {
         if let Some(blocker) = port.blocker {
             blockers.insert(blocker);
         }
-        let memory = resources::plan_software_memory(self.0.env.memory_total_bytes(), &held, request.memory_mib,
-            software.map(|s| s.id()));
+        let memory = resources::plan_software_memory(
+            self.0.env.memory_total_bytes(),
+            &held,
+            request.memory_mib,
+            software.map(|s| s.id()),
+        );
         warnings.extend(memory.warnings.iter().copied());
         if let Some(blocker) = memory.blocker {
             blockers.insert(blocker);
@@ -704,6 +709,7 @@ impl ImportJobs {
         request: &CreateApplyRequest,
         idempotency_key: &str,
     ) -> JobResult<ApplyAccepted> {
+        self.ensure_accepting()?;
         if idempotency_key.is_empty()
             || idempotency_key.len() > 128
             || idempotency_key.chars().any(char::is_control)
@@ -784,16 +790,7 @@ impl ImportJobs {
         job_id: &str,
         installer: &dyn CreateInstaller,
     ) -> JobResult<CreateJob> {
-        let _running = {
-            let mut running = self.0.running.lock().map_err(|_| JobError::UNAVAILABLE)?;
-            if !running.insert(job_id.to_owned()) {
-                return Err(JobError::CONFLICT);
-            }
-            Running {
-                jobs: self,
-                id: job_id.to_owned(),
-            }
-        };
+        let _running = self.enter_running(job_id)?;
         let flag = Arc::new(AtomicBool::new(false));
         self.0
             .cancels
@@ -841,6 +838,14 @@ impl ImportJobs {
             }
         {
             self.settle_create(job_id, server_id, outcome)?;
+            return self.create_status(binding, job_id);
+        }
+        if self.is_stopping() {
+            self.settle_create(
+                job_id,
+                server_id,
+                Outcome::Interrupted("host_shutdown_interrupted"),
+            )?;
             return self.create_status(binding, job_id);
         }
         if let Err(error) = self.create_register(job_id, &review, &eula_account) {
@@ -1161,6 +1166,11 @@ impl ImportJobs {
     /// destination is removed and the reservation released, except for an
     /// interruption that the owner resumes.
     fn settle_create(&self, job_id: &str, server_id: Uuid, outcome: Outcome) -> JobResult<()> {
+        let outcome = if self.is_stopping() && matches!(outcome, Outcome::Cancelled) {
+            Outcome::Interrupted("host_shutdown_interrupted")
+        } else {
+            outcome
+        };
         let now = self.0.host.now_ms();
         let (state, error, release) = match outcome {
             Outcome::Cancelled => ("cancelled", None, true),

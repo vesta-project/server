@@ -351,6 +351,21 @@ fn recover(directory: &ArtifactDirectory) -> Result<(Option<GenerationRecord>, b
 /// Run until an accepted `Shutdown` request, or `stop` resolves while idle. Returns an
 /// error before serving if another supervisor owns this state or its records are bad.
 pub async fn run(config: SupervisorConfig, stop: impl Future<Output = ()>) -> Result<()> {
+    run_with_shutdown(config, async {
+        stop.await;
+        false
+    })
+    .await
+}
+
+/// An OS stop (`true`) closes effect admission and gracefully stops the owned
+/// generation once existing save/maintenance obligations finish. `false` keeps
+/// the ordinary idle-only supervisor release behavior. The binary owns the OS
+/// deadline: a timeout must never be reported here as a clean game exit.
+pub async fn run_with_shutdown(
+    config: SupervisorConfig,
+    stop: impl Future<Output = bool>,
+) -> Result<()> {
     let directory = config
         .state
         .supervisor()
@@ -362,6 +377,7 @@ pub async fn run(config: SupervisorConfig, stop: impl Future<Output = ()>) -> Re
         .map_err(|_| "supervisor_state_unavailable")?;
     fs2::FileExt::try_lock_exclusive(&lock_file).map_err(|_| "supervisor_already_running")?;
     let (orphan, unresolved) = recover(&directory)?;
+    record::clear_shutdown(&directory)?;
     let restarts = Restarts::load(directory.clone(), config.restart)?;
     // A lease from an earlier supervisor: undoable only if its game is gone.
     let mut save_lease = save::read(&directory)?;
@@ -418,7 +434,7 @@ pub async fn run(config: SupervisorConfig, stop: impl Future<Output = ()>) -> Re
 async fn serve(
     endpoint: &std::path::Path,
     core: Shared,
-    stop: impl Future<Output = ()>,
+    stop: impl Future<Output = bool>,
 ) -> Result<()> {
     let (shutdown, mut requested) = tokio::sync::watch::channel(false);
     let observer = {
@@ -445,6 +461,9 @@ async fn serve(
     let mut listener = Listener::bind(endpoint)?;
     tokio::pin!(stop);
     let mut stop_requested = false;
+    let mut system_stop = false;
+    let mut delivery: Option<(GenerationId, GuardedInput<()>)> = None;
+    let mut delivery_failed = false;
     let result = loop {
         if *requested.borrow() {
             break Ok(());
@@ -452,7 +471,48 @@ async fn serve(
         if stop_requested {
             // Close admission under the core lock only when nothing is live.
             let mut core = lock(&core);
-            if core.idle() {
+            if system_stop {
+                core.observe_state();
+                if let Some((generation, receipt)) = &mut delivery {
+                    if let Some(result) = receipt.try_result() {
+                        let generation = *generation;
+                        let delivered = result.is_ok();
+                        core.stop_delivered(generation, delivered);
+                        if delivered {
+                            if core.process.acknowledge_guarded_stop(generation).is_err() {
+                                delivery_failed = true;
+                            }
+                        } else {
+                            delivery_failed = true;
+                        }
+                        delivery = None;
+                    }
+                }
+                let snapshot = core.process.snapshot();
+                if delivery.is_none()
+                    && !delivery_failed
+                    && core.save_lease.is_none()
+                    && core.hold.is_none()
+                    && !core.content_pending()
+                    && snapshot.phase == vesta_game_runtime::process::ProcessPhase::Running
+                    && let Some(generation) = snapshot.generation
+                {
+                    match core
+                        .process
+                        .queue_stop_guarded(generation, || Ok::<(), ()>(()))
+                    {
+                        Ok(receipt) => {
+                            core.stop_requested(generation);
+                            delivery = Some((generation, receipt));
+                        }
+                        Err(_) => {
+                            delivery_failed = true;
+                            core.observation_failed = true;
+                        }
+                    }
+                }
+            }
+            if core.idle() && delivery.is_none() {
                 core.stopping = true;
                 break Ok(());
             }
@@ -467,7 +527,12 @@ async fn serve(
         let stream = tokio::select! {
             stream = listener.accept() => stream,
             _ = requested.changed() => continue,
-            _ = &mut stop, if !stop_requested => { stop_requested = true; continue }
+            system = &mut stop, if !stop_requested => {
+                stop_requested = true;
+                system_stop = system;
+                if system { let mut core = lock(&core); core.stopping = true; core.restarts.cancel_pending(); }
+                continue
+            }
             _ = tokio::time::sleep(Duration::from_millis(250)), if stop_requested => continue,
         };
         // Endpoint failures never abandon a live game; keep retrying the listener.
@@ -488,6 +553,34 @@ async fn serve(
     let _ = observer.await;
     // Wait for every in-flight request to return before ownership is released.
     let _ = permits.acquire_many(MAX_CONNECTIONS as u32).await;
+    if result.is_ok() && system_stop {
+        let mut core = lock(&core);
+        if !core.idle()
+            || core.observation_failed
+            || core.unresolved
+            || core.recorded.is_some()
+            || core.intent_for.is_some()
+            || core.content_pending()
+        {
+            return Err("supervisor_shutdown_unproven");
+        }
+        if let Some(mut responder) = core.offline.take() {
+            if responder.close().is_err() {
+                return Err("offline_release_uncertain");
+            }
+        }
+        let snapshot = core.process.snapshot();
+        record::write_shutdown(
+            &core.directory,
+            &record::ShutdownReceipt {
+                version: 1,
+                supervisor_pid: std::process::id(),
+                launch_identity: core.launch_identity.clone(),
+                exit: snapshot.last_exit.as_ref().map(wire::exit_to_wire),
+                offline_released: true,
+            },
+        )?;
+    }
     drop(listener);
     result
 }
@@ -717,9 +810,10 @@ fn execute(core: &Shared, op: Op) -> Reply {
             let mut core = lock(core);
             core.observe_state();
             let actual = core.process.snapshot().generation.map(|g| g.to_hex());
-            if core.stopping {
+            let shutdown_cleanup = core.stopping && configuration.is_none();
+            if core.stopping && configuration.is_some() {
                 Err(refused("supervisor_shutting_down"))
-            } else if expected_generation != actual {
+            } else if !shutdown_cleanup && expected_generation != actual {
                 Err(refused("offline_stale_generation"))
             } else if configuration.is_some()
                 && (actual.is_some()
@@ -1018,6 +1112,8 @@ impl Core {
             .snapshot(0, 1)
             .map(|page| page.latest_cursor)
             .map_err(|error| refused(error.code()))?;
+        // Retire proof of a prior stopped generation before any new launch.
+        record::clear_shutdown(&self.directory).map_err(refused)?;
         // Durable before any spawn: a crash from here on leaves an unresolved intent.
         record::write_intent(
             &self.directory,

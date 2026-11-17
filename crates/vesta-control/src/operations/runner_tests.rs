@@ -600,6 +600,7 @@ fn returned_stop_ack_with_second_owned_writer_draining_retains_lock_until_actual
             }),
             shared: shared.clone(),
             stop_wait: Duration::from_millis(25),
+            system_stop: SystemStop::default(),
             observation_uncertain: None,
             after_dispatch: None,
         },
@@ -831,6 +832,7 @@ fn delayed_stop(
             }),
             shared: shared.clone(),
             stop_wait: Duration::from_millis(25),
+            system_stop: SystemStop::default(),
             observation_uncertain: None,
             after_dispatch: None,
         },
@@ -893,6 +895,7 @@ fn pending_player_query_timeout_retains_driver_database_and_lifecycle_exclusion(
             active: None,
             shared: shared.clone(),
             stop_wait: Duration::from_millis(25),
+            system_stop: SystemStop::default(),
             observation_uncertain: None,
             after_dispatch: None,
         },
@@ -1141,6 +1144,7 @@ fn delayed_stop_ack(
             }),
             shared: shared.clone(),
             stop_wait: Duration::from_millis(25),
+            system_stop: SystemStop::default(),
             observation_uncertain: None,
             after_dispatch: None,
         },
@@ -1189,6 +1193,7 @@ fn dispatch_driver(harness: &Harness, probe: Option<fn(&mut Driver)>) -> Fixture
             active: None,
             shared,
             stop_wait: Duration::from_millis(25),
+            system_stop: SystemStop::default(),
             observation_uncertain: None,
             after_dispatch: probe,
         },
@@ -1385,3 +1390,126 @@ mod motd_tests;
 mod sleep_tests;
 #[path = "startup_whitelist_tests.rs"]
 mod startup_whitelist_tests;
+
+#[test]
+fn system_shutdown_sends_graceful_stop_and_preserves_resume_intent() {
+    let h = Harness::new(false);
+    let mut owned = h.runtime(Duration::from_secs(1));
+    let generation = start(&h, &owned.runtime);
+    let resume = || {
+        h.db.read(|c| {
+            Ok(c.query_row(
+        "SELECT json_extract(desired_value,'$.resume') FROM settings WHERE key='sleep-runtime'",
+        [], |r| r.get::<_, bool>(0))?)
+        })
+        .unwrap()
+    };
+    assert!(resume());
+    owned.runtime.request_system_shutdown();
+    assert!(owned.runtime.status().unwrap().dispatch_stopped);
+    assert_eq!(
+        owned.runtime.shutdown(WAIT).unwrap(),
+        ShutdownOutcome::Complete
+    );
+    assert!(
+        resume(),
+        "OS stop must not overwrite the owner's reboot startup intent"
+    );
+    assert_eq!(owned.runtime.game_snapshot().unwrap().generation, None);
+    assert_eq!(
+        owned
+            .runtime
+            .game_snapshot()
+            .unwrap()
+            .last_exit
+            .unwrap()
+            .generation,
+        generation
+    );
+    assert_eq!(
+        fs::read_to_string(h.cwd.join("operation-commands")).unwrap(),
+        "stop\n"
+    );
+}
+
+#[test]
+fn system_shutdown_timeout_retains_ignoring_child_and_never_duplicates_or_kills() {
+    let h = Harness::new(true);
+    let mut owned = h.runtime(Duration::from_millis(10));
+    let generation = start(&h, &owned.runtime);
+    owned.runtime.request_system_shutdown();
+    wait_for(|| {
+        fs::read_to_string(h.cwd.join("operation-commands"))
+            .unwrap_or_default()
+            .contains("stop")
+    });
+    let before = Instant::now();
+    assert!(matches!(
+        owned.runtime.shutdown(Duration::from_millis(20)).unwrap(),
+        ShutdownOutcome::TimedOut(_)
+    ));
+    assert!(before.elapsed() < Duration::from_secs(1));
+    owned.runtime.request_system_shutdown();
+    assert!(matches!(
+        owned.runtime.shutdown(Duration::from_millis(20)).unwrap(),
+        ShutdownOutcome::TimedOut(_)
+    ));
+    assert_eq!(
+        owned.runtime.game_snapshot().unwrap().generation,
+        Some(generation)
+    );
+    assert_eq!(
+        fs::read_to_string(h.cwd.join("operation-commands")).unwrap(),
+        "stop\n"
+    );
+    assert_eq!(h.db.close().unwrap_err().code(), "state_runtime_busy");
+    fs::write(h.cwd.join("release-game"), b"release").unwrap();
+    assert_eq!(
+        owned.runtime.shutdown(WAIT).unwrap(),
+        ShutdownOutcome::Complete
+    );
+}
+
+#[test]
+fn system_shutdown_of_idle_runtime_completes_without_starting_a_game() {
+    let h = Harness::new(false);
+    let mut owned = h.runtime(Duration::from_secs(1));
+    owned.runtime.request_system_shutdown();
+    assert!(
+        owned
+            .runtime
+            .network_handle()
+            .submit_game(&h.subject, GameCommand::Start, "system-stop-no-start")
+            .is_err()
+    );
+    assert_eq!(
+        owned.runtime.shutdown(WAIT).unwrap(),
+        ShutdownOutcome::Complete
+    );
+    assert!(!h.cwd.join("operation-ready").exists());
+}
+
+#[test]
+fn system_shutdown_quiescence_keeps_idle_driver_until_native_stop_phase_is_authorized() {
+    let h = Harness::new(false);
+    let mut owned = h.runtime(Duration::from_secs(1));
+    owned.runtime.request_system_quiescence();
+    assert!(matches!(
+        owned.runtime.shutdown(Duration::from_millis(20)).unwrap(),
+        ShutdownOutcome::TimedOut(_)
+    ));
+    assert!(!owned.runtime.status().unwrap().driver_finished);
+    assert!(
+        owned
+            .runtime
+            .network_handle()
+            .submit_game(&h.subject, GameCommand::Start, "quiesced-no-start")
+            .is_err()
+    );
+    owned.runtime.request_system_shutdown();
+    assert_eq!(
+        owned.runtime.shutdown(WAIT).unwrap(),
+        ShutdownOutcome::Complete
+    );
+    assert!(!h.cwd.join("operation-ready").exists());
+}

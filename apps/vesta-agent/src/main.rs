@@ -21,6 +21,8 @@ use vesta_supervisor::pipe_security;
 mod serve;
 mod servers;
 mod sessions;
+mod shutdown;
+mod shutdown_signal;
 mod status;
 mod supervision;
 mod uninstall;

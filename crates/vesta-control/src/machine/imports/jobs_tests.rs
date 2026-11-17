@@ -169,9 +169,15 @@ impl Fixture {
         let path = self.temp.path().join("imports").join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let text = if relative.ends_with("server.properties") {
-            let port = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap().local_addr().unwrap().port();
+            let port = std::net::TcpListener::bind(("0.0.0.0", 0))
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port();
             text.replace("server-port=25565", &format!("server-port={port}"))
-        } else { text.to_owned() };
+        } else {
+            text.to_owned()
+        };
         fs::write(path, text).unwrap();
     }
     pub fn vanilla(&self) {
@@ -773,12 +779,32 @@ fn unreadable_source_plan_reports_only_the_source_cause() {
 fn create_defaults_include_pending_import_name_port_and_memory_reservations() {
     let f = Fixture::new();
     f.vanilla();
-    let job = f.jobs.plan(&f.binding, PlanRequest {
-        folder_token: f.token("vanilla"), name: "minecraft server".into(), game_port: None,
-        memory_mib: Some(8192), launch_choice: None, minecraft_version: None,
-    }).unwrap();
-    let accepted = f.jobs.apply(&f.binding, &Fixture::apply_request(&job), "reserved-default").unwrap();
-    assert_eq!(f.jobs.suggested_create_name().unwrap(), "Minecraft Server 2");
+    let job = f
+        .jobs
+        .plan(
+            &f.binding,
+            PlanRequest {
+                folder_token: f.token("vanilla"),
+                name: "minecraft server".into(),
+                game_port: None,
+                memory_mib: Some(8192),
+                launch_choice: None,
+                minecraft_version: None,
+            },
+        )
+        .unwrap();
+    let accepted = f
+        .jobs
+        .apply(
+            &f.binding,
+            &Fixture::apply_request(&job),
+            "reserved-default",
+        )
+        .unwrap();
+    assert_eq!(
+        f.jobs.suggested_create_name().unwrap(),
+        "Minecraft Server 2"
+    );
     let (memory, port) = f.jobs.resource_plans(None, None).unwrap();
     assert_eq!(port.game_port, Some(25566));
     assert_eq!(memory.memory_mib, Some(2048));
@@ -827,10 +853,111 @@ fn startup_sweeps_destinations_of_abandoned_jobs_only() {
     fs::create_dir_all(&unknown).unwrap();
     f.reopen();
     let dir = |i: usize| servers.join(ids[i].to_string());
-    assert!(!dir(0).exists() && !dir(1).exists(), "abandoned creates removed");
+    assert!(
+        !dir(0).exists() && !dir(1).exists(),
+        "abandoned creates removed"
+    );
     // The import's staging copy goes; anything else it holds stays.
     assert!(!dir(2).join("staging").exists() && dir(2).join("install").exists());
-    assert!(dir(3).join("staging").exists(), "interrupted kept for resume");
+    assert!(
+        dir(3).join("staging").exists(),
+        "interrupted kept for resume"
+    );
     assert!(dir(4).exists(), "a committed job keeps its server");
     assert!(unknown.exists(), "unknown folders are never touched");
+}
+
+#[test]
+fn shutdown_mid_copy_preserves_staging_and_reservation_for_resume() {
+    let mut f = Fixture::new();
+    f.vanilla();
+    let before = Fixture::tree(&f.source("vanilla"));
+    let (_, accepted) = applied(&f, "vanilla");
+    let jobs = f.jobs.clone();
+    f.env.set_hook(Some(Box::new(move |index| {
+        if index == 3 {
+            jobs.request_shutdown();
+            assert!(!jobs.is_shutdown_complete());
+        }
+    })));
+    let job = f.jobs.run_apply(&f.binding, &accepted.job_id).unwrap();
+    assert_eq!(job.state, "interrupted");
+    assert_eq!(job.error.as_deref(), Some("host_shutdown_interrupted"));
+    assert!(
+        f.jobs
+            .server_dir(accepted.server_id)
+            .join("staging")
+            .is_dir()
+    );
+    assert!(f.jobs.is_shutdown_complete());
+    assert_eq!(Fixture::tree(&f.source("vanilla")), before);
+    let (memory, _) = f.jobs.resource_plans(None, None).unwrap();
+    assert_eq!(memory.reserved_mib, 2048);
+    assert_eq!(
+        f.jobs
+            .resume(&f.binding, &accepted.job_id)
+            .unwrap_err()
+            .code(),
+        "host_shutting_down"
+    );
+    f.env.set_hook(None);
+    f.reopen();
+    f.jobs.resume(&f.binding, &accepted.job_id).unwrap();
+    let resumed = f.jobs.run_apply(&f.binding, &accepted.job_id).unwrap();
+    assert_eq!(resumed.state, "ready", "{:?}", resumed.error);
+}
+#[test]
+fn shutdown_closes_planning_and_upload_admission() {
+    let f = Fixture::new();
+    f.vanilla();
+    let token = f.token("vanilla");
+    let planning = f
+        .jobs
+        .begin_plan(
+            &f.binding,
+            PlanRequest {
+                folder_token: token.clone(),
+                name: "Queued".into(),
+                game_port: None,
+                memory_mib: Some(1024),
+                launch_choice: None,
+                minecraft_version: None,
+            },
+        )
+        .unwrap();
+    f.jobs.request_shutdown();
+    f.jobs.request_shutdown();
+    assert!(f.jobs.is_shutdown_complete());
+    assert_eq!(
+        f.jobs
+            .run_plan(&f.binding, &planning.job_id)
+            .unwrap_err()
+            .code(),
+        "host_shutting_down"
+    );
+    assert_eq!(
+        f.jobs
+            .begin_plan(
+                &f.binding,
+                PlanRequest {
+                    folder_token: token,
+                    name: "Later".into(),
+                    game_port: None,
+                    memory_mib: Some(1024),
+                    launch_choice: None,
+                    minecraft_version: None
+                }
+            )
+            .unwrap_err()
+            .code(),
+        "host_shutting_down"
+    );
+    assert_eq!(
+        f.jobs
+            .begin_create_upload(&f.binding, "modpack")
+            .err()
+            .unwrap()
+            .code(),
+        "host_shutting_down"
+    );
 }

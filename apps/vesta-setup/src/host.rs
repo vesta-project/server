@@ -82,7 +82,25 @@ pub(crate) fn acquire_host_lease(root: &Path) -> Result<HostLease> {
     })
 }
 pub fn serve(root: &Path) -> Result<()> {
-    if crate::activation::delegate_host(root)?.is_some() {
+    // Covers the immutable bootstrap, selected setup wrapper and pending host.
+    // Keep the watchdog alive through all inner resource destructors.
+    let monitor =
+        vesta_control::shutdown_signal::ShutdownMonitor::register().map_err(str::to_owned)?;
+    let watchdog = vesta_control::process_shutdown::ExitWatchdog::arm(monitor.observer())
+        .map_err(str::to_owned)?;
+    let result = serve_monitored(root, &monitor, &watchdog);
+    monitor.complete();
+    watchdog.finish();
+    result
+}
+fn serve_monitored(
+    root: &Path,
+    monitor: &vesta_control::shutdown_signal::ShutdownMonitor,
+    watchdog: &vesta_control::process_shutdown::ExitWatchdog,
+) -> Result<()> {
+    let shutdown = monitor.observer();
+    crate::activation::ensure_host_running(&shutdown)?;
+    if crate::activation::delegate_host(root, &shutdown)?.is_some() {
         return Ok(());
     }
     engine::guard(&root.join("private/uninstall-pending"))?;
@@ -93,7 +111,7 @@ pub fn serve(root: &Path) -> Result<()> {
     let lease = acquire_host_lease(root)?;
     crate::updates::start_check(root, &receipt.release_manifest_sha256);
     if receipt.phase == "activated" {
-        return run_agent(root, &lease);
+        return run_agent(root, &lease, &shutdown);
     }
     // An explicit new host invocation consumes a previous clean stop request.
     // Hold the host lock first so a duplicate invocation cannot cancel a stop.
@@ -142,11 +160,14 @@ pub fn serve(root: &Path) -> Result<()> {
         root.join("private/key.pem"),
     )
     .map_err(|_| "setup_listener_invalid")?;
+    crate::activation::ensure_host_running(&shutdown)?;
     let transport =
         vesta_transport::Transport::start_pending_pinned(pending, &listener, &receipt.tls_sha256)
             .map_err(|_| "setup_host_unavailable")?;
     loop {
-        if let Some(service) = &provisioning {
+        if monitor.current_request().is_none()
+            && let Some(service) = &provisioning
+        {
             let completed=service.publish_ready(|id,server_id,host,launch|{
                 let consumer=serde_json::to_vec(&serde_json::json!({"schema":1,"installation_id":receipt.installation_id,"server_id":server_id,"job_id":id,"configuration":"host.toml","state":"private/state","launch_sha256":hex::encode(Sha256::digest(launch.as_bytes())),"host_sha256":hex::encode(Sha256::digest(host.as_bytes())),"installed_manifest_sha256":receipt.release_manifest_sha256})).map_err(|_|vesta_control::identity::management::permissions::PermissionError::Unavailable)?;
                 publish_document(root,"private/launch.toml",launch.as_bytes()).and_then(|_|publish_document(root,"host.toml",host.as_bytes())).and_then(|_|publish_document(root,"private/consumer.json",&consumer)).map_err(|_|vesta_control::identity::management::permissions::PermissionError::Unavailable)
@@ -168,24 +189,39 @@ pub fn serve(root: &Path) -> Result<()> {
             && engine::read_private(&stopping, 128)
                 .is_ok_and(|b| b == receipt.installation_id.as_bytes());
         let activated = engine::read_receipt(root)?.phase == "activated";
-        if stop || activated {
-            match transport
-                .shutdown(Duration::from_secs(5))
-                .map_err(|_| "setup_shutdown_failed")?
-            {
-                vesta_transport::TransportShutdown::Complete => (),
-                vesta_transport::TransportShutdown::TimedOut(_) => {
-                    return Err("setup_shutdown_incomplete".into());
+        if stop || activated || monitor.current_request().is_some() {
+            if let Some(request) = monitor.current_request() {
+                watchdog.begin(request);
+            } else {
+                watchdog.begin_local();
+            }
+            if let Some(service) = &provisioning {
+                service.request_shutdown();
+            }
+            let mut remaining = transport;
+            loop {
+                let wait = watchdog.remaining().min(Duration::from_millis(100));
+                match remaining
+                    .shutdown(wait)
+                    .map_err(|_| "setup_shutdown_failed")?
+                {
+                    vesta_transport::TransportShutdown::Complete => break,
+                    vesta_transport::TransportShutdown::TimedOut(transport) => {
+                        remaining = transport
+                    }
                 }
             }
             if let Some(service) = &provisioning {
-                service
-                    .shutdown()
-                    .map_err(|_| "setup_provisioning_shutdown_failed")?;
+                while !service
+                    .shutdown_poll()
+                    .map_err(|_| "setup_provisioning_shutdown_failed")?
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
             }
             db.close().map_err(|_| "setup_state_busy")?;
-            return if activated {
-                run_agent(root, &lease)
+            return if activated && monitor.current_request().is_none() {
+                run_agent(root, &lease, &shutdown)
             } else {
                 Ok(())
             };
@@ -451,8 +487,13 @@ pub fn activate(root: &Path) -> Result<()> {
         &serde_json::to_vec_pretty(&receipt).map_err(|_| "setup_write_failed")?,
     )
 }
-fn run_agent(root: &Path, lease: &HostLease) -> Result<()> {
-    if crate::activation::run_registered(root, lease)?.is_some() {
+fn run_agent(
+    root: &Path,
+    lease: &HostLease,
+    shutdown: &vesta_control::shutdown_signal::ShutdownObserver,
+) -> Result<()> {
+    crate::activation::ensure_host_running(shutdown)?;
+    if crate::activation::run_registered(root, lease, shutdown)?.is_some() {
         return Ok(());
     }
     let agent = root.join("bin").join(if cfg!(windows) {
@@ -463,13 +504,15 @@ fn run_agent(root: &Path, lease: &HostLease) -> Result<()> {
     let source = root.join("host.toml");
     engine::guard(&agent)?;
     engine::guard(&source)?;
-    let result = Command::new(agent)
+    crate::activation::ensure_host_running(shutdown)?;
+    let mut child = Command::new(agent)
         .arg("serve")
         .arg(source)
         .current_dir(root)
         .stdin(Stdio::null())
-        .status()
+        .spawn()
         .map_err(|_| "setup_agent_start_failed")?;
+    let result = vesta_control::process_shutdown::wait_owned_child(&mut child, shutdown);
     if result.success() {
         Ok(())
     } else {

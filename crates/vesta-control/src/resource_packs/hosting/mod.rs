@@ -299,6 +299,18 @@ impl Service {
             worker: Some(worker),
         })
     }
+    /// Cancellation is observed between download/staging steps; publication
+    /// retains its existing recovery journal and is never detached mid-write.
+    pub fn request_shutdown(&self) {
+        self.inner.cancel.store(true, Ordering::Release);
+        if let Ok(mut queue) = self.inner.queue.try_lock() {
+            queue.stop = true;
+        }
+        self.inner.wake.notify_all();
+    }
+    pub fn is_shutdown_complete(&self) -> bool {
+        self.worker.as_ref().is_none_or(JoinHandle::is_finished)
+    }
     pub fn handle(&self) -> Handle {
         Handle {
             inner: self.inner.clone(),
@@ -307,11 +319,7 @@ impl Service {
 }
 impl Drop for Service {
     fn drop(&mut self) {
-        self.inner.cancel.store(true, Ordering::Release);
-        if let Ok(mut queue) = self.inner.queue.lock() {
-            queue.stop = true;
-            self.inner.wake.notify_all();
-        }
+        self.request_shutdown();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -413,7 +421,7 @@ impl Handle {
         let minecraft_version = self.inner.hooks.minecraft_version()?;
         let _lock = self.inner.admission.try_lock().map_err(|_| Error::Busy)?;
         let mut queue = self.inner.queue.lock().map_err(|_| Error::Unavailable)?;
-        if queue.stop {
+        if queue.stop || self.inner.cancel.load(Ordering::Acquire) {
             return Err(Error::Unavailable);
         }
         let mut work = None;

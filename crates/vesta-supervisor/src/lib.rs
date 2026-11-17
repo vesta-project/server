@@ -35,7 +35,7 @@ use std::{
 pub use client::SupervisorClient;
 pub use remote::RemoteProcess;
 pub use restart::RestartPolicy;
-pub use server::{SupervisorConfig, run};
+pub use server::{SupervisorConfig, run, run_with_shutdown};
 
 const READY_WAIT: Duration = Duration::from_secs(10);
 

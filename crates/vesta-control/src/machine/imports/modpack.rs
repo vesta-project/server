@@ -11,8 +11,8 @@
 //! the installer's own result), then installs the pack's content through the
 //! new server's own pack engine before registering it once. Pack scripts and
 //! Java are never used.
-use super::*;
 use super::create::CreatePrivate;
+use super::*;
 use crate::machine::creates::{Catalogue, CreateInstaller};
 use crate::packs::workspace::{CreatePackReview, check_create_upload_archive};
 use std::io::Write;
@@ -134,6 +134,7 @@ pub struct CreateUpload {
 impl CreateUpload {
     /// `request_too_large` past 2 GiB.
     pub fn write(&mut self, data: &[u8]) -> JobResult<()> {
+        self.jobs.ensure_accepting()?;
         let file = self.file.as_mut().ok_or(JobError::UNAVAILABLE)?;
         self.bytes = self
             .bytes
@@ -145,6 +146,7 @@ impl CreateUpload {
     }
     /// Publish the upload for the owner: 24 hours, bound to the account.
     pub fn finish(mut self) -> JobResult<UploadAccepted> {
+        self.jobs.ensure_accepting()?;
         let file = self.file.take().ok_or(JobError::UNAVAILABLE)?;
         if self.bytes == 0 {
             let _ = fs::remove_file(&self.path);
@@ -251,6 +253,7 @@ impl ImportJobs {
         binding: &OwnerBinding,
         kind: &str,
     ) -> JobResult<CreateUpload> {
+        self.ensure_accepting()?;
         match kind {
             "modpack" => {}
             "restore" => return Err(JobError("not_supported_yet")),
@@ -259,11 +262,14 @@ impl ImportJobs {
         self.read(|c| self.owner(c, binding).map(|_| ()))?;
         self.prune_uploads()?;
         let live: i64 = self.read(|c| {
-            Ok(c.query_row("SELECT count(*) FROM machine_create_uploads", [], |r| {
-                r.get(0)
-            })?)
+            Ok(
+                c.query_row("SELECT count(*) FROM machine_create_uploads", [], |r| {
+                    r.get(0)
+                })?,
+            )
         })?;
         let mut uploading = self.0.uploading.lock().map_err(|_| JobError::UNAVAILABLE)?;
+        self.ensure_accepting()?;
         if live + uploading.len() as i64 >= MAX_UPLOADS {
             return Err(Kind::Create.saturated());
         }
@@ -466,6 +472,14 @@ impl ImportJobs {
         } else {
             software
         };
-        self.compute_create_core(binding, &new, software, Some(pack), None, installer, catalogue)
+        self.compute_create_core(
+            binding,
+            &new,
+            software,
+            Some(pack),
+            None,
+            installer,
+            catalogue,
+        )
     }
 }

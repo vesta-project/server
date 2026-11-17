@@ -492,6 +492,9 @@ impl Backups {
         kind: JobKind,
         idempotency_key: Option<&str>,
     ) -> Result<String> {
+        if self.inner.stopping.load(Ordering::Acquire) {
+            return Err(BackupError::Busy);
+        }
         if self.inner.policy().profile(profile).is_none() {
             return Err(BackupError::UnknownProfile);
         }
@@ -522,6 +525,7 @@ impl Backups {
         let principal = subject.principal.as_str();
         let device = subject.device.as_str();
         let id = self.inner.db.write(|c| {
+            if self.inner.stopping.load(Ordering::Acquire) { return Ok(Err(BackupError::Busy)); }
             if !allowed(c, &self.inner.db, subject, required)? {
                 return Ok(Err(BackupError::Forbidden));
             }
@@ -602,6 +606,20 @@ impl Backups {
 
     /// Stop claiming queued jobs (they stay queued for the next start). A job already
     /// running continues; `busy` reports it until it finishes.
+    /// Stop admitting/claiming new jobs. Active writes retain their consistency
+    /// leases and journal until they reach a safe boundary or actually finish.
+    pub fn request_shutdown(&self) {
+        self.inner.stopping.store(true, Ordering::Release);
+        let (lock, condvar) = &self.inner.wake;
+        if let Ok(mut woken) = lock.try_lock() {
+            *woken = true;
+        }
+        condvar.notify_all();
+    }
+    pub fn is_shutdown_complete(&self) -> bool {
+        !self.busy()
+    }
+
     pub fn stop_claiming(&self) {
         self.inner.stopping.store(true, Ordering::Release);
         self.inner.notify();
@@ -797,6 +815,12 @@ impl Inner {
                     // Never advance past an uncommitted outcome: the backup is not rerun.
                     let mut delay = Duration::from_millis(200);
                     while self.finish(&job, &outcome).is_err() {
+                        // A failed outcome write remains durably running/uncertain;
+                        // startup reconciliation owns it. Do not hold OS shutdown
+                        // indefinitely just to retry a failed database write.
+                        if self.stopping.load(Ordering::Acquire) {
+                            return;
+                        }
                         std::thread::sleep(delay);
                         delay = (delay * 2).min(Duration::from_secs(30));
                     }
@@ -848,8 +872,12 @@ impl Inner {
     }
 
     fn claim(&self) -> Result<Option<Claimed>> {
+        if self.stopping.load(Ordering::Acquire) {
+            return Ok(None);
+        }
         let now = self.db.clock().millis();
         Ok(self.db.write(|c| {
+            if self.stopping.load(Ordering::Acquire) { return Ok(None); }
             let next = c
                 .query_row(
                     "SELECT id,profile,kind,target,requested_by,requested_device FROM backup_jobs WHERE state='queued' ORDER BY created_at,id LIMIT 1",
@@ -1052,23 +1080,39 @@ impl Inner {
             };
             let before = scan(&self.game);
             let tags = ["vesta".to_owned(), format!("{CANDIDATE}={}", profile.name)];
-            let result = self.engine.backup_within(
+            let result = self.engine.backup_within_cancellable(
                 &self.game,
                 &ignore,
                 &tags,
                 Some(&profile_tag(&profile.name)),
                 budget.bytes,
+                &|| self.stopping.load(Ordering::Acquire),
             );
-            let after = scan(&self.game);
+            let after = if self.stopping.load(Ordering::Acquire) {
+                Scan {
+                    files: Files::new(),
+                    complete: false,
+                }
+            } else {
+                scan(&self.game)
+            };
             let kept = consistency.release();
             (result, before, after, kept)
         };
         // Phase 2: judge the snapshot; repository maintenance holds nothing else.
+        if self.stopping.load(Ordering::Acquire) {
+            return Outcome::failed("backup_shutdown_interrupted");
+        }
         let mut summary = match result {
             Ok(summary) => summary,
             Err(EngineError::LimitReached) => return Outcome::failed(budget.exceeded()),
             Err(error) => return Outcome::failed(error.code()),
         };
+        // The consistent read released its game/file leases above. A shutdown
+        // leaves this candidate unpublished; never promote a partial shutdown job.
+        if self.stopping.load(Ordering::Acquire) {
+            return Outcome::failed("backup_shutdown_interrupted");
+        }
         // Read every chunk of the new snapshot before promotion or retention.
         if let Err(error) = self.engine.verify_snapshot(&summary.snapshot_id) {
             return Outcome::failed(error.code());
@@ -1081,6 +1125,9 @@ impl Inner {
             MutationPolicy::FailWorld => world_changed,
             MutationPolicy::FailAny => !changes.is_empty() || !kept || !complete,
         };
+        if self.stopping.load(Ordering::Acquire) {
+            return Outcome::failed("backup_shutdown_interrupted");
+        }
         // Promotion/rejection replaces the listing after the bounded backup.
         // Charge its growth too, and preserve room for the atomic local write.
         let tag = if fail {

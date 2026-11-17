@@ -884,3 +884,31 @@ fn snapshot_verification_detects_corrupt_chunks() {
         Err(EngineError::Corrupt)
     );
 }
+
+#[test]
+fn interrupted_backup_never_publishes_a_snapshot() {
+    let game = game();
+    let store = MemStore::default();
+    let engine = Engine::new(Box::new(store.clone()));
+    engine.init().unwrap();
+    let polls = std::cell::Cell::new(0);
+    let result = engine.backup_within_cancellable(
+        game.path(),
+        &Ignore::default(),
+        &tags("world"),
+        None,
+        None,
+        &|| {
+            let n = polls.get() + 1;
+            polls.set(n);
+            n > 5
+        },
+    );
+    assert!(result.is_err());
+    assert!(
+        store.keys("tags/") == 0 && store.keys("snapshots/") == 0,
+        "interrupted chunks must remain unpublished"
+    );
+    assert!(engine.snapshots("profile=world").unwrap().is_empty());
+    assert!(game.path().join("world/level.dat").is_file());
+}

@@ -189,13 +189,22 @@ fn verify_contents(r: &Registration, contents: &[u8]) -> Result<(), String> {
 fn unit(r: &Registration) -> Result<String, String> {
     name(&r.server_id)?;
     Ok(format!(
-        "# Vesta managed agent {} principal={}\n[Unit]\nDescription=Vesta managed server agent\nStartLimitIntervalSec=60\nStartLimitBurst=3\n\n[Service]\nType=simple\nWorkingDirectory=/\nExecStart={} agent serve {} --allow-local\nRestart=on-failure\nRestartSec=5\nKillSignal=SIGINT\nKillMode=process\nSendSIGKILL=no\nTimeoutStopSec=30\n\n[Install]\nWantedBy=default.target\n",
+        "# Vesta managed agent {} principal={}\n[Unit]\nDescription=Vesta managed server agent\nStartLimitIntervalSec=60\nStartLimitBurst=3\n\n[Service]\nType=simple\nWorkingDirectory=/\nExecStart={} agent serve {} --allow-local\nRestart=on-failure\nRestartSec=5\nKillSignal=SIGTERM\nKillMode=mixed\nSendSIGKILL=yes\nTimeoutStopSec=90\n\n[Install]\nWantedBy=default.target\n",
         r.server_id,
         r.principal,
         quote(&r.executable)?,
         quote(&r.server_dir.join("host.toml"))?
     ))
 }
+#[cfg(any(target_os = "linux", test))]
+fn legacy_unit(r: &Registration) -> Result<String, String> {
+    Ok(unit(r)?.replacen(
+        "KillSignal=SIGTERM\nKillMode=mixed\nSendSIGKILL=yes\nTimeoutStopSec=90",
+        "KillSignal=SIGINT\nKillMode=process\nSendSIGKILL=no\nTimeoutStopSec=30",
+        1,
+    ))
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
@@ -307,7 +316,9 @@ mod linux {
         {
             return Err("foreign enablement link preserved".into());
         }
-        if crate::platform::linux::read_owned_unit(&path, &unit(r)?)? {
+        if crate::platform::linux::read_owned_unit(&path, &unit(r)?)
+            .or_else(|_| crate::platform::linux::read_owned_unit(&path, &legacy_unit(r)?))?
+        {
             Ok(Some(path))
         } else {
             Ok(None)
@@ -334,11 +345,25 @@ mod linux {
         }
     }
     pub fn enable(r: &Registration) -> Result<(), String> {
-        let existing = owned(r)?;
+        let mut existing = owned(r)?;
         if !r.executable.is_file() || !r.server_dir.join("host.toml").is_file() {
             return Err("agent installation missing".into());
         }
         run("systemctl", &["--user", "show-environment"])?;
+        if let Some(path) = existing.as_ref() {
+            if crate::platform::linux::read_owned_unit(path, &legacy_unit(r)?)
+                .is_ok_and(|owned| owned)
+            {
+                if run("systemctl", &["--user", "is-active", &name(&r.server_id)?]).is_ok() {
+                    return Err("legacy agent unit is active; stop it deliberately before upgrading its shutdown policy".into());
+                }
+                if !crate::platform::linux::read_owned_unit(path, &legacy_unit(r)?)? {
+                    return Err("agent unit changed while upgrading".into());
+                }
+                fs::remove_file(path).map_err(|e| e.to_string())?;
+                existing = None;
+            }
+        }
         if existing.is_none() {
             crate::platform::linux::ensure_safe_dir(&r.unit_directory)?;
             use std::os::unix::fs::OpenOptionsExt;
@@ -417,7 +442,14 @@ mod tests {
             quote(&registration().server_dir.join("host.toml")).unwrap()
         )));
         assert!(text.contains("WorkingDirectory=/\n"));
-        assert!(text.contains("KillMode=process\nSendSIGKILL=no"));
+        assert!(
+            text.contains("KillSignal=SIGTERM\nKillMode=mixed\nSendSIGKILL=yes\nTimeoutStopSec=90")
+        );
+        assert!(
+            legacy_unit(&registration())
+                .unwrap()
+                .contains("KillSignal=SIGINT\nKillMode=process\nSendSIGKILL=no\nTimeoutStopSec=30")
+        );
         assert!(!text.contains("--local-only"));
         assert!(!text.contains("autostart"));
         assert!(quote(Path::new("/tmp/bad\npath")).is_err());
@@ -430,7 +462,7 @@ mod tests {
         for edited in [
             expected.replace("--allow-local", "--local-only"),
             expected.replace("principal=1000", "principal=0"),
-            expected.replace("KillMode=process", "KillMode=control-group"),
+            expected.replace("KillMode=mixed", "KillMode=control-group"),
             expected.replace(" agent serve ", " host "),
         ] {
             assert!(verify_contents(&r, edited.as_bytes()).is_err());

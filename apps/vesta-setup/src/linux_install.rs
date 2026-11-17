@@ -150,6 +150,10 @@ mod tests {
         let s = String::from_utf8(o.stdout).unwrap();
         for needle in [
             "User=vesta",
+            "KillSignal=SIGTERM",
+            "KillMode=mixed",
+            "SendSIGKILL=yes",
+            "TimeoutStopSec=90",
             "host /var/lib/vesta/host.toml",
             "WantedBy=multi-user.target",
             "NoNewPrivileges=true",

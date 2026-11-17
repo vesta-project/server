@@ -585,6 +585,17 @@ pub(crate) struct Driver {
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
+impl Driver {
+    pub(crate) fn request_shutdown(&self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = &self.worker {
+            worker.thread().unpark();
+        }
+    }
+    pub(crate) fn is_shutdown_complete(&self) -> bool {
+        self.worker.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+}
 impl Drop for Driver {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);

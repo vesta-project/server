@@ -341,6 +341,26 @@ impl Provisioning {
         }
         Ok(())
     }
+    /// Reject new work and cooperatively cancel at existing installer boundaries.
+    pub fn request_shutdown(&self) {
+        self.0.stop.store(true, Ordering::Release);
+    }
+    /// Observe without consuming a live worker or entering an unbounded join.
+    pub fn shutdown_poll(&self) -> Result<bool> {
+        self.request_shutdown();
+        let mut worker = match self.0.worker.try_lock() {
+            Ok(worker) => worker,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(false),
+            Err(_) => return Err(Error::Unavailable),
+        };
+        if worker.as_ref().is_some_and(|worker| !worker.is_finished()) {
+            return Ok(false);
+        }
+        if let Some(worker) = worker.take() {
+            worker.join().map_err(unavailable)?;
+        }
+        Ok(true)
+    }
     pub fn shutdown(&self) -> Result<()> {
         self.0.stop.store(true, Ordering::Release);
         let handle = self.0.worker.lock().map_err(unavailable)?.take();

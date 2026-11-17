@@ -77,7 +77,9 @@ pub enum WorkerShutdown {
 pub trait ServerWorker: Send + Sync {
     fn server_id(&self) -> Uuid;
     /// Only the immutable published asset service; never management authority.
-    fn public_resource_packs(&self) -> Option<crate::resource_packs::hosting::Handle> {None}
+    fn public_resource_packs(&self) -> Option<crate::resource_packs::hosting::Handle> {
+        None
+    }
     fn sync_policy(&self, policy: WorkerPolicy) -> Result<(), ManagementError>;
     fn authorize(&self, subject: ServerSubject) -> Result<NetworkHost, ManagementError>;
     /// Host-side observation of the game for the registry (no caller
@@ -133,6 +135,22 @@ impl Worker {
     pub fn handle(&self) -> WorkerHandle {
         self.handle.clone()
     }
+    pub fn request_system_shutdown(&self) -> Result<(), HostError> {
+        self.host.request_system_shutdown()
+    }
+    pub fn advance_system_shutdown(&self) -> bool {
+        self.host.advance_system_shutdown()
+    }
+    pub fn shutdown_system(self, timeout: Duration) -> Result<WorkerShutdown, HostError> {
+        let Self { host, handle } = self;
+        match host.shutdown_system(timeout)? {
+            HostShutdown::Complete => Ok(WorkerShutdown::Complete),
+            HostShutdown::TimedOut(host) => Ok(WorkerShutdown::TimedOut(Box::new(Self {
+                host: *host,
+                handle,
+            }))),
+        }
+    }
     pub fn shutdown(self, timeout: Duration) -> Result<WorkerShutdown, HostError> {
         let Self { host, handle } = self;
         match host.shutdown(timeout)? {
@@ -150,7 +168,9 @@ impl ServerWorker for WorkerHandle {
             self.network.database(),
         )
     }
-    fn public_resource_packs(&self)->Option<crate::resource_packs::hosting::Handle>{Some(self.network.resource_packs().clone())}
+    fn public_resource_packs(&self) -> Option<crate::resource_packs::hosting::Handle> {
+        Some(self.network.resource_packs().clone())
+    }
     fn server_id(&self) -> Uuid {
         self.server_id
     }
@@ -193,8 +213,12 @@ pub(crate) struct TrustedAuthorization {
     subject: ServerSubject,
 }
 impl TrustedAuthorization {
-    pub(crate) fn server_id(&self)->Uuid {self.server_id}
-    pub(crate) fn expires_at_ms(&self)->i64 {self.subject.expires_at_ms}
+    pub(crate) fn server_id(&self) -> Uuid {
+        self.server_id
+    }
+    pub(crate) fn expires_at_ms(&self) -> i64 {
+        self.subject.expires_at_ms
+    }
     pub(crate) fn authenticate(&self) -> Result<Subject, ManagementError> {
         let s = &self.subject;
         let now = self.db.clock().millis();

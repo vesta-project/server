@@ -80,6 +80,8 @@ pub async fn run(source: &Path) -> ExitCode {
     }
 }
 async fn run_inner(source: &Path) -> Result<(), &'static str> {
+    let mut signals = crate::shutdown_signal::ShutdownSignal::register()?;
+    let watchdog = crate::shutdown::ExitWatchdog::arm(signals.observer())?;
     let source = std::path::absolute(source).map_err(|_| "host_config_invalid")?;
     let base = source.parent().ok_or("host_config_invalid")?;
     let bytes = std::fs::read(&source).map_err(|_| "host_config_unreadable")?;
@@ -334,11 +336,9 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
         eprintln!("Vesta Server LAN discovery needs discovery-interfaces in host.toml");
         None
     };
-    let signal = shutdown_signal();
-    tokio::pin!(signal);
     let mut tick = tokio::time::interval(Duration::from_secs(2));
     loop {
-        tokio::select! {_=&mut signal=>break,_=tick.tick()=>{
+        tokio::select! {request=signals.wait()=>{watchdog.begin(request?);break},_=tick.tick()=>{
             // Claim and owner renames are re-announced on the next tick.
             let next=claim_state();
             let name=router.display_name();
@@ -349,50 +349,83 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
             }
         }}
     }
+    eprintln!("host_shutdown_started");
+    // Quiesce all owners before any listener/job wait; a stuck job on one
+    // server must not postpone the shutdown signal to every other server.
+    router.request_system_shutdown();
+    if let Some(worker) = &worker {
+        worker
+            .request_system_shutdown()
+            .map_err(|_| "host_worker_shutdown_request_failed")?;
+    }
     if let Some(ad) = discovery {
         let _ = ad.shutdown();
     }
-    local
-        .shutdown()
-        .await
-        .map_err(|_| "host_local_shutdown_failed")?;
-    let mut t = transport;
-    loop {
-        match t
-            .shutdown(Duration::from_secs(5))
-            .map_err(|_| "host_shutdown_failed")?
-        {
-            TransportShutdown::Complete => break,
-            TransportShutdown::TimedOut(remaining) => t = remaining,
+    let local_shutdown = local.shutdown();
+    tokio::pin!(local_shutdown);
+    let mut progress = tokio::time::interval(Duration::from_millis(10));
+    let mut clean = loop {
+        tokio::select! {
+            result=&mut local_shutdown=>break result.is_ok(),
+            _=progress.tick()=>{router.advance_system_shutdown();if let Some(worker)=&worker {worker.advance_system_shutdown();}}
+        }
+    };
+    let mut transport = Some(transport);
+    while let Some(current) = transport.take() {
+        router.advance_system_shutdown();
+        if let Some(worker) = &worker {
+            worker.advance_system_shutdown();
+        }
+        match current.shutdown(watchdog.remaining().min(Duration::from_millis(25))) {
+            Ok(TransportShutdown::Complete) => (),
+            Ok(TransportShutdown::TimedOut(owner)) => transport = Some(owner),
+            Err(_) => {
+                clean = false;
+            }
+        }
+        if transport.is_some() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
-    let owned = router.take_owned_workers();
-    for mut w in worker.into_iter().chain(owned) {
-        loop {
-            match w
-                .shutdown(Duration::from_secs(5))
-                .map_err(|_| "host_worker_shutdown_failed")?
-            {
-                WorkerShutdown::Complete => break,
-                WorkerShutdown::TimedOut(remaining) => w = *remaining,
+    // Async requests/cache writers and import jobs retain state access until
+    // transport/job drain. Only then can a worker close its database.
+    while !router.shutdown_jobs_complete() {
+        router.advance_system_shutdown();
+        if let Some(worker) = &worker {
+            worker.advance_system_shutdown();
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let mut owners: std::collections::VecDeque<_> = worker
+        .into_iter()
+        .chain(router.take_owned_workers())
+        .collect();
+    while !owners.is_empty() {
+        let count = owners.len();
+        for _ in 0..count {
+            let current = owners.pop_front().expect("owned worker");
+            match current.shutdown_system(Duration::ZERO) {
+                Ok(WorkerShutdown::Complete) => (),
+                Ok(WorkerShutdown::TimedOut(owner)) => owners.push_back(*owner),
+                Err(error) => {
+                    eprintln!("host_worker_shutdown_failed: {}", error.code());
+                    clean = false;
+                }
             }
+        }
+        if !owners.is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
     if let Some(release) = supervisor_release {
         release.finish();
     }
-    Ok(())
-}
-
-async fn shutdown_signal() {
-    #[cfg(unix)]
-    {
-        if let Ok(mut terminate) =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        {
-            tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{}}
-            return;
-        }
+    signals.complete();
+    watchdog.finish();
+    if clean {
+        eprintln!("host_shutdown_complete");
+        Ok(())
+    } else {
+        Err("host_shutdown_incomplete")
     }
-    let _ = tokio::signal::ctrl_c().await;
 }

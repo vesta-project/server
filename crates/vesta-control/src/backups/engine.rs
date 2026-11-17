@@ -470,6 +470,23 @@ impl Engine {
         parent_tag: Option<&str>,
         budget: Option<u64>,
     ) -> Result<BackupSummary> {
+        self.backup_within_cancellable(root, ignore, tags, parent_tag, budget, &|| false)
+    }
+
+    /// Cooperative interruption before publication. Stored chunks remain
+    /// unreferenced and can be pruned; no snapshot is listed for an aborted read.
+    pub fn backup_within_cancellable(
+        &self,
+        root: &Path,
+        ignore: &Ignore,
+        tags: &[String],
+        parent_tag: Option<&str>,
+        budget: Option<u64>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<BackupSummary> {
+        if cancelled() {
+            return Err(EngineError::Failed);
+        }
         let within =
             |added: u64, next: usize| budget.is_none_or(|b| added.saturating_add(next as u64) <= b);
         if tags.iter().any(|t| !valid_tag(t)) {
@@ -506,6 +523,9 @@ impl Engine {
         let mut entries = Vec::with_capacity(files.len());
         let mut buffer = vec![0u8; CHUNK_SIZE];
         for (relative, size, modified_ms) in files {
+            if cancelled() {
+                return Err(EngineError::Failed);
+            }
             summary.total_bytes_processed += size;
             if let Some(previous) = parent.get(&relative)
                 && previous.size == size
@@ -526,8 +546,14 @@ impl Engine {
             let mut chunks = Vec::new();
             let mut read_size = 0u64;
             loop {
+                if cancelled() {
+                    return Err(EngineError::Failed);
+                }
                 let mut filled = 0;
                 while filled < CHUNK_SIZE {
+                    if cancelled() {
+                        return Err(EngineError::Failed);
+                    }
                     match file.read(&mut buffer[filled..]) {
                         Ok(0) => break,
                         Ok(n) => filled += n,
@@ -560,6 +586,9 @@ impl Engine {
                 modified_ms,
                 chunks,
             });
+        }
+        if cancelled() {
+            return Err(EngineError::Failed);
         }
         let mut id_bytes = [0u8; 16];
         getrandom::fill(&mut id_bytes).map_err(|_| EngineError::Failed)?;

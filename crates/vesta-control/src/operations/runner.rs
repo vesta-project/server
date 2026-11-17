@@ -1,7 +1,8 @@
 //! Trusted, closed, autonomously driven operation ownership.
 //!
-//! One driver owns the native process, exact claims and OS/DB owner. Shutdown is
-//! observation-only: it never automatically sends stop/kill/restart. A timeout
+//! One driver owns the native process, exact claims and OS/DB owner. Ordinary
+//! shutdown is observation-only; explicit system shutdown separately requests a
+//! graceful stop while preserving the owner's reboot startup intent. A timeout
 //! keeps the same JoinHandle and all native IO handles. Drop requests shutdown
 //! and joins to real completion; an uncooperative child/writer can block forever.
 use super::{
@@ -73,6 +74,8 @@ struct Observation {
 struct DriverState {
     // This is the kernel's exact shared stopping flag, not a delayed mirror.
     stopping: Arc<AtomicBool>,
+    system_shutdown: AtomicBool,
+    system_admission_closed: AtomicBool,
     queue_pending: AtomicBool,
     wake: Arc<WorkWake>,
     observation: Mutex<Observation>,
@@ -140,6 +143,8 @@ impl DriverState {
         (
             Arc::new(Self {
                 stopping,
+                system_shutdown: AtomicBool::new(false),
+                system_admission_closed: AtomicBool::new(false),
                 queue_pending: AtomicBool::new(true),
                 wake: Arc::default(),
                 observation: Mutex::new(Observation::default()),
@@ -346,6 +351,9 @@ impl RuntimeHandle {
         command: GameCommand,
         idempotency_key: &str,
     ) -> OperationsResult<super::Admission> {
+        if self.shared.system_admission_closed.load(Ordering::Acquire) {
+            return Err(OperationError::rejected(OperationErrorCode::OwnerStopping));
+        }
         let result = self.operations.admit_with_view(
             subject,
             command.operation_type(),
@@ -367,6 +375,9 @@ impl RuntimeHandle {
         player: String,
         id: i64,
     ) -> OperationsResult<super::Admission> {
+        if self.shared.system_admission_closed.load(Ordering::Acquire) {
+            return Err(OperationError::rejected(OperationErrorCode::OwnerStopping));
+        }
         let command = GameCommand::Moderate {
             expected_generation: generation,
             action: crate::moderation::ModerationAction::Pardon { player },
@@ -561,6 +572,7 @@ impl OperationRuntime {
             active: None,
             shared: shared.clone(),
             stop_wait,
+            system_stop: SystemStop::default(),
             observation_uncertain: None,
             #[cfg(test)]
             after_dispatch: None,
@@ -636,6 +648,26 @@ impl OperationRuntime {
         self.shared.stop();
     }
 
+    /// Explicit machine/service stop. Close admission now; the sole process
+    /// owner sends the fixed graceful stop once earlier native work returns.
+    /// Ordinary `shutdown` remains observation-only. This path never records an
+    /// owner's manual Stop, so the durable reboot-resume intent is preserved.
+    pub(crate) fn request_system_quiescence(&self) {
+        self.shared
+            .system_admission_closed
+            .store(true, Ordering::Release);
+        self.shared.stop();
+    }
+
+    pub fn request_system_shutdown(&self) {
+        self.shared.system_shutdown.store(true, Ordering::Release);
+        self.request_system_quiescence();
+    }
+
+    pub(crate) fn is_shutdown_complete(&self) -> bool {
+        self.driver.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+
     /// Bounded observation only. A timeout leaves the exact driver, owner lease,
     /// claims and native handles attached to this runtime for later observation.
     pub fn shutdown(&mut self, timeout: Duration) -> OperationsResult<ShutdownOutcome> {
@@ -703,6 +735,12 @@ impl Active {
         }
     }
 }
+#[derive(Default)]
+struct SystemStop {
+    attempted: bool,
+    receipt: Option<(GenerationId, GuardedInput<OperationError>)>,
+}
+
 struct Driver {
     local_receiver: mpsc::Receiver<LocalRequest>,
     owner: OwnerSession,
@@ -712,6 +750,7 @@ struct Driver {
     active: Option<Active>,
     shared: Arc<DriverState>,
     stop_wait: Duration,
+    system_stop: SystemStop,
     // Sticky loss of native observation proof. A later successful poll cannot
     // retroactively turn an uncertain effect into a known timeout/success.
     // Typed native classification, never a database error namespace.
@@ -857,7 +896,14 @@ impl Driver {
             }
             if self.shared.stopping.load(Ordering::Acquire) {
                 self.owner.stop_claiming();
+                if self.shared.system_shutdown.load(Ordering::Acquire) {
+                    if let Err(error) = self.advance_system_shutdown() {
+                        self.shared.error(error.code());
+                        first_failure.get_or_insert(error);
+                    }
+                }
                 if !self.game.is_local()
+                    && !self.shared.system_admission_closed.load(Ordering::Acquire)
                     && let Some(Active::Exit { claim, .. }) = self.active.take()
                 {
                     // The supervisor, not this agent, owns the game. Waiting for its
@@ -872,7 +918,12 @@ impl Driver {
                     }
                 }
                 if self.active.is_none()
+                    && (!self.shared.system_admission_closed.load(Ordering::Acquire)
+                        || self.shared.system_shutdown.load(Ordering::Acquire))
                     && !self.game.retains_native_child()
+                    && self.system_stop.receipt.is_none()
+                    && (!self.shared.system_shutdown.load(Ordering::Acquire)
+                        || self.game.process.snapshot().generation.is_none())
                     && !self.ticks.writer_pending()
                 {
                     if self.game.configure_offline(None).is_err() {
@@ -945,6 +996,57 @@ impl Driver {
                 thread::sleep(DRIVER_INTERVAL);
             }
         }
+    }
+
+    fn advance_system_shutdown(&mut self) -> OperationsResult<()> {
+        if let Some((generation, mut receipt)) = self.system_stop.receipt.take() {
+            match receipt.try_result() {
+                None => self.system_stop.receipt = Some((generation, receipt)),
+                Some(Ok(())) => self.game.process.acknowledge_guarded_stop(generation)?,
+                Some(Err(GuardedError::Guard(error))) => return Err(error),
+                Some(Err(GuardedError::Runtime(error))) => {
+                    // The supervisor can independently receive the same OS
+                    // shutdown and refuse a duplicate request. Keep observing
+                    // the exact generation; no refusal is proof of its exit.
+                    self.shared.error(error.code());
+                }
+            }
+        }
+        if self.system_stop.attempted
+            || self.active.is_some()
+            || self.players.writer_pending()
+            || self.ticks.writer_pending()
+            || self.observation_uncertain.is_some()
+        {
+            return Ok(());
+        }
+        let snapshot = self.game.process.snapshot();
+        let Some(generation) = snapshot.generation else {
+            return Ok(());
+        };
+        self.system_stop.attempted = true;
+        // A prior completed native stop already owns delivery. Never send it a
+        // second time or reclassify a user-requested stop as a reboot resume.
+        if snapshot.phase != ProcessPhase::Running {
+            return Ok(());
+        }
+        let audit = self.owner.operations().audit.clone();
+        let guard = move || {
+            use vesta_state::audit::{AuditActor, AuditRecord};
+            audit.append_record(&AuditRecord::of(
+                AuditActor::system("machine-shutdown".into())?,
+                "system.game.stop".into(),
+                generation.to_hex(),
+                "admitted".into(),
+                None,
+            )?)?;
+            Ok::<(), OperationError>(())
+        };
+        match self.game.process.queue_stop_guarded(generation, guard) {
+            Ok(receipt) => self.system_stop.receipt = Some((generation, receipt)),
+            Err(error) => self.shared.error(error.code()),
+        }
+        Ok(())
     }
 
     fn execute_local(&mut self, action: LocalAction) -> Result<(), &'static str> {

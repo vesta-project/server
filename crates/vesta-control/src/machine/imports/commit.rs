@@ -418,6 +418,7 @@ impl ImportJobs {
         worker: &WorkerHandle,
         kind: Kind,
     ) -> JobResult<()> {
+        self.ensure_accepting()?;
         let job = self.read(|c| {
             self.owner(c, binding)?;
             self.committed(c, job_id, kind)
@@ -476,6 +477,7 @@ impl ImportJobs {
         let network = worker
             .authorize(server_subject)
             .map_err(|_| JobError::FORBIDDEN)?;
+        self.ensure_accepting()?;
         network
             .runtime()
             .submit_game(

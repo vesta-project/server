@@ -54,6 +54,10 @@ pub struct RemoteProcess {
     client: Arc<SupervisorClient>,
     launch_identity: String,
     state: String,
+    supervisor_pid: u32,
+    shutdown_directory: vesta_state::artifacts::ArtifactDirectory,
+    observed_generation: Option<GenerationId>,
+    final_shutdown: bool,
     mirror: Arc<Mutex<Mirror>>,
     console: ConsoleCapture,
     snapshot: ProcessSnapshot,
@@ -173,15 +177,24 @@ impl RemoteProcess {
         &self,
         configuration: Option<vesta_game_runtime::offline::Configuration>,
     ) -> Result<Vec<std::net::IpAddr>> {
+        if self.final_shutdown {
+            return if configuration.is_none() {
+                Ok(Vec::new())
+            } else {
+                Err("supervisor_shutting_down")
+            };
+        }
+        let cleanup = configuration.is_none();
         match self.client.call(
             Op::Offline {
                 expected_generation: self.snapshot.generation.map(|g| g.to_hex()),
                 configuration,
             },
             SYNC_WAIT,
-        )? {
-            Reply::Offline { wakes } if wakes.len() <= 16 => Ok(wakes),
-            Reply::Refused { code } => Err(classify_offline_code(&code)),
+        ) {
+            Ok(Reply::Offline { wakes }) if wakes.len() <= 16 => Ok(wakes),
+            Ok(Reply::Refused { code }) => Err(classify_offline_code(&code)),
+            Err(_) if cleanup && self.final_snapshot().is_ok() => Ok(Vec::new()),
             _ => Err("offline_configuration_failed"),
         }
     }
@@ -196,17 +209,25 @@ impl RemoteProcess {
             return Err("supervisor_launch_mismatch");
         }
         let console = ConsoleCapture::new();
+        let snapshot = wire::snapshot_from_wire(&hello.snapshot)?;
+        let directory = vesta_state::StateDirectory::new(&hello.state, None)
+            .and_then(|state| state.supervisor())
+            .map_err(|_| "supervisor_state_unavailable")?;
         let mut remote = Self {
             client,
             launch_identity,
             state: hello.state,
+            supervisor_pid: hello.supervisor_pid,
+            shutdown_directory: directory,
+            observed_generation: snapshot.generation,
+            final_shutdown: false,
             mirror: Arc::new(Mutex::new(Mirror {
                 console: console.clone(),
                 cursor: 0,
                 floor: None,
             })),
             console,
-            snapshot: wire::snapshot_from_wire(&hello.snapshot)?,
+            snapshot,
             synced: None,
             health: hello.health,
             floor: None,
@@ -299,6 +320,9 @@ impl RemoteProcess {
     /// `force` waits for an in-progress player-list horizon; otherwise a busy mirror
     /// simply defers this observation.
     fn sync(&mut self, force: bool) -> std::result::Result<ProcessSnapshot, RuntimeError> {
+        if self.final_shutdown {
+            return Ok(self.snapshot);
+        }
         let mirror = self.mirror.clone();
         let mut mirror = if force {
             mirror.lock().unwrap_or_else(|poison| poison.into_inner())
@@ -316,6 +340,16 @@ impl RemoteProcess {
             SYNC_WAIT,
         ) {
             Ok(Reply::Sync(page)) => page,
+            Err(_) => {
+                let snapshot = self.final_snapshot()?;
+                self.snapshot = snapshot;
+                self.synced = Some(Instant::now());
+                self.final_shutdown = true;
+                // Exit proof survives endpoint closure; upstream final console
+                // lines may not have been mirrored, so expose an honest gap.
+                let _ = self.console.mark_gap();
+                return Ok(snapshot);
+            }
             _ => return Err(RuntimeError::ObserveFailed),
         };
         let snapshot =
@@ -362,12 +396,68 @@ impl RemoteProcess {
         }
         self.floor = mirror.floor;
         self.snapshot = snapshot;
+        if let Some(generation) = snapshot.generation {
+            self.observed_generation = Some(generation);
+        }
         self.health = page.health;
         self.synced = Some(Instant::now());
         if page.health.observation_failed {
             return Err(RuntimeError::ObserveFailed);
         }
         Ok(snapshot)
+    }
+
+    fn final_snapshot(&self) -> std::result::Result<ProcessSnapshot, RuntimeError> {
+        if self.health.orphan_running
+            || self.health.launch_unresolved
+            || self.health.observation_failed
+            || self.health.save_state_unknown
+            || self.health.save_lease_stranded
+            || self
+                .writer
+                .as_ref()
+                .is_some_and(|writer| !writer.is_finished())
+        {
+            return Err(RuntimeError::ObserveFailed);
+        }
+        if crate::record::read(&self.shutdown_directory)
+            .map_err(|_| RuntimeError::ObserveFailed)?
+            .is_some()
+            || crate::record::read_intent(&self.shutdown_directory)
+                .map_err(|_| RuntimeError::ObserveFailed)?
+                .is_some()
+        {
+            return Err(RuntimeError::ObserveFailed);
+        }
+        let receipt = crate::record::read_shutdown(&self.shutdown_directory)
+            .map_err(|_| RuntimeError::ObserveFailed)?
+            .ok_or(RuntimeError::ObserveFailed)?;
+        if receipt.supervisor_pid != self.supervisor_pid
+            || receipt.launch_identity != self.launch_identity
+        {
+            return Err(RuntimeError::ObserveFailed);
+        }
+        let exit = receipt
+            .exit
+            .as_ref()
+            .map(wire::exit_from_wire)
+            .transpose()
+            .map_err(|_| RuntimeError::ObserveFailed)?;
+        match (self.observed_generation, exit) {
+            (Some(known), Some(exit)) if known == exit.generation => Ok(ProcessSnapshot {
+                generation: None,
+                phase: ProcessPhase::Stopped,
+                output_failed: exit.output_failed,
+                stdin_failed: exit.stdin_failed,
+                last_exit: Some(exit),
+            }),
+            (None, None)
+                if self.snapshot.generation.is_none() && self.snapshot.last_exit.is_none() =>
+            {
+                Ok(self.snapshot)
+            }
+            _ => Err(RuntimeError::ObserveFailed),
+        }
     }
 
     fn reap_writer(&mut self) {
@@ -383,6 +473,9 @@ impl RemoteProcess {
         guard: impl FnOnce(ProcessSnapshot) -> std::result::Result<(), E>,
     ) -> std::result::Result<GenerationId, GuardedError<E>> {
         let snapshot = self.sync(true)?;
+        if self.final_shutdown {
+            return Err(RuntimeError::GenerationUnavailable.into());
+        }
         if snapshot.generation.is_some()
             || self.health.orphan_running
             || self.health.launch_unresolved
@@ -402,8 +495,12 @@ impl RemoteProcess {
         );
         let _ = self.sync(true);
         match reply {
-            Ok(Reply::Started { generation }) => GenerationId::parse_hex(&generation)
-                .map_err(|_| RuntimeError::StartupUncertain.into()),
+            Ok(Reply::Started { generation }) => {
+                let generation = GenerationId::parse_hex(&generation)
+                    .map_err(|_| RuntimeError::StartupUncertain)?;
+                self.observed_generation = Some(generation);
+                Ok(generation)
+            }
             // Nothing was written: the guard's effect marker records a failed start.
             Err(error) if client::unsent(error) => Err(RuntimeError::SpawnFailed.into()),
             Ok(Reply::Refused { code }) => Err(refused_without_effect(&code)

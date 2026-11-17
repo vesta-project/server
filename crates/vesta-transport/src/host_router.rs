@@ -42,6 +42,7 @@ pub struct HostRouter {
     catalogue: Option<Arc<dyn vesta_control::machine::creates::Catalogue>>,
     creator: Option<Arc<dyn vesta_control::machine::creates::CreateInstaller>>,
     removal_lock: Arc<Mutex<()>>,
+    stopping: Arc<std::sync::atomic::AtomicBool>,
 }
 impl HostRouter {
     pub fn new(identity: Arc<HostIdentity>, name: String, folders: Arc<FolderBrowser>) -> Self {
@@ -55,6 +56,7 @@ impl HostRouter {
             catalogue: None,
             creator: None,
             removal_lock: Default::default(),
+            stopping: Default::default(),
         }
     }
     /// Enable the import job routes. `create` builds a registered server's
@@ -102,6 +104,35 @@ impl HostRouter {
     pub fn imports(&self) -> Option<&ImportJobs> {
         self.imports.as_deref().map(|i| &i.jobs)
     }
+    /// Close machine job admission before transport drain. Late installs may
+    /// finish their current safe phase but cannot create/start another worker.
+    pub fn request_system_shutdown(&self) {
+        self.stopping
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(jobs) = self.imports() {
+            jobs.request_shutdown();
+        }
+        if let Ok(owned) = self.owned.lock() {
+            for worker in owned.iter() {
+                if let Err(e) = worker.request_system_shutdown() {
+                    eprintln!("host_worker_shutdown_request_failed: {}", e.code());
+                }
+            }
+        }
+    }
+    pub fn advance_system_shutdown(&self) {
+        if let Ok(owned) = self.owned.try_lock() {
+            for worker in owned.iter() {
+                worker.advance_system_shutdown();
+            }
+        }
+    }
+    pub fn shutdown_jobs_complete(&self) -> bool {
+        self.imports().is_none_or(|j| j.is_shutdown_complete())
+    }
+    fn is_stopping(&self) -> bool {
+        self.stopping.load(std::sync::atomic::Ordering::Acquire)
+    }
     pub fn add_worker(&self, worker: Arc<dyn ServerWorker>) {
         self.workers.lock().expect("worker registry").push(worker);
     }
@@ -125,7 +156,13 @@ impl HostRouter {
     /// the first start after the copy was committed).
     fn import_worker(&self, server_id: Uuid) -> Result<WorkerHandle, JobError> {
         let imports = self.imports.as_ref().ok_or(JobError::UNAVAILABLE)?;
+        if self.is_stopping() || imports.jobs.is_stopping() {
+            return Err(JobError("host_stopping"));
+        }
         let mut owned = self.owned.lock().map_err(|_| JobError::UNAVAILABLE)?;
+        if self.is_stopping() || imports.jobs.is_stopping() {
+            return Err(JobError("host_stopping"));
+        }
         if let Some(handle) = owned
             .iter()
             .map(Worker::handle)
@@ -145,6 +182,11 @@ impl HostRouter {
         }
         let worker = (imports.create)(server_id)?;
         let handle = worker.handle();
+        if self.is_stopping() || imports.jobs.is_stopping() {
+            let _ = worker.request_system_shutdown();
+            owned.push(worker);
+            return Err(JobError("host_stopping"));
+        }
         self.add_worker(Arc::new(handle.clone()));
         owned.push(worker);
         Ok(handle)
@@ -152,6 +194,9 @@ impl HostRouter {
     /// Finish installation without requiring another launcher action.
     fn start_installed(&self, owner: &OwnerBinding, id: &str, create: bool) {
         let Some(jobs) = self.imports() else { return };
+        if self.is_stopping() || jobs.is_stopping() {
+            return;
+        }
         let status = if create {
             jobs.create_status(owner, id)
                 .map(|j| (j.state, j.error, j.server_id))
@@ -170,6 +215,9 @@ impl HostRouter {
             let _ = jobs.installed_start_failed(id);
             return;
         };
+        if self.is_stopping() || jobs.is_stopping() {
+            return;
+        }
         let started = if create {
             jobs.create_start(owner, id, &handle).map(|_| ())
         } else {
@@ -180,6 +228,9 @@ impl HostRouter {
             return;
         }
         loop {
+            if self.is_stopping() || jobs.is_stopping() {
+                break;
+            }
             let next = if create {
                 jobs.create_readiness(owner, id, &handle).map(|j| j.state)
             } else {
@@ -484,6 +535,9 @@ fn subject(
 }
 impl Application {
     async fn route(self: &Arc<Self>, request: Request<Incoming>, peer: SocketAddr) -> Reply {
+        if self.router.is_stopping() {
+            return failure(StatusCode::SERVICE_UNAVAILABLE, "host_stopping");
+        }
         if !self
             .limiter
             .lock()
@@ -670,6 +724,9 @@ impl Application {
         peer: SocketAddr,
         bytes: &[u8],
     ) -> Reply {
+        if self.router.is_stopping() {
+            return failure(StatusCode::SERVICE_UNAVAILABLE, "host_stopping");
+        }
         if query.is_some()
             && !path.starts_with("/v1/servers/")
             && path != "/v1/host/catalogue/software"

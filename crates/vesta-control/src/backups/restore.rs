@@ -82,6 +82,13 @@ impl Backups {
         paths: Vec<String>,
         skip_safety_snapshot: bool,
     ) -> Result<PreparedRestore> {
+        if self
+            .inner
+            .stopping
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(BackupError::Busy);
+        }
         if self.inner.policy().profile(profile).is_none() {
             return Err(BackupError::UnknownProfile);
         }
@@ -150,6 +157,13 @@ impl Backups {
         job_id: &str,
         token: &ConfirmationToken,
     ) -> Result<()> {
+        if self
+            .inner
+            .stopping
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(BackupError::Busy);
+        }
         let db = &self.inner.db;
         let audit = AuditLog::new(db.clone())?;
         let now = db.clock().millis();
@@ -428,12 +442,13 @@ impl Inner {
                 }
             };
             let tags = ["vesta".to_owned(), safety_tag(&profile.name)];
-            match self.engine.backup_within(
+            match self.engine.backup_within_cancellable(
                 &self.game,
                 &ignore,
                 &tags,
                 Some(&profile_tag(&profile.name)),
                 budget.bytes,
+                &|| self.stopping.load(std::sync::atomic::Ordering::Acquire),
             ) {
                 Ok(summary) => Some(summary.snapshot_id),
                 Err(EngineError::LimitReached) => {
@@ -448,6 +463,10 @@ impl Inner {
         } else {
             None
         };
+        if self.stopping.load(std::sync::atomic::Ordering::Acquire) {
+            consistency.release();
+            return Outcome::failed("backup_shutdown_interrupted");
+        }
         // From here the live tree may change: an agent crash means recovery required.
         let marked = self.db.write(|c| {
             c.execute(

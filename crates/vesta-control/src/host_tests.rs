@@ -1249,3 +1249,70 @@ fn unfinished_properties_confirmation_is_invalidated_on_host_restart_without_eff
         HostShutdown::Complete
     ));
 }
+
+#[test]
+fn system_shutdown_retains_host_while_a_background_worker_has_not_returned() {
+    let f = Fixture::new();
+    let mut host = f.open("minecraft").unwrap();
+    // Replace the ordinary idle scheduler with an owned gated test worker.
+    // A fixed timeout releases it even if the implementation incorrectly joins,
+    // so a regression fails the duration assertion instead of hanging tests.
+    drop(host.driver.take());
+    let (release, wait) = std::sync::mpsc::channel::<()>();
+    host.driver = Some(AutomationDriver {
+        stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        local: Arc::new(std::sync::OnceLock::new()),
+        thread: Some(thread::spawn(move || {
+            let _ = wait.recv_timeout(Duration::from_secs(2));
+        })),
+        alerts: None,
+    });
+    host.request_system_shutdown().unwrap();
+    let start = std::time::Instant::now();
+    let host = match host.shutdown_system(Duration::from_millis(20)).unwrap() {
+        HostShutdown::TimedOut(host) => *host,
+        HostShutdown::Complete => panic!("unfinished background owner was lost"),
+    };
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "shutdown joined a still-running worker"
+    );
+    assert!(
+        !host.runtime.is_shutdown_complete(),
+        "quiescence released the game owner before safe job completion"
+    );
+    let _ = release.send(());
+    assert!(matches!(
+        host.shutdown_system(Duration::from_secs(5)).unwrap(),
+        HostShutdown::Complete
+    ));
+    f.reopen().close().unwrap();
+}
+
+#[test]
+fn system_shutdown_advances_native_owner_without_closing_inflight_request_state() {
+    let f = Fixture::new();
+    let host = f.open("minecraft").unwrap();
+    host.request_system_shutdown().unwrap();
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    while !host.advance_system_shutdown() || !host.runtime.is_shutdown_complete() {
+        assert!(
+            std::time::Instant::now() < until,
+            "native stop did not progress during endpoint drain"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    // Metadata/cache requests may still own a database read until endpoint
+    // draining finishes. Native completion must not close those handles early.
+    assert_eq!(
+        host.database()
+            .read(|c| Ok(c.query_row("SELECT 1", [], |r| r.get::<_, i32>(0))?))
+            .unwrap(),
+        1
+    );
+    assert!(matches!(
+        host.shutdown_system(Duration::from_secs(1)).unwrap(),
+        HostShutdown::Complete
+    ));
+    f.reopen().close().unwrap();
+}
