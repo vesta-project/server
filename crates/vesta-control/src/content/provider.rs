@@ -34,6 +34,21 @@ impl MetadataCache {
 }
 include!(concat!(env!("OUT_DIR"), "/provider_key.rs"));
 
+fn modrinth_update_url(project: &str, minecraft: &str, software: Option<&str>) -> Result<url::Url> {
+    validate_id(project)?;
+    let mut url = url::Url::parse(&format!(
+        "https://api.modrinth.com/v2/project/{project}/version"
+    ))
+    .map_err(|_| ContentError::InvalidRequest)?;
+    let mut query = url.query_pairs_mut();
+    query.append_pair("game_versions", &serde_json::json!([minecraft]).to_string());
+    if let Some(software) = software {
+        query.append_pair("loaders", &serde_json::json!([software]).to_string());
+    }
+    drop(query);
+    Ok(url)
+}
+
 fn bundled_curseforge_key() -> Option<String> {
     (!BUNDLED_CURSEFORGE_KEY.is_empty()).then(|| {
         BUNDLED_CURSEFORGE_KEY
@@ -282,6 +297,23 @@ impl UreqProviderClient {
                     .cloned()
                     .ok_or(ContentError::InvalidMetadata)
             }
+        }
+    }
+    /// Limit update discovery to compatible versions before reading the bounded body.
+    /// Every candidate is still bound and checked locally before it is offered.
+    pub(crate) fn pack_update_versions(
+        &self,
+        provider: Provider,
+        project: &str,
+        minecraft: &str,
+        software: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        match provider {
+            Provider::Modrinth => {
+                let url = modrinth_update_url(project, minecraft, software)?;
+                self.metadata(url.as_str(), None)
+            }
+            Provider::Curseforge => self.pack_document(provider, project, None, true),
         }
     }
     /// One optional bounded lookup; successful negative results are cacheable.
@@ -675,6 +707,18 @@ pub(crate) fn curseforge_document_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modrinth_update_request_filters_the_version_list_at_the_provider() {
+        let url = modrinth_update_url("Jkb29YJU", "26.3", Some("fabric")).unwrap();
+        assert_eq!(url.host_str(), Some("api.modrinth.com"));
+        assert_eq!(url.path(), "/v2/project/Jkb29YJU/version");
+        let filters: BTreeMap<_, _> = url.query_pairs().collect();
+        assert_eq!(filters["game_versions"], r#"["26.3"]"#);
+        assert_eq!(filters["loaders"], r#"["fabric"]"#);
+        let no_loader = modrinth_update_url("Jkb29YJU", "26.3", None).unwrap();
+        assert_eq!(no_loader.query_pairs().count(), 1);
+    }
     #[test]
     fn batch_rows_bind_by_file_and_project_not_response_order() {
         let requested = BTreeMap::from([(2, 1), (3, 9)]);

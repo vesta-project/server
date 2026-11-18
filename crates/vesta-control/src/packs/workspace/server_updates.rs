@@ -46,14 +46,9 @@ impl PackWorkspace {
             _ => return Err(invalid()),
         };
         let providers = providers
-            .with_deadline(std::time::Instant::now() + std::time::Duration::from_secs(20))
-            .map_err(|_| super::super::PackError::Unavailable)?;
-        let current = providers
-            .pack_document(platform, project_id, Some(version_id), false)
-            .map_err(|_| super::super::PackError::Unavailable)?;
-        let versions = providers
-            .pack_document(platform, project_id, None, true)
-            .map_err(|_| super::super::PackError::Unavailable)?;
+            .with_deadline(std::time::Instant::now() + std::time::Duration::from_secs(20))?;
+        let current = providers.pack_document(platform, project_id, Some(version_id), false)?;
+        let versions = providers.pack_update_versions(platform, project_id, minecraft, software)?;
         if let Some(version_id) = newer(
             platform, project_id, version_id, minecraft, software, &current, &versions,
         )? {
