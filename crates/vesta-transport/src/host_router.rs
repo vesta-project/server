@@ -191,26 +191,19 @@ impl HostRouter {
         owned.push(worker);
         Ok(handle)
     }
-    /// Finish installation without requiring another launcher action.
-    fn start_installed(&self, owner: &OwnerBinding, id: &str, create: bool) {
+    /// Start a newly created server. Imports remain stopped after registration.
+    fn start_created(&self, owner: &OwnerBinding, id: &str) {
         let Some(jobs) = self.imports() else { return };
         if self.is_stopping() || jobs.is_stopping() {
             return;
         }
-        let status = if create {
-            jobs.create_status(owner, id)
-                .map(|j| (j.state, j.error, j.server_id))
-        } else {
-            jobs.status(owner, id)
-                .map(|j| (j.state, j.error, j.server_id))
-        };
-        let Ok((state, error, server)) = status else {
+        let Ok(job) = jobs.create_status(owner, id) else {
             return;
         };
-        if state != "ready" || error.is_some() {
+        if job.state != "ready" || job.error.is_some() {
             return;
         }
-        let Some(server) = server else { return };
+        let Some(server) = job.server_id else { return };
         let Ok(handle) = self.import_worker(server) else {
             let _ = jobs.installed_start_failed(id);
             return;
@@ -218,12 +211,7 @@ impl HostRouter {
         if self.is_stopping() || jobs.is_stopping() {
             return;
         }
-        let started = if create {
-            jobs.create_start(owner, id, &handle).map(|_| ())
-        } else {
-            jobs.start(owner, id, &handle).map(|_| ())
-        };
-        if started.is_err() {
+        if jobs.create_start(owner, id, &handle).is_err() {
             let _ = jobs.installed_start_failed(id);
             return;
         }
@@ -231,11 +219,7 @@ impl HostRouter {
             if self.is_stopping() || jobs.is_stopping() {
                 break;
             }
-            let next = if create {
-                jobs.create_readiness(owner, id, &handle).map(|j| j.state)
-            } else {
-                jobs.readiness(owner, id, &handle).map(|j| j.state)
-            };
+            let next = jobs.create_readiness(owner, id, &handle).map(|j| j.state);
             self.refresh_server_states();
             if !next.is_ok_and(|state| state == "starting") {
                 break;

@@ -238,7 +238,7 @@ fn spawn_apply(router: &HostRouter, service: &Service, binding: &OwnerBinding, i
         let _ = worker
             .jobs
             .run_create_apply(&owner, &id, worker.installer.as_ref());
-        router.start_installed(&owner, &id, true);
+        router.start_created(&owner, &id);
     });
 }
 fn background(work: impl FnOnce() + Send + 'static) {

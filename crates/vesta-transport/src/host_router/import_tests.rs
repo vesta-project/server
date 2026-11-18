@@ -491,12 +491,10 @@ fn owner_plans_applies_and_polls_import_jobs_through_the_router() {
     assert_eq!(status, 202, "{accepted}");
     assert_eq!(host.apply(&job, "apply-key-1").1, accepted);
     let server = accepted["serverId"].as_str().unwrap().to_owned();
-    let done = host.wait(id, Duration::from_secs(60), |j| {
-        !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null())
-    });
+    let done = host.wait(id, Duration::from_secs(60), |j| j["state"] != "applying");
     assert_eq!(done["state"], "ready", "{done}");
-    assert_eq!(done["error"], "start_failed");
-    assert_eq!(done["phase"], "start");
+    assert!(done["error"].is_null(), "{done}");
+    assert_eq!(done["phase"], "register");
     assert_eq!(done["serverId"], server);
     assert!(done["review"]["confirmation"].is_null());
     let progress = &done["progress"];
@@ -715,8 +713,9 @@ fn real_vanilla_import_reaches_online_and_is_managed_through_mapped_routes() {
     let (status, accepted) = host.apply(&job, "real-apply");
     assert_eq!(status, 202, "{accepted}");
     let server = accepted["serverId"].as_str().unwrap().to_owned();
-    let ready = host.wait(&id, Duration::from_secs(300), |j| !matches!(j["state"].as_str(), Some("applying" | "starting")) && (j["state"] != "ready" || !j["error"].is_null()));
-    assert_eq!(ready["state"], "online", "{ready}");
+    let ready = host.wait(&id, Duration::from_secs(300), |j| j["state"] != "applying");
+    assert_eq!(ready["state"], "ready", "{ready}");
+    assert!(ready["error"].is_null(), "{ready}");
 
     // Start: the HTTP call returns at once; readiness is polled.
     let (status, started) = host.call(
@@ -726,7 +725,7 @@ fn real_vanilla_import_reaches_online_and_is_managed_through_mapped_routes() {
         &host.owner,
     );
     assert_eq!(status, 202, "{started}");
-    assert_eq!(started["state"], "online", "{started}");
+    assert_eq!(started["state"], "starting", "{started}");
     let online = host.wait(&id, Duration::from_secs(600), |j| j["state"] != "starting");
     if online["state"] != "online" {
         // Diagnostics: the game console and managed status through the
