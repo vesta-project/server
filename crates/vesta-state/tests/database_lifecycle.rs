@@ -14,6 +14,53 @@ fn assert_error_code<T>(result: StateResult<T>, expected: &str) {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+#[allow(unsafe_code)] // fcntl record locks have no safe wrapper in this test crate.
+fn tightening_sqlite_file_permissions_preserves_the_process_record_lock() {
+    use std::{
+        fs::Permissions,
+        os::{fd::AsRawFd, unix::fs::PermissionsExt},
+    };
+
+    let temp = tempfile::tempdir().unwrap();
+    let directory = StateDirectory::new(&temp.path().join("private state"), None).unwrap();
+    let db = StateDatabase::open(
+        directory.clone(),
+        Arc::new(TestClock::new(DEFAULT_TEST_TIME_MS)),
+    )
+    .unwrap();
+    let path = directory.path().join("lock-fixture");
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_permissions(Permissions::from_mode(0o640)).unwrap();
+    let mut lock = libc::flock {
+        l_type: libc::F_WRLCK as _,
+        l_whence: libc::SEEK_SET as _,
+        l_start: 0,
+        l_len: 1,
+        l_pid: 0,
+    };
+    // SAFETY: the file is held and the command reads a correctly initialized flock.
+    assert_eq!(
+        unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &lock) },
+        0
+    );
+    directory.tighten_file(&path).unwrap();
+    assert_eq!(
+        file.metadata().unwrap().permissions().mode() & 0o7777,
+        0o600
+    );
+    // An open-file-description lock conflicts with process locks, including our own.
+    // SAFETY: the file is held and lock points to initialized, writable flock storage.
+    assert_eq!(
+        unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_GETLK, &mut lock) },
+        0
+    );
+    assert_eq!(i32::from(lock.l_type), libc::F_WRLCK);
+    assert_eq!(lock.l_pid as u32, std::process::id());
+    db.close().unwrap();
+}
+
 #[test]
 fn concurrent_connections_keep_companions_stable_and_reopen_with_all_audited_writes() {
     let temp = tempfile::tempdir().expect("create local temporary test root");

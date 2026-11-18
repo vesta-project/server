@@ -132,8 +132,13 @@ impl StateDirectory {
             }
         }
         if require_regular_or_absent(&raw)? {
-            let held = open_regular(&raw, false, false)?;
-            tighten_open_file(&held)?;
+            #[cfg(target_os = "linux")]
+            tighten_linux_file(&raw)?;
+            #[cfg(not(target_os = "linux"))]
+            {
+                let held = open_regular(&raw, false, false)?;
+                tighten_open_file(&held)?;
+            }
             require_regular_or_absent(&raw)?;
         }
         Ok(())
@@ -474,11 +479,45 @@ fn tighten_directory(path: &Path) -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
+fn tighten_linux_file(path: &Path) -> Result<()> {
+    use std::os::{
+        fd::AsRawFd,
+        unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    };
+
+    // Closing a regular descriptor can release this process's POSIX locks on
+    // the inode, including locks held by SQLite. O_PATH keeps the file identity
+    // without opening another data descriptor.
+    let held = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
+        .open(path)?;
+    let metadata = held.metadata()?;
+    if !metadata.is_file() || metadata.nlink() != 1 {
+        return Err(StateError::new("state_file_linked"));
+    }
+    const PRIVATE_MODE: u32 = 0o600;
+    if metadata.mode() & 0o7777 != PRIVATE_MODE {
+        let descriptor_path = format!("/proc/self/fd/{}", held.as_raw_fd());
+        fs::set_permissions(descriptor_path, fs::Permissions::from_mode(PRIVATE_MODE))
+            .map_err(|_| StateError::new("state_permissions_failed"))?;
+        validate_posix_mode(&held, PRIVATE_MODE, false)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
 fn tighten_posix_handle(file: &File, directory: bool) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let mode = if directory { 0o700 } else { 0o600 };
     file.set_permissions(fs::Permissions::from_mode(mode))
         .map_err(|_| StateError::new("state_permissions_failed"))?;
+    validate_posix_mode(file, mode, directory)
+}
+
+#[cfg(target_os = "linux")]
+fn validate_posix_mode(file: &File, mode: u32, directory: bool) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
     let metadata = file
         .metadata()
         .map_err(|_| StateError::new("state_permissions_failed"))?;
