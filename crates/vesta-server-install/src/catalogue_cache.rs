@@ -13,6 +13,8 @@ pub const CATALOGUE_CACHE_DISK_BYTES: usize = 64 * 1024 * 1024;
 pub const CATALOGUE_CACHE_ENTRIES: usize = 64;
 pub const CATALOGUE_CACHE_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const TTL: Duration = Duration::from_secs(300);
+const MAX_QUERY_READERS: usize = 16;
+const MAX_ACTIVE_QUERIES: usize = 8;
 const FAILURE_COOLDOWN: Duration = Duration::from_millis(250);
 
 /// Protected, optional persistence supplied by the owning host. Implementations
@@ -61,11 +63,13 @@ pub(crate) struct CatalogueCache {
     disk: Arc<Semaphore>,
     queries: tokio::sync::Mutex<HashMap<String, Arc<Query>>>,
     waiters: Arc<Semaphore>,
+    active: Arc<Semaphore>,
 }
 pub(crate) struct QueryGuard {
-    _waiter: OwnedSemaphorePermit,
     _key: tokio::sync::OwnedMutexGuard<()>,
     state: Arc<Query>,
+    _active: OwnedSemaphorePermit,
+    _waiter: OwnedSemaphorePermit,
 }
 impl QueryGuard {
     pub fn failed(&self, error: InstallError) {
@@ -91,7 +95,8 @@ impl CatalogueCache {
             store,
             disk: Arc::new(Semaphore::new(1)),
             queries: Default::default(),
-            waiters: Arc::new(Semaphore::new(16)),
+            waiters: Arc::new(Semaphore::new(MAX_QUERY_READERS)),
+            active: Arc::new(Semaphore::new(MAX_ACTIVE_QUERIES)),
         })
     }
 
@@ -117,7 +122,7 @@ impl CatalogueCache {
             if let Some(gate) = gates.get(key) {
                 gate.clone()
             } else {
-                if gates.len() >= 8 {
+                if gates.len() >= MAX_QUERY_READERS {
                     return Err(InstallError::Busy);
                 }
                 let gate = Arc::new(Query {
@@ -141,10 +146,25 @@ impl CatalogueCache {
                 }
             }
         }
+        // Same-key readers share that key's gate. Only its front reader can
+        // queue for a provider slot, within the total reader and job deadlines.
+        let active = transfer::controlled(
+            async {
+                self.active
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| InstallError::Busy)
+            },
+            job.deadline,
+            reporter,
+        )
+        .await?;
         Ok(QueryGuard {
-            _waiter: waiter,
             _key: key,
             state: gate,
+            _active: active,
+            _waiter: waiter,
         })
     }
 

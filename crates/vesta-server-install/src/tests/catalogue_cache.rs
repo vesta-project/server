@@ -282,6 +282,25 @@ async fn protected_snapshots_survive_cache_recreation_but_corruption_is_rejected
 }
 
 #[tokio::test]
+async fn additional_catalogue_keys_wait_when_all_query_slots_are_active() {
+    let cache = CatalogueCache::new(None);
+    let job = crate::transfer::Job::new(Limits::default(), 0);
+    let mut active = Vec::new();
+    for index in 0..8 {
+        active.push(
+            cache
+                .query(&format!("key-{index}"), &job, &SilentProgressReporter)
+                .await
+                .unwrap(),
+        );
+    }
+    let mut queued = Box::pin(cache.query("spigot", &job, &SilentProgressReporter));
+    assert!(futures::poll!(queued.as_mut()).is_pending());
+    drop(active.pop());
+    assert!(queued.await.is_ok());
+}
+
+#[tokio::test]
 async fn cancellation_while_waiting_releases_query_admission() {
     let cache = CatalogueCache::new(None);
     let job = crate::transfer::Job::new(Limits::default(), 0);
