@@ -39,7 +39,9 @@ zero, and `largest` is empty.
 `largest` contains up to ten `{path,bytes}` entries in descending byte order,
 then path order for ties. Paths are relative to the Files tab's game root.
 Folder sizes include their descendants and can overlap. Data comes from the
-same background snapshot as machine storage.
+same background snapshot as machine storage. A standalone API v3 listener
+uses its own startup and 15-minute measurements of the game root, managed
+local backup repository, and private trash.
 
 ## Cleanup
 

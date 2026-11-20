@@ -68,6 +68,7 @@ pub(super) fn implemented(path: &str) -> bool {
         || matches!(
             path,
             "/api/v3/manage/server"
+                | "/api/v3/manage/storage"
                 | "/api/v3/manage/server/status"
                 | "/api/v3/manage/lifecycle/start"
                 | "/api/v3/manage/lifecycle/sleep"

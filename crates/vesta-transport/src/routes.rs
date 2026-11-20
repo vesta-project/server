@@ -426,6 +426,7 @@ pub(super) async fn route(
     } else {
         &state.jobs
     };
+    let storage = state.storage.clone();
     let version3 = operational || path == "/api/v3/status";
     jobs.execute_for(version3, move || {
         // Blocking work outlives a cancelled HTTP waiter: its bytes and permit
@@ -443,6 +444,11 @@ pub(super) async fn route(
                 authorization.as_ref().map(|s| s.as_str()),
                 downloads,
                 &tls,
+            );
+        }
+        if path == "/api/v3/manage/storage" {
+            return storage.reply(
+                &host, &method, query.as_deref(), authorization.as_deref().map(String::as_str),
             );
         }
         if operational {

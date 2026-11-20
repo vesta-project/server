@@ -62,6 +62,7 @@ use vesta_control::{
 
 mod file_body;
 mod manage;
+mod standalone_storage;
 pub mod worker;
 mod pack_sync;
 pub mod pending;
@@ -770,6 +771,7 @@ impl Drop for Transport {
 struct Shared {
     tls: Arc<tls::Material>,
     host: NetworkHost,
+    storage: standalone_storage::Storage,
     max_body: usize,
     bodies: Arc<Semaphore>,
     control_bodies: Arc<Semaphore>,
@@ -906,9 +908,12 @@ async fn serve(
     };
     let downloads = Arc::new(Downloads::new(DOWNLOADS));
     let public_downloads = downloads.global.clone();
+    let storage = standalone_storage::Storage::default();
+    let measurement = tokio::spawn(storage.clone().measure(host.clone(), stop.clone()));
     let shared = Arc::new(Shared {
         tls,
         host,
+        storage,
         max_body: config.max_request_bytes() as usize,
         bodies: Arc::new(Semaphore::new(REQUEST_BODY_BUDGET - CONTROL_BODY_BUDGET)),
         control_bodies: Arc::new(Semaphore::new(CONTROL_BODY_BUDGET)),
@@ -941,6 +946,7 @@ async fn serve(
         install_jobs: BlockingJobs::new(blocking.install),
     });
     serve_application(listener, config, shared, stop).await;
+    let _ = measurement.await;
 }
 
 pub(crate) trait HttpApplication: Send + Sync + 'static {

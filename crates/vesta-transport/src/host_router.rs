@@ -1188,6 +1188,7 @@ impl Application {
         let downloads = Arc::new(Downloads::new(DOWNLOADS));
         let shared = Arc::new(Shared {
             host,
+            storage: Default::default(),
             tls: self.tls.clone(),
             max_body: 4 * 1024 * 1024,
             bodies: self.bodies.clone(),

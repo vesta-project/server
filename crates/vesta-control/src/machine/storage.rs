@@ -196,7 +196,7 @@ pub fn measure(
         if !removed::plain_repository(&dir) {
             continue;
         }
-        let (parts, largest) = server_parts(&dir)?;
+        let (parts, largest) = server_parts(Some(&dir), &dir.join("game"), &[])?;
         if parts.backups > 0 {
             result.volume(&dir, "backups")?;
         }
@@ -260,12 +260,56 @@ pub fn measure(
     Ok(result)
 }
 
-fn server_parts(dir: &Path) -> JobResult<(Parts, Vec<LargestFolder>)> {
+pub fn measure_instance(
+    config: &crate::config::HostConfiguration,
+    measured_ms: i64,
+) -> JobResult<serde_json::Value> {
+    use crate::config::{BackupRepository, BackupSettings};
+    let game = config.game();
+    if !removed::plain_repository(game) {
+        return Err(JobError::UNAVAILABLE);
+    }
+    let settings = config
+        .backups()
+        .cloned()
+        .unwrap_or_else(|| BackupSettings::for_instance(config.base()));
+    let repository = match settings.repository {
+        BackupRepository::Local(path)
+            if path.starts_with(config.base())
+                && !game.starts_with(&path)
+                && removed::plain_repository(&path) =>
+        {
+            Some(path)
+        }
+        _ => None,
+    };
+    let mut exclude = vec![config.state()];
+    exclude.extend(repository.as_deref());
+    let (mut parts, largest) = server_parts(None, game, &exclude)?;
+    let trash = config.state().join("trash");
+    if removed::plain_repository(&trash) {
+        parts.trash = tree_bytes(&trash, &[])?;
+    }
+    if let Some(path) = repository {
+        parts.backups = tree_bytes(&path, &[])?;
+    }
+    let (free_bytes, total_bytes) = volume_space(game).map_err(|_| JobError::UNAVAILABLE)?;
+    Ok(serde_json::json!({
+        "measuredAt": super::sessions::timestamp(measured_ms), "bytes": parts.total(),
+        "parts": parts, "volume": {"label":"Data drive","freeBytes":free_bytes,"totalBytes":total_bytes},
+        "largest": largest
+    }))
+}
+
+fn server_parts(
+    dir: Option<&Path>,
+    game: &Path,
+    exclude: &[&Path],
+) -> JobResult<(Parts, Vec<LargestFolder>)> {
     let mut largest = Vec::new();
     let mut parts = Parts::default();
-    let game = dir.join("game");
     let props = game.join("server.properties");
-    let world = if removed::plain_repository(&game)
+    let world = if removed::plain_repository(game)
         && fs::symlink_metadata(&props)
             .is_ok_and(|m| removed::plain_storage_file(&m) && m.len() <= 1024 * 1024)
     {
@@ -278,7 +322,11 @@ fn server_parts(dir: &Path) -> JobResult<(Parts, Vec<LargestFolder>)> {
     }
     .unwrap_or_else(|| "world".to_owned());
     let world = world.split('/').next().unwrap_or("world");
-    for (root, is_game) in [(dir, false), (&game, true)] {
+    for (root, is_game) in dir
+        .map(|dir| (dir, false))
+        .into_iter()
+        .chain([(game, true)])
+    {
         if !removed::plain_repository(root) {
             continue;
         }
@@ -316,8 +364,8 @@ fn server_parts(dir: &Path) -> JobResult<(Parts, Vec<LargestFolder>)> {
             };
             let path = entry.path();
             let size = if is_game {
-                walk_bytes(&path, &[], |folder, bytes| {
-                    let Some(path) = folder.strip_prefix(&game).ok().and_then(Path::to_str) else {
+                walk_bytes(&path, exclude, |folder, bytes| {
+                    let Some(path) = folder.strip_prefix(game).ok().and_then(Path::to_str) else {
                         return;
                     };
                     let path = path.replace(std::path::MAIN_SEPARATOR, "/");
