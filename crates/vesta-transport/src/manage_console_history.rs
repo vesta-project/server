@@ -3,7 +3,10 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use vesta_control::files::{FileError, FileStream};
-use vesta_game_runtime::console::{ConsoleLine, MAX_LINE_BYTES, MAX_PAGE_BYTES, MAX_PAGE_LINES};
+use vesta_control::operations::{
+    ConsoleLine, MAX_CONSOLE_LINE_BYTES as MAX_LINE_BYTES, MAX_CONSOLE_PAGE_BYTES as MAX_PAGE_BYTES,
+    MAX_CONSOLE_PAGE_LINES as MAX_PAGE_LINES,
+};
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
