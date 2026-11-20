@@ -101,6 +101,13 @@ struct Cache {
 }
 
 impl HostStorage {
+    pub fn active_size(&self, id: Uuid) -> Option<u64> {
+        self.servers
+            .iter()
+            .find(|server| server.server_id == id)
+            .map(|server| server.bytes)
+    }
+
     fn volume(&mut self, root: &Path, holds: &'static str) -> JobResult<String> {
         if let Some(existing) = self
             .volumes

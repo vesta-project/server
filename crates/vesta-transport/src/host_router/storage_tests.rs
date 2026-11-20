@@ -78,6 +78,26 @@ fn host_storage_is_owner_only_and_reads_background_measurements() {
         host.call("GET", path, Value::Null, &host.owner).1["servers"][0]["bytes"],
         68
     );
+    let permanent = json!({
+        "confirmName":"Measured","idempotencyKey":Uuid::new_v4(),"permanently":true
+    });
+    let server_path = format!("/v1/host/servers/{id}");
+    let (status, receipt) = host.call("DELETE", &server_path, permanent.clone(), &host.owner);
+    assert_eq!(status, 202, "{receipt}");
+    assert_eq!(receipt["bytes"], 68);
+    let deadline = std::time::Instant::now() + Duration::from_secs(25);
+    loop {
+        let (_, snapshot) = host.call("GET", path, Value::Null, &host.owner);
+        if snapshot["servers"] == json!([]) && snapshot["backups"]["outsideServers"] == 5 {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{snapshot}");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert_eq!(
+        host.call("DELETE", &server_path, permanent, &host.owner),
+        (202, receipt)
+    );
     assert!(matches!(
         host.call("POST", &format!("{path}/measure"), json!({}), &host.owner)
             .0,

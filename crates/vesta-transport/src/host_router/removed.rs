@@ -17,7 +17,11 @@ pub(super) fn start_janitor(app: Weak<Application>) {
             let _ = tokio::task::spawn_blocking(move || {
                 if let Some(jobs) = router.imports() {
                     let state = &router.identity.state;
-                    let _ = removed::purge_expired(state, jobs.servers_root(), state.now_ms());
+                    if removed::purge_expired(state, jobs.servers_root(), state.now_ms())
+                        .is_ok_and(|purged| purged > 0)
+                    {
+                        router.storage.refresh();
+                    }
                 }
             })
             .await;
@@ -114,9 +118,25 @@ pub(super) fn removed_routes(
                 Ok(request) => request,
                 Err(reply) => return reply,
             };
-            removed::queue_purge(state, servers, device.account_id, id, key, &request)
-                .map(accepted)
-                .unwrap_or_else(error)
+            let measured = router
+                .storage
+                .removed_size(id)
+                .or_else(|| router.storage.active_size(id));
+            match removed::queue_purge(
+                state,
+                servers,
+                device.account_id,
+                id,
+                key,
+                &request,
+                measured,
+            ) {
+                Ok(value) => {
+                    router.storage.refresh();
+                    accepted(value)
+                }
+                Err(e) => error(e),
+            }
         }
         _ => failure(StatusCode::NOT_FOUND, "not_found"),
     }
@@ -157,7 +177,13 @@ pub(super) fn dispatch(router: &HostRouter, device: &Device, path: &str, bytes: 
         Ok(v) => v,
         Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     };
-    let (record, complete) = match removed::prepare(state, device.account_id, id, &req) {
+    let (record, complete) = match removed::prepare(
+        state,
+        device.account_id,
+        id,
+        &req,
+        router.storage.active_size(id),
+    ) {
         Ok(v) => v,
         Err(e) => return error(e),
     };
@@ -276,6 +302,7 @@ pub(super) fn dispatch(router: &HostRouter, device: &Device, path: &str, bytes: 
     if let Err(e) = removed::finish(state, jobs.servers_root(), &record, &req) {
         return error(e);
     }
+    router.storage.refresh();
     remove_reply(&record)
 }
 fn error(e: JobError) -> Reply {

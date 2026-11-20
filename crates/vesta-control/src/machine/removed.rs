@@ -52,6 +52,8 @@ pub struct Removed {
     pub permanently: bool,
     #[serde(default = "keep_backups_by_default")]
     pub keep_backups: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purge_bytes: Option<u64>,
 }
 fn keep_backups_by_default() -> bool {
     true
@@ -61,7 +63,7 @@ impl Removed {
         serde_json::json!({"serverId":self.server_id,"removedAt":self.removed_at,"restoreUntil":self.restore_until})
     }
     pub fn purge_reply(&self) -> serde_json::Value {
-        serde_json::json!({"serverId":self.server_id,"purgeStartedAt":self.removed_at,"bytes":null})
+        serde_json::json!({"serverId":self.server_id,"purgeStartedAt":self.removed_at,"bytes":self.purge_bytes})
     }
     pub(super) fn path(&self, root: &Path) -> PathBuf {
         root.join(format!("{}-{}", self.server_id, self.removed_ms / 1000))
@@ -76,6 +78,7 @@ pub fn prepare(
     account: Uuid,
     server: Uuid,
     req: &RemoveRequest,
+    measured_bytes: Option<u64>,
 ) -> JobResult<(Removed, bool)> {
     if !req.permanently && req.keep_backups.is_some() {
         return Err(JobError::INVALID);
@@ -107,7 +110,7 @@ pub fn prepare(
         if let Some(record)=pending { result=Some(Ok((record,false))); return Ok(()); }
         let now=host.now_ms();
         let retention = i64::from(super::settings::removal_retention_in(c)?) * DAY_MS;
-        let record=Removed { server_id: server, name, removed_at: super::sessions::timestamp(now), removed_by: account, restore_until: super::sessions::timestamp(now.saturating_add(retention)), removed_ms: now, restore_until_ms: now.saturating_add(retention), permanently: req.permanently, keep_backups: req.keep_backups.unwrap_or(true) };
+        let record=Removed { server_id: server, name, removed_at: super::sessions::timestamp(now), removed_by: account, restore_until: super::sessions::timestamp(now.saturating_add(retention)), removed_ms: now, restore_until_ms: now.saturating_add(retention), permanently: req.permanently, keep_backups: req.keep_backups.unwrap_or(true), purge_bytes: measured_bytes.filter(|_| req.permanently) };
         let raw=serde_json::to_string(&record).map_err(|_| super::state::reject(crate::IdentityErrorCode::InvalidRequest))?;
         c.execute("INSERT INTO machine_removal_receipts(account,key,server,name,record) VALUES(?,?,?,?,?)", params![account.to_string(), req.idempotency_key.to_string(), server.to_string(), record.name, raw])?;
         result=Some(Ok((record,false)));

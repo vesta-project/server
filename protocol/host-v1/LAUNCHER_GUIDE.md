@@ -301,3 +301,4 @@ Unfinished removal retries recheck the current confirmation name and busy state.
 
 The [removed servers contract](removed.md) covers restore, permanent deletion, and retention.
 See [machine storage](storage.md) for the snapshot and measurement routes.
+Purge receipts include a cached byte estimate when available.

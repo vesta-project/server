@@ -203,6 +203,7 @@ pub fn queue_purge(
     id: Uuid,
     key: Uuid,
     request: &PurgeRequest,
+    measured_bytes: Option<u64>,
 ) -> JobResult<Value> {
     let root = root(servers)?;
     let input = encode(request)?;
@@ -246,7 +247,7 @@ pub fn queue_purge(
             &id.to_string(),
             now,
         )?;
-        let reply = json!({"serverId":id,"purgeStartedAt":started_at,"bytes":null});
+        let reply = json!({"serverId":id,"purgeStartedAt":started_at,"bytes":measured_bytes});
         save_reply(c, account, "purge", key, id, &input, &reply)?;
         Ok(Ok(reply))
     })?
@@ -518,7 +519,7 @@ pub fn reconcile(host: &HostState, servers: &Path) -> JobResult<()> {
 /// The host transport calls this from its background janitor. Queue admission
 /// and restore use the same database writer. Files are deleted outside it so a
 /// large world cannot hold the host write transaction open.
-pub fn purge_expired(host: &HostState, servers: &Path, now: i64) -> JobResult<()> {
+pub fn purge_expired(host: &HostState, servers: &Path, now: i64) -> JobResult<usize> {
     let root = root(servers)?;
     let expired = list(&root)?
         .into_iter()
@@ -539,6 +540,7 @@ pub fn purge_expired(host: &HostState, servers: &Path, now: i64) -> JobResult<()
         Ok(result)
     })?;
     let mut outcome = Ok(());
+    let mut purged = 0;
     for (raw, keep_backups) in pending {
         let record: Removed = serde_json::from_str(&raw).map_err(|_| JobError::UNAVAILABLE)?;
         if let Err(error) =
@@ -562,8 +564,9 @@ pub fn purge_expired(host: &HostState, servers: &Path, now: i64) -> JobResult<()
             )?;
             Ok(())
         })?;
+        purged += 1;
     }
-    outcome
+    outcome.map(|()| purged)
 }
 
 fn purge_files(servers: &Path, source: &Path, id: Uuid, keep_backups: bool) -> JobResult<()> {

@@ -28,7 +28,11 @@ the opaque `nextCursor` when a page of 100 entries has older results. Each row
 includes `serverId`, `name`, `removedAt`, `restoreUntil`, `removedBy`, `state`,
 `bytes`, `minecraftVersion` and `software`. Unknown measurements and software
 facts are null. The list reports `restorable` or `purging`. Permanent removal of
-an active server skips the removed list. Purge receipts may report null `bytes`.
+an active server skips the removed list. Both purge routes capture `bytes`
+from the last measurement, or null when the server has yet to be measured.
+This is a size estimate for the server tree and can include backups that will
+be retained. Retries return the original receipt. Purge completion refreshes
+the background storage snapshot.
 
 Soft removal stops the game, revokes grants and invites, releases the name
 and game port and isolates the server directory. Restore returns the same

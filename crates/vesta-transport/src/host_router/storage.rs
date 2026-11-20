@@ -37,6 +37,16 @@ impl Measurements {
             .copied()
     }
 
+    pub(super) fn active_size(&self, id: Uuid) -> Option<u64> {
+        self.inner.lock().ok()?.snapshot.active_size(id)
+    }
+
+    pub(super) fn refresh(&self) {
+        if let Ok(mut state) = self.inner.lock() {
+            state.requested = true;
+        }
+    }
+
     fn snapshot(&self) -> Reply {
         let (snapshot, measuring) = match self.inner.lock() {
             Ok(state) => (state.snapshot.clone(), state.running || state.requested),
@@ -88,7 +98,7 @@ impl Measurements {
 
     fn finish(&self, result: Option<HostStorage>) {
         if let Ok(mut state) = self.inner.lock() {
-            if let Some(result) = result {
+            if let Some(result) = result.filter(|_| !state.requested) {
                 state.snapshot = Arc::new(result);
             }
             state.running = false;
