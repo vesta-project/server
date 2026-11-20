@@ -1367,7 +1367,7 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
 
     // 51 capability ids, in persisted ordinal order, with the persisted flags.
     assert_eq!(fixture_capabilities.len(), 51);
-    assert_eq!(Capability::ALL.len(), 62);
+    assert_eq!(Capability::ALL.len(), 63);
     assert_eq!(
         &Capability::ALL[51..],
         &[
@@ -1381,7 +1381,8 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
             Capability::AutomationManage,
             Capability::NotificationsView,
             Capability::BackupsConfigure,
-            Capability::PlayersOperator
+            Capability::PlayersOperator,
+            Capability::StorageView,
         ]
     );
     for (index, expected) in fixture_capabilities.iter().enumerate() {

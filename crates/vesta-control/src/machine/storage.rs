@@ -338,7 +338,7 @@ fn server_parts(dir: &Path) -> JobResult<(Parts, Vec<LargestFolder>)> {
     Ok((parts, largest))
 }
 
-fn tree_bytes(root: &Path, exclude: &[&Path]) -> JobResult<u64> {
+pub(super) fn tree_bytes(root: &Path, exclude: &[&Path]) -> JobResult<u64> {
     walk_bytes(root, exclude, |_, _| {})
 }
 

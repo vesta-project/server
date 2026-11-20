@@ -35,7 +35,7 @@ fn root(servers: &Path) -> JobResult<PathBuf> {
         .join("removed"))
 }
 
-fn schema(c: &Connection) -> crate::Result<()> {
+pub(in crate::machine) fn schema(c: &Connection) -> crate::Result<()> {
     c.execute_batch(
         "CREATE TABLE IF NOT EXISTS machine_server_purges(
             server TEXT PRIMARY KEY, record TEXT NOT NULL, started_at TEXT NOT NULL,
@@ -50,7 +50,7 @@ fn schema(c: &Connection) -> crate::Result<()> {
     Ok(())
 }
 
-pub(super) fn insert_purge(
+pub(in crate::machine) fn insert_purge(
     c: &Connection,
     record: &Removed,
     started_at: &str,
@@ -74,7 +74,7 @@ fn table_exists(c: &Connection, name: &str) -> rusqlite::Result<bool> {
     )
 }
 
-fn purge_state(c: &Connection, id: Uuid) -> crate::Result<Option<bool>> {
+pub(in crate::machine) fn purge_state(c: &Connection, id: Uuid) -> crate::Result<Option<bool>> {
     Ok(c.query_row(
         "SELECT complete FROM machine_server_purges WHERE server=?",
         [id.to_string()],
@@ -594,7 +594,7 @@ fn purge_files(servers: &Path, source: &Path, id: Uuid, keep_backups: bool) -> J
     fs::remove_dir_all(source).map_err(|_| JobError::UNAVAILABLE)
 }
 
-fn local_repository(source: &Path, original: &Path) -> JobResult<Option<PathBuf>> {
+pub(in crate::machine) fn local_repository(source: &Path, original: &Path) -> JobResult<Option<PathBuf>> {
     let path = source.join("host.toml");
     let settings = match fs::symlink_metadata(&path) {
         Ok(metadata) if plain_file(&metadata) && metadata.len() <= 1024 * 1024 => {
@@ -638,7 +638,7 @@ fn local_repository(source: &Path, original: &Path) -> JobResult<Option<PathBuf>
 }
 
 #[cfg(target_os = "linux")]
-fn refuse_nested_mounts(root: &Path) -> JobResult<()> {
+pub(crate) fn refuse_nested_mounts(root: &Path) -> JobResult<()> {
     use std::io::{BufRead, BufReader};
     use std::os::unix::ffi::OsStrExt;
     let root = fs::canonicalize(root).map_err(|_| JobError::UNAVAILABLE)?;

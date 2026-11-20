@@ -1007,7 +1007,7 @@ impl Application {
                 }
             }
             if self.router.imports.is_some() {
-                capabilities.push("server-storage");
+                capabilities.extend(["server-storage", "storage-cleanup"]);
             }
             let mut value = json!({"hostId":s.host_id,"name":self.router.display_name(),"fingerprint":self.tls.fingerprint().unwrap_or_default(),"endpoints":[],"authGeneration":s.auth_generation.to_string(),"revision":s.revision.to_string(),"role":owner.map(host_role_name),"capabilities":capabilities});
             if owner.is_some() {
@@ -1021,6 +1021,9 @@ impl Application {
         }
         if owner.is_none() {
             return failure(StatusCode::FORBIDDEN, "forbidden");
+        }
+        if method == Method::POST && path == "/v1/host/storage/cleanup" {
+            return storage::cleanup(&self.router, &device, query, headers, bytes);
         }
         if path == "/v1/host/storage" || path.starts_with("/v1/host/storage/") {
             return storage::dispatch(&self.router, method, path, bytes);

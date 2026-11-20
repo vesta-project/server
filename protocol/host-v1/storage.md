@@ -24,8 +24,7 @@ true, poll GET. The host preserves the last completed snapshot if a walk fails.
 Values can change while a walk is running. The current projection covers
 managed server, removal, retained backup, state and known cache roots.
 External repositories and nonstandard paths can be outside these totals.
-Cache deletion and host realtime remain deferred. Per-server streams keep their
-existing URLs.
+Host realtime remains deferred. Per-server streams keep their existing URLs.
 
 ## One server
 
@@ -41,3 +40,31 @@ zero, and `largest` is empty.
 then path order for ties. Paths are relative to the Files tab's game root.
 Folder sizes include their descendants and can overlap. Data comes from the
 same background snapshot as machine storage.
+
+## Cleanup
+
+The `storage-cleanup` capability enables owner-only POST
+`/v1/host/storage/cleanup`. Send `{targets,dryRun}` with 1 to 100 targets:
+
+- `{kind:"cache",cache:"java"|"software_downloads"|"catalogue"|"pack_staging"|"temp"}`
+- `{kind:"logs",serverId,olderThanDays}` with a positive integer age in days
+- `{kind:"trash",serverId}`
+- `{kind:"removed",serverId,confirmName?}` with the exact name required for one server
+
+`serverId` is a canonical UUID or `"all"`. Omit `confirmName` for `"all"`.
+Targets of the same kind must cover distinct servers or caches. Preview with
+`dryRun:true`, then reuse the targets with `dryRun:false` and a UUID
+`Idempotency-Key` header. Dry runs ignore that header. Completed mutations
+return the original receipt on retry. Changed input returns
+`409 idempotency_conflict`. An incorrect name returns
+`422 confirm_name_mismatch`.
+
+The response is `200 {dryRun,items:[{target,bytes,skipped?}],bytes}`.
+An `"all"` target expands to individual server rows when servers match.
+Skipped rows report zero bytes and one of `in_use`, `busy` or `not_found`.
+Removed servers are queued for purge with their backups retained. Their bytes
+are estimates of the queued deletions. Log cleanup selects dated Minecraft
+archives in stopped servers by modification time and leaves `latest.log`
+alone. Trash cleanup retires completed copies that have no pending recovery
+intent. Java, pack staging and temporary cache paths currently report
+`in_use` when present because their ownership cannot be proven idle.

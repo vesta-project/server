@@ -304,3 +304,5 @@ See [machine storage](storage.md) for the snapshot and measurement routes.
 Purge receipts include a cached byte estimate when available.
 The `server-storage` capability enables the per-server storage view for owners
 and server administrators.
+Use `storage-cleanup` to preview owner-only cleanup and submit the same targets
+with a UUID idempotency key.

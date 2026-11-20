@@ -9,7 +9,9 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
-mod lifecycle;
+pub(super) mod lifecycle;
+#[cfg(target_os = "linux")]
+pub(crate) use lifecycle::refuse_nested_mounts;
 pub use lifecycle::{
     PurgeRequest, RestoreRequest, list_page, purge_expired, queue_purge, reconcile, restore_remote,
 };

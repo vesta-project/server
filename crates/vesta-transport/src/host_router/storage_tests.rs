@@ -104,3 +104,88 @@ fn host_storage_is_owner_only_and_reads_background_measurements() {
         202 | 429
     ));
 }
+
+#[test]
+fn storage_cleanup_previews_then_queues_removed_servers_and_replays_receipt() {
+    let host = create_host(Arc::new(FakeInstaller::default()));
+    let owner = host.state.snapshot().unwrap().primary_account_id.unwrap();
+    let root = host.router.imports().unwrap().servers_root();
+    let server = Uuid::new_v4();
+    host.state
+        .register_server(
+            Actor::Account(owner),
+            &ServerEntry {
+                server_id: server,
+                name: "Cleanup".into(),
+                game_port: free_port(),
+                state: ServerState::Stopped,
+                visibility: Visibility::Private,
+            },
+            host.state.snapshot().unwrap().revision,
+        )
+        .unwrap();
+    let dir = root.join(server.to_string());
+    std::fs::create_dir_all(dir.join("game/world")).unwrap();
+    std::fs::write(dir.join("game/world/marker"), b"test").unwrap();
+    std::fs::create_dir_all(dir.join("backups/repository")).unwrap();
+    std::fs::write(dir.join("backups/repository/marker"), b"backup").unwrap();
+    std::fs::create_dir_all(root.join(".staging")).unwrap();
+    std::fs::write(root.join(".staging/owned"), b"skip").unwrap();
+    assert_eq!(
+        host.call(
+            "DELETE",
+            &format!("/v1/host/servers/{server}"),
+            json!({
+                "confirmName":"Cleanup","idempotencyKey":Uuid::new_v4()
+            }),
+            &host.owner
+        )
+        .0,
+        200
+    );
+    let path = "/v1/host/storage/cleanup";
+    let mut payload = json!({"dryRun":true,"targets":[
+        {"kind":"removed","serverId":server,"confirmName":"Cleanup"},
+        {"kind":"cache","cache":"temp"}
+    ]});
+    assert_eq!(
+        host.call("POST", path, payload.clone(), &host.stranger).0,
+        403
+    );
+    let (status, mut preview) = host.call("POST", path, payload.clone(), &host.owner);
+    assert_eq!(status, 200, "{preview}");
+    assert_eq!(preview["items"][1]["skipped"], "in_use");
+    assert!(preview["bytes"].as_u64().is_some_and(|bytes| bytes >= 4));
+    let removed = host
+        .call("GET", "/v1/host/servers/removed", Value::Null, &host.owner)
+        .1;
+    assert_eq!(removed["servers"][0]["state"], "restorable");
+    payload["dryRun"] = json!(false);
+    assert_eq!(host.call("POST", path, payload.clone(), &host.owner).0, 400);
+    let key = Uuid::new_v4();
+    let call = |body: &Value| {
+        let headers = format!(
+            "Authorization: {}\r\nContent-Type: application/json\r\nIdempotency-Key: {key}\r\n",
+            host.owner
+        );
+        let (status, bytes, _) =
+            host.wire()
+                .raw("POST", path, &headers, &serde_json::to_vec(body).unwrap());
+        (status, serde_json::from_slice::<Value>(&bytes).unwrap())
+    };
+    preview["dryRun"] = json!(false);
+    assert_eq!(call(&payload), (200, preview.clone()));
+    assert_eq!(call(&payload), (200, preview));
+    payload["targets"][0]["confirmName"] = json!("Wrong");
+    assert_eq!(call(&payload).0, 409);
+    assert!(root.join(".staging/owned").is_file());
+    let backup = root
+        .with_file_name("retained-backups")
+        .join(server.to_string())
+        .join("marker");
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !backup.is_file() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}

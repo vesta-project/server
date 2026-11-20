@@ -305,7 +305,7 @@ pub(super) fn dispatch(router: &HostRouter, device: &Device, path: &str, bytes: 
     router.storage.refresh();
     remove_reply(&record)
 }
-fn error(e: JobError) -> Reply {
+pub(super) fn error(e: JobError) -> Reply {
     let status = match e.0 {
         "forbidden" => StatusCode::FORBIDDEN,
         "not_found" => StatusCode::NOT_FOUND,

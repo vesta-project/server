@@ -1093,7 +1093,7 @@ impl FileBrowser {
         Ok(())
     }
 
-    fn trash_dir(&self) -> Result<ArtifactDirectory> {
+    pub(super) fn trash_dir(&self) -> Result<ArtifactDirectory> {
         self.db.directory().trash().map_err(state_io)
     }
 
@@ -1497,7 +1497,7 @@ pub(super) fn random_id() -> Result<String> {
     Ok(hex::encode(random))
 }
 
-fn trash_name(id: &str) -> Result<ArtifactName> {
+pub(super) fn trash_name(id: &str) -> Result<ArtifactName> {
     if id.len() != 32
         || !id
             .bytes()

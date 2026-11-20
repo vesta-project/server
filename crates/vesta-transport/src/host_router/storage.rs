@@ -152,6 +152,78 @@ pub(super) fn start(app: Weak<Application>) {
     });
 }
 
+pub(super) fn cleanup(
+    router: &HostRouter,
+    device: &Device,
+    query: Option<&str>,
+    headers: &http::HeaderMap,
+    body: &[u8],
+) -> Reply {
+    use vesta_control::machine::cleanup;
+    let Some(jobs) = router.imports() else {
+        return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+    };
+    if query.is_some() {
+        return failure(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    let request: cleanup::Request = match parse(body) {
+        Ok(request) => request,
+        Err(reply) => return reply,
+    };
+    let key = if request.dry_run {
+        None
+    } else {
+        let values = headers.get_all("idempotency-key");
+        let mut values = values.iter();
+        let key = values
+            .next()
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| Uuid::parse_str(value).ok());
+        let Some(key) = key.filter(|_| values.next().is_none()) else {
+            return failure(StatusCode::BAD_REQUEST, "idempotency_key_required");
+        };
+        Some(key)
+    };
+    let Ok(_guard) = router.removal_lock.lock() else {
+        return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+    };
+    let state = &router.identity.state;
+    let Ok(snapshot) = state.snapshot() else {
+        return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+    };
+    let handles = match router.workers.lock() {
+        Ok(workers) => workers.clone(),
+        Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+    };
+    let mut workers = std::collections::HashMap::new();
+    for worker in handles {
+        let id = worker.server_id();
+        if let Ok(subject) = subject(router, worker.as_ref(), device)
+            && let Ok(network) = worker.authorize(subject)
+        {
+            workers.insert(id, network);
+        }
+    }
+    match cleanup::run(
+        state,
+        jobs.servers_root(),
+        router.storage.java_cache.as_deref(),
+        device.account_id,
+        key,
+        &request,
+        snapshot.auth_generation,
+        &workers,
+    ) {
+        Ok(result) => {
+            if !request.dry_run {
+                router.storage.refresh();
+            }
+            routes::json(result)
+        }
+        Err(error) => removed::error(error),
+    }
+}
+
 pub(super) fn dispatch(router: &HostRouter, method: &Method, path: &str, body: &[u8]) -> Reply {
     if router.imports().is_none() {
         return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
