@@ -208,11 +208,15 @@ impl ImportJobs {
     /// Every restore point not attached to a live server, newest first.
     fn restore_candidates(&self) -> JobResult<Vec<Candidate>> {
         let facts = self.server_facts()?;
-        let Ok(entries) = fs::read_dir(&self.0.servers) else {
-            return Ok(Vec::new());
-        };
         let mut out = Vec::new();
-        for entry in entries.flatten().take(MAX_FOLDERS) {
+        let retained = self.0.servers.with_file_name("retained-backups");
+        let active_entries = fs::read_dir(&self.0.servers).into_iter().flatten().flatten().take(MAX_FOLDERS);
+        let retained_entries = crate::machine::removed::retained_root(&retained)
+            .into_iter().flatten().flatten().take(MAX_FOLDERS);
+        let entries = retained_entries.map(|entry| (entry, true))
+            .chain(active_entries.map(|entry| (entry, false)));
+        let mut seen = std::collections::HashSet::new();
+        for (entry, is_retained) in entries {
             let Some(origin) = entry
                 .file_name()
                 .to_str()
@@ -221,7 +225,7 @@ impl ImportJobs {
             else {
                 continue;
             };
-            let dir = self.server_dir(origin);
+            let dir = entry.path();
             if !fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
             {
                 continue;
@@ -242,10 +246,11 @@ impl ImportJobs {
             })? {
                 continue;
             }
-            let Some(repository) = Self::folder_repository(&dir) else {
+            let repository = if is_retained { Some(dir) } else { Self::folder_repository(&dir) };
+            let Some(repository) = repository else {
                 continue;
             };
-            if !fs::symlink_metadata(&repository).is_ok_and(|m| m.is_dir()) {
+            if !crate::machine::removed::plain_repository(&repository) || !seen.insert(origin) {
                 continue;
             }
             let engine = BackupEngine::new(Box::new(LocalStore::new(repository.clone())));
@@ -428,7 +433,7 @@ impl ImportJobs {
             blockers.insert("insufficient_space");
         }
 
-        let server_id = Uuid::new_v4();
+        let server_id = self.new_server_id()?;
         let now = super::super::browse::now_ms();
         let mut review = CreateReview {
             plan_id: Uuid::new_v4().to_string(),

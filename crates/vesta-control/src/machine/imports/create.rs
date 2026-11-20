@@ -622,7 +622,7 @@ impl ImportJobs {
             blockers.insert("insufficient_space");
         }
 
-        let server_id = Uuid::new_v4();
+        let server_id = self.new_server_id()?;
         let now = super::super::browse::now_ms();
         let mut review = CreateReview {
             plan_id: Uuid::new_v4().to_string(),

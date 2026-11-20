@@ -901,7 +901,7 @@ impl ImportJobs {
             blockers.insert(cause);
             warnings.clear();
         }
-        let server_id = Uuid::new_v4();
+        let server_id = self.new_server_id()?;
         let plan_id = Uuid::new_v4().to_string();
         let now = super::browse::now_ms();
         let mut review = Review {
@@ -1013,6 +1013,16 @@ impl ImportJobs {
         Ok(Some(ApplyAccepted { job_id, server_id }))
     }
 
+    /// Candidate IDs are checked again at apply, before creating a directory.
+    pub(crate) fn new_server_id(&self) -> JobResult<Uuid> {
+        self.read(|c| loop {
+            let id = Uuid::new_v4();
+            if !server_id_in_use(c, id)? {
+                break Ok(id);
+            }
+        })
+    }
+
     /// Re-check name, port and memory against every live reservation and
     /// registered server, then reserve them for `job_id` in the caller's
     /// transaction. Racing plans for one port cannot both pass: the second
@@ -1027,6 +1037,9 @@ impl ImportJobs {
         memory: u64,
     ) -> JobResult<()> {
         let held = reservations_in(c, None)?;
+        if server_id_in_use(c, server_id)? {
+            return Err(JobError::CONFLICT);
+        }
         if name_in_use(c, name)? {
             return Err(JobError("name_in_use"));
         }
@@ -1713,6 +1726,18 @@ fn decode<T: serde::de::DeserializeOwned>(raw: Option<String>) -> JobResult<T> {
     serde_json::from_str(raw.as_deref().ok_or(JobError::UNAVAILABLE)?)
         .map_err(|_| JobError::UNAVAILABLE)
 }
+
+fn server_id_in_use(c: &Connection, id: Uuid) -> JobResult<bool> {
+    Ok(c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM machine_servers WHERE server_id=?1)
+         OR EXISTS(SELECT 1 FROM machine_import_reservations WHERE server_id=?1)
+         OR EXISTS(SELECT 1 FROM machine_host WHERE host_id=?1)",
+        [id.to_string()],
+        |r| r.get(0),
+    )?)
+}
+
+pub(crate) use commit::plain_drive_path as plain_managed_path;
 
 /// Names of registered servers and of unreleased reservations (imports and
 /// creates alike) share one case-insensitive namespace.

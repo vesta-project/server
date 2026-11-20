@@ -215,6 +215,7 @@ fn job_routes(
             if !matches!(job.state.as_str(), "ready" | "starting" | "online") {
                 return job_failure(JobError::CONFLICT);
             }
+            let _admission = tryjob!(router.removal_lock.lock().map_err(|_| JobError::UNAVAILABLE));
             let handle = tryjob!(router.import_worker(server));
             let job = tryjob!(jobs.create_start(&binding, id, &handle));
             router.refresh_server_states();
@@ -238,9 +239,48 @@ fn spawn_apply(router: &HostRouter, service: &Service, binding: &OwnerBinding, i
         let _ = worker
             .jobs
             .run_create_apply(&owner, &id, worker.installer.as_ref());
-        router.start_created(&owner, &id);
+        start_created(&router, &owner, &id);
     });
 }
+/// Share admission with removal through worker creation and start submission.
+fn start_created(router: &HostRouter, owner: &OwnerBinding, id: &str) {
+    let Some(jobs) = router.imports() else { return };
+    let handle = {
+        let Ok(_admission) = router.removal_lock.lock() else { return };
+        if router.is_stopping() || jobs.is_stopping() {
+            return;
+        }
+        let Ok(job) = jobs.create_status(owner, id) else { return };
+        if job.state != "ready" || job.error.is_some() {
+            return;
+        }
+        let Some(server) = job.server_id else { return };
+        let Ok(handle) = router.import_worker(server) else {
+            let _ = jobs.installed_start_failed(id);
+            return;
+        };
+        if router.is_stopping() || jobs.is_stopping() {
+            return;
+        }
+        if jobs.create_start(owner, id, &handle).is_err() {
+            let _ = jobs.installed_start_failed(id);
+            return;
+        }
+        handle
+    };
+    loop {
+        if router.is_stopping() || jobs.is_stopping() {
+            break;
+        }
+        let next = jobs.create_readiness(owner, id, &handle).map(|job| job.state);
+        router.refresh_server_states();
+        if !next.is_ok_and(|state| state == "starting") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 fn background(work: impl FnOnce() + Send + 'static) {
     // If no thread can be started the job stays pollable; a host restart
     // marks it `interrupted` and the owner resumes it.

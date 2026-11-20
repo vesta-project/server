@@ -35,7 +35,7 @@ fn dispatch(identity: &HostIdentity, request: LocalRequest) -> Response {
     let result = match request {
         LocalRequest::RemovedServers => {
             let root=identity.state.database().directory().path().parent().unwrap().join("removed");
-            vesta_control::machine::removed::list(&root).and_then(|v| serde_json::to_value(v).map_err(|_| vesta_control::machine::imports::jobs::JobError::UNAVAILABLE)).map_err(|e| vesta_control::machine::sessions::IdentityFailure(e.0))
+            vesta_control::machine::removed::list(&root).and_then(|v| serde_json::to_value(v.into_iter().filter(|entry| !entry.permanently).collect::<Vec<_>>()).map_err(|_| vesta_control::machine::imports::jobs::JobError::UNAVAILABLE)).map_err(|e| vesta_control::machine::sessions::IdentityFailure(e.0))
         },
         LocalRequest::RestoreServer {server_id} => {
             let root=identity.state.database().directory().path().parent().unwrap().join("servers");
@@ -172,23 +172,19 @@ impl Server {
             }
             crate::control::bind_control(&endpoint)?
         };
-        let removed_root = state.parent().ok_or("host_local_failed")?.join("removed");
-        vesta_control::machine::removed::purge(&removed_root, identity.state.now_ms())
-            .map_err(|_| "host_local_failed")?;
         let (stop, mut stopped) = tokio::sync::oneshot::channel();
         #[cfg(any(windows, target_os = "linux"))]
         let task = tokio::spawn(async move {
-            let mut janitor = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
             loop {
                 #[cfg(windows)]
                 let mut stream = {
-                    tokio::select! {_= &mut stopped=>break,_=janitor.tick()=>{let _=vesta_control::machine::removed::purge(&removed_root,identity.state.now_ms());continue;},result=listener.connect()=>result.map_err(|_|"host_local_accept_failed")?}
+                    tokio::select! {_= &mut stopped=>break,result=listener.connect()=>result.map_err(|_|"host_local_accept_failed")?}
                     let next = crate::host_local_windows::create(&endpoint, false, 2)?;
                     std::mem::replace(&mut listener, next)
                 };
                 #[cfg(target_os = "linux")]
                 let mut stream = {
-                    let (stream, _) = tokio::select! {_= &mut stopped=>break,_=janitor.tick()=>{let _=vesta_control::machine::removed::purge(&removed_root,identity.state.now_ms());continue;},result=listener.accept()=>result.map_err(|_|"host_local_accept_failed")?};
+                    let (stream, _) = tokio::select! {_= &mut stopped=>break,result=listener.accept()=>result.map_err(|_|"host_local_accept_failed")?};
                     if !allowed_peer(
                         stream
                             .peer_cred()

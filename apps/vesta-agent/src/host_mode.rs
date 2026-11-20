@@ -153,6 +153,9 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
         std::fs::create_dir_all(dir).map_err(|_| "host_servers_unavailable")?;
         protected.push(dir.clone());
     }
+    if let Some(parent) = servers_root.parent() {
+        protected.extend([parent.join("removed"), parent.join("retained-backups")]);
+    }
     let (folders, skipped) = FolderBrowser::new_skipping_unusable(
         config
             .import_roots
@@ -243,6 +246,10 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
     // a restart; a failure is reported and leaves the host (and other servers)
     // running.
     let imported = |id| jobs.server_dir(id).join("host.toml").is_file();
+    if let Some(jobs) = router.imports() {
+        vesta_control::machine::removed::reconcile(&identity.state, jobs.servers_root())
+            .map_err(|_| "host_removal_recovery_failed")?;
+    }
     for (id, e) in router.restore_registered_workers() {
         eprintln!("Vesta Server could not open server {id}: {e}");
     }

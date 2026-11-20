@@ -204,7 +204,7 @@ pub fn effective_role_in(
     role.map(|s| ServerRole::parse(&s).map(EffectiveRole::Server))
         .transpose()
 }
-fn server_in(c: &Connection, id: Uuid) -> Result<Option<ServerEntry>> {
+pub(super) fn server_in(c: &Connection, id: Uuid) -> Result<Option<ServerEntry>> {
     let row: Option<(String, u16, String, String)> = c
         .query_row(
             "SELECT name,game_port,state,visibility FROM machine_servers WHERE server_id=?1",

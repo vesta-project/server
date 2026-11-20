@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 /// mDNS TXT `name` limit.
 pub const MACHINE_NAME_MAX_BYTES: usize = 63;
 pub const DEVICE_NAME_MAX_CHARS: usize = 64;
+const DEFAULT_REMOVAL_RETENTION_DAYS: u16 = 7;
+const MAX_REMOVAL_RETENTION_DAYS: u16 = 365;
 const NAME_INPUT_MAX_BYTES: usize = 256;
 
 /// How a device that is new to this host may join an account that already
@@ -36,12 +38,14 @@ pub struct HostSettings {
     /// Owner-chosen machine name; `None` keeps the host.toml name.
     pub name: Option<String>,
     pub new_device_sign_in: NewDeviceSignIn,
+    pub removed_server_retention_days: u16,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HostSettingsPatch {
     pub name: Option<String>,
     pub new_device_sign_in: Option<NewDeviceSignIn>,
+    pub removed_server_retention_days: Option<u16>,
 }
 
 /// Removes control and bidirectional-override characters, collapses whitespace
@@ -104,17 +108,29 @@ pub(crate) fn sign_in_mode_in(c: &Connection) -> Result<NewDeviceSignIn> {
         _ => NewDeviceSignIn::Account,
     })
 }
+pub(crate) fn removal_retention_in(c: &Connection) -> Result<u16> {
+    match setting_in(c, "removed_server_retention_days")? {
+        None => Ok(DEFAULT_REMOVAL_RETENTION_DAYS),
+        Some(value) => value
+            .parse::<u16>()
+            .ok()
+            .filter(|days| (1..=MAX_REMOVAL_RETENTION_DAYS).contains(days))
+            .ok_or_else(|| reject(Code::InvalidRequest)),
+    }
+}
+
 fn settings_in(c: &Connection) -> Result<HostSettings> {
     Ok(HostSettings {
         name: setting_in(c, "name")?,
         new_device_sign_in: sign_in_mode_in(c)?,
+        removed_server_retention_days: removal_retention_in(c)?,
     })
 }
 impl HostState {
     pub fn settings(&self) -> Result<HostSettings> {
         self.read(settings_in)
     }
-    /// Owner-only. Each change is audited; neither setting changes any existing
+    /// Owner-only. Each change is audited. Settings do not change any existing
     /// grant, so the auth generation stays put.
     pub fn update_settings(&self, actor: Actor, patch: HostSettingsPatch) -> Result<HostSettings> {
         let name = patch
@@ -122,14 +138,27 @@ impl HostState {
             .as_deref()
             .map(|n| machine_name(n).ok_or_else(|| reject(Code::InvalidRequest)))
             .transpose()?;
-        if name.is_none() && patch.new_device_sign_in.is_none() {
+        if patch
+            .removed_server_retention_days
+            .is_some_and(|days| !(1..=MAX_REMOVAL_RETENTION_DAYS).contains(&days))
+            || (name.is_none()
+                && patch.new_device_sign_in.is_none()
+                && patch.removed_server_retention_days.is_none())
+        {
             return Err(reject(Code::InvalidRequest));
         }
         self.write(|c| {
             require_owner(c, actor)?;
             if let Some(name) = &name {
                 put_in(c, "name", name)?;
-                changed(c, false, "host_rename", &actor.audit(), "name", self.now_ms())?;
+                changed(
+                    c,
+                    false,
+                    "host_rename",
+                    &actor.audit(),
+                    "name",
+                    self.now_ms(),
+                )?;
             }
             if let Some(mode) = patch.new_device_sign_in {
                 put_in(c, "new_device_sign_in", mode.as_str())?;
@@ -139,6 +168,18 @@ impl HostState {
                     "new_device_sign_in_change",
                     &actor.audit(),
                     mode.as_str(),
+                    self.now_ms(),
+                )?;
+            }
+            if let Some(days) = patch.removed_server_retention_days {
+                let value = days.to_string();
+                put_in(c, "removed_server_retention_days", &value)?;
+                changed(
+                    c,
+                    false,
+                    "removed_server_retention_change",
+                    &actor.audit(),
+                    &value,
                     self.now_ms(),
                 )?;
             }

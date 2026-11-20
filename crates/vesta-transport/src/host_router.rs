@@ -191,42 +191,6 @@ impl HostRouter {
         owned.push(worker);
         Ok(handle)
     }
-    /// Start a newly created server. Imports remain stopped after registration.
-    fn start_created(&self, owner: &OwnerBinding, id: &str) {
-        let Some(jobs) = self.imports() else { return };
-        if self.is_stopping() || jobs.is_stopping() {
-            return;
-        }
-        let Ok(job) = jobs.create_status(owner, id) else {
-            return;
-        };
-        if job.state != "ready" || job.error.is_some() {
-            return;
-        }
-        let Some(server) = job.server_id else { return };
-        let Ok(handle) = self.import_worker(server) else {
-            let _ = jobs.installed_start_failed(id);
-            return;
-        };
-        if self.is_stopping() || jobs.is_stopping() {
-            return;
-        }
-        if jobs.create_start(owner, id, &handle).is_err() {
-            let _ = jobs.installed_start_failed(id);
-            return;
-        }
-        loop {
-            if self.is_stopping() || jobs.is_stopping() {
-                break;
-            }
-            let next = jobs.create_readiness(owner, id, &handle).map(|j| j.state);
-            self.refresh_server_states();
-            if !next.is_ok_and(|state| state == "starting") {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        }
-    }
     /// Owner/role-filtered server cards: registry facts plus the software and
     /// Minecraft version recorded by the job that created or imported the
     /// server, and the branding icon ETag observed from its worker. Unknown
@@ -366,6 +330,7 @@ impl Transport {
                         tokio::task::spawn_blocking(move || router.refresh_server_states()).await;
                 }
             });
+            removed::start_janitor(Arc::downgrade(&app));
             app
         })
     }
@@ -714,6 +679,7 @@ impl Application {
         if query.is_some()
             && !path.starts_with("/v1/servers/")
             && path != "/v1/host/catalogue/software"
+            && !(method == Method::GET && path == "/v1/host/servers/removed")
         {
             return failure(StatusCode::BAD_REQUEST, "invalid_request");
         }
@@ -905,6 +871,9 @@ impl Application {
                 Err(_) => failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable"),
             };
         }
+        if path == "/v1/host/servers/removed" || path.starts_with("/v1/host/servers/removed/") {
+            return removed::removed_routes(&self.router, &device, method, path, query, headers, bytes);
+        }
         if method == Method::DELETE && path.starts_with("/v1/host/servers/") && query.is_none() {
             return removed::dispatch(&self.router, &device, path, bytes);
         }
@@ -1005,8 +974,9 @@ impl Application {
             let Ok(s) = state.snapshot() else {
                 return failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable");
             };
-            let mut capabilities = vec!["folders", "import-inspect", "resource-plan"];
+            let mut capabilities = vec!["folders", "import-inspect", "resource-plan", "removed-server-retention"];
             if self.router.imports.is_some() {
+                capabilities.extend(["removed-servers", "server-purge"]);
                 capabilities.push("import-jobs");
                 if self.router.creator.is_some() && self.router.catalogue.is_some() {
                     capabilities.push("create-jobs");
@@ -1018,6 +988,7 @@ impl Application {
                     return failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable");
                 };
                 value["newDeviceSignIn"] = json!(settings.new_device_sign_in);
+                value["removedServerRetentionDays"] = json!(settings.removed_server_retention_days);
             }
             return routes::json(value);
         }
@@ -1031,7 +1002,7 @@ impl Application {
             return match state.update_settings(Actor::Account(device.account_id), input!()) {
                 Ok(settings) => match state.snapshot() {
                     Ok(s) => routes::json(
-                        json!({"hostId":s.host_id,"name":self.router.display_name(),"newDeviceSignIn":settings.new_device_sign_in,"revision":s.revision.to_string()}),
+                        json!({"hostId":s.host_id,"name":self.router.display_name(),"newDeviceSignIn":settings.new_device_sign_in,"removedServerRetentionDays":settings.removed_server_retention_days,"revision":s.revision.to_string()}),
                     ),
                     Err(_) => failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable"),
                 },

@@ -298,3 +298,5 @@ Owner-only removal: `DELETE /v1/host/servers/{serverId}` with JSON `{ "confirmNa
 Host-backed `manage/users` rows expose `device_count` as the count of active host devices for that account, and `machine_owner: true` for machine owners (API v3 snake_case envelope). Counts contain no device names or IDs. The launcher may label these accounts ?Owner of <machine>?.
 
 Unfinished removal retries recheck the current confirmation name and busy state. Completed removal receipts replay the original response.
+
+The [removed servers contract](removed.md) covers restore, permanent deletion, and retention.

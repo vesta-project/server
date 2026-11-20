@@ -9,12 +9,30 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
-const RETENTION: i64 = 7 * 24 * 60 * 60 * 1000;
+mod lifecycle;
+pub use lifecycle::{
+    PurgeRequest, RestoreRequest, list_page, purge_expired, queue_purge, reconcile, restore_remote,
+};
+
+pub(crate) fn retained_root(path: &Path) -> Option<std::fs::ReadDir> {
+    lifecycle::plain_path(path).ok()?;
+    std::fs::read_dir(path).ok()
+}
+
+pub(crate) fn plain_repository(path: &Path) -> bool {
+    lifecycle::plain_path(path).is_ok()
+}
+
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RemoveRequest {
     pub confirm_name: String,
     pub idempotency_key: Uuid,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub permanently: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_backups: Option<bool>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,10 +44,20 @@ pub struct Removed {
     pub restore_until: String,
     pub removed_ms: i64,
     pub restore_until_ms: i64,
+    #[serde(default)]
+    pub permanently: bool,
+    #[serde(default = "keep_backups_by_default")]
+    pub keep_backups: bool,
+}
+fn keep_backups_by_default() -> bool {
+    true
 }
 impl Removed {
     pub fn reply(&self) -> serde_json::Value {
         serde_json::json!({"serverId":self.server_id,"removedAt":self.removed_at,"restoreUntil":self.restore_until})
+    }
+    pub fn purge_reply(&self) -> serde_json::Value {
+        serde_json::json!({"serverId":self.server_id,"purgeStartedAt":self.removed_at,"bytes":null})
     }
     fn path(&self, root: &Path) -> PathBuf {
         root.join(format!("{}-{}", self.server_id, self.removed_ms / 1000))
@@ -45,6 +73,9 @@ pub fn prepare(
     server: Uuid,
     req: &RemoveRequest,
 ) -> JobResult<(Removed, bool)> {
+    if !req.permanently && req.keep_backups.is_some() {
+        return Err(JobError::INVALID);
+    }
     let mut result = None;
     host.write(|c| {
         require_owner(c, Actor::Account(account))?;
@@ -55,6 +86,12 @@ pub fn prepare(
                 result=Some(Err(JobError("idempotency_conflict"))); return Ok(());
             }
             let record: Removed=serde_json::from_str(&record).map_err(|_| super::state::reject(crate::IdentityErrorCode::InvalidRequest))?;
+            if record.permanently != req.permanently
+                || record.keep_backups != req.keep_backups.unwrap_or(true)
+            {
+                result = Some(Err(JobError::IDEMPOTENCY));
+                return Ok(());
+            }
             if complete { result=Some(Ok((record,true))); return Ok(()); }
             Some(record)
         } else { None };
@@ -65,7 +102,8 @@ pub fn prepare(
         if imports && c.query_row("SELECT EXISTS(SELECT 1 FROM machine_import_jobs WHERE server_id=? AND state IN ('planning','applying','starting','interrupted'))", [server.to_string()], |r| r.get::<_,bool>(0))? { result=Some(Err(JobError("server_busy"))); return Ok(()); }
         if let Some(record)=pending { result=Some(Ok((record,false))); return Ok(()); }
         let now=host.now_ms();
-        let record=Removed { server_id: server, name, removed_at: super::sessions::timestamp(now), removed_by: account, restore_until: super::sessions::timestamp(now.saturating_add(RETENTION)), removed_ms: now, restore_until_ms: now.saturating_add(RETENTION) };
+        let retention = i64::from(super::settings::removal_retention_in(c)?) * DAY_MS;
+        let record=Removed { server_id: server, name, removed_at: super::sessions::timestamp(now), removed_by: account, restore_until: super::sessions::timestamp(now.saturating_add(retention)), removed_ms: now, restore_until_ms: now.saturating_add(retention), permanently: req.permanently, keep_backups: req.keep_backups.unwrap_or(true) };
         let raw=serde_json::to_string(&record).map_err(|_| super::state::reject(crate::IdentityErrorCode::InvalidRequest))?;
         c.execute("INSERT INTO machine_removal_receipts(account,key,server,name,record) VALUES(?,?,?,?,?)", params![account.to_string(), req.idempotency_key.to_string(), server.to_string(), record.name, raw])?;
         result=Some(Ok((record,false)));
@@ -73,6 +111,23 @@ pub fn prepare(
     })?;
     result.ok_or(JobError::UNAVAILABLE)?
 }
+/// Reject an unmanaged or missing server directory before stopping its worker.
+pub fn check_removable_path(servers: &Path, record: &Removed) -> JobResult<()> {
+    let source = servers.join(record.server_id.to_string());
+    if source.exists() {
+        return lifecycle::plain_path(&source);
+    }
+    let root = servers
+        .parent()
+        .ok_or(JobError::UNAVAILABLE)?
+        .join("removed");
+    let target = record.path(&root);
+    if target.exists() {
+        return lifecycle::plain_path(&target);
+    }
+    Err(JobError("not_found"))
+}
+
 pub fn finish(
     host: &HostState,
     servers: &Path,
@@ -83,22 +138,32 @@ pub fn finish(
         .parent()
         .ok_or(JobError::UNAVAILABLE)?
         .join("removed");
-    std::fs::create_dir_all(&removed).map_err(|_| JobError::UNAVAILABLE)?;
+    lifecycle::ensure_directory(&removed)?;
     let source = servers.join(record.server_id.to_string());
     let target = record.path(&removed);
     if source.exists() {
+        lifecycle::plain_path(&source)?;
+        if target.exists() {
+            return Err(JobError("destination_conflict"));
+        }
         let bytes = serde_json::to_vec_pretty(record).map_err(|_| JobError::UNAVAILABLE)?;
-        std::fs::write(source.join("removed.json"), bytes).map_err(|_| JobError::UNAVAILABLE)?;
+        lifecycle::write_atomic(&source.join("removed.json"), &bytes)?;
         std::fs::rename(&source, &target).map_err(|_| JobError::UNAVAILABLE)?;
     } else if !target.is_dir() {
         return Err(JobError("not_found"));
     }
-    host.write(|c| {
+    let result = host.write(|c| {
         require_owner(c, Actor::Account(record.removed_by))?;
-        c.execute(
-            "UPDATE machine_servers SET state='deleted' WHERE server_id=?",
-            [record.server_id.to_string()],
+        let updated = c.execute(
+            "UPDATE machine_servers SET state='deleted' WHERE server_id=? AND name=? AND state!='deleted'",
+            params![record.server_id.to_string(), record.name],
         )?;
+        if updated != 1 {
+            return Err(super::state::reject(crate::IdentityErrorCode::Conflict));
+        }
+        if record.permanently {
+            lifecycle::insert_purge(c, record, &record.removed_at, record.keep_backups)?;
+        }
         c.execute(
             "DELETE FROM machine_server_grants WHERE server_id=?",
             [record.server_id.to_string()],
@@ -123,6 +188,10 @@ pub fn finish(
             }
         }
         c.execute(
+            "DELETE FROM machine_removal_receipts WHERE server=? AND complete=0 AND NOT (account=? AND key=?)",
+            params![record.server_id.to_string(), record.removed_by.to_string(), req.idempotency_key.to_string()],
+        )?;
+        c.execute(
             "UPDATE machine_removal_receipts SET complete=1 WHERE account=? AND key=?",
             params![
                 record.removed_by.to_string(),
@@ -138,7 +207,11 @@ pub fn finish(
             host.now_ms(),
         )?;
         Ok(())
-    })?;
+    });
+    if let Err(error) = result {
+        let _ = std::fs::rename(&target, &source);
+        return Err(error.into());
+    }
     Ok(())
 }
 pub fn list(root: &Path) -> JobResult<Vec<Removed>> {
@@ -146,6 +219,7 @@ pub fn list(root: &Path) -> JobResult<Vec<Removed>> {
     if !root.exists() {
         return Ok(out);
     }
+    lifecycle::plain_path(root)?;
     for entry in std::fs::read_dir(root).map_err(|_| JobError::UNAVAILABLE)? {
         let entry = entry.map_err(|_| JobError::UNAVAILABLE)?;
         if !entry
@@ -155,7 +229,14 @@ pub fn list(root: &Path) -> JobResult<Vec<Removed>> {
         {
             continue;
         }
-        if let Ok(bytes) = std::fs::read(entry.path().join("removed.json")) {
+        let manifest = entry.path().join("removed.json");
+        if lifecycle::plain_path(&entry.path()).is_err()
+            || !std::fs::symlink_metadata(&manifest)
+                .is_ok_and(|m| lifecycle::plain_file(&m) && m.len() <= 64 * 1024)
+        {
+            continue;
+        }
+        if let Ok(bytes) = std::fs::read(manifest) {
             if let Ok(record) = serde_json::from_slice::<Removed>(&bytes) {
                 if record.path(root) == entry.path() {
                     out.push(record);
@@ -166,63 +247,6 @@ pub fn list(root: &Path) -> JobResult<Vec<Removed>> {
     out.sort_by_key(|r| r.removed_ms);
     Ok(out)
 }
-pub fn purge(root: &Path, now: i64) -> JobResult<()> {
-    for entry in list(root)? {
-        if entry.restore_until_ms < now {
-            std::fs::remove_dir_all(entry.path(root)).map_err(|_| JobError::UNAVAILABLE)?;
-        }
-    }
-    Ok(())
-}
 pub fn restore(host: &HostState, servers: &Path, id: Uuid) -> JobResult<Removed> {
-    let root = servers
-        .parent()
-        .ok_or(JobError::UNAVAILABLE)?
-        .join("removed");
-    let record = list(&root)?
-        .into_iter()
-        .rev()
-        .find(|r| r.server_id == id && r.restore_until_ms >= host.now_ms())
-        .ok_or(JobError("not_found"))?;
-    let entry = host.server(id)?.ok_or(JobError("not_found"))?;
-    let conflict=host.read(|c| Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM machine_servers WHERE state!='deleted' AND (game_port=? OR lower(name)=lower(?)))",params![entry.game_port,entry.name],|r|r.get::<_,bool>(0))?))?;
-    let reserved = host.read(|c| {
-        let exists:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='machine_import_reservations')",[],|r|r.get(0))?;
-        Ok(exists && c.query_row("SELECT EXISTS(SELECT 1 FROM machine_import_reservations WHERE game_port=? AND released=0 AND server_id!=?)",params![entry.game_port,id.to_string()],|r|r.get::<_,bool>(0))?)
-    })?;
-    if conflict || reserved
-        || super::resources::plan_port(&Default::default(), Some(entry.game_port))
-            .blocker
-            .is_some()
-    {
-        return Err(JobError("game_port_in_use"));
-    }
-    let target = servers.join(id.to_string());
-    if target.exists() {
-        return Err(JobError("destination_conflict"));
-    }
-    std::fs::rename(record.path(&root), &target).map_err(|_| JobError::UNAVAILABLE)?;
-    let result = host.write(|c| {
-        c.execute(
-            "UPDATE machine_servers SET state='stopped' WHERE server_id=? AND state='deleted'",
-            [id.to_string()],
-        )?;
-        let reservations: bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='machine_import_reservations')",[],|r|r.get(0))?;
-        if reservations { c.execute("UPDATE machine_import_reservations SET released=0 WHERE server_id=?",[id.to_string()])?; }
-        changed(
-            c,
-            true,
-            "server_restore",
-            "local",
-            &id.to_string(),
-            host.now_ms(),
-        )?;
-        Ok(())
-    });
-    if let Err(error) = result {
-        let _ = std::fs::rename(&target, record.path(&root));
-        return Err(error.into());
-    }
-    let _ = std::fs::remove_file(target.join("removed.json"));
-    Ok(record)
+    lifecycle::restore_local(host, servers, id)
 }

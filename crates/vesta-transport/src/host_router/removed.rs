@@ -1,5 +1,137 @@
 use super::*;
+use std::sync::Weak;
 use vesta_control::machine::removed::{self, RemoveRequest};
+
+pub(super) fn start_janitor(app: Weak<Application>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            let Some(router) = app.upgrade().map(|app| app.router.clone()) else {
+                return;
+            };
+            if router.is_stopping() {
+                return;
+            }
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Some(jobs) = router.imports() {
+                    let state = &router.identity.state;
+                    let _ = removed::purge_expired(state, jobs.servers_root(), state.now_ms());
+                }
+            })
+            .await;
+        }
+    });
+}
+
+pub(super) fn removed_routes(
+    router: &HostRouter,
+    device: &Device,
+    method: &Method,
+    path: &str,
+    query: Option<&str>,
+    headers: &http::HeaderMap,
+    bytes: &[u8],
+) -> Reply {
+    let state = &router.identity.state;
+    match state.host_role(device.account_id) {
+        Ok(Some(_)) => (),
+        Ok(None) => return failure(StatusCode::FORBIDDEN, "forbidden"),
+        Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable"),
+    }
+    let Some(jobs) = router.imports() else {
+        return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+    };
+    let servers = jobs.servers_root();
+    let reply = |value| routes::json(value);
+    if *method == Method::GET && path == "/v1/host/servers/removed" {
+        let cursor = match query {
+            None => None,
+            Some(raw) => match raw.strip_prefix("cursor=").filter(|s| !s.is_empty()) {
+                Some(cursor) => Some(cursor),
+                None => return failure(StatusCode::BAD_REQUEST, "invalid_request"),
+            },
+        };
+        return match removed::list_page(state, servers, device.account_id, cursor) {
+            Ok(mut value) => {
+                if let Ok(facts) = jobs.server_facts() {
+                    if let Some(entries) = value["servers"].as_array_mut() {
+                        for entry in entries {
+                            let id = entry["serverId"]
+                                .as_str()
+                                .and_then(|id| Uuid::parse_str(id).ok());
+                            if let Some(fact) = id.and_then(|id| facts.get(&id)) {
+                                entry["minecraftVersion"] = json!(fact.minecraft_version);
+                                entry["software"] =
+                                    json!(fact.software.as_ref().map(
+                                        |(kind, version)| json!({"kind":kind,"version":version})
+                                    ));
+                            }
+                        }
+                    }
+                }
+                reply(value)
+            }
+            Err(e) => error(e),
+        };
+    }
+    let Some(suffix) = path.strip_prefix("/v1/host/servers/removed/") else {
+        return failure(StatusCode::NOT_FOUND, "not_found");
+    };
+    let (id, action) = suffix.split_once('/').unwrap_or((suffix, ""));
+    let Ok(id) = Uuid::parse_str(id) else {
+        return failure(StatusCode::NOT_FOUND, "not_found");
+    };
+    let headers = headers.get_all("idempotency-key");
+    let mut values = headers.iter();
+    let key = values
+        .next()
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| Uuid::parse_str(v).ok());
+    let Some(key) = key.filter(|_| values.next().is_none()) else {
+        return failure(StatusCode::BAD_REQUEST, "idempotency_key_required");
+    };
+    let _guard = match router.removal_lock.lock() {
+        Ok(guard) => guard,
+        Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+    };
+    match (method, action) {
+        (&Method::POST, "restore") => {
+            let request = match parse(bytes) {
+                Ok(request) => request,
+                Err(reply) => return reply,
+            };
+            removed::restore_remote(state, servers, device.account_id, id, key, &request)
+                .map(reply)
+                .unwrap_or_else(error)
+        }
+        (&Method::DELETE, "") => {
+            let request = match parse(bytes) {
+                Ok(request) => request,
+                Err(reply) => return reply,
+            };
+            removed::queue_purge(state, servers, device.account_id, id, key, &request)
+                .map(accepted)
+                .unwrap_or_else(error)
+        }
+        _ => failure(StatusCode::NOT_FOUND, "not_found"),
+    }
+}
+
+fn accepted(value: serde_json::Value) -> Reply {
+    let mut reply = routes::json(value);
+    *reply.status_mut() = StatusCode::ACCEPTED;
+    reply
+}
+
+fn remove_reply(record: &removed::Removed) -> Reply {
+    if record.permanently {
+        accepted(record.purge_reply())
+    } else {
+        routes::json(record.reply())
+    }
+}
 pub(super) fn dispatch(router: &HostRouter, device: &Device, path: &str, bytes: &[u8]) -> Reply {
     let state = &router.identity.state;
     if !state
@@ -27,11 +159,14 @@ pub(super) fn dispatch(router: &HostRouter, device: &Device, path: &str, bytes: 
         Err(e) => return error(e),
     };
     if complete {
-        return routes::json(record.reply());
+        return remove_reply(&record);
     }
     let Some(jobs) = router.imports() else {
         return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
     };
+    if let Err(error) = removed::check_removable_path(jobs.servers_root(), &record) {
+        return self::error(error);
+    }
     let worker = router
         .workers
         .lock()
@@ -130,22 +265,30 @@ pub(super) fn dispatch(router: &HostRouter, device: &Device, path: &str, bytes: 
             Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE, "worker_unavailable"),
         }
     }
-    if let Err(e) = removed::finish(state, jobs.servers_root(), &record, &req) {
-        return error(e);
-    }
     router
         .workers
         .lock()
         .unwrap()
         .retain(|w| w.server_id() != id);
-    routes::json(record.reply())
+    if let Err(e) = removed::finish(state, jobs.servers_root(), &record, &req) {
+        return error(e);
+    }
+    remove_reply(&record)
 }
 fn error(e: JobError) -> Reply {
     let status = match e.0 {
         "forbidden" => StatusCode::FORBIDDEN,
         "not_found" => StatusCode::NOT_FOUND,
+        "gone" => StatusCode::GONE,
+        "invalid_request" => StatusCode::BAD_REQUEST,
         "confirm_name_mismatch" => StatusCode::UNPROCESSABLE_ENTITY,
-        "server_busy" | "idempotency_conflict" => StatusCode::CONFLICT,
+        "server_busy"
+        | "idempotency_conflict"
+        | "purging"
+        | "game_port_in_use"
+        | "port_state_unknown"
+        | "port_unresolved"
+        | "destination_conflict" => StatusCode::CONFLICT,
         _ => StatusCode::SERVICE_UNAVAILABLE,
     };
     failure(status, e.0)

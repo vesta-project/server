@@ -368,6 +368,8 @@ fn removed_servers_revoke_grants_replay_restore_and_expire() {
     let bad = RemoveRequest {
         confirm_name: "wrong".into(),
         idempotency_key: Uuid::new_v4(),
+        permanently: false,
+        keep_backups: None,
     };
     assert_eq!(
         removed::prepare(&state, owner, server.server_id, &bad)
@@ -386,6 +388,8 @@ fn removed_servers_revoke_grants_replay_restore_and_expire() {
     let req = RemoveRequest {
         confirm_name: server.name.clone(),
         idempotency_key: Uuid::new_v4(),
+        permanently: false,
+        keep_backups: None,
     };
     let (record, done) = removed::prepare(&state, owner, server.server_id, &req).unwrap();
     assert!(!done);
@@ -420,10 +424,12 @@ fn removed_servers_revoke_grants_replay_restore_and_expire() {
     let req = RemoveRequest {
         confirm_name: server.name,
         idempotency_key: Uuid::new_v4(),
+        permanently: false,
+        keep_backups: None,
     };
     let (record, _) = removed::prepare(&state, owner, server.server_id, &req).unwrap();
     removed::finish(&state, &servers, &record, &req).unwrap();
-    removed::purge(&root, record.restore_until_ms + 1).unwrap();
+    removed::purge_expired(&state, &servers, record.restore_until_ms + 1).unwrap();
     assert!(removed::list(&root).unwrap().is_empty());
 }
 #[test]

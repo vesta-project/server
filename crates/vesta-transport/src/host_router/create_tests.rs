@@ -2825,3 +2825,6 @@ fn owners_remove_running_and_stopped_servers_and_replay() {
         assert_eq!(host.call("GET",&format!("/v1/servers/{server}/manage/server/status"),Value::Null,&host.owner).0,200);
     }
 }
+
+#[path = "removal_tests.rs"]
+mod removal_tests;
