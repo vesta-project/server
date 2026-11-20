@@ -5,6 +5,7 @@ pub mod owners;
 pub mod registry;
 pub mod removed;
 pub mod state;
+pub mod storage;
 
 pub mod accounts;
 pub mod claim;

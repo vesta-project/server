@@ -228,6 +228,7 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
         .with_imports(jobs.clone(), move |id| {
             factory.0.create_worker(id, factory.1.clone())
         })
+        .with_storage_java_cache(java_root.clone())
         .with_create_installer(Arc::new(
             vesta_control::machine::creates::LiveCreateInstaller::new(
                 java_root,

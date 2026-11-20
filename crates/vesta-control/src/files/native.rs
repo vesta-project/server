@@ -431,14 +431,14 @@ pub(crate) fn volume_space(_path: &Path) -> Result<(u64, u64)> {
 }
 
 #[cfg(unix)]
-pub(super) fn same_volume(a: &Path, b: &Path) -> Result<bool> {
+pub(crate) fn same_volume(a: &Path, b: &Path) -> Result<bool> {
     use std::os::unix::fs::MetadataExt;
     Ok(std::fs::metadata(a).map_err(io_error)?.dev()
         == std::fs::metadata(b).map_err(io_error)?.dev())
 }
 #[cfg(windows)]
 #[allow(unsafe_code)]
-pub(super) fn same_volume(a: &Path, b: &Path) -> Result<bool> {
+pub(crate) fn same_volume(a: &Path, b: &Path) -> Result<bool> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::GetVolumePathNameW;
     fn volume(path: &Path) -> Result<Vec<u16>> {
@@ -461,7 +461,7 @@ pub(super) fn same_volume(a: &Path, b: &Path) -> Result<bool> {
     Ok(volume(a)? == volume(b)?)
 }
 #[cfg(not(any(unix, windows)))]
-pub(super) fn same_volume(_a: &Path, _b: &Path) -> Result<bool> {
+pub(crate) fn same_volume(_a: &Path, _b: &Path) -> Result<bool> {
     Err(FileError::Unavailable)
 }
 

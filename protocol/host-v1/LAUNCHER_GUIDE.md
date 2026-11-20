@@ -300,3 +300,4 @@ Host-backed `manage/users` rows expose `device_count` as the count of active hos
 Unfinished removal retries recheck the current confirmation name and busy state. Completed removal receipts replay the original response.
 
 The [removed servers contract](removed.md) covers restore, permanent deletion, and retention.
+See [machine storage](storage.md) for the snapshot and measurement routes.

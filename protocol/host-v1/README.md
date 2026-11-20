@@ -144,3 +144,4 @@ Owner-only removal: `DELETE /v1/host/servers/{serverId}` with JSON `{ "confirmNa
 During process shutdown, host request admission closes with HTTP 503 `host_stopping`. New machine jobs and late automatic starts are refused; interrupted work retains its recovery state. See `docs/operations/shutdown.md` for platform deadlines and service behavior.
 
 The [removed servers contract](removed.md) covers restore, permanent deletion, and retention.
+See [machine storage](storage.md) for the snapshot and measurement routes.

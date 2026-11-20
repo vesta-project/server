@@ -19,6 +19,10 @@ pub(crate) fn retained_root(path: &Path) -> Option<std::fs::ReadDir> {
     std::fs::read_dir(path).ok()
 }
 
+pub(super) fn plain_storage_file(metadata: &std::fs::Metadata) -> bool {
+    lifecycle::plain_file(metadata)
+}
+
 pub(crate) fn plain_repository(path: &Path) -> bool {
     lifecycle::plain_path(path).is_ok()
 }
@@ -59,7 +63,7 @@ impl Removed {
     pub fn purge_reply(&self) -> serde_json::Value {
         serde_json::json!({"serverId":self.server_id,"purgeStartedAt":self.removed_at,"bytes":null})
     }
-    fn path(&self, root: &Path) -> PathBuf {
+    pub(super) fn path(&self, root: &Path) -> PathBuf {
         root.join(format!("{}-{}", self.server_id, self.removed_ms / 1000))
     }
 }

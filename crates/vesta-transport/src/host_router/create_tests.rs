@@ -2828,3 +2828,6 @@ fn owners_remove_running_and_stopped_servers_and_replay() {
 
 #[path = "removal_tests.rs"]
 mod removal_tests;
+
+#[path = "storage_tests.rs"]
+mod storage_tests;

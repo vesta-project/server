@@ -28,7 +28,7 @@ fn decode(s: &str) -> String {
     }
     out
 }
-pub(super) fn parse(text: &str) -> BTreeMap<String, String> {
+pub(crate) fn parse(text: &str) -> BTreeMap<String, String> {
     let mut lines = Vec::new();
     let mut line = String::new();
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
@@ -105,7 +105,7 @@ pub(super) fn rewrite(text: &str, port: u16) -> String {
         .map(|(k, v)| format!("{}={}\n", encode(&k), encode(&v)))
         .collect()
 }
-pub(super) fn safe_world(v: &str) -> bool {
+pub(crate) fn safe_world(v: &str) -> bool {
     !v.is_empty()
         && !v.contains(['\\', ':'])
         && !v.starts_with('/')

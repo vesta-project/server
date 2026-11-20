@@ -22,6 +22,7 @@ mod creates;
 mod imports;
 mod owners;
 mod removed;
+mod storage;
 
 /// Builds the in-process worker for a registered imported server.
 pub type WorkerFactory = dyn Fn(Uuid) -> Result<Worker, JobError> + Send + Sync;
@@ -42,6 +43,7 @@ pub struct HostRouter {
     catalogue: Option<Arc<dyn vesta_control::machine::creates::Catalogue>>,
     creator: Option<Arc<dyn vesta_control::machine::creates::CreateInstaller>>,
     removal_lock: Arc<Mutex<()>>,
+    storage: Arc<storage::Measurements>,
     stopping: Arc<std::sync::atomic::AtomicBool>,
 }
 impl HostRouter {
@@ -56,6 +58,7 @@ impl HostRouter {
             catalogue: None,
             creator: None,
             removal_lock: Default::default(),
+            storage: Default::default(),
             stopping: Default::default(),
         }
     }
@@ -73,6 +76,10 @@ impl HostRouter {
             jobs,
             create: Box::new(create),
         }));
+        self
+    }
+    pub fn with_storage_java_cache(mut self, java_cache: std::path::PathBuf) -> Self {
+        self.storage = Arc::new(storage::Measurements::with_java_cache(java_cache));
         self
     }
     /// Substitute metadata providers (also useful for offline installations).
@@ -331,6 +338,7 @@ impl Transport {
                 }
             });
             removed::start_janitor(Arc::downgrade(&app));
+            storage::start(Arc::downgrade(&app));
             app
         })
     }
@@ -976,7 +984,7 @@ impl Application {
             };
             let mut capabilities = vec!["folders", "import-inspect", "resource-plan", "removed-server-retention"];
             if self.router.imports.is_some() {
-                capabilities.extend(["removed-servers", "server-purge"]);
+                capabilities.extend(["removed-servers", "server-purge", "storage"]);
                 capabilities.push("import-jobs");
                 if self.router.creator.is_some() && self.router.catalogue.is_some() {
                     capabilities.push("create-jobs");
@@ -994,6 +1002,9 @@ impl Application {
         }
         if owner.is_none() {
             return failure(StatusCode::FORBIDDEN, "forbidden");
+        }
+        if path == "/v1/host/storage" || path.starts_with("/v1/host/storage/") {
+            return storage::dispatch(&self.router, method, path, bytes);
         }
         if path.starts_with("/v1/host/catalogue/") || path.starts_with("/v1/host/creates/") {
             return creates::dispatch(&self.router, &device, method, path, query, &headers, bytes);

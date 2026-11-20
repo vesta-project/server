@@ -61,6 +61,9 @@ pub(super) fn removed_routes(
                             let id = entry["serverId"]
                                 .as_str()
                                 .and_then(|id| Uuid::parse_str(id).ok());
+                            if let Some(bytes) = id.and_then(|id| router.storage.removed_size(id)) {
+                                entry["bytes"] = json!(bytes);
+                            }
                             if let Some(fact) = id.and_then(|id| facts.get(&id)) {
                                 entry["minecraftVersion"] = json!(fact.minecraft_version);
                                 entry["software"] =
