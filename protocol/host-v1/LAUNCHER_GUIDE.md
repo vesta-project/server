@@ -307,3 +307,4 @@ and server administrators.
 Use `storage-cleanup` to preview owner-only cleanup and submit the same targets
 with a UUID idempotency key.
 The `console-history` capability enables [backward console paging](console.md).
+The [host events design](host-events-design.md) describes the planned owner stream.
