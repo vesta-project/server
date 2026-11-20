@@ -48,7 +48,8 @@ The default `keepBackups` is true, including on expiry. The host retains
 an internal local repository outside the removed tree under the server ID.
 The existing restore-from-backup flow discovers these repositories. Pass
 false to delete backups stored in the managed tree. External or remote
-repositories stay separately managed.
+repositories stay separately managed: permanent deletion never touches them
+(owner decision, 2026-11-21).
 
 The `removed-server-retention` capability adds owner-only
 `removedServerRetentionDays` to GET and PATCH `/v1/host`. PATCH accepts an
