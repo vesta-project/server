@@ -49,7 +49,7 @@ The `storage-cleanup` capability enables owner-only POST
 `/v1/host/storage/cleanup`. Send `{targets,dryRun}` with 1 to 100 targets:
 
 - `{kind:"cache",cache:"java"|"software_downloads"|"catalogue"|"pack_staging"|"temp"}`
-- `{kind:"logs",serverId,olderThanDays}` with a positive integer age in days
+- `{kind:"logs",serverId,olderThanDays}` with an integer age in days, starting at zero
 - `{kind:"trash",serverId}`
 - `{kind:"removed",serverId,confirmName?}` with the exact name required for one server
 

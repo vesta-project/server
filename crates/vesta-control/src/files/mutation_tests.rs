@@ -2669,3 +2669,32 @@ fn external_preparation_and_admission_share_the_original_mutation_deadline() {
 
 #[path = "recovery_assurance.rs"]
 mod recovery_assurance;
+
+#[test]
+fn cleanup_previews_and_clears_only_unowned_log_archives_and_trash() {
+    use std::time::{Duration, SystemTime};
+
+    let f = Fixture::open();
+    fs::create_dir(f.game.join("logs")).unwrap();
+    fs::create_dir(f.game.join("world")).unwrap();
+    f.put("logs/2000-01-01-1.log.gz", b"old");
+    f.put("logs/latest.log", b"live");
+    f.put("world/2000-01-01-1.log.gz", b"world");
+    f.put("config/old.json", b"trash");
+    f.files.delete(&f.owner, &Fixture::path("config/old.json"), &sha(b"trash")).unwrap();
+    f.put("config/old.json", b"active config");
+
+    let logs = || CleanupFiles::Logs { cutoff: SystemTime::now() + Duration::from_secs(2) };
+    assert_eq!(f.files.cleanup_files(logs(), false, || false).unwrap(), None);
+    assert_eq!(f.files.cleanup_files(logs(), true, || true).unwrap(), Some(3));
+    assert_eq!(f.get("logs/2000-01-01-1.log.gz").unwrap(), b"old");
+    assert_eq!(f.files.cleanup_files(logs(), false, || true).unwrap(), Some(3));
+    assert!(f.get("logs/2000-01-01-1.log.gz").is_none());
+    assert_eq!(f.get("logs/latest.log").unwrap(), b"live");
+    assert_eq!(f.get("world/2000-01-01-1.log.gz").unwrap(), b"world");
+    assert_eq!(f.files.cleanup_files(CleanupFiles::Trash, true, || true).unwrap(), Some(5));
+    assert_eq!(f.trash_rows(), 1);
+    assert_eq!(f.files.cleanup_files(CleanupFiles::Trash, false, || true).unwrap(), Some(5));
+    assert_eq!((f.trash_rows(), f.trash_files()), (0, 0));
+    assert_eq!(f.get("config/old.json").unwrap(), b"active config");
+}

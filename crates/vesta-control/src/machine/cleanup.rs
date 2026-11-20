@@ -80,10 +80,7 @@ fn validate(request: &Request) -> JobResult<()> {
                     Cache::Temp => "temp",
                 },
             ),
-            Target::Logs {
-                server_id,
-                older_than_days,
-            } if *older_than_days > 0 => ("logs", server_id.as_str()),
+            Target::Logs { server_id, .. } => ("logs", server_id.as_str()),
             Target::Trash { server_id } => ("trash", server_id.as_str()),
             Target::Removed {
                 server_id,
@@ -444,6 +441,13 @@ fn clean_worker(
                     .runtime()
                     .game_snapshot()
                     .is_ok_and(|game| game.phase == crate::operations::ProcessPhase::Stopped)
+                    && host.runtime().supervision().is_ok_and(|health| {
+                        health.is_none_or(|health| {
+                            !health.orphan_running
+                                && !health.launch_unresolved
+                                && !health.observation_failed
+                        })
+                    })
         })
         .ok()
         .flatten()

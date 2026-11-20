@@ -24,11 +24,18 @@ impl FileBrowser {
             let busy: bool = c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM operations WHERE state NOT IN ('succeeded','failed','cancelled'))
                     OR EXISTS(SELECT 1 FROM backup_jobs WHERE state IN ('awaiting_confirmation','queued','running','recovery_required','uncertain'))
-                    OR EXISTS(SELECT 1 FROM software_jobs WHERE state IN ('queued','staging','activating','recovery_required'))
                     OR EXISTS(SELECT 1 FROM workflow_runs WHERE state IN ('queued','running','suspended'))",
                 [], |row| row.get(0),
             )?;
-            if busy || !ready() {
+            let software_installed: bool = c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='software_jobs')",
+                [], |row| row.get(0),
+            )?;
+            let software_busy = software_installed && c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM software_jobs WHERE state IN ('queued','staging','activating','recovery_required'))",
+                [], |row| row.get::<_, bool>(0),
+            )?;
+            if busy || software_busy || !ready() {
                 return Ok(None);
             }
             let bytes = match selection {
