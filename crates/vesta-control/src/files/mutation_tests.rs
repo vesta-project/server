@@ -2672,6 +2672,7 @@ mod recovery_assurance;
 
 #[test]
 fn cleanup_previews_and_clears_only_unowned_log_archives_and_trash() {
+    use crate::files::CleanupFiles;
     use std::time::{Duration, SystemTime};
 
     let f = Fixture::open();
