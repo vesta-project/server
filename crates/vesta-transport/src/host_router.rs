@@ -935,6 +935,22 @@ impl Application {
                 Ok(s) => s,
                 Err(e) => return e,
             };
+            if suffix == "manage/storage" && self.router.imports().is_some() {
+                use vesta_control::identity::Capability;
+                if method != Method::GET || query.is_some() || !bytes.is_empty() {
+                    return crate::manage::error(StatusCode::BAD_REQUEST, "invalid_request");
+                }
+                let worker_host = match worker.authorize(subject) {
+                    Ok(host) => host,
+                    Err(error) => return crate::manage::management_error(error),
+                };
+                if let Err(error) = worker_host.management().authorize(
+                    "trusted-worker", Capability::StorageView, None,
+                ) {
+                    return crate::manage::management_error(error);
+                }
+                return self.router.storage.server_details(id);
+            }
             if suffix == "pack/ticket" && *method == Method::POST {
                 use vesta_host_client::rand_core::RngCore;
                 let mut random = [0; 32];
@@ -989,6 +1005,9 @@ impl Application {
                 if self.router.creator.is_some() && self.router.catalogue.is_some() {
                     capabilities.push("create-jobs");
                 }
+            }
+            if self.router.imports.is_some() {
+                capabilities.push("server-storage");
             }
             let mut value = json!({"hostId":s.host_id,"name":self.router.display_name(),"fingerprint":self.tls.fingerprint().unwrap_or_default(),"endpoints":[],"authGeneration":s.auth_generation.to_string(),"revision":s.revision.to_string(),"role":owner.map(host_role_name),"capabilities":capabilities});
             if owner.is_some() {

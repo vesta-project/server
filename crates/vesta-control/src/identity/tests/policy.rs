@@ -1536,6 +1536,10 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
                 .unwrap();
             expected_capabilities.insert(at + 1, "players.operator".to_owned());
         }
+        if matches!(role, BuiltinRole::Owner | BuiltinRole::Administrator) {
+            let at = expected_capabilities.iter().position(|c| c == "metrics.view").unwrap();
+            expected_capabilities.insert(at + 1, "storage.view".to_owned());
+        }
         assert_eq!(expected_capabilities, declared, "role {}", expected.id);
 
         // The migrated rows carry the same ids, name, rank and whole-scope grants.
@@ -1592,8 +1596,8 @@ fn capability_and_builtin_role_constants_match_the_protocol_fixture() {
     );
     assert_eq!(
         Capability::ALL.len(),
-        persisted_ids.len() + 11,
-        "legacy fixture ids, unified pack, V16 permission-management, V18 automation/inbox, V21 backup policy and V22 operator additions were compared"
+        persisted_ids.len() + 12,
+        "legacy fixture ids, unified pack, V16 permission-management, V18 automation/inbox, V21 backup policy, V22 operator and V32 storage additions were compared"
     );
 }
 

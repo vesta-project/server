@@ -1939,6 +1939,27 @@ fn server_session_projects_the_callers_roles_and_capabilities() {
         assert_eq!(caps, expected(role), "{view}");
     };
     check(&host.owner, BuiltinRole::Owner);
+    let storage_path = format!("/v1/servers/{server}/manage/storage");
+    let root = host.router.imports().unwrap().servers_root().join(server.to_string());
+    let folder = root.join("game/world/probe");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("marker"), vec![0; 32]).unwrap();
+    host.router.storage.refresh();
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let (status, reply) = host.call("GET", &storage_path, Value::Null, &host.owner);
+        assert_eq!(status, 200, "{reply}");
+        if reply["data"]["largest"].as_array().unwrap().iter().any(|entry| {
+            entry == &json!({"path":"world/probe","bytes":32})
+        }) {
+            assert!(reply["data"]["volume"]["totalBytes"].is_number());
+            assert!(reply["data"]["largest"].as_array().unwrap().len() <= 10);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{reply}");
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    assert_eq!(host.call("GET", &storage_path, Value::Null, &host.stranger).0, 404);
     // No role on this server: the server does not exist for this caller.
     let (status, _) = host.call("GET", &path, Value::Null, &host.stranger);
     assert_eq!(status, 404);
@@ -1957,6 +1978,8 @@ fn server_session_projects_the_callers_roles_and_capabilities() {
             .set_server_role(Actor::LocalRecovery, server, stranger, Some(role), revision)
             .unwrap();
         check(&host.stranger, builtin);
+        let (status, reply) = host.call("GET", &storage_path, Value::Null, &host.stranger);
+        assert_eq!(status, if role == HostServerRole::Admin { 200 } else { 403 }, "{reply}");
     }
     let previous = host.state.snapshot().unwrap();
     let device = host.state.device(host.devices.1).unwrap().unwrap();

@@ -35,8 +35,23 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         29 => apply_v29(c),
         30 => apply_v30(c),
         31 => apply_v31(c),
+        32 => apply_v32(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
+}
+
+fn apply_v32(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(
+        r#"
+        DROP TRIGGER role_capabilities_builtin_no_insert;
+        INSERT OR IGNORE INTO role_capabilities(role_id,capability,scope)
+            SELECT id,'storage.view','*' FROM roles WHERE id IN ('owner','administrator');
+        CREATE TRIGGER role_capabilities_builtin_no_insert BEFORE INSERT ON role_capabilities
+        WHEN (SELECT builtin FROM roles WHERE id=NEW.role_id)=1
+        BEGIN SELECT RAISE(ABORT, 'builtin roles are immutable'); END;
+        "#,
+    )?;
+    Ok(())
 }
 
 fn apply_v27(c: &Connection) -> crate::Result<()> {

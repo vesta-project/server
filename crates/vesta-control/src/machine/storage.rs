@@ -52,6 +52,14 @@ struct Server {
     volume_id: String,
     bytes: u64,
     parts: Parts,
+    #[serde(skip)]
+    largest: Vec<LargestFolder>,
+}
+
+#[derive(Serialize)]
+struct LargestFolder {
+    path: String,
+    bytes: u64,
 }
 
 #[derive(Default, Serialize)]
@@ -101,6 +109,25 @@ struct Cache {
 }
 
 impl HostStorage {
+    pub fn server_details(&self, id: Uuid) -> serde_json::Value {
+        let Some(server) = self.servers.iter().find(|server| server.server_id == id) else {
+            return serde_json::json!({
+                "measuredAt": null, "bytes": 0, "parts": Parts::default(),
+                "volume": {"label": null, "freeBytes": null, "totalBytes": null}, "largest": []
+            });
+        };
+        let volume = self
+            .volumes
+            .iter()
+            .find(|volume| volume.volume_id == server.volume_id)
+            .expect("measured server has a volume");
+        serde_json::json!({
+            "measuredAt": self.measured_at, "bytes": server.bytes, "parts": server.parts,
+            "volume": {"label": volume.label, "freeBytes": volume.free_bytes, "totalBytes": volume.total_bytes},
+            "largest": server.largest
+        })
+    }
+
     pub fn active_size(&self, id: Uuid) -> Option<u64> {
         self.servers
             .iter()
@@ -169,7 +196,7 @@ pub fn measure(
         if !removed::plain_repository(&dir) {
             continue;
         }
-        let parts = server_parts(&dir)?;
+        let (parts, largest) = server_parts(&dir)?;
         if parts.backups > 0 {
             result.volume(&dir, "backups")?;
         }
@@ -180,6 +207,7 @@ pub fn measure(
             volume_id: servers_volume.clone(),
             bytes: parts.total(),
             parts,
+            largest,
         });
         active_dirs.push(dir);
     }
@@ -232,7 +260,8 @@ pub fn measure(
     Ok(result)
 }
 
-fn server_parts(dir: &Path) -> JobResult<Parts> {
+fn server_parts(dir: &Path) -> JobResult<(Parts, Vec<LargestFolder>)> {
+    let mut largest = Vec::new();
     let mut parts = Parts::default();
     let game = dir.join("game");
     let props = game.join("server.properties");
@@ -286,40 +315,90 @@ fn server_parts(dir: &Path) -> JobResult<Parts> {
                 _ => &mut parts.other,
             };
             let path = entry.path();
-            *bytes = bytes.saturating_add(tree_bytes(&path, &[])?);
+            let size = if is_game {
+                walk_bytes(&path, &[], |folder, bytes| {
+                    let Some(path) = folder.strip_prefix(&game).ok().and_then(Path::to_str) else {
+                        return;
+                    };
+                    let path = path.replace(std::path::MAIN_SEPARATOR, "/");
+                    if crate::files::RelativePath::parse(&path).is_ok() {
+                        largest.push(LargestFolder { path, bytes });
+                        largest.sort_unstable_by(|a, b| {
+                            b.bytes.cmp(&a.bytes).then_with(|| a.path.cmp(&b.path))
+                        });
+                        largest.truncate(10);
+                    }
+                })?
+            } else {
+                tree_bytes(&path, &[])?
+            };
+            *bytes = bytes.saturating_add(size);
         }
     }
-    Ok(parts)
+    Ok((parts, largest))
 }
 
 fn tree_bytes(root: &Path, exclude: &[&Path]) -> JobResult<u64> {
-    let mut bytes = 0_u64;
-    let mut pending = vec![root.to_owned()];
-    while let Some(path) = pending.pop() {
-        if exclude.contains(&path.as_path()) {
-            continue;
-        }
-        let metadata = match fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == ErrorKind::NotFound => continue,
-            Err(_) => return Err(JobError::UNAVAILABLE),
-        };
-        if removed::plain_storage_file(&metadata) {
-            bytes = bytes.saturating_add(metadata.len());
-        } else if super::imports::browse::plain_directory(&metadata).is_ok() {
-            #[cfg(unix)]
-            if path != root && !same_volume(root, &path).unwrap_or(false) {
-                continue;
-            }
-            let entries = match fs::read_dir(&path) {
-                Ok(entries) => entries,
+    walk_bytes(root, exclude, |_, _| {})
+}
+
+/// Sum folders after their children. Open directory iterators are bounded by depth.
+fn walk_bytes(
+    root: &Path,
+    exclude: &[&Path],
+    mut folder: impl FnMut(&Path, u64),
+) -> JobResult<u64> {
+    struct Directory {
+        path: PathBuf,
+        entries: fs::ReadDir,
+        bytes: u64,
+    }
+    let mut stack: Vec<Directory> = Vec::new();
+    let mut next = Some(root.to_owned());
+    let mut total = 0_u64;
+    loop {
+        if let Some(path) = next
+            .take()
+            .filter(|path| !exclude.contains(&path.as_path()))
+        {
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
                 Err(error) if error.kind() == ErrorKind::NotFound => continue,
                 Err(_) => return Err(JobError::UNAVAILABLE),
             };
-            for entry in entries {
-                pending.push(entry.map_err(|_| JobError::UNAVAILABLE)?.path());
+            if removed::plain_storage_file(&metadata) {
+                total = total.saturating_add(metadata.len());
+                if let Some(parent) = stack.last_mut() {
+                    parent.bytes = parent.bytes.saturating_add(metadata.len());
+                }
+            } else if super::imports::browse::plain_directory(&metadata).is_ok() {
+                #[cfg(unix)]
+                if path != root && !same_volume(root, &path).unwrap_or(false) {
+                    continue;
+                }
+                match fs::read_dir(&path) {
+                    Ok(entries) => stack.push(Directory {
+                        path,
+                        entries,
+                        bytes: 0,
+                    }),
+                    Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                    Err(_) => return Err(JobError::UNAVAILABLE),
+                }
+            }
+        }
+        let Some(directory) = stack.last_mut() else {
+            return Ok(total);
+        };
+        match directory.entries.next() {
+            Some(entry) => next = Some(entry.map_err(|_| JobError::UNAVAILABLE)?.path()),
+            None => {
+                let directory = stack.pop().expect("current directory");
+                folder(&directory.path, directory.bytes);
+                if let Some(parent) = stack.last_mut() {
+                    parent.bytes = parent.bytes.saturating_add(directory.bytes);
+                }
             }
         }
     }
-    Ok(bytes)
 }

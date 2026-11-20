@@ -47,6 +47,19 @@ impl Measurements {
         }
     }
 
+    pub(super) fn server_details(&self, id: Uuid) -> Reply {
+        let snapshot = match self.inner.lock() {
+            Ok(state) => state.snapshot.clone(),
+            Err(_) => {
+                return crate::manage::error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "temporarily_unavailable",
+                );
+            }
+        };
+        crate::manage::ok(snapshot.server_details(id))
+    }
+
     fn snapshot(&self) -> Reply {
         let (snapshot, measuring) = match self.inner.lock() {
             Ok(state) => (state.snapshot.clone(), state.running || state.requested),

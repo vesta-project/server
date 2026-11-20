@@ -84,6 +84,7 @@ pub enum Capability {
     /// points at the next backup, so this is owner-reserved like restore.
     BackupsConfigure,
     PlayersOperator,
+    StorageView,
 }
 
 impl Capability {
@@ -151,6 +152,7 @@ impl Capability {
         Self::NotificationsView,
         Self::BackupsConfigure,
         Self::PlayersOperator,
+        Self::StorageView,
     ];
 
     /// The stable, exact identifier used in persisted identity records.
@@ -167,6 +169,7 @@ impl Capability {
             Self::NotificationsView => "notifications.view",
             Self::BackupsConfigure => "backups.configure",
             Self::PlayersOperator => "players.operator",
+            Self::StorageView => "storage.view",
             Self::StatusView => "status.view",
             Self::StatusDetailed => "status.detailed",
             Self::MetricsView => "metrics.view",
@@ -235,6 +238,7 @@ impl Capability {
             "notifications.view" => Some(Self::NotificationsView),
             "backups.configure" => Some(Self::BackupsConfigure),
             "players.operator" => Some(Self::PlayersOperator),
+            "storage.view" => Some(Self::StorageView),
             "status.view" => Some(Self::StatusView),
             "status.detailed" => Some(Self::StatusDetailed),
             "metrics.view" => Some(Self::MetricsView),

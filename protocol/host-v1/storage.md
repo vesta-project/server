@@ -24,5 +24,20 @@ true, poll GET. The host preserves the last completed snapshot if a walk fails.
 Values can change while a walk is running. The current projection covers
 managed server, removal, retained backup, state and known cache roots.
 External repositories and nonstandard paths can be outside these totals.
-Cache deletion and per-server storage endpoints are deferred. Host realtime
-remains deferred and per-server streams keep their existing URLs.
+Cache deletion and host realtime remain deferred. Per-server streams keep their
+existing URLs.
+
+## One server
+
+The `server-storage` capability enables `GET /v1/servers/{serverId}/manage/storage`
+(the host-scoped form of `GET /api/v3/manage/storage`). It requires `storage.view`,
+granted by default to owners and server administrators. It uses the API v3
+management envelope with `data: {measuredAt,bytes,parts,volume,largest}`.
+The volume contains `label`, `freeBytes` and `totalBytes`. Before that server's
+first measurement, `measuredAt` and the three volume fields are null, sizes are
+zero, and `largest` is empty.
+
+`largest` contains up to ten `{path,bytes}` entries in descending byte order,
+then path order for ties. Paths are relative to the Files tab's game root.
+Folder sizes include their descendants and can overlap. Data comes from the
+same background snapshot as machine storage.

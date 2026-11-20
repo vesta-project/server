@@ -146,3 +146,5 @@ During process shutdown, host request admission closes with HTTP 503 `host_stopp
 The [removed servers contract](removed.md) covers restore, permanent deletion, and retention.
 See [machine storage](storage.md) for the snapshot and measurement routes.
 Purge receipts include a cached byte estimate when available.
+The `server-storage` capability enables the per-server storage view for owners
+and server administrators.
