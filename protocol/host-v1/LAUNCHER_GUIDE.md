@@ -306,3 +306,4 @@ The `server-storage` capability enables the per-server storage view for owners
 and server administrators.
 Use `storage-cleanup` to preview owner-only cleanup and submit the same targets
 with a UUID idempotency key.
+The `console-history` capability enables [backward console paging](console.md).

@@ -209,6 +209,40 @@ mod tests {
         }
     }
     #[test]
+    fn console_history_pages_latest_and_rotated_logs_with_stable_boundaries() {
+        use std::io::Write;
+        let f = Fixture::new();
+        let logs = f._temp.path().join("game/logs");
+        std::fs::create_dir(&logs).unwrap();
+        let latest = logs.join("latest.log");
+        std::fs::write(&latest, "one\r\ntwo\r\nthree\r\n").unwrap();
+        let rotated = std::fs::File::create(logs.join("2000-01-01-2.log.gz")).unwrap();
+        let mut gzip = flate2::write::GzEncoder::new(rotated, flate2::Compression::default());
+        gzip.write_all(b"archive\n").unwrap();
+        gzip.finish().unwrap();
+
+        let page = |query: Option<&str>| {
+            let reply = f.request(f.subject.clone(), "console", query);
+            assert_eq!(reply.status(), http::StatusCode::OK);
+            let crate::ReplyBody::Bytes(bytes) = reply.body() else { panic!("JSON reply"); };
+            serde_json::from_slice::<serde_json::Value>(bytes).unwrap()["data"].clone()
+        };
+        let initial = page(None);
+        let first = initial["previous_cursor"].as_str().unwrap();
+        std::fs::OpenOptions::new().append(true).open(latest).unwrap().write_all(b"four\n").unwrap();
+        let recent = page(Some(&format!("before={first}&limit=2")));
+        assert_eq!(recent["items"][0]["text"], "two");
+        assert_eq!(recent["items"][1]["text"], "three");
+        let older = page(Some(&format!("before={}", recent["previous_cursor"].as_str().unwrap())));
+        assert_eq!(older["items"][0]["text"], "one");
+        let archive = page(Some(&format!("before={}", older["previous_cursor"].as_str().unwrap())));
+        assert_eq!(archive["items"][0]["text"], "archive");
+        assert!(archive["previous_cursor"].is_null());
+        let invalid = f.request(f.subject.clone(), "console", Some(&format!("before={first}&cursor={first}")));
+        assert_eq!(invalid.status(), http::StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
     fn trusted_worker_drives_console_files_players_pack_and_backups_without_bearer() {
         let f = Fixture::new();
         for (path, query) in [

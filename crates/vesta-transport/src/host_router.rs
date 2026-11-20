@@ -998,10 +998,13 @@ impl Application {
             let Ok(s) = state.snapshot() else {
                 return failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable");
             };
-            let mut capabilities = vec!["folders", "import-inspect", "resource-plan", "removed-server-retention"];
+            let mut capabilities = vec!["folders", "import-inspect", "resource-plan", "removed-server-retention", "console-history"];
             if self.router.imports.is_some() {
                 capabilities.extend(["removed-servers", "server-purge", "storage"]);
                 capabilities.push("import-jobs");
+                // Removal needs the job store (busy checks, servers root); listed so launchers
+                // can tell an older machine (no route) from a server that is already gone (404).
+                capabilities.push("server-remove");
                 if self.router.creator.is_some() && self.router.catalogue.is_some() {
                     capabilities.push("create-jobs");
                 }

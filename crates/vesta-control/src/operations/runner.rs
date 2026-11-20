@@ -490,6 +490,20 @@ impl RuntimeHandle {
     {
         self.shared.console.snapshot(after, limit)
     }
+
+    pub fn console_before(
+        &self,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<
+        (
+            vesta_game_runtime::console::ConsolePage,
+            Option<vesta_game_runtime::console::ConsoleLine>,
+        ),
+        vesta_game_runtime::console::ConsoleError,
+    > {
+        self.shared.console.snapshot_before(before, limit)
+    }
 }
 impl OperationRuntime {
     pub fn network_handle(&self) -> RuntimeHandle {
