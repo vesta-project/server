@@ -433,6 +433,54 @@ fn removed_servers_revoke_grants_replay_restore_and_expire() {
     assert!(removed::list(&root).unwrap().is_empty());
 }
 #[test]
+fn removed_server_restart_reconciles_moves_and_resumes_permanent_purge() {
+    use super::removed::{self, RemoveRequest};
+
+    let temp = tempfile::tempdir().unwrap();
+    let host_path = temp.path().join("host");
+    let mut state = open(&host_path);
+    let owner = Uuid::new_v4();
+    state.claim(owner, "Owner", [1; 32]).unwrap();
+    let server = register(&state, owner, 25565);
+    let servers = temp.path().join("servers");
+    let source = servers.join(server.server_id.to_string());
+    let removed_root = temp.path().join("removed");
+    std::fs::create_dir_all(source.join("backups/repository")).unwrap();
+    std::fs::create_dir(&removed_root).unwrap();
+    std::fs::write(source.join("backups/repository/point"), b"retained").unwrap();
+    let request = RemoveRequest {
+        permanently: true,
+        keep_backups: None,
+        idempotency_key: Uuid::new_v4(),
+        confirm_name: server.name.clone(),
+    };
+    let (record, _) = removed::prepare(&state, owner, server.server_id, &request).unwrap();
+    let staged = record.path(&removed_root);
+    std::fs::write(source.join("removed.json"), serde_json::to_vec(&record).unwrap()).unwrap();
+    std::fs::rename(&source, &staged).unwrap();
+
+    // An interruption between the move and the registry commit is reversible.
+    drop(state);
+    state = open(&host_path);
+    removed::reconcile(&state, &servers).unwrap();
+    assert!(source.join("backups/repository/point").is_file());
+    assert!(!source.join("removed.json").exists());
+    assert!(!staged.exists());
+
+    removed::finish(&state, &servers, &record, &request).unwrap();
+    drop(state);
+    state = open(&host_path);
+    removed::reconcile(&state, &servers).unwrap();
+    removed::purge_expired(&state, &servers, state.now_ms()).unwrap();
+    assert!(!source.exists());
+    assert!(!staged.exists());
+    let retained = temp.path().join("retained-backups").join(server.server_id.to_string());
+    assert_eq!(std::fs::read(retained.join("point")).unwrap(), b"retained");
+    assert_eq!(state.server(server.server_id).unwrap().unwrap().state, ServerState::Deleted);
+    assert!(removed::prepare(&state, owner, server.server_id, &request).unwrap().1);
+}
+
+#[test]
 fn host_device_counts_exclude_revoked_devices() {
     let temp = tempfile::tempdir().unwrap();
     let state = open(temp.path());
