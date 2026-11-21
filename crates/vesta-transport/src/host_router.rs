@@ -374,6 +374,13 @@ impl HttpApplication for Application {
         Ok(self.route(request, peer).await)
     }
 }
+/// A port refusal on a per-server management route, in that API's envelope: the closed
+/// `conflict` code with the cause as its reason, which launchers translate.
+fn port_conflict(reason: &str) -> Reply {
+    let mut reply = routes::json(json!({"error":{"code":"conflict","reason":reason,"requestId":Uuid::new_v4()}}));
+    *reply.status_mut() = StatusCode::CONFLICT;
+    reply
+}
 fn failure(status: StatusCode, code: &str) -> Reply {
     let mut reply = routes::json(json!({"error":{"code":code,"requestId":Uuid::new_v4()}}));
     *reply.status_mut() = status;
@@ -957,7 +964,39 @@ impl Application {
                     json!({"ticket":ticket,"artifactUrl":format!("/v1/servers/{id}/pack/artifact")}),
                 );
             }
-            return crate::worker::dispatch_host(
+            // Changing server-port in the server's settings: the port must be free on this
+            // machine (no other server holds it, nothing is listening), and the registry,
+            // which allocates ports for new servers, follows the change.
+            let new_port = (suffix == "manage/config/server-properties" && *method == Method::PATCH)
+                .then(|| serde_json::from_slice::<serde_json::Value>(bytes).ok())
+                .flatten()
+                .and_then(|body| {
+                    let value = &body["changes"]["server-port"];
+                    value.as_u64().or_else(|| value.as_str()?.trim().parse().ok())
+                })
+                .and_then(|port| u16::try_from(port).ok())
+                .filter(|port| *port > 0);
+            let new_port = match new_port {
+                Some(port) => match state.server(id) {
+                    Ok(Some(entry)) if entry.game_port == port => None,
+                    Ok(Some(_)) => {
+                        if state.game_port_taken(id, port).unwrap_or(true) {
+                            return port_conflict("game_port_in_use");
+                        }
+                        let probe = vesta_control::machine::imports::inspection::port_state(
+                            port, "tcp", &std::collections::BTreeSet::new(),
+                        );
+                        match probe.state {
+                            "free" => Some(port),
+                            "occupied" => return port_conflict("game_port_in_use"),
+                            _ => return port_conflict("port_state_unknown"),
+                        }
+                    }
+                    _ => None,
+                },
+                None => None,
+            };
+            let reply = crate::worker::dispatch_host(
                 worker.as_ref(),
                 subject,
                 crate::worker::WorkerRequest {
@@ -975,6 +1014,15 @@ impl Application {
                 peer.ip(),
                 self.downloads.clone(),
             );
+            if let Some(port) = new_port {
+                // 202 means the edit still awaits confirmation; only a finished edit moves the port.
+                if reply.status() == StatusCode::OK {
+                    // A race with another server taking the port leaves the registry as it was;
+                    // the next start reports the clash.
+                    let _ = state.observe_game_port(id, port);
+                }
+            }
+            return reply;
         }
         let owner = state.host_role(device.account_id).ok().flatten();
         if method == Method::GET && path == "/v1/host" {

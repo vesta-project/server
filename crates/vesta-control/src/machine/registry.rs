@@ -135,6 +135,46 @@ impl HostState {
         })?;
         Ok(updated)
     }
+    /// Whether another active server on this machine already has `port` as its game port.
+    pub fn game_port_taken(&self, id: Uuid, port: u16) -> Result<bool> {
+        self.read(|c| {
+            Ok(c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM machine_servers WHERE state!='deleted' AND server_id!=?1 AND game_port=?2)",
+                params![id.to_string(), port],
+                |r| r.get(0),
+            )?)
+        })
+    }
+    /// The server's own settings changed its game port (trusted host input, after the worker
+    /// accepted the edit). Keeps the registry, which allocates ports for new servers, in step.
+    /// Refuses a port another active server holds; not an authority change.
+    pub fn observe_game_port(&self, id: Uuid, port: u16) -> Result<()> {
+        if port == 0 {
+            return Err(reject(Code::InvalidRequest));
+        }
+        self.write(|c| {
+            let Some(entry) = server_in(c, id)? else {
+                return Ok(());
+            };
+            if entry.game_port == port || entry.state == ServerState::Deleted {
+                return Ok(());
+            }
+            let taken: bool = c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM machine_servers WHERE state!='deleted' AND server_id!=?1 AND game_port=?2)",
+                params![id.to_string(), port],
+                |r| r.get(0),
+            )?;
+            if taken {
+                return Err(reject(Code::Conflict));
+            }
+            c.execute(
+                "UPDATE machine_servers SET game_port=?1 WHERE server_id=?2",
+                params![port, id.to_string()],
+            )?;
+            changed(c, false, "server_port", "host", &id.to_string(), self.now_ms())?;
+            Ok(())
+        })
+    }
     /// Trusted registry lookup, not an authorization check for an HTTP caller.
     pub fn server(&self, id: Uuid) -> Result<Option<ServerEntry>> {
         self.read(|c| server_in(c, id))
