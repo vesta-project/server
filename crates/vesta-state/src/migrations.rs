@@ -36,6 +36,12 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         30 => apply_v30(c),
         31 => apply_v31(c),
         32 => apply_v32(c),
+        33 => {
+            c.execute_batch("ALTER TABLE file_trash ADD COLUMN directory INTEGER NOT NULL DEFAULT 0 CHECK(directory IN (0,1));
+                ALTER TABLE file_trash ADD COLUMN directory_identity TEXT;
+                ALTER TABLE file_trash ADD COLUMN batch_id TEXT;")?;
+            Ok(())
+        }
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }

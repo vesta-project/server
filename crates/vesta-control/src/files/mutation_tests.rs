@@ -2699,3 +2699,46 @@ fn cleanup_previews_and_clears_only_unowned_log_archives_and_trash() {
     assert_eq!((f.trash_rows(), f.trash_files()), (0, 0));
     assert_eq!(f.get("config/old.json").unwrap(), b"active config");
 }
+
+
+#[test]
+fn bulk_delete_moves_tree_and_files_to_one_restorable_batch() {
+    use crate::files::{BulkDeleteItem, RemoteFileMutation};
+
+    let f = Fixture::open();
+    fs::create_dir_all(f.game.join("config/nested/empty")).unwrap();
+    f.put("config/nested/value.json", b"inside");
+    f.put("config/other.json", b"outside");
+    let items = [
+        BulkDeleteItem { path: "config/nested".into(), expected_sha256: None, recursive: true },
+        BulkDeleteItem { path: "config/missing.json".into(), expected_sha256: Some(sha(b"missing")), recursive: false },
+        BulkDeleteItem { path: "config/other.json".into(), expected_sha256: Some(sha(b"outside")), recursive: false },
+    ];
+    let key = "bulk-delete-batch-fixture";
+    let batch = f.files.delete_remote_batch(&f.owner, key, &items).unwrap();
+    assert!(!f.game.join("config/nested").exists());
+    assert!(f.get("config/other.json").is_none());
+    assert_eq!(batch["results"][1]["error_code"], "file_not_found");
+    assert_eq!(f.files.delete_remote_batch(&f.owner, key, &items).unwrap(), batch);
+    let rows = f.files.trash_entries(&f.owner).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row.batch_id.as_deref() == batch["batch_id"].as_str()));
+    let folder = batch["results"][0]["trash_id"].as_str().unwrap();
+    f.files.mutate_remote(&f.owner, "restore-bulk-folder", RemoteFileMutation::Restore { id: folder }).unwrap();
+    assert_eq!(f.get("config/nested/value.json").unwrap(), b"inside");
+    assert!(f.game.join("config/nested/empty").is_dir());
+}
+
+#[test]
+fn bulk_delete_refuses_protected_descendants_without_moving_parent() {
+    use crate::files::BulkDeleteItem;
+
+    let f = Fixture::open();
+    f.put("config/server.properties", b"protected");
+    let result = f.files.delete_remote_batch(&f.owner, "protected-subtree-fixture", &[
+        BulkDeleteItem { path: "config".into(), expected_sha256: None, recursive: true }
+    ]).unwrap();
+    assert_eq!(result["results"][0]["error_code"], "file_path_protected");
+    assert_eq!(f.get("config/server.properties").unwrap(), b"protected");
+    assert_eq!(f.trash_rows(), 0);
+}

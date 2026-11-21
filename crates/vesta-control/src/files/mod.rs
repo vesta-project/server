@@ -38,7 +38,7 @@ pub(crate) use sftp::SftpWrite;
 mod upload;
 mod world;
 mod world_details;
-pub use remote::RemoteFileMutation;
+pub use remote::{BulkDeleteItem, RemoteFileMutation};
 pub use stream::{
     FILE_CHUNK_BYTES, FileStream, LinePage, MAX_RANGE_BYTES, MAX_TEXT_LINES, encoding_hint,
 };
@@ -257,6 +257,7 @@ pub struct FileBrowser {
     trash_policy: TrashPolicy,
     upload_policy: UploadPolicy,
     remote_key: Option<String>,
+    trash_batch: Option<String>,
     pack_effect: bool,
     remote_outcome: Option<serde_json::Value>,
     world_write: bool,
@@ -293,6 +294,7 @@ impl FileBrowser {
             trash_policy: TrashPolicy::default(),
             upload_policy: UploadPolicy::default(),
             remote_key: None,
+            trash_batch: None,
             pack_effect: false,
             remote_outcome: None,
             world_write: false,

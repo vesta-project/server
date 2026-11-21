@@ -43,20 +43,28 @@ impl FileBrowser {
                 CleanupFiles::Trash => {
                     let trash = self.trash_dir()?;
                     let mut query = c.prepare(
-                        "SELECT id FROM file_trash WHERE server_id=? AND status IN ('complete','restored')
+                        "SELECT id,directory,size FROM file_trash WHERE server_id=? AND status IN ('complete','restored')
                         AND NOT EXISTS (SELECT 1 FROM file_intents WHERE status IN ('pending','recovery-required')
                             AND json_extract(details_json,'$.trash')=file_trash.id) ORDER BY id"
                     )?;
-                    let ids = query.query_map([self.db.server_id()], |r| r.get::<_, String>(0))?
+                    let ids = query.query_map([self.db.server_id()], |r| Ok((r.get::<_, String>(0)?,r.get::<_, bool>(1)?,r.get::<_, i64>(2)?)))?
                         .collect::<rusqlite::Result<Vec<_>>>()?;
                     let mut bytes = 0_u64;
-                    for id in ids {
+                    for (id, directory, size) in ids {
                         let name = trash_name(&id)?;
-                        let len = trash.open(&name).map_err(state_io)?.map(|file| {
-                            file.metadata().map(|m| m.len()).map_err(io_error)
-                        }).transpose()?.unwrap_or(0);
+                        let len = if directory {
+                            u64::try_from(size).map_err(|_| FileError::Unavailable)?
+                        } else {
+                            trash.open(&name).map_err(state_io)?.map(|file| {
+                                file.metadata().map(|m| m.len()).map_err(io_error)
+                            }).transpose()?.unwrap_or(0)
+                        };
                         if !dry_run {
-                            trash.remove(&name).map_err(state_io)?;
+                            if directory {
+                                self.remove_directory_copy(c, &id)?;
+                            } else {
+                                trash.remove(&name).map_err(state_io)?;
+                            }
                             c.execute("DELETE FROM file_trash WHERE server_id=? AND id=?", params![self.db.server_id(), id])?;
                         }
                         bytes = bytes.saturating_add(len);
