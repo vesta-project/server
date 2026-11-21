@@ -1,7 +1,7 @@
 //! Durable host policy projection. Worker databases never fall back to legacy
 //! per-server identity grants, even before the first synchronization.
 use super::*;
-use crate::worker::{ServerRole, ServerSubject, WorkerPolicy};
+use crate::worker::{ServerSubject, WorkerPolicy};
 use management::ManagementError;
 use rusqlite::{Connection, OptionalExtension, params};
 use vesta_state::StateDatabase;
@@ -163,68 +163,27 @@ pub(crate) fn resolve(
     let Some(grant) = grant else {
         return Ok(Some(PolicySnapshot::none()));
     };
-    let builtin = match grant.role {
-        ServerRole::Owner => BuiltinRole::Owner,
-        ServerRole::Admin => BuiltinRole::Administrator,
-        ServerRole::Moderator => BuiltinRole::Moderator,
-        ServerRole::Player => BuiltinRole::PackUser,
-    };
-    let allows = Capability::ALL
-        .iter()
-        .filter(|c| {
-            grant.capabilities.iter().any(|s| s == c.id()) && role_permits(&grant.role, **c)
-        })
-        .map(|c| RoleGrant::new(*c, ResourceScope::ALL))
+    let server_role = grant.role.server_role();
+    let builtin = Some(server_role.map_or(BuiltinRole::Owner, |role| role.builtin()));
+    let allows = grant.role.capabilities()
+        .filter(|c| grant.capabilities.iter().any(|s| s == c.id()))
+        .map(|c| RoleGrant::new(c, ResourceScope::ALL))
         .collect::<crate::Result<Vec<_>>>()?;
     Ok(Some(PolicySnapshot::from_resolved(
         Some(subject.principal.clone()),
         Some(subject.device.clone()),
-        builtin.rank(),
-        vec![RoleId::parse(builtin.id())?],
-        std::collections::HashSet::from([builtin]),
+        server_role.map_or(BuiltinRole::Owner.rank(), |role| role.rank()),
+        vec![RoleId::parse(server_role.map_or(BuiltinRole::Owner.id(), |role| role.id()))?],
+        builtin.into_iter().collect(),
         allows,
         vec![],
     )))
 }
 
-/// Server roles never inherit host identity/security authority. These are upper
-/// bounds; every action must also appear in the host's effective grant snapshot.
-fn role_permits(role: &ServerRole, capability: Capability) -> bool {
-    match role {
-        ServerRole::Owner | ServerRole::Admin => {
-            let builtin = if matches!(role, ServerRole::Owner) {
-                BuiltinRole::Owner
-            } else {
-                BuiltinRole::Administrator
-            };
-            builtin.capabilities().contains(&capability)
-                && !matches!(
-                    capability,
-                    Capability::DevicesRevoke
-                        | Capability::RolesCreate
-                        | Capability::CredentialsManage
-                        | Capability::SecurityManage
-                        | Capability::RolesManage
-                )
-                && (capability != Capability::AccessSourcesManage || matches!(role, ServerRole::Owner))
-        }
-        ServerRole::Moderator => matches!(
-            capability,
-            Capability::StatusView
-                | Capability::PlayersView
-                | Capability::PlayersModerate
-                | Capability::ConsoleRead
-                | Capability::LifecycleRestart
-                | Capability::NotificationsView
-                | Capability::TasksView
-        ),
-        ServerRole::Player => BuiltinRole::PackUser.capabilities().contains(&capability),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::worker::ServerRole;
     use std::sync::Arc;
     use uuid::Uuid;
 

@@ -4,7 +4,7 @@ use std::{path::Path, sync::Arc};
 use uuid::Uuid;
 use vesta_state::{Clock, StateDatabase, StateDirectory, StateError};
 
-pub const HOST_SCHEMA_VERSION: u32 = 1;
+pub const HOST_SCHEMA_VERSION: u32 = 2;
 
 /// A separate protected state directory is required, outside every game tree.
 /// The underlying vesta-state identity is storage infrastructure, never a host id
@@ -37,6 +37,9 @@ impl HostState {
         state.write(|c| {
             c.execute_batch(SCHEMA)?;
             c.execute("INSERT OR IGNORE INTO machine_host(singleton,host_id,schema_version,revision,auth_generation) VALUES(1,?1,1,1,1)", [Uuid::new_v4().to_string()])?;
+            if snapshot_in(c)?.schema_version == 1 {
+                migrate_server_roles(c)?;
+            }
             if snapshot_in(c)?.schema_version != HOST_SCHEMA_VERSION {
                 return Err(StateError::new("state_host_schema_unsupported").into());
             }
@@ -67,6 +70,33 @@ impl HostState {
             .read_with(|tx| work(tx.connection()))
             .map_err(ControlError::from)
     }
+}
+
+fn migrate_server_roles(c: &Connection) -> Result<()> {
+    c.execute_batch(
+        "CREATE TABLE machine_server_grants_v2(
+            server_id TEXT NOT NULL REFERENCES machine_servers(server_id),
+            account_id TEXT NOT NULL REFERENCES machine_accounts(account_id),
+            role TEXT NOT NULL CHECK(role IN ('admin','maintainer','moderator','viewer','pack-user','player')),
+            PRIMARY KEY(server_id,account_id));
+         INSERT INTO machine_server_grants_v2
+             SELECT server_id,account_id,CASE role WHEN 'player' THEN 'pack-user' ELSE role END
+             FROM machine_server_grants;
+         DROP TABLE machine_server_grants;
+         ALTER TABLE machine_server_grants_v2 RENAME TO machine_server_grants;",
+    )?;
+    let invites_exist = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='machine_invites')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if invites_exist {
+        c.execute("UPDATE machine_invites SET role='pack-user' WHERE role='player'", [])?;
+    }
+    // Old Player granted Pack User capabilities. Preserve those grants and
+    // fence worker projections that used the previous role IDs.
+    c.execute("UPDATE machine_host SET schema_version=2, auth_generation=auth_generation+1 WHERE singleton=1 AND auth_generation<9223372036854775807", [])?;
+    Ok(())
 }
 
 pub(crate) fn reject(code: IdentityErrorCode) -> ControlError {
@@ -149,3 +179,38 @@ CREATE TABLE IF NOT EXISTS machine_audit(sequence INTEGER PRIMARY KEY,action TEX
 CREATE TABLE IF NOT EXISTS machine_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS machine_account_names(account_id TEXT PRIMARY KEY REFERENCES machine_accounts(account_id), name TEXT NOT NULL, verified_at_ms INTEGER NOT NULL);
 ";
+
+#[cfg(test)]
+mod role_migration_tests {
+    use super::*;
+
+    #[test]
+    fn old_player_grants_and_invites_become_pack_user_and_fence_workers() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(SCHEMA).unwrap();
+        c.execute_batch(
+            "INSERT INTO machine_host(singleton,host_id,schema_version,revision,auth_generation) VALUES(1,'h',1,1,5);
+             INSERT INTO machine_accounts(account_id) VALUES('a'),('b');
+             INSERT INTO machine_servers VALUES('s','Survival',25565,'stopped','private');
+             INSERT INTO machine_server_grants VALUES('s','a','player'),('s','b','admin');
+             CREATE TABLE machine_invites(id TEXT PRIMARY KEY,server TEXT NOT NULL,role TEXT NOT NULL);
+             INSERT INTO machine_invites VALUES('i','s','player');",
+        )
+        .unwrap();
+        migrate_server_roles(&c).unwrap();
+        let role = |account: &str| -> String {
+            c.query_row("SELECT role FROM machine_server_grants WHERE account_id=?1", [account], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(role("a"), "pack-user");
+        assert_eq!(role("b"), "admin");
+        let invite: String = c.query_row("SELECT role FROM machine_invites", [], |r| r.get(0)).unwrap();
+        assert_eq!(invite, "pack-user");
+        let (version, generation): (u32, i64) = c
+            .query_row("SELECT schema_version,auth_generation FROM machine_host", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((version, generation), (2, 6));
+        // The new roles are accepted by the migrated table.
+        c.execute("UPDATE machine_server_grants SET role='maintainer' WHERE account_id='a'", []).unwrap();
+        assert!(c.execute("UPDATE machine_server_grants SET role='owner' WHERE account_id='a'", []).is_err());
+    }
+}

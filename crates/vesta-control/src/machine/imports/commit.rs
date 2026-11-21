@@ -7,7 +7,7 @@
 use super::*;
 use crate::{
     config::HostConfiguration,
-    identity::{BuiltinRole, DeviceId, PrincipalId, Subject},
+    identity::{DeviceId, PrincipalId, Subject},
     machine::{
         owners::Actor,
         registry::{ServerEntry, ServerState, Visibility},
@@ -123,10 +123,8 @@ pub fn owner_policy(host: &HostState, server_id: Uuid) -> JobResult<WorkerPolicy
     let whitelist_owners = host.owners(Actor::LocalRecovery)?.into_iter()
         .filter_map(|owner| owner.name.map(|name| (owner.account_id, name)))
         .collect();
-    let capabilities: Vec<String> = BuiltinRole::Owner
+    let capabilities: Vec<String> = ServerRole::Owner
         .capabilities()
-        .iter()
-        .filter(|c| !c.local_only())
         .map(|c| c.id().to_owned())
         .collect();
     let mut out = None;

@@ -24,6 +24,10 @@ mod service;
 
 pub use builtin_roles::BuiltinRole;
 pub use capability::Capability;
+
+pub(crate) fn can_delegate_role(issuer_rank: i32, role_rank: i32, builtin: Option<BuiltinRole>) -> bool {
+    role_rank < issuer_rank && !builtin.is_some_and(BuiltinRole::local_grant_only)
+}
 pub use domain::{
     AssignmentId, AuthorityChange, CodeLifetime, CustomRank, CustomRole, DEFAULT_CODE_LIFETIME,
     DeviceId, DeviceLabel, DisplayName, Effect, Expiry, Fingerprint, LocalCommand,

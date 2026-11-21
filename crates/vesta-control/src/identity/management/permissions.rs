@@ -201,7 +201,7 @@ fn lower_role(
     policy: &PolicySnapshot,
     r: &crate::identity::authorization::Role,
 ) -> AdminResult<()> {
-    if r.rank >= policy.rank() || r.builtin.is_some_and(BuiltinRole::local_grant_only) {
+    if !crate::identity::can_delegate_role(policy.rank(), r.rank, r.builtin) {
         return Err(PermissionError::Forbidden);
     }
     Ok(())

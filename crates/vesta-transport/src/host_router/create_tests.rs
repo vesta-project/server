@@ -1971,7 +1971,7 @@ fn server_session_projects_the_callers_roles_and_capabilities() {
         .account_id;
     for (role, builtin) in [
         (HostServerRole::Admin, BuiltinRole::Administrator),
-        (HostServerRole::Player, BuiltinRole::PackUser),
+        (HostServerRole::PackUser, BuiltinRole::PackUser),
     ] {
         let revision = host.state.snapshot().unwrap().revision;
         host.state
@@ -2834,7 +2834,7 @@ fn owners_remove_running_and_stopped_servers_and_replay() {
         host.state.write(|c| {c.execute("UPDATE machine_import_jobs SET state='online' WHERE server_id=?",[server])?;Ok(())}).unwrap();
         let stranger=host.state.devices(Actor::LocalRecovery).unwrap().into_iter().find(|d| d.device_id==host.devices.1).unwrap();
         let owner=host.state.snapshot().unwrap().primary_account_id.unwrap();
-        for role in [None,Some(ServerRole::Admin),Some(ServerRole::Moderator),Some(ServerRole::Player)] {
+        for role in [None,Some(ServerRole::Admin),Some(ServerRole::Moderator),Some(ServerRole::PackUser)] {
             host.state.set_server_role(Actor::Account(owner),server.parse().unwrap(),stranger.account_id,role,host.state.snapshot().unwrap().revision).unwrap();
             let (status,reply)=host.call("DELETE",&path,body.clone(),&host.stranger);assert_eq!(status,403,"{reply}");
         }

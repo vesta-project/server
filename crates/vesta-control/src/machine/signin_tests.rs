@@ -171,7 +171,7 @@ fn machine_sign_in_server_role_enrolls_and_account_without_role_leaves_no_device
             Actor::Account(f.owner),
             server,
             player,
-            Some(ServerRole::Player),
+            Some(ServerRole::PackUser),
             f.state.snapshot().unwrap().revision,
         )
         .unwrap();

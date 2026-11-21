@@ -1,13 +1,15 @@
 //! Server access is resolved by the host, never the worker identity database.
 use super::*;
 fn role_value(role: EffectiveRole) -> serde_json::Value {
-    let (id, name, rank) = match role {
-        EffectiveRole::PrimaryOwner | EffectiveRole::Owner => ("owner", "Owner", 100),
-        EffectiveRole::Server(ServerRole::Admin) => ("administrator", "Administrator", 80),
-        EffectiveRole::Server(ServerRole::Moderator) => ("moderator", "Moderator", 50),
-        EffectiveRole::Server(ServerRole::Player) => ("player", "Player", 10),
-    };
-    json!({"id":id,"name":name,"rank":rank,"builtin":true,"capabilities":[]})
+    match role {
+        EffectiveRole::Server(role) => role.summary(),
+        EffectiveRole::PrimaryOwner | EffectiveRole::Owner => {
+            let owner = vesta_control::identity::BuiltinRole::Owner;
+            json!({"id":owner.id(),"name":owner.name(),"rank":owner.rank(),"builtin":true,
+                "capabilities":vesta_control::worker::ServerRole::Owner.capabilities()
+                    .map(|cap|json!({"capability":cap.id(),"scope":"*"})).collect::<Vec<_>>()})
+        }
+    }
 }
 fn user(
     id: Uuid,
@@ -27,12 +29,7 @@ struct Roles {
     expected_version: String,
 }
 fn parse_role(id: &str) -> Option<ServerRole> {
-    match id {
-        "administrator" | "admin" => Some(ServerRole::Admin),
-        "moderator" => Some(ServerRole::Moderator),
-        "player" => Some(ServerRole::Player),
-        _ => None,
-    }
+    ServerRole::parse(id).ok()
 }
 pub(super) fn dispatch(
     router: &HostRouter,
@@ -101,9 +98,10 @@ pub(super) fn dispatch(
     } else if kind == "devices" || path.ends_with("/devices") {
         failure(StatusCode::NOT_FOUND, "not_supported")
     } else if method == Method::GET && path == "roles" && query.is_none() {
-        crate::manage::ok(
-            json!({"roles":[role_value(EffectiveRole::Owner),role_value(EffectiveRole::Server(ServerRole::Admin)),role_value(EffectiveRole::Server(ServerRole::Moderator)),role_value(EffectiveRole::Server(ServerRole::Player))]}),
-        )
+        let roles = std::iter::once(role_value(EffectiveRole::Owner))
+            .chain(ServerRole::ALL.iter().map(|role| role.summary()))
+            .collect::<Vec<_>>();
+        crate::manage::ok(json!({"roles":roles}))
     } else if method == Method::GET && path == "users" {
         let mut offset = 0usize;
         let mut limit = 100usize;
@@ -263,7 +261,7 @@ mod tests {
         for (i, role) in [
             (1, ServerRole::Admin),
             (2, ServerRole::Moderator),
-            (3, ServerRole::Player),
+            (3, ServerRole::PackUser),
         ] {
             state
                 .set_server_role(

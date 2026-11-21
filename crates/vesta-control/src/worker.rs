@@ -34,8 +34,51 @@ pub enum ServerRole {
     /// Host-owner expansion, confined to this worker's server services.
     Owner,
     Admin,
+    Maintainer,
     Moderator,
-    Player,
+    Viewer,
+    /// Old policies spelled Pack User `player`.
+    #[serde(rename = "pack-user", alias = "player")]
+    PackUser,
+}
+impl ServerRole {
+    pub fn for_effective(role: crate::machine::owners::EffectiveRole) -> Self {
+        use crate::machine::owners::{EffectiveRole, ServerRole as HostRole};
+        match role {
+            EffectiveRole::PrimaryOwner | EffectiveRole::Owner => Self::Owner,
+            EffectiveRole::Server(role) => match role {
+                HostRole::Admin => Self::Admin,
+                HostRole::Maintainer => Self::Maintainer,
+                HostRole::Moderator => Self::Moderator,
+                HostRole::Viewer => Self::Viewer,
+                HostRole::PackUser => Self::PackUser,
+            },
+        }
+    }
+
+    pub(crate) fn server_role(&self) -> Option<crate::machine::owners::ServerRole> {
+        use crate::machine::owners::ServerRole as HostRole;
+        match self {
+            Self::Owner => None,
+            Self::Admin => Some(HostRole::Admin),
+            Self::Maintainer => Some(HostRole::Maintainer),
+            Self::Moderator => Some(HostRole::Moderator),
+            Self::Viewer => Some(HostRole::Viewer),
+            Self::PackUser => Some(HostRole::PackUser),
+        }
+    }
+
+    pub fn capabilities(&self) -> impl Iterator<Item = Capability> + '_ {
+        let caps = self.server_role().map_or_else(
+            || crate::identity::BuiltinRole::Owner.capabilities(),
+            crate::machine::owners::ServerRole::capabilities,
+        );
+        caps.iter().copied().filter(|&capability| {
+            !capability.local_only()
+                && !matches!(capability, Capability::DevicesRevoke | Capability::RolesCreate | Capability::CredentialsManage | Capability::SecurityManage | Capability::RolesManage)
+                && (capability != Capability::AccessSourcesManage || matches!(self, Self::Owner))
+        })
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

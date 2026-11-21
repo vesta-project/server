@@ -359,7 +359,7 @@ fn removed_servers_revoke_grants_replay_restore_and_expire() {
             Actor::Account(owner),
             server.server_id,
             player,
-            Some(ServerRole::Player),
+            Some(ServerRole::PackUser),
             state.snapshot().unwrap().revision,
         )
         .unwrap();

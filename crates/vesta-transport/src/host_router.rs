@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 use vesta_control::{
-    identity::BuiltinRole,
     machine::{
         imports::{
             FolderBrowser, OwnerBinding,
@@ -408,24 +407,13 @@ fn role_name(role: EffectiveRole) -> &'static str {
     match role {
         EffectiveRole::PrimaryOwner => "primary_owner",
         EffectiveRole::Owner => "owner",
-        EffectiveRole::Server(ServerRole::Admin) => "admin",
-        EffectiveRole::Server(ServerRole::Moderator) => "moderator",
-        EffectiveRole::Server(ServerRole::Player) => "player",
+        EffectiveRole::Server(role) => role.as_str(),
     }
 }
 fn host_role_name(role: HostRole) -> &'static str {
     match role {
         HostRole::PrimaryOwner => "primary_owner",
         HostRole::Owner => "owner",
-    }
-}
-fn grant_role(role: EffectiveRole) -> (vesta_control::worker::ServerRole, BuiltinRole) {
-    use vesta_control::worker::ServerRole as W;
-    match role {
-        EffectiveRole::PrimaryOwner | EffectiveRole::Owner => (W::Owner, BuiltinRole::Owner),
-        EffectiveRole::Server(ServerRole::Admin) => (W::Admin, BuiltinRole::Administrator),
-        EffectiveRole::Server(ServerRole::Moderator) => (W::Moderator, BuiltinRole::Moderator),
-        EffectiveRole::Server(ServerRole::Player) => (W::Player, BuiltinRole::PackUser),
     }
 }
 /// Build the complete snapshot, including every active device, in stable order.
@@ -450,17 +438,13 @@ fn subject(
             .effective_role(d.account_id, worker.server_id())
             .map_err(|_| unavailable())?
         {
-            let (role, builtin) = grant_role(role);
+            let role = vesta_control::worker::ServerRole::for_effective(role);
+            let capabilities = role.capabilities().map(|c| c.id().into()).collect();
             grants.push(WorkerGrant {
                 account_id: d.account_id,
                 device_id: d.device_id,
                 role,
-                capabilities: builtin
-                    .capabilities()
-                    .iter()
-                    .filter(|c| !c.local_only())
-                    .map(|c| c.id().into())
-                    .collect(),
+                capabilities,
             });
         }
     }
@@ -483,11 +467,8 @@ fn subject(
         generation: snap.auth_generation,
         issued_at_ms: now,
         expires_at_ms: now + 30_000,
-        capabilities: grant_role(role)
-            .1
+        capabilities: vesta_control::worker::ServerRole::for_effective(role)
             .capabilities()
-            .iter()
-            .filter(|c| !c.local_only())
             .map(|c| c.id().into())
             .collect(),
     })

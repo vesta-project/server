@@ -35,14 +35,6 @@ pub struct RedeemInvite {
 fn default_name() -> String {
     "Invited device".into()
 }
-fn role(id: &str) -> Option<ServerRole> {
-    match id {
-        "administrator" | "admin" => Some(ServerRole::Admin),
-        "moderator" => Some(ServerRole::Moderator),
-        "player" => Some(ServerRole::Player),
-        _ => None,
-    }
-}
 fn ensure(c: &rusqlite::Connection) -> crate::Result<()> {
     c.execute_batch("CREATE TABLE IF NOT EXISTS machine_invites(id TEXT PRIMARY KEY,server TEXT NOT NULL,role TEXT NOT NULL,payload_hash TEXT NOT NULL UNIQUE,created INTEGER NOT NULL,expires INTEGER NOT NULL,creator TEXT NOT NULL,max_uses INTEGER NOT NULL,uses INTEGER NOT NULL DEFAULT 0,revoked INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS machine_invite_receipts(invite TEXT NOT NULL,account TEXT NOT NULL,device TEXT NOT NULL,PRIMARY KEY(invite,device));")?;
     Ok(())
@@ -54,21 +46,14 @@ fn authority(
     requested: Option<ServerRole>,
 ) -> crate::Result<()> {
     super::registry::require_server(c, server)?;
-    let owner = match actor {
-        Actor::LocalRecovery => true,
-        Actor::Account(id) => host_role_in(c, id)?.is_some(),
+    let role = match actor {
+        Actor::LocalRecovery => Some(EffectiveRole::PrimaryOwner),
+        Actor::Account(id) => super::registry::effective_role_in(c, id, server)?,
     };
-    if owner {
-        return Ok(());
-    }
-    let admin = match actor {
-        Actor::Account(id) => {
-            super::registry::effective_role_in(c, id, server)?
-                == Some(EffectiveRole::Server(ServerRole::Admin))
-        }
-        _ => false,
-    };
-    if !admin || requested == Some(ServerRole::Admin) {
+    if !role.is_some_and(|role| match requested {
+        Some(requested) => role.can_invite(requested),
+        None => role.permits(crate::identity::Capability::InvitationsCreate),
+    }) {
         return Err(reject(Code::Forbidden));
     }
     Ok(())
@@ -80,7 +65,7 @@ pub fn issue(
     fingerprint: &str,
     input: CreateInvite,
 ) -> crate::Result<Value> {
-    let grant = role(&input.role).ok_or_else(|| reject(Code::RoleInvalid))?;
+    let grant = ServerRole::parse(&input.role)?;
     if input.expires_minutes == 0 || input.expires_minutes > 10080 {
         return Err(reject(Code::InvalidRequest));
     }
@@ -105,13 +90,16 @@ pub fn issue(
     );
     state.write(|c| {authority(c,actor,server,Some(grant))?;ensure(c)?;c.execute("INSERT INTO machine_invites(id,server,role,payload_hash,created,expires,creator,max_uses) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![id.to_string(),server.to_string(),grant.as_str(),hash,now,expires,actor.audit(),max])?;changed(c,false,"invite_create",&actor.audit(),&id.to_string(),now)?;Ok(())})?;
     Ok(
-        json!({"id":id,"inviteId":id,"code":invite,"invite":invite,"pairing_link":invite,"role":input.role,"expires_at_ms":expires}),
+        json!({"id":id,"inviteId":id,"code":invite,"invite":invite,"pairing_link":invite,"role":grant.id(),"expires_at_ms":expires}),
     )
 }
 pub fn list(state: &HostState, actor: Actor, server: Uuid) -> crate::Result<Value> {
     state.write(|c| {authority(c,actor,server,None)?;ensure(c)?;let mut q=c.prepare("SELECT id,role,created,expires,creator FROM machine_invites WHERE server=?1 AND revoked=0 AND expires>?2 AND uses<max_uses ORDER BY created,id LIMIT 100")?;
  let rows=q.query_map(params![server.to_string(),state.now_ms()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
- Ok(json!({"invitations":rows.into_iter().map(|(id,role,created,expires,creator)|json!({"id":id,"role":{"id":if role=="admin" {"administrator"} else {&role},"name":role,"rank":match role.as_str(){"admin"=>80,"moderator"=>50,_=>10}},"created_at_ms":created,"expires_at_ms":expires,"created_by":creator})).collect::<Vec<_>>(),"next_offset":null}))})
+ let invitations = rows.into_iter().map(|(id,role,created,expires,creator)| {
+     Ok(json!({"id":id,"role":ServerRole::parse(&role)?.summary(),"created_at_ms":created,"expires_at_ms":expires,"created_by":creator}))
+ }).collect::<crate::Result<Vec<_>>>()?;
+ Ok(json!({"invitations":invitations,"next_offset":null}))})
 }
 pub fn revoke(state: &HostState, actor: Actor, server: Uuid, id: Uuid) -> crate::Result<()> {
     state.write(|c| {
@@ -125,7 +113,17 @@ pub fn revoke(state: &HostState, actor: Actor, server: Uuid, id: Uuid) -> crate:
             )
             .optional()?;
         let grant = grant.ok_or_else(|| reject(Code::NotFound))?;
-        authority(c, actor, server, role(&grant))?;
+        let grant = ServerRole::parse(&grant)?;
+        // Existing administrator invitations can still be revoked by an owner.
+        if grant == ServerRole::Admin {
+            if let Actor::Account(id) = actor {
+                if host_role_in(c, id)?.is_none() {
+                    return Err(reject(Code::Forbidden));
+                }
+            }
+        } else {
+            authority(c, actor, server, Some(grant))?;
+        }
         c.execute(
             "UPDATE machine_invites SET revoked=1 WHERE id=?1",
             [id.to_string()],
@@ -201,7 +199,8 @@ pub fn redeem(
    // Invite redemption never downgrades existing authority or changes owners.
    if host_role_in(c,account)?.is_none() {
     let current=super::registry::effective_role_in(c,account,server)?;
-    if !matches!(current,Some(EffectiveRole::Server(r)) if r>=desired) {c.execute("INSERT INTO machine_server_grants(server_id,account_id,role) VALUES(?1,?2,?3) ON CONFLICT(server_id,account_id) DO UPDATE SET role=excluded.role",params![server.to_string(),account.to_string(),grant])?;}
+    let keeps_current = matches!(current,Some(EffectiveRole::Server(r)) if r.rank() >= desired.rank());
+    if !keeps_current {c.execute("INSERT INTO machine_server_grants(server_id,account_id,role) VALUES(?1,?2,?3) ON CONFLICT(server_id,account_id) DO UPDATE SET role=excluded.role",params![server.to_string(),account.to_string(),grant])?;}
    }
    c.execute("UPDATE machine_invites SET uses=uses+1 WHERE id=?1",[&id])?;
    c.execute("INSERT INTO machine_invite_receipts VALUES(?1,?2,?3)",params![id,account.to_string(),device.device_id.to_string()])?;

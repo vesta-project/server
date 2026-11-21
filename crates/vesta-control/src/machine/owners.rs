@@ -2,7 +2,10 @@ use super::{
     HostSnapshot, HostState,
     state::{account_exists, changed, expect_revision, reject, snapshot_in, uuid},
 };
-use crate::{IdentityErrorCode as Code, Result};
+use crate::{
+    IdentityErrorCode as Code, Result,
+    identity::{BuiltinRole, Capability},
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
@@ -27,25 +30,77 @@ pub enum HostRole {
     PrimaryOwner,
     Owner,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// A server role on a Host: exactly the standalone built-in roles below Owner (Owner is the
+/// Host's own role), with the same ids, ranks and capabilities, so a server acts the same
+/// whether a Host manages it or not. `player` is accepted as the old name for Pack User.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServerRole {
-    Player,
+    PackUser,
+    Viewer,
     Moderator,
+    Maintainer,
     Admin,
 }
 impl ServerRole {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub const ALL: &[Self] = &[Self::Admin, Self::Maintainer, Self::Moderator, Self::Viewer, Self::PackUser];
+
+    pub const fn builtin(self) -> BuiltinRole {
         match self {
-            Self::Player => "player",
-            Self::Moderator => "moderator",
-            Self::Admin => "admin",
+            Self::Admin => BuiltinRole::Administrator,
+            Self::Maintainer => BuiltinRole::Maintainer,
+            Self::Moderator => BuiltinRole::Moderator,
+            Self::Viewer => BuiltinRole::Viewer,
+            Self::PackUser => BuiltinRole::PackUser,
         }
     }
-    pub(crate) fn parse(s: &str) -> Result<Self> {
+
+    pub const fn id(self) -> &'static str {
+        self.builtin().id()
+    }
+
+    pub const fn name(self) -> &'static str {
+        self.builtin().name()
+    }
+
+    pub const fn rank(self) -> i32 {
+        self.builtin().rank()
+    }
+
+    pub const fn capabilities(self) -> &'static [Capability] {
+        self.builtin().capabilities()
+    }
+
+    pub fn permits(self, capability: Capability) -> bool {
+        self.capabilities().contains(&capability)
+    }
+
+    pub fn summary(self) -> serde_json::Value {
+        let role = crate::worker::ServerRole::for_effective(EffectiveRole::Server(self));
+        serde_json::json!({
+            "id": self.id(),
+            "name": self.name(),
+            "rank": self.rank(),
+            "builtin": true,
+            "capabilities": role.capabilities().map(|cap| serde_json::json!({
+                "capability": cap.id(), "scope": "*"
+            })).collect::<Vec<_>>()
+        })
+    }
+
+    /// The stored spelling (Administrator was stored as `admin` before roles were unified).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+            _ => self.id(),
+        }
+    }
+    pub fn parse(s: &str) -> Result<Self> {
         match s {
-            "player" => Ok(Self::Player),
+            "pack-user" | "player" => Ok(Self::PackUser),
+            "viewer" => Ok(Self::Viewer),
             "moderator" => Ok(Self::Moderator),
-            "admin" => Ok(Self::Admin),
+            "maintainer" => Ok(Self::Maintainer),
+            "admin" | "administrator" => Ok(Self::Admin),
             _ => Err(reject(Code::RoleInvalid)),
         }
     }
@@ -55,6 +110,28 @@ pub enum EffectiveRole {
     PrimaryOwner,
     Owner,
     Server(ServerRole),
+}
+
+impl EffectiveRole {
+    pub const fn rank(self) -> i32 {
+        match self {
+            Self::Owner | Self::PrimaryOwner => BuiltinRole::Owner.rank(),
+            Self::Server(role) => role.rank(),
+        }
+    }
+
+    pub fn permits(self, capability: Capability) -> bool {
+        match self {
+            Self::Owner | Self::PrimaryOwner => BuiltinRole::Owner.capabilities().contains(&capability),
+            Self::Server(role) => role.permits(capability),
+        }
+    }
+
+    pub fn can_invite(self, role: ServerRole) -> bool {
+        self.permits(Capability::InvitationsCreate)
+            && crate::identity::can_delegate_role(self.rank(), role.rank(), Some(role.builtin()))
+            && role.capabilities().iter().all(|&cap| cap.delegable() && self.permits(cap))
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {
