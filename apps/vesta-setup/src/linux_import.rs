@@ -4,12 +4,13 @@ use std::{
     fs,
     os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt, chown},
     path::{Path, PathBuf},
+    process::Command,
 };
 
 const EXPORTS: &str = "/srv/vesta-imports";
 
 pub fn run(args: &[OsString]) -> Result<(), String> {
-    if unsafe { libc::geteuid() } != 0 {
+    if account_id(&["-u"])? != 0 {
         return Err("Run this command with sudo.".into());
     }
     let [action, source] = args else {
@@ -25,12 +26,7 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
     if !installed.is_absolute() {
         return Err("Invalid Vesta installation data path.".into());
     }
-    let group = unsafe {
-        libc::getpwnam(c"vesta".as_ptr())
-            .as_ref()
-            .map(|account| account.pw_gid)
-            .ok_or("Vesta service account is missing.")?
-    };
+    let group = account_id(&["-g", "vesta"]).map_err(|_| "Vesta service account is missing.")?;
     let path = prepare(source, Path::new(EXPORTS), group, installed)?;
     println!("Prepared import: {}", path.display());
     println!(
@@ -41,6 +37,20 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
         path.display()
     );
     Ok(())
+}
+
+fn account_id(args: &[&str]) -> Result<u32, String> {
+    let output = Command::new("/usr/bin/id")
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err("Could not look up the local account.".into());
+    }
+    std::str::from_utf8(&output.stdout)
+        .ok()
+        .and_then(|id| id.trim().parse().ok())
+        .ok_or_else(|| "Invalid local account ID.".into())
 }
 
 fn private_dir(path: &Path) -> std::io::Result<()> {
