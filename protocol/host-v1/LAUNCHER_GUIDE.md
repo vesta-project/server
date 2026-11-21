@@ -289,7 +289,7 @@ Provider transfers use a 3s connect timeout, 120s idle read timeout, and a bound
 
 ### Server access / Vesta Server access
 
-Use per-server manage/users, manage/roles and manage/invitations for the Access tab. Owners listed there cannot be demoted or removed there. Manage users with PUT users/{accountId}/roles using {add:[roleId],remove:[oldRoleId],expected_version:user.version}. Built-in ids are owner, administrator, moderator and player. Devices and access-sources are not_supported at this level; use host device routes in Vesta Server access. Invite proof and redemption details are in README. Generated invites currently need an out-of-band host address (endpoints are empty).
+Use per-server manage/users, manage/roles and manage/invitations for the Access tab. Owners listed there cannot be demoted or removed there. Manage users with PUT users/{accountId}/roles using {add:[roleId],remove:[oldRoleId],expected_version:user.version}. Built-in ids are owner, administrator, moderator and player. Use host device routes in Vesta Server access. If the server projects access-sources.manage, expose only the owner whitelist sync toggle. Read and update it through manage/access-sources with sync_whitelist and the current expected_version. Invite proof and redemption details are in README. Generated invites currently need an out-of-band host address (endpoints are empty).
 
 A server grant change synchronizes its worker policy before returning success. Interim streams also close when the host authorization generation changes (within the existing 250ms polling interval), including removal/demotion of a server grant.
 
