@@ -108,8 +108,12 @@ impl FileBrowser {
                     .checked_add(metadata.len())
                     .ok_or(FileError::TooLarge)?;
             }
+            let suffix = relative
+                .as_str()
+                .strip_prefix(path.as_str())
+                .ok_or(FileError::InvalidPath)?;
             records.push((
-                relative.as_str().to_owned(),
+                suffix.to_owned(),
                 directory,
                 if directory { 0 } else { metadata.len() },
             ));
