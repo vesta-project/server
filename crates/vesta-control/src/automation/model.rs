@@ -190,7 +190,7 @@ pub enum AutomationEvent {
     FirstPlayerJoined,
     PlayerFirstJoined { player: String, uuid: String },
     BackupCompleted { profile: String },
-    BackupFailed { profile: String },
+    BackupFailed { profile: String, error_code: String },
     UpdateAvailable,
 }
 }
@@ -208,7 +208,7 @@ impl AutomationEvent {
             | (Self::FirstPlayerJoined, Trigger::FirstPlayerJoined)
             | (Self::UpdateAvailable, Trigger::UpdateAvailable) => true,
             (Self::BackupCompleted { profile }, Trigger::BackupCompleted { profile: filter })
-            | (Self::BackupFailed { profile }, Trigger::BackupFailed { profile: filter }) => {
+            | (Self::BackupFailed { profile, .. }, Trigger::BackupFailed { profile: filter }) => {
                 bounded_text(profile, 128, false) && filter.as_ref().is_none_or(|f| f == profile)
             }
             _ => false,

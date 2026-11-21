@@ -175,7 +175,13 @@ impl Automation {
         } else if let Some(p) = previous.as_ref().filter(|_| !expired) {
             match p.state.as_str() {
                 "submitting" => {
-                    let key = format!("automation.{}.{}.{}", run.id, run.current_step, run.attempt);
+                    let prefix = if matches!(step.action, Action::Backup { .. })
+                        && run.trigger["event"]["kind"] == "backup_failed" {
+                        "automation-failure"
+                    } else {
+                        "automation"
+                    };
+                    let key = format!("{prefix}.{}.{}.{}", run.id, run.current_step, run.attempt);
                     PortDecision::Begun(self.port.begin(
                         &run.execution_principal,
                         &step.action,
@@ -301,7 +307,9 @@ impl Automation {
                 body,
             } => {
                 self.insert_step(c, run, now, "submitting")?;
-                inbox::insert(c, now, *severity, title, body, &run.workflow_id)?;
+                let detail = run.trigger["event"]["error_code"].as_str().filter(|_| run.trigger["event"]["kind"] == "backup_failed");
+                let body = detail.map_or_else(|| body.clone(), |code| body.replace("{{backup_error_code}}", code));
+                inbox::insert(c, now, *severity, title, &body, &run.workflow_id)?;
                 self.succeed(c, run, now, &serde_json::Value::Null)
             }
             _ => self.insert_step(c, run, now, "submitting"),

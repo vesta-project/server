@@ -1568,3 +1568,28 @@ fn newest_run_pages_use_time_and_id_ties_without_skipping() {
             .is_empty()
     );
 }
+
+
+#[test]
+fn backup_failure_outbox_creates_one_run_with_the_reason() {
+    let f = Fixture::new();
+    let workflow = f.create(definition(
+        Trigger::BackupFailed { profile: Some("daily".into()) },
+        vec![step("notify", Action::Notify {
+            severity: Severity::Warning,
+            title: "Backup failed".into(),
+            body: "{{backup_error_code}}".into(),
+        })],
+    ));
+    f.db.write(|c| {
+        c.execute_batch("CREATE TABLE backup_failure_events(job TEXT PRIMARY KEY,profile TEXT,error_code TEXT);
+            INSERT INTO backup_failure_events VALUES('job1','daily','backup_snapshot_size_limit_reached');
+            INSERT INTO backup_failure_events VALUES('job2','other','backup_disk_space_low');")?;
+        Ok(())
+    }).unwrap();
+    f.automation.consume_backup_failures().unwrap();
+    f.automation.consume_backup_failures().unwrap();
+    let runs = f.automation.list_runs(&f.owner, Some(&workflow.id), None, 10).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].trigger["event"]["error_code"], "backup_snapshot_size_limit_reached");
+}

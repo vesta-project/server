@@ -201,6 +201,8 @@ pub struct BackupProfile {
     /// Most restore points this profile may hold after retention; a backup that would
     /// exceed it is refused (nothing is deleted to make room).
     pub max_snapshots: Option<u32>,
+    pub max_snapshot_bytes: Option<u64>,
+    pub max_collection_bytes: Option<u64>,
     /// Literal game-relative roots; empty includes worlds, configs and other game files.
     pub include: Vec<String>,
     pub exclude: Vec<String>,
@@ -326,6 +328,8 @@ pub fn validate_backup_policy(profiles: &[BackupProfile], limits: &BackupLimits)
             .any(|&k| k > MAX_RETENTION)
             || p.warn_seconds > MAX_WARN_SECONDS
             || p.max_snapshots == Some(0)
+            || p.max_snapshot_bytes == Some(0)
+            || p.max_collection_bytes == Some(0)
         {
             return Err(ConfigError::InvalidDocument);
         }
@@ -856,6 +860,8 @@ impl HostConfiguration {
                         on_mutation: p.on_mutation,
                         warn_seconds: p.warn_seconds.unwrap_or(DEFAULT_WARN_SECONDS),
                         max_snapshots: p.max_snapshots,
+                        max_snapshot_bytes: p.max_snapshot_bytes,
+                        max_collection_bytes: p.max_collection_bytes,
                         include: p.include,
                         exclude: p.exclude,
                     })
@@ -1453,6 +1459,8 @@ struct WireBackupProfile {
     on_mutation: MutationPolicy,
     warn_seconds: Option<u32>,
     max_snapshots: Option<u32>,
+    max_snapshot_bytes: Option<u64>,
+    max_collection_bytes: Option<u64>,
     #[serde(default)]
     include: Vec<String>,
     #[serde(default)]

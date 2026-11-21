@@ -78,6 +78,8 @@ pub struct ProfileDocument {
     pub warn_seconds: Option<u32>,
     #[serde(default)]
     pub max_snapshots: Option<u32>,
+    pub max_snapshot_bytes: Option<u64>,
+    pub max_collection_bytes: Option<u64>,
     #[serde(default)]
     pub include: Vec<String>,
     #[serde(default)]
@@ -124,6 +126,8 @@ impl PolicyDocument {
                 on_mutation,
                 warn_seconds: p.warn_seconds.unwrap_or(DEFAULT_WARN_SECONDS),
                 max_snapshots: p.max_snapshots,
+                max_snapshot_bytes: p.max_snapshot_bytes,
+                max_collection_bytes: p.max_collection_bytes,
                 include: p.include.clone(),
                 exclude: p.exclude.clone(),
             });
@@ -164,6 +168,8 @@ impl PolicyDocument {
                     ),
                     warn_seconds: Some(p.warn_seconds),
                     max_snapshots: p.max_snapshots,
+                max_snapshot_bytes: p.max_snapshot_bytes,
+                max_collection_bytes: p.max_collection_bytes,
                     include: p.include.clone(),
                     exclude: p.exclude.clone(),
                 })

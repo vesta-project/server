@@ -69,6 +69,7 @@ pub enum EngineError {
     /// A backup would store more than its byte budget (repository size limit or the
     /// repository disk's free-space reserve).
     LimitReached,
+    CollectionLimitReached,
     /// The disk receiving restored files would drop below its free-space reserve.
     DiskSpaceLow,
 }
@@ -85,6 +86,7 @@ impl EngineError {
             Self::NotInSnapshot => "backup_restore_path_not_in_snapshot",
             Self::TargetUnsafe => "backup_restore_target_unsafe",
             Self::LimitReached => "backup_storage_limit_reached",
+            Self::CollectionLimitReached => "backup_collection_limit_reached",
             Self::DiskSpaceLow => "backup_disk_space_low",
         }
     }
@@ -734,6 +736,105 @@ impl Engine {
             }
         }
         Ok(total)
+    }
+
+    fn object_sizes(&self) -> Result<BTreeMap<String, u64>> {
+        let mut sizes = BTreeMap::new();
+        for prefix in ["chunks/", "snapshots/", "tags/"] {
+            for object in self.store.list(prefix, MAX_CHUNKS_LISTED)? {
+                sizes.insert(object.key, object.size);
+            }
+        }
+        Ok(sizes)
+    }
+
+    fn snapshot_objects(&self, id: &str) -> Result<BTreeSet<String>> {
+        let mut objects = BTreeSet::from([format!("snapshots/{id}"), format!("tags/{id}")]);
+        for hash in self.manifest(id)?.files.into_iter().flat_map(|file| file.chunks) {
+            if !valid_hash(&hash) {
+                return Err(EngineError::Corrupt);
+            }
+            objects.insert(chunk_key(&hash));
+        }
+        Ok(objects)
+    }
+
+    pub fn collection_usage(&self, tags: &[String]) -> Result<BTreeMap<String, u64>> {
+        if tags.is_empty() { return Ok(BTreeMap::new()); }
+        let sizes = self.object_sizes()?;
+        let records = self.all()?;
+        tags.iter().map(|tag| {
+            let mut objects = BTreeSet::new();
+            for (id, record) in &records {
+                if record.tags.contains(tag) {
+                    objects.extend(self.snapshot_objects(id)?);
+                }
+            }
+            let bytes = objects.iter().try_fold(0u64, |total, key|
+                sizes.get(key).map(|size| total.saturating_add(*size)).ok_or(EngineError::Corrupt))?;
+            Ok((tag.clone(), bytes))
+        }).collect()
+    }
+
+    /// Plan before writing the new profile tag or deleting existing restore points.
+    pub(super) fn collection_prune_plan(&self, tag: &str, candidate: &str, retention: Retention, max: u64) -> Result<Vec<String>> {
+        let sizes = self.object_sizes()?;
+        let mut records = self.all()?.into_iter()
+            .filter(|(id, record)| id == candidate || record.tags.iter().any(|t| t == tag))
+            .collect::<Vec<_>>();
+        records.sort_by(|(a_id, a), (b_id, b)| a.time_ms.cmp(&b.time_ms).then_with(|| a_id.cmp(b_id)));
+        let newest = records.last().map_or(0, |(_, record)| record.time_ms).saturating_add(1);
+        let ordering = records.iter().map(|(id, record)| {
+            (id.clone(), if id == candidate { newest } else { record.time_ms })
+        }).collect::<Vec<_>>();
+        let keep = keep_set(&ordering, retention);
+        let mut refs = BTreeMap::<String, usize>::new();
+        let mut bytes = 0u64;
+        let mut removable = Vec::new();
+        for (id, record) in records {
+            let protected = id == candidate || record.kept || keep.contains(&id)
+                || record.tags.iter().any(|t| (t.starts_with(PROFILE_PREFIX) && t != tag) || t.starts_with(SAFETY_PREFIX));
+            let objects = self.snapshot_objects(&id)?;
+            for object in &objects {
+                let count = refs.entry(object.clone()).or_default();
+                if *count == 0 {
+                    bytes = bytes.saturating_add(*sizes.get(object).ok_or(EngineError::Corrupt)?);
+                }
+                *count += 1;
+            }
+            if protected {
+                if id == candidate {
+                    // The new profile tag grows the tag object by two quotes and a comma.
+                    bytes = bytes.saturating_add(tag.len() as u64 + 3);
+                }
+            } else {
+                removable.push((id, objects));
+            }
+        }
+        let mut plan = Vec::new();
+        for (id, objects) in removable {
+            if bytes <= max && retention.is_empty() { break; }
+            for object in objects {
+                let count = refs.get_mut(&object).ok_or(EngineError::Corrupt)?;
+                *count -= 1;
+                if *count == 0 {
+                    bytes -= sizes[&object];
+                }
+            }
+            plan.push(id);
+        }
+        if bytes > max { return Err(EngineError::CollectionLimitReached); }
+        Ok(plan)
+    }
+
+    pub(super) fn apply_collection_prune(&self, ids: &[String]) -> Result<()> {
+        for id in ids {
+            self.remove_snapshot(id)?;
+        }
+        if !ids.is_empty() {
+            self.prune()?;
+        }
+        Ok(())
     }
 
     /// How many snapshots carry each tag.

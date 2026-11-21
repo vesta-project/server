@@ -55,6 +55,8 @@ fn profile(name: &str, mode: BackupMode, keep_last: u32) -> BackupProfile {
         on_mutation: MutationPolicy::FailWorld,
         warn_seconds: 0,
         max_snapshots: None,
+        max_snapshot_bytes: None,
+        max_collection_bytes: None,
         include: Vec::new(),
         exclude: Vec::new(),
     }
@@ -794,6 +796,8 @@ fn policy_document(profiles: &[(&str, &str, u32)], max_snapshots: Option<u32>) -
                 on_mutation: None,
                 warn_seconds: Some(0),
                 max_snapshots: None,
+                max_snapshot_bytes: None,
+                max_collection_bytes: None,
                 include: Vec::new(),
                 exclude: Vec::new(),
             })
@@ -1012,4 +1016,63 @@ fn remote_repository_initialization_refuses_a_junction_before_writing() {
     );
     assert!(!target.join("config.json").exists());
     assert_eq!(backups.policy().revision, None);
+}
+
+
+#[test]
+fn per_profile_byte_limits_keep_the_last_success_and_surface_usage() {
+    let mut f = fixture();
+    f.settings.profiles[0].keep_last = 0;
+    let (backups, _, _) = open(&f, false);
+    backups.init_repository().unwrap();
+    assert_eq!(backup_error(&backups, "stopped"), None);
+    let first = backups.snapshots("stopped").unwrap().pop().unwrap().id;
+    let status = backups.storage().unwrap();
+    let usage = status.profiles.iter().find(|p| p.name == "stopped").unwrap().collection_bytes;
+    assert!(usage > 1);
+    let mut policy = PolicyDocument::from_policy(&backups.policy().profiles, &backups.policy().limits);
+    policy.profiles[0].max_snapshot_bytes = Some(1);
+    let saved = backups.set_policy(&owner(), None, &policy).unwrap();
+    assert_eq!(backup_error(&backups, "stopped").as_deref(), Some(vesta_control::backups::SNAPSHOT_SIZE_LIMIT));
+    assert_eq!(backups.snapshots("stopped").unwrap()[0].id, first);
+    policy.profiles[0].max_snapshot_bytes = None;
+    policy.profiles[0].max_collection_bytes = Some(1);
+    backups.set_policy(&owner(), Some(saved), &policy).unwrap();
+    assert_eq!(backup_error(&backups, "stopped").as_deref(), Some(vesta_control::backups::COLLECTION_SIZE_LIMIT));
+    assert_eq!(backups.snapshots("stopped").unwrap()[0].id, first);
+    let status = backups.storage().unwrap();
+    assert_eq!(status.profiles[0].max_collection_bytes, Some(1));
+    assert_eq!(status.profiles[0].collection_bytes, usage);
+}
+
+
+#[test]
+fn per_profile_collection_cap_prunes_oldest_unkept_snapshot() {
+    let mut f = fixture();
+    f.settings.profiles[0].keep_last = 0;
+    let write_world = |seed: u32| {
+        let mut state = seed;
+        let bytes = (0..32768).map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        }).collect::<Vec<_>>();
+        fs::write(f.game.join("world/region.mca"), bytes).unwrap();
+    };
+    write_world(1);
+    let (backups, _, _) = open(&f, false);
+    backups.init_repository().unwrap();
+    assert_eq!(backup_error(&backups, "stopped"), None);
+    let oldest = backups.snapshots("stopped").unwrap()[0].id.clone();
+    let max = backups.storage().unwrap().profiles[0].collection_bytes + 4096;
+    let mut policy = PolicyDocument::from_policy(&backups.policy().profiles, &backups.policy().limits);
+    policy.profiles[0].max_collection_bytes = Some(max);
+    backups.set_policy(&owner(), None, &policy).unwrap();
+    write_world(2);
+    assert_eq!(backup_error(&backups, "stopped"), None);
+    let snapshots = backups.snapshots("stopped").unwrap();
+    assert_eq!(snapshots.len(), 1);
+    assert_ne!(snapshots[0].id, oldest);
+    assert!(backups.storage().unwrap().profiles[0].collection_bytes <= max);
 }

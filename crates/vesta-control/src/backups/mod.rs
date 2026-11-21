@@ -31,7 +31,7 @@ pub mod s3;
 pub mod space;
 pub mod store;
 
-pub use limits::{DISK_SPACE_LOW, SNAPSHOT_LIMIT, STORAGE_LIMIT, StorageStatus};
+pub use limits::{COLLECTION_SIZE_LIMIT, DISK_SPACE_LOW, ProfileStorage, SNAPSHOT_LIMIT, SNAPSHOT_SIZE_LIMIT, STORAGE_LIMIT, StorageStatus};
 pub use policy::{BackupPolicy, LimitsDocument, PolicyDocument, ProfileDocument};
 pub use restore::{PreparedRestore, recovery_jobs, resolve_recovery_locally};
 
@@ -221,7 +221,7 @@ impl Job {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BackupEvent {
     Completed { profile: String, job: String },
-    Failed { profile: String, job: String },
+    Failed { profile: String, job: String, error_code: String },
 }
 
 /// Facts the service needs from the rest of the host, supplied by composition.
@@ -436,6 +436,10 @@ impl Backups {
                 params![now],
             )?;
             // Agent died mid-job: the snapshot may or may not exist.
+            c.execute_batch("CREATE TABLE IF NOT EXISTS backup_failure_events(job TEXT PRIMARY KEY, profile TEXT NOT NULL, error_code TEXT NOT NULL)")?;
+            c.execute("INSERT OR IGNORE INTO backup_failure_events
+                SELECT id,profile,'backup_interrupted' FROM backup_jobs WHERE kind='backup' AND state='running'
+                AND coalesce(idempotency_key,'') NOT LIKE 'automation-failure.%'", [])?;
             c.execute(
                 "UPDATE backup_jobs SET state='uncertain',error_code='backup_interrupted',finished_at=? WHERE state='running'",
                 params![now],
@@ -920,6 +924,11 @@ impl Inner {
                 "UPDATE backup_jobs SET state=?,snapshot_id=?,result_json=?,error_code=?,finished_at=? WHERE id=?",
                 params![outcome.state.wire(), outcome.snapshot, result, outcome.error, now, job.id],
             )?;
+            if job.kind == "backup" && outcome.state != JobState::Succeeded {
+                c.execute("INSERT OR IGNORE INTO backup_failure_events
+                    SELECT id,profile,coalesce(error_code,'backup_failed') FROM backup_jobs WHERE id=?
+                    AND coalesce(idempotency_key,'') NOT LIKE 'automation-failure.%'", [&job.id])?;
+            }
             // Bounded history: drop old finished jobs, then cap the finished count.
             c.execute(
                 "DELETE FROM backup_jobs WHERE state IN ('succeeded','failed','uncertain') AND finished_at < ?",
@@ -941,6 +950,7 @@ impl Inner {
                 BackupEvent::Failed {
                     profile: job.profile.clone(),
                     job: job.id.clone(),
+                    error_code: outcome.error.unwrap_or("backup_failed").into(),
                 }
             };
             (self.env.events)(event);
@@ -1119,6 +1129,9 @@ impl Inner {
         if self.stopping.load(Ordering::Acquire) {
             return Outcome::failed("backup_shutdown_interrupted");
         }
+        if profile.max_snapshot_bytes.is_some_and(|max| summary.total_bytes_processed > max) {
+            return Outcome::failed(SNAPSHOT_SIZE_LIMIT);
+        }
         // Read every chunk of the new snapshot before promotion or retention.
         if let Err(error) = self.engine.verify_snapshot(&summary.snapshot_id) {
             return Outcome::failed(error.code());
@@ -1136,11 +1149,24 @@ impl Inner {
         }
         // Promotion/rejection replaces the listing after the bounded backup.
         // Charge its growth too, and preserve room for the atomic local write.
-        let tag = if fail {
-            REJECTED.to_owned()
-        } else {
-            profile_tag(&profile.name)
+        let profile_tag = profile_tag(&profile.name);
+        let retention = Retention {
+            keep_total: profile.keep_total,
+            keep_hourly: profile.keep_hourly,
+            keep_last: profile.keep_last,
+            keep_daily: profile.keep_daily,
+            keep_weekly: profile.keep_weekly,
+            keep_monthly: profile.keep_monthly,
         };
+        let plan = if let Some(max) = profile.max_collection_bytes.filter(|_| !fail) {
+            match self.engine.collection_prune_plan(&profile_tag, &summary.snapshot_id, retention, max) {
+                Ok(plan) => Some(plan),
+                Err(error) => return Outcome::failed(error.code()),
+            }
+        } else {
+            None
+        };
+        let tag = if fail { REJECTED.to_owned() } else { profile_tag.clone() };
         let tagging = self
             .disk_budget()
             .map_err(|_| EngineError::DiskSpaceLow)
@@ -1157,20 +1183,12 @@ impl Inner {
         }
         let promoted = !fail && tagging.is_ok();
         let mut retention_error = None;
-        let retention = Retention {
-            keep_total: profile.keep_total,
-            keep_hourly: profile.keep_hourly,
-            keep_last: profile.keep_last,
-            keep_daily: profile.keep_daily,
-            keep_weekly: profile.keep_weekly,
-            keep_monthly: profile.keep_monthly,
-        };
-        if promoted && !retention.is_empty() {
-            retention_error = self
-                .engine
-                .forget(&profile_tag(&profile.name), retention)
-                .err()
-                .map(EngineError::code);
+        if promoted {
+            if let Some(plan) = &plan {
+                retention_error = self.engine.apply_collection_prune(plan).err().map(EngineError::code);
+            } else if !retention.is_empty() {
+                retention_error = self.engine.forget(&profile_tag, retention).err().map(EngineError::code);
+            }
         }
         let consistency = match (online, kept) {
             (_, false) => "unproven",
@@ -1203,6 +1221,8 @@ impl Inner {
             } else {
                 error.code()
             })
+        } else if plan.is_some() {
+            retention_error
         } else {
             None
         };

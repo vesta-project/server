@@ -252,15 +252,11 @@ impl AutomationDriver {
                         }
                     }
                     while let Ok(event) = backup_events.try_recv() {
-                        let _ = automation.publish(match event {
-                            BackupEvent::Completed { profile, .. } => {
-                                AutomationEvent::BackupCompleted { profile }
-                            }
-                            BackupEvent::Failed { profile, .. } => {
-                                AutomationEvent::BackupFailed { profile }
-                            }
-                        });
+                        if let BackupEvent::Completed { profile, .. } = event {
+                            let _ = automation.publish(AutomationEvent::BackupCompleted { profile });
+                        }
                     }
+                    let _ = automation.consume_backup_failures();
                     if let Ok(Some(health)) = runtime.supervision() {
                         if health.crash_loop && !crash_loop {
                             // Never brought back by a later Vesta restart either.
@@ -378,11 +374,11 @@ impl Host {
     }
 
     pub(crate) fn open_bound(
-        startup_mode: crate::machine::startup::StartupMode,
         config: HostConfiguration,
         clock: Arc<dyn Clock>,
         supervisor: Option<vesta_supervisor::RemoteProcess>,
         worker: Option<(uuid::Uuid, uuid::Uuid)>,
+        startup_mode: crate::machine::startup::StartupMode,
     ) -> Result<Self, HostError> {
         let checked = check_launch(&config)?;
         let owner = match (config.supervision(), supervisor) {
@@ -724,11 +720,11 @@ impl Host {
 }
 
 fn compose(
-    startup_mode: crate::machine::startup::StartupMode,
     config: HostConfiguration,
     db: &StateDatabase,
     launch: LaunchConfiguration,
     supervisor: Option<vesta_supervisor::RemoteProcess>,
+    startup_mode: crate::machine::startup::StartupMode,
 ) -> Result<Host, HostError> {
     let protected: Vec<&Path> = config
         .host_protected_paths()

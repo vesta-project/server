@@ -537,7 +537,26 @@ impl Automation {
         )
     }
     pub fn publish(&self, event: AutomationEvent) -> Result<Vec<String>> {
+        self.write(|c| self.publish_in(c, &event))
+    }
+
+    /// Consume durable failure events in the same transaction as triggering runs.
+    pub(crate) fn consume_backup_failures(&self) -> Result<()> {
         self.write(|c| {
+            let exists: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='backup_failure_events')", [], |row| row.get(0))?;
+            if !exists { return Ok(()); }
+            let mut query = c.prepare("SELECT job,profile,error_code FROM backup_failure_events ORDER BY rowid LIMIT 16")?;
+            let pending = query.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get(1)?, row.get(2)?)))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            for (job, profile, error_code) in pending {
+                self.publish_in(c, &AutomationEvent::BackupFailed { profile, error_code })?;
+                c.execute("DELETE FROM backup_failure_events WHERE job=?", [job])?;
+            }
+            Ok(())
+        })
+    }
+
+    fn publish_in(&self, c: &Connection, event: &AutomationEvent) -> Result<Vec<String>> {
             let mut q = c.prepare(&format!(
                 "SELECT {WORKFLOW_COLUMNS} FROM workflows WHERE enabled=1 ORDER BY id"
             ))?;
@@ -559,7 +578,6 @@ impl Automation {
                 }
             }
             Ok(runs)
-        })
     }
     /// Join observation and its matching runs commit together. Never forget visits during retention.
     pub(crate) fn seed_player_history(&self, ids: &[uuid::Uuid]) -> Result<()> {
