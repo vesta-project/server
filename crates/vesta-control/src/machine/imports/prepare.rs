@@ -2,7 +2,7 @@
 use super::{browse, inspection};
 use crate::files::{
     copied_export::{CopiedExport, CopyLimits},
-    require_space,
+    FileError, require_space,
 };
 use std::{
     collections::BTreeSet,
@@ -23,7 +23,7 @@ pub fn copy(source: &Path, target: &Path, protected: Vec<PathBuf>) -> Result<(),
         );
     }
     let export = CopiedExport::open(&canonical, &[target])
-        .map_err(|e| e.to_string())?
+        .map_err(|e| copy_error("open the source", e))?
         .with_limits(CopyLimits::IMPORT);
     let properties = inspection::read_properties(&canonical.join("server.properties"))
         .map_err(|_| "Choose the Minecraft server folder containing server.properties.")?;
@@ -37,15 +37,29 @@ pub fn copy(source: &Path, target: &Path, protected: Vec<PathBuf>) -> Result<(),
         Ok(())
     };
     stopped()?;
-    let snapshot = export.snapshot().map_err(|e| e.to_string())?;
-    require_space(target, snapshot.bytes).map_err(|e| e.to_string())?;
+    let snapshot = export.snapshot().map_err(|e| copy_error("inspect the source files", e))?;
+    require_space(target, snapshot.bytes).map_err(|e| copy_error("check space for the prepared copy", e))?;
     export
         .copy_to_directory(&snapshot, target, |_, _| Ok(()))
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| copy_error("copy the source files", e))?;
     export
         .preserve_modified_times(&snapshot, target)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| copy_error("preserve file timestamps", e))?;
     stopped()
+}
+
+fn copy_error(stage: &str, error: FileError) -> String {
+    let detail = match error {
+        FileError::LinkedPath => "The source contains a symbolic link, hard link, or mount point. Prepare a separate folder with regular files and try that folder.",
+        FileError::ProtectedPath => "The source contains a protected configuration, database, key, or certificate. Prepare a separate clean Minecraft folder.",
+        FileError::InvalidPath => "A file name in the source is unsupported. Check the source for names that cannot be copied.",
+        FileError::NotRegular => "The source contains a special file, such as a socket or pipe. Prepare a separate folder with regular files.",
+        FileError::TooLarge => "The source exceeds the import size or file count limit.",
+        FileError::InsufficientSpace => "Free space on the filesystem that holds /srv/vesta-imports.",
+        FileError::Conflict(_) | FileError::Corrupt => "A file changed during inspection or copy. Stop the server and any process writing to the directory, then retry.",
+        _ => "Check that the source remains readable and that the staging filesystem is writable.",
+    };
+    format!("Could not {stage} ({}). {detail}", error.code())
 }
 
 #[cfg(test)]
@@ -107,7 +121,9 @@ mod tests {
         )
         .unwrap();
         symlink("/etc/passwd", source.path().join("linked")).unwrap();
-        assert!(copy(source.path(), target.path(), vec![]).is_err());
+        let error = copy(source.path(), target.path(), vec![]).unwrap_err();
+        assert!(error.contains("inspect the source files"));
+        assert!(error.contains("file_path_linked"));
         assert!(fs::read_dir(target.path()).unwrap().next().is_none());
     }
 }
