@@ -141,16 +141,13 @@ impl CopiedExport {
                     .file_name()
                     .into_string()
                     .map_err(|_| FileError::InvalidPath)?;
-                if [
-                    "vesta-state.db",
-                    "setup.json",
-                    "host.toml",
-                    "key.pem",
-                    "certificate.pem",
-                ]
-                .iter()
-                .any(|n| name.eq_ignore_ascii_case(n))
-                {
+                // Vesta's own secrets and state never travel in a copy. They sit at the top of a
+                // Vesta folder; plugins keep files with the same names deeper down (Floodgate's
+                // key.pem), so only the state database is refused at any depth.
+                let vesta_secret = ["setup.json", "host.toml", "key.pem", "certificate.pem"]
+                    .iter()
+                    .any(|n| name.eq_ignore_ascii_case(n));
+                if name.eq_ignore_ascii_case("vesta-state.db") || (directory.is_empty() && vesta_secret) {
                     return Err(FileError::ProtectedPath);
                 }
                 let path = if directory.is_empty() {

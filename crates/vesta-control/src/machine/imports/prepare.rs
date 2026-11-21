@@ -108,6 +108,29 @@ mod tests {
     }
 
     #[test]
+    fn plugin_keys_copy_but_vesta_secrets_at_the_top_do_not() {
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        fs::write(source.path().join("server.properties"), format!("server-port={port}
+")).unwrap();
+        // Floodgate keeps its encryption key as plugins/floodgate/key.pem.
+        fs::create_dir_all(source.path().join("plugins/floodgate")).unwrap();
+        fs::write(source.path().join("plugins/floodgate/key.pem"), b"floodgate").unwrap();
+        copy(source.path(), target.path(), vec![]).unwrap();
+        assert_eq!(fs::read(target.path().join("plugins/floodgate/key.pem")).unwrap(), b"floodgate");
+
+        let vesta = tempfile::tempdir().unwrap();
+        let empty = tempfile::tempdir().unwrap();
+        fs::write(vesta.path().join("server.properties"), format!("server-port={port}
+")).unwrap();
+        fs::write(vesta.path().join("key.pem"), b"vesta").unwrap();
+        assert!(copy(vesta.path(), empty.path(), vec![]).unwrap_err().contains("file_path_protected"));
+    }
+
+    #[test]
     fn staging_rejects_protected_sources_and_linked_files() {
         let source = tempfile::tempdir().unwrap();
         let target = tempfile::tempdir().unwrap();
