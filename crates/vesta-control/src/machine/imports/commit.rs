@@ -351,18 +351,31 @@ impl ImportJobs {
             .map_err(|_| JobError("configure_failed"))?;
         let snapshot = self.0.host.snapshot()?;
         use crate::machine::startup::StartupMode;
-        let startup = if boot {
+        let pending_removal = crate::machine::removed::has_pending(&self.0.host, server_id)?;
+        let startup = if boot && !pending_removal && self.setup_completed(server_id)? {
             self.0.host.startup_settings(server_id)?.map_or(StartupMode::Configured, StartupMode::Managed)
         } else {
             StartupMode::Deferred
         };
         let worker = Worker::open_with_startup(config, clock, None, snapshot.host_id, server_id, startup)
             .map_err(|_| JobError("worker_unavailable"))?;
-        if crate::machine::removed::has_pending(&self.0.host, server_id)? {
+        if pending_removal {
             worker.recover_removal_fence(snapshot.auth_generation)
                 .map_err(|_| JobError("worker_unavailable"))?;
         }
         Ok(worker)
+    }
+
+    /// A crash can occur after inserting the registry entry and before committing the
+    /// setup receipt. Only already configured servers can take the startup action.
+    pub(super) fn setup_completed(&self, server_id: Uuid) -> JobResult<bool> {
+        self.read(|c| {
+            Ok(c.query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM machine_import_jobs WHERE server_id=?
+                 AND state NOT IN ('ready','starting','online') AND phase NOT IN ('start','starting'))",
+                [server_id.to_string()], |row| row.get(0),
+            )?)
+        })
     }
 
     pub(super) fn subject(
