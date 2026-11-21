@@ -429,6 +429,12 @@ fn owner_plans_applies_and_polls_import_jobs_through_the_router() {
             .unwrap()
             .contains(&json!("import-jobs"))
     );
+    assert!(
+        info["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("server-remove"))
+    );
     // Non-owners cannot plan, read, apply, cancel or start.
     let token = host.token("vanilla");
     let body = json!({"folderToken":token,"name":"x","gamePort":null,"memoryMiB":null,"launchChoice":null,"minecraftVersion":null});
