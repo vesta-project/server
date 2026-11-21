@@ -146,6 +146,7 @@ fn detects_vanilla_paper_fabric_forge_and_neoforge_layouts() {
     let report = inspect(&b, "amp-paper");
     assert_eq!(report.detected.loader, Some(Loader::Paper));
     assert_eq!(report.detected.launch.unwrap().relative_path, "paperclip.jar");
+    assert_eq!(report.detected.launch_candidates, ["minecraft_server.jar", "paperclip.jar"]);
 
     let report = inspect(&b, "fabric");
     assert_eq!(report.detected.loader, Some(Loader::Fabric));

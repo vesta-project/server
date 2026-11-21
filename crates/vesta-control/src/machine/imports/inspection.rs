@@ -67,6 +67,9 @@ pub struct Detected {
     pub minecraft_version: Option<String>,
     pub loader: Option<Loader>,
     pub launch: Option<Launch>,
+    /// Jars at the top of the folder, for the owner to pick from when `launch` is unknown.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub launch_candidates: Vec<String>,
 }
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -310,6 +313,7 @@ pub(crate) fn inspect_path(
             minecraft_version: None,
             loader: None,
             launch: None,
+            launch_candidates: Vec::new(),
         },
         server: ServerPorts::default(),
         size: SourceSize::default(),
@@ -372,6 +376,20 @@ pub(crate) fn inspect_path(
     report.detected.loader = loader;
     report.detected.minecraft_version = version;
     report.detected.launch = detect_launch(path, &listing, loader);
+    report.detected.launch_candidates = {
+        let mut jars: Vec<String> = listing
+            .files
+            .iter()
+            .filter(|f| {
+                let lower = f.to_ascii_lowercase();
+                lower.ends_with(".jar") && !lower.contains("installer")
+            })
+            .take(32)
+            .cloned()
+            .collect();
+        jars.sort();
+        jars
+    };
     let has = |e: &str| report.evidence.iter().any(|x| *x == e);
     for (name, present) in [
         ("server_properties", has("server_properties")),

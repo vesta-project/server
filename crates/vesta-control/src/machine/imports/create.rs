@@ -1314,6 +1314,7 @@ mod imported_version_tests {
                 .into(),
                 relative_path: path.into(),
             }),
+            launch_candidates: Vec::new(),
         }
     }
 

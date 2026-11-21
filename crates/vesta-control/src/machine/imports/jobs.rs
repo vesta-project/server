@@ -318,6 +318,9 @@ pub struct ReviewDetected {
     pub minecraft_version: Option<String>,
     pub loader: Option<String>,
     pub launch: Option<LaunchChoice>,
+    /// Jars the owner can choose to start with when `launch` is unknown.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub launch_candidates: Vec<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -768,6 +771,7 @@ impl ImportJobs {
                 kind: l.kind.into(),
                 relative_path: l.relative_path.clone(),
             }),
+            launch_candidates: report.detected.launch_candidates.clone(),
         };
         // Owner overrides resolve detection gaps only; they never add arguments.
         if let Some(version) = &request.minecraft_version {
