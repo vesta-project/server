@@ -142,6 +142,12 @@ pub trait ServerWorker: Send + Sync {
     fn icon_etag(&self) -> Option<String> {
         None
     }
+    fn startup_report(&self) -> Option<crate::machine::startup::StartupReport> {
+        None
+    }
+    fn configured_startup(&self) -> crate::machine::startup::StartupAction {
+        Default::default()
+    }
 }
 impl Worker {
     pub fn open(
@@ -151,10 +157,21 @@ impl Worker {
         host_id: Uuid,
         server_id: Uuid,
     ) -> Result<Self, HostError> {
+        Self::open_with_startup(config, clock, supervisor, host_id, server_id, Default::default())
+    }
+
+    pub fn open_with_startup(
+        config: HostConfiguration,
+        clock: Arc<dyn Clock>,
+        supervisor: Option<vesta_supervisor::RemoteProcess>,
+        host_id: Uuid,
+        server_id: Uuid,
+        startup: crate::machine::startup::StartupMode,
+    ) -> Result<Self, HostError> {
         if host_id.is_nil() || server_id.is_nil() || host_id == server_id {
             return Err(HostError::Supervisor("worker_binding_invalid"));
         }
-        let host = Host::open_bound(config, clock, supervisor, Some((host_id, server_id)))?;
+        let host = Host::open_bound(config, clock, supervisor, Some((host_id, server_id)), startup)?;
         let handle = WorkerHandle {
             network: host.network_handle(),
             host_id,
@@ -216,6 +233,13 @@ impl Worker {
     }
 }
 impl ServerWorker for WorkerHandle {
+    fn startup_report(&self) -> Option<crate::machine::startup::StartupReport> {
+        self.network.sleep().startup_report().ok().flatten()
+    }
+    fn configured_startup(&self) -> crate::machine::startup::StartupAction {
+        self.network.sleep().on_agent_start_explicit(self.network.configuration().on_agent_start_explicit())
+            .ok().flatten().into()
+    }
     fn icon_etag(&self) -> Option<String> {
         crate::identity::management::permissions::branding::stored_icon_etag(
             self.network.database(),

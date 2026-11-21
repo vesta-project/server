@@ -26,6 +26,7 @@ use vesta_state::{
 
 const POLICY_KEY: &str = "sleep-policy";
 const RUNTIME_KEY: &str = "sleep-runtime";
+const STARTUP_REPORT_KEY: &str = "startup-report";
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
@@ -332,13 +333,29 @@ impl Sleep {
             })
             .map_err(|_| "sleep_state_unavailable")
     }
-    pub(crate) fn initialize(
+    pub fn startup_report(&self) -> Result<Option<crate::machine::startup::StartupReport>, &'static str> {
+        self.db.read(|c| load(c, &self.db, STARTUP_REPORT_KEY))
+            .map(|row| row.map(|(_, report)| report)).map_err(map_state_error)
+    }
+
+    pub(crate) fn record_startup(&self, report: &crate::machine::startup::StartupReport) -> Result<(), &'static str> {
+        self.db.write(|c| put(c, &self.db, STARTUP_REPORT_KEY, report)).map_err(map_state_error)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn initialize(&self, policy: crate::config::OnAgentStart) -> Result<(), &'static str> {
+        self.initialize_startup(policy, false)
+    }
+
+    pub(crate) fn initialize_startup(
         &self,
         policy: crate::config::OnAgentStart,
+        host_managed: bool,
     ) -> Result<(), &'static str> {
         self.db
             .read(|c| {
-                if let (_, Some(stored)) = load_policy(c, &self.db)?
+                if !host_managed
+                    && let (_, Some(stored)) = load_policy(c, &self.db)?
                     && stored.policy.on_agent_start.is_some()
                     && policy != crate::config::OnAgentStart::StayStopped
                 {

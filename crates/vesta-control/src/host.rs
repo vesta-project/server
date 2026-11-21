@@ -149,7 +149,7 @@ impl AutomationDriver {
         automation: Arc<Automation>,
         runtime: Arc<std::sync::OnceLock<crate::operations::RuntimeHandle>>,
         backup_events: mpsc::Receiver<BackupEvent>,
-        startup: (Option<crate::config::OnAgentStart>, crate::sleep::Sleep),
+        startup: (Option<crate::config::OnAgentStart>, crate::sleep::Sleep, crate::machine::startup::StartupMode),
         actions: Arc<HostActions>,
         telemetry: DriverTelemetry,
     ) -> Result<Self, HostError> {
@@ -181,32 +181,32 @@ impl AutomationDriver {
                 let _ = automation.publish(AutomationEvent::AgentStarted);
                 let mut joins = crate::automation::joins::JoinTracker::new(game_directory.clone(), &runtime);
                 let mut generation = runtime.game_snapshot().ok().and_then(|s| s.generation);
-                // An explicit policy (local override, stored policy, host.toml)
-                // wins; otherwise the server resumes what it was left doing:
-                // running (or starting) starts again, sleeping sleeps again,
-                // stopped by the owner (or crash looped) stays stopped.
-                let startup_policy = match startup.1.on_agent_start_explicit(startup.0) {
-                    Ok(Some(policy)) => policy,
-                    Ok(None) => startup.1.resume_on_agent_start().unwrap_or(crate::config::OnAgentStart::StayStopped),
-                    Err(_) => crate::config::OnAgentStart::StayStopped,
+                use crate::{config::OnAgentStart, machine::startup::{StartupMode, StartupOutcome, StartupReport}};
+                let (config, sleep, mode) = &startup;
+                let configured = match mode {
+                    StartupMode::Configured => sleep.on_agent_start_explicit(*config),
+                    StartupMode::Deferred => Ok(Some(OnAgentStart::StayStopped)),
+                    StartupMode::Managed(settings) => Ok(if std::env::var_os("VESTA_AGENT_STAY_STOPPED").as_deref() == Some(std::ffi::OsStr::new("1")) {
+                        Some(OnAgentStart::StayStopped)
+                    } else {
+                        settings.on_agent_start.explicit()
+                    }),
                 };
-                let mut startup_allowed = true;
-                if generation.is_none() && let Err(code) = startup.1.initialize(startup_policy) {
-                    startup_allowed = false;
-                    let _ = startup.1.initialize(crate::config::OnAgentStart::StayStopped);
-                    let _ = automation.notify(Severity::Warning, "Agent startup policy refused", code, "agent");
-                }
-                if startup_allowed && startup_policy == crate::config::OnAgentStart::Start && generation.is_none() {
-                    // The runtime's own start path refuses duplicates, orphans,
-                    // unresolved launches and maintenance blocks; its outcome is audited.
-                    if let Err(code) = local.request(crate::operations::LocalAction::Start) {
-                        let _ = automation.notify(
-                            Severity::Warning,
-                            "Start on agent start refused",
-                            code,
-                            "agent",
-                        );
-                    }
+                let resolved = configured.and_then(|action| action.map_or_else(|| sleep.resume_on_agent_start(), Ok));
+                let delay = match (mode, resolved) {
+                    (StartupMode::Managed(settings), Ok(OnAgentStart::Start)) => settings.start_delay_seconds,
+                    _ => 0,
+                };
+                let mut report = StartupReport {
+                    at_ms: automation.database_for_alerts().clock().millis(),
+                    applied_action: resolved.unwrap_or(OnAgentStart::StayStopped),
+                    outcome: StartupOutcome::Pending,
+                    error_code: resolved.err().map(str::to_owned),
+                };
+                let mut startup_at = (!matches!(mode, StartupMode::Deferred))
+                    .then(|| std::time::Instant::now() + Duration::from_secs(u64::from(delay)));
+                if delay > 0 {
+                    let _ = sleep.record_startup(&report);
                 }
                 let mut crash_loop = false;
                 while !flag.load(Ordering::Acquire) {
@@ -214,6 +214,33 @@ impl AutomationDriver {
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_millis() as i64)
                         .unwrap_or(0);
+                    if startup_at.is_some_and(|due| due <= std::time::Instant::now()) {
+                        startup_at = None;
+                        let result = runtime.game_snapshot().map(|snapshot| snapshot.generation)
+                            .map_err(|_| "startup_state_unavailable").and_then(|generation| {
+                                if generation.is_some() {
+                                    report.outcome = StartupOutcome::AlreadyRunning;
+                                } else {
+                                    if let Err(code) = sleep.initialize_startup(report.applied_action, matches!(mode, StartupMode::Managed(_))) {
+                                        let _ = sleep.initialize_startup(OnAgentStart::StayStopped, true);
+                                        return Err(code);
+                                    }
+                                    if report.applied_action == OnAgentStart::Start {
+                                        local.request(crate::operations::LocalAction::Start)?;
+                                    }
+                                    report.outcome = StartupOutcome::Applied;
+                                }
+                                Ok(())
+                            });
+                        if let Err(code) = result {
+                            report.error_code = Some(code.into());
+                        }
+                        if let Some(code) = &report.error_code {
+                            report.outcome = StartupOutcome::Failed;
+                            let _ = automation.notify(Severity::Warning, "Agent startup policy refused", code, "agent");
+                        }
+                        let _ = sleep.record_startup(&report);
+                    }
                     metrics.tick(&runtime, now);
                     joins.tick(&runtime, &automation);
                     let _ = automation.tick(now);
@@ -347,10 +374,11 @@ impl Host {
         clock: Arc<dyn Clock>,
         supervisor: Option<vesta_supervisor::RemoteProcess>,
     ) -> Result<Self, HostError> {
-        Self::open_bound(config, clock, supervisor, None)
+        Self::open_bound(config, clock, supervisor, None, Default::default())
     }
 
     pub(crate) fn open_bound(
+        startup_mode: crate::machine::startup::StartupMode,
         config: HostConfiguration,
         clock: Arc<dyn Clock>,
         supervisor: Option<vesta_supervisor::RemoteProcess>,
@@ -407,7 +435,7 @@ impl Host {
                 return Err(HostError::Supervisor("worker_policy_unavailable"));
             }
         }
-        match compose(config, &db, checked.launch, owner) {
+        match compose(config, &db, checked.launch, owner, startup_mode) {
             Ok(host) => Ok(host),
             Err(error) => {
                 // Nothing owned live work yet; closing cannot discard a running child.
@@ -696,6 +724,7 @@ impl Host {
 }
 
 fn compose(
+    startup_mode: crate::machine::startup::StartupMode,
     config: HostConfiguration,
     db: &StateDatabase,
     launch: LaunchConfiguration,
@@ -864,7 +893,7 @@ fn compose(
         automation.clone(),
         cell.clone(),
         backup_events,
-        (config.on_agent_start_explicit(), sleep.clone()),
+        (config.on_agent_start_explicit(), sleep.clone(), startup_mode),
         actions,
         DriverTelemetry {
             game_directory: config.game().to_path_buf(),

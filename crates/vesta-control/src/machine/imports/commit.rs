@@ -338,15 +338,24 @@ impl ImportJobs {
     /// Build the registered server's worker through the H05 composition entry
     /// point. The caller (host lifecycle) owns the returned worker.
     pub fn create_worker(&self, server_id: Uuid, clock: Arc<dyn Clock>) -> JobResult<Worker> {
-        let entry = self.0.host.server(server_id)?.ok_or(JobError::NOT_FOUND)?;
+        self.open_worker(server_id, clock, false)
+    }
+
+    pub fn open_worker(&self, server_id: Uuid, clock: Arc<dyn Clock>, boot: bool) -> JobResult<Worker> {
+        self.0.host.server(server_id)?.ok_or(JobError::NOT_FOUND)?;
         let dir = self.server_dir(server_id);
         let text = fs::read(dir.join("host.toml")).map_err(|_| JobError::NOT_FOUND)?;
         let config = HostConfiguration::parse_toml(&text, &dir, Path::new("host.toml"))
             .map_err(|_| JobError("configure_failed"))?;
         let snapshot = self.0.host.snapshot()?;
-        let worker = Worker::from_registry(Some(&entry), config, clock, None, snapshot.host_id)
-            .map_err(|_| JobError("worker_unavailable"))?
-            .ok_or(JobError::NOT_FOUND)?;
+        use crate::machine::startup::StartupMode;
+        let startup = if boot {
+            self.0.host.startup_settings(server_id)?.map_or(StartupMode::Configured, StartupMode::Managed)
+        } else {
+            StartupMode::Deferred
+        };
+        let worker = Worker::open_with_startup(config, clock, None, snapshot.host_id, server_id, startup)
+            .map_err(|_| JobError("worker_unavailable"))?;
         if crate::machine::removed::has_pending(&self.0.host, server_id)? {
             worker.recover_removal_fence(snapshot.auth_generation)
                 .map_err(|_| JobError("worker_unavailable"))?;

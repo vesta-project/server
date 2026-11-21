@@ -80,6 +80,7 @@ impl HostState {
             let used=server_in(c,entry.server_id)?.is_some();
             if conflict || used { return Err(reject(Code::Conflict)); }
             c.execute("INSERT INTO machine_servers(server_id,name,game_port,state,visibility) VALUES(?1,?2,?3,?4,?5)",params![entry.server_id.to_string(),entry.name,entry.game_port,entry.state.as_str(),entry.visibility.as_str()])?;
+            super::startup::register_in(c, entry.server_id)?;
             changed(c,true,"server_register",&actor.audit(),&entry.server_id.to_string(),self.now_ms())
         })
     }

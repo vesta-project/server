@@ -225,8 +225,8 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
     .map_err(|_| "host_imports_unavailable")?;
     let factory = (jobs.clone(), clock.clone());
     let router = HostRouter::new(identity.clone(), config.name.clone(), folders)
-        .with_imports(jobs.clone(), move |id| {
-            factory.0.create_worker(id, factory.1.clone())
+        .with_startup_worker_factory(jobs.clone(), move |id, boot| {
+            factory.0.open_worker(id, factory.1.clone(), boot)
         })
         .with_storage_java_cache(java_root.clone())
         .with_create_installer(Arc::new(
@@ -276,8 +276,11 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
         } else {
             None
         };
-        let w = Worker::from_registry(
-            Some(entry),
+        use vesta_control::machine::startup::StartupMode;
+        let startup = state.startup_settings(entry.server_id)
+            .map_err(|_| "host_state_unavailable")?
+            .map_or(StartupMode::Configured, StartupMode::Managed);
+        let w = Worker::open_with_startup(
             c,
             clock,
             remote,
@@ -285,9 +288,10 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
                 .snapshot()
                 .map_err(|_| "host_state_unavailable")?
                 .host_id,
+            entry.server_id,
+            startup,
         )
-        .map_err(|_| "host_worker_unavailable")?
-        .ok_or("host_worker_unavailable")?;
+        .map_err(|_| "host_worker_unavailable")?;
         router.add_worker(Arc::new(w.handle()));
         worker = Some(w);
     }

@@ -34,12 +34,13 @@ pub(super) fn install(
     let text = std::fs::read(dir.join("host.toml")).map_err(|_| "install_failed")?;
     let config = HostConfiguration::parse_toml(&text, dir, Path::new("host.toml"))
         .map_err(|_| "install_failed")?;
-    let worker = Worker::open(
+    let worker = Worker::open_with_startup(
         config,
         Arc::new(vesta_state::SystemClock),
         None,
         request.host_id,
         request.server_id,
+        crate::machine::startup::StartupMode::Deferred,
     )
     .map_err(|_| "install_failed")?;
     let handle = worker.handle();

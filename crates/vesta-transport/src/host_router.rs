@@ -17,6 +17,7 @@ use vesta_control::{
     worker::{ServerSubject, ServerWorker, Worker, WorkerGrant, WorkerHandle, WorkerPolicy},
 };
 mod access;
+mod startup;
 mod creates;
 mod imports;
 mod owners;
@@ -24,7 +25,7 @@ mod removed;
 mod storage;
 
 /// Builds the in-process worker for a registered imported server.
-pub type WorkerFactory = dyn Fn(Uuid) -> Result<Worker, JobError> + Send + Sync;
+pub type WorkerFactory = dyn Fn(Uuid, bool) -> Result<Worker, JobError> + Send + Sync;
 /// Owner import jobs plus the worker factory used once a copy is committed.
 pub struct ImportService {
     pub jobs: ImportJobs,
@@ -64,19 +65,25 @@ impl HostRouter {
     /// Enable the import job routes. `create` builds a registered server's
     /// worker (normally `ImportJobs::create_worker` with the host clock).
     pub fn with_imports(
-        mut self,
+        self,
         jobs: ImportJobs,
         create: impl Fn(Uuid) -> Result<Worker, JobError> + Send + Sync + 'static,
+    ) -> Self {
+        self.with_startup_worker_factory(jobs, move |id, _| create(id))
+    }
+
+    pub fn with_startup_worker_factory(
+        mut self,
+        jobs: ImportJobs,
+        create: impl Fn(Uuid, bool) -> Result<Worker, JobError> + Send + Sync + 'static,
     ) -> Self {
         self.catalogue = vesta_control::machine::creates::LiveCatalogue::open(jobs.servers_root())
             .ok()
             .map(|c| Arc::new(c) as Arc<dyn vesta_control::machine::creates::Catalogue>);
-        self.imports = Some(Arc::new(ImportService {
-            jobs,
-            create: Box::new(create),
-        }));
+        self.imports = Some(Arc::new(ImportService { jobs, create: Box::new(create) }));
         self
     }
+
     pub fn with_storage_java_cache(mut self, java_cache: std::path::PathBuf) -> Self {
         self.storage = Arc::new(storage::Measurements::with_java_cache(java_cache));
         self
@@ -186,7 +193,7 @@ impl HostRouter {
             // Routed through an externally configured worker; not ours to start.
             return Err(JobError("worker_unavailable"));
         }
-        let worker = (imports.create)(server_id)?;
+        let worker = (imports.create)(server_id, false)?;
         let handle = worker.handle();
         if self.is_stopping() || imports.jobs.is_stopping() {
             let _ = worker.request_system_shutdown();
@@ -247,11 +254,14 @@ impl HostRouter {
             if routed || !imports.jobs.server_dir(id).join("host.toml").is_file() {
                 continue;
             }
-            match (imports.create)(id) {
+            match (imports.create)(id, true) {
                 Ok(worker) => {
                     self.adopt_worker(worker);
                 }
-                Err(e) => failed.push((id, e)),
+                Err(e) => {
+                    let _ = state.record_startup_open_failure(id, e.0);
+                    failed.push((id, e));
+                }
             }
         }
         failed
@@ -446,6 +456,8 @@ fn subject(
             .effective_role(d.account_id, worker.server_id())
             .map_err(|_| unavailable())?
         {
+            let mut effective = state.server_capabilities(worker.server_id(), d.account_id, role)
+                .map_err(|_| unavailable())?;
             let role = vesta_control::worker::ServerRole::for_effective(role);
             let mut capabilities: Vec<String> = role.capabilities()
                 .filter(|cap| effective.remove(cap))
@@ -458,10 +470,13 @@ fn subject(
                 device_id: d.device_id,
                 role,
                 capabilities,
-            let mut effective = state.server_capabilities(worker.server_id(), d.account_id, role)
-                .map_err(|_| unavailable())?;
             });
         }
+    }
+    let capabilities = grants.iter().find(|grant| grant.device_id == device.device_id)
+        .ok_or_else(unavailable)?.capabilities.clone();
+    if state.snapshot().map_err(|_| unavailable())?.auth_generation != snap.auth_generation {
+        return Err(unavailable());
     }
     worker
         .sync_policy(WorkerPolicy {
@@ -470,11 +485,6 @@ fn subject(
             generation: snap.auth_generation,
             grants,
             whitelist_owners: state.owners(Actor::LocalRecovery).map_err(|_| unavailable())?
-    let capabilities = grants.iter().find(|grant| grant.device_id == device.device_id)
-        .ok_or_else(unavailable)?.capabilities.clone();
-    if state.snapshot().map_err(|_| unavailable())?.auth_generation != snap.auth_generation {
-        return Err(unavailable());
-    }
                 .into_iter().filter_map(|owner| owner.name.map(|name| (owner.account_id, name))).collect(),
         })
         .map_err(|_| unavailable())?;
@@ -928,6 +938,9 @@ impl Application {
                     .ok()
                     .map(|w| Arc::new(w) as Arc<dyn ServerWorker>)
             });
+            if suffix == "manage/startup" {
+                return startup::dispatch(state, &device, id, worker.as_deref(), method, query, bytes);
+            }
             let Some(worker) = worker else {
                 return failure(StatusCode::SERVICE_UNAVAILABLE, "worker_unavailable");
             };
@@ -1060,6 +1073,7 @@ impl Application {
                 };
                 value["newDeviceSignIn"] = json!(settings.new_device_sign_in);
                 value["removedServerRetentionDays"] = json!(settings.removed_server_retention_days);
+                value["defaultOnAgentStart"] = json!(settings.default_on_agent_start);
             }
             return routes::json(value);
         }
@@ -1079,7 +1093,7 @@ impl Application {
             return match state.update_settings(Actor::Account(device.account_id), input!()) {
                 Ok(settings) => match state.snapshot() {
                     Ok(s) => routes::json(
-                        json!({"hostId":s.host_id,"name":self.router.display_name(),"newDeviceSignIn":settings.new_device_sign_in,"removedServerRetentionDays":settings.removed_server_retention_days,"revision":s.revision.to_string()}),
+                        json!({"hostId":s.host_id,"name":self.router.display_name(),"newDeviceSignIn":settings.new_device_sign_in,"removedServerRetentionDays":settings.removed_server_retention_days,"defaultOnAgentStart":settings.default_on_agent_start,"revision":s.revision.to_string()}),
                     ),
                     Err(_) => failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable"),
                 },

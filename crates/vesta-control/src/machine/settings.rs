@@ -1,6 +1,7 @@
 //! Owner-controlled host settings persisted in the host database.
 use super::{
     HostState,
+    startup::StartupAction,
     owners::{Actor, require_owner},
     state::{changed, reject},
 };
@@ -39,6 +40,7 @@ pub struct HostSettings {
     pub name: Option<String>,
     pub new_device_sign_in: NewDeviceSignIn,
     pub removed_server_retention_days: u16,
+    pub default_on_agent_start: StartupAction,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -46,6 +48,7 @@ pub struct HostSettingsPatch {
     pub name: Option<String>,
     pub new_device_sign_in: Option<NewDeviceSignIn>,
     pub removed_server_retention_days: Option<u16>,
+    pub default_on_agent_start: Option<StartupAction>,
 }
 
 /// Removes control and bidirectional-override characters, collapses whitespace
@@ -119,11 +122,18 @@ pub(crate) fn removal_retention_in(c: &Connection) -> Result<u16> {
     }
 }
 
+pub(super) fn startup_default_in(c: &Connection) -> Result<StartupAction> {
+    setting_in(c, "default_on_agent_start")?.map(|value| {
+        serde_json::from_str(&value).map_err(|_| reject(Code::InvalidRequest))
+    }).transpose().map(Option::unwrap_or_default)
+}
+
 fn settings_in(c: &Connection) -> Result<HostSettings> {
     Ok(HostSettings {
         name: setting_in(c, "name")?,
         new_device_sign_in: sign_in_mode_in(c)?,
         removed_server_retention_days: removal_retention_in(c)?,
+        default_on_agent_start: startup_default_in(c)?,
     })
 }
 impl HostState {
@@ -143,7 +153,8 @@ impl HostState {
             .is_some_and(|days| !(1..=MAX_REMOVAL_RETENTION_DAYS).contains(&days))
             || (name.is_none()
                 && patch.new_device_sign_in.is_none()
-                && patch.removed_server_retention_days.is_none())
+                && patch.removed_server_retention_days.is_none()
+                && patch.default_on_agent_start.is_none())
         {
             return Err(reject(Code::InvalidRequest));
         }
@@ -182,6 +193,11 @@ impl HostState {
                     &value,
                     self.now_ms(),
                 )?;
+            }
+            if let Some(action) = patch.default_on_agent_start {
+                let value = serde_json::to_string(&action).map_err(|_| reject(Code::InvalidRequest))?;
+                put_in(c, "default_on_agent_start", &value)?;
+                changed(c, false, "default_startup_change", &actor.audit(), "default_on_agent_start", self.now_ms())?;
             }
             settings_in(c)
         })

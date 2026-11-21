@@ -256,6 +256,7 @@ fn machine_sign_in_approval_mode_requires_link_approval() {
                     name: None,
                     new_device_sign_in: Some(NewDeviceSignIn::Approval),
                     removed_server_retention_days: None,
+                default_on_agent_start: None,
                 }
             )
             .unwrap_err()
@@ -270,6 +271,7 @@ fn machine_sign_in_approval_mode_requires_link_approval() {
                 name: None,
                 new_device_sign_in: Some(NewDeviceSignIn::Approval),
                 removed_server_retention_days: None,
+                default_on_agent_start: None,
             },
         )
         .unwrap();
@@ -286,6 +288,7 @@ fn machine_sign_in_approval_mode_requires_link_approval() {
                 name: None,
                 new_device_sign_in: Some(NewDeviceSignIn::Account),
                 removed_server_retention_days: None,
+                default_on_agent_start: None,
             },
         )
         .unwrap();
@@ -337,6 +340,7 @@ fn machine_owners_list_names_and_rename_authorization() {
                 name: Some(name.into()),
                 new_device_sign_in: None,
                 removed_server_retention_days: None,
+                default_on_agent_start: None,
             },
         )
     };

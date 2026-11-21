@@ -19,6 +19,7 @@ pub mod recovery;
 pub mod resources;
 pub mod sessions;
 pub mod settings;
+pub mod startup;
 pub mod signin;
 
 pub use state::{HostSnapshot, HostState};
