@@ -4,7 +4,7 @@ use std::{path::Path, sync::Arc};
 use uuid::Uuid;
 use vesta_state::{Clock, StateDatabase, StateDirectory, StateError};
 
-pub const HOST_SCHEMA_VERSION: u32 = 2;
+pub const HOST_SCHEMA_VERSION: u32 = 3;
 
 /// A separate protected state directory is required, outside every game tree.
 /// The underlying vesta-state identity is storage infrastructure, never a host id
@@ -39,6 +39,9 @@ impl HostState {
             c.execute("INSERT OR IGNORE INTO machine_host(singleton,host_id,schema_version,revision,auth_generation) VALUES(1,?1,1,1,1)", [Uuid::new_v4().to_string()])?;
             if snapshot_in(c)?.schema_version == 1 {
                 migrate_server_roles(c)?;
+            }
+            if snapshot_in(c)?.schema_version == 2 {
+                migrate_custom_roles(c)?;
             }
             if snapshot_in(c)?.schema_version != HOST_SCHEMA_VERSION {
                 return Err(StateError::new("state_host_schema_unsupported").into());
@@ -96,6 +99,28 @@ fn migrate_server_roles(c: &Connection) -> Result<()> {
     // Old Player granted Pack User capabilities. Preserve those grants and
     // fence worker projections that used the previous role IDs.
     c.execute("UPDATE machine_host SET schema_version=2, auth_generation=auth_generation+1 WHERE singleton=1 AND auth_generation<9223372036854775807", [])?;
+    Ok(())
+}
+
+fn migrate_custom_roles(c: &Connection) -> Result<()> {
+    c.execute_batch(
+        "CREATE TABLE machine_roles(
+             server_id TEXT NOT NULL REFERENCES machine_servers(server_id),
+             id TEXT NOT NULL, document TEXT NOT NULL, PRIMARY KEY(server_id,id));
+         CREATE TABLE machine_server_grants_v3(
+             server_id TEXT NOT NULL REFERENCES machine_servers(server_id),
+             account_id TEXT NOT NULL REFERENCES machine_accounts(account_id),
+             role TEXT NOT NULL CHECK(role IN ('admin','maintainer','moderator','viewer','pack-user','player') OR length(role)=36),
+             PRIMARY KEY(server_id,account_id));
+         INSERT INTO machine_server_grants_v3 SELECT * FROM machine_server_grants;
+         DROP TABLE machine_server_grants;
+         ALTER TABLE machine_server_grants_v3 RENAME TO machine_server_grants;
+         CREATE TABLE machine_capability_overrides(
+             server_id TEXT NOT NULL, account_id TEXT NOT NULL, document TEXT NOT NULL,
+             PRIMARY KEY(server_id,account_id),
+             FOREIGN KEY(server_id,account_id) REFERENCES machine_server_grants(server_id,account_id) ON DELETE CASCADE);
+         UPDATE machine_host SET schema_version=3, auth_generation=auth_generation+1 WHERE singleton=1;",
+    )?;
     Ok(())
 }
 

@@ -410,11 +410,12 @@ fn parse<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Reply> {
 fn no_content() -> Reply {
     response(StatusCode::NO_CONTENT, Bytes::new(), "application/json")
 }
-fn role_name(role: EffectiveRole) -> &'static str {
+fn role_name(role: EffectiveRole) -> String {
     match role {
-        EffectiveRole::PrimaryOwner => "primary_owner",
-        EffectiveRole::Owner => "owner",
-        EffectiveRole::Server(role) => role.as_str(),
+        EffectiveRole::PrimaryOwner => "primary_owner".into(),
+        EffectiveRole::Owner => "owner".into(),
+        EffectiveRole::Server(role) => role.as_str().into(),
+        EffectiveRole::Custom { id, .. } => id.to_string(),
     }
 }
 fn host_role_name(role: HostRole) -> &'static str {
@@ -432,7 +433,7 @@ fn subject(
     let state = &router.identity.state;
     let unavailable = || failure(StatusCode::SERVICE_UNAVAILABLE, "worker_unavailable");
     let snap = state.snapshot().map_err(|_| unavailable())?;
-    let role = state
+    state
         .effective_role(device.account_id, worker.server_id())
         .map_err(|_| unavailable())?
         .ok_or_else(|| failure(StatusCode::NOT_FOUND, "not_found"))?;
@@ -446,12 +447,19 @@ fn subject(
             .map_err(|_| unavailable())?
         {
             let role = vesta_control::worker::ServerRole::for_effective(role);
-            let capabilities = role.capabilities().map(|c| c.id().into()).collect();
+            let mut capabilities: Vec<String> = role.capabilities()
+                .filter(|cap| effective.remove(cap))
+                .map(|cap| cap.id().into())
+                .collect();
+            capabilities.extend(effective.into_iter().filter(|&cap| role.permits_projection(cap)).map(|cap| cap.id().into()));
+
             grants.push(WorkerGrant {
                 account_id: d.account_id,
                 device_id: d.device_id,
                 role,
                 capabilities,
+            let mut effective = state.server_capabilities(worker.server_id(), d.account_id, role)
+                .map_err(|_| unavailable())?;
             });
         }
     }
@@ -462,6 +470,11 @@ fn subject(
             generation: snap.auth_generation,
             grants,
             whitelist_owners: state.owners(Actor::LocalRecovery).map_err(|_| unavailable())?
+    let capabilities = grants.iter().find(|grant| grant.device_id == device.device_id)
+        .ok_or_else(unavailable)?.capabilities.clone();
+    if state.snapshot().map_err(|_| unavailable())?.auth_generation != snap.auth_generation {
+        return Err(unavailable());
+    }
                 .into_iter().filter_map(|owner| owner.name.map(|name| (owner.account_id, name))).collect(),
         })
         .map_err(|_| unavailable())?;
@@ -474,10 +487,7 @@ fn subject(
         generation: snap.auth_generation,
         issued_at_ms: now,
         expires_at_ms: now + 30_000,
-        capabilities: vesta_control::worker::ServerRole::for_effective(role)
-            .capabilities()
-            .map(|c| c.id().into())
-            .collect(),
+        capabilities,
     })
 }
 impl Application {

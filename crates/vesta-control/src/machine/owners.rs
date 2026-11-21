@@ -110,6 +110,7 @@ pub enum EffectiveRole {
     PrimaryOwner,
     Owner,
     Server(ServerRole),
+    Custom { id: Uuid, rank: i32 },
 }
 
 impl EffectiveRole {
@@ -117,6 +118,7 @@ impl EffectiveRole {
         match self {
             Self::Owner | Self::PrimaryOwner => BuiltinRole::Owner.rank(),
             Self::Server(role) => role.rank(),
+            Self::Custom { rank, .. } => rank,
         }
     }
 
@@ -124,6 +126,7 @@ impl EffectiveRole {
         match self {
             Self::Owner | Self::PrimaryOwner => BuiltinRole::Owner.capabilities().contains(&capability),
             Self::Server(role) => role.permits(capability),
+            Self::Custom { .. } => false,
         }
     }
 
@@ -429,9 +432,7 @@ impl HostState {
             let allowed = match actor {
                 Actor::LocalRecovery => true,
                 Actor::Account(id) => {
-                    host_role_in(c, id)?.is_some()
-                        || super::registry::effective_role_in(c, id, server)?
-                            == Some(EffectiveRole::Server(ServerRole::Admin))
+                    super::roles::can_view(c, id, server)?
                 }
             };
             if !allowed {

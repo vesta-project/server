@@ -1,8 +1,35 @@
 //! Server access is resolved by the host, never the worker identity database.
+mod catalog;
 use super::*;
+use catalog::capability_catalog;
+use vesta_control::machine::roles::{Override, RoleFields};
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RoleWrite {
+    expected_version: String,
+    name: Option<String>,
+    rank: Option<i32>,
+    capabilities: Option<Vec<vesta_control::machine::roles::Grant>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Version {
+    expected_version: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Overrides {
+    expected_version: String,
+    overrides: Vec<Override>,
+}
+
 fn role_value(role: EffectiveRole) -> serde_json::Value {
     match role {
         EffectiveRole::Server(role) => role.summary(),
+        EffectiveRole::Custom { id, rank } => json!({"id":id,"rank":rank}),
         EffectiveRole::PrimaryOwner | EffectiveRole::Owner => {
             let owner = vesta_control::identity::BuiltinRole::Owner;
             json!({"id":owner.id(),"name":owner.name(),"rank":owner.rank(),"builtin":true,
@@ -28,9 +55,54 @@ struct Roles {
     remove: Vec<String>,
     expected_version: String,
 }
-fn parse_role(id: &str) -> Option<ServerRole> {
-    ServerRole::parse(id).ok()
+fn user_row(
+    state: &vesta_control::machine::HostState,
+    server: Uuid,
+    roles: &[serde_json::Value],
+    id: Uuid,
+    role: EffectiveRole,
+    name: Option<String>,
+    revision: u64,
+    count: u64,
+) -> Result<serde_json::Value, Reply> {
+    let mut row = user(id, role, name, revision, count);
+    if let EffectiveRole::Custom { id, .. } = role {
+        row["roles"][0]["role"] = roles
+            .iter()
+            .find(|role| role["id"] == id.to_string())
+            .cloned()
+            .ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"))?;
+    }
+    row["overrides"] = json!(
+        state
+            .capability_overrides(server, id)
+            .map_err(access_error)?
+    );
+    Ok(row)
 }
+
+pub(super) fn version(value: &str) -> Result<u64, Reply> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|v| v.to_string() == value)
+        .ok_or_else(|| failure(StatusCode::BAD_REQUEST, "invalid_request"))
+}
+
+fn refresh(router: &HostRouter, server: Uuid, device: &Device) -> Result<(), Reply> {
+    let worker = router
+        .workers
+        .lock()
+        .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE, "worker_unavailable"))?
+        .iter()
+        .find(|w| w.server_id() == server)
+        .cloned();
+    if let Some(worker) = worker {
+        subject(router, worker.as_ref(), device)?;
+    }
+    Ok(())
+}
+
 pub(super) fn dispatch(
     router: &HostRouter,
     device: &Device,
@@ -43,10 +115,7 @@ pub(super) fn dispatch(
 ) -> Option<Reply> {
     let path = suffix.strip_prefix("manage/")?;
     let kind = path.split('/').next()?;
-    if !matches!(
-        kind,
-        "users" | "roles" | "devices" | "invitations"
-    ) {
+    if !matches!(kind, "users" | "roles" | "devices" | "invitations") {
         return None;
     }
     let state = &router.identity.state;
@@ -64,6 +133,39 @@ pub(super) fn dispatch(
         Ok(s) => s.revision,
         Err(e) => return Some(access_error(e)),
     };
+    let result = handle(
+        router,
+        device,
+        server,
+        method,
+        path,
+        query,
+        bytes,
+        fingerprint,
+        rows,
+        count,
+        revision,
+    );
+    Some(result.unwrap_or_else(|error| error))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle(
+    router: &HostRouter,
+    device: &Device,
+    server: Uuid,
+    method: &Method,
+    path: &str,
+    query: Option<&str>,
+    bytes: &[u8],
+    fingerprint: &str,
+    rows: Vec<(Uuid, EffectiveRole, Option<String>)>,
+    count: impl Fn(Uuid) -> u32,
+    revision: u64,
+) -> Result<Reply, Reply> {
+    let kind = path.split('/').next().unwrap_or_default();
+    let state = &router.identity.state;
+    let actor = Actor::Account(device.account_id);
     let result = if kind == "invitations" {
         use vesta_control::machine::invites;
         match (method.as_str(), path) {
@@ -74,7 +176,7 @@ pub(super) fn dispatch(
             ("POST", "invitations") if query.is_none() => {
                 let input: invites::CreateInvite = match parse(bytes) {
                     Ok(v) => v,
-                    Err(e) => return Some(e),
+                    Err(e) => return Err(e),
                 };
                 match invites::issue(state, actor, server, fingerprint, input) {
                     Ok(v) => crate::manage::ok(v),
@@ -97,116 +199,181 @@ pub(super) fn dispatch(
         }
     } else if kind == "devices" || path.ends_with("/devices") {
         failure(StatusCode::NOT_FOUND, "not_supported")
-    } else if method == Method::GET && path == "roles" && query.is_none() {
-        let roles = std::iter::once(role_value(EffectiveRole::Owner))
-            .chain(ServerRole::ALL.iter().map(|role| role.summary()))
-            .collect::<Vec<_>>();
-        crate::manage::ok(json!({"roles":roles}))
+    } else if kind == "roles" && query.is_none() {
+        match (method.as_str(), path) {
+            ("GET", "roles") if bytes.is_empty() => {
+                let roles = std::iter::once(role_value(EffectiveRole::Owner))
+                    .chain(ServerRole::ALL.iter().map(|role| role.summary()))
+                    .chain(state.custom_roles(server).map_err(access_error)?)
+                    .collect::<Vec<_>>();
+                crate::manage::ok(json!({"roles":roles,"version":revision.to_string()}))
+            }
+            ("GET", "roles/capabilities") if bytes.is_empty() => {
+                crate::manage::ok(capability_catalog())
+            }
+            ("POST" | "PATCH", _) => {
+                let id = if method == Method::POST && path == "roles" {
+                    None
+                } else if method == Method::PATCH {
+                    Some(custom_id(path)?)
+                } else {
+                    return Err(failure(StatusCode::NOT_FOUND, "not_found"));
+                };
+                let input: RoleWrite = parse(bytes)?;
+                let (snapshot, role) = state
+                    .write_custom_role(
+                        actor,
+                        server,
+                        id,
+                        version(&input.expected_version)?,
+                        RoleFields {
+                            name: input.name,
+                            rank: input.rank,
+                            capabilities: input.capabilities,
+                        },
+                    )
+                    .map_err(access_error)?;
+                refresh(router, server, device)?;
+                crate::manage::ok(json!({"version":snapshot.revision.to_string(),"role":role}))
+            }
+            ("DELETE", _) => {
+                let id = custom_id(path)?;
+                let input: Version = parse(bytes)?;
+                let snapshot = state
+                    .delete_custom_role(actor, server, id, version(&input.expected_version)?)
+                    .map_err(access_error)?;
+                refresh(router, server, device)?;
+                crate::manage::ok(json!({"version":snapshot.revision.to_string(),"id":id}))
+            }
+            _ => failure(StatusCode::NOT_FOUND, "not_found"),
+        }
     } else if method == Method::GET && path == "users" {
         let mut offset = 0usize;
         let mut limit = 100usize;
         if let Some(q) = query {
             for field in q.split('&') {
                 let Some((key, value)) = field.split_once('=') else {
-                    return Some(failure(StatusCode::BAD_REQUEST, "invalid_request"));
+                    return Err(failure(StatusCode::BAD_REQUEST, "invalid_request"));
                 };
                 let Ok(n) = value.parse::<usize>() else {
-                    return Some(failure(StatusCode::BAD_REQUEST, "invalid_request"));
+                    return Err(failure(StatusCode::BAD_REQUEST, "invalid_request"));
                 };
                 match key {
                     "offset" if n <= 1000000 => offset = n,
                     "limit" if (1..=100).contains(&n) => limit = n,
-                    _ => return Some(failure(StatusCode::BAD_REQUEST, "invalid_request")),
+                    _ => return Err(failure(StatusCode::BAD_REQUEST, "invalid_request")),
                 }
             }
         }
         let next = (rows.len() > offset.saturating_add(limit)).then_some(offset + limit);
-        crate::manage::ok(
-            json!({"users":rows.into_iter().skip(offset).take(limit).map(|(id,r,n)|user(id,r,n,revision,u64::from(count(id)))).collect::<Vec<_>>(),"next_offset":next}),
-        )
-    } else if method == Method::PUT
-        && path.starts_with("users/")
-        && path.ends_with("/roles")
-        && query.is_none()
-    {
-        let target = &path[6..path.len() - 6];
-        let Ok(target) = Uuid::parse_str(target) else {
-            return Some(failure(StatusCode::NOT_FOUND, "not_found"));
+        let custom = state.custom_roles(server).map_err(access_error)?;
+        let users = rows
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .map(|(id, r, n)| {
+                user_row(
+                    state,
+                    server,
+                    &custom,
+                    id,
+                    r,
+                    n,
+                    revision,
+                    u64::from(count(id)),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        crate::manage::ok(json!({"users":users,"next_offset":next}))
+    } else if method == Method::PUT && query.is_none() && kind == "users" {
+        let Some((target, action)) = path.strip_prefix("users/").and_then(|p| p.split_once('/'))
+        else {
+            return Err(failure(StatusCode::NOT_FOUND, "not_found"));
         };
-        let input: Roles = match parse(bytes) {
-            Ok(v) => v,
-            Err(e) => return Some(e),
-        };
-        if input.expected_version != revision.to_string() {
-            return Some(failure(
-                StatusCode::PRECONDITION_FAILED,
-                "precondition_failed",
-            ));
-        }
-        if input.add.len() > 1
-            || input.remove.len() > 1
-            || input.remove.iter().any(|r| parse_role(r).is_none())
-        {
-            return Some(failure(StatusCode::BAD_REQUEST, "invalid_request"));
-        }
-        let role = match input.add.first() {
-            Some(id) => match parse_role(id) {
-                Some(r) => Some(r),
-                None => return Some(failure(StatusCode::FORBIDDEN, "forbidden")),
-            },
-            None => None,
-        };
-        match state.set_server_role(actor, server, target, role, revision) {
-            Ok(s) => {
-                // Revoke the old policy in the worker before returning success.
-                let worker = router
-                    .workers
-                    .lock()
-                    .ok()
-                    .and_then(|w| w.iter().find(|w| w.server_id() == server).cloned());
-                if let Some(worker) = worker {
-                    if subject(router, worker.as_ref(), device).is_err() {
-                        return Some(failure(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            "worker_unavailable",
-                        ));
-                    }
+        let target =
+            Uuid::parse_str(target).map_err(|_| failure(StatusCode::NOT_FOUND, "not_found"))?;
+        let (snapshot, role) = match action {
+            "roles" => {
+                let input: Roles = parse(bytes)?;
+                if input.add.len() > 1 || input.remove.len() > 1 {
+                    return Err(failure(StatusCode::BAD_REQUEST, "invalid_request"));
                 }
-                let name = rows
-                    .into_iter()
-                    .find(|(id, _, _)| *id == target)
-                    .and_then(|(_, _, n)| n);
-                match role {
-                    Some(r) => crate::manage::ok(user(
+                state
+                    .assign_role(
+                        actor,
+                        server,
                         target,
-                        EffectiveRole::Server(r),
-                        name,
-                        s.revision,
-                        u64::from(count(target)),
-                    )),
-                    None => crate::manage::ok(
-                        json!({"id":target,"display_name":name.unwrap_or_else(||target.to_string()),"minecraft_accounts":[{"uuid":target,"name":null}],"roles":[],"rank":0,"device_count":count(target),"machine_owner":false,"version":s.revision.to_string()}),
-                    ),
-                }
+                        input.add.first().map(String::as_str),
+                        input.remove.first().map(String::as_str),
+                        version(&input.expected_version)?,
+                    )
+                    .map_err(access_error)?
             }
-            Err(e) => access_error(e),
-        }
+            "overrides" => {
+                let input: Overrides = parse(bytes)?;
+                let (snapshot, role) = state
+                    .set_capability_overrides(
+                        actor,
+                        server,
+                        target,
+                        version(&input.expected_version)?,
+                        &input.overrides,
+                    )
+                    .map_err(access_error)?;
+                (snapshot, Some(role))
+            }
+            _ => return Err(failure(StatusCode::NOT_FOUND, "not_found")),
+        };
+        refresh(router, server, device)?;
+        let name = rows
+            .into_iter()
+            .find(|(id, _, _)| *id == target)
+            .and_then(|(_, _, name)| name);
+        let row = match role {
+            Some(role) => user_row(
+                state,
+                server,
+                &state.custom_roles(server).map_err(access_error)?,
+                target,
+                role,
+                name,
+                snapshot.revision,
+                u64::from(count(target)),
+            )?,
+            None => {
+                json!({"id":target,"display_name":name.clone().unwrap_or_else(||target.to_string()),"minecraft_accounts":[{"uuid":target,"name":name}],"roles":[],"overrides":[],"rank":0,"device_count":count(target),"machine_owner":false,"version":snapshot.revision.to_string()})
+            }
+        };
+        crate::manage::ok(row)
     } else {
         failure(StatusCode::NOT_FOUND, "not_supported")
     };
-    Some(result)
+    Ok(result)
 }
 
-fn access_error(e: vesta_control::ControlError) -> Reply {
+fn custom_id(path: &str) -> Result<Uuid, Reply> {
+    let id = path.strip_prefix("roles/").unwrap_or_default();
+    if id == "owner" || ServerRole::parse(id).is_ok() {
+        return Err(failure(StatusCode::FORBIDDEN, "management_forbidden"));
+    }
+    Uuid::parse_str(id).map_err(|_| failure(StatusCode::NOT_FOUND, "not_found"))
+}
+
+pub(super) fn access_error(e: vesta_control::ControlError) -> Reply {
+    use vesta_control::IdentityErrorCode as Code;
     match e {
-        vesta_control::ControlError::Rejected { code, .. } => failure(
-            match code {
-                vesta_control::IdentityErrorCode::Forbidden => StatusCode::FORBIDDEN,
-                vesta_control::IdentityErrorCode::NotFound => StatusCode::NOT_FOUND,
-                _ => StatusCode::CONFLICT,
-            },
-            "management_forbidden",
-        ),
+        vesta_control::ControlError::Rejected { code, .. } => match code {
+            Code::Forbidden | Code::LocalAuthorityRequired => {
+                failure(StatusCode::FORBIDDEN, "management_forbidden")
+            }
+            Code::NotFound => failure(StatusCode::NOT_FOUND, "not_found"),
+            Code::Conflict => failure(StatusCode::PRECONDITION_FAILED, "precondition_failed"),
+            Code::RoleInUse => failure(StatusCode::CONFLICT, "role_in_use"),
+            Code::InvalidRequest | Code::RoleInvalid => {
+                failure(StatusCode::BAD_REQUEST, "invalid_request")
+            }
+            _ => failure(StatusCode::CONFLICT, "management_forbidden"),
+        },
         _ => failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     }
 }
@@ -309,10 +476,7 @@ mod tests {
                     "{i} {path}"
                 );
             }
-            for path in [
-                "manage/devices",
-                "manage/users/invalid/devices",
-            ] {
+            for path in ["manage/devices", "manage/users/invalid/devices"] {
                 assert_eq!(
                     dispatch(
                         &router,
@@ -454,11 +618,13 @@ mod user_metadata_tests {
     use super::*;
     #[test]
     fn owner_rows_expose_only_aggregate_machine_device_metadata() {
-        let id=Uuid::new_v4();
-        let row=user(id,EffectiveRole::PrimaryOwner,Some("Owner".into()),1,2);
-        assert_eq!(row["device_count"],2);assert_eq!(row["machine_owner"],true);
+        let id = Uuid::new_v4();
+        let row = user(id, EffectiveRole::PrimaryOwner, Some("Owner".into()), 1, 2);
+        assert_eq!(row["device_count"], 2);
+        assert_eq!(row["machine_owner"], true);
         assert!(row.get("devices").is_none());
-        let row=user(id,EffectiveRole::Server(ServerRole::Admin),None,1,3);
-        assert_eq!(row["device_count"],3);assert_eq!(row["machine_owner"],false);
+        let row = user(id, EffectiveRole::Server(ServerRole::Admin), None, 1, 3);
+        assert_eq!(row["device_count"], 3);
+        assert_eq!(row["machine_owner"], false);
     }
 }

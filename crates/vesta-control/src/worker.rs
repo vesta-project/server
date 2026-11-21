@@ -34,6 +34,7 @@ pub enum ServerRole {
     /// Host-owner expansion, confined to this worker's server services.
     Owner,
     Admin,
+    Custom { id: Uuid, rank: i32 },
     Maintainer,
     Moderator,
     Viewer,
@@ -46,6 +47,7 @@ impl ServerRole {
         use crate::machine::owners::{EffectiveRole, ServerRole as HostRole};
         match role {
             EffectiveRole::PrimaryOwner | EffectiveRole::Owner => Self::Owner,
+            EffectiveRole::Custom { id, rank } => Self::Custom { id, rank },
             EffectiveRole::Server(role) => match role {
                 HostRole::Admin => Self::Admin,
                 HostRole::Maintainer => Self::Maintainer,
@@ -59,7 +61,7 @@ impl ServerRole {
     pub(crate) fn server_role(&self) -> Option<crate::machine::owners::ServerRole> {
         use crate::machine::owners::ServerRole as HostRole;
         match self {
-            Self::Owner => None,
+            Self::Owner | Self::Custom { .. } => None,
             Self::Admin => Some(HostRole::Admin),
             Self::Maintainer => Some(HostRole::Maintainer),
             Self::Moderator => Some(HostRole::Moderator),
@@ -73,11 +75,13 @@ impl ServerRole {
             || crate::identity::BuiltinRole::Owner.capabilities(),
             crate::machine::owners::ServerRole::capabilities,
         );
-        caps.iter().copied().filter(|&capability| {
+        caps.iter().copied().filter(|&capability| !matches!(self, Self::Custom { .. }) && self.permits_projection(capability))
+    }
+
+    pub fn permits_projection(&self, capability: Capability) -> bool {
             !capability.local_only()
-                && !matches!(capability, Capability::DevicesRevoke | Capability::RolesCreate | Capability::CredentialsManage | Capability::SecurityManage | Capability::RolesManage)
+                && !matches!(capability, Capability::DevicesRevoke | Capability::CredentialsManage | Capability::SecurityManage)
                 && (capability != Capability::AccessSourcesManage || matches!(self, Self::Owner))
-        })
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

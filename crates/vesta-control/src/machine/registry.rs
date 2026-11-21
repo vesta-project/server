@@ -1,6 +1,6 @@
 use super::{
     HostSnapshot, HostState,
-    owners::{Actor, EffectiveRole, HostRole, ServerRole, host_role_in, require_owner},
+    owners::{Actor, EffectiveRole, HostRole, host_role_in, require_owner},
     state::{changed, expect_revision, reject, snapshot_in, uuid},
 };
 use crate::{IdentityErrorCode as Code, Result};
@@ -241,7 +241,7 @@ pub fn effective_role_in(
             |r| r.get(0),
         )
         .optional()?;
-    role.map(|s| ServerRole::parse(&s).map(EffectiveRole::Server))
+    role.map(|s| super::roles::resolve_role(c, server, &s))
         .transpose()
 }
 pub(super) fn server_in(c: &Connection, id: Uuid) -> Result<Option<ServerEntry>> {

@@ -45,15 +45,7 @@ fn authority(
     server: Uuid,
     requested: Option<ServerRole>,
 ) -> crate::Result<()> {
-    super::registry::require_server(c, server)?;
-    let role = match actor {
-        Actor::LocalRecovery => Some(EffectiveRole::PrimaryOwner),
-        Actor::Account(id) => super::registry::effective_role_in(c, id, server)?,
-    };
-    if !role.is_some_and(|role| match requested {
-        Some(requested) => role.can_invite(requested),
-        None => role.permits(crate::identity::Capability::InvitationsCreate),
-    }) {
+    if !super::roles::can_invite_builtin(c, actor, server, requested)? {
         return Err(reject(Code::Forbidden));
     }
     Ok(())
@@ -199,8 +191,8 @@ pub fn redeem(
    // Invite redemption never downgrades existing authority or changes owners.
    if host_role_in(c,account)?.is_none() {
     let current=super::registry::effective_role_in(c,account,server)?;
-    let keeps_current = matches!(current,Some(EffectiveRole::Server(r)) if r.rank() >= desired.rank());
-    if !keeps_current {c.execute("INSERT INTO machine_server_grants(server_id,account_id,role) VALUES(?1,?2,?3) ON CONFLICT(server_id,account_id) DO UPDATE SET role=excluded.role",params![server.to_string(),account.to_string(),grant])?;}
+    let keeps_current = current.is_some_and(|role| role.rank() >= desired.rank());
+    if !keeps_current {super::roles::clear_overrides(c,server,account)?;c.execute("INSERT INTO machine_server_grants(server_id,account_id,role) VALUES(?1,?2,?3) ON CONFLICT(server_id,account_id) DO UPDATE SET role=excluded.role",params![server.to_string(),account.to_string(),grant])?;}
    }
    c.execute("UPDATE machine_invites SET uses=uses+1 WHERE id=?1",[&id])?;
    c.execute("INSERT INTO machine_invite_receipts VALUES(?1,?2,?3)",params![id,account.to_string(),device.device_id.to_string()])?;

@@ -192,6 +192,7 @@ pub fn finish(
         if record.permanently {
             lifecycle::insert_purge(c, record, &record.removed_at, record.keep_backups)?;
         }
+        c.execute("DELETE FROM machine_roles WHERE server_id=?", [record.server_id.to_string()])?;
         c.execute(
             "DELETE FROM machine_server_grants WHERE server_id=?",
             [record.server_id.to_string()],

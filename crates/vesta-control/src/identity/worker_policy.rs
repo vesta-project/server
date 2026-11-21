@@ -164,16 +164,24 @@ pub(crate) fn resolve(
         return Ok(Some(PolicySnapshot::none()));
     };
     let server_role = grant.role.server_role();
-    let builtin = Some(server_role.map_or(BuiltinRole::Owner, |role| role.builtin()));
-    let allows = grant.role.capabilities()
-        .filter(|c| grant.capabilities.iter().any(|s| s == c.id()))
+    let (builtin, rank, id) = match grant.role {
+        crate::worker::ServerRole::Custom { id, rank } => (None, rank, id.to_string()),
+        _ => {
+            let builtin = server_role.map_or(BuiltinRole::Owner, |role| role.builtin());
+            (Some(builtin), builtin.rank(), builtin.id().into())
+        }
+    };
+    let allows = grant.capabilities.iter()
+        .filter_map(|id| Capability::from_id(id))
+        .filter(|&cap| grant.role.permits_projection(cap) &&
+            (builtin.is_some_and(|role| role.capabilities().contains(&cap)) || crate::machine::roles::host_delegable(cap)))
         .map(|c| RoleGrant::new(c, ResourceScope::ALL))
         .collect::<crate::Result<Vec<_>>>()?;
     Ok(Some(PolicySnapshot::from_resolved(
         Some(subject.principal.clone()),
         Some(subject.device.clone()),
-        server_role.map_or(BuiltinRole::Owner.rank(), |role| role.rank()),
-        vec![RoleId::parse(server_role.map_or(BuiltinRole::Owner.id(), |role| role.id()))?],
+        rank,
+        vec![RoleId::parse(&id)?],
         builtin.into_iter().collect(),
         allows,
         vec![],
