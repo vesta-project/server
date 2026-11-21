@@ -71,6 +71,72 @@ fn inventory_batch_provenance_requires_the_current_file_hash() {
     assert!(changed.provider.is_none());
     assert!(changed.display_provider.is_none());
 }
+
+#[test]
+fn content_identification_records_matches_for_unknown_resource_files() {
+    let f = Fixture::open();
+    f.write("mods/renamed.jar", b"known bytes");
+    f.write("plugins/renamed.jar.disabled", b"known bytes");
+    f.write("plugins/unknown.jar", b"unknown bytes");
+    f.write("plugins/config.yml", b"known bytes");
+    f.write("resourcepacks/renamed.zip", b"known bytes");
+    f.db.write(|c| {
+        for (bytes, identity) in [
+            (
+                &b"known bytes"[..],
+                r#"{"provider":"modrinth","project_id":"project","version_id":"version"}"#,
+            ),
+            (&b"unknown bytes"[..], "null"),
+        ] {
+            c.execute(
+                "INSERT INTO server_content_hashes VALUES(?,?)",
+                params![hex::encode(sha2::Sha512::digest(bytes)), identity],
+            )?;
+        }
+        Ok(())
+    })
+    .unwrap();
+
+    let world = f.browser.world(&f.owner).unwrap();
+    let inventory = || {
+        f.browser
+            .content_inventory(&f.owner, Some("fabric".into()), "1.21.1".into(), &world)
+            .unwrap()
+    };
+    let before = inventory();
+    assert!(before.items.iter().all(|item| item.provider.is_none()));
+    f.browser.identify_unknown_in_background(&before);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let paths = loop {
+        let recorded =
+            f.db.read(|c| {
+                let mut query =
+                    c.prepare("SELECT path FROM server_content_provenance ORDER BY path")?;
+                Ok(query
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .unwrap();
+        if recorded.len() >= 3 || std::time::Instant::now() >= deadline {
+            break recorded;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert_eq!(paths, ["mods/renamed.jar", "plugins/renamed.jar.disabled", "resourcepacks/renamed.zip"]);
+    let after = inventory();
+    assert_eq!(
+        after
+            .items
+            .iter()
+            .filter(|item| item
+                .provider
+                .as_ref()
+                .is_some_and(|p| p.project_id == "project"))
+            .count(),
+        3
+    );
+}
+
 impl Clock for FixedClock {
     fn millis(&self) -> i64 {
         1_791_115_200_000

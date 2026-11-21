@@ -250,6 +250,7 @@ impl fmt::Debug for FileRead {
 #[derive(Clone)]
 pub struct FileBrowser {
     startup_whitelist: std::sync::Arc<startup_whitelist::StartupState>,
+    content_identification: std::sync::Arc<std::sync::Mutex<content::IdentificationState>>,
     db: StateDatabase,
     root: root::Root,
     audit: vesta_state::audit::AuditLog,
@@ -285,6 +286,7 @@ impl FileBrowser {
         let root = root::Root::open(root, &protected)?;
         Ok(Self {
             startup_whitelist: std::sync::Arc::new(startup_whitelist::StartupState::open(&db)?),
+            content_identification: Default::default(),
             audit: vesta_state::audit::AuditLog::new(db.clone())?,
             db,
             root,

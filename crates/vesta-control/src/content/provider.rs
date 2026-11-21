@@ -318,9 +318,21 @@ impl UreqProviderClient {
     }
     /// One optional bounded lookup; successful negative results are cacheable.
     pub fn identify_sha512(&self, hash: &str) -> Result<Option<super::ContentProvider>> {
-        ExpectedHash::Sha512(hash.into()).validate()?;
+        Ok(self.identify_sha512_batch(&[hash])?.remove(hash))
+    }
+
+    pub(crate) fn identify_sha512_batch(
+        &self,
+        hashes: &[&str],
+    ) -> Result<std::collections::BTreeMap<String, super::ContentProvider>> {
+        if hashes.is_empty() || hashes.len() > 32 {
+            return Err(ContentError::InvalidMetadata);
+        }
+        for hash in hashes {
+            ExpectedHash::Sha512((*hash).into()).validate()?;
+        }
         let client = http::agent_with_timeout(std::time::Duration::from_secs(5));
-        let body = serde_json::json!({"hashes":[hash],"algorithm":"sha512"}).to_string();
+        let body = serde_json::json!({"hashes":hashes,"algorithm":"sha512"}).to_string();
         let mut response = client
             .post("https://api.modrinth.com/v2/version_files")
             .header("Content-Type", "application/json")
@@ -349,23 +361,30 @@ impl UreqProviderClient {
         }
         let versions: std::collections::BTreeMap<String, ModrinthVersion> =
             serde_json::from_slice(&bytes).map_err(|_| ContentError::InvalidMetadata)?;
-        let Some(version) = versions.get(hash) else {
-            return Ok(None);
-        };
-        if !version
-            .files
-            .iter()
-            .any(|f| f.hashes.sha512.eq_ignore_ascii_case(hash))
-        {
-            return Err(ContentError::InvalidMetadata);
+        let mut found = std::collections::BTreeMap::new();
+        for &hash in hashes {
+            let Some(version) = versions.get(hash) else {
+                continue;
+            };
+            if !version
+                .files
+                .iter()
+                .any(|f| f.hashes.sha512.eq_ignore_ascii_case(hash))
+            {
+                return Err(ContentError::InvalidMetadata);
+            }
+            validate_id(&version.id)?;
+            validate_id(&version.project_id)?;
+            found.insert(
+                hash.to_owned(),
+                super::ContentProvider {
+                    provider: "modrinth".into(),
+                    project_id: version.project_id.clone(),
+                    version_id: version.id.clone(),
+                },
+            );
         }
-        validate_id(&version.id)?;
-        validate_id(&version.project_id)?;
-        Ok(Some(super::ContentProvider {
-            provider: "modrinth".into(),
-            project_id: version.project_id.clone(),
-            version_id: version.id.clone(),
-        }))
+        Ok(found)
     }
     /// API key is trusted server configuration, not a request field.
     pub fn new(curseforge_api_key: Option<String>) -> Self {
