@@ -30,3 +30,5 @@ mod enrollment_tests;
 mod signin_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod requirement_tests;

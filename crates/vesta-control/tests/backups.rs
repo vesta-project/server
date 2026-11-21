@@ -1076,3 +1076,116 @@ fn per_profile_collection_cap_prunes_oldest_unkept_snapshot() {
     assert_ne!(snapshots[0].id, oldest);
     assert!(backups.storage().unwrap().profiles[0].collection_bytes <= max);
 }
+
+// ---- Requirement tests: backup byte limits and failure automation ----
+
+fn failure_events(f: &Fixture) -> Vec<(String, String)> {
+    f.db.read(|c| {
+        let exists: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='backup_failure_events')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(Vec::new());
+        }
+        let mut q = c.prepare("SELECT profile,error_code FROM backup_failure_events ORDER BY rowid")?;
+        let rows = q
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    })
+    .unwrap()
+}
+
+// REQ backups: a single backup larger than max_snapshot_bytes fails with a clear
+// code, keeps earlier backups, and emits one durable failure event for automation.
+#[test]
+fn req_oversized_backup_fails_and_emits_a_failure_event() {
+    let mut f = fixture();
+    f.settings.profiles[0].keep_last = 0;
+    f.settings.profiles[0].max_snapshot_bytes = Some(1);
+    let (backups, _, _) = open(&f, false);
+    backups.init_repository().unwrap();
+    assert_eq!(
+        backup_error(&backups, "stopped").as_deref(),
+        Some(vesta_control::backups::SNAPSHOT_SIZE_LIMIT)
+    );
+    assert!(backups.snapshots("stopped").unwrap().is_empty());
+    assert_eq!(
+        failure_events(&f),
+        vec![("stopped".to_owned(), vesta_control::backups::SNAPSHOT_SIZE_LIMIT.to_owned())]
+    );
+}
+
+// REQ backups: successful backups emit no failure events.
+#[test]
+fn req_successful_backup_emits_no_failure_event() {
+    let f = fixture();
+    let (backups, _, _) = open(&f, false);
+    backups.init_repository().unwrap();
+    assert_eq!(backup_error(&backups, "stopped"), None);
+    assert!(failure_events(&f).is_empty());
+}
+
+// REQ backups: a backup started by a failure-triggered workflow does not trigger
+// failure workflows again when it fails (no failure loops).
+#[test]
+fn req_failure_workflow_backups_do_not_retrigger_failure_events() {
+    let mut f = fixture();
+    f.settings.profiles[0].max_snapshot_bytes = Some(1);
+    let (backups, _, _) = open(&f, false);
+    backups.init_repository().unwrap();
+    let id = backups
+        .submit(&owner(), "stopped", JobKind::Backup, Some("automation-failure.run.0.0"))
+        .unwrap();
+    assert!(wait(&backups, &id).error_code.is_some());
+    assert!(failure_events(&f).is_empty());
+    // An ordinary automation backup still reports its failure.
+    let id = backups
+        .submit(&owner(), "stopped", JobKind::Backup, Some("automation.run.0.0"))
+        .unwrap();
+    assert!(wait(&backups, &id).error_code.is_some());
+    assert_eq!(failure_events(&f).len(), 1);
+}
+
+// REQ backups: a collection cap the newest backup alone cannot fit under fails the
+// backup and never deletes older backups to make room.
+#[test]
+fn req_collection_cap_never_empties_the_collection() {
+    let mut f = fixture();
+    f.settings.profiles[0].keep_last = 0;
+    let (backups, _, _) = open(&f, false);
+    backups.init_repository().unwrap();
+    assert_eq!(backup_error(&backups, "stopped"), None);
+    let before = backups.snapshots("stopped").unwrap();
+    drop(backups);
+    f.settings.profiles[0].max_collection_bytes = Some(1);
+    let (backups, _, _) = open(&f, false);
+    assert_eq!(
+        backup_error(&backups, "stopped").as_deref(),
+        Some(vesta_control::backups::COLLECTION_SIZE_LIMIT)
+    );
+    let after = backups.snapshots("stopped").unwrap();
+    assert_eq!(
+        before.iter().map(|s| &s.id).collect::<Vec<_>>(),
+        after.iter().map(|s| &s.id).collect::<Vec<_>>()
+    );
+    let usage = backups.storage().unwrap();
+    let profile = usage.profiles.iter().find(|p| p.name == "stopped").unwrap();
+    assert_eq!(profile.max_collection_bytes, Some(1));
+}
+
+// REQ backups: profile limits are validated when the policy is saved.
+#[test]
+fn req_profile_byte_limits_must_be_positive() {
+    let f = fixture();
+    let (backups, _, _) = open(&f, false);
+    backups.init_repository().unwrap();
+    let mut policy = PolicyDocument::from_policy(&backups.policy().profiles, &backups.policy().limits);
+    policy.profiles[0].max_snapshot_bytes = Some(0);
+    assert!(backups.set_policy(&owner(), None, &policy).is_err());
+    policy.profiles[0].max_snapshot_bytes = None;
+    policy.profiles[0].max_collection_bytes = Some(0);
+    assert!(backups.set_policy(&owner(), None, &policy).is_err());
+}
