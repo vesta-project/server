@@ -138,6 +138,9 @@ impl Worker {
     pub fn handle(&self) -> WorkerHandle {
         self.handle.clone()
     }
+    pub(crate) fn recover_removal_fence(&self, generation: u64) -> vesta_state::Result<()> {
+        crate::identity::worker_policy::recover_removal_fence(self.handle.network.database(), generation)
+    }
     pub fn request_system_shutdown(&self) -> Result<(), HostError> {
         self.host.request_system_shutdown()
     }

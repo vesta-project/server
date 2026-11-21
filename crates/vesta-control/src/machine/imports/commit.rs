@@ -345,10 +345,15 @@ impl ImportJobs {
         let text = fs::read(dir.join("host.toml")).map_err(|_| JobError::NOT_FOUND)?;
         let config = HostConfiguration::parse_toml(&text, &dir, Path::new("host.toml"))
             .map_err(|_| JobError("configure_failed"))?;
-        let host_id = self.0.host.snapshot()?.host_id;
-        Worker::from_registry(Some(&entry), config, clock, None, host_id)
+        let snapshot = self.0.host.snapshot()?;
+        let worker = Worker::from_registry(Some(&entry), config, clock, None, snapshot.host_id)
             .map_err(|_| JobError("worker_unavailable"))?
-            .ok_or(JobError::NOT_FOUND)
+            .ok_or(JobError::NOT_FOUND)?;
+        if crate::machine::removed::has_pending(&self.0.host, server_id)? {
+            worker.recover_removal_fence(snapshot.auth_generation)
+                .map_err(|_| JobError("worker_unavailable"))?;
+        }
+        Ok(worker)
     }
 
     pub(super) fn subject(

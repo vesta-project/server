@@ -86,6 +86,28 @@ pub(crate) fn whitelist_owners(
     let owners = serde_json::from_str::<WorkerPolicy>(&document).map(|policy| policy.whitelist_owners).unwrap_or_default();
     Ok(Some(owners))
 }
+/// Old removals could persist an empty policy one generation ahead of the
+/// Host before committing the deletion. A new worker for a registered server
+/// with a pending receipt waits for the current Host policy after this reset.
+pub(crate) fn recover_removal_fence(db: &StateDatabase, generation: u64) -> vesta_state::Result<()> {
+    let Ok(fence) = i64::try_from(generation.saturating_add(1)) else {
+        return Ok(());
+    };
+    db.write(|c| {
+        let document: Option<String> = c.query_row(
+            "SELECT document FROM worker_policy WHERE singleton=1 AND generation=?",
+            [fence],
+            |row| row.get(0),
+        ).optional()?;
+        if document.and_then(|value| serde_json::from_str::<WorkerPolicy>(&value).ok())
+            .is_some_and(|policy| policy.grants.is_empty() && policy.whitelist_owners.is_empty())
+        {
+            c.execute("UPDATE worker_policy SET generation=0,document='' WHERE singleton=1", [])?;
+        }
+        Ok(())
+    })
+}
+
 pub(crate) fn authenticate(
     db: &StateDatabase,
     s: &ServerSubject,
@@ -197,5 +219,45 @@ fn role_permits(role: &ServerRole, capability: Capability) -> bool {
                 | Capability::TasksView
         ),
         ServerRole::Player => BuiltinRole::PackUser.capabilities().contains(&capability),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use uuid::Uuid;
+
+    #[test]
+    fn recovers_only_the_empty_legacy_removal_fence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = StateDatabase::open(
+            vesta_state::StateDirectory::new(tmp.path().join("worker"), None).unwrap(),
+            Arc::new(vesta_state::SystemClock),
+        ).unwrap();
+        let mut policy = WorkerPolicy {
+            host_id: Uuid::new_v4(),
+            server_id: Uuid::new_v4(),
+            generation: 4,
+            grants: vec![],
+            whitelist_owners: Default::default(),
+        };
+        initialize(&db, policy.host_id, policy.server_id).unwrap();
+        sync(&db, &policy).unwrap();
+        let generation = || db.read(|c| Ok(c.query_row("SELECT generation FROM worker_policy", [], |row| row.get::<_, i64>(0))?)).unwrap();
+        recover_removal_fence(&db, 2).unwrap();
+        assert_eq!(generation(), 4);
+        recover_removal_fence(&db, 3).unwrap();
+        assert_eq!(generation(), 0);
+        policy.generation = 3;
+        policy.grants.push(crate::worker::WorkerGrant {
+            account_id: Uuid::new_v4(),
+            device_id: Uuid::new_v4(),
+            role: ServerRole::Owner,
+            capabilities: vec![Capability::StatusView.id().into()],
+        });
+        sync(&db, &policy).unwrap();
+        recover_removal_fence(&db, 2).unwrap();
+        assert_eq!(generation(), 3);
     }
 }

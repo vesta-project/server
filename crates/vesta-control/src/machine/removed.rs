@@ -75,6 +75,25 @@ fn schema(c: &rusqlite::Connection) -> crate::Result<()> {
     c.execute_batch("CREATE TABLE IF NOT EXISTS machine_removal_receipts(account TEXT NOT NULL,key TEXT NOT NULL,server TEXT NOT NULL,name TEXT NOT NULL,record TEXT NOT NULL,complete INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(account,key))")?;
     Ok(())
 }
+/// Look for an interrupted request without creating or modifying a receipt.
+pub(super) fn has_pending(host: &HostState, server: Uuid) -> JobResult<bool> {
+    Ok(host.read(|c| {
+        let exists: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='machine_removal_receipts')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(false);
+        }
+        Ok(c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM machine_removal_receipts WHERE server=? AND complete=0)",
+            [server.to_string()],
+            |row| row.get(0),
+        )?)
+    })?)
+}
+
 pub fn prepare(
     host: &HostState,
     account: Uuid,

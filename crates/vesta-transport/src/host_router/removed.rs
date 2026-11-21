@@ -263,22 +263,8 @@ pub(super) fn dispatch(router: &HostRouter, device: &Device, path: &str, bytes: 
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
-        let generation = match state.snapshot() {
-            Ok(s) => s.auth_generation.saturating_add(1),
-            Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
-        };
-        if worker
-            .sync_policy(WorkerPolicy {
-                host_id: state.snapshot().unwrap().host_id,
-                server_id: id,
-                generation,
-                grants: Vec::new(),
-                whitelist_owners: Default::default(),
-            })
-            .is_err()
-        {
-            return failure(StatusCode::SERVICE_UNAVAILABLE, "worker_unavailable");
-        }
+        // Keep the current durable policy while shutdown can still fail. Host
+        // admission is locked here, and finish revokes Host access on commit.
     }
     let owned = router.owned.lock().ok().and_then(|mut w| {
         w.iter()
