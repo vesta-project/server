@@ -774,8 +774,16 @@ fn detect_launch(path: &Path, listing: &Listing, loader: Option<Loader>) -> Opti
             jar("fabric-server-launch.jar").or_else(|| prefixed("fabric-server-mc."))
         }
         Some(Loader::Quilt) => jar("quilt-server-launch.jar"),
-        Some(Loader::Purpur) => prefixed("purpur-"),
-        Some(Loader::Paper) => prefixed("paper-"),
+        // Panels name these differently: AMP keeps Paper as paperclip.jar next to the vanilla
+        // minecraft_server.jar it patches, so the single-jar fallback below cannot pick.
+        Some(Loader::Purpur) => prefixed("purpur-")
+            .or_else(|| jar("purpur.jar"))
+            .or_else(|| jar("paperclip.jar"))
+            .or_else(|| jar("server.jar")),
+        Some(Loader::Paper) => prefixed("paper-")
+            .or_else(|| jar("paper.jar"))
+            .or_else(|| jar("paperclip.jar"))
+            .or_else(|| jar("server.jar")),
         Some(Loader::Vanilla) => prefixed("minecraft_server").or_else(|| jar("server.jar")),
         None => None,
     };

@@ -77,6 +77,15 @@ fn detects_vanilla_paper_fabric_forge_and_neoforge_layouts() {
     write(paper.join("bukkit.yml"), "");
     write(paper.join("cache/mojang_1.21.1.jar"), "");
     fs::create_dir_all(paper.join("plugins")).unwrap();
+    // AMP: Paper as paperclip.jar beside the vanilla jar it patches.
+    let amp = base.join("amp-paper");
+    write(amp.join("server.properties"), "");
+    write(amp.join("paperclip.jar"), "");
+    write(amp.join("minecraft_server.jar"), "");
+    write(amp.join("bukkit.yml"), "");
+    write(amp.join("config/paper-global.yml"), "");
+    write(amp.join("version_history.json"), "{\"currentVersion\":\"git-Paper-1 (MC: 1.21.1)\"}");
+    fs::create_dir_all(amp.join("plugins")).unwrap();
     let fabric = base.join("fabric");
     write(fabric.join("server.properties"), "");
     write(fabric.join("fabric-server-launch.jar"), "");
@@ -133,6 +142,10 @@ fn detects_vanilla_paper_fabric_forge_and_neoforge_layouts() {
         report.detected.launch.unwrap().relative_path,
         "paper-1.21.1-123.jar"
     );
+
+    let report = inspect(&b, "amp-paper");
+    assert_eq!(report.detected.loader, Some(Loader::Paper));
+    assert_eq!(report.detected.launch.unwrap().relative_path, "paperclip.jar");
 
     let report = inspect(&b, "fabric");
     assert_eq!(report.detected.loader, Some(Loader::Fabric));
