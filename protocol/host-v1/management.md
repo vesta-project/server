@@ -4,12 +4,12 @@ The server paths below are relative to `/v1/servers/{serverId}/manage`. Successf
 
 ## Roles
 
-- GET `/roles` returns `{version,roles}`. Each role has `{id,name,rank,builtin,capabilities:[{capability,scope:"*"}]}`. Custom role IDs are generated UUIDs and survive renames. Built-ins are immutable presets.
+- GET `/roles` returns `{version,roles}`. Each role has `{id,name,rank,builtin,capabilities:[{capability,scope:"*"}]}`. Custom role IDs are generated UUIDs and survive renames. A custom rank is an integer from 1 to 79. Built-ins are immutable presets.
 - GET `/roles/capabilities` returns `{capabilities:[{id,label,description,group,delegable}]}`. It includes every stable capability ID. `delegable` reports whether the capability is eligible for a server grant, independent of the caller's own authority.
 - POST `/roles` accepts `{expected_version,name,rank,capabilities:[{capability,scope:"*"}]}`. PATCH `/roles/{roleId}` accepts the same fields with only `expected_version` required. Both return `{version,role}`. To duplicate a preset, submit its desired capabilities and a lower rank in a new role.
 - DELETE `/roles/{roleId}` accepts `{expected_version}` and returns `{version,id}`. A role in use returns 409 `role_in_use`.
 - PUT `/users/{accountId}/roles` accepts `{expected_version,add:[roleId],remove:[roleId]}` and returns the updated user. As before, a single added role replaces the current role and an empty add list clears it. Clearing a role clears overrides.
-- PUT `/users/{accountId}/overrides` accepts `{expected_version,overrides:[{capability,effect:"allow"|"deny"}]}` and replaces the override set. It returns the updated user. User rows expose `overrides` as an array. Deny takes precedence over role grants.
+- PUT `/users/{accountId}/overrides` accepts `{expected_version,overrides:[{capability,effect:"allow"|"deny"}]}` and replaces the override set. It returns the updated user. User rows expose `overrides` as an array of permanent grants. Deny takes precedence over role grants.
 
 Role editors must have `roles.create` for creation and either `roles.create` or `roles.manage` to edit or delete a custom role. Overrides require `roles.manage`. Host owners can use all of these actions. Delegation checks the current and proposed rank and capabilities, including those of existing assignees. Administrator and Owner are reserved for local authority when issuing new grants. Invalid fields return 400 `invalid_request`, unknown IDs return 404 `not_found`, and disallowed changes return 403 `management_forbidden`.
 

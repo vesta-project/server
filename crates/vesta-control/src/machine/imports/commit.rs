@@ -338,11 +338,13 @@ impl ImportJobs {
     /// Build the registered server's worker through the H05 composition entry
     /// point. The caller (host lifecycle) owns the returned worker.
     pub fn create_worker(&self, server_id: Uuid, clock: Arc<dyn Clock>) -> JobResult<Worker> {
-        self.open_worker(server_id, clock, false)
+        self.open_worker(server_id, clock, true)
     }
 
     pub fn open_worker(&self, server_id: Uuid, clock: Arc<dyn Clock>, boot: bool) -> JobResult<Worker> {
-        self.0.host.server(server_id)?.ok_or(JobError::NOT_FOUND)?;
+        self.0.host.server(server_id)?
+            .filter(|entry| entry.state != ServerState::Deleted)
+            .ok_or(JobError::NOT_FOUND)?;
         let dir = self.server_dir(server_id);
         let text = fs::read(dir.join("host.toml")).map_err(|_| JobError::NOT_FOUND)?;
         let config = HostConfiguration::parse_toml(&text, &dir, Path::new("host.toml"))

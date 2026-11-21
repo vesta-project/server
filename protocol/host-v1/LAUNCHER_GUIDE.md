@@ -130,13 +130,11 @@ followed by a stop, sleep or kill. A server whose crash loop suspended
 automatic restarts is not started again. Nothing is started twice: a server
 whose game is still running is left alone.
 
-An explicit startup policy always wins over this default: the sleep policy's
-`on_agent_start` (`stay_stopped`, `sleep` or `start`, set through the existing
-sleep/policy document) or the server's host.toml `[process]` setting. Status
-keeps reporting `on_agent_start` as before (`stay_stopped` when nothing is set
-explicitly), so show the default as "Comes back as it was" when the sleep
-policy's `onAgentStart` is null, rather than as "Stay stopped". Clients need no
-action after a restart: poll the server list or status as usual.
+For startup settings, use GET or PATCH
+`/v1/servers/{serverId}/manage/startup`. Its `on_agent_start` is the configured
+action, `start_delay_seconds` staggers automatic starts, and `last_startup`
+reports the applied action and outcome. See [Host management extensions](management.md).
+Clients can continue polling the server list or status after a restart.
 
 ## Realtime for this slice
 
@@ -283,13 +281,15 @@ Import stopped-state codes and suggested text:
 
 ### Effective startup policy
 
-Server status `on_agent_start` is `restore_previous` when no stored or host.toml policy was explicitly chosen. This means resume the server's last lifecycle state after an agent restart. Explicit `stay_stopped`, `sleep`, and `start` choices and the local stay-stopped override retain their meaning.
+Read the Host-managed policy from `manage/startup`. Standalone configuration
+and the sleep policy supply the fallback for older servers until a Host policy is
+saved. The local stay-stopped override still applies during startup.
 
 Provider transfers use a 3s connect timeout, 120s idle read timeout, and a bounded overall job deadline. Idempotent metadata GETs retry transient transport/429/5xx failures with backoff. Installer catalogue queries retain their existing sub-15s total budget and persisted catalogue cache; installation metadata and artifacts use the longer job budget. Pack downloads retain destination validation, byte limits and their caller deadline.
 
 ### Server access / Vesta Server access
 
-Use per-server manage/users, manage/roles and manage/invitations for the Access tab. Owners listed there cannot be demoted or removed there. Manage users with PUT users/{accountId}/roles using {add:[roleId],remove:[oldRoleId],expected_version:user.version}. Built-in ids are owner, administrator, moderator and player. Use host device routes in Vesta Server access. If the server projects access-sources.manage, expose only the owner whitelist sync toggle. Read and update it through manage/access-sources with sync_whitelist and the current expected_version. Invite proof and redemption details are in README. Generated invites currently need an out-of-band host address (endpoints are empty).
+Use per-server manage/users, manage/roles and manage/invitations for the Access tab. Owners listed there cannot be demoted or removed there. Manage users with PUT users/{accountId}/roles using {add:[roleId],remove:[oldRoleId],expected_version:user.version}. Read built-in and custom role IDs from manage/roles. Read labels and descriptions from manage/roles/capabilities. Use host device routes in Vesta Server access. If the server projects access-sources.manage, expose only the owner whitelist sync toggle. Read and update it through manage/access-sources with sync_whitelist and the current expected_version. Invite proof and redemption details are in README. Generated invites currently need an out-of-band host address (endpoints are empty).
 
 A server grant change synchronizes its worker policy before returning success. Interim streams also close when the host authorization generation changes (within the existing 250ms polling interval), including removal/demotion of a server grant.
 

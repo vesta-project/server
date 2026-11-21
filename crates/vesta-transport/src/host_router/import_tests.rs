@@ -255,8 +255,8 @@ impl Host {
             ImportJobs::open(state.clone(), folders.clone(), &base.join("servers"), env).unwrap();
         let factory = jobs.clone();
         let mut router = HostRouter::new(identity, "Test machine".into(), folders)
-            .with_imports(jobs, move |id| {
-                factory.create_worker(id, Arc::new(vesta_state::SystemClock))
+            .with_startup_worker_factory(jobs, move |id, boot| {
+                factory.open_worker(id, Arc::new(vesta_state::SystemClock), boot)
             })
             .with_create_catalogue(catalogue.unwrap_or_else(|| Arc::new(FakeCatalogue)));
         if let Some(creator) = creator {

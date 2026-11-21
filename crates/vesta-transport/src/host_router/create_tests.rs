@@ -957,6 +957,17 @@ fn running_servers_come_back_after_a_restart_and_stopped_ones_stay_stopped() {
     }
     stop_server(&host, &servers[1], "stopped-stop-0001");
     assert_eq!(card_state(&host, &servers[0]), "online");
+    let startup = format!("/v1/servers/{}/manage/startup", servers[0]);
+    let (status, policy) = host.call("GET", &startup, Value::Null, &host.owner);
+    assert_eq!(status, 200, "{policy}");
+    assert_eq!(policy["data"]["on_agent_start"], "restore_previous");
+    let (status, edited) = host.call("PATCH", &startup, json!({
+        "expected_version": policy["data"]["version"],
+        "start_delay_seconds": 2,
+    }), &host.owner);
+    assert_eq!(status, 200, "{edited}");
+    assert_eq!(edited["data"]["start_delay_seconds"], 2);
+
 
     // The Vesta Server stops: the OS ends its game with it (no lifecycle
     // operation is involved), then the service comes back.
@@ -977,6 +988,7 @@ fn running_servers_come_back_after_a_restart_and_stopped_ones_stay_stopped() {
         Arc::new(FakeEnv::default()),
         Some(Arc::new(FakeInstaller::default())),
     );
+    let boot = std::time::Instant::now();
     assert!(host.router.restore_registered_workers().is_empty());
     let until = std::time::Instant::now() + Duration::from_secs(60);
     while card_state(&host, &servers[0]) != "online" {
@@ -987,6 +999,11 @@ fn running_servers_come_back_after_a_restart_and_stopped_ones_stay_stopped() {
         );
         std::thread::sleep(Duration::from_millis(200));
     }
+    assert!(boot.elapsed() >= Duration::from_secs(2));
+    let (status, report) = host.call("GET", &startup, Value::Null, &host.owner);
+    assert_eq!(status, 200, "{report}");
+    assert_eq!(report["data"]["last_startup"]["applied_action"], "start");
+    assert_eq!(report["data"]["last_startup"]["outcome"], "applied");
     assert!(host.router.restore_registered_workers().is_empty());
     // Give a wrongly started server time to show up.
     std::thread::sleep(Duration::from_secs(3));
