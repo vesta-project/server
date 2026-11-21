@@ -100,6 +100,22 @@ impl CopiedExport {
     pub(crate) fn snapshot(&self) -> Result<CopySnapshot> {
         self.snapshot_observed(|_| {})
     }
+
+    /// Keep original activity timestamps in a private local staging copy.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn preserve_modified_times(
+        &self,
+        snapshot: &CopySnapshot,
+        target: &Path,
+    ) -> Result<()> {
+        for entry in snapshot.entries.iter().filter(|entry| !entry.directory) {
+            let modified = self.file(entry)?.metadata().map_err(io_error)?.modified().map_err(io_error)?;
+            let path = RelativePath::parse(&entry.path)?;
+            File::open(target.join(path.as_str())).map_err(io_error)?
+                .set_modified(modified).map_err(io_error)?;
+        }
+        Ok(())
+    }
     /// Snapshot with running totals reported after every hashed file.
     pub(crate) fn snapshot_observed(
         &self,

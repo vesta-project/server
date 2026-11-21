@@ -7,6 +7,8 @@ mod arguments;
 pub mod browse;
 pub mod inspection;
 pub mod jobs;
+#[cfg(target_os = "linux")]
+pub mod prepare;
 pub(super) mod properties;
 
 pub use amp::{CandidateScan, CandidatesResponse, ImportCandidate, ImportWarning, Remediation};

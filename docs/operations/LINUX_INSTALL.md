@@ -25,6 +25,19 @@ Rerunning replaces binaries atomically and preserves host.toml, TLS identity, ho
 
 ## Import permission
 
+For a private source that cannot be granted read access directly, stop it and
+disable auto-restart, then prepare a copy on the host:
+
+```bash
+sudo vesta import prepare '/absolute/path/to/Minecraft'
+```
+
+Paste the printed path into the launcher's import picker. The command makes a
+read-only staging copy under `/srv/vesta-imports` for the service account and
+leaves the original permissions and data alone. It requires free space for
+the staged and final copies. Delete the prepared directory after the import
+finishes. Preparing a copy does not require `setfacl` or a service restart.
+
 ```bash
 sudo vesta import-root add '/home/amp/.ampdata/instances/Survival/Minecraft'
 # Custom installation:

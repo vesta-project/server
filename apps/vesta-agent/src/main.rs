@@ -64,6 +64,16 @@ fn main() -> ExitCode {
         Ok(None) => (),
     }
     #[cfg(target_os = "linux")]
+    if dispatch_args.first().is_some_and(|arg| arg == "import") {
+        return match vesta_setup::linux_import::run(&dispatch_args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("Vesta import: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    #[cfg(target_os = "linux")]
     if dispatch_args
         .first()
         .and_then(|s| s.to_str())
