@@ -747,6 +747,8 @@ fn host_startup_upgrades_original_v8_without_upload_table_and_purges_orphan_stag
     // retain v31 tables while claiming user_version=8: reapplying v31 correctly
     // refuses those duplicates. Remove their schema before that simulation.
     offline.execute_batch("DROP TABLE management_invitation_uses; DROP TABLE whitelist_sync_actor; DROP TABLE whitelist_sync_members;").unwrap();
+    // v33 file_trash columns must also be absent, or reapplying v33 refuses the duplicates.
+    offline.execute_batch("ALTER TABLE file_trash DROP COLUMN batch_id; ALTER TABLE file_trash DROP COLUMN directory_identity; ALTER TABLE file_trash DROP COLUMN directory;").unwrap();
     // These v27 tables must also be absent in the simulated original v8 database.
     offline.execute_batch("DROP TABLE pack_import_warnings; DROP TABLE pack_publication_history; DROP TABLE pack_workspace_uploads; DROP TABLE pack_workspace_published; DROP TABLE pack_workspace_receipts; DROP TABLE pack_workspace_blobs; DROP TABLE pack_workspace;").unwrap();
     offline
