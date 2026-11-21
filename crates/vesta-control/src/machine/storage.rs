@@ -260,6 +260,17 @@ pub fn measure(
     Ok(result)
 }
 
+fn trash_bytes(state: &Path) -> JobResult<u64> {
+    let mut bytes = 0u64;
+    for name in ["trash", "trash-folders"] {
+        let path = state.join(name);
+        if removed::plain_repository(&path) {
+            bytes = bytes.saturating_add(tree_bytes(&path, &[])?);
+        }
+    }
+    Ok(bytes)
+}
+
 pub fn measure_instance(
     config: &crate::config::HostConfiguration,
     measured_ms: i64,
@@ -286,10 +297,7 @@ pub fn measure_instance(
     let mut exclude = vec![config.state()];
     exclude.extend(repository.as_deref());
     let (mut parts, largest) = server_parts(None, game, &exclude)?;
-    let trash = config.state().join("trash");
-    if removed::plain_repository(&trash) {
-        parts.trash = tree_bytes(&trash, &[])?;
-    }
+    parts.trash = trash_bytes(config.state())?;
     if let Some(path) = repository {
         parts.backups = tree_bytes(&path, &[])?;
     }
@@ -338,10 +346,12 @@ fn server_parts(
                 (false, "game") => continue,
                 (false, "private") => {
                     let private = entry.path();
-                    if removed::plain_repository(&private.join("state")) {
-                        let trash = private.join("state/trash");
-                        parts.trash = tree_bytes(&trash, &[])?;
-                        parts.other = parts.other.saturating_add(tree_bytes(&private, &[&trash])?);
+                    let state = private.join("state");
+                    if removed::plain_repository(&state) {
+                        let trash = state.join("trash");
+                        let folders = state.join("trash-folders");
+                        parts.trash = trash_bytes(&state)?;
+                        parts.other = parts.other.saturating_add(tree_bytes(&private, &[&trash, &folders])?);
                     } else {
                         parts.other = parts.other.saturating_add(tree_bytes(&private, &[])?);
                     }

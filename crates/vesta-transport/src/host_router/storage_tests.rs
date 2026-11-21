@@ -27,6 +27,7 @@ fn host_storage_is_owner_only_and_reads_background_measurements() {
         ("game/server.jar", 22),
         ("backups/repository/backup", 5),
         ("private/marker", 3),
+        ("private/state/trash-folders/item/nested/data", 11),
     ] {
         let path = dir.join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -52,7 +53,7 @@ fn host_storage_is_owner_only_and_reads_background_measurements() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|server| server["bytes"] == 68)
+            .any(|server| server["bytes"] == 79)
         {
             break snapshot;
         }
@@ -64,7 +65,7 @@ fn host_storage_is_owner_only_and_reads_background_measurements() {
     assert_eq!(
         snapshot["servers"][0]["parts"],
         json!({
-            "worlds":14,"content":15,"backups":5,"logs":9,"software":22,"trash":0,"other":3
+            "worlds":14,"content":15,"backups":5,"logs":9,"software":22,"trash":11,"other":3
         })
     );
     let volume = &snapshot["volumes"][0];
@@ -76,7 +77,7 @@ fn host_storage_is_owner_only_and_reads_background_measurements() {
     std::fs::write(dir.join("game/world/level.dat"), vec![1; 141]).unwrap();
     assert_eq!(
         host.call("GET", path, Value::Null, &host.owner).1["servers"][0]["bytes"],
-        68
+        79
     );
     let permanent = json!({
         "confirmName":"Measured","idempotencyKey":Uuid::new_v4(),"permanently":true
@@ -84,7 +85,7 @@ fn host_storage_is_owner_only_and_reads_background_measurements() {
     let server_path = format!("/v1/host/servers/{id}");
     let (status, receipt) = host.call("DELETE", &server_path, permanent.clone(), &host.owner);
     assert_eq!(status, 202, "{receipt}");
-    assert_eq!(receipt["bytes"], 68);
+    assert_eq!(receipt["bytes"], 79);
     let deadline = std::time::Instant::now() + Duration::from_secs(25);
     loop {
         let (_, snapshot) = host.call("GET", path, Value::Null, &host.owner);
