@@ -227,7 +227,11 @@ impl ServerWorker for WorkerHandle {
         use crate::machine::registry::ServerState;
         use vesta_game_runtime::readiness::Readiness;
         Some(match self.network.runtime().readiness().ok()?.readiness {
-            Readiness::Stopped => ServerState::Stopped,
+            Readiness::Stopped => match self.network.sleep().public_state(self.network.runtime()) {
+                Ok(crate::motd::State::Sleeping) => ServerState::Sleeping,
+                Ok(crate::motd::State::Waking) => ServerState::Starting,
+                _ => ServerState::Stopped,
+            },
             Readiness::Starting => ServerState::Starting,
             Readiness::Ready => ServerState::Online,
             Readiness::Degraded(_) => ServerState::Failed,

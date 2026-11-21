@@ -168,7 +168,7 @@ fn job_routes(
             Err(e) => return e,
         };
         let accepted = tryjob!(jobs.create_apply(&binding, &request, key));
-        spawn_apply(router, &service, &binding, &accepted.job_id);
+        spawn_apply(&service, &binding, &accepted.job_id);
         return accepted_reply(serde_json::to_value(accepted).expect("wire"));
     }
     let rest = path.trim_start_matches("/v1/host/creates/jobs/");
@@ -203,7 +203,7 @@ fn job_routes(
         "resume" => {
             let job = tryjob!(jobs.create_resume(&binding, id));
             if job.state == "applying" {
-                spawn_apply(router, &service, &binding, id);
+                spawn_apply(&service, &binding, id);
             }
             accepted_reply(job_json(&job))
         }
@@ -231,56 +231,15 @@ fn service(router: &HostRouter) -> Option<Service> {
         catalogue: router.catalogue.clone()?,
     })
 }
-fn spawn_apply(router: &HostRouter, service: &Service, binding: &OwnerBinding, id: &str) {
+fn spawn_apply(service: &Service, binding: &OwnerBinding, id: &str) {
     let (worker, owner, id) = (service.clone(), binding.clone(), id.to_owned());
-    let router = router.clone();
     // A second runner for the same job is refused by `run_create_apply` itself.
     background(move || {
         let _ = worker
             .jobs
             .run_create_apply(&owner, &id, worker.installer.as_ref());
-        start_created(&router, &owner, &id);
     });
 }
-/// Share admission with removal through worker creation and start submission.
-fn start_created(router: &HostRouter, owner: &OwnerBinding, id: &str) {
-    let Some(jobs) = router.imports() else { return };
-    let handle = {
-        let Ok(_admission) = router.removal_lock.lock() else { return };
-        if router.is_stopping() || jobs.is_stopping() {
-            return;
-        }
-        let Ok(job) = jobs.create_status(owner, id) else { return };
-        if job.state != "ready" || job.error.is_some() {
-            return;
-        }
-        let Some(server) = job.server_id else { return };
-        let Ok(handle) = router.import_worker(server) else {
-            let _ = jobs.installed_start_failed(id);
-            return;
-        };
-        if router.is_stopping() || jobs.is_stopping() {
-            return;
-        }
-        if jobs.create_start(owner, id, &handle).is_err() {
-            let _ = jobs.installed_start_failed(id);
-            return;
-        }
-        handle
-    };
-    loop {
-        if router.is_stopping() || jobs.is_stopping() {
-            break;
-        }
-        let next = jobs.create_readiness(owner, id, &handle).map(|job| job.state);
-        router.refresh_server_states();
-        if !next.is_ok_and(|state| state == "starting") {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-}
-
 fn background(work: impl FnOnce() + Send + 'static) {
     // If no thread can be started the job stays pollable; a host restart
     // marks it `interrupted` and the owner resumes it.

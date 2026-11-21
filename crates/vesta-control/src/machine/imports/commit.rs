@@ -578,11 +578,6 @@ impl ImportJobs {
         Ok(())
     }
 
-    /// Preserve an installed server when its worker cannot start.
-    pub fn installed_start_failed(&self, job_id: &str) -> JobResult<()> {
-        self.resolvable(job_id, "ready", "start_failed")
-    }
-
     fn resolvable(&self, job_id: &str, state: &str, code: &str) -> JobResult<()> {
         let now = self.0.host.now_ms();
         let error = (!code.is_empty()).then_some(code);

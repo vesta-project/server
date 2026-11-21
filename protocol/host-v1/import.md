@@ -104,7 +104,7 @@ Import stopped-state codes and suggested text:
 - `bind_address_cleared` warns: "The imported server will bind to all interfaces; Vesta clears server-ip in the copy."
 - `launch_arguments_unsupported`: "The launch arguments contain unsupported options or paths. Use a self-contained server folder with supported Forge arguments, then check again."
 
-Installed servers start automatically after registration. Jobs advance through `starting` to `online`; `ready` is an internal registration checkpoint or a recoverable start failure with `error: start_failed|game_port_in_use`. A failed start retains the installed server; POST jobs/{jobId}/start retries. Launchers show View server after successful installation.
+Installation completes at `ready` with Minecraft stopped. The launcher can open and configure the server immediately. Starting Minecraft requires an explicit action. A failed start retains the files and returns the job to `ready` with `error: start_failed|game_port_in_use`.
 
 Imports record confidently identified software and Minecraft versions in per-server software state with the trusted generated launch; unresolved software remains unknown.
 

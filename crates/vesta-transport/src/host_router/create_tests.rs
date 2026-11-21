@@ -530,10 +530,9 @@ fn owner_creates_vanilla_reviews_applies_starts_and_reaches_online() {
     installer.hold.store(false, Ordering::SeqCst);
     let ready = host.create_wait(&id, Duration::from_secs(60), |j| {
         !matches!(j["state"].as_str(), Some("applying" | "starting"))
-            && (j["state"] != "ready" || !j["error"].is_null())
     });
-    assert_eq!(ready["state"], "online", "{ready}");
-    assert_eq!(ready["phase"], "starting");
+    assert_eq!(ready["state"], "ready", "{ready}");
+    assert_eq!(ready["phase"], "registering");
     assert!(ready["error"].is_null());
     assert_eq!(ready["serverId"], server);
     assert_eq!(installer.installs.load(Ordering::SeqCst), 1);
@@ -559,7 +558,7 @@ fn owner_creates_vanilla_reviews_applies_starts_and_reaches_online() {
     assert_eq!(servers.len(), 1);
     assert_eq!(servers[0]["serverId"], server);
     assert_eq!(servers[0]["name"], "Survival");
-    assert_eq!(servers[0]["state"], "online");
+    assert_eq!(servers[0]["state"], "registered");
     assert_eq!(
         servers[0]["software"],
         json!({"kind":"vanilla","version":"26.1"})
@@ -570,10 +569,20 @@ fn owner_creates_vanilla_reviews_applies_starts_and_reaches_online() {
     assert_eq!(host.job_action(&id, "cancel").0, 409);
     assert_eq!(host.job_action(&id, "resume").0, 409);
 
+    let (status, before_start) = host.call(
+        "GET",
+        &format!("/v1/servers/{server}/manage/server/status"),
+        Value::Null,
+        &host.owner,
+    );
+    assert_eq!(status, 200, "{before_start}");
+    assert_eq!(before_start["data"]["state"], "stopped");
+    assert!(before_start["data"]["generation"].is_null());
+
     // Start returns at once; readiness is polled until the game is online.
     let (status, started) = host.job_action(&id, "start");
     assert_eq!(status, 202, "{started}");
-    assert_eq!(started["state"], "online", "{started}");
+    assert_eq!(started["state"], "starting", "{started}");
     assert_eq!(started["phase"], "starting");
     let online = host.create_wait(&id, Duration::from_secs(120), |j| j["state"] != "starting");
     assert_eq!(online["state"], "online", "{online}");
@@ -826,7 +835,6 @@ fn cancel_mid_install_releases_the_reservation_and_destination() {
     assert_eq!((status, requested), (200, json!({"state":"applying"})));
     let done = host.create_wait(&id, Duration::from_secs(30), |j| {
         !matches!(j["state"].as_str(), Some("applying" | "starting"))
-            && (j["state"] != "ready" || !j["error"].is_null())
     });
     assert_eq!(done["state"], "cancelled", "{done}");
     assert!(!host.temp.path().join("servers").join(&server).exists());
@@ -860,9 +868,8 @@ fn back_to_back_creates_get_distinct_resources_and_survive_a_restart() {
         let id = accepted["jobId"].as_str().unwrap().to_owned();
         let ready = host.create_wait(&id, Duration::from_secs(60), |j| {
             !matches!(j["state"].as_str(), Some("applying" | "starting"))
-                && (j["state"] != "ready" || !j["error"].is_null())
         });
-        assert_eq!(ready["state"], "online", "{ready}");
+        assert_eq!(ready["state"], "ready", "{ready}");
         created.push((id, defaults));
     }
     let (first, second) = (&created[0].1, &created[1].1);
@@ -938,9 +945,8 @@ fn running_servers_come_back_after_a_restart_and_stopped_ones_stay_stopped() {
         let id = accepted["jobId"].as_str().unwrap().to_owned();
         let ready = host.create_wait(&id, Duration::from_secs(60), |j| {
             !matches!(j["state"].as_str(), Some("applying" | "starting"))
-                && (j["state"] != "ready" || !j["error"].is_null())
         });
-        assert_eq!(ready["state"], "online", "{ready}");
+        assert_eq!(ready["state"], "ready", "{ready}");
         if name != "Never" {
             assert_eq!(host.job_action(&id, "start").0, 202);
             let online =
@@ -1052,9 +1058,8 @@ fn interrupted_create_resumes_after_a_restart_without_duplicates() {
     assert_eq!(resumed["phase"], "resolving");
     let ready = host.create_wait(&id, Duration::from_secs(60), |j| {
         !matches!(j["state"].as_str(), Some("applying" | "starting"))
-            && (j["state"] != "ready" || !j["error"].is_null())
     });
-    assert_eq!(ready["state"], "online", "{ready}");
+    assert_eq!(ready["state"], "ready", "{ready}");
     assert_eq!(installer.installs.load(Ordering::SeqCst), 1);
     let servers = host.servers();
     assert_eq!(servers.len(), 1);
@@ -1107,9 +1112,8 @@ fn real_vanilla_and_fabric_creates_run_together() {
         let server = accepted["serverId"].as_str().unwrap().to_owned();
         let ready = host.create_wait(&id, Duration::from_secs(900), |j| {
             !matches!(j["state"].as_str(), Some("applying" | "starting"))
-                && (j["state"] != "ready" || !j["error"].is_null())
         });
-        assert_eq!(ready["state"], "online", "{ready}");
+        assert_eq!(ready["state"], "ready", "{ready}");
         let (status, started) = host.job_action(&id, "start");
         assert_eq!(status, 202, "{started}");
         let online = host.create_wait(&id, Duration::from_secs(600), |j| j["state"] != "starting");
@@ -1345,9 +1349,8 @@ fn provider_modpack_reviews_installs_its_content_and_reaches_online() {
     let server = accepted["serverId"].as_str().unwrap().to_owned();
     let ready = host.create_wait(&id, Duration::from_secs(60), |j| {
         !matches!(j["state"].as_str(), Some("applying" | "starting"))
-            && (j["state"] != "ready" || !j["error"].is_null())
     });
-    assert_eq!(ready["state"], "online", "{ready}");
+    assert_eq!(ready["state"], "ready", "{ready}");
     // Base software once, then the reviewed pack's content, then registration.
     assert_eq!(installer.installs.load(Ordering::SeqCst), 1);
     let installed = installer.pack_installs.lock().unwrap().clone();
@@ -1538,7 +1541,6 @@ fn uploaded_packs_are_owner_bound_checked_and_expire() {
         Duration::from_secs(60),
         |j| {
             !matches!(j["state"].as_str(), Some("applying" | "starting"))
-                && (j["state"] != "ready" || !j["error"].is_null())
         },
     );
     assert_eq!(failed["state"], "failed", "{failed}");
@@ -1670,9 +1672,8 @@ fn modpack_creates_install_software_once_for_vanilla_and_loader_packs() {
         let id = accepted["jobId"].as_str().unwrap();
         let ready = host.create_wait(id, Duration::from_secs(120), |j| {
             !matches!(j["state"].as_str(), Some("applying" | "starting"))
-                && (j["state"] != "ready" || !j["error"].is_null())
         });
-        assert_eq!(ready["state"], "online", "{ready}");
+        assert_eq!(ready["state"], "ready", "{ready}");
         // One software install per create: the base install, nothing else.
         assert_eq!(installer.installs.load(Ordering::SeqCst), before + 1);
         let server = accepted["serverId"].as_str().unwrap();
@@ -1761,7 +1762,6 @@ fn cancel_during_pack_install_releases_everything() {
     assert_eq!((status, requested), (200, json!({"state":"applying"})));
     let done = host.create_wait(&id, Duration::from_secs(60), |j| {
         !matches!(j["state"].as_str(), Some("applying" | "starting"))
-            && (j["state"] != "ready" || !j["error"].is_null())
     });
     assert_eq!(done["state"], "cancelled", "{done}");
     assert!(!host.temp.path().join("servers").join(&server).exists());
@@ -1812,9 +1812,8 @@ fn real_modrinth_fabric_modpack_create_reaches_online() {
     let dir = host.temp.path().join("servers").join(&server);
     let ready = host.create_wait(&id, Duration::from_secs(1800), |j| {
         !matches!(j["state"].as_str(), Some("applying" | "starting"))
-            && (j["state"] != "ready" || !j["error"].is_null())
     });
-    assert_eq!(ready["state"], "online", "{ready}");
+    assert_eq!(ready["state"], "ready", "{ready}");
     let mods: Vec<_> = std::fs::read_dir(dir.join("game/mods"))
         .unwrap()
         .flatten()
@@ -1880,9 +1879,8 @@ fn server_session_projects_the_callers_roles_and_capabilities() {
     let id = accepted["jobId"].as_str().unwrap();
     let ready = host.create_wait(id, Duration::from_secs(60), |j| {
         !matches!(j["state"].as_str(), Some("applying" | "starting"))
-            && (j["state"] != "ready" || !j["error"].is_null())
     });
-    assert_eq!(ready["state"], "online", "{ready}");
+    assert_eq!(ready["state"], "ready", "{ready}");
     let server: Uuid = accepted["serverId"].as_str().unwrap().parse().unwrap();
     host.router.import_worker(server).expect("worker");
     let path = format!("/v1/servers/{server}/manage/session");
@@ -2103,10 +2101,9 @@ fn restore_lists_detached_backups_and_restores_one_as_a_new_server() {
         Duration::from_secs(60),
         |j| {
             !matches!(j["state"].as_str(), Some("applying" | "starting"))
-                && (j["state"] != "ready" || !j["error"].is_null())
         },
     );
-    assert_eq!(ready["state"], "online", "{ready}");
+    assert_eq!(ready["state"], "ready", "{ready}");
     let live: Uuid = accepted["serverId"].as_str().unwrap().parse().unwrap();
     let live_dir = host.temp.path().join("servers").join(live.to_string());
     std::fs::write(live_dir.join("game/server.jar"), version_jar("26.1")).unwrap();
@@ -2199,10 +2196,9 @@ fn restore_lists_detached_backups_and_restores_one_as_a_new_server() {
     let id = accepted["jobId"].as_str().unwrap();
     let ready = host.create_wait(id, Duration::from_secs(60), |j| {
         !matches!(j["state"].as_str(), Some("applying" | "starting"))
-            && (j["state"] != "ready" || !j["error"].is_null())
     });
     assert_eq!(ready["state"], "ready", "{ready}");
-    assert_eq!(ready["error"], "start_failed");
+    assert!(ready["error"].is_null(), "{ready}");
     let server = accepted["serverId"].as_str().unwrap();
     let dir = host.temp.path().join("servers").join(server);
     assert_eq!(
@@ -2295,10 +2291,9 @@ fn restore_of_a_created_server_reinstalls_its_software_and_reaches_online() {
         Duration::from_secs(60),
         |j| {
             !matches!(j["state"].as_str(), Some("applying" | "starting"))
-                && (j["state"] != "ready" || !j["error"].is_null())
         },
     );
-    assert_eq!(ready["state"], "online", "{ready}");
+    assert_eq!(ready["state"], "ready", "{ready}");
     let origin: Uuid = accepted["serverId"].as_str().unwrap().parse().unwrap();
     let dir = host.temp.path().join("servers").join(origin.to_string());
     // The real layout: the software lives in install/, game/ has no jar.
@@ -2347,9 +2342,8 @@ fn restore_of_a_created_server_reinstalls_its_software_and_reaches_online() {
     assert_eq!(status, 202, "{accepted}");
     let ready = host.create_wait(&id, Duration::from_secs(60), |j| {
         !matches!(j["state"].as_str(), Some("applying" | "starting"))
-            && (j["state"] != "ready" || !j["error"].is_null())
     });
-    assert_eq!(ready["state"], "online", "{ready}");
+    assert_eq!(ready["state"], "ready", "{ready}");
     assert_eq!(installer.installs.load(Ordering::SeqCst), 2);
     let server = accepted["serverId"].as_str().unwrap().to_owned();
     let dir = host.temp.path().join("servers").join(&server);
@@ -2417,7 +2411,6 @@ fn corrupted_snapshots_are_refused_before_anything_is_published() {
         Duration::from_secs(60),
         |j| {
             !matches!(j["state"].as_str(), Some("applying" | "starting"))
-                && (j["state"] != "ready" || !j["error"].is_null())
         },
     );
     assert_eq!(
@@ -2527,7 +2520,6 @@ fn restore_cancel_and_resume_leave_no_duplicates() {
     env.java_gate.store(false, Ordering::SeqCst);
     let done = host.create_wait(&id, Duration::from_secs(30), |j| {
         !matches!(j["state"].as_str(), Some("applying" | "starting"))
-            && (j["state"] != "ready" || !j["error"].is_null())
     });
     assert_eq!(done["state"], "cancelled", "{done}");
     assert!(!host.temp.path().join("servers").join(&server).exists());
@@ -2555,10 +2547,9 @@ fn restore_cancel_and_resume_leave_no_duplicates() {
     assert_eq!(status, 202, "{resumed}");
     let ready = host.create_wait(&id, Duration::from_secs(60), |j| {
         !matches!(j["state"].as_str(), Some("applying" | "starting"))
-            && (j["state"] != "ready" || !j["error"].is_null())
     });
     assert_eq!(ready["state"], "ready", "{ready}");
-    assert_eq!(ready["error"], "start_failed");
+    assert!(ready["error"].is_null(), "{ready}");
     let servers = host.servers();
     assert_eq!(servers.len(), 1);
     assert_eq!(servers[0]["serverId"], accepted["serverId"]);
@@ -2644,9 +2635,8 @@ fn real_vanilla_backup_restores_as_a_new_server_and_reaches_online() {
     let original = accepted["serverId"].as_str().unwrap().to_owned();
     let ready = host.create_wait(&id, Duration::from_secs(900), |j| {
         !matches!(j["state"].as_str(), Some("applying" | "starting"))
-            && (j["state"] != "ready" || !j["error"].is_null())
     });
-    assert_eq!(ready["state"], "online", "{ready}");
+    assert_eq!(ready["state"], "ready", "{ready}");
     assert_eq!(host.job_action(&id, "start").0, 202);
     let online = host.create_wait(&id, Duration::from_secs(600), |j| j["state"] != "starting");
     assert_eq!(online["state"], "online", "{online}");
@@ -2719,9 +2709,8 @@ fn real_vanilla_backup_restores_as_a_new_server_and_reaches_online() {
     let restored = accepted["serverId"].as_str().unwrap().to_owned();
     let ready = host.create_wait(&id, Duration::from_secs(900), |j| {
         !matches!(j["state"].as_str(), Some("applying" | "starting"))
-            && (j["state"] != "ready" || !j["error"].is_null())
     });
-    assert_eq!(ready["state"], "online", "{ready}");
+    assert_eq!(ready["state"], "ready", "{ready}");
     let restored_dir = host.temp.path().join("servers").join(&restored);
     assert_eq!(
         std::fs::read(restored_dir.join("game/world/vesta-restore-proof.txt")).unwrap(),
@@ -2784,9 +2773,8 @@ fn real_loader_less_modrinth_pack_creates_on_vanilla_and_reaches_online() {
     let server = accepted["serverId"].as_str().unwrap().to_owned();
     let ready = host.create_wait(&id, Duration::from_secs(1800), |j| {
         !matches!(j["state"].as_str(), Some("applying" | "starting"))
-            && (j["state"] != "ready" || !j["error"].is_null())
     });
-    assert_eq!(ready["state"], "online", "{ready}");
+    assert_eq!(ready["state"], "ready", "{ready}");
     host.router
         .import_worker(server.parse().unwrap())
         .expect("worker");
@@ -2814,7 +2802,11 @@ fn owners_remove_running_and_stopped_servers_and_replay() {
         let id=job["jobId"].as_str().unwrap();
         let (status,accepted)=host.create_apply(&job,"remove-create",json!({}));assert_eq!(status,202,"{accepted}");
         let server=accepted["serverId"].as_str().unwrap();
-        let ready=host.create_wait(id,Duration::from_secs(120),|j| j["state"]=="online" || j["state"]=="failed");assert_eq!(ready["state"],"online","{ready}");
+        let ready = host.create_wait(id, Duration::from_secs(120), |j| j["state"] != "applying");
+        assert_eq!(ready["state"], "ready", "{ready}");
+        assert_eq!(host.job_action(id, "start").0, 202);
+        let online = host.create_wait(id, Duration::from_secs(120), |j| j["state"] != "starting");
+        assert_eq!(online["state"], "online", "{online}");
         if stop_first {
             let worker=host.router.owned_handle(server.parse().unwrap()).unwrap();
             let device=host.state.devices(Actor::LocalRecovery).unwrap().into_iter().find(|d| d.device_id==host.devices.0).unwrap();
@@ -2834,6 +2826,7 @@ fn owners_remove_running_and_stopped_servers_and_replay() {
         host.state.write(|c| {c.execute("UPDATE machine_import_jobs SET state='online' WHERE server_id=?",[server])?;Ok(())}).unwrap();
         let stranger=host.state.devices(Actor::LocalRecovery).unwrap().into_iter().find(|d| d.device_id==host.devices.1).unwrap();
         let owner=host.state.snapshot().unwrap().primary_account_id.unwrap();
+        host.router.refresh_server_states();
         for role in [None,Some(ServerRole::Admin),Some(ServerRole::Moderator),Some(ServerRole::PackUser)] {
             host.state.set_server_role(Actor::Account(owner),server.parse().unwrap(),stranger.account_id,role,host.state.snapshot().unwrap().revision).unwrap();
             let (status,reply)=host.call("DELETE",&path,body.clone(),&host.stranger);assert_eq!(status,403,"{reply}");
