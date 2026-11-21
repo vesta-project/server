@@ -811,6 +811,19 @@ impl ManagementAccess {
             PermissionMutation::Access(input) => {
                 let mut settings = access::source_settings(repo)?;
                 expected(&input.expected_version, &json!({"settings":settings}))?;
+                let worker: bool = repo.connection().query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='worker_policy')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if worker && (input.anonymous.is_some()
+                    || input.new_user.is_some()
+                    || input.whitelist.is_some()
+                    || input.whitelist_enabled.is_some()
+                    || input.password.is_some())
+                {
+                    return Err(PermissionError::Forbidden);
+                }
                 if input.anonymous.is_none()
                     && input.new_user.is_none()
                     && input.whitelist.is_none()
@@ -840,14 +853,16 @@ impl ManagementAccess {
                 if let Some(v) = &input.password {
                     settings.password = v.clone();
                 }
-                safe_sources(repo, &settings)?;
-                for id in [
-                    &settings.anonymous,
-                    &settings.new_user,
-                    &settings.whitelist,
-                    &settings.password,
-                ] {
-                    delegated(policy, &role(repo, id)?.grants)?;
+                if !worker {
+                    safe_sources(repo, &settings)?;
+                    for id in [
+                        &settings.anonymous,
+                        &settings.new_user,
+                        &settings.whitelist,
+                        &settings.password,
+                    ] {
+                        delegated(policy, &role(repo, id)?.grants)?;
+                    }
                 }
                 let json =
                     serde_json::to_string(&settings).map_err(|_| PermissionError::Unavailable)?;

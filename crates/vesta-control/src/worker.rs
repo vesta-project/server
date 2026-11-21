@@ -28,7 +28,7 @@ pub struct ServerSubject {
     pub expires_at_ms: i64,
     pub capabilities: Vec<String>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServerRole {
     /// Host-owner expansion, confined to this worker's server services.
@@ -37,7 +37,7 @@ pub enum ServerRole {
     Moderator,
     Player,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerGrant {
     pub account_id: Uuid,
@@ -52,6 +52,9 @@ pub struct WorkerPolicy {
     pub server_id: Uuid,
     pub generation: u64,
     pub grants: Vec<WorkerGrant>,
+    /// Verified profiles of machine owners, independent of the devices they use.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub whitelist_owners: std::collections::BTreeMap<Uuid, String>,
 }
 /// Cloneable admission handle; dropping it never stops the game. The owner must
 /// retain Worker until shutdown completes (including a timeout return).

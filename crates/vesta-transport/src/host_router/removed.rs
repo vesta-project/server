@@ -273,6 +273,7 @@ pub(super) fn dispatch(router: &HostRouter, device: &Device, path: &str, bytes: 
                 server_id: id,
                 generation,
                 grants: Vec::new(),
+                whitelist_owners: Default::default(),
             })
             .is_err()
         {

@@ -470,6 +470,8 @@ fn subject(
             server_id: worker.server_id(),
             generation: snap.auth_generation,
             grants,
+            whitelist_owners: state.owners(Actor::LocalRecovery).map_err(|_| unavailable())?
+                .into_iter().filter_map(|owner| owner.name.map(|name| (owner.account_id, name))).collect(),
         })
         .map_err(|_| unavailable())?;
     let now = state.now_ms();

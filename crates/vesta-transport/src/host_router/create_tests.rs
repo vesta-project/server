@@ -1900,11 +1900,11 @@ fn server_session_projects_the_callers_roles_and_capabilities() {
                     "devices.",
                     "credentials.",
                     "security.",
-                    "access-sources.",
                 ]
                 .iter()
                 .any(|p| c.starts_with(p))
             })
+            .filter(|c| c != "access-sources.manage" || role == BuiltinRole::Owner)
             .collect();
         caps.sort();
         caps

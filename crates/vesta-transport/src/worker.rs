@@ -50,7 +50,6 @@ fn dispatch_inner(
         "users",
         "devices",
         "invitations",
-        "access-sources",
         "sftp",
     ]
     .iter()
@@ -167,6 +166,7 @@ mod tests {
                     role: ServerRole::Admin,
                     capabilities: subject.capabilities.clone(),
                 }],
+                whitelist_owners: Default::default(),
             };
             assert!(handle.authorize(subject.clone()).is_err());
             handle.sync_policy(policy.clone()).unwrap();
@@ -296,6 +296,45 @@ mod tests {
         }
         assert!(f._temp.path().join("game/created-by-worker").is_dir());
     }
+    #[test]
+    fn host_owner_can_toggle_whitelist_sync_without_changing_access_sources() {
+        let f = Fixture::new();
+        assert_eq!(f.request(f.subject.clone(), "access-sources", None).status(), 403);
+        let mut policy = f.policy.clone();
+        policy.generation = 2;
+        policy.grants[0].role = ServerRole::Owner;
+        policy.grants[0].capabilities = BuiltinRole::Owner.capabilities().iter()
+            .filter(|capability| !capability.local_only()).map(|capability| capability.id().into()).collect();
+        policy.whitelist_owners.insert(f.subject.account_id, "VerifiedOwner".into());
+        f.handle.sync_policy(policy.clone()).unwrap();
+        let mut subject = f.subject.clone();
+        subject.generation = policy.generation;
+        subject.capabilities = policy.grants[0].capabilities.clone();
+        let response = f.request(subject.clone(), "access-sources", None);
+        assert_eq!(response.status(), 200);
+        let crate::ReplyBody::Bytes(bytes) = response.body() else { panic!("expected JSON"); };
+        let response: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        let version = &response["data"]["version"];
+        assert!(version.is_string(), "{response}");
+        let patch = |key, body: serde_json::Value| {
+            dispatch_inner(&f.handle, subject.clone(), WorkerRequest {
+                method: &Method::PATCH,
+                path: "access-sources",
+                query: None,
+                body: &serde_json::to_vec(&body).unwrap(),
+                idempotency_key: Some(key),
+                if_match: None, if_none_match: None, range: None, if_range: None,
+            })
+        };
+        let denied = patch("whitelist-worker-denied", serde_json::json!({"expected_version":version,"anonymous":"player"}));
+        assert_eq!(denied.status(), 403);
+        let changed = patch("whitelist-worker-toggle", serde_json::json!({"expected_version":version,"sync_whitelist":true}));
+        assert_eq!(changed.status(), 200);
+        let crate::ReplyBody::Bytes(bytes) = changed.body() else { panic!("expected JSON"); };
+        let response: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(response["data"]["settings"]["sync_whitelist"], true, "{response}");
+    }
+
     #[test]
     fn trusted_worker_refuses_cross_server_stale_future_expired_and_missing_capability() {
         let f = Fixture::new();

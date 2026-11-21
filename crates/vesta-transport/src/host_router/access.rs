@@ -48,7 +48,7 @@ pub(super) fn dispatch(
     let kind = path.split('/').next()?;
     if !matches!(
         kind,
-        "users" | "roles" | "devices" | "invitations" | "access-sources"
+        "users" | "roles" | "devices" | "invitations"
     ) {
         return None;
     }
@@ -98,7 +98,7 @@ pub(super) fn dispatch(
             }
             _ => failure(StatusCode::NOT_FOUND, "not_found"),
         }
-    } else if kind == "devices" || path.ends_with("/devices") || kind == "access-sources" {
+    } else if kind == "devices" || path.ends_with("/devices") {
         failure(StatusCode::NOT_FOUND, "not_supported")
     } else if method == Method::GET && path == "roles" && query.is_none() {
         crate::manage::ok(
@@ -313,7 +313,6 @@ mod tests {
             }
             for path in [
                 "manage/devices",
-                "manage/access-sources",
                 "manage/users/invalid/devices",
             ] {
                 assert_eq!(

@@ -120,6 +120,9 @@ pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> JobResult<()> {
 /// Complete effective snapshot for a new server: every host owner's active
 /// devices with the host-owner expansion. No per-server grants exist yet.
 pub fn owner_policy(host: &HostState, server_id: Uuid) -> JobResult<WorkerPolicy> {
+    let whitelist_owners = host.owners(Actor::LocalRecovery)?.into_iter()
+        .filter_map(|owner| owner.name.map(|name| (owner.account_id, name)))
+        .collect();
     let capabilities: Vec<String> = BuiltinRole::Owner
         .capabilities()
         .iter()
@@ -153,6 +156,7 @@ pub fn owner_policy(host: &HostState, server_id: Uuid) -> JobResult<WorkerPolicy
             server_id,
             generation: snapshot.auth_generation,
             grants,
+            whitelist_owners,
         });
         Ok(())
     })?;

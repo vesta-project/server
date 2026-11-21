@@ -27,6 +27,11 @@ pub(crate) fn sync(
         return Err(ManagementError::InvalidRequest);
     }
     let mut devices = std::collections::HashSet::new();
+    if policy.whitelist_owners.len() > 4096
+        || policy.whitelist_owners.iter().any(|(id, name)| id.is_nil() || !crate::moderation::valid_player(name))
+    {
+        return Err(ManagementError::InvalidRequest);
+    }
     for g in &policy.grants {
         if g.account_id.is_nil()
             || g.device_id.is_nil()
@@ -52,6 +57,8 @@ pub(crate) fn sync(
             || server != policy.server_id.to_string()
             || (policy.generation as i64) < generation
             || policy.generation as i64 == generation && previous != document
+                && !serde_json::from_str::<WorkerPolicy>(&previous)
+                    .is_ok_and(|prior| prior.grants == policy.grants)
         {
             return Err(ManagementError::Forbidden);
         }
@@ -62,6 +69,22 @@ pub(crate) fn sync(
         Ok(())
     })
     .map_err(|_| ManagementError::Forbidden)
+}
+
+pub(crate) fn whitelist_owners(
+    c: &Connection,
+) -> vesta_state::Result<Option<std::collections::BTreeMap<uuid::Uuid, String>>> {
+    let exists: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='worker_policy')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Ok(None);
+    }
+    let document: String = c.query_row("SELECT document FROM worker_policy WHERE singleton=1", [], |row| row.get(0))?;
+    let owners = serde_json::from_str::<WorkerPolicy>(&document).map(|policy| policy.whitelist_owners).unwrap_or_default();
+    Ok(Some(owners))
 }
 pub(crate) fn authenticate(
     db: &StateDatabase,
@@ -160,8 +183,8 @@ fn role_permits(role: &ServerRole, capability: Capability) -> bool {
                         | Capability::CredentialsManage
                         | Capability::SecurityManage
                         | Capability::RolesManage
-                        | Capability::AccessSourcesManage
                 )
+                && (capability != Capability::AccessSourcesManage || matches!(role, ServerRole::Owner))
         }
         ServerRole::Moderator => matches!(
             capability,
