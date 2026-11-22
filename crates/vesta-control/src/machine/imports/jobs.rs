@@ -40,13 +40,15 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::{Duration, Instant},
 };
 use uuid::Uuid;
 
 pub const PLAN_TTL_MS: u64 = 10 * 60 * 1000;
 /// Space kept free beyond the remaining copy while copying.
 pub const COPY_RESERVE_BYTES: u64 = 64 * 1024 * 1024;
-const PROGRESS_EVERY: u64 = 64;
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
+const DISK_CHECK_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_JOBS: i64 = 256;
 
 /// Fixed error codes. Blocker codes from the contract are reused verbatim.
@@ -380,6 +382,14 @@ pub(crate) struct Private {
     pub source_identity: String,
     pub snapshot: Option<CopySnapshot>,
     pub plan_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publication: Option<Publication>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct Publication {
+    identity: String,
+    moved_source: bool,
 }
 
 struct Inner {
@@ -392,6 +402,8 @@ struct Inner {
     stopping: AtomicBool,
     /// Create uploads still streaming (their partial files are live).
     uploading: Mutex<HashSet<String>>,
+    #[cfg(all(test, target_os = "linux"))]
+    prepared_root: Option<PathBuf>,
 }
 /// Owner import job service. Construct once per host process.
 #[derive(Clone)]
@@ -466,6 +478,8 @@ impl ImportJobs {
             running: Mutex::new(HashSet::new()),
             stopping: AtomicBool::new(false),
             uploading: Mutex::new(HashSet::new()),
+            #[cfg(all(test, target_os = "linux"))]
+            prepared_root: None,
         }));
         jobs.sweep_abandoned();
         Ok(jobs)
@@ -549,6 +563,15 @@ impl ImportJobs {
 
     pub fn servers_root(&self) -> &Path {
         &self.0.servers
+    }
+
+    #[cfg(target_os = "linux")]
+    fn is_prepared_source(&self, source: &Path) -> bool {
+        #[cfg(test)]
+        if let Some(root) = &self.0.prepared_root {
+            return super::prepare::is_prepared(source, root, super::prepare::service_uid());
+        }
+        self.0.browser.is_prepared_source(source)
     }
     /// Names held by committed servers and pending imports share one namespace.
     pub fn suggested_create_name(&self) -> JobResult<String> {
@@ -893,10 +916,13 @@ impl ImportJobs {
         let mut snapshot = None;
         if blockers.is_empty() {
             let (files_total, bytes_total) = (report.size.files, report.size.bytes);
+            let mut last_report = Instant::now();
             match CopiedExport::open(&source, &[&self.0.servers]).and_then(|export| {
                 export
                     .with_limits(CopyLimits::IMPORT)
-                    .snapshot_observed(|p| self.report_hashing(job_id, p, files_total, bytes_total))
+                    .snapshot_observed(|p| {
+                        self.report_progress(job_id, p, files_total, bytes_total, &mut last_report)
+                    })
             }) {
                 Ok(taken) => snapshot = Some(taken),
                 Err(error) => {
@@ -920,8 +946,16 @@ impl ImportJobs {
             None => (report.size.files, report.size.bytes),
         };
         let free = self.0.env.free_bytes(&self.0.servers);
+        let transfer_bytes = {
+            #[cfg(target_os = "linux")]
+            let movable = self.is_prepared_source(&source)
+                && native::same_volume(&source, &self.0.servers).unwrap_or(false);
+            #[cfg(not(target_os = "linux"))]
+            let movable = false;
+            if movable { 0 } else { bytes }
+        };
         if report.size.complete
-            && free.is_some_and(|free| free < bytes.saturating_add(SPACE_MARGIN_BYTES))
+            && free.is_some_and(|free| free < transfer_bytes.saturating_add(SPACE_MARGIN_BYTES))
         {
             blockers.insert("insufficient_space");
         }
@@ -1006,6 +1040,7 @@ impl ImportJobs {
             source_identity: opened.identity,
             snapshot,
             plan_hash: String::new(),
+            publication: None,
         };
         let private = Private {
             plan_hash: plan_hash(binding, &review, &private)?,
@@ -1316,16 +1351,19 @@ impl ImportJobs {
             .insert(job_id.to_owned(), flag.clone());
         let (phase, review, private) = self.read(|c| {
             self.owner(c, binding)?;
-            let (state, phase, review, private): (String, String, Option<String>, Option<String>) =
+            let (state, phase, review, private, cancelled): (String, String, Option<String>, Option<String>, bool) =
                 c.query_row(
-                    "SELECT state,phase,review,private FROM machine_import_jobs WHERE job_id=?1 AND kind='import'",
+                    "SELECT state,phase,review,private,cancel_requested FROM machine_import_jobs WHERE job_id=?1 AND kind='import'",
                     [job_id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                 )
                 .optional()?
                 .ok_or(JobError::NOT_FOUND)?;
             if state != "applying" {
                 return Err(JobError::CONFLICT);
+            }
+            if cancelled {
+                flag.store(true, Ordering::Release);
             }
             Ok((
                 phase,
@@ -1333,8 +1371,25 @@ impl ImportJobs {
                 decode::<Private>(private)?,
             ))
         })?;
-        if matches!(phase.as_str(), "conflicts" | "snapshot" | "copy") {
-            match self.copy_phase(job_id, &review, &private, &flag) {
+        if matches!(
+            phase.as_str(),
+            "conflicts" | "snapshot" | "copy" | "publish"
+        ) {
+            let game = self.server_dir(review.destination.server_id).join("game");
+            let result = match fs::symlink_metadata(&game) {
+                Ok(_) if phase == "publish" => self.finish_publish(
+                    job_id,
+                    &review,
+                    &private,
+                    private.publication.as_ref().ok_or(JobError::UNAVAILABLE)?,
+                ),
+                Ok(_) => Err(Outcome::Failed("destination_conflict")),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    self.copy_phase(job_id, &review, &private, &flag)
+                }
+                Err(_) => Err(Outcome::Interrupted("copy_failed")),
+            };
+            match result {
                 Ok(()) => {}
                 Err(outcome) => {
                     self.settle(job_id, review.destination.server_id, outcome)?;
@@ -1375,6 +1430,114 @@ impl ImportJobs {
         })
     }
 
+    /// Cancellation and publication race through the same transaction. Once
+    /// publication starts, restart must finish or revalidate the rename.
+    fn begin_publish(&self, job_id: &str, publication: &Publication) -> Result<(), Outcome> {
+        if self.is_stopping() {
+            return Err(Outcome::Interrupted("host_shutdown_interrupted"));
+        }
+        let json = serde_json::to_string(publication).map_err(|_| JobError::UNAVAILABLE)?;
+        let started = self.write(|c| {
+            Ok(c.execute(
+                "UPDATE machine_import_jobs SET phase='publish', private=json_set(private,'$.publication',json(?1)),updated_ms=?2
+                 WHERE job_id=?3 AND state='applying' AND cancel_requested=0",
+                params![json, self.0.host.now_ms(), job_id],
+            )? == 1)
+        })?;
+        if !started {
+            return Err(Outcome::Cancelled);
+        }
+        Ok(())
+    }
+
+    fn finish_publish(
+        &self,
+        job_id: &str,
+        review: &Review,
+        private: &Private,
+        publication: &Publication,
+    ) -> Result<(), Outcome> {
+        let dir = self.server_dir(review.destination.server_id);
+        let game = dir.join("game");
+        if native::directory_identity(&game).ok().as_deref() != Some(publication.identity.as_str())
+        {
+            return Err(Outcome::Interrupted("destination_conflict"));
+        }
+        if publication.moved_source {
+            let reviewed = private
+                .snapshot
+                .as_ref()
+                .ok_or(Outcome::Failed("plan_blocked"))?;
+            CopiedExport::open(&game, &[])
+                .map(|export| export.with_limits(CopyLimits::IMPORT))
+                .and_then(|export| export.validate_snapshot(reviewed, |_| {}))
+                .map_err(|_| Outcome::Interrupted("source_changed"))?;
+        }
+        for path in [&game, &dir, &self.0.servers] {
+            native::sync_directory(path).map_err(|_| Outcome::Interrupted("copy_failed"))?;
+        }
+        if publication.moved_source {
+            let parent = private
+                .source
+                .parent()
+                .ok_or(Outcome::Interrupted("copy_failed"))?;
+            native::sync_directory(parent).map_err(|_| Outcome::Interrupted("copy_failed"))?;
+            let reviewed = private
+                .snapshot
+                .as_ref()
+                .ok_or(Outcome::Failed("plan_blocked"))?;
+            let files = reviewed
+                .entries
+                .iter()
+                .filter(|entry| !entry.directory)
+                .count() as u64;
+            self.progress(
+                job_id,
+                CopyProgress {
+                    files,
+                    bytes: reviewed.bytes,
+                },
+                files,
+                reviewed.bytes,
+            )?;
+        }
+        self.set_phase(job_id, "applying", "configure")?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn move_prepared(
+        &self,
+        job_id: &str,
+        review: &Review,
+        private: &Private,
+    ) -> Result<bool, Outcome> {
+        let dir = self.server_dir(review.destination.server_id);
+        files::create_local_directory(&dir, true)
+            .map_err(|_| Outcome::Interrupted("copy_failed"))?;
+        let publication = Publication {
+            identity: private.source_identity.clone(),
+            moved_source: true,
+        };
+        self.begin_publish(job_id, &publication)?;
+        if !self.is_prepared_source(&private.source)
+            || native::directory_identity(&private.source).ok().as_deref()
+                != Some(publication.identity.as_str())
+        {
+            return Err(Outcome::Blocked("source_changed"));
+        }
+        match native::rename_absent_io(&private.source, &dir.join("game")) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(Outcome::Failed("destination_conflict"));
+            }
+            Err(_) => return Err(Outcome::Interrupted("copy_failed")),
+        }
+        self.finish_publish(job_id, review, private, &publication)?;
+        Ok(true)
+    }
+
     fn copy_phase(
         &self,
         job_id: &str,
@@ -1390,7 +1553,7 @@ impl ImportJobs {
         self.set_phase(job_id, "applying", "conflicts")
             .map_err(Outcome::from)?;
         // The admitted directory must be the reviewed one, not a swapped path.
-        if self.0.browser.protected_overlap(&private.source)
+        if self.0.browser.protected_import_overlap(&private.source)
             || native::directory_identity(&private.source).ok().as_deref()
                 != Some(private.source_identity.as_str())
         {
@@ -1423,18 +1586,37 @@ impl ImportJobs {
             "occupied" => return Err(Outcome::Blocked("game_port_in_use")),
             _ => return Err(Outcome::Blocked("port_state_unknown")),
         }
-        // Snapshot again now that the source is confirmed stopped.
+        // Walk the stopped source and reuse reviewed digests for unchanged files.
         self.set_phase(job_id, "applying", "snapshot")
             .map_err(Outcome::from)?;
         let export = CopiedExport::open(&private.source, &[&self.0.servers])
             .map_err(|e| Outcome::Blocked(snapshot_blocker(&e)))?
             .with_limits(CopyLimits::IMPORT);
         let reviewed_files = reviewed.entries.iter().filter(|e| !e.directory).count() as u64;
-        let current = export
-            .snapshot_observed(|p| self.report_hashing(job_id, p, reviewed_files, reviewed.bytes))
-            .map_err(|e| Outcome::Blocked(snapshot_blocker(&e)))?;
-        if current.sha256 != reviewed.sha256 {
-            return Err(Outcome::Blocked("source_changed"));
+        let mut last_report = Instant::now();
+        export
+            .validate_snapshot(reviewed, |p| {
+                self.report_progress(job_id, p, reviewed_files, reviewed.bytes, &mut last_report)
+            })
+            .map_err(|e| {
+                Outcome::Blocked(match e {
+                    FileError::Corrupt | FileError::NotFound => "source_changed",
+                    _ => snapshot_blocker(&e),
+                })
+            })?;
+        if cancel.load(Ordering::Acquire) || self.is_stopping() {
+            return Err(Outcome::Cancelled);
+        }
+        #[cfg(target_os = "linux")]
+        if self.is_prepared_source(&private.source) {
+            let free = self.0.env.free_bytes(&self.0.servers).unwrap_or(0);
+            if free < SPACE_MARGIN_BYTES {
+                return Err(Outcome::Blocked("insufficient_space"));
+            }
+            if self.move_prepared(job_id, review, private)? {
+                return Ok(());
+            }
+            self.set_phase(job_id, "applying", "copy")?;
         }
         let free = self.0.env.free_bytes(&self.0.servers).unwrap_or(0);
         let staging = self.server_dir(server_id).join("staging");
@@ -1448,33 +1630,45 @@ impl ImportJobs {
         files::create_local_directory(&self.server_dir(server_id), true)
             .and_then(|()| files::create_local_directory(&staging, true))
             .map_err(|_| Outcome::Interrupted("copy_failed"))?;
-        remove_parts(&staging);
-        let files_total = reviewed.entries.iter().filter(|e| !e.directory).count() as u64;
+        remove_parts(&staging, reviewed);
+        let files_total = reviewed_files;
         self.progress(job_id, CopyProgress::default(), files_total, reviewed.bytes)
             .map_err(Outcome::from)?;
         let mut stop = None;
         let mut index = 0u64;
+        let mut next_disk_check = 0;
+        let mut last_report = Instant::now();
         let result = export.copy_to_directory(reviewed, &staging, |entry, progress| {
             self.0.env.before_copy_entry(index);
             index += 1;
-            if cancel.load(Ordering::Acquire) || self.cancel_requested(job_id) {
+            if cancel.load(Ordering::Acquire) || self.is_stopping() {
                 stop = Some(Stop::Cancelled);
                 return Err(FileError::Unavailable);
             }
-            let remaining = reviewed.bytes.saturating_sub(progress.bytes);
-            if !entry.directory
-                && self
+            if !entry.directory && progress.bytes.saturating_add(entry.size) >= next_disk_check {
+                let remaining = reviewed.bytes.saturating_sub(progress.bytes);
+                let next_bytes = remaining.min(DISK_CHECK_BYTES.max(entry.size));
+                if self
                     .0
                     .env
                     .free_bytes(&staging)
-                    .is_none_or(|free| free < remaining.saturating_add(COPY_RESERVE_BYTES))
-            {
-                stop = Some(Stop::LowDisk);
-                return Err(FileError::InsufficientSpace);
+                    .is_none_or(|free| free < next_bytes.saturating_add(COPY_RESERVE_BYTES))
+                {
+                    stop = Some(Stop::LowDisk);
+                    return Err(FileError::InsufficientSpace);
+                }
+                next_disk_check = progress
+                    .bytes
+                    .saturating_add(entry.size)
+                    .saturating_add(DISK_CHECK_BYTES);
             }
-            if index.is_multiple_of(PROGRESS_EVERY) {
-                let _ = self.progress(job_id, progress, files_total, reviewed.bytes);
-            }
+            self.report_progress(
+                job_id,
+                progress,
+                files_total,
+                reviewed.bytes,
+                &mut last_report,
+            );
             Ok(())
         });
         match (result, stop) {
@@ -1483,13 +1677,31 @@ impl ImportJobs {
                 Err(Outcome::Blocked("insufficient_space"))
             }
             (Ok(progress), None) => {
+                if self
+                    .0
+                    .env
+                    .free_bytes(&staging)
+                    .is_none_or(|free| free < COPY_RESERVE_BYTES)
+                {
+                    return Err(Outcome::Blocked("insufficient_space"));
+                }
                 self.progress(job_id, progress, files_total, reviewed.bytes)
                     .map_err(Outcome::from)?;
                 let game = self.server_dir(server_id).join("game");
-                if fs::symlink_metadata(&game).is_ok() {
-                    return Err(Outcome::Failed("destination_conflict"));
-                }
-                fs::rename(&staging, &game).map_err(|_| Outcome::Interrupted("copy_failed"))?;
+                let publication = Publication {
+                    identity: native::directory_identity(&staging)
+                        .map_err(|_| Outcome::Interrupted("copy_failed"))?,
+                    moved_source: false,
+                };
+                self.begin_publish(job_id, &publication)?;
+                native::rename_absent(&staging, &game).map_err(|error| {
+                    if matches!(error, FileError::Conflict(_)) {
+                        Outcome::Failed("destination_conflict")
+                    } else {
+                        Outcome::Interrupted("copy_failed")
+                    }
+                })?;
+                self.finish_publish(job_id, review, private, &publication)?;
                 Ok(())
             }
             (
@@ -1507,9 +1719,16 @@ impl ImportJobs {
         }
     }
 
-    /// Throttled progress while hashing the source (files and bytes read).
-    fn report_hashing(&self, job_id: &str, progress: CopyProgress, files: u64, bytes: u64) {
-        if progress.files.is_multiple_of(PROGRESS_EVERY) {
+    fn report_progress(
+        &self,
+        job_id: &str,
+        progress: CopyProgress,
+        files: u64,
+        bytes: u64,
+        last: &mut Instant,
+    ) {
+        if last.elapsed() >= PROGRESS_INTERVAL {
+            *last = Instant::now();
             let _ = self.progress(
                 job_id,
                 progress,
@@ -1653,7 +1872,7 @@ fn snapshot_blocker(error: &FileError) -> &'static str {
 }
 
 /// Torn part files from a crashed copy; complete files are re-verified by hash.
-fn remove_parts(staging: &Path) {
+fn remove_parts(staging: &Path, reviewed: &CopySnapshot) {
     let mut stack = vec![staging.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let Ok(read) = fs::read_dir(&dir) else {
@@ -1670,7 +1889,19 @@ fn remove_parts(staging: &Path) {
                 .to_str()
                 .is_some_and(|n| n.ends_with(crate::files::copied_export::PART_SUFFIX))
             {
-                let _ = fs::remove_file(entry.path());
+                let path = entry.path();
+                if let Ok(relative) = path.strip_prefix(staging)
+                    && let Some(relative) = relative.to_str()
+                {
+                    let relative = relative.replace('\\', "/");
+                    if reviewed
+                        .entries
+                        .binary_search_by(|entry| entry.path.cmp(&relative))
+                        .is_err()
+                    {
+                        let _ = fs::remove_file(path);
+                    }
+                }
             }
         }
     }

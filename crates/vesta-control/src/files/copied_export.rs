@@ -1,13 +1,16 @@
 //! Read-only copied-export admission and copying through the existing per-file
 //! mutation journal. Source roots are selected by local composition, not HTTP.
-use super::{FileBrowser, FileError, RelativePath, Result, io_error, native, root::Root};
+use super::{
+    FileBrowser, FileError, RelativePath, Result, io_error, native,
+    root::{CheckedPath, Root},
+};
 use crate::identity::Subject;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
     fs::File,
-    io::{Read, Seek, SeekFrom},
+    io::{Read, Seek, SeekFrom, Write},
     path::Path,
 };
 
@@ -51,6 +54,8 @@ pub(crate) struct CopyEntry {
     pub size: u64,
     pub sha256: String,
     pub identity: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) version: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -82,6 +87,16 @@ impl CopiedExport {
     fn file(&self, entry: &CopyEntry) -> Result<File> {
         let relative = RelativePath::parse(&entry.path)?;
         let checked = self.root.resolve(Some(&relative))?;
+        let file = self.admitted_file(&checked)?;
+        if file.metadata().map_err(io_error)?.len() != entry.size
+            || (!entry.identity.is_empty() && native::file_identity(&file)? != entry.identity)
+        {
+            return Err(FileError::Corrupt);
+        }
+        Ok(file)
+    }
+
+    fn admitted_file(&self, checked: &CheckedPath) -> Result<File> {
         let file = native::open_regular(&checked.path)?;
         if self
             .root
@@ -90,32 +105,12 @@ impl CopiedExport {
         {
             return Err(FileError::LinkedPath);
         }
-        if file.metadata().map_err(io_error)?.len() != entry.size
-            || (!entry.identity.is_empty() && native::file_identity(&file)? != entry.identity)
-        {
-            return Err(FileError::Corrupt);
-        }
         Ok(file)
     }
     pub(crate) fn snapshot(&self) -> Result<CopySnapshot> {
         self.snapshot_observed(|_| {})
     }
 
-    /// Keep original activity timestamps in a private local staging copy.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn preserve_modified_times(
-        &self,
-        snapshot: &CopySnapshot,
-        target: &Path,
-    ) -> Result<()> {
-        for entry in snapshot.entries.iter().filter(|entry| !entry.directory) {
-            let modified = self.file(entry)?.metadata().map_err(io_error)?.modified().map_err(io_error)?;
-            let path = RelativePath::parse(&entry.path)?;
-            File::open(target.join(path.as_str())).map_err(io_error)?
-                .set_modified(modified).map_err(io_error)?;
-        }
-        Ok(())
-    }
     /// Snapshot with running totals reported after every hashed file.
     pub(crate) fn snapshot_observed(
         &self,
@@ -123,7 +118,92 @@ impl CopiedExport {
     ) -> Result<CopySnapshot> {
         let mut progress = CopyProgress::default();
         let mut entries = Vec::new();
+        self.walk(|path, checked| {
+            let mut entry = CopyEntry {
+                path,
+                directory: checked.metadata.is_dir(),
+                size: 0,
+                sha256: String::new(),
+                identity: String::new(),
+                version: String::new(),
+            };
+            if !entry.directory {
+                let mut file = self.admitted_file(checked)?;
+                entry.size = checked.metadata.len();
+                entry.identity = native::file_identity(&file)?;
+                let version = native::file_version(&file).ok();
+                entry.sha256 = digest_observed(&mut file, entry.size, version.as_ref())?;
+                entry.version = reusable_key(version);
+                progress.files += 1;
+                progress.bytes += entry.size;
+                observe(progress);
+            }
+            entries.push(entry);
+            Ok(())
+        })?;
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+        let encoded = serde_json::to_vec(&entries).map_err(|_| FileError::Corrupt)?;
+        Ok(CopySnapshot {
+            entries,
+            bytes: progress.bytes,
+            sha256: hex::encode(Sha256::digest(encoded)),
+        })
+    }
+
+    /// Check exact membership, file kind, and bytes. Reuse a reviewed digest
+    /// only when the opened file has the same change-aware version. Legacy
+    /// reviews and filesystems without a change time verify by reading bytes.
+    pub(crate) fn validate_snapshot(
+        &self,
+        reviewed: &CopySnapshot,
+        mut observe: impl FnMut(CopyProgress),
+    ) -> Result<()> {
+        let mut matched = 0;
+        let mut progress = CopyProgress::default();
+        self.walk(|path, checked| {
+            let index = reviewed
+                .entries
+                .binary_search_by(|entry| entry.path.cmp(&path))
+                .map_err(|_| FileError::Corrupt)?;
+            let entry = &reviewed.entries[index];
+            if checked.metadata.is_dir() != entry.directory {
+                return Err(FileError::Corrupt);
+            }
+            if !entry.directory {
+                if checked.metadata.len() != entry.size {
+                    return Err(FileError::Corrupt);
+                }
+                let mut file = self.admitted_file(checked)?;
+                let version = native::file_version(&file).ok();
+                if !version
+                    .as_ref()
+                    .is_some_and(|current| current.reusable && current.key == entry.version)
+                    && (native::file_identity(&file)? != entry.identity
+                        || digest_observed(&mut file, entry.size, version.as_ref())?
+                            != entry.sha256)
+                {
+                    return Err(FileError::Corrupt);
+                }
+                progress.files += 1;
+                progress.bytes += entry.size;
+                observe(progress);
+            }
+            matched += 1;
+            Ok(())
+        })?;
+        if matched != reviewed.entries.len() {
+            return Err(FileError::Corrupt);
+        }
+        Ok(())
+    }
+
+    fn walk(&self, mut observe: impl FnMut(String, &CheckedPath) -> Result<()>) -> Result<()> {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        #[cfg(unix)]
+        let device = self.root.resolve(None)?.metadata.dev();
         let mut queue = vec![String::new()];
+        let mut count = 0;
         let mut bytes = 0u64;
         while let Some(directory) = queue.pop() {
             let relative = if directory.is_empty() {
@@ -133,9 +213,10 @@ impl CopiedExport {
             };
             let checked = self.root.resolve(relative.as_ref())?;
             for item in fs::read_dir(&checked.path).map_err(io_error)? {
-                if entries.len() >= self.limits.entries {
+                if count == self.limits.entries {
                     return Err(FileError::TooLarge);
                 }
+                count += 1;
                 let item = item.map_err(io_error)?;
                 let name = item
                     .file_name()
@@ -157,51 +238,28 @@ impl CopiedExport {
                 };
                 let relative = RelativePath::parse(&path)?;
                 let checked = self.root.resolve(Some(&relative))?;
+                #[cfg(unix)]
+                if checked.metadata.dev() != device {
+                    return Err(FileError::LinkedPath);
+                }
                 if checked.metadata.is_dir() {
                     queue.push(path.clone());
-                    entries.push(CopyEntry {
-                        path,
-                        directory: true,
-                        size: 0,
-                        sha256: String::new(),
-                        identity: String::new(),
-                    });
                 } else if checked.metadata.is_file() {
-                    // Admission binds the opened regular file. Never reopen a pathname
-                    // between native identity validation and its streamed digest.
-                    let mut entry = CopyEntry {
-                        path,
-                        directory: false,
-                        size: checked.metadata.len(),
-                        sha256: String::new(),
-                        identity: String::new(),
-                    };
-                    if entry.size > self.limits.file_bytes {
+                    let size = checked.metadata.len();
+                    if size > self.limits.file_bytes {
                         return Err(FileError::TooLarge);
                     }
-                    bytes = bytes.checked_add(entry.size).ok_or(FileError::TooLarge)?;
+                    bytes = bytes.checked_add(size).ok_or(FileError::TooLarge)?;
                     if bytes > self.limits.total_bytes {
                         return Err(FileError::TooLarge);
                     }
-                    let mut file = self.file(&entry)?;
-                    entry.identity = native::file_identity(&file)?;
-                    entry.sha256 = digest(&mut file, entry.size)?;
-                    progress.files += 1;
-                    progress.bytes += entry.size;
-                    observe(progress);
-                    entries.push(entry);
                 } else {
                     return Err(FileError::NotRegular);
                 }
+                observe(path, &checked)?;
             }
         }
-        entries.sort_by(|a, b| a.path.cmp(&b.path));
-        let encoded = serde_json::to_vec(&entries).map_err(|_| FileError::Corrupt)?;
-        Ok(CopySnapshot {
-            entries,
-            bytes,
-            sha256: hex::encode(Sha256::digest(encoded)),
-        })
+        Ok(())
     }
     pub(crate) fn copy_into(
         &self,
@@ -215,9 +273,7 @@ impl CopiedExport {
         if source.starts_with(&target) || target.starts_with(&source) {
             return Err(FileError::InvalidRoot);
         }
-        if self.snapshot()?.sha256 != snapshot.sha256 {
-            return Err(FileError::Corrupt);
-        }
+        self.validate_snapshot(snapshot, |_| {})?;
         super::require_space(&target, snapshot.bytes)?;
         // Snapshot ordering is lexical: each parent precedes its descendants.
         destination.reconcile_pending()?;
@@ -253,9 +309,7 @@ impl CopiedExport {
         destination.reconcile_pending()?;
         // Membership and content must still match the reviewed source. A new file
         // or a changed payload after a partial copy leaves setup incomplete.
-        if self.snapshot()?.sha256 != snapshot.sha256 {
-            return Err(FileError::Corrupt);
-        }
+        self.validate_snapshot(snapshot, |_| {})?;
         let copied = Self {
             root: destination.root.clone(),
             limits: self.limits,
@@ -274,19 +328,28 @@ pub(crate) struct CopyProgress {
     pub bytes: u64,
 }
 pub(crate) const PART_SUFFIX: &str = ".vesta-part";
+const SYNC_BATCH_FILES: usize = 64;
+const SYNC_WORKERS: usize = 8;
+
 impl CopiedExport {
-    /// Resumable read-only copy into a fresh, host-managed, unregistered staging
-    /// directory (host-scope imports). No per-server journal exists yet, so each
-    /// file is written to a sibling part file, verified against the reviewed
-    /// digest, synced and renamed. Already-present files are kept only when their
-    /// digest matches, so a crash resumes without recopying verified content. The
-    /// source is reopened through the admitted root with identity checks and is
-    /// never written, locked or deleted. `boundary` runs before every entry.
+    /// Copy into private, unregistered staging. A restart hashes any files
+    /// already there, discards torn writes, and syncs reused files again. Whole
+    /// batches are flushed concurrently before the tree can be published.
     pub(crate) fn copy_to_directory(
         &self,
         snapshot: &CopySnapshot,
         target: &Path,
+        boundary: impl FnMut(&CopyEntry, CopyProgress) -> Result<()>,
+    ) -> Result<CopyProgress> {
+        self.copy_to_directory_with(snapshot, target, boundary, |_, _| Ok(()))
+    }
+
+    pub(crate) fn copy_to_directory_with(
+        &self,
+        snapshot: &CopySnapshot,
+        target: &Path,
         mut boundary: impl FnMut(&CopyEntry, CopyProgress) -> Result<()>,
+        mut finalize_file: impl FnMut(&File, &File) -> std::io::Result<()>,
     ) -> Result<CopyProgress> {
         let source = self.root.resolve(None)?.path;
         let target = fs::canonicalize(target).map_err(io_error)?;
@@ -294,82 +357,134 @@ impl CopiedExport {
             return Err(FileError::InvalidRoot);
         }
         let mut progress = CopyProgress::default();
-        for entry in &snapshot.entries {
+        let mut staged = snapshot.clone();
+        let mut batch = Vec::with_capacity(SYNC_BATCH_FILES);
+        let mut buffer = [0u8; 65_536];
+        for (entry, verified) in snapshot.entries.iter().zip(&mut staged.entries) {
             boundary(entry, progress)?;
             let relative = RelativePath::parse(&entry.path)?;
             let mut path = target.clone();
             path.extend(relative.as_str().split('/'));
-            let existing = fs::symlink_metadata(&path);
-            if let Ok(meta) = &existing
-                && (meta.file_type().is_symlink() || (meta.is_dir() != entry.directory))
-            {
-                return Err(FileError::Corrupt);
-            }
+            let existing = match fs::symlink_metadata(&path) {
+                Ok(meta) => {
+                    super::root::plain(&meta)?;
+                    if meta.is_dir() != entry.directory {
+                        return Err(FileError::Corrupt);
+                    }
+                    true
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(error) => return Err(io_error(error)),
+            };
             if entry.directory {
-                if existing.is_err() {
-                    fs::create_dir(&path).map_err(io_error)?;
+                if !existing {
+                    fs::create_dir(&path).map_err(write_error)?;
                 }
                 continue;
             }
-            if existing.is_ok() {
-                let mut file = File::open(&path).map_err(io_error)?;
+            let mut completed = None;
+            if existing {
+                let mut file = fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&path)
+                    .map_err(io_error)?;
+                if native::actual_path(&file, &path)? != path {
+                    return Err(FileError::LinkedPath);
+                }
+                let version = native::file_version(&file).ok();
                 if file.metadata().map_err(io_error)?.len() == entry.size
-                    && digest(&mut file, entry.size)? == entry.sha256
+                    && digest_observed(&mut file, entry.size, version.as_ref())? == entry.sha256
                 {
-                    progress.files += 1;
-                    progress.bytes += entry.size;
-                    continue;
+                    completed = Some((file, version));
+                } else {
+                    drop(file);
+                    fs::remove_file(&path).map_err(io_error)?;
                 }
-                drop(file);
-                fs::remove_file(&path).map_err(io_error)?;
             }
-            let leaf = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .ok_or(FileError::InvalidPath)?;
-            let part = path.with_file_name(format!(".{leaf}{PART_SUFFIX}"));
-            let mut reader = self.file(entry)?;
-            reader.seek(SeekFrom::Start(0)).map_err(io_error)?;
-            let mut writer = File::create(&part).map_err(io_error)?;
-            let mut hash = Sha256::new();
-            let mut buffer = vec![0u8; 65536];
-            let mut written = 0u64;
-            loop {
-                let n = reader.read(&mut buffer).map_err(io_error)?;
-                if n == 0 {
-                    break;
+            let (file, version) = match completed {
+                Some(completed) => completed,
+                None => {
+                    let mut reader = self.file(entry)?;
+                    let mut writer = File::create_new(&path).map_err(write_error)?;
+                    copy_verified(&mut reader, &mut writer, entry, &mut buffer)?;
+                    finalize_file(&reader, &writer).map_err(write_error)?;
+                    let version = native::file_version(&writer).ok();
+                    (writer, version)
                 }
-                written += n as u64;
-                if written > entry.size {
-                    return Err(FileError::Corrupt);
-                }
-                hash.update(&buffer[..n]);
-                std::io::Write::write_all(&mut writer, &buffer[..n]).map_err(write_error)?;
+            };
+            verified.identity = native::file_identity(&file)?;
+            verified.version = reusable_key(version);
+            batch.push(file);
+            if batch.len() == SYNC_BATCH_FILES {
+                sync_batch(&mut batch)?;
             }
-            if written != entry.size || hex::encode(hash.finalize()) != entry.sha256 {
-                drop(writer);
-                let _ = fs::remove_file(&part);
-                return Err(FileError::Corrupt);
-            }
-            writer.sync_all().map_err(write_error)?;
-            drop(writer);
-            fs::rename(&part, &path).map_err(io_error)?;
             progress.files += 1;
             progress.bytes += entry.size;
         }
-        // Membership and content must still match the reviewed source, and the
-        // destination must hold exactly the reviewed tree.
-        if self.snapshot()?.sha256 != snapshot.sha256 {
-            return Err(FileError::Corrupt);
-        }
-        let copied = Self::open(&target, &[])?
+        sync_batch(&mut batch)?;
+        self.validate_snapshot(snapshot, |_| {})?;
+        Self::open(&target, &[])?
             .with_limits(self.limits)
-            .snapshot()?;
-        if !copied.same_content(snapshot) {
-            return Err(FileError::Corrupt);
+            .validate_snapshot(&staged, |_| {})?;
+        for entry in snapshot
+            .entries
+            .iter()
+            .rev()
+            .filter(|entry| entry.directory)
+        {
+            native::sync_directory(&target.join(&entry.path))?;
         }
+        native::sync_directory(&target)?;
         Ok(progress)
     }
+}
+
+fn sync_batch(batch: &mut Vec<File>) -> Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    std::thread::scope(|scope| -> Result<()> {
+        let workers = batch
+            .chunks(SYNC_BATCH_FILES / SYNC_WORKERS)
+            .map(|files| scope.spawn(|| files.iter().try_for_each(File::sync_all)))
+            .collect::<Vec<_>>();
+        for worker in workers {
+            worker
+                .join()
+                .map_err(|_| FileError::Unavailable)?
+                .map_err(write_error)?;
+        }
+        Ok(())
+    })?;
+    batch.clear();
+    Ok(())
+}
+
+fn copy_verified(
+    reader: &mut File,
+    writer: &mut File,
+    entry: &CopyEntry,
+    buffer: &mut [u8],
+) -> Result<()> {
+    let mut hash = Sha256::new();
+    let mut written = 0u64;
+    loop {
+        let n = reader.read(buffer).map_err(io_error)?;
+        if n == 0 {
+            break;
+        }
+        written += n as u64;
+        if written > entry.size {
+            return Err(FileError::Corrupt);
+        }
+        hash.update(&buffer[..n]);
+        writer.write_all(&buffer[..n]).map_err(write_error)?;
+    }
+    if written != entry.size || hex::encode(hash.finalize()) != entry.sha256 {
+        return Err(FileError::Corrupt);
+    }
+    Ok(())
 }
 fn write_error(error: std::io::Error) -> FileError {
     if matches!(
@@ -401,4 +516,110 @@ fn digest(file: &mut File, size: u64) -> Result<String> {
         return Err(FileError::Corrupt);
     }
     Ok(hex::encode(hash.finalize()))
+}
+
+fn reusable_key(version: Option<native::FileVersion>) -> String {
+    version
+        .filter(|version| version.reusable)
+        .map_or_else(String::new, |version| version.key)
+}
+
+fn digest_observed(
+    file: &mut File,
+    size: u64,
+    version: Option<&native::FileVersion>,
+) -> Result<String> {
+    let (hash, unchanged) = if let Some(version) = version {
+        let hash = digest(file, size)?;
+        (hash, native::file_version(file)?.key == version.key)
+    } else {
+        let before = file
+            .metadata()
+            .map_err(io_error)?
+            .modified()
+            .map_err(io_error)?;
+        let hash = digest(file, size)?;
+        let after = file.metadata().map_err(io_error)?;
+        (
+            hash,
+            after.len() == size && after.modified().map_err(io_error)? == before,
+        )
+    };
+    if !unchanged {
+        return Err(FileError::Corrupt);
+    }
+    Ok(hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn snapshot_validation_detects_a_same_size_rewrite_with_restored_mtime() {
+        let source = tempfile::tempdir().unwrap();
+        let path = source.path().join("world.mca");
+        fs::write(&path, b"reviewed").unwrap();
+        let export = CopiedExport::open(source.path(), &[]).unwrap();
+        let reviewed = export.snapshot().unwrap();
+        export.validate_snapshot(&reviewed, |_| {}).unwrap();
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        fs::write(&path, b"modified").unwrap();
+        File::open(&path).unwrap().set_modified(modified).unwrap();
+        assert!(matches!(
+            export.validate_snapshot(&reviewed, |_| {}),
+            Err(FileError::Corrupt)
+        ));
+    }
+
+    #[test]
+    fn interrupted_batch_reuses_verified_files_and_repairs_torn_writes() {
+        let source = tempfile::tempdir().unwrap();
+        let staged = tempfile::tempdir().unwrap();
+        for index in 0..SYNC_BATCH_FILES + 8 {
+            fs::write(source.path().join(format!("{index:03}.yml")), b"reviewed").unwrap();
+        }
+        let export = CopiedExport::open(source.path(), &[]).unwrap();
+        let reviewed = export.snapshot().unwrap();
+        let crash = std::panic::catch_unwind(|| {
+            export.copy_to_directory(&reviewed, staged.path(), |_, progress| {
+                assert_ne!(
+                    progress.files,
+                    SYNC_BATCH_FILES as u64 + 2,
+                    "simulated crash"
+                );
+                Ok(())
+            })
+        });
+        assert!(crash.is_err());
+        let kept = staged.path().join("000.yml");
+        let identity = native::file_identity(&File::open(&kept).unwrap()).unwrap();
+        fs::write(
+            staged.path().join(format!("{SYNC_BATCH_FILES:03}.yml")),
+            b"torn",
+        )
+        .unwrap();
+        fs::write(
+            staged
+                .path()
+                .join(format!("{:03}.yml", SYNC_BATCH_FILES + 1)),
+            b"modified",
+        )
+        .unwrap();
+        export
+            .copy_to_directory(&reviewed, staged.path(), |_, _| Ok(()))
+            .unwrap();
+        assert_eq!(
+            native::file_identity(&File::open(&kept).unwrap()).unwrap(),
+            identity
+        );
+        assert!(
+            CopiedExport::open(staged.path(), &[])
+                .unwrap()
+                .snapshot()
+                .unwrap()
+                .same_content(&reviewed)
+        );
+    }
 }

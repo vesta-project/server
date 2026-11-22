@@ -32,11 +32,15 @@ disable auto-restart, then prepare a copy on the host:
 sudo vesta import prepare '/absolute/path/to/Minecraft'
 ```
 
-Paste the printed path into the launcher's import picker. The command makes a
-read-only staging copy under `/srv/vesta-imports` for the service account and
-leaves the original permissions and data alone. It requires free space for
-the staged and final copies. Delete the prepared directory after the import
-finishes. Preparing a copy does not require `setfacl` or a service restart.
+Paste the printed path into the launcher's import picker or open **Prepared
+imports**. The command creates a private, service-owned copy under
+`<data-root>/prepared-imports`, beside the managed storage in the service's
+writable mount. The original file permissions and data stay in place. Import
+consumes the prepared directory when it can rename it into managed storage. If
+managed storage is on a separate filesystem, import needs space for a second
+copy and leaves the prepared directory available for manual cleanup. Earlier
+copies under `/srv/vesta-imports` still work as ordinary copy imports. Preparing
+a copy requires neither `setfacl` nor a service restart.
 
 ```bash
 sudo vesta import-root add '/home/amp/.ampdata/instances/Survival/Minecraft'

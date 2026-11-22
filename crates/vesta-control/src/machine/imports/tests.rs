@@ -20,6 +20,77 @@ fn owner() -> OwnerBinding {
         device_id: "device".into(),
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn prepared_picker_root_exposes_only_published_folders_inside_host_storage() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("host");
+    let root = data.join(prepare::PREPARED_DIRECTORY);
+    let id = uuid::Uuid::new_v4().to_string();
+    let wrapper = root.join(&id);
+    let source = wrapper.join("world-server");
+    let pending = root.join(format!(".{id}.pending"));
+    let servers = data.join("servers");
+    for path in [&source, &pending, &servers] {
+        fs::create_dir_all(path).unwrap();
+    }
+    for path in [&wrapper, &source, &pending] {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let browser = FolderBrowser::new(vec![], vec![data.clone(), servers.clone()])
+        .unwrap()
+        .with_test_prepared_root(root.clone());
+    let roots = browser.roots().unwrap();
+    let prepared = roots
+        .roots
+        .iter()
+        .find(|entry| entry.display_path == root.to_str().unwrap())
+        .unwrap();
+    let token = browser
+        .resolve(
+            &owner(),
+            &ResolveRequest {
+                root_id: prepared.root_id.clone(),
+                relative_path: String::new(),
+            },
+        )
+        .unwrap();
+    let listing = browser
+        .list(
+            &owner(),
+            &ListRequest {
+                folder_token: token.folder_token,
+                cursor: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        listing
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        [id.as_str()]
+    );
+    let checked = browser.check(&owner(), source.to_str().unwrap()).unwrap();
+    assert_eq!(checked.status, "ok");
+    let token = checked.folder_token.unwrap();
+    assert_eq!(browser.open(&owner(), &token).unwrap().path, source);
+    for path in [&data, &servers, &pending] {
+        assert_eq!(
+            browser
+                .check(&owner(), path.to_str().unwrap())
+                .unwrap()
+                .status,
+            "protected"
+        );
+    }
+    fs::rename(&source, servers.join("game")).unwrap();
+    assert!(browser.open(&owner(), &token).is_err());
+}
 fn root_config(path: &Path) -> ImportRootConfig {
     ImportRootConfig {
         root_id: "r1".into(),

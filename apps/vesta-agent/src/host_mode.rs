@@ -182,6 +182,10 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
             root.path.display()
         );
     }
+    #[cfg(target_os = "linux")]
+    let folders = folders.with_prepared_root(
+        base.join(vesta_control::machine::imports::prepare::PREPARED_DIRECTORY),
+    );
     let folders = Arc::new(folders);
     let root_base = base.to_owned();
     folders.set_root_loader(move || {

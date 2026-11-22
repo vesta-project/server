@@ -458,6 +458,163 @@ fn source_changed_after_review_blocks_and_requires_replan() {
     );
 }
 
+#[cfg(target_os = "linux")]
+fn planned_transfer(f: &Fixture, folder: &str) -> (ImportJob, Private) {
+    let job = f.plan(folder);
+    assert_eq!(
+        job.state,
+        "review",
+        "{:?}",
+        job.review.as_ref().unwrap().blockers
+    );
+    let private = f
+        .jobs
+        .read(|c| {
+            let json = c.query_row(
+                "SELECT private FROM machine_import_jobs WHERE job_id=?1",
+                [&job.job_id],
+                |row| row.get(0),
+            )?;
+            decode(json)
+        })
+        .unwrap();
+    (job, private)
+}
+
+#[cfg(target_os = "linux")]
+fn prepared_fixture(f: &mut Fixture) -> String {
+    use std::os::unix::fs::PermissionsExt;
+
+    let id = Uuid::new_v4().to_string();
+    let wrapper = f.source(&id);
+    let source = wrapper.join("vanilla");
+    fs::create_dir(&wrapper).unwrap();
+    fs::rename(f.source("vanilla"), &source).unwrap();
+    for dir in [&wrapper, &source] {
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    Arc::get_mut(&mut f.jobs.0).unwrap().prepared_root = Some(f.temp.path().join("imports"));
+    format!("{id}/vanilla")
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn prepared_import_moves_within_the_volume_and_copies_across_volumes() {
+    let other_volume = tempfile::tempdir_in("/dev/shm").unwrap();
+    for cross_volume in [false, true] {
+        let mut f = Fixture::new();
+        f.vanilla();
+        if cross_volume {
+            assert!(!native::same_volume(f.temp.path(), other_volume.path()).unwrap());
+            f.jobs = ImportJobs::open(
+                f.state.clone(),
+                f.browser.clone(),
+                other_volume.path(),
+                f.env.clone(),
+            )
+            .unwrap();
+        }
+        let folder = prepared_fixture(&mut f);
+        let source = f.source(&folder);
+        let tree = Fixture::tree(&source);
+        let (job, private) = planned_transfer(&f, &folder);
+        let review = job.review.unwrap();
+        f.jobs
+            .copy_phase(&job.job_id, &review, &private, &AtomicBool::new(false))
+            .unwrap();
+        let game = f.jobs.server_dir(review.destination.server_id).join("game");
+        assert_eq!(Fixture::tree(&game), tree);
+        if cross_volume {
+            assert_eq!(Fixture::tree(&source), tree);
+            assert_ne!(
+                native::directory_identity(&game).unwrap(),
+                private.source_identity
+            );
+        } else {
+            assert!(!source.exists());
+            assert_eq!(
+                native::directory_identity(&game).unwrap(),
+                private.source_identity
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn ordinary_transfer_copies_even_on_the_same_volume() {
+    let f = Fixture::new();
+    f.vanilla();
+    let (job, private) = planned_transfer(&f, "vanilla");
+    let review = job.review.unwrap();
+    f.jobs
+        .copy_phase(&job.job_id, &review, &private, &AtomicBool::new(false))
+        .unwrap();
+    let game = f.jobs.server_dir(review.destination.server_id).join("game");
+    assert_eq!(Fixture::tree(&game), Fixture::tree(&private.source));
+    assert_ne!(
+        native::directory_identity(&game).unwrap(),
+        private.source_identity
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn interrupted_prepared_publication_resumes_on_either_side_of_rename() {
+    for renamed in [false, true] {
+        let mut f = Fixture::new();
+        f.vanilla();
+        let folder = prepared_fixture(&mut f);
+        let (job, private) = planned_transfer(&f, &folder);
+        let review = job.review.unwrap();
+        let dir = f.jobs.server_dir(review.destination.server_id);
+        fs::create_dir(&dir).unwrap();
+        f.jobs
+            .write(|c| {
+                c.execute(
+                    "UPDATE machine_import_jobs SET state='applying',server_id=?1 WHERE job_id=?2",
+                    params![review.destination.server_id.to_string(), job.job_id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        f.jobs
+            .begin_publish(
+                &job.job_id,
+                &Publication {
+                    identity: private.source_identity.clone(),
+                    moved_source: true,
+                },
+            )
+            .unwrap();
+        let game = dir.join("game");
+        if renamed {
+            native::rename_absent(&private.source, &game).unwrap();
+        }
+        f.reopen();
+        Arc::get_mut(&mut f.jobs.0).unwrap().prepared_root = Some(f.temp.path().join("imports"));
+        assert_eq!(
+            f.jobs.cancel(&f.binding, &job.job_id),
+            Err(JobError::CONFLICT)
+        );
+        f.jobs.resume(&f.binding, &job.job_id).unwrap();
+        let recovered = f.jobs.run_apply(&f.binding, &job.job_id).unwrap();
+        // Registration still requires consent. This fixture only exercises transfer.
+        assert_eq!(recovered.error.as_deref(), Some("eula_required"));
+        assert_eq!(recovered.phase, "configure");
+        assert_eq!(
+            recovered.progress.files_done,
+            recovered.progress.files_total
+        );
+        assert!(recovered.progress.files_done > 0);
+        assert_eq!(
+            native::directory_identity(&game).unwrap(),
+            private.source_identity
+        );
+        assert!(!private.source.exists());
+    }
+}
+
 #[test]
 fn source_changed_mid_copy_quarantines_destination() {
     let f = Fixture::new();
@@ -510,10 +667,14 @@ fn low_disk_at_plan_and_mid_copy() {
             .contains(&"insufficient_space".into())
     );
     f.env.free.store(100 * GIB, Ordering::SeqCst);
+    fs::File::create(f.source("vanilla").join("z-large.bin"))
+        .unwrap()
+        .set_len(DISK_CHECK_BYTES + 1)
+        .unwrap();
     let (_, accepted) = applied(&f, "vanilla");
     // Plenty at the pre-copy check, then the disk fills during the copy.
     let calls = f.env.free_calls.load(Ordering::SeqCst);
-    f.env.low_after.store(calls + 3, Ordering::SeqCst);
+    f.env.low_after.store(calls + 2, Ordering::SeqCst);
     let job = f.jobs.run_apply(&f.binding, &accepted.job_id).unwrap();
     assert_eq!(job.state, "blocked");
     assert_eq!(job.error.as_deref(), Some("insufficient_space"));

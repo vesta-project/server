@@ -639,6 +639,7 @@ impl ImportJobs {
             size,
             sha256,
             identity: String::new(),
+            version: String::new(),
         };
         let (managed, jvm_args) = commit::trusted_launch(&game, &launch, &java, memory, &entry)
             .map_err(|e| {

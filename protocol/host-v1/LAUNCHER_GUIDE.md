@@ -189,10 +189,11 @@ answers 429 `rate_limited` (with `Retry-After`) beyond that.
 4. Apply: POST `/v1/host/imports/apply` with header `Idempotency-Key: <random>`
    and `{planId,confirmation,acknowledgedWarnings:<all review.warnings>,eulaAccepted:true,sourceStoppedConfirmed:true}`.
    202 `{jobId,serverId}`. Retry a lost reply with the same key and body. Poll
-   the job: `applying` with `phase` `conflicts`, `snapshot`, `copy`,
-   `configure`, `register`; show `progress` as a bar (bytesDone/bytesTotal).
-   A Cancel button calls POST `/v1/host/imports/jobs/{jobId}/cancel`; `applying`
-   in the reply means it stops at the next file, keep polling until `cancelled`.
+   the job through `conflicts`, `snapshot`, `copy`, `publish`, `configure`
+   and `register`. Show `progress` as a bar using bytesDone/bytesTotal. A
+   same-filesystem prepared move can skip `copy` and consumes the prepared
+   folder. Cancel is available before `publish`. When the cancel reply is
+   `applying`, keep polling for `cancelled`.
    The original folder is never changed.
 5. When the job is `ready` (phase `register`) the server already appears in
    GET `/v1/host/servers`. Start: POST `/v1/host/imports/jobs/{jobId}/start`

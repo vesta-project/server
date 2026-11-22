@@ -12,6 +12,87 @@ use vesta_state::{Clock, StateDirectory};
 struct FixedClock;
 
 #[test]
+fn later_inventory_rows_and_large_jars_get_mutation_validators() {
+    let f = Fixture::open();
+    for i in 0..130 {
+        f.write(&format!("mods/{i:03}.jar"), b"imported");
+    }
+    let path = RelativePath::parse("mods/large.jar").unwrap();
+    let disabled = RelativePath::parse("mods/large.jar.disabled").unwrap();
+    fs::File::create(f.game.join(path.as_str()))
+        .unwrap()
+        .set_len(65 * 1024 * 1024)
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2100));
+    let world = f.browser.world(&f.owner).unwrap();
+    let inventory = || {
+        f.browser
+            .content_inventory(&f.owner, None, "1.21.1".into(), &world)
+            .unwrap()
+    };
+    let first = inventory();
+    assert_eq!(
+        first
+            .items
+            .iter()
+            .filter(|item| item.sha256.is_some())
+            .count(),
+        128
+    );
+    assert!(inventory().items.last().unwrap().sha256.is_none());
+    let ready = inventory();
+    assert!(ready.items.iter().all(|item| item.sha256.is_some()));
+    let hash = ready
+        .items
+        .iter()
+        .find(|item| item.path == path.as_str())
+        .unwrap()
+        .sha256
+        .as_deref()
+        .unwrap();
+    f.browser.rename(&f.owner, &path, &disabled, hash).unwrap();
+    f.browser.delete(&f.owner, &disabled, hash).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn inventory_validator_rejects_a_same_size_rewrite_with_restored_mtime() {
+    let f = Fixture::open();
+    f.write("mods/changed.jar", b"old");
+    std::thread::sleep(std::time::Duration::from_millis(2100));
+    let path = f.game.join("mods/changed.jar");
+    let world = f.browser.world(&f.owner).unwrap();
+    let inventory = || {
+        f.browser
+            .content_inventory(&f.owner, None, "1.21.1".into(), &world)
+            .unwrap()
+    };
+    let before = inventory();
+    let cached: i64 =
+        f.db.read(|c| {
+            Ok(c.query_row(
+                "SELECT count(*) FROM server_content_validators",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(cached, 1);
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    fs::write(&path, b"new").unwrap();
+    fs::File::open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    let after = inventory();
+    assert_ne!(before.items[0].sha256, after.items[0].sha256);
+    assert_eq!(
+        after.items[0].sha256.as_deref(),
+        Some(hex::encode(Sha256::digest(b"new")).as_str())
+    );
+}
+
+#[test]
 fn inventory_batch_provenance_requires_the_current_file_hash() {
     let f = Fixture::open();
     f.write("mods/verified.jar", b"verified bytes");

@@ -155,6 +155,8 @@ pub struct FolderBrowser {
     reload:
         RwLock<Option<Arc<dyn Fn() -> Result<Vec<ImportRootConfig>, ImportError> + Send + Sync>>>,
     protected: Vec<PathBuf>,
+    #[cfg(target_os = "linux")]
+    prepared: Option<(PathBuf, u32)>,
     tokens: Mutex<HashMap<String, TokenEntry>>,
     clock: Clock,
 }
@@ -209,6 +211,8 @@ impl FolderBrowser {
                 revision: 0,
             }),
             protected: checked_protected,
+            #[cfg(target_os = "linux")]
+            prepared: None,
             tokens: Mutex::new(HashMap::new()),
             clock,
         };
@@ -224,6 +228,7 @@ impl FolderBrowser {
             if config.root_id.is_empty()
                 || config.root_id.len() > 64
                 || config.root_id.starts_with(FILESYSTEM_ROOT_PREFIX)
+                || config.root_id == PREPARED_ROOT_ID
                 || checked
                     .iter()
                     .any(|r: &Root| r.config.root_id == config.root_id)
@@ -243,6 +248,58 @@ impl FolderBrowser {
             state.revision += 1;
         }
         Ok(())
+    }
+
+    /// Trusted Host composition. Only the dedicated root can browse the
+    /// prepared layout inside the otherwise protected Host data directory.
+    #[cfg(target_os = "linux")]
+    pub fn with_prepared_root(mut self, path: PathBuf) -> Self {
+        self.prepared = Some((path, 0));
+        self
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn with_test_prepared_root(mut self, path: PathBuf) -> Self {
+        self.prepared = Some((path, super::prepare::service_uid()));
+        self
+    }
+
+    #[cfg(target_os = "linux")]
+    fn trusted_prepared_root(&self) -> Option<(&Path, u32)> {
+        let (path, owner) = self.prepared.as_ref()?;
+        if !super::prepare::trusted_root(path, *owner)
+            || self
+                .protected
+                .iter()
+                .any(|protected| within(protected, path))
+            || plain_ancestors(path).is_err()
+        {
+            return None;
+        }
+        Some((path, *owner))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn is_prepared_source(&self, path: &Path) -> bool {
+        self.trusted_prepared_root()
+            .is_some_and(|(root, owner)| super::prepare::is_prepared(path, root, owner))
+    }
+
+    fn prepared_root(&self) -> Option<Root> {
+        #[cfg(target_os = "linux")]
+        {
+            let (path, _) = self.trusted_prepared_root()?;
+            let mut root = open_filesystem_root(ImportRootConfig {
+                root_id: PREPARED_ROOT_ID.into(),
+                label: "Prepared imports".into(),
+                path: path.to_owned(),
+            })
+            .ok()?;
+            root.filesystem = false;
+            Some(root)
+        }
+        #[cfg(not(target_os = "linux"))]
+        None
     }
     fn open_root(&self, config: ImportRootConfig) -> Result<Root, ImportError> {
         let path = &config.path;
@@ -302,11 +359,13 @@ impl FolderBrowser {
     pub fn roots(&self) -> Result<RootsResponse, ImportError> {
         self.refresh_roots()?;
         let state = self.roots.read().map_err(|_| ImportError::Unavailable)?;
+        let prepared = self.prepared_root();
         Ok(RootsResponse {
             roots: state
                 .saved
                 .iter()
                 .chain(&state.filesystem)
+                .chain(&prepared)
                 .map(|root| RootInfo {
                     root_id: root.config.root_id.clone(),
                     label: root.config.label.clone(),
@@ -418,7 +477,7 @@ impl FolderBrowser {
             let Ok(metadata) = fs::symlink_metadata(&child) else {
                 continue;
             };
-            if plain_directory(&metadata).is_err() || self.hidden(&child) {
+            if plain_directory(&metadata).is_err() || self.hidden_in_root(&root, &child) {
                 continue;
             }
             let mut parts = opened.parts.clone();
@@ -458,7 +517,7 @@ impl FolderBrowser {
         token: &str,
     ) -> Result<OpenedFolder, ImportError> {
         let opened = self.open_for_browsing(binding, token)?;
-        if self.protected_overlap(&opened.path) {
+        if self.protected_import_overlap(&opened.path) {
             return Err(ImportError::ProtectedPath);
         }
         Ok(opened)
@@ -515,7 +574,14 @@ impl FolderBrowser {
                 remediation_command,
             })
         };
-        if self.hidden(&typed) {
+        let prepared = self
+            .prepared_root()
+            .filter(|root| within(&typed, &root.canonical));
+        let hidden = |path: &Path| match &prepared {
+            Some(root) => self.hidden_in_root(root, path),
+            None => self.hidden(path),
+        };
+        if hidden(&typed) {
             return reply(&typed, "protected", None);
         }
         let real = match fs::canonicalize(&typed) {
@@ -525,7 +591,7 @@ impl FolderBrowser {
             }
             Err(_) => return reply(&typed, "not_found", None),
         };
-        if self.hidden(&real) {
+        if hidden(&real) || (prepared.is_some() && real != typed) {
             return reply(&real, "protected", None);
         }
         match fs::metadata(&real) {
@@ -539,8 +605,17 @@ impl FolderBrowser {
                 _ => reply(&typed, "permission_needed", None),
             };
         }
-        let Some((root, parts)) = self.filesystem_root_for(&real) else {
-            return reply(&typed, "not_found", None);
+        let (root, parts) = if let Some(root) = prepared {
+            let relative = real
+                .strip_prefix(&root.canonical)
+                .map_err(|_| ImportError::InvalidPath)?;
+            let parts = parse_relative(relative.to_str().ok_or(ImportError::InvalidPath)?)?;
+            (root, parts)
+        } else {
+            let Some(admitted) = self.filesystem_root_for(&real) else {
+                return reply(&typed, "not_found", None);
+            };
+            admitted
         };
         let root = self.root(&root.config.root_id)?;
         match self.walk(&root, &parts) {
@@ -600,6 +675,9 @@ impl FolderBrowser {
     }
 
     pub(crate) fn root(&self, root_id: &str) -> Result<Root, ImportError> {
+        if root_id == PREPARED_ROOT_ID {
+            return self.prepared_root().ok_or(ImportError::UnknownRoot);
+        }
         let root = {
             let state = self.roots.read().map_err(|_| ImportError::Unavailable)?;
             state
@@ -636,7 +714,7 @@ impl FolderBrowser {
         for part in parts {
             segment(part)?;
             let child = path.join(part);
-            if self.hidden(&child) {
+            if self.hidden_in_root(root, &child) {
                 return Err(ImportError::ProtectedPath);
             }
             let metadata = fs::symlink_metadata(&child).map_err(read_error)?;
@@ -654,7 +732,7 @@ impl FolderBrowser {
             pinned.push(handle);
             path = actual;
         }
-        if self.hidden(&path) {
+        if self.hidden_in_root(root, &path) {
             return Err(ImportError::ProtectedPath);
         }
         Ok(path)
@@ -663,6 +741,31 @@ impl FolderBrowser {
         self.protected
             .iter()
             .any(|protected| within(path, protected) || within(protected, path))
+    }
+
+    pub(crate) fn protected_import_overlap(&self, path: &Path) -> bool {
+        #[cfg(target_os = "linux")]
+        if self.is_prepared_source(path) {
+            return false;
+        }
+        self.protected_overlap(path)
+    }
+
+    fn hidden_in_root(&self, root: &Root, path: &Path) -> bool {
+        #[cfg(target_os = "linux")]
+        if root.config.root_id == PREPARED_ROOT_ID {
+            return match path
+                .strip_prefix(&root.canonical)
+                .map(|relative| relative.components().count())
+            {
+                Ok(0) => false,
+                Ok(1) => !super::prepare::prepared_wrapper(path),
+                Ok(2) => !self.is_prepared_source(path),
+                _ => true,
+            };
+        }
+        let _ = root;
+        self.hidden(path)
     }
     /// Never listed or entered: protected paths and everything below them, and
     /// pseudo/system trees.
@@ -676,6 +779,7 @@ impl FolderBrowser {
 
 /// Root ids of filesystem roots start with this; saved roots may not.
 const FILESYSTEM_ROOT_PREFIX: &str = "filesystem";
+const PREPARED_ROOT_ID: &str = "prepared-imports";
 
 #[cfg(not(windows))]
 fn filesystem_roots() -> Vec<ImportRootConfig> {

@@ -7,8 +7,6 @@ use std::{
     process::Command,
 };
 
-const EXPORTS: &str = "/srv/vesta-imports";
-
 pub fn run(args: &[OsString]) -> Result<(), String> {
     if account_id(&["-u"])? != 0 {
         return Err("Run this command with sudo.".into());
@@ -27,13 +25,15 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
         return Err("Invalid Vesta installation data path.".into());
     }
     let group = account_id(&["-g", "vesta"]).map_err(|_| "Vesta service account is missing.")?;
-    let path = prepare(source, Path::new(EXPORTS), group, installed)?;
+    let user = account_id(&["-u", "vesta"]).map_err(|_| "Vesta service account is missing.")?;
+    let staging = installed.join(vesta_control::machine::imports::prepare::PREPARED_DIRECTORY);
+    let path = prepare(source, &staging, user, group, installed)?;
     println!("Prepared import: {}", path.display());
     println!(
         "Open this path in the launcher’s import picker. Keep the copy until the import finishes."
     );
     println!(
-        "The prepared copy can be deleted afterward from: {}",
+        "A same-filesystem import moves this prepared copy into managed storage. If import copies it instead, the prepared folder can be deleted afterward from: {}",
         path.display()
     );
     Ok(())
@@ -67,25 +67,25 @@ fn controlled(path: &Path) -> std::io::Result<fs::Metadata> {
     Ok(metadata)
 }
 
-fn publish_modes(path: &Path, group: u32) -> std::io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    let mode = if metadata.is_dir() {
-        for entry in fs::read_dir(path)? {
-            publish_modes(&entry?.path(), group)?;
+fn publish_directories(path: &Path, user: u32, group: u32) -> std::io::Result<()> {
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            publish_directories(&entry.path(), user, group)?;
+        } else if !kind.is_file() {
+            return Err(std::io::Error::other("Unexpected file in prepared import"));
         }
-        0o750
-    } else if metadata.is_file() {
-        0o640
-    } else {
-        return Err(std::io::Error::other("Unexpected file in prepared import"));
-    };
-    chown(path, Some(0), Some(group))?;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+    }
+    chown(path, Some(user), Some(group))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    fs::File::open(path)?.sync_all()
 }
 
 fn prepare(
     source: &Path,
     staging: &Path,
+    user: u32,
     group: u32,
     installed: PathBuf,
 ) -> Result<PathBuf, String> {
@@ -117,7 +117,7 @@ fn prepare(
     let result = (|| {
         let target = pending.join(name);
         private_dir(&target).map_err(|e| e.to_string())?;
-        vesta_control::machine::imports::prepare::copy(
+        vesta_control::machine::imports::prepare::copy_for_service(
             source,
             &target,
             vec![
@@ -127,9 +127,14 @@ fn prepare(
                 "/etc".into(),
                 "/root".into(),
             ],
+            user,
+            group,
         )?;
-        publish_modes(&pending, group).map_err(|e| e.to_string())?;
+        publish_directories(&pending, user, group).map_err(|e| e.to_string())?;
         fs::rename(&pending, &ready).map_err(|e| e.to_string())?;
+        fs::File::open(staging)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|e| e.to_string())?;
         Ok(ready.join(name))
     })();
     if result.is_err() {

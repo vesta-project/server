@@ -114,6 +114,51 @@ pub(crate) fn file_identity(file: &File) -> Result<String> {
 pub(crate) fn file_identity(_file: &File) -> Result<String> {
     Err(FileError::Unavailable)
 }
+
+pub(super) struct FileVersion {
+    pub(super) key: String,
+    pub(super) reusable: bool,
+}
+
+fn settled_change_time(unix_ns: i128) -> bool {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // Coarse clocks can assign the same change time to consecutive writes.
+    // Only reuse an observation made after its timestamp bucket has passed.
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .is_ok_and(|now| (now.as_nanos() as i128) - unix_ns >= 2_000_000_000)
+}
+
+/// Bind the opened file ID, size and both data modification and change times.
+#[cfg(unix)]
+pub(super) fn file_version(file: &File) -> Result<FileVersion> {
+    use std::os::unix::fs::MetadataExt;
+    let m = file.metadata().map_err(io_error)?;
+    Ok(FileVersion {
+        key: format!(
+            "{}:{}:{}:{}:{}:{}:{}",
+            m.dev(),
+            m.ino(),
+            m.len(),
+            m.mtime(),
+            m.mtime_nsec(),
+            m.ctime(),
+            m.ctime_nsec()
+        ),
+        reusable: settled_change_time(
+            i128::from(m.ctime()) * 1_000_000_000 + i128::from(m.ctime_nsec()),
+        ),
+    })
+}
+#[cfg(windows)]
+pub(super) fn file_version(file: &File) -> Result<FileVersion> {
+    windows::version(file)
+}
+#[cfg(not(any(windows, unix)))]
+pub(super) fn file_version(_file: &File) -> Result<FileVersion> {
+    Err(FileError::Unavailable)
+}
+
 /// Directory identity observed without following a final link or reparse point.
 /// Host import browsing binds opaque folder tokens to this identity.
 #[cfg(unix)]
@@ -235,8 +280,8 @@ mod windows {
     };
     use windows_sys::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
-        FILE_TYPE_DISK, GetFileInformationByHandle, GetFileType, GetFinalPathNameByHandleW,
-        GetLongPathNameW,
+        FILE_BASIC_INFO, FILE_TYPE_DISK, FileBasicInfo, GetFileInformationByHandle,
+        GetFileInformationByHandleEx, GetFileType, GetFinalPathNameByHandleW, GetLongPathNameW,
     };
     pub(super) fn long_path(path: &Path) -> Option<PathBuf> {
         use std::os::windows::ffi::OsStrExt;
@@ -284,6 +329,33 @@ mod windows {
             "{}:{}:{}",
             info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow
         ))
+    }
+    pub(super) fn version(file: &File) -> Result<FileVersion> {
+        let identity = identity(file)?;
+        let size = file.metadata().map_err(io_error)?.len();
+        let mut info = FILE_BASIC_INFO::default();
+        // SAFETY: the file owns the live handle and the output is a writable
+        // FILE_BASIC_INFO of the supplied size.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle().cast(),
+                FileBasicInfo,
+                (&mut info as *mut FILE_BASIC_INFO).cast(),
+                std::mem::size_of::<FILE_BASIC_INFO>() as u32,
+            )
+        };
+        if ok == 0 || info.ChangeTime == 0 {
+            return Err(FileError::Unavailable);
+        }
+        // FILE_BASIC_INFO timestamps are in 100 ns units since 1601.
+        let unix_ns = (i128::from(info.ChangeTime) - 116_444_736_000_000_000) * 100;
+        Ok(FileVersion {
+            key: format!(
+                "{identity}:{size}:{}:{}",
+                info.LastWriteTime, info.ChangeTime
+            ),
+            reusable: settled_change_time(unix_ns),
+        })
     }
     pub(super) fn directory_identity(path: &Path) -> Result<String> {
         use std::os::windows::fs::OpenOptionsExt;
@@ -338,7 +410,7 @@ mod windows {
 /// silently overwrite a target that appeared after the absence check.
 #[cfg(windows)]
 #[allow(unsafe_code)]
-pub(super) fn rename_absent(from: &Path, to: &Path) -> Result<()> {
+pub(crate) fn rename_absent(from: &Path, to: &Path) -> Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
     let from: Vec<u16> = from.as_os_str().encode_wide().chain([0]).collect();
@@ -354,13 +426,15 @@ pub(super) fn rename_absent(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 #[cfg(target_os = "linux")]
+pub(crate) fn rename_absent(from: &Path, to: &Path) -> Result<()> {
+    rename_absent_io(from, to).map_err(super::mutation::no_replace_error)
+}
+#[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
-pub(super) fn rename_absent(from: &Path, to: &Path) -> Result<()> {
+pub(crate) fn rename_absent_io(from: &Path, to: &Path) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
-    let from =
-        std::ffi::CString::new(from.as_os_str().as_bytes()).map_err(|_| FileError::InvalidPath)?;
-    let to =
-        std::ffi::CString::new(to.as_os_str().as_bytes()).map_err(|_| FileError::InvalidPath)?;
+    let from = std::ffi::CString::new(from.as_os_str().as_bytes())?;
+    let to = std::ffi::CString::new(to.as_os_str().as_bytes())?;
     // SAFETY: stable NUL-terminated path buffers; AT_FDCWD accepts absolute paths.
     // Unsupported kernels/filesystems fail closed rather than falling back to replace.
     if unsafe {
@@ -373,15 +447,25 @@ pub(super) fn rename_absent(from: &Path, to: &Path) -> Result<()> {
         )
     } != 0
     {
-        return Err(super::mutation::no_replace_error(
-            std::io::Error::last_os_error(),
-        ));
+        return Err(std::io::Error::last_os_error());
     }
     Ok(())
 }
 #[cfg(not(any(windows, target_os = "linux")))]
-pub(super) fn rename_absent(_from: &Path, _to: &Path) -> Result<()> {
+pub(crate) fn rename_absent(_from: &Path, _to: &Path) -> Result<()> {
     Err(FileError::Unavailable)
+}
+
+#[cfg(unix)]
+pub(crate) fn sync_directory(path: &Path) -> Result<()> {
+    File::open(path)
+        .and_then(|dir| dir.sync_all())
+        .map_err(io_error)
+}
+#[cfg(not(unix))]
+pub(crate) fn sync_directory(_path: &Path) -> Result<()> {
+    // Windows does not expose a directory flush through a regular File handle.
+    Ok(())
 }
 
 /// Available and total bytes on the volume holding `path`.

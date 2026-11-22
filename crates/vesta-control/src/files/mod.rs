@@ -251,6 +251,7 @@ impl fmt::Debug for FileRead {
 pub struct FileBrowser {
     startup_whitelist: std::sync::Arc<startup_whitelist::StartupState>,
     content_identification: std::sync::Arc<std::sync::Mutex<content::IdentificationState>>,
+    content_hash_work: std::sync::Arc<std::sync::Mutex<Option<content::HashWork>>>,
     db: StateDatabase,
     root: root::Root,
     audit: vesta_state::audit::AuditLog,
@@ -288,6 +289,7 @@ impl FileBrowser {
         Ok(Self {
             startup_whitelist: std::sync::Arc::new(startup_whitelist::StartupState::open(&db)?),
             content_identification: Default::default(),
+            content_hash_work: Default::default(),
             audit: vesta_state::audit::AuditLog::new(db.clone())?,
             db,
             root,

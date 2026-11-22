@@ -25,6 +25,23 @@ impl FileBrowser {
     /// All three resources (submitted, canonical, handle) pass live policy and
     /// remote document exclusions. The handle allows writers/rotation on Windows.
     pub fn open_stream(&self, subject: &Subject, path: &RelativePath) -> Result<FileStream> {
+        self.open_stream_with(subject, path, native::open_growing)
+    }
+
+    pub(super) fn open_content_stream(
+        &self,
+        subject: &Subject,
+        path: &RelativePath,
+    ) -> Result<FileStream> {
+        self.open_stream_with(subject, path, native::open_regular)
+    }
+
+    fn open_stream_with(
+        &self,
+        subject: &Subject,
+        path: &RelativePath,
+        open: fn(&std::path::Path) -> Result<File>,
+    ) -> Result<FileStream> {
         #[cfg(feature = "latency-probe")]
         let _latency_file_admission = vesta_state::latency_probe::Span::new("file_admission");
         self.db
@@ -39,7 +56,7 @@ impl FileBrowser {
                 authorize(&policy, Capability::FilesRead, &path.resource())?;
                 let checked = root.resolve(Some(path))?;
                 authorize(&policy, Capability::FilesRead, &checked.resource)?;
-                let file = native::open_growing(&checked.path)?;
+                let file = open(&checked.path)?;
                 let actual = native::actual_path(&file, &checked.path)?;
                 let actual_resource = root.resource(&actual)?;
                 authorize(&policy, Capability::FilesRead, &actual_resource)?;
@@ -159,6 +176,10 @@ impl FileBrowser {
 }
 
 impl FileStream {
+    pub(super) fn content_version(&self) -> Result<native::FileVersion> {
+        native::file_version(&self.file)
+    }
+
     /// Consume the already authorized handle for bounded declaration parsing.
     /// Do not resolve/open the pathname again after admission: it may be replaced.
     pub(super) fn into_metadata_reader(self) -> File {

@@ -64,6 +64,7 @@ fn launch_spec_uses_only_detected_facts() {
             size: 3,
             sha256: "ab".repeat(32),
             identity: String::new(),
+            version: String::new(),
         };
         let choice = LaunchChoice {
             kind: kind.into(),
@@ -99,6 +100,7 @@ fn launch_spec_uses_only_detected_facts() {
         size: 1,
         sha256: String::new(),
         identity: String::new(),
+        version: String::new(),
     };
     let script = LaunchChoice {
         kind: "script".into(),
