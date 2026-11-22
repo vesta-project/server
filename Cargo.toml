@@ -15,6 +15,11 @@ members = ["crates/modpack-engine",
 ]
 resolver = "3"
 
+[profile.test]
+# The setup integration tests sign and install the Cargo-built setup executable.
+# Keep its embedded debug data out of the signed artifact's size budget.
+strip = "debuginfo"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
