@@ -11,7 +11,7 @@ fn v10_upgrade_preserves_pending_trash_and_adds_constrained_intents() {
     let server = f.db.server_id().to_owned();
     let trash = "a".repeat(32);
     f.db.write(|c| {
-        c.execute("INSERT INTO file_trash VALUES (?,?,?, ?,3,'replace','principal','device','pending',?,NULL,0,?,?)", params![trash,server,"config/legacy.txt","b".repeat(64),"c".repeat(64),DEFAULT_TEST_TIME_MS,DEFAULT_TEST_TIME_MS+1000])?;
+        c.execute("INSERT INTO file_trash VALUES (?,?,?, ?,3,'replace','principal','device','pending',?,NULL,0,?,?,0,NULL,NULL)", params![trash,server,"config/legacy.txt","b".repeat(64),"c".repeat(64),DEFAULT_TEST_TIME_MS,DEFAULT_TEST_TIME_MS+1000])?;
         Ok(())
     }).unwrap();
     f.db.close().unwrap();
