@@ -87,6 +87,7 @@ pub(super) fn dispatch(
             "version":revision.to_string(),
             "on_agent_start":settings.on_agent_start,
             "start_delay_seconds":settings.start_delay_seconds,
+            "enabled":state.server(server).map_err(error)?.is_some_and(|entry| entry.state != vesta_control::machine::registry::ServerState::Disabled),
             "last_startup":last_startup,
         })))
     }

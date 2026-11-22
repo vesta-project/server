@@ -599,6 +599,36 @@ impl ImportJobs {
         }
         Ok(account)
     }
+    fn creator(&self, c: &Connection, binding: &OwnerBinding) -> JobResult<Uuid> {
+        let account = Uuid::parse_str(&binding.account_id).map_err(|_| JobError::FORBIDDEN)?;
+        let host = super::super::state::snapshot_in(c)?.host_id;
+        if binding.host_id != host.to_string() {
+            return Err(JobError::FORBIDDEN);
+        }
+        super::super::access::require(c, super::super::owners::Actor::Account(account),
+            crate::identity::Capability::HostServersCreate)?;
+        Ok(account)
+    }
+
+    fn authorize_job(&self, c: &Connection, binding: &OwnerBinding, job: &str, kind: Kind) -> JobResult<Uuid> {
+        if kind == Kind::Import {
+            return self.owner(c, binding);
+        }
+        let account = self.creator(c, binding)?;
+        if host_role_in(c, account)?.is_some() {
+            return Ok(account);
+        }
+        let allowed: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM machine_import_jobs WHERE job_id=?1 AND kind='create'
+             AND account_id=?2 AND COALESCE(json_extract(request,'$.kind'),'new') = 'new')",
+            params![job, binding.account_id], |row| row.get(0),
+        )?;
+        if !allowed {
+            return Err(JobError::CREATE_NOT_FOUND);
+        }
+        Ok(account)
+    }
+
     fn write<T>(&self, work: impl FnOnce(&Connection) -> JobResult<T>) -> JobResult<T> {
         let mut out = None;
         let result = self.0.host.write(|c| match work(c) {
@@ -659,7 +689,10 @@ impl ImportJobs {
         let id = Uuid::new_v4().to_string();
         let now = self.0.host.now_ms();
         self.write(|c| {
-            self.owner(c, binding)?;
+            match kind {
+                Kind::Import => self.owner(c, binding)?,
+                Kind::Create => self.creator(c, binding)?,
+            };
             // Prune stale reviews and finished attempts before enforcing the cap.
             c.execute(
                 "DELETE FROM machine_import_jobs WHERE state IN ('review','blocked','cancelled','failed') AND apply_key IS NULL AND updated_ms<?1",
@@ -1164,7 +1197,7 @@ impl ImportJobs {
         self.ensure_accepting()?;
         let now = self.0.host.now_ms();
         self.write(|c| {
-            self.owner(c, binding)?;
+            self.authorize_job(c, binding, job_id, kind)?;
             let (state, phase, server): (String, String, Option<String>) = c
                 .query_row(
                     "SELECT state,phase,server_id FROM machine_import_jobs WHERE job_id=?1 AND kind=?2",
@@ -1218,7 +1251,7 @@ impl ImportJobs {
     ) -> JobResult<CancelResponse> {
         let now = self.0.host.now_ms();
         let (state, server) = self.write(|c| {
-            self.owner(c, binding)?;
+            self.authorize_job(c, binding, job_id, kind)?;
             let (state, phase, server): (String, String, Option<String>) = c
                 .query_row(
                     "SELECT state,phase,server_id FROM machine_import_jobs WHERE job_id=?1 AND kind=?2",

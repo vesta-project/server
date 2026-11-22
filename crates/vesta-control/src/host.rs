@@ -377,7 +377,7 @@ impl Host {
         config: HostConfiguration,
         clock: Arc<dyn Clock>,
         supervisor: Option<vesta_supervisor::RemoteProcess>,
-        worker: Option<(uuid::Uuid, uuid::Uuid)>,
+        worker: Option<(uuid::Uuid, uuid::Uuid, Option<crate::worker::WorkerPolicy>)>,
         startup_mode: crate::machine::startup::StartupMode,
     ) -> Result<Self, HostError> {
         let checked = check_launch(&config)?;
@@ -425,8 +425,10 @@ impl Host {
             }
         };
         let db = StateDatabase::open(checked.state, clock).map_err(HostError::State)?;
-        if let Some((host, server)) = worker {
-            if crate::identity::worker_policy::initialize(&db, host, server).is_err() {
+        if let Some((host, server, policy)) = worker {
+            let initialized = crate::identity::worker_policy::initialize(&db, host, server)
+                .and_then(|()| policy.map_or(Ok(()), |policy| crate::identity::worker_policy::sync(&db, &policy)));
+            if initialized.is_err() {
                 let _ = db.close();
                 return Err(HostError::Supervisor("worker_policy_unavailable"));
             }
@@ -885,6 +887,8 @@ fn compose(
     ));
     let automation =
         Arc::new(Automation::new(db.clone(), actions.clone()).map_err(HostError::Identity)?);
+    // Recover the disabled interval before any startup event or schedule can run.
+    automation.resume_after_disable().map_err(HostError::Identity)?;
     let driver = AutomationDriver::start(
         automation.clone(),
         cell.clone(),

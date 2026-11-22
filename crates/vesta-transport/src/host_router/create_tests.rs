@@ -1907,11 +1907,9 @@ fn server_session_projects_the_callers_roles_and_capabilities() {
             .iter()
             .filter(|c| !c.local_only())
             .map(|c| c.id().to_owned())
-            // Identity administration belongs to the host, never to a server.
+            // Server role management remains available through the Host router.
             .filter(|c| {
                 ![
-                    "roles.create",
-                    "roles.manage",
                     "devices.",
                     "credentials.",
                     "security.",

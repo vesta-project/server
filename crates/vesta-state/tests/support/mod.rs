@@ -154,7 +154,7 @@ pub fn remove_directory_link(link: &Path) -> io::Result<()> {
 // still reject duplicate tables; the fixture must actually remove later schema.
 macro_rules! without_v31_schema {
     ($earlier:literal) => {
-        concat!("DROP TABLE management_invitation_uses; DROP TABLE whitelist_sync_actor; DROP TABLE whitelist_sync_members;", $earlier)
+        concat!("DROP TABLE server_automation_disabled; ALTER TABLE file_trash DROP COLUMN batch_id; ALTER TABLE file_trash DROP COLUMN directory_identity; ALTER TABLE file_trash DROP COLUMN directory; DROP TABLE management_invitation_uses; DROP TABLE whitelist_sync_actor; DROP TABLE whitelist_sync_members;", $earlier)
     };
 }
 #[allow(dead_code)]

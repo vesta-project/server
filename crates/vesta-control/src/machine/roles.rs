@@ -41,11 +41,11 @@ pub struct RoleFields {
     pub capabilities: Option<Vec<Grant>>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct CustomRole {
-    name: String,
-    rank: i32,
-    capabilities: Vec<Grant>,
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct CustomRole {
+    pub name: String,
+    pub rank: i32,
+    pub capabilities: Vec<Grant>,
 }
 
 impl CustomRole {
@@ -53,7 +53,7 @@ impl CustomRole {
         json!({"id":id,"name":self.name,"rank":self.rank,"builtin":false,"capabilities":self.capabilities})
     }
 
-    fn capabilities(&self) -> BTreeSet<Capability> {
+    pub(super) fn capabilities(&self) -> BTreeSet<Capability> {
         self.capabilities
             .iter()
             .filter_map(|grant| Capability::from_id(&grant.capability))
@@ -61,17 +61,17 @@ impl CustomRole {
     }
 }
 
-fn decode<T: serde::de::DeserializeOwned>(text: &str) -> Result<T> {
+pub(super) fn decode<T: serde::de::DeserializeOwned>(text: &str) -> Result<T> {
     serde_json::from_str(text)
         .map_err(|_| vesta_state::StateError::new("state_host_record_invalid").into())
 }
 
-fn encode(value: &impl Serialize) -> Result<String> {
+pub(super) fn encode(value: &impl Serialize) -> Result<String> {
     serde_json::to_string(value)
         .map_err(|_| vesta_state::StateError::new("state_host_record_invalid").into())
 }
 
-fn custom_role(c: &Connection, server: Uuid, id: &str) -> Result<CustomRole> {
+pub(super) fn role_record(c: &Connection, server: Uuid, id: &str) -> Result<Option<CustomRole>> {
     let document: Option<String> = c
         .query_row(
             "SELECT document FROM machine_roles WHERE server_id=? AND id=?",
@@ -79,17 +79,128 @@ fn custom_role(c: &Connection, server: Uuid, id: &str) -> Result<CustomRole> {
             |row| row.get(0),
         )
         .optional()?;
-    decode(&document.ok_or_else(|| reject(Code::NotFound))?)
+    document.map(|value| decode(&value)).transpose()
+}
+
+fn custom_role(c: &Connection, server: Uuid, id: &str) -> Result<CustomRole> {
+    role_record(c, server, id)?.ok_or_else(|| reject(Code::NotFound))
+}
+
+fn shipped(role: ServerRole) -> CustomRole {
+    from_capabilities(role.name(), role.rank(), role.capabilities().iter().copied().filter(|cap| !cap.host_scoped()))
+}
+
+fn from_capabilities(name: &str, rank: i32, caps: impl IntoIterator<Item = Capability>) -> CustomRole {
+    CustomRole { name: name.into(), rank, capabilities: caps.into_iter().map(|cap| Grant {
+        capability:cap.id().into(), scope:"*".into(),
+    }).collect() }
+}
+
+pub(super) fn role_definition(c: &Connection, server: Uuid, id: &str) -> Result<CustomRole> {
+    require_server(c, server)?;
+    if id == "owner" {
+        let owner = crate::identity::BuiltinRole::Owner;
+        return Ok(from_capabilities(owner.name(), owner.rank(), owner.capabilities().iter().copied()
+            .filter(|cap| !cap.host_scoped()).chain([Capability::LifecycleEnable])));
+    }
+    if let Ok(role) = ServerRole::parse(id) {
+        let mut definition = role_record(c, server, role.id())?.unwrap_or_else(|| shipped(role));
+        if role == ServerRole::Admin {
+            definition.capabilities.push(Grant { capability: Capability::LifecycleEnable.id().into(), scope: "*".into() });
+        }
+        return Ok(definition);
+    }
+    let id = Uuid::parse_str(id).map_err(|_| reject(Code::NotFound))?;
+    custom_role(c, server, &id.to_string())
+}
+
+pub(super) fn role_summary(c: &Connection, server: Uuid, id: &str) -> Result<Value> {
+    let definition = role_definition(c, server, id)?;
+    let builtin = ServerRole::parse(id).ok();
+    let id = match builtin { Some(role) => role.id(), None => id };
+    let mut value = definition.summary(id);
+    value["builtin"] = json!(builtin.is_some() || id == "owner");
+    value["editable"] = json!(id != "owner" && builtin != Some(ServerRole::Admin));
+    value["modified"] = json!(builtin.is_some() && role_record(c, server, id)?.is_some());
+    Ok(value)
+}
+
+fn require_role_fields(fields: &RoleFields) -> Result<()> {
+    if fields.name.is_none() && fields.rank.is_none() && fields.capabilities.is_none() {
+        return Err(reject(Code::InvalidRequest));
+    }
+    Ok(())
+}
+
+pub(super) fn prepare_role(fields: RoleFields, prior: Option<CustomRole>) -> Result<CustomRole> {
+    prepare_fields(fields, prior, false)
+}
+
+pub(super) fn prepare_fields(fields: RoleFields, prior: Option<CustomRole>, retain_reserved: bool) -> Result<CustomRole> {
+    let invalid = || reject(Code::InvalidRequest);
+    let name = fields.name.or_else(|| prior.as_ref().map(|r| r.name.clone())).ok_or_else(invalid)?;
+    let name = name.trim();
+    if name.is_empty() || name.len() > 96 || name.chars().any(char::is_control) {
+        return Err(invalid());
+    }
+    let rank_changed = fields.rank.is_some();
+    let rank = fields.rank.or_else(|| prior.as_ref().map(|r| r.rank)).ok_or_else(invalid)?;
+    if (rank_changed || !retain_reserved) && !(1..ServerRole::Admin.rank()).contains(&rank) {
+        return Err(invalid());
+    }
+    let capabilities_changed = fields.capabilities.is_some();
+    let capabilities = fields.capabilities.or_else(|| prior.map(|r| r.capabilities)).ok_or_else(invalid)?;
+    if capabilities_changed || !retain_reserved {
+        let mut caps = BTreeSet::new();
+        for grant in &capabilities {
+            if grant.scope != "*" || !caps.insert(grant_cap(&grant.capability)?) {
+                return Err(invalid());
+            }
+        }
+    }
+    Ok(CustomRole { name: name.into(), rank, capabilities })
+}
+
+pub(super) fn save_role(c: &Connection, server: Uuid, id: &str, role: &CustomRole) -> Result<()> {
+    c.execute("INSERT INTO machine_roles VALUES(?,?,?) ON CONFLICT(server_id,id) DO UPDATE SET document=excluded.document",
+        params![server.to_string(), id, encode(role)?])?;
+    Ok(())
+}
+
+pub(super) fn check_role_edit(
+    c: &Connection, actor: Actor, server: Uuid, id: &str,
+    prior: Option<&CustomRole>, next: &CustomRole,
+) -> Result<()> {
+    let auth = authority(c, actor, server)?;
+    if let Some(prior) = prior {
+        auth.require_role_edit()?;
+        auth.delegate(prior.rank, prior.capabilities())?;
+        let mut q = c.prepare("SELECT account_id FROM machine_server_grants WHERE server_id=? AND role=?")?;
+        let mut rows = q.query(params![server.to_string(), id])?;
+        while let Some(row) = rows.next()? {
+            target(c, server, &auth, super::state::uuid(row.get(0)?)?)?;
+        }
+    } else {
+        auth.require(Capability::RolesCreate)?;
+    }
+    auth.delegate(next.rank, next.capabilities())
+}
+
+fn matches_builtin(c: &Connection, server: Uuid, role: ServerRole) -> Result<EffectiveRole> {
+    Ok(match role_record(c, server, role.id())? {
+        Some(record) => EffectiveRole::EditedBuiltin { role, rank: record.rank },
+        None => EffectiveRole::Server(role),
+    })
 }
 
 pub(super) fn resolve_role(c: &Connection, server: Uuid, id: &str) -> Result<EffectiveRole> {
     if let Ok(role) = ServerRole::parse(id) {
-        return Ok(EffectiveRole::Server(role));
+        return matches_builtin(c, server, role);
     }
     let uuid = Uuid::parse_str(id).map_err(|_| reject(Code::NotFound))?;
     Ok(EffectiveRole::Custom {
         id: uuid,
-        rank: custom_role(c, server, id)?.rank,
+        rank: custom_role(c, server, &uuid.to_string())?.rank,
     })
 }
 
@@ -118,8 +229,8 @@ pub(super) fn clear_overrides(c: &Connection, server: Uuid, account: Uuid) -> Re
 fn base(c: &Connection, server: Uuid, role: EffectiveRole) -> Result<BTreeSet<Capability>> {
     Ok(match role {
         EffectiveRole::Custom { id, .. } => custom_role(c, server, &id.to_string())?.capabilities(),
-        EffectiveRole::Server(role) => role.capabilities().iter().copied().collect(),
-        _ => crate::identity::BuiltinRole::Owner.capabilities().iter().copied().collect(),
+        EffectiveRole::Server(role) | EffectiveRole::EditedBuiltin { role, .. } => role_definition(c, server, role.id())?.capabilities(),
+        _ => role_definition(c, server, "owner")?.capabilities(),
     })
 }
 
@@ -130,8 +241,12 @@ fn effective(
     role: EffectiveRole,
 ) -> Result<BTreeSet<Capability>> {
     let mut caps = base(c, server, role)?;
+    if super::access::host_access_sources_in(c, account)? {
+        caps.insert(Capability::AccessSourcesManage);
+    }
     for item in overrides_in(c, server, account)? {
         let cap = Capability::from_id(&item.capability).ok_or_else(|| reject(Code::RoleInvalid))?;
+        if cap.host_scoped() { continue; }
         match item.effect {
             Effect::Allow => {
                 caps.insert(cap);
@@ -190,7 +305,7 @@ fn authority(c: &Connection, actor: Actor, server: Uuid) -> Result<Authority> {
     Ok(Authority {
         owner: matches!(role, EffectiveRole::PrimaryOwner | EffectiveRole::Owner),
         rank: role.rank(),
-        caps: effective(c, server, account, role)?,
+        caps: effective(c, server, account, role)?.into_iter().filter(|cap| !cap.host_scoped()).collect(),
     })
 }
 
@@ -227,13 +342,12 @@ pub(super) fn can_invite_builtin(
     role: Option<ServerRole>,
 ) -> Result<bool> {
     let auth = authority(c, actor, server)?;
-    Ok(auth.require(Capability::InvitationsCreate).is_ok()
-        && role.is_none_or(|role| {
-            role != ServerRole::Admin
-                && auth
-                    .delegate(role.rank(), role.capabilities().iter().copied())
-                    .is_ok()
-        }))
+    if auth.require(Capability::InvitationsCreate).is_err() {
+        return Ok(false);
+    }
+    let Some(role) = role else { return Ok(true); };
+    let definition = role_definition(c, server, role.id())?;
+    Ok(role != ServerRole::Admin && auth.delegate(definition.rank, definition.capabilities()).is_ok())
 }
 
 fn target(
@@ -252,7 +366,7 @@ fn target(
             role.rank(),
             base(c, server, role)?
                 .into_iter()
-                .chain(effective(c, server, account, role)?),
+                .chain(effective(c, server, account, role)?.into_iter().filter(|cap| !cap.host_scoped())),
         )?;
     }
     Ok(role)
@@ -260,11 +374,7 @@ fn target(
 
 /// Hard capabilities are never carried by custom grants or principal overrides.
 pub fn host_delegable(cap: Capability) -> bool {
-    cap.delegable()
-        && !matches!(
-            cap,
-            Capability::AccessSourcesManage | Capability::DevicesRevoke
-        )
+    cap.delegable() && !cap.host_scoped()
 }
 
 fn grant_cap(id: &str) -> Result<Capability> {
@@ -276,6 +386,51 @@ fn grant_cap(id: &str) -> Result<Capability> {
 }
 
 impl HostState {
+    /// Build a complete policy from one Host snapshot. Device enrollment,
+    /// membership, role edits and Host access grants share its generation.
+    pub fn worker_policy(&self, server: Uuid) -> Result<crate::worker::WorkerPolicy> {
+        use crate::worker::{ServerRole as WorkerRole, WorkerGrant, WorkerPolicy};
+        self.read(|c| {
+            require_server(c, server)?;
+            let snapshot = super::state::snapshot_in(c)?;
+            let mut q = c.prepare(
+                "SELECT d.account_id,d.device_id FROM machine_devices d JOIN machine_accounts a USING(account_id)
+                 WHERE d.revoked_at_ms IS NULL AND a.disabled=0 ORDER BY d.device_id",
+            )?;
+            let mut rows = q.query([])?;
+            let mut grants = Vec::new();
+            let mut access_sources_accounts = BTreeSet::new();
+            while let Some(row) = rows.next()? {
+                let account_id = super::state::uuid(row.get(0)?)?;
+                let device_id = super::state::uuid(row.get(1)?)?;
+                if let Some(role) = effective_role_in(c, account_id, server)? {
+                    let mut effective = effective(c, server, account_id, role)?;
+                    let role = WorkerRole::for_effective(role);
+                    if role != WorkerRole::Owner && effective.contains(&Capability::AccessSourcesManage) {
+                        access_sources_accounts.insert(account_id);
+                    }
+                    let mut capabilities: Vec<String> = role.capabilities()
+                        .filter(|cap| effective.remove(cap)).map(|cap| cap.id().into()).collect();
+                    capabilities.extend(effective.into_iter().filter(|&cap| role.permits_projection(cap))
+                        .map(|cap| cap.id().into()));
+                    grants.push(WorkerGrant { account_id, device_id, role, capabilities });
+                }
+            }
+            let mut whitelist_owners = std::collections::BTreeMap::new();
+            let mut q = c.prepare(
+                "SELECT n.account_id,n.name FROM machine_account_names n JOIN machine_accounts a USING(account_id)
+                 WHERE a.disabled=0 AND (n.account_id IN (SELECT account_id FROM machine_owners)
+                   OR n.account_id=(SELECT primary_account_id FROM machine_host WHERE singleton=1))",
+            )?;
+            let mut rows = q.query([])?;
+            while let Some(row) = rows.next()? {
+                whitelist_owners.insert(super::state::uuid(row.get(0)?)?, row.get(1)?);
+            }
+            Ok(WorkerPolicy { host_id:snapshot.host_id, server_id:server, generation:snapshot.auth_generation,
+                grants, whitelist_owners, access_sources_accounts })
+        })
+    }
+
     pub fn server_capabilities(
         &self,
         server: Uuid,
@@ -298,7 +453,10 @@ impl HostState {
             let mut roles = Vec::new();
             while let Some(row) = rows.next()? {
                 let role: CustomRole = decode(&row.get::<_, String>(1)?)?;
-                roles.push(role.summary(&row.get::<_, String>(0)?));
+                let id: String = row.get(0)?;
+                if Uuid::parse_str(&id).is_ok() {
+                    roles.push(role.summary(&id));
+                }
             }
             Ok(roles)
         })
@@ -317,45 +475,66 @@ impl HostState {
         fields: RoleFields,
     ) -> Result<(HostSnapshot, Value)> {
         self.write(|c| {
-            let auth = authority(c, actor, server)?;
-            if id.is_some() { auth.require_role_edit()?; } else { auth.require(Capability::RolesCreate)?; }
             expect_revision(c, revision)?;
-            if fields.name.is_none() && fields.rank.is_none() && fields.capabilities.is_none() {
-                return Err(reject(Code::InvalidRequest));
-            }
             let editing = id.is_some();
             let id = id.unwrap_or_else(Uuid::new_v4).to_string();
             let prior = editing.then(|| custom_role(c, server, &id)).transpose()?;
-            if let Some(role) = &prior {
-                auth.delegate(role.rank, role.capabilities())?;
-                let mut q = c.prepare("SELECT account_id FROM machine_server_grants WHERE server_id=? AND role=?")?;
-                let mut rows = q.query(params![server.to_string(), id])?;
-                while let Some(row) = rows.next()? {
-                    target(c, server, &auth, super::state::uuid(row.get(0)?)?)?;
-                }
-            }
-            let invalid = || reject(Code::InvalidRequest);
-            let name = fields.name.or_else(|| prior.as_ref().map(|r| r.name.clone())).ok_or_else(invalid)?;
-            let name = name.trim();
-            if name.is_empty() || name.len() > 96 || name.chars().any(char::is_control) {
-                return Err(invalid());
-            }
-            let rank = fields.rank.or_else(|| prior.as_ref().map(|r| r.rank)).ok_or_else(invalid)?;
-            if !(1..ServerRole::Admin.rank()).contains(&rank) {
-                return Err(invalid());
-            }
-            let grants = fields.capabilities.or_else(|| prior.map(|r| r.capabilities)).ok_or_else(invalid)?;
-            let mut caps = BTreeSet::new();
-            for grant in &grants {
-                if grant.scope != "*" || !caps.insert(grant_cap(&grant.capability)?) {
-                    return Err(invalid());
-                }
-            }
-            auth.delegate(rank, caps)?;
-            let role = CustomRole { name: name.into(), rank, capabilities: grants };
-            c.execute("INSERT INTO machine_roles VALUES(?,?,?) ON CONFLICT(server_id,id) DO UPDATE SET document=excluded.document",
-                params![server.to_string(), id, encode(&role)?])?;
+            require_role_fields(&fields)?;
+            let role = prepare_role(fields, prior.clone())?;
+            check_role_edit(c, actor, server, &id, prior.as_ref(), &role)?;
+            save_role(c, server, &id, &role)?;
             Ok((changed(c, true, "server_custom_role_write", &actor.audit(), &format!("{server}/{id}"), self.now_ms())?, role.summary(&id)))
+        })
+    }
+
+    pub fn server_roles(&self, server: Uuid) -> Result<Vec<Value>> {
+        self.read(|c| {
+            let mut roles = vec![role_summary(c, server, "owner")?];
+            for role in ServerRole::ALL {
+                roles.push(role_summary(c, server, role.id())?);
+            }
+            let mut q = c.prepare("SELECT id FROM machine_roles WHERE server_id=? ORDER BY id")?;
+            let mut rows = q.query([server.to_string()])?;
+            while let Some(row) = rows.next()? {
+                let id: String = row.get(0)?;
+                if Uuid::parse_str(&id).is_ok() {
+                    roles.push(role_summary(c, server, &id)?);
+                }
+            }
+            Ok(roles)
+        })
+    }
+
+    pub fn write_builtin_role(
+        &self, actor: Actor, server: Uuid, id: &str, revision: u64, fields: Option<RoleFields>,
+    ) -> Result<(HostSnapshot, Value)> {
+        self.write(|c| {
+            if id == "owner" { return Err(reject(Code::Forbidden)); }
+            let role = ServerRole::parse(id).map_err(|_| reject(Code::NotFound))?;
+            if role == ServerRole::Admin { return Err(reject(Code::Forbidden)); }
+            expect_revision(c, revision)?;
+            let prior = role_definition(c, server, role.id())?;
+            let reset = fields.is_none();
+            let next = match fields {
+                Some(fields) => {
+                    require_role_fields(&fields)?;
+                    prepare_role(fields, Some(prior.clone()))?
+                }
+                None => shipped(role),
+            };
+            check_role_edit(c, actor, server, role.as_str(), Some(&prior), &next)?;
+            // Also check pre-unification Pack User assignments.
+            if role == ServerRole::PackUser {
+                check_role_edit(c, actor, server, "player", Some(&prior), &next)?;
+            }
+            if reset {
+                c.execute("DELETE FROM machine_roles WHERE server_id=? AND id=?", params![server.to_string(), role.id()])?;
+            } else {
+                save_role(c, server, role.id(), &next)?;
+            }
+            super::invites::fence_role_in(c, server, role)?;
+            let snapshot = changed(c, true, "server_builtin_role_write", &actor.audit(), &format!("{server}/{}",role.id()), self.now_ms())?;
+            Ok((snapshot, role_summary(c, server, role.id())?))
         })
     }
 
@@ -405,7 +584,24 @@ impl HostState {
         remove: Option<&str>,
         revision: u64,
     ) -> Result<(HostSnapshot, Option<EffectiveRole>)> {
+        self.assign_role_impl(actor, server, account, add, remove, revision, false)
+    }
+
+    pub fn set_host_membership(
+        &self, actor: Actor, account: Uuid, server: Uuid, revision: u64, role: Option<&str>,
+    ) -> Result<(HostSnapshot, Option<EffectiveRole>)> {
+        self.assign_role_impl(actor, server, account, role, None, revision, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn assign_role_impl(
+        &self, actor: Actor, server: Uuid, account: Uuid, add: Option<&str>,
+        remove: Option<&str>, revision: u64, from_host: bool,
+    ) -> Result<(HostSnapshot, Option<EffectiveRole>)> {
         self.write(|c| {
+            if from_host {
+                super::access::require(c, actor, Capability::HostMembershipsManage)?;
+            }
             let auth = authority(c, actor, server)?;
             auth.require(if add.is_some() {
                 Capability::RolesAssign
@@ -416,6 +612,9 @@ impl HostState {
             let current = target(c, server, &auth, account)?;
             if let Some(id) = remove {
                 resolve_role(c, server, id)?;
+            }
+            if add == Some("owner") {
+                return Err(reject(Code::Forbidden));
             }
             let role = add.map(|id| resolve_role(c, server, id)).transpose()?;
             if let Some(role) = role {
@@ -431,7 +630,7 @@ impl HostState {
                 clear_overrides(c, server, account)?;
             }
             match role {
-                Some(EffectiveRole::Server(role)) => {
+                Some(EffectiveRole::Server(role) | EffectiveRole::EditedBuiltin { role, .. }) => {
                     store_assignment(c, server, account, role.as_str())?
                 }
                 Some(EffectiveRole::Custom { id, .. }) => {

@@ -155,6 +155,7 @@ pub fn owner_policy(host: &HostState, server_id: Uuid) -> JobResult<WorkerPolicy
             generation: snapshot.auth_generation,
             grants,
             whitelist_owners,
+            access_sources_accounts: Default::default(),
         });
         Ok(())
     })?;
@@ -342,9 +343,12 @@ impl ImportJobs {
     }
 
     pub fn open_worker(&self, server_id: Uuid, clock: Arc<dyn Clock>, boot: bool) -> JobResult<Worker> {
-        self.0.host.server(server_id)?
+        let entry = self.0.host.server(server_id)?
             .filter(|entry| entry.state != ServerState::Deleted)
             .ok_or(JobError::NOT_FOUND)?;
+        if entry.state == ServerState::Disabled {
+            return Err(JobError("server_disabled"));
+        }
         let dir = self.server_dir(server_id);
         let text = fs::read(dir.join("host.toml")).map_err(|_| JobError::NOT_FOUND)?;
         let config = HostConfiguration::parse_toml(&text, &dir, Path::new("host.toml"))
@@ -357,13 +361,16 @@ impl ImportJobs {
         } else {
             StartupMode::Deferred
         };
-        let worker = Worker::open_with_startup(config, clock, None, snapshot.host_id, server_id, startup)
-            .map_err(|_| JobError("worker_unavailable"))?;
         if pending_removal {
+            let worker = Worker::open_with_startup(config, clock, None, snapshot.host_id, server_id, startup)
+                .map_err(|_| JobError("worker_unavailable"))?;
             worker.recover_removal_fence(snapshot.auth_generation)
                 .map_err(|_| JobError("worker_unavailable"))?;
+            return Ok(worker);
         }
-        Ok(worker)
+        let policy = self.0.host.worker_policy(server_id)?;
+        Worker::open_with_policy(config, clock, None, policy, startup)
+            .map_err(|_| JobError("worker_unavailable"))
     }
 
     /// A crash can occur after inserting the registry entry and before committing the
@@ -451,7 +458,7 @@ impl ImportJobs {
     ) -> JobResult<()> {
         self.ensure_accepting()?;
         let job = self.read(|c| {
-            self.owner(c, binding)?;
+            self.authorize_job(c, binding, job_id, kind)?;
             self.committed(c, job_id, kind)
         })?;
         let (state, attempt) = (job.state.as_str(), job.attempt);
@@ -497,9 +504,9 @@ impl ImportJobs {
                 return self.resolvable(job_id, "ready", code);
             }
         }
-        let policy = owner_policy(&self.0.host, server_id)?;
+        let policy = self.0.host.worker_policy(server_id)?;
         // Same generation and document is accepted again; a newer host sync wins.
-        let _ = worker.sync_policy(policy);
+        worker.sync_policy(policy).map_err(|_| JobError::FORBIDDEN)?;
         let (server_subject, subject) = self.subject(
             binding,
             server_id,
@@ -507,6 +514,8 @@ impl ImportJobs {
         )?;
         let network = worker
             .authorize(server_subject)
+            .map_err(|_| JobError::FORBIDDEN)?;
+        network.management().authorize("trusted-worker", crate::identity::Capability::LifecycleStart, None)
             .map_err(|_| JobError::FORBIDDEN)?;
         self.ensure_accepting()?;
         network
@@ -550,7 +559,7 @@ impl ImportJobs {
         kind: Kind,
     ) -> JobResult<()> {
         let (job, since) = self.read(|c| {
-            self.owner(c, binding)?;
+            self.authorize_job(c, binding, job_id, kind)?;
             let job = self.committed(c, job_id, kind)?;
             let since: i64 = c.query_row(
                 "SELECT updated_ms FROM machine_import_jobs WHERE job_id=?1",

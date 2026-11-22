@@ -15,6 +15,7 @@ pub(super) fn start_janitor(app: Weak<Application>) {
                 return;
             }
             let _ = tokio::task::spawn_blocking(move || {
+                enablement::reap(&router);
                 if let Some(jobs) = router.imports() {
                     let state = &router.identity.state;
                     if removed::purge_expired(state, jobs.servers_root(), state.now_ms())
@@ -158,8 +159,8 @@ fn remove_reply(record: &removed::Removed) -> Reply {
 pub(super) fn dispatch(router: &HostRouter, device: &Device, path: &str, bytes: &[u8]) -> Reply {
     let state = &router.identity.state;
     if !state
-        .host_role(device.account_id)
-        .is_ok_and(|r| r.is_some())
+        .has_host_capability(Actor::Account(device.account_id), vesta_control::identity::Capability::HostServersRemove)
+        .is_ok_and(|allowed| allowed)
     {
         return failure(StatusCode::FORBIDDEN, "forbidden");
     }
@@ -177,6 +178,11 @@ pub(super) fn dispatch(router: &HostRouter, device: &Device, path: &str, bytes: 
         Ok(v) => v,
         Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     };
+    if state.server(id).is_ok_and(|entry| entry.is_some_and(|entry| entry.state == vesta_control::machine::registry::ServerState::Disabled)) {
+        if let Err(reply) = enablement::finish_worker(router, id, Duration::from_secs(3)) {
+            return reply;
+        }
+    }
     let (record, complete) = match removed::prepare(
         state,
         device.account_id,

@@ -76,7 +76,7 @@ fn schema(c: &rusqlite::Connection) -> crate::Result<()> {
     Ok(())
 }
 /// Look for an interrupted request without creating or modifying a receipt.
-pub(super) fn has_pending(host: &HostState, server: Uuid) -> JobResult<bool> {
+pub fn has_pending(host: &HostState, server: Uuid) -> JobResult<bool> {
     Ok(host.read(|c| {
         let exists: bool = c.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='machine_removal_receipts')",
@@ -106,7 +106,7 @@ pub fn prepare(
     }
     let mut result = None;
     host.write(|c| {
-        require_owner(c, Actor::Account(account))?;
+        super::access::require(c, Actor::Account(account), crate::identity::Capability::HostServersRemove)?;
         schema(c)?;
         let receipt: Option<(String,String,String,bool)> = c.query_row("SELECT server,name,record,complete FROM machine_removal_receipts WHERE account=? AND key=?", params![account.to_string(), req.idempotency_key.to_string()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
         let pending = if let Some((id,name,record,complete)) = receipt {
@@ -123,6 +123,11 @@ pub fn prepare(
             if complete { result=Some(Ok((record,true))); return Ok(()); }
             Some(record)
         } else { None };
+        if !super::access::is_owner(c, Actor::Account(account))?
+            && (req.permanently || super::registry::effective_role_in(c, account, server)?.is_none())
+        {
+            return Err(super::state::reject(crate::IdentityErrorCode::Forbidden));
+        }
         let entry: Option<(String,String)> = c.query_row("SELECT name,state FROM machine_servers WHERE server_id=? AND state!='deleted'", [server.to_string()], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
         let Some((name,_)) = entry else { result=Some(Err(JobError("not_found"))); return Ok(()); };
         if name != req.confirm_name { result=Some(Err(JobError("confirm_name_mismatch"))); return Ok(()); }
@@ -181,7 +186,7 @@ pub fn finish(
         return Err(JobError("not_found"));
     }
     let result = host.write(|c| {
-        require_owner(c, Actor::Account(record.removed_by))?;
+        super::access::require(c, Actor::Account(record.removed_by), crate::identity::Capability::HostServersRemove)?;
         let updated = c.execute(
             "UPDATE machine_servers SET state='deleted' WHERE server_id=? AND name=? AND state!='deleted'",
             params![record.server_id.to_string(), record.name],

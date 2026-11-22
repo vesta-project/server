@@ -184,7 +184,7 @@ fn req_administrator_is_not_remotely_assignable() {
 
 // REQ roles: built-in presets are immutable.
 #[test]
-fn req_builtin_roles_cannot_be_edited_or_deleted() {
+fn req_builtin_ids_are_separate_from_custom_uuids() {
     let h = Host::new();
     for id in ["viewer", "moderator", "owner"] {
         let parsed = Uuid::parse_str(id);
@@ -332,4 +332,113 @@ fn req_startup_edits_are_bounded_and_authorized() {
     h.state.patch_startup(editor, h.server, h.rev(), fallback, Some(StartupAction::StayStopped), None).unwrap();
     assert_eq!(code(h.state.patch_startup(editor, h.server, h.rev(), fallback, Some(StartupAction::Start), None)), "forbidden");
     assert_eq!(h.state.startup_settings(h.server).unwrap().unwrap().on_agent_start, StartupAction::StayStopped);
+}
+
+
+fn another_server(h: &Host, actor: Actor) -> crate::Result<Uuid> {
+    let server_id = Uuid::new_v4();
+    h.state.register_server(actor, &ServerEntry {
+        server_id, name: "Second".into(), game_port: 31101,
+        state: ServerState::Stopped, visibility: Visibility::Private,
+    }, h.rev())?;
+    Ok(server_id)
+}
+
+#[test]
+fn req_host_abilities_are_account_grants_and_do_not_expand_server_membership() {
+    let h = Host::new();
+    let manager = h.account(31);
+    let target = h.account(32);
+    let actor = Actor::Account(manager);
+    assert_eq!(code(another_server(&h, actor)), "forbidden");
+    let ids = ["host.servers.create", "host.settings.edit", "host.access.manage", "host.memberships.manage", "access-sources.manage"]
+        .map(str::to_owned);
+    h.state.set_host_capabilities(h.owner, manager, h.rev(), &ids).unwrap();
+    let second = another_server(&h, actor).unwrap();
+    assert!(h.state.has_host_capability(actor, Capability::HostView).unwrap());
+    h.state.update_settings(actor, HostSettingsPatch {
+        name: Some("Workshop".into()), new_device_sign_in: None,
+        removed_server_retention_days: None, default_on_agent_start: None
+    }).unwrap();
+    assert!(h.state.visible_servers(manager).unwrap().is_empty());
+    assert_eq!(code(h.state.set_host_capabilities(actor, target, h.rev(), &["devices.revoke".into()])), "forbidden");
+    assert_eq!(code(h.state.set_host_capabilities(h.owner, manager, h.rev(), &["lifecycle.start".into()])), "forbidden");
+    assert_eq!(code(h.state.set_host_capabilities(h.owner, manager, h.rev(), &["owner.recovery".into()])), "forbidden");
+    h.state.set_host_capabilities(actor, target, h.rev(), &["host.view".into()]).unwrap();
+    assert!(h.state.host_people(h.owner).unwrap()["people"].as_array().unwrap().len() >= 3);
+
+    let role = h.role(h.owner, "Server access manager", 60, &[Capability::RolesAssign, Capability::RolesRevoke, Capability::StatusView]).unwrap();
+    h.state.set_host_membership(h.owner, manager, h.server, h.rev(), Some(&role)).unwrap();
+    assert_eq!(code(h.state.set_host_membership(actor, target, second, h.rev(), Some("viewer"))), "forbidden");
+    h.state.set_host_membership(h.owner, target, h.server, h.rev(), Some("viewer")).unwrap();
+    assert_eq!(h.state.host_memberships(actor, target).unwrap()["memberships"][0]["server_id"], h.server.to_string());
+    assert!(h.caps(manager).contains(&Capability::AccessSourcesManage));
+    assert_eq!(h.state.worker_policy(h.server).unwrap().access_sources_accounts.into_iter().collect::<Vec<_>>(), vec![manager]);
+    assert!(h.state.worker_policy(second).unwrap().access_sources_accounts.is_empty());
+    assert!(!h.caps(target).contains(&Capability::AccessSourcesManage));
+    h.state.set_host_membership(h.owner, target, h.server, h.rev(), None).unwrap();
+    assert!(h.state.visible_servers(target).unwrap().is_empty());
+    assert_eq!(code(h.state.set_host_membership(h.owner, target, h.server, h.rev(), Some("administrator"))), "forbidden");
+}
+
+#[test]
+fn req_builtin_role_overrides_reset_and_presets_are_independent_copies() {
+    let h = Host::new();
+    let target = h.account(33);
+    h.assign(h.owner, target, "viewer").unwrap();
+    let second = another_server(&h, h.owner).unwrap();
+    h.state.set_host_membership(h.owner, target, second, h.rev(), Some("viewer")).unwrap();
+    let (_, edited) = h.state.write_builtin_role(h.owner, h.server, "viewer", h.rev(),
+        Some(fields(Some("Readers"), Some(21), Some(&[Capability::FilesRead])))).unwrap();
+    assert_eq!(edited["id"], "viewer");
+    assert_eq!(edited["modified"], true);
+    assert!(h.caps(target).contains(&Capability::FilesRead));
+    let second_role = h.state.effective_role(target, second).unwrap().unwrap();
+    assert_eq!(second_role, EffectiveRole::Server(ServerRole::Viewer));
+    assert!(!h.state.server_capabilities(second, target, second_role).unwrap().contains(&Capability::FilesRead));
+    assert_eq!(code(h.state.write_builtin_role(h.owner, h.server, "administrator", h.rev(), None)), "forbidden");
+    assert_eq!(code(h.state.write_builtin_role(h.owner, h.server, "owner", h.rev(), None)), "forbidden");
+
+    let preset = h.state.save_role_preset(h.owner, h.server, "viewer", h.rev(), true).unwrap();
+    let id: Uuid = preset["preset"]["id"].as_str().unwrap().parse().unwrap();
+    assert_eq!(h.state.role_presets(h.owner).unwrap()["presets"][0]["id"], id.to_string());
+    let (_, reset) = h.state.write_builtin_role(h.owner, h.server, "viewer", h.rev(), None).unwrap();
+    assert_eq!(reset["modified"], false);
+    assert_eq!(reset["rank"], ServerRole::Viewer.rank());
+    assert!(!h.caps(target).contains(&Capability::FilesRead));
+    let applied = h.state.apply_role_preset(h.owner, id, second, h.rev()).unwrap();
+    assert_eq!(applied["role"]["name"], "Readers");
+    h.state.patch_role_preset(h.owner, id, h.rev(), fields(Some("Night shift"), None, None), None).unwrap();
+    let updated = h.state.apply_role_preset(h.owner, id, second, h.rev()).unwrap();
+    assert_eq!(updated["role"]["id"], applied["role"]["id"]);
+    assert_eq!(updated["role"]["name"], "Night shift");
+    let third = Uuid::new_v4();
+    h.state.register_server(h.owner, &ServerEntry {
+        server_id: third, name: "Third".into(), game_port: 31102,
+        state: ServerState::Registered, visibility: Visibility::Private,
+    }, h.rev()).unwrap();
+    assert_eq!(h.state.custom_roles(third).unwrap()[0]["name"], "Night shift");
+    h.state.delete_role_preset(h.owner, id, h.rev()).unwrap();
+    assert_eq!(h.state.custom_roles(third).unwrap()[0]["id"], id.to_string());
+}
+
+#[test]
+fn req_enablement_is_versioned_scoped_and_preserves_startup_policy() {
+    let h = Host::new();
+    let target = h.account(34);
+    let actor = Actor::Account(target);
+    let role = h.role(h.owner, "Worker operator", 20, &[Capability::LifecycleEnable]).unwrap();
+    h.assign(h.owner, target, &role).unwrap();
+    let second = another_server(&h, h.owner).unwrap();
+    assert_eq!(code(h.state.set_server_enabled(actor, second, false, Some(h.rev()))), "forbidden");
+    assert_eq!(code(h.state.set_server_enabled(actor, h.server, false, Some(h.rev() - 1))), "conflict");
+    let config = h.state.startup_settings(h.server).unwrap().unwrap();
+    h.state.set_server_enabled(actor, h.server, false, Some(h.rev())).unwrap();
+    assert!(!h.state.observe_server_state(h.server, ServerState::Online).unwrap());
+    assert_eq!(h.state.visible_servers(target).unwrap()[0].0.state, ServerState::Disabled);
+    let reopened = HostState::open(h._tmp.path().join("host"), Arc::new(vesta_state::SystemClock)).unwrap();
+    assert_eq!(reopened.server(h.server).unwrap().unwrap().state, ServerState::Disabled);
+    reopened.set_server_enabled(actor, h.server, true, Some(h.rev())).unwrap();
+    assert_eq!(reopened.server(h.server).unwrap().unwrap().state, ServerState::Stopped);
+    assert_eq!(reopened.startup_settings(h.server).unwrap().unwrap().on_agent_start, config.on_agent_start);
 }

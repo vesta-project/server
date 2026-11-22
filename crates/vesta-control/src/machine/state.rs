@@ -4,7 +4,7 @@ use std::{path::Path, sync::Arc};
 use uuid::Uuid;
 use vesta_state::{Clock, StateDatabase, StateDirectory, StateError};
 
-pub const HOST_SCHEMA_VERSION: u32 = 3;
+pub const HOST_SCHEMA_VERSION: u32 = 4;
 
 /// A separate protected state directory is required, outside every game tree.
 /// The underlying vesta-state identity is storage infrastructure, never a host id
@@ -42,6 +42,15 @@ impl HostState {
             }
             if snapshot_in(c)?.schema_version == 2 {
                 migrate_custom_roles(c)?;
+            }
+            if snapshot_in(c)?.schema_version == 3 {
+                c.execute_batch(
+                    "ALTER TABLE machine_servers ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1));
+                     CREATE TABLE machine_host_capabilities(
+                         account_id TEXT PRIMARY KEY REFERENCES machine_accounts(account_id), document TEXT NOT NULL);
+                     CREATE TABLE machine_role_presets(id TEXT PRIMARY KEY, document TEXT NOT NULL);
+                     UPDATE machine_host SET schema_version=4, auth_generation=auth_generation+1 WHERE singleton=1;"
+                )?;
             }
             if snapshot_in(c)?.schema_version != HOST_SCHEMA_VERSION {
                 return Err(StateError::new("state_host_schema_unsupported").into());

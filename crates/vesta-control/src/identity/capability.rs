@@ -85,6 +85,14 @@ pub enum Capability {
     BackupsConfigure,
     PlayersOperator,
     StorageView,
+    HostView,
+    HostServersCreate,
+    HostSettingsEdit,
+    HostAccessManage,
+    HostMembershipsManage,
+    HostServersRemove,
+    HostPresetsManage,
+    LifecycleEnable,
 }
 
 impl Capability {
@@ -155,9 +163,29 @@ impl Capability {
         Self::StorageView,
     ];
 
+    /// Additional permissions used by the Host management API.
+    pub const HOST_MANAGEMENT: &'static [Self] = &[
+        Self::HostView,
+        Self::HostServersCreate,
+        Self::HostSettingsEdit,
+        Self::HostAccessManage,
+        Self::HostMembershipsManage,
+        Self::HostServersRemove,
+        Self::HostPresetsManage,
+        Self::LifecycleEnable,
+    ];
+
     /// The stable, exact identifier used in persisted identity records.
     pub const fn id(self) -> &'static str {
         match self {
+            Self::HostView => "host.view",
+            Self::HostServersCreate => "host.servers.create",
+            Self::HostSettingsEdit => "host.settings.edit",
+            Self::HostAccessManage => "host.access.manage",
+            Self::HostMembershipsManage => "host.memberships.manage",
+            Self::HostServersRemove => "host.servers.remove",
+            Self::HostPresetsManage => "host.presets.manage",
+            Self::LifecycleEnable => "lifecycle.enable",
             Self::PublicInfo => "public.info",
             Self::PackDownload => "pack.download",
             Self::PackRealtime => "pack.realtime",
@@ -227,6 +255,14 @@ impl Capability {
     /// Resolve only known persisted identifiers; unknown identifiers remain absent.
     pub fn from_id(id: &str) -> Option<Self> {
         match id {
+            "host.view" => Some(Self::HostView),
+            "host.servers.create" => Some(Self::HostServersCreate),
+            "host.settings.edit" => Some(Self::HostSettingsEdit),
+            "host.access.manage" => Some(Self::HostAccessManage),
+            "host.memberships.manage" => Some(Self::HostMembershipsManage),
+            "host.servers.remove" => Some(Self::HostServersRemove),
+            "host.presets.manage" => Some(Self::HostPresetsManage),
+            "lifecycle.enable" => Some(Self::LifecycleEnable),
             "public.info" => Some(Self::PublicInfo),
             "pack.download" => Some(Self::PackDownload),
             "pack.realtime" => Some(Self::PackRealtime),
@@ -292,6 +328,16 @@ impl Capability {
             "agent.install" => Some(Self::AgentInstall),
             _ => None,
         }
+    }
+
+    /// Authority belongs to the Host when resolving Host-managed identities.
+    pub const fn host_scoped(self) -> bool {
+        matches!(self,
+            Self::HostView | Self::HostServersCreate | Self::HostSettingsEdit |
+            Self::HostAccessManage | Self::HostMembershipsManage | Self::HostServersRemove |
+            Self::HostPresetsManage | Self::DevicesRevoke | Self::AccessSourcesManage |
+            Self::OwnerRecovery | Self::AgentInstall
+        )
     }
 
     pub const fn scoped(self) -> bool {

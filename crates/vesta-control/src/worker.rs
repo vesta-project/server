@@ -34,6 +34,7 @@ pub enum ServerRole {
     /// Host-owner expansion, confined to this worker's server services.
     Owner,
     Admin,
+    EditedBuiltin { role: String, rank: i32 },
     Custom { id: Uuid, rank: i32 },
     Maintainer,
     Moderator,
@@ -48,6 +49,7 @@ impl ServerRole {
         match role {
             EffectiveRole::PrimaryOwner | EffectiveRole::Owner => Self::Owner,
             EffectiveRole::Custom { id, rank } => Self::Custom { id, rank },
+            EffectiveRole::EditedBuiltin { role, rank } => Self::EditedBuiltin { role: role.id().into(), rank },
             EffectiveRole::Server(role) => match role {
                 HostRole::Admin => Self::Admin,
                 HostRole::Maintainer => Self::Maintainer,
@@ -62,6 +64,7 @@ impl ServerRole {
         use crate::machine::owners::ServerRole as HostRole;
         match self {
             Self::Owner | Self::Custom { .. } => None,
+            Self::EditedBuiltin { role, .. } => HostRole::parse(role).ok(),
             Self::Admin => Some(HostRole::Admin),
             Self::Maintainer => Some(HostRole::Maintainer),
             Self::Moderator => Some(HostRole::Moderator),
@@ -75,13 +78,15 @@ impl ServerRole {
             || crate::identity::BuiltinRole::Owner.capabilities(),
             crate::machine::owners::ServerRole::capabilities,
         );
-        caps.iter().copied().filter(|&capability| !matches!(self, Self::Custom { .. }) && self.permits_projection(capability))
+        caps.iter().copied().filter(|&capability| !matches!(self, Self::Custom { .. } | Self::EditedBuiltin { .. }) && self.permits_projection(capability)
+            && (capability != Capability::AccessSourcesManage || matches!(self, Self::Owner)))
     }
 
     pub fn permits_projection(&self, capability: Capability) -> bool {
             !capability.local_only()
                 && !matches!(capability, Capability::DevicesRevoke | Capability::CredentialsManage | Capability::SecurityManage)
-                && (capability != Capability::AccessSourcesManage || matches!(self, Self::Owner))
+                && (capability == Capability::AccessSourcesManage || !capability.host_scoped())
+                && capability != Capability::LifecycleEnable
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +107,9 @@ pub struct WorkerPolicy {
     /// Verified profiles of machine owners, independent of the devices they use.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub whitelist_owners: std::collections::BTreeMap<Uuid, String>,
+    /// Corroborates this Host-layer ability independently of server grants.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub access_sources_accounts: std::collections::BTreeSet<Uuid>,
 }
 /// Cloneable admission handle; dropping it never stops the game. The owner must
 /// retain Worker until shutdown completes (including a timeout return).
@@ -168,15 +176,39 @@ impl Worker {
         server_id: Uuid,
         startup: crate::machine::startup::StartupMode,
     ) -> Result<Self, HostError> {
+        Self::open_bound(config, clock, supervisor, host_id, server_id, startup, None)
+    }
+
+    /// Install current Host authority before startup events or schedules can act.
+    pub fn open_with_policy(
+        config: HostConfiguration,
+        clock: Arc<dyn Clock>,
+        supervisor: Option<vesta_supervisor::RemoteProcess>,
+        policy: WorkerPolicy,
+        startup: crate::machine::startup::StartupMode,
+    ) -> Result<Self, HostError> {
+        Self::open_bound(config, clock, supervisor, policy.host_id, policy.server_id, startup, Some(policy))
+    }
+
+    fn open_bound(
+        config: HostConfiguration,
+        clock: Arc<dyn Clock>,
+        supervisor: Option<vesta_supervisor::RemoteProcess>,
+        host_id: Uuid,
+        server_id: Uuid,
+        startup: crate::machine::startup::StartupMode,
+        policy: Option<WorkerPolicy>,
+    ) -> Result<Self, HostError> {
         if host_id.is_nil() || server_id.is_nil() || host_id == server_id {
             return Err(HostError::Supervisor("worker_binding_invalid"));
         }
-        let host = Host::open_bound(config, clock, supervisor, Some((host_id, server_id)), startup)?;
+        let generation = policy.as_ref().map_or(0, |policy| policy.generation);
+        let host = Host::open_bound(config, clock, supervisor, Some((host_id, server_id, policy)), startup)?;
         let handle = WorkerHandle {
             network: host.network_handle(),
             host_id,
             server_id,
-            active_generation: Arc::new(AtomicU64::new(0)),
+            active_generation: Arc::new(AtomicU64::new(generation)),
         };
         Ok(Self { host, handle })
     }
@@ -191,7 +223,7 @@ impl Worker {
     ) -> Result<Option<Self>, HostError> {
         match entry {
             None => Ok(None),
-            Some(entry) if entry.state == crate::machine::registry::ServerState::Deleted => {
+            Some(entry) if matches!(entry.state, crate::machine::registry::ServerState::Deleted | crate::machine::registry::ServerState::Disabled) => {
                 Ok(None)
             }
             Some(entry) => {
@@ -205,6 +237,33 @@ impl Worker {
     pub(crate) fn recover_removal_fence(&self, generation: u64) -> vesta_state::Result<()> {
         crate::identity::worker_policy::recover_removal_fence(self.handle.network.database(), generation)
     }
+    /// Fence automation execution while the Host checks jobs and commits disablement.
+    pub fn disable_guard(&self) -> Result<std::sync::MutexGuard<'_, ()>, &'static str> {
+        self.host.automation().disable_guard()
+    }
+
+    pub fn disable_blocker(&self) -> Result<Option<&'static str>, vesta_state::StateError> {
+        self.handle.network.database().read(|c| {
+            for (sql, code) in [
+                ("SELECT EXISTS(SELECT 1 FROM backup_jobs WHERE kind IN ('restore','restore_in_place') AND state IN ('awaiting_confirmation','queued','running','recovery_required'))", "restore_job_active"),
+                ("SELECT EXISTS(SELECT 1 FROM backup_jobs WHERE kind IN ('backup','verify') AND state IN ('queued','running'))", "backup_job_active"),
+            ] {
+                if c.query_row(sql, [], |row| row.get::<_, bool>(0))? {
+                    return Ok(Some(code));
+                }
+            }
+            let exists: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='software_jobs')", [], |row| row.get(0))?;
+            if exists && c.query_row("SELECT EXISTS(SELECT 1 FROM software_jobs WHERE state IN ('queued','staging','activating','recovery_required'))", [], |row| row.get::<_, bool>(0))? {
+                return Ok(Some("server_busy"));
+            }
+            Ok(None)
+        })
+    }
+
+    pub fn mark_disabled(&self) -> crate::Result<()> {
+        self.host.automation().mark_disabled()
+    }
+
     pub fn request_system_shutdown(&self) -> Result<(), HostError> {
         self.host.request_system_shutdown()
     }

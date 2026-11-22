@@ -39,6 +39,13 @@ fn ensure(c: &rusqlite::Connection) -> crate::Result<()> {
     c.execute_batch("CREATE TABLE IF NOT EXISTS machine_invites(id TEXT PRIMARY KEY,server TEXT NOT NULL,role TEXT NOT NULL,payload_hash TEXT NOT NULL UNIQUE,created INTEGER NOT NULL,expires INTEGER NOT NULL,creator TEXT NOT NULL,max_uses INTEGER NOT NULL,uses INTEGER NOT NULL DEFAULT 0,revoked INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS machine_invite_receipts(invite TEXT NOT NULL,account TEXT NOT NULL,device TEXT NOT NULL,PRIMARY KEY(invite,device));")?;
     Ok(())
 }
+pub(super) fn fence_role_in(c: &rusqlite::Connection, server: Uuid, role: ServerRole) -> crate::Result<()> {
+    ensure(c)?;
+    c.execute("UPDATE machine_invites SET revoked=1 WHERE server=?1 AND (role=?2 OR (role='player' AND ?2='pack-user'))",
+        params![server.to_string(),role.as_str()])?;
+    Ok(())
+}
+
 fn authority(
     c: &rusqlite::Connection,
     actor: Actor,
@@ -89,7 +96,7 @@ pub fn list(state: &HostState, actor: Actor, server: Uuid) -> crate::Result<Valu
     state.write(|c| {authority(c,actor,server,None)?;ensure(c)?;let mut q=c.prepare("SELECT id,role,created,expires,creator FROM machine_invites WHERE server=?1 AND revoked=0 AND expires>?2 AND uses<max_uses ORDER BY created,id LIMIT 100")?;
  let rows=q.query_map(params![server.to_string(),state.now_ms()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
  let invitations = rows.into_iter().map(|(id,role,created,expires,creator)| {
-     Ok(json!({"id":id,"role":ServerRole::parse(&role)?.summary(),"created_at_ms":created,"expires_at_ms":expires,"created_by":creator}))
+     Ok(json!({"id":id,"role":super::roles::role_summary(c, server, &ServerRole::parse(&role)?.id())?,"created_at_ms":created,"expires_at_ms":expires,"created_by":creator}))
  }).collect::<crate::Result<Vec<_>>>()?;
  Ok(json!({"invitations":invitations,"next_offset":null}))})
 }
@@ -187,7 +194,7 @@ pub fn redeem(
   if !replay && used>=max {return Err(reject(Code::CodeInvalid))}
   let created=existing.is_none();let device=match existing {Some(d)=>d,None=>enroll_device_in(c,account,&name,key,state.now_ms())?};
   if !replay {
-   let desired=ServerRole::parse(&grant)?;
+   let desired=super::roles::resolve_role(c,server,&grant)?;
    // Invite redemption never downgrades existing authority or changes owners.
    if host_role_in(c,account)?.is_none() {
     let current=super::registry::effective_role_in(c,account,server)?;

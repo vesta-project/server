@@ -14,9 +14,11 @@ use vesta_control::{
         },
         owners::{Actor, Device, EffectiveRole, HostRole, ServerRole},
     },
-    worker::{ServerSubject, ServerWorker, Worker, WorkerGrant, WorkerHandle, WorkerPolicy},
+    worker::{ServerSubject, ServerWorker, Worker, WorkerHandle},
 };
 mod access;
+mod enablement;
+mod host_access;
 mod startup;
 mod creates;
 mod imports;
@@ -40,6 +42,7 @@ pub struct HostRouter {
     /// Workers this router created or adopted; the host shuts them down.
     owned: Arc<Mutex<Vec<Worker>>>,
     imports: Option<Arc<ImportService>>,
+    configured_worker: Option<(Uuid, Arc<WorkerFactory>)>,
     catalogue: Option<Arc<dyn vesta_control::machine::creates::Catalogue>>,
     creator: Option<Arc<dyn vesta_control::machine::creates::CreateInstaller>>,
     removal_lock: Arc<Mutex<()>>,
@@ -55,6 +58,7 @@ impl HostRouter {
             workers: Default::default(),
             owned: Default::default(),
             imports: None,
+            configured_worker: None,
             catalogue: None,
             creator: None,
             removal_lock: Default::default(),
@@ -82,6 +86,24 @@ impl HostRouter {
             .map(|c| Arc::new(c) as Arc<dyn vesta_control::machine::creates::Catalogue>);
         self.imports = Some(Arc::new(ImportService { jobs, create: Box::new(create) }));
         self
+    }
+
+    pub fn with_configured_worker(
+        mut self,
+        server: Uuid,
+        create: impl Fn(Uuid, bool) -> Result<Worker, JobError> + Send + Sync + 'static,
+    ) -> Self {
+        self.configured_worker = Some((server, Arc::new(create)));
+        self
+    }
+
+    fn worker_factory(&self, id: Uuid) -> Result<&WorkerFactory, JobError> {
+        if let Some((configured, factory)) = &self.configured_worker {
+            if *configured == id {
+                return Ok(factory.as_ref());
+            }
+        }
+        self.imports.as_ref().map(|service| service.create.as_ref()).ok_or(JobError::UNAVAILABLE)
     }
 
     pub fn with_storage_java_cache(mut self, java_cache: std::path::PathBuf) -> Self {
@@ -168,12 +190,19 @@ impl HostRouter {
     /// The worker for an imported server, created on first use (for example
     /// the first start after the copy was committed).
     fn import_worker(&self, server_id: Uuid) -> Result<WorkerHandle, JobError> {
-        let imports = self.imports.as_ref().ok_or(JobError::UNAVAILABLE)?;
-        if self.is_stopping() || imports.jobs.is_stopping() {
+        use vesta_control::machine::registry::ServerState;
+        let entry = self.identity.state.server(server_id)?.ok_or(JobError::NOT_FOUND)?;
+        if entry.state == ServerState::Disabled {
+            return Err(JobError("server_disabled"));
+        }
+        if entry.state == ServerState::Deleted {
+            return Err(JobError::NOT_FOUND);
+        }
+        if self.is_stopping() || self.imports().is_some_and(ImportJobs::is_stopping) {
             return Err(JobError("host_stopping"));
         }
         let mut owned = self.owned.lock().map_err(|_| JobError::UNAVAILABLE)?;
-        if self.is_stopping() || imports.jobs.is_stopping() {
+        if self.is_stopping() || self.imports().is_some_and(ImportJobs::is_stopping) {
             return Err(JobError("host_stopping"));
         }
         if let Some(handle) = owned
@@ -193,9 +222,9 @@ impl HostRouter {
             // Routed through an externally configured worker; not ours to start.
             return Err(JobError("worker_unavailable"));
         }
-        let worker = (imports.create)(server_id, false)?;
+        let worker = self.worker_factory(server_id)?(server_id, false)?;
         let handle = worker.handle();
-        if self.is_stopping() || imports.jobs.is_stopping() {
+        if self.is_stopping() || self.imports().is_some_and(ImportJobs::is_stopping) {
             let _ = worker.request_system_shutdown();
             owned.push(worker);
             return Err(JobError("host_stopping"));
@@ -226,7 +255,7 @@ impl HostRouter {
                     .find(|w| w.server_id() == e.server_id)
                     .and_then(|w| w.icon_etag());
                 json!({"serverId":e.server_id,"name":e.name,"gamePort":e.game_port,
-                    "state":format!("{:?}",e.state).to_lowercase(),"role":role_name(r),
+                    "state":format!("{:?}",e.state).to_lowercase(),"enabled":e.state != vesta_control::machine::registry::ServerState::Disabled,"role":role_name(r),
                     "software":fact.software.map(|(kind,version)|json!({"kind":kind,"version":version})),
                     "minecraftVersion":fact.minecraft_version,"iconEtag":icon})
             })
@@ -236,9 +265,6 @@ impl HostRouter {
     /// `<servers>/<serverId>/host.toml` (created or imported) its worker back.
     /// Servers already routed are skipped; failures are returned, not fatal.
     pub fn restore_registered_workers(&self) -> Vec<(Uuid, JobError)> {
-        let Some(imports) = self.imports.as_ref() else {
-            return Vec::new();
-        };
         let state = &self.identity.state;
         let entries = match state.snapshot().map(|s| s.primary_account_id) {
             Ok(Some(primary)) => state.visible_servers(primary).unwrap_or_default(),
@@ -251,10 +277,12 @@ impl HostRouter {
                 .workers
                 .lock()
                 .is_ok_and(|w| w.iter().any(|w| w.server_id() == id));
-            if routed || !imports.jobs.server_dir(id).join("host.toml").is_file() {
+            let configured = self.configured_worker.as_ref().is_some_and(|(server, _)| *server == id);
+            let managed = self.imports().is_some_and(|jobs| jobs.server_dir(id).join("host.toml").is_file());
+            if entry.state == vesta_control::machine::registry::ServerState::Disabled || routed || !(configured || managed) {
                 continue;
             }
-            match (imports.create)(id, true) {
+            match self.worker_factory(id).and_then(|factory| factory(id, true)) {
                 Ok(worker) => {
                     self.adopt_worker(worker);
                 }
@@ -276,6 +304,18 @@ impl HostRouter {
             .retain(|w| !ids.contains(&w.server_id()));
         taken
     }
+    fn refresh_worker_policies(&self, server: Option<Uuid>) -> Result<(), Reply> {
+        let unavailable = || failure(StatusCode::SERVICE_UNAVAILABLE, "worker_unavailable");
+        let workers = self.workers.lock().map_err(|_| unavailable())?.clone();
+        for worker in workers {
+            if server.is_none_or(|id| worker.server_id() == id) {
+                let policy = self.identity.state.worker_policy(worker.server_id()).map_err(|_| unavailable())?;
+                worker.sync_policy(policy).map_err(|_| unavailable())?;
+            }
+        }
+        Ok(())
+    }
+
     /// Copy each worker's observed game state into the registry so
     /// `GET /v1/host/servers` reflects starting/online/stopped/failed.
     pub fn refresh_server_states(&self) {
@@ -424,7 +464,7 @@ fn role_name(role: EffectiveRole) -> String {
     match role {
         EffectiveRole::PrimaryOwner => "primary_owner".into(),
         EffectiveRole::Owner => "owner".into(),
-        EffectiveRole::Server(role) => role.as_str().into(),
+        EffectiveRole::Server(role) | EffectiveRole::EditedBuiltin { role, .. } => role.as_str().into(),
         EffectiveRole::Custom { id, .. } => id.to_string(),
     }
 }
@@ -442,59 +482,20 @@ fn subject(
 ) -> Result<ServerSubject, Reply> {
     let state = &router.identity.state;
     let unavailable = || failure(StatusCode::SERVICE_UNAVAILABLE, "worker_unavailable");
-    let snap = state.snapshot().map_err(|_| unavailable())?;
-    state
-        .effective_role(device.account_id, worker.server_id())
-        .map_err(|_| unavailable())?
-        .ok_or_else(|| failure(StatusCode::NOT_FOUND, "not_found"))?;
-    let devices = state
-        .devices(Actor::LocalRecovery)
-        .map_err(|_| unavailable())?;
-    let mut grants = Vec::new();
-    for d in devices.into_iter().filter(|d| d.revoked_at_ms.is_none()) {
-        if let Some(role) = state
-            .effective_role(d.account_id, worker.server_id())
-            .map_err(|_| unavailable())?
-        {
-            let mut effective = state.server_capabilities(worker.server_id(), d.account_id, role)
-                .map_err(|_| unavailable())?;
-            let role = vesta_control::worker::ServerRole::for_effective(role);
-            let mut capabilities: Vec<String> = role.capabilities()
-                .filter(|cap| effective.remove(cap))
-                .map(|cap| cap.id().into())
-                .collect();
-            capabilities.extend(effective.into_iter().filter(|&cap| role.permits_projection(cap)).map(|cap| cap.id().into()));
-
-            grants.push(WorkerGrant {
-                account_id: d.account_id,
-                device_id: d.device_id,
-                role,
-                capabilities,
-            });
-        }
-    }
-    let capabilities = grants.iter().find(|grant| grant.device_id == device.device_id)
-        .ok_or_else(unavailable)?.capabilities.clone();
-    if state.snapshot().map_err(|_| unavailable())?.auth_generation != snap.auth_generation {
-        return Err(unavailable());
-    }
-    worker
-        .sync_policy(WorkerPolicy {
-            host_id: snap.host_id,
-            server_id: worker.server_id(),
-            generation: snap.auth_generation,
-            grants,
-            whitelist_owners: state.owners(Actor::LocalRecovery).map_err(|_| unavailable())?
-                .into_iter().filter_map(|owner| owner.name.map(|name| (owner.account_id, name))).collect(),
-        })
-        .map_err(|_| unavailable())?;
+    let policy = state.worker_policy(worker.server_id()).map_err(|_| unavailable())?;
+    let capabilities = policy.grants.iter().find(|grant|
+        grant.device_id == device.device_id && grant.account_id == device.account_id)
+        .ok_or_else(|| failure(StatusCode::NOT_FOUND, "not_found"))?.capabilities.clone();
+    let host_id = policy.host_id;
+    let generation = policy.generation;
+    worker.sync_policy(policy).map_err(|_| unavailable())?;
     let now = state.now_ms();
     Ok(ServerSubject {
-        host_id: snap.host_id,
+        host_id,
         server_id: worker.server_id(),
         account_id: device.account_id,
         device_id: device.device_id,
-        generation: snap.auth_generation,
+        generation,
         issued_at_ms: now,
         expires_at_ms: now + 30_000,
         capabilities,
@@ -742,7 +743,9 @@ impl Application {
                     .ok()
                     .filter(|id| {
                         state.server(*id).ok().flatten().is_some_and(|e| {
-                            e.state != vesta_control::machine::registry::ServerState::Deleted
+                            !matches!(e.state,
+                                vesta_control::machine::registry::ServerState::Deleted |
+                                vesta_control::machine::registry::ServerState::Disabled)
                         })
                     })
                     .and_then(|id| {
@@ -914,6 +917,9 @@ impl Application {
             {
                 return failure(StatusCode::NOT_FOUND, "not_found");
             }
+            if suffix == "manage/enabled" {
+                return enablement::dispatch(&self.router, &device, id, method, query, bytes);
+            }
             if let Some(reply) = access::dispatch(
                 &self.router,
                 &device,
@@ -932,7 +938,11 @@ impl Application {
                 .lock()
                 .ok()
                 .and_then(|w| w.iter().find(|w| w.server_id() == id).cloned());
-            let worker = worker.or_else(|| {
+            let disabled = match state.server(id) {
+                Ok(Some(entry)) => entry.state == vesta_control::machine::registry::ServerState::Disabled,
+                _ => return failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable"),
+            };
+            let worker = worker.filter(|_| !disabled).or_else(|| {
                 self.router
                     .import_worker(id)
                     .ok()
@@ -940,6 +950,9 @@ impl Application {
             });
             if suffix == "manage/startup" {
                 return startup::dispatch(state, &device, id, worker.as_deref(), method, query, bytes);
+            }
+            if disabled {
+                return failure(StatusCode::CONFLICT, "server_disabled");
             }
             let Some(worker) = worker else {
                 return failure(StatusCode::SERVICE_UNAVAILABLE, "worker_unavailable");
@@ -1047,12 +1060,28 @@ impl Application {
             }
             return reply;
         }
+        use vesta_control::identity::Capability;
+        let actor = Actor::Account(device.account_id);
         let owner = state.host_role(device.account_id).ok().flatten();
+        let host_caps = match state.host_capabilities(actor) {
+            Ok(caps) => caps,
+            Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable"),
+        };
+        if let Some(suffix) = path.strip_prefix("/v1/host/manage/") {
+            let _admission = match self.router.removal_lock.lock() {
+                Ok(lock) => lock,
+                Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+            };
+            return host_access::dispatch(&self.router, actor, method, suffix, query, bytes);
+        }
         if method == Method::GET && path == "/v1/host" {
+            if !host_caps.contains(&Capability::HostView) {
+                return failure(StatusCode::FORBIDDEN, "forbidden");
+            }
             let Ok(s) = state.snapshot() else {
                 return failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable");
             };
-            let mut capabilities = vec!["folders", "import-inspect", "resource-plan", "removed-server-retention", "console-history"];
+            let mut capabilities = vec!["host-access", "role-presets", "server-enablement", "folders", "import-inspect", "resource-plan", "removed-server-retention", "console-history"];
             if self.router.imports.is_some() {
                 capabilities.extend(["removed-servers", "server-purge", "storage"]);
                 capabilities.push("import-jobs");
@@ -1067,7 +1096,8 @@ impl Application {
                 capabilities.extend(["server-storage", "storage-cleanup"]);
             }
             let mut value = json!({"hostId":s.host_id,"name":self.router.display_name(),"fingerprint":self.tls.fingerprint().unwrap_or_default(),"endpoints":[],"authGeneration":s.auth_generation.to_string(),"revision":s.revision.to_string(),"role":owner.map(host_role_name),"capabilities":capabilities});
-            if owner.is_some() {
+            value["hostCapabilities"] = json!(host_caps.iter().map(|cap| cap.id()).collect::<Vec<_>>());
+            if host_caps.contains(&Capability::HostSettingsEdit) {
                 let Ok(settings) = state.settings() else {
                     return failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable");
                 };
@@ -1077,7 +1107,14 @@ impl Application {
             }
             return routes::json(value);
         }
-        if owner.is_none() {
+        let delegated = (method == Method::PATCH && path == "/v1/host" && host_caps.contains(&Capability::HostSettingsEdit))
+            || ((path.starts_with("/v1/host/catalogue/") || path.starts_with("/v1/host/creates/"))
+                && host_caps.contains(&Capability::HostServersCreate))
+            || (method == Method::GET && path == "/v1/host/devices"
+                && (host_caps.contains(&Capability::HostAccessManage) || host_caps.contains(&Capability::DevicesRevoke)))
+            || (method == Method::DELETE && path.starts_with("/v1/host/devices/")
+                && host_caps.contains(&Capability::DevicesRevoke));
+        if owner.is_none() && !delegated {
             return failure(StatusCode::FORBIDDEN, "forbidden");
         }
         if method == Method::POST && path == "/v1/host/storage/cleanup" {
@@ -1133,7 +1170,7 @@ impl Application {
                 return failure(StatusCode::BAD_REQUEST, "invalid_request");
             };
             return match state.revoke_device(Actor::Account(device.account_id), id) {
-                Ok(_) => no_content(),
+                Ok(_) => self.router.refresh_worker_policies(None).map_or_else(|reply| reply, |_| no_content()),
                 Err(_) => failure(StatusCode::FORBIDDEN, "forbidden"),
             };
         }
@@ -1203,6 +1240,11 @@ impl Application {
                     .is_ok_and(|r| r.is_some())
                 {
                     return Err(failure(StatusCode::NOT_FOUND, "not_found"));
+                }
+                if router.identity.state.server(id).is_ok_and(|entry| entry.is_some_and(|entry|
+                    entry.state == vesta_control::machine::registry::ServerState::Disabled))
+                {
+                    return Err(failure(StatusCode::CONFLICT, "server_disabled"));
                 }
                 let w = router
                     .workers

@@ -2,22 +2,77 @@
 
 The server paths below are relative to `/v1/servers/{serverId}/manage`. Successful management responses wrap the given payload in `{"api_version":3,"data":...}`. Role writes and startup settings use decimal-string Host revisions. A stale `expected_version` returns 412 `precondition_failed`.
 
+## Host access
+
+GET `/v1/host` adds `hostCapabilities` with the caller's effective Host ability IDs. Its existing `capabilities` feature list adds `host-access`, `role-presets` and `server-enablement`. Owners have every Host ability. Linked accounts with any Host grant or a server membership have `host.view`. An authenticated account without either receives 403 `forbidden` from GET `/v1/host`. Discovery continues to expose public discovery metadata.
+
+These paths start at `/v1/host/manage`. Responses use the management envelope and the same decimal-string Host version as server management.
+
+| Method and path | Request and response | Authority |
+| --- | --- | --- |
+| GET `/capabilities` | Returns `{capabilities:[{id,label,description,group,layer,delegable}]}` | `host.view` |
+| GET `/people` | Returns `{version,people:[{account_id,name,role,capabilities}]}`. Name and owner role are nullable. The role is `primary_owner` or `owner` for Host owners. Capabilities are explicitly stored Host grants. | `host.access.manage` or `host.memberships.manage` |
+| PUT `/people/{accountId}/capabilities` | Accepts `{expected_version,capabilities:[id]}` and replaces all explicit Host grants. An empty array clears them. Returns `{version,person}` with the same fields as a people row. | `host.access.manage` |
+| GET `/people/{accountId}/memberships` | Returns `{version,memberships:[{server_id,name,role_id,inherited}]}`. Owners inherit `owner` membership on each active server, including disabled servers. Delegated callers see memberships only on servers where they can read access. | `host.memberships.manage` |
+| PUT `/people/{accountId}/memberships/{serverId}` | Accepts `{expected_version,role_id}`. A role ID replaces the grant, and an explicit null clears it. Returns `{version,server_id,role_id}`. | `host.memberships.manage` plus the same per-server assignment, revocation, rank and capability checks as the server users route |
+
+Host grants carry no server membership. Delegated Host access managers can change another non-owner's grants only when they already hold all the target's current and proposed abilities. Server role definitions and account overrides accept only server-layer delegable capabilities.
+
+- `host.servers.create` permits the creation catalogue, defaults, and the caller's own `new` create jobs. Starting a created server requires a membership with `lifecycle.start`. Import, restore and modpack setup retain their existing owner authority.
+- `host.settings.edit` permits reading and changing Host settings on `/v1/host`.
+- `host.servers.remove` permits reversible removal of a server the caller can access. Gracefully stopping a running server for removal also uses the caller's `lifecycle.stop` authority. Permanent removal, removed-server browsing, restore and purge require an owner.
+- `host.access.manage` also permits device listing. `devices.revoke` permits listing devices and revoking another non-owner's device subject to the Host grant authority check. Ownership and primary-owner protection still apply.
+- `access-sources.manage` permits editing access sources through the existing server endpoint when the caller holds a membership on that server.
+- `host.presets.manage` permits Host presets. Ownership, owner recovery and agent installation keep their existing protections.
+
+Unknown accounts and role IDs return 404 `not_found`. Unknown capability IDs and malformed fields return 400 `invalid_request`. Disallowed delegation or use of a capability from the wrong layer returns 403 `management_forbidden`.
+
 ## Roles
 
-- GET `/roles` returns `{version,roles}`. Each role has `{id,name,rank,builtin,capabilities:[{capability,scope:"*"}]}`. Custom role IDs are generated UUIDs and survive renames. A custom rank is an integer from 1 to 79. Built-ins are immutable presets.
-- GET `/roles/capabilities` returns `{capabilities:[{id,label,description,group,delegable}]}`. It includes every stable capability ID. `delegable` reports whether the capability is eligible for a server grant, independent of the caller's own authority.
-- POST `/roles` accepts `{expected_version,name,rank,capabilities:[{capability,scope:"*"}]}`. PATCH `/roles/{roleId}` accepts the same fields with only `expected_version` required. Both return `{version,role}`. To duplicate a preset, submit its desired capabilities and a lower rank in a new role.
-- DELETE `/roles/{roleId}` accepts `{expected_version}` and returns `{version,id}`. A role in use returns 409 `role_in_use`.
-- PUT `/users/{accountId}/roles` accepts `{expected_version,add:[roleId],remove:[roleId]}` and returns the updated user. As before, a single added role replaces the current role and an empty add list clears it. Clearing a role clears overrides.
-- PUT `/users/{accountId}/overrides` accepts `{expected_version,overrides:[{capability,effect:"allow"|"deny"}]}` and replaces the override set. It returns the updated user. User rows expose `overrides` as an array of permanent grants. Deny takes precedence over role grants.
+- GET `/roles` returns `{version,roles}`. Each role has `{id,name,rank,builtin,editable,modified,capabilities:[{capability,scope:"*"}]}`. The `modified` field identifies a server-specific edit to a built-in.
+- GET `/roles/capabilities` returns the same catalog as Host management. Use entries with `layer:"server"` and `delegable:true` for editable server grants. `layer` is `host` or `server` and `delegable` applies within that layer independently of the caller.
+- POST `/roles` creates a custom role with `{expected_version,name,rank,capabilities:[{capability,scope:"*"}]}`. PATCH `/roles/{roleId}` accepts the same fields with only `expected_version` and at least one change field required. Both return `{version,role}`. Role IDs survive renames. Editable ranks are 1 to 79.
+- PATCH supports the stable built-in IDs `maintainer`, `moderator`, `viewer` and `pack-user`. The edit applies to all holders of that role on the selected server and revokes outstanding invitations for that role on that server.
+- POST `/roles/{roleId}/reset` accepts `{expected_version}` and restores the shipped definition of an editable built-in, returning `{version,role}`. Owner and Administrator have fixed IDs, capabilities and ranks because they mark reserved authority tiers.
+- DELETE `/roles/{roleId}` accepts `{expected_version}` and returns `{version,id}` for custom roles. A role in use returns 409 `role_in_use`. Built-in deletion, editing Owner or Administrator, and resetting either locked role return 403 `management_forbidden`.
+- PUT `/users/{accountId}/roles` accepts `{expected_version,add:[roleId],remove:[roleId]}` and returns the updated user. A single added role replaces the current role and an empty add list clears it. Changing or clearing a role clears its overrides.
+- PUT `/users/{accountId}/overrides` accepts `{expected_version,overrides:[{capability,effect:"allow"|"deny"}]}` and replaces the override set. User rows expose `overrides` as an array of permanent grants. Deny takes precedence over role grants.
 
-Role editors must have `roles.create` for creation and either `roles.create` or `roles.manage` to edit or delete a custom role. Overrides require `roles.manage`. Host owners can use all of these actions. Delegation checks the current and proposed rank and capabilities, including those of existing assignees. Administrator and Owner are reserved for local authority when issuing new grants. Invalid fields return 400 `invalid_request`, unknown IDs return 404 `not_found`, and disallowed changes return 403 `management_forbidden`.
+Role editors need `roles.create` for creation and either `roles.create` or `roles.manage` to edit, reset or delete. Overrides require `roles.manage`. Delegation checks the current and proposed rank and capabilities, including the authority of existing assignees. Grants of Owner and Administrator remain reserved. Invalid fields return 400 `invalid_request`, unknown IDs return 404 `not_found`, and disallowed changes return 403 `management_forbidden`.
 
-## Startup
+## Host role presets
 
-GET and PATCH `/startup` return `{version,on_agent_start,start_delay_seconds,last_startup}`. PATCH accepts `{expected_version,on_agent_start?,start_delay_seconds?}`. `on_agent_start` is `restore_previous`, `stay_stopped`, `sleep` or `start`. Delay is an integer from 0 to 3600 and applies to automatic launch, including a restored running state. Configure distinct delays to stagger launches. The report is null before evaluation or `{at_ms,applied_action,outcome,error_code}`, where action is `stay_stopped`, `sleep` or `start`, outcome is `pending`, `applied`, `already_running` or `failed`, and error_code is nullable. An applied start means the runtime accepted the start request. Read requires `status.view`. Write requires `config.edit` plus `lifecycle.start` for start or restore previous, or `lifecycle.stop` for stay stopped or sleep. Invalid values return 400 `invalid_request`.
+These routes start at `/v1/host/manage` and require `host.presets.manage`. A preset has `{id,name,rank,capabilities:[{capability,scope:"*"}],default_for_new_servers,applicable}`.
 
-The owner-only Host settings response and PATCH `/v1/host` accept `defaultOnAgentStart` with the same action values. The initial default is `restore_previous`. A newly registered server adopts the default in effect at registration. Setup, import and restore completion leave Minecraft stopped. The policy is applied on a subsequent Agent start.
+| Method and path | Request and response |
+| --- | --- |
+| GET `/role-presets` | Returns `{version,presets}` |
+| POST `/role-presets` | Copies a server role selected by `{expected_version,server_id,role_id,default_for_new_servers?}`. Returns `{version,preset}`. |
+| PATCH `/role-presets/{presetId}` | Accepts `{expected_version,name?,rank?,capabilities?,default_for_new_servers?}` with at least one change. Returns `{version,preset}`. |
+| DELETE `/role-presets/{presetId}` | Accepts `{expected_version}` and returns `{version,id}`. Existing copies stay on their servers. |
+| POST `/role-presets/{presetId}/apply` | Accepts `{expected_version,server_id}` and returns `{version,role}`. Creates a custom role with the preset's ID or updates the existing role with that ID on the destination server. |
+
+Saving from a server requires access-list authority on that server. Applying requires the same destination role authority and delegation checks as regular server role writes. Newly registered servers receive the shipped built-ins and a copy of each preset marked `default_for_new_servers`. The flag defaults to false, and only owners can mark, change or delete a default preset. Presets with reserved rank or capabilities may be saved and renamed, with `applicable:false` until the rank and capabilities fit a custom role. Applying or defaulting an incompatible preset returns 403 `management_forbidden`.
+
+## Startup and enablement
+
+GET and PATCH `/startup` return `{version,on_agent_start,start_delay_seconds,last_startup,enabled}`. PATCH accepts `{expected_version,on_agent_start?,start_delay_seconds?}`. `on_agent_start` is `restore_previous`, `stay_stopped`, `sleep` or `start`. Delay is an integer from 0 to 3600 and applies to automatic launch, including a restored running state. Configure distinct delays to stagger launches. The report is null before evaluation or `{at_ms,applied_action,outcome,error_code}`, where action is `stay_stopped`, `sleep` or `start`, outcome is `pending`, `applied`, `already_running` or `failed`, and error_code is nullable. An applied start means the runtime accepted the start request. Read requires `status.view`. Write requires `config.edit` plus `lifecycle.start` for start or restore previous, or `lifecycle.stop` for stay stopped or sleep. Invalid values return 400 `invalid_request`.
+
+Host settings expose `defaultOnAgentStart` with the same action values. The initial default is `restore_previous`. A newly registered server adopts the default in effect at registration. Setup, import and restore completion leave Minecraft stopped. Startup actions apply when an enabled worker opens at Host boot or after enablement.
+
+GET `/enabled` returns `{version,enabled,can_manage}` to server members, including while disabled. `can_manage` is whether the caller can enable or disable this server. PATCH `/enabled` accepts `{expected_version,enabled}` and returns `{version,enabled}`. It requires the server-layer ability `lifecycle.enable`, which owners and the shipped Administrator hold and which can be delegated. GET `/v1/host/servers` includes disabled members' server cards with `state:"disabled"` and `enabled:false`. Disabled servers keep their files, backups, memberships and startup settings. The Host skips their workers at boot. Enablement reopens the worker and applies its startup action and delay.
+
+Disabling closes admissions and asks the existing game runtime for a graceful shutdown. Authenticated server routes that require a disabled worker return 409 `server_disabled`. Public pack assets return 404 while that worker is offline. Host access, roles and startup settings remain available to authorized callers during disablement. The same Host revision precondition applies to enablement.
+
+| Status and code | Meaning |
+| --- | --- |
+| 409 `backup_job_active` | An active backup or verification job prevents disablement |
+| 409 `restore_job_active` | A restore requires confirmation, execution or recovery |
+| 409 `server_busy` | Automation is applying an action, a software or removal job prevents admission, or the Host is stopping |
+| 409 `server_disable_pending` | Disablement is saved and new worker requests are fenced. The previous worker is still shutting down. Refresh the Host revision before retrying. |
+| 503 `worker_unavailable` | A worker could not be opened or shut down. An ordinary enable-open failure keeps the server disabled and records the startup error. |
+
+Pending workflow runs are cancelled with outcome `server_disabled` and audited as skipped. When the worker next opens, each due schedule produces one skipped summary for the latest missed occurrence. It appears in notifications, the audit log, and available run history as `state:"cancelled"` with `outcome_code:"server_disabled"`. Their missed-run policy does not replay work from the disabled interval.
 
 ## File deletion
 

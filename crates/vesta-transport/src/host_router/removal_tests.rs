@@ -202,3 +202,51 @@ fn removed_server_lifecycle_routes_preserve_ids_and_backup_choices() {
         ServerState::Deleted
     );
 }
+
+
+#[test]
+fn req_host_management_wire_grants_memberships_and_disables_one_server() {
+    let host = create_host(Arc::new(FakeInstaller::default()));
+    let owner = host.state.snapshot().unwrap().primary_account_id.unwrap();
+    let target = host.state.device(host.devices.1).unwrap().unwrap().account_id;
+    let version = || host.state.snapshot().unwrap().revision.to_string();
+    let actor = Actor::Account(owner);
+    let server = Uuid::new_v4();
+    host.state.register_server(actor, &ServerEntry {
+        server_id:server,name:"Test server".into(),game_port:free_port(),
+        state:ServerState::Stopped,visibility:Visibility::Private,
+    }, host.state.snapshot().unwrap().revision).unwrap();
+    assert_eq!(host.call("GET", "/v1/host", Value::Null, &host.stranger).0, 403);
+    let root = "/v1/host/manage";
+    let (status, grants) = host.call("PUT", &format!("{root}/people/{target}/capabilities"),
+        json!({"expected_version":version(),"capabilities":["host.settings.edit"]}), &host.owner);
+    assert_eq!(status, 200, "{grants}");
+    let (status, settings) = host.call("PATCH", "/v1/host", json!({"name":"Updated"}), &host.stranger);
+    assert_eq!(status, 200, "{settings}");
+    let (_, info) = host.call("GET", "/v1/host", Value::Null, &host.stranger);
+    assert_eq!(info["hostCapabilities"], json!(["host.view","host.settings.edit"]));
+    let (_, catalog) = host.call("GET", &format!("{root}/capabilities"), Value::Null, &host.stranger);
+    let caps = catalog["data"]["capabilities"].as_array().unwrap();
+    for (id, layer) in [("devices.revoke","host"),("lifecycle.enable","server")] {
+        assert!(caps.iter().any(|value| value["id"] == id && value["layer"] == layer));
+    }
+    let path = format!("{root}/people/{target}/memberships/{server}");
+    assert_eq!(host.call("PUT", &path, json!({"expected_version":version()}), &host.owner).0, 400);
+    let (status, _) = host.call("PUT", &path,
+        json!({"expected_version":version(),"role_id":"viewer"}), &host.owner);
+    assert_eq!(status, 200);
+    let path = format!("/v1/servers/{server}/manage/enabled");
+    let patch = || json!({"expected_version":version(),"enabled":false});
+    assert_eq!(host.call("PATCH", &path, patch(), &host.stranger).0, 403);
+    let (status, reply) = host.call("PATCH", &path, patch(), &host.owner);
+    assert_eq!(status, 200, "{reply}");
+    let (_, cards) = host.call("GET", "/v1/host/servers", Value::Null, &host.stranger);
+    assert_eq!(cards["servers"][0]["state"], "disabled");
+    assert_eq!(cards["servers"][0]["enabled"], false);
+    let (status, view) = host.call("GET", &path, Value::Null, &host.stranger);
+    assert_eq!(status, 200, "{view}");
+    assert_eq!(view["data"]["can_manage"], false);
+    let (status, reply) = host.call("GET", &format!("/v1/servers/{server}/manage/server"), Value::Null, &host.stranger);
+    assert_eq!(status, 409);
+    assert_eq!(reply["error"]["code"], "server_disabled");
+}

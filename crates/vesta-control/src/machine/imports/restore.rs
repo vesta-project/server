@@ -314,6 +314,7 @@ impl ImportJobs {
         binding: &OwnerBinding,
         request: &RestoreServerRequest,
     ) -> JobResult<PlanAccepted> {
+        self.read(|c| self.owner(c, binding).map(|_| ()))?;
         validate_restore(request)?;
         let request = RestoreServerRequest {
             name: request.name.trim().to_owned(),

@@ -110,6 +110,7 @@ pub enum EffectiveRole {
     PrimaryOwner,
     Owner,
     Server(ServerRole),
+    EditedBuiltin { role: ServerRole, rank: i32 },
     Custom { id: Uuid, rank: i32 },
 }
 
@@ -118,7 +119,15 @@ impl EffectiveRole {
         match self {
             Self::Owner | Self::PrimaryOwner => BuiltinRole::Owner.rank(),
             Self::Server(role) => role.rank(),
-            Self::Custom { rank, .. } => rank,
+            Self::Custom { rank, .. } | Self::EditedBuiltin { rank, .. } => rank,
+        }
+    }
+
+    pub fn id(self) -> String {
+        match self {
+            Self::PrimaryOwner | Self::Owner => BuiltinRole::Owner.id().into(),
+            Self::Server(role) | Self::EditedBuiltin { role, .. } => role.id().into(),
+            Self::Custom { id, .. } => id.to_string(),
         }
     }
 
@@ -126,7 +135,7 @@ impl EffectiveRole {
         match self {
             Self::Owner | Self::PrimaryOwner => BuiltinRole::Owner.capabilities().contains(&capability),
             Self::Server(role) => role.permits(capability),
-            Self::Custom { .. } => false,
+            Self::Custom { .. } | Self::EditedBuiltin { .. } => false,
         }
     }
 
@@ -156,7 +165,7 @@ pub struct OwnerEntry {
 
 /// Primary owner, owner, or a grant on any server that is not deleted.
 pub(crate) fn holds_any_role_in(c: &Connection, account: Uuid) -> Result<bool> {
-    if host_role_in(c, account)?.is_some() {
+    if host_role_in(c, account)?.is_some() || super::access::has_grants_in(c, account)? {
         return Ok(true);
     }
     Ok(account_exists(c, account)?
@@ -180,7 +189,7 @@ pub(crate) fn record_account_name_in(
     )?;
     Ok(())
 }
-fn account_name_in(c: &Connection, account: Uuid) -> Result<Option<String>> {
+pub(super) fn account_name_in(c: &Connection, account: Uuid) -> Result<Option<String>> {
     Ok(c.query_row(
         "SELECT name FROM machine_account_names WHERE account_id=?1",
         [account.to_string()],
@@ -387,7 +396,8 @@ impl HostState {
     }
     pub fn devices(&self, actor: Actor) -> Result<Vec<Device>> {
         self.read(|c| {
-            require_owner(c, actor)?;
+            super::access::require(c, actor, Capability::HostAccessManage)
+                .or_else(|_| super::access::require(c, actor, Capability::DevicesRevoke))?;
             let mut statement =
                 c.prepare("SELECT device_id FROM machine_devices ORDER BY device_id")?;
             let ids = statement
@@ -400,8 +410,8 @@ impl HostState {
     }
     pub fn revoke_device(&self, actor: Actor, id: Uuid) -> Result<HostSnapshot> {
         self.write(|c| {
-            require_owner(c, actor)?;
             let device = device_in(c, id)?.ok_or_else(|| reject(Code::NotFound))?;
+            super::access::authorize_device_revoke(c, actor, device.account_id)?;
             if snapshot_in(c)?.primary_account_id == Some(device.account_id) {
                 require_primary(c, actor)?;
             }

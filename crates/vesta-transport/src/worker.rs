@@ -167,6 +167,7 @@ mod tests {
                     capabilities: subject.capabilities.clone(),
                 }],
                 whitelist_owners: Default::default(),
+                access_sources_accounts: Default::default(),
             };
             assert!(handle.authorize(subject.clone()).is_err());
             handle.sync_policy(policy.clone()).unwrap();
@@ -302,6 +303,14 @@ mod tests {
         assert_eq!(f.request(f.subject.clone(), "access-sources", None).status(), 403);
         let mut policy = f.policy.clone();
         policy.generation = 2;
+        policy.access_sources_accounts.insert(f.subject.account_id);
+        f.handle.sync_policy(policy.clone()).unwrap();
+        let mut delegated = f.subject.clone();
+        delegated.generation = policy.generation;
+        assert_eq!(f.request(delegated, "access-sources", None).status(), 200);
+
+        policy.generation = 3;
+        policy.access_sources_accounts.clear();
         policy.grants[0].role = ServerRole::Owner;
         policy.grants[0].capabilities = BuiltinRole::Owner.capabilities().iter()
             .filter(|capability| !capability.local_only()).map(|capability| capability.id().into()).collect();

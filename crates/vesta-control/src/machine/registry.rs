@@ -16,6 +16,7 @@ pub enum ServerState {
     Sleeping,
     Failed,
     Deleted,
+    Disabled,
 }
 impl ServerState {
     fn as_str(self) -> &'static str {
@@ -27,6 +28,7 @@ impl ServerState {
             Self::Sleeping => "sleeping",
             Self::Failed => "failed",
             Self::Deleted => "deleted",
+            Self::Disabled => "disabled",
         }
     }
     fn parse(s: &str) -> Result<Self> {
@@ -74,13 +76,14 @@ impl HostState {
         revision: u64,
     ) -> Result<HostSnapshot> {
         self.write(|c| {
-            require_owner(c,actor)?; expect_revision(c,revision)?; validate(entry)?;
+            super::access::require(c,actor,crate::identity::Capability::HostServersCreate)?; expect_revision(c,revision)?; validate(entry)?;
             if entry.server_id==snapshot_in(c)?.host_id || entry.state==ServerState::Deleted { return Err(reject(Code::InvalidRequest)); }
             let conflict: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM machine_servers WHERE state!='deleted' AND (lower(name)=lower(?1) OR game_port=?2))", params![entry.name, entry.game_port], |r|r.get(0))?;
             let used=server_in(c,entry.server_id)?.is_some();
             if conflict || used { return Err(reject(Code::Conflict)); }
             c.execute("INSERT INTO machine_servers(server_id,name,game_port,state,visibility) VALUES(?1,?2,?3,?4,?5)",params![entry.server_id.to_string(),entry.name,entry.game_port,entry.state.as_str(),entry.visibility.as_str()])?;
             super::startup::register_in(c, entry.server_id)?;
+            super::presets::register_in(c, entry.server_id)?;
             changed(c,true,"server_register",&actor.audit(),&entry.server_id.to_string(),self.now_ms())
         })
     }
@@ -105,7 +108,7 @@ impl HostState {
     /// valid. Returns whether the stored state changed. Deleted entries and the
     /// first-slice `registered` state before any start are left alone.
     pub fn observe_server_state(&self, id: Uuid, observed: ServerState) -> Result<bool> {
-        if matches!(observed, ServerState::Deleted | ServerState::Registered) {
+        if matches!(observed, ServerState::Deleted | ServerState::Registered | ServerState::Disabled) {
             return Err(reject(Code::InvalidRequest));
         }
         let mut updated = false;
@@ -114,7 +117,7 @@ impl HostState {
                 return Ok(());
             };
             if entry.state == observed
-                || entry.state == ServerState::Deleted
+                || matches!(entry.state, ServerState::Deleted | ServerState::Disabled)
                 || (entry.state == ServerState::Registered && observed == ServerState::Stopped)
             {
                 return Ok(());
@@ -176,6 +179,31 @@ impl HostState {
             Ok(())
         })
     }
+    pub fn authorize_enablement(&self, actor: Actor, server: Uuid, revision: u64) -> Result<()> {
+        self.read(|c| {
+            super::roles::require_capability(c, actor, server, crate::identity::Capability::LifecycleEnable)?;
+            expect_revision(c, revision)
+        })
+    }
+
+    pub fn set_server_enabled(
+        &self, actor: Actor, server: Uuid, enabled: bool, revision: Option<u64>,
+    ) -> Result<HostSnapshot> {
+        self.write(|c| {
+            super::roles::require_capability(c, actor, server, crate::identity::Capability::LifecycleEnable)?;
+            if let Some(revision) = revision {
+                expect_revision(c, revision)?;
+            }
+            let entry = server_in(c, server)?.ok_or_else(|| reject(Code::NotFound))?;
+            if enabled == (entry.state != ServerState::Disabled) {
+                return snapshot_in(c);
+            }
+            c.execute("UPDATE machine_servers SET enabled=?,state=CASE WHEN ? THEN 'stopped' ELSE state END WHERE server_id=?",
+                params![enabled, enabled, server.to_string()])?;
+            changed(c, false, "server_enablement", &actor.audit(), &server.to_string(), self.now_ms())
+        })
+    }
+
     /// Trusted registry lookup, not an authorization check for an HTTP caller.
     pub fn server(&self, id: Uuid) -> Result<Option<ServerEntry>> {
         self.read(|c| server_in(c, id))
@@ -206,6 +234,7 @@ impl HostState {
 }
 fn validate(entry: &ServerEntry) -> Result<()> {
     if entry.server_id.is_nil()
+        || entry.state == ServerState::Disabled
         || entry.game_port == 0
         || entry.name.trim().is_empty()
         || entry.name.len() > 128
@@ -246,19 +275,23 @@ pub fn effective_role_in(
         .transpose()
 }
 pub(super) fn server_in(c: &Connection, id: Uuid) -> Result<Option<ServerEntry>> {
-    let row: Option<(String, u16, String, String)> = c
+    let row: Option<(String, u16, String, String, bool)> = c
         .query_row(
-            "SELECT name,game_port,state,visibility FROM machine_servers WHERE server_id=?1",
+            "SELECT name,game_port,state,visibility,enabled FROM machine_servers WHERE server_id=?1",
             [id.to_string()],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()?;
-    row.map(|(name, port, state, visibility)| {
+    row.map(|(name, port, state, visibility, enabled)| {
         Ok(ServerEntry {
             server_id: id,
             name,
             game_port: port,
-            state: ServerState::parse(&state)?,
+            state: if enabled || state == "deleted" {
+                ServerState::parse(&state)?
+            } else {
+                ServerState::Disabled
+            },
             visibility: match visibility.as_str() {
                 "private" => Visibility::Private,
                 "public" => Visibility::Public,

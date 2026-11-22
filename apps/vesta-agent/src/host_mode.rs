@@ -224,7 +224,7 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
     )
     .map_err(|_| "host_imports_unavailable")?;
     let factory = (jobs.clone(), clock.clone());
-    let router = HostRouter::new(identity.clone(), config.name.clone(), folders)
+    let mut router = HostRouter::new(identity.clone(), config.name.clone(), folders)
         .with_startup_worker_factory(jobs.clone(), move |id, boot| {
             factory.0.open_worker(id, factory.1.clone(), boot)
         })
@@ -243,57 +243,48 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
         .transpose()
         .map_err(|_| "host_registry_unavailable")?
         .unwrap_or_default();
-    // Created and imported servers come back from their managed host.toml after
-    // a restart; a failure is reported and leaves the host (and other servers)
-    // running.
+    // Managed and explicitly configured servers share the Host worker registry,
+    // including the enablement and shutdown paths.
     let imported = |id| jobs.server_dir(id).join("host.toml").is_file();
+    let supervisor_release = Arc::new(std::sync::Mutex::new(None));
+    if let Some((entry, _)) = entries.iter().find(|(entry, _)| !imported(entry.server_id)) {
+        let worker_source = config.worker_config.as_ref().map(|p| path(p));
+        let worker_base = base.to_path_buf();
+        let clock = clock.clone();
+        let state = state.clone();
+        let release = supervisor_release.clone();
+        router = router.with_configured_worker(entry.server_id, move |id, boot| {
+            use vesta_control::machine::{imports::jobs::JobError, startup::StartupMode};
+            let worker_source = worker_source.as_ref().ok_or(JobError("host_worker_config_required"))?;
+            let config = HostConfiguration::load_file(worker_source, &worker_base)
+                .map_err(|_| JobError("host_worker_config_invalid"))?;
+            let remote = if config.supervision() == Supervision::Separate {
+                let mut release = release.lock().map_err(|_| JobError("host_supervisor_unavailable"))?;
+                let attached = crate::supervision::attach(
+                    &config, worker_source, worker_source.parent().unwrap_or(&worker_base),
+                ).map_err(|_| JobError("host_supervisor_unavailable"))?;
+                if release.is_none() {
+                    *release = Some(crate::supervision::Release::new(attached.state));
+                }
+                Some(attached.remote)
+            } else {
+                None
+            };
+            let startup = if boot {
+                state.startup_settings(id)?.map_or(StartupMode::Configured, StartupMode::Managed)
+            } else {
+                StartupMode::Deferred
+            };
+            Worker::open_with_policy(config, clock.clone(), remote, state.worker_policy(id)?, startup)
+                .map_err(|_| JobError("host_worker_unavailable"))
+        });
+    }
     if let Some(jobs) = router.imports() {
         vesta_control::machine::removed::reconcile(&identity.state, jobs.servers_root())
             .map_err(|_| "host_removal_recovery_failed")?;
     }
     for (id, e) in router.restore_registered_workers() {
         eprintln!("Vesta Server could not open server {id}: {e}");
-    }
-    let mut worker = None;
-    let mut supervisor_release = None;
-    if let Some((entry, _)) = entries.iter().find(|(e, _)| !imported(e.server_id)) {
-        let worker_source = config
-            .worker_config
-            .as_ref()
-            .map(|p| path(p))
-            .ok_or("host_worker_config_required")?;
-        let c = HostConfiguration::load_file(&worker_source, base)
-            .map_err(|_| "host_worker_config_invalid")?;
-        let remote = if c.supervision() == Supervision::Separate {
-            let attached = crate::supervision::attach(
-                &c,
-                &worker_source,
-                worker_source.parent().unwrap_or(base),
-            )
-            .map_err(|_| "host_supervisor_unavailable")?;
-            supervisor_release = Some(crate::supervision::Release::new(attached.state));
-            Some(attached.remote)
-        } else {
-            None
-        };
-        use vesta_control::machine::startup::StartupMode;
-        let startup = state.startup_settings(entry.server_id)
-            .map_err(|_| "host_state_unavailable")?
-            .map_or(StartupMode::Configured, StartupMode::Managed);
-        let w = Worker::open_with_startup(
-            c,
-            clock,
-            remote,
-            state
-                .snapshot()
-                .map_err(|_| "host_state_unavailable")?
-                .host_id,
-            entry.server_id,
-            startup,
-        )
-        .map_err(|_| "host_worker_unavailable")?;
-        router.add_worker(Arc::new(w.handle()));
-        worker = Some(w);
     }
     let bind = if config.local_only {
         "127.0.0.1".parse().unwrap()
@@ -365,11 +356,6 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
     // Quiesce all owners before any listener/job wait; a stuck job on one
     // server must not postpone the shutdown signal to every other server.
     router.request_system_shutdown();
-    if let Some(worker) = &worker {
-        worker
-            .request_system_shutdown()
-            .map_err(|_| "host_worker_shutdown_request_failed")?;
-    }
     if let Some(ad) = discovery {
         let _ = ad.shutdown();
     }
@@ -379,15 +365,12 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
     let mut clean = loop {
         tokio::select! {
             result=&mut local_shutdown=>break result.is_ok(),
-            _=progress.tick()=>{router.advance_system_shutdown();if let Some(worker)=&worker {worker.advance_system_shutdown();}}
+            _=progress.tick()=>{router.advance_system_shutdown();}
         }
     };
     let mut transport = Some(transport);
     while let Some(current) = transport.take() {
         router.advance_system_shutdown();
-        if let Some(worker) = &worker {
-            worker.advance_system_shutdown();
-        }
         match current.shutdown(watchdog.remaining().min(Duration::from_millis(25))) {
             Ok(TransportShutdown::Complete) => (),
             Ok(TransportShutdown::TimedOut(owner)) => transport = Some(owner),
@@ -403,14 +386,10 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
     // transport/job drain. Only then can a worker close its database.
     while !router.shutdown_jobs_complete() {
         router.advance_system_shutdown();
-        if let Some(worker) = &worker {
-            worker.advance_system_shutdown();
-        }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    let mut owners: std::collections::VecDeque<_> = worker
+    let mut owners: std::collections::VecDeque<_> = router.take_owned_workers()
         .into_iter()
-        .chain(router.take_owned_workers())
         .collect();
     while !owners.is_empty() {
         let count = owners.len();
@@ -429,7 +408,7 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
-    if let Some(release) = supervisor_release {
+    if let Some(release) = supervisor_release.lock().expect("supervisor release").take() {
         release.finish();
     }
     signals.complete();

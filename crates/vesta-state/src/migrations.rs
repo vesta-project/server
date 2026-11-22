@@ -42,6 +42,13 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
                 ALTER TABLE file_trash ADD COLUMN batch_id TEXT;")?;
             Ok(())
         }
+        34 => {
+            c.execute_batch("CREATE TABLE server_automation_disabled (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                since_ms INTEGER NOT NULL CHECK(since_ms>=0)
+            ) STRICT;")?;
+            Ok(())
+        }
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }

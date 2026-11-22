@@ -26,6 +26,11 @@ pub(crate) fn sync(
     if policy.generation == 0 || policy.generation > i64::MAX as u64 || policy.grants.len() > 4096 {
         return Err(ManagementError::InvalidRequest);
     }
+    if policy.access_sources_accounts.len() > 4096
+        || policy.access_sources_accounts.iter().any(|id| id.is_nil())
+    {
+        return Err(ManagementError::InvalidRequest);
+    }
     let mut devices = std::collections::HashSet::new();
     if policy.whitelist_owners.len() > 4096
         || policy.whitelist_owners.iter().any(|(id, name)| id.is_nil() || !crate::moderation::valid_player(name))
@@ -58,7 +63,8 @@ pub(crate) fn sync(
             || (policy.generation as i64) < generation
             || policy.generation as i64 == generation && previous != document
                 && !serde_json::from_str::<WorkerPolicy>(&previous)
-                    .is_ok_and(|prior| prior.grants == policy.grants)
+                    .is_ok_and(|prior| prior.grants == policy.grants
+                        && prior.access_sources_accounts == policy.access_sources_accounts)
         {
             return Err(ManagementError::Forbidden);
         }
@@ -166,15 +172,24 @@ pub(crate) fn resolve(
     let server_role = grant.role.server_role();
     let (builtin, rank, id) = match grant.role {
         crate::worker::ServerRole::Custom { id, rank } => (None, rank, id.to_string()),
+        crate::worker::ServerRole::EditedBuiltin { ref role, rank } => (None, rank, role.clone()),
         _ => {
             let builtin = server_role.map_or(BuiltinRole::Owner, |role| role.builtin());
             (Some(builtin), builtin.rank(), builtin.id().into())
         }
     };
+    let access_sources = matches!(grant.role, crate::worker::ServerRole::Owner)
+        || policy.access_sources_accounts.contains(&grant.account_id);
     let allows = grant.capabilities.iter()
         .filter_map(|id| Capability::from_id(id))
-        .filter(|&cap| grant.role.permits_projection(cap) &&
-            (builtin.is_some_and(|role| role.capabilities().contains(&cap)) || crate::machine::roles::host_delegable(cap)))
+        .filter(|&cap| {
+            if cap == Capability::AccessSourcesManage {
+                return access_sources;
+            }
+            grant.role.permits_projection(cap)
+                && (builtin.is_some_and(|role| role.capabilities().contains(&cap))
+                    || crate::machine::roles::host_delegable(cap))
+        })
         .map(|c| RoleGrant::new(c, ResourceScope::ALL))
         .collect::<crate::Result<Vec<_>>>()?;
     Ok(Some(PolicySnapshot::from_resolved(
@@ -208,6 +223,7 @@ mod tests {
             generation: 4,
             grants: vec![],
             whitelist_owners: Default::default(),
+            access_sources_accounts: Default::default(),
         };
         initialize(&db, policy.host_id, policy.server_id).unwrap();
         sync(&db, &policy).unwrap();

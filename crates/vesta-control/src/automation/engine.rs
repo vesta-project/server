@@ -13,15 +13,18 @@ impl Automation {
         if now < 0 {
             return Err(invalid());
         }
+        let Ok(_execution) = self.execution.try_lock() else {
+            return Ok(());
+        };
         // A read-only pulse must not queue behind lifecycle/authentication writes
         // when there is no work to change. Read fresh state, without a cache or
         // skipped retention: a concurrent admission is picked up next pulse.
-        if !self.read(|c| self.tick_needed(c, now))? {
+        if !self.read(|c| Ok(!Self::disabled_in(c)? && self.tick_needed(c, now)?))? {
             return Ok(());
         }
         let runs = self.write(|c| {
             self.retain(c, now)?;
-            self.schedule(c, now)?;
+            self.schedule(c, now, false)?;
             c.execute("UPDATE workflow_runs AS q SET state='running' WHERE q.state='queued' AND NOT EXISTS(SELECT 1 FROM workflow_runs a WHERE a.workflow_id=q.workflow_id AND a.state IN ('running','suspended')) AND q.rowid=(SELECT min(x.rowid) FROM workflow_runs x WHERE x.workflow_id=q.workflow_id AND x.state='queued')", [])?;
             // Deleted workflows may still have live snapshots. Bound by total
             // retained runs, not current workflow count, to avoid starving them.
@@ -45,7 +48,7 @@ impl Automation {
             |r| r.get(0),
         )?)
     }
-    fn schedule(&self, c: &Connection, now: i64) -> Result<()> {
+    fn schedule(&self, c: &Connection, now: i64, disabled: bool) -> Result<()> {
         let mut q = c.prepare(&format!(
             "SELECT {WORKFLOW_COLUMNS} FROM workflows WHERE enabled=1 ORDER BY id"
         ))?;
@@ -87,6 +90,25 @@ impl Automation {
                 }
                 _ => continue,
             };
+            if disabled {
+                self.retain(c, now)?;
+                let count: i64 = c.query_row("SELECT count(*) FROM workflow_runs", [], |row| row.get(0))?;
+                let id = (count < MAX_RUNS).then(|| uuid::Uuid::new_v4().to_string());
+                if let Some(id) = &id {
+                    c.execute(
+                        "INSERT INTO workflow_runs(id,workflow_id,revision,definition_json,principal_id,trigger_json,state,current_step,attempt,started_at,finished_at,outcome_code)
+                         VALUES(?,?,?,?,?,?,'cancelled',0,0,?,?,'server_disabled')",
+                        params![id,w.id,w.revision,json(&w.definition)?,w.execution_principal.as_str(),
+                            json(&serde_json::json!({"kind":"schedule","occurrence":latest}))?,now,now],
+                    )?;
+                }
+                inbox::insert(c, now, Severity::Info, "Workflow skipped",
+                    "Scheduled work was skipped while the server was disabled.", &w.id)?;
+                self.audit(c, None, "automation.disabled", &w.id, "skipped", id.as_deref())?;
+                c.execute("UPDATE workflow_schedule SET last_occurrence=? WHERE workflow_id=?",
+                    params![latest, w.id])?;
+                continue;
+            }
             let missed = now.saturating_sub(first) >= GRACE_MS;
             let occurrences = if !missed {
                 vec![latest]

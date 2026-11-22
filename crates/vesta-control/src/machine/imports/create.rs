@@ -371,7 +371,7 @@ impl ImportJobs {
     ) -> JobResult<CreateJob> {
         let _running = self.enter_running(job_id)?;
         let raw: String = self.read(|c| {
-            self.owner(c, binding)?;
+            self.authorize_job(c, binding, job_id, Kind::Create)?;
             let row: Option<(String, String, String)> = c
                 .query_row(
                     "SELECT request,state,account_id FROM machine_import_jobs WHERE job_id=?1 AND kind='create'",
@@ -693,7 +693,7 @@ impl ImportJobs {
     /// Durable create job view for an owner.
     pub fn create_status(&self, binding: &OwnerBinding, job_id: &str) -> JobResult<CreateJob> {
         self.read(|c| {
-            self.owner(c, binding)?;
+            self.authorize_job(c, binding, job_id, Kind::Create)?;
             job_in_kind(c, job_id, Kind::Create)
         })
     }
@@ -721,7 +721,7 @@ impl ImportJobs {
         ));
         let now = self.0.host.now_ms();
         self.write(|c| {
-            let account = self.owner(c, binding)?;
+            let account = self.creator(c, binding)?;
             if let Some(accepted) =
                 Self::apply_retry(c, binding, Kind::Create, idempotency_key, &body_hash)?
             {
@@ -741,6 +741,7 @@ impl ImportJobs {
             if job_account != binding.account_id || job_device != binding.device_id {
                 return Err(JobError::FORBIDDEN);
             }
+            self.authorize_job(c, binding, &job_id, Kind::Create)?;
             match state.as_str() {
                 "review" => {}
                 "blocked" => return Err(JobError::BLOCKED),
@@ -799,7 +800,7 @@ impl ImportJobs {
             .insert(job_id.to_owned(), flag.clone());
         #[allow(clippy::type_complexity)]
         let (phase, review, private, eula_ms, eula_account) = self.read(|c| {
-            self.owner(c, binding)?;
+            self.authorize_job(c, binding, job_id, Kind::Create)?;
             let row: (String, String, Option<String>, Option<String>, Option<i64>, Option<String>) =
                 c.query_row(
                     "SELECT state,phase,review,private,eula_accepted_ms,eula_account FROM machine_import_jobs WHERE job_id=?1 AND kind='create'",

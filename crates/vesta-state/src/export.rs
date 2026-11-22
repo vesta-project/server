@@ -230,6 +230,8 @@ const EXCLUDED: &[&str] = &[
     "metrics_policy",
     "workflow_runs",
     "run_steps",
+    // Live disablement marker; the Host's enabled flag is the source of truth.
+    "server_automation_disabled",
     "pack_releases",
     "pack_import_warnings",
     "pack_workspace",

@@ -1,5 +1,5 @@
 //! Server access is resolved by the host, never the worker identity database.
-mod catalog;
+pub(super) mod catalog;
 use super::*;
 use catalog::capability_catalog;
 use vesta_control::machine::roles::{Override, RoleFields};
@@ -29,6 +29,7 @@ struct Overrides {
 fn role_value(role: EffectiveRole) -> serde_json::Value {
     match role {
         EffectiveRole::Server(role) => role.summary(),
+        EffectiveRole::EditedBuiltin { role, rank } => json!({"id":role.id(),"rank":rank}),
         EffectiveRole::Custom { id, rank } => json!({"id":id,"rank":rank}),
         EffectiveRole::PrimaryOwner | EffectiveRole::Owner => {
             let owner = vesta_control::identity::BuiltinRole::Owner;
@@ -66,13 +67,11 @@ fn user_row(
     count: u64,
 ) -> Result<serde_json::Value, Reply> {
     let mut row = user(id, role, name, revision, count);
-    if let EffectiveRole::Custom { id, .. } = role {
-        row["roles"][0]["role"] = roles
+    row["roles"][0]["role"] = roles
             .iter()
-            .find(|role| role["id"] == id.to_string())
+            .find(|value| value["id"] == role.id())
             .cloned()
             .ok_or_else(|| failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"))?;
-    }
     row["overrides"] = json!(
         state
             .capability_overrides(server, id)
@@ -202,20 +201,35 @@ fn handle(
     } else if kind == "roles" && query.is_none() {
         match (method.as_str(), path) {
             ("GET", "roles") if bytes.is_empty() => {
-                let roles = std::iter::once(role_value(EffectiveRole::Owner))
-                    .chain(ServerRole::ALL.iter().map(|role| role.summary()))
-                    .chain(state.custom_roles(server).map_err(access_error)?)
-                    .collect::<Vec<_>>();
+                let roles = state.server_roles(server).map_err(access_error)?;
                 crate::manage::ok(json!({"roles":roles,"version":revision.to_string()}))
             }
             ("GET", "roles/capabilities") if bytes.is_empty() => {
                 crate::manage::ok(capability_catalog())
             }
+            ("POST", _) if path.ends_with("/reset") => {
+                let id = path.strip_prefix("roles/").and_then(|path| path.strip_suffix("/reset"))
+                    .ok_or_else(|| failure(StatusCode::NOT_FOUND, "not_found"))?;
+                let input: Version = parse(bytes)?;
+                let (snapshot, role) = state.write_builtin_role(actor, server, id, version(&input.expected_version)?, None).map_err(access_error)?;
+                refresh(router, server, device)?;
+                crate::manage::ok(json!({"version":snapshot.revision.to_string(),"role":role}))
+            }
             ("POST" | "PATCH", _) => {
                 let id = if method == Method::POST && path == "roles" {
                     None
                 } else if method == Method::PATCH {
-                    Some(custom_id(path)?)
+                    let id = path.strip_prefix("roles/").filter(|id| !id.contains('/'))
+                        .ok_or_else(|| failure(StatusCode::NOT_FOUND, "not_found"))?;
+                    if let Ok(id) = id.parse::<Uuid>() {
+                        Some(id)
+                    } else {
+                        let input: RoleWrite = parse(bytes)?;
+                        let fields = RoleFields { name: input.name, rank: input.rank, capabilities: input.capabilities };
+                        let (snapshot, role) = state.write_builtin_role(actor, server, id, version(&input.expected_version)?, Some(fields)).map_err(access_error)?;
+                        refresh(router, server, device)?;
+                        return Ok(crate::manage::ok(json!({"version":snapshot.revision.to_string(),"role":role})));
+                    }
                 } else {
                     return Err(failure(StatusCode::NOT_FOUND, "not_found"));
                 };
@@ -266,7 +280,7 @@ fn handle(
             }
         }
         let next = (rows.len() > offset.saturating_add(limit)).then_some(offset + limit);
-        let custom = state.custom_roles(server).map_err(access_error)?;
+        let custom = state.server_roles(server).map_err(access_error)?;
         let users = rows
             .into_iter()
             .skip(offset)
@@ -333,7 +347,7 @@ fn handle(
             Some(role) => user_row(
                 state,
                 server,
-                &state.custom_roles(server).map_err(access_error)?,
+                &state.server_roles(server).map_err(access_error)?,
                 target,
                 role,
                 name,

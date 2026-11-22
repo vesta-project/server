@@ -342,6 +342,7 @@ impl ImportJobs {
             ..request.clone()
         };
         let raw = serde_json::to_string(&request).map_err(|_| JobError::INVALID)?;
+        self.read(|c| self.owner(c, binding).map(|_| ()))?;
         self.insert_planning(binding, Kind::Create, "resolving", &raw)
     }
 

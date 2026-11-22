@@ -2,7 +2,7 @@
 use super::{
     HostState,
     startup::StartupAction,
-    owners::{Actor, require_owner},
+    owners::Actor,
     state::{changed, reject},
 };
 use crate::{IdentityErrorCode as Code, Result};
@@ -159,7 +159,7 @@ impl HostState {
             return Err(reject(Code::InvalidRequest));
         }
         self.write(|c| {
-            require_owner(c, actor)?;
+            super::access::require(c, actor, crate::identity::Capability::HostSettingsEdit)?;
             if let Some(name) = &name {
                 put_in(c, "name", name)?;
                 changed(

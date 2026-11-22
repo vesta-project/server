@@ -18,6 +18,7 @@ pub struct Automation {
     pub(super) db: StateDatabase,
     port: Arc<dyn ActionPort>,
     audit: AuditLog,
+    execution: Arc<std::sync::Mutex<()>>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Workflow {
@@ -142,8 +143,42 @@ impl Automation {
     pub fn new(db: StateDatabase, port: Arc<dyn ActionPort>) -> Result<Self> {
         db.write(|c| { c.execute_batch("CREATE TABLE IF NOT EXISTS automation_player_visits (uuid TEXT PRIMARY KEY NOT NULL, first_name TEXT NOT NULL, first_seen_at INTEGER NOT NULL) STRICT;")?; Ok(()) })?;
         let audit = AuditLog::new(db.clone())?;
-        Ok(Self { db, port, audit })
+        Ok(Self { db, port, audit, execution: Default::default() })
     }
+    pub(crate) fn disable_guard(&self) -> std::result::Result<std::sync::MutexGuard<'_, ()>, &'static str> {
+        self.execution.try_lock().map_err(|_| "server_busy")
+    }
+
+    fn disabled_in(c: &Connection) -> Result<bool> {
+        Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM server_automation_disabled)", [], |row| row.get(0))?)
+    }
+
+    pub(crate) fn mark_disabled(&self) -> Result<()> {
+        self.write(|c| {
+            let now = self.now();
+            c.execute("INSERT OR IGNORE INTO server_automation_disabled VALUES(1,?)", [now])?;
+            let mut q = c.prepare("SELECT id,workflow_id FROM workflow_runs WHERE state IN ('queued','running','suspended')")?;
+            let runs = q.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (id, workflow) in runs {
+                c.execute("UPDATE run_steps SET state='skipped',error_code='server_disabled',finished_at=MAX(started_at,?) WHERE run_id=? AND finished_at IS NULL", params![now,id])?;
+                c.execute("UPDATE workflow_runs SET state='cancelled',outcome_code='server_disabled',next_wake_at=NULL,finished_at=MAX(started_at,?) WHERE id=?", params![now,id])?;
+                self.audit(c, None, "automation.disabled", &workflow, "skipped", Some(&id))?;
+            }
+            Ok(())
+        })
+    }
+
+    pub(crate) fn resume_after_disable(&self) -> Result<()> {
+        self.write(|c| {
+            if Self::disabled_in(c)? {
+                self.schedule(c, self.now(), true)?;
+                c.execute("DELETE FROM server_automation_disabled", [])?;
+            }
+            Ok(())
+        })
+    }
+
     pub(crate) fn now(&self) -> i64 {
         self.db.clock().millis()
     }
@@ -661,6 +696,10 @@ impl Automation {
         now: i64,
         catch_up: bool,
     ) -> Result<Option<String>> {
+        if Self::disabled_in(c)? {
+            self.audit(c, None, "automation.disabled", &w.id, "skipped", None)?;
+            return Ok(None);
+        }
         let pending:i64=c.query_row("SELECT count(*) FROM workflow_runs WHERE workflow_id=? AND state IN ('queued','running','suspended')",[&w.id],|r|r.get(0))?;
         if pending > 0 && (!catch_up || pending >= 10) {
             return Ok(None);
@@ -697,7 +736,7 @@ impl Automation {
         Ok(Some(id))
     }
     fn retain(&self, c: &Connection, now: i64) -> Result<()> {
-        c.execute("DELETE FROM workflow_runs WHERE state IN ('succeeded','failed') AND (finished_at<? OR id IN (SELECT id FROM workflow_runs WHERE state IN ('succeeded','failed') ORDER BY finished_at DESC,id DESC LIMIT -1 OFFSET 1024))",[now.saturating_sub(inbox::HISTORY_MS)])?;
+        c.execute("DELETE FROM workflow_runs WHERE (state IN ('succeeded','failed') OR outcome_code='server_disabled') AND (finished_at<? OR id IN (SELECT id FROM workflow_runs WHERE (state IN ('succeeded','failed') OR outcome_code='server_disabled') ORDER BY finished_at DESC,id DESC LIMIT -1 OFFSET 1024))",[now.saturating_sub(inbox::HISTORY_MS)])?;
         inbox::retain(c, now)
     }
 }

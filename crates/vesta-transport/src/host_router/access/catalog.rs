@@ -1,16 +1,24 @@
 use serde_json::{Value, json};
 use vesta_control::{identity::Capability, machine::roles::host_delegable};
 
-pub(super) fn capability_catalog() -> Value {
-    json!({"capabilities":Capability::ALL.iter().map(|&capability| {
+pub(in crate::host_router) fn capability_catalog() -> Value {
+    json!({"capabilities":Capability::ALL.iter().chain(Capability::HOST_MANAGEMENT).map(|&capability| {
         let (group, label, description) = metadata(capability);
-        json!({"id":capability.id(),"group":group,"label":label,"description":description,"delegable":host_delegable(capability)})
+        json!({"id":capability.id(),"group":group,"label":label,"description":description,"layer":if capability.host_scoped() {"host"} else {"server"},"delegable":if capability.host_scoped() {capability.delegable()} else {host_delegable(capability)}})
     }).collect::<Vec<_>>()})
 }
 
 fn metadata(capability: Capability) -> (&'static str, &'static str, &'static str) {
     use Capability::*;
     match capability {
+        HostView => ("Host", "View Host", "Read the Host identity and your access."),
+        HostServersCreate => ("Host", "Create servers", "Create new servers on the Host."),
+        HostSettingsEdit => ("Host", "Edit Host settings", "Change Host settings."),
+        HostAccessManage => ("Host", "Manage Host access", "Read people and set Host capabilities within your authority."),
+        HostMembershipsManage => ("Host", "Manage memberships", "Manage server memberships within your server authority."),
+        HostServersRemove => ("Host", "Remove servers", "Remove servers from the Host."),
+        HostPresetsManage => ("Host", "Manage role presets", "Manage Host role presets."),
+        LifecycleEnable => ("Lifecycle", "Enable or disable server", "Control whether this server's worker runs."),
         StatusView => ("Status", "View status", "Read basic server status."),
         StatusDetailed => (
             "Status",
