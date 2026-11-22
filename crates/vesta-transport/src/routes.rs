@@ -248,10 +248,10 @@ pub(super) async fn route(
             | "/api/v3/manage/metrics/stream"
     ) && method == Method::GET
     {
-        return super::realtime::upgrade(request, state).await;
+        return super::realtime::upgrade(request, state, None).await;
     }
     if path == "/api/v2/realtime" {
-        return super::realtime::upgrade(request, state).await;
+        return super::realtime::upgrade(request, state, None).await;
     }
     let error = |status, code| {
         if operational || path == "/api/v3/status" {

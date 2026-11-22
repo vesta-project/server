@@ -268,7 +268,7 @@ fn machine_local_recovery_revokes_old_sessions_and_retries_without_new_device() 
             key(57).public_key().as_ref().try_into().unwrap(),
         )
         .unwrap();
-    let mut sessions = HostSessions::new(state.clone());
+    let mut sessions = HostSessions::new(state.clone()).unwrap();
     let token = sessions.issue(&old).unwrap().session;
     let local = LocalPrivilege::from_privileged_local_channel();
     let request = RecoveryRequest {
@@ -319,7 +319,7 @@ fn machine_lost_claim_reply_recovers_device_id_by_fresh_key_possession() {
         .unwrap();
     let device = commit.device().unwrap();
     drop(commit);
-    let mut sessions = HostSessions::new(state.clone());
+    let mut sessions = HostSessions::new(state.clone()).unwrap();
     let recovered = sessions
         .challenge_key(SessionKeyChallengeRequest {
             device_key: scope.device_key.clone(),

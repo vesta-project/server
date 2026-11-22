@@ -74,16 +74,18 @@ impl HttpApplication for PendingApplication {
 }
 impl PendingApplication {
     async fn route(&self, request: Request<Incoming>, peer: SocketAddr) -> Reply {
-        let allowed = self
+        let decision = self
             .limiter
             .lock()
-            .map(|mut l| matches!(l.try_acquire(peer.ip()), AdmissionDecision::Allowed))
-            .unwrap_or(false);
-        if !allowed {
-            return with_retry_after(
-                error(StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
-                Duration::from_secs(1),
-            );
+            .map_or(AdmissionDecision::ClockUnavailable, |mut l| l.try_acquire(peer.ip()));
+        match decision {
+            AdmissionDecision::Allowed => {}
+            AdmissionDecision::RateLimited { retry_after } => {
+                return rate_limited("rate_limited", retry_after);
+            }
+            AdmissionDecision::Saturated | AdmissionDecision::ClockUnavailable => {
+                return error(StatusCode::SERVICE_UNAVAILABLE, "transport_busy");
+            }
         }
         if request.uri().query().is_some() {
             return error(StatusCode::BAD_REQUEST, "invalid_request");
@@ -274,7 +276,7 @@ where
         // Host management may await async provider work from an admitted
         // blocking request. Catalogue persistence itself uses spawn_blocking;
         // leave bounded headroom so it cannot queue behind its own caller.
-        .max_blocking_threads(2 * WORKERS + 2)
+        .max_blocking_threads(12)
         .enable_all()
         .thread_name("vesta-pending-https")
         .build()

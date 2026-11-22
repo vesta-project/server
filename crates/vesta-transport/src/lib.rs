@@ -806,7 +806,7 @@ impl BlockingJobs {
             waiters: Arc::new(Semaphore::new(32)),
         }
     }
-    /// Two synchronous operations maximum, including abandoned HTTP requests.
+    /// Limits include synchronous operations whose HTTP requests were abandoned.
     #[cfg(test)]
     async fn execute(&self, action: impl FnOnce() -> Reply + Send + 'static) -> Reply {
         self.execute_for(false, action).await
@@ -1004,6 +1004,9 @@ async fn serve_application<S: HttpApplication>(
         .expect("fixed connection rate policy"),
     );
     let mut connections = JoinSet::new();
+    let mut peer_slots = std::collections::HashMap::new();
+    let max_connections = usize::from(config.max_connections());
+    let per_peer = (max_connections / 2).max(2).min(max_connections);
     loop {
         tokio::select! {
             biased;
@@ -1012,12 +1015,28 @@ async fn serve_application<S: HttpApplication>(
             accepted = listener.accept() => {
                 // Transient accept failures (e.g. descriptor exhaustion) must not stop serving.
                 let Ok((socket, peer)) = accepted else { tokio::time::sleep(Duration::from_millis(50)).await; continue; };
-                if connections.len() + shared.active_upgrades() >= usize::from(config.max_connections()) { drop(socket); continue; }
+                if connections.len() + shared.active_upgrades() >= max_connections { drop(socket); continue; }
                 if !matches!(connection_limiter.try_acquire(peer.ip()), AdmissionDecision::Allowed) { drop(socket); continue; }
+                peer_slots.retain(|_, slots: &mut (std::sync::Weak<Semaphore>, std::sync::Weak<Semaphore>)|
+                    slots.0.strong_count() > 0);
+                let slots = peer_slots.entry(peer.ip().to_canonical()).or_default();
+                let connection_slots = slots.0.upgrade().unwrap_or_else(|| {
+                    let semaphore = Arc::new(Semaphore::new(per_peer));
+                    slots.0 = Arc::downgrade(&semaphore);
+                    semaphore
+                });
+                let Ok(connection_slot) = connection_slots.try_acquire_owned() else { drop(socket); continue; };
+                let handshake_slots = slots.1.upgrade().unwrap_or_else(|| {
+                    let semaphore = Arc::new(Semaphore::new(HANDSHAKES / 2));
+                    slots.1 = Arc::downgrade(&semaphore);
+                    semaphore
+                });
+                let Ok(peer_handshake) = handshake_slots.try_acquire_owned() else { drop(socket); continue; };
                 let Ok(handshake) = handshakes.clone().try_acquire_owned() else { drop(socket); continue; };
                 let Ok((config, fingerprint)) = shared.tls().accept_config() else { drop(socket); continue; };
                 let tls = TlsAcceptor::from(config); let state = shared.clone();
                 connections.spawn(async move {
+                    let _connection_slot = connection_slot;
                     let limit = state.timeout();
                     // Handshake, heads and routing get `limit`; streamed artifact
                     // bodies are bounded by the throughput floor instead. Expiry drops
@@ -1027,6 +1046,7 @@ async fn serve_application<S: HttpApplication>(
                     let work = async move {
                         let Ok(Ok(stream)) = tokio::time::timeout(HANDSHAKE_TIMEOUT.min(limit), tls.accept(socket)).await else { return; };
                         drop(handshake);
+                        drop(peer_handshake);
                         let context = tls::connection_context(stream.get_ref().1, fingerprint);
                         let Ok(context) = context else { return; };
                         let stream = DeadlineIo { inner: stream, deadline: deadline.clone() };
@@ -1041,6 +1061,7 @@ async fn serve_application<S: HttpApplication>(
                                 request.extensions_mut().insert(deadline.clone());
                                 if let Some(context) = context.clone() { request.extensions_mut().insert(context); }
                                 let mut reply = state.dispatch(request, peer).await?;
+                                set_retry_hint(&mut reply);
                                 reply.body_mut().watch(deadline);
                                 // An upgrade hands ownership to the separately bounded
                                 // realtime transport; do not replace Connection: upgrade.
@@ -1211,6 +1232,16 @@ fn with_retry_after(mut reply: Reply, retry_after: Duration) -> Reply {
         seconds.to_string().parse().expect("decimal retry duration"),
     );
     reply
+}
+
+fn set_retry_hint(reply: &mut Reply) {
+    // Rate limiters with a known next admission set their own deadline. For
+    // capacity, I/O and shutdown failures there is no known recovery time.
+    // Supply a conservative polling interval for backoff in those cases.
+    if matches!(reply.status(), StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE) {
+        reply.headers_mut().entry(http::header::RETRY_AFTER)
+            .or_insert(http::HeaderValue::from_static("2"));
+    }
 }
 
 #[cfg(test)]

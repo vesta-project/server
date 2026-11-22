@@ -119,6 +119,20 @@ pub(super) fn dispatch(
     }
     let state = &router.identity.state;
     let actor = Actor::Account(device.account_id);
+    if *method == Method::GET && query.is_none() && bytes.is_empty() {
+        let result = if path == "roles" {
+            Some(state.server_role_list(actor, server))
+        } else if path == "roles/capabilities" {
+            Some(state
+                .check_server_access_view(actor, server)
+                .map(|()| capability_catalog()))
+        } else {
+            None
+        };
+        if let Some(result) = result {
+            return Some(result.map_or_else(access_error, crate::manage::ok));
+        }
+    }
     let rows = match state.server_access(actor, server) {
         Ok(r) => r,
         Err(e) => return Some(access_error(e)),
@@ -200,13 +214,6 @@ fn handle(
         failure(StatusCode::NOT_FOUND, "not_supported")
     } else if kind == "roles" && query.is_none() {
         match (method.as_str(), path) {
-            ("GET", "roles") if bytes.is_empty() => {
-                let roles = state.server_roles(server).map_err(access_error)?;
-                crate::manage::ok(json!({"roles":roles,"version":revision.to_string()}))
-            }
-            ("GET", "roles/capabilities") if bytes.is_empty() => {
-                crate::manage::ok(capability_catalog())
-            }
             ("POST", _) if path.ends_with("/reset") => {
                 let id = path.strip_prefix("roles/").and_then(|path| path.strip_suffix("/reset"))
                     .ok_or_else(|| failure(StatusCode::NOT_FOUND, "not_found"))?;

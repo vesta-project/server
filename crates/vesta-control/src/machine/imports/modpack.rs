@@ -23,6 +23,7 @@ pub const UPLOAD_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 pub const UPLOAD_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Live (unexpired) uploads kept for the whole host.
 const MAX_UPLOADS: i64 = 16;
+const SPACE_CHECK_INTERVAL_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
@@ -124,11 +125,11 @@ fn validate_modpack(request: &ModpackServerRequest) -> JobResult<()> {
 pub struct CreateUpload {
     jobs: ImportJobs,
     upload_id: String,
-    account_id: String,
-    device_id: String,
+    owner: OwnerBinding,
     path: PathBuf,
     file: Option<fs::File>,
     bytes: u64,
+    space_checked_through: u64,
     hasher: Sha256,
 }
 impl CreateUpload {
@@ -136,23 +137,34 @@ impl CreateUpload {
     pub fn write(&mut self, data: &[u8]) -> JobResult<()> {
         self.jobs.ensure_accepting()?;
         let file = self.file.as_mut().ok_or(JobError::UNAVAILABLE)?;
-        self.bytes = self
+        let total = self
             .bytes
             .checked_add(data.len() as u64)
             .filter(|n| *n <= UPLOAD_MAX_BYTES)
             .ok_or(JobError("request_too_large"))?;
+        if total > self.space_checked_through {
+            let available = self.jobs.0.env.free_bytes(&self.jobs.0.servers)
+                .ok_or(JobError::UNAVAILABLE)?
+                .saturating_sub(SPACE_MARGIN_BYTES);
+            if total - self.bytes > available {
+                return Err(JobError("insufficient_space"));
+            }
+            self.space_checked_through = total.max(self.bytes + available.min(SPACE_CHECK_INTERVAL_BYTES));
+        }
         self.hasher.update(data);
-        file.write_all(data).map_err(|_| JobError::UNAVAILABLE)
+        file.write_all(data).map_err(|_| JobError::UNAVAILABLE)?;
+        self.bytes = total;
+        Ok(())
     }
     /// Publish the upload for the owner: 24 hours, bound to the account.
     pub fn finish(mut self) -> JobResult<UploadAccepted> {
         self.jobs.ensure_accepting()?;
-        let file = self.file.take().ok_or(JobError::UNAVAILABLE)?;
         if self.bytes == 0 {
-            let _ = fs::remove_file(&self.path);
             return Err(JobError::INVALID);
         }
-        file.sync_all().map_err(|_| JobError::UNAVAILABLE)?;
+        self.file.as_ref().ok_or(JobError::UNAVAILABLE)?
+            .sync_all().map_err(|_| JobError::UNAVAILABLE)?;
+        let file = self.file.take().ok_or(JobError::UNAVAILABLE)?;
         drop(file);
         let sha256 = hex::encode(std::mem::take(&mut self.hasher).finalize());
         let jobs = self.jobs.clone();
@@ -164,11 +176,18 @@ impl CreateUpload {
         let now = jobs.0.host.now_ms();
         let expires = now.saturating_add(UPLOAD_TTL_MS as i64);
         let stored = jobs.write(|c| {
+            let account = jobs.owner(c, &self.owner)?;
+            let device = Uuid::parse_str(&self.owner.device_id).map_err(|_| JobError::FORBIDDEN)?;
+            if !crate::machine::owners::active_device_in(c, device)?
+                .is_some_and(|device| device.account_id == account)
+            {
+                return Err(JobError::FORBIDDEN);
+            }
             c.execute(
                 "INSERT INTO machine_create_uploads(upload_id,account_id,device_id,kind,bytes,sha256,created_ms,expires_ms) VALUES(?1,?2,?3,'modpack',?4,?5,?6,?7)",
-                params![self.upload_id, self.account_id, self.device_id, self.bytes as i64, sha256, now, expires],
+                params![self.upload_id, self.owner.account_id, self.owner.device_id, self.bytes as i64, sha256, now, expires],
             )?;
-            audit(c, "create.upload", &self.account_id, &self.upload_id, now)?;
+            audit(c, "create.upload", &self.owner.account_id, &self.upload_id, now)?;
             Ok(())
         });
         if let Err(error) = stored {
@@ -219,6 +238,10 @@ impl ImportJobs {
         }
         // Partial files from interrupted uploads.
         if let Ok(entries) = fs::read_dir(self.uploads_dir()) {
+            // Publishing inserts the durable row before dropping its in-flight
+            // slot. Hold the slot lock across the snapshot and cleanup so a
+            // completed upload is visible in at least one of the two sets.
+            let running = self.0.uploading.lock().map_err(|_| JobError::UNAVAILABLE)?;
             let live: HashSet<String> = self.read(|c| {
                 let mut stmt = c.prepare("SELECT upload_id FROM machine_create_uploads")?;
                 let ids = stmt
@@ -226,12 +249,6 @@ impl ImportJobs {
                     .collect::<rusqlite::Result<HashSet<_>>>()?;
                 Ok(ids)
             })?;
-            let running = self
-                .0
-                .uploading
-                .lock()
-                .map_err(|_| JobError::UNAVAILABLE)?
-                .clone();
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 let id = name
@@ -261,6 +278,7 @@ impl ImportJobs {
         }
         self.read(|c| self.owner(c, binding).map(|_| ()))?;
         self.prune_uploads()?;
+        let mut uploading = self.0.uploading.lock().map_err(|_| JobError::UNAVAILABLE)?;
         let live: i64 = self.read(|c| {
             Ok(
                 c.query_row("SELECT count(*) FROM machine_create_uploads", [], |r| {
@@ -268,7 +286,6 @@ impl ImportJobs {
                 })?,
             )
         })?;
-        let mut uploading = self.0.uploading.lock().map_err(|_| JobError::UNAVAILABLE)?;
         self.ensure_accepting()?;
         if live + uploading.len() as i64 >= MAX_UPLOADS {
             return Err(Kind::Create.saturated());
@@ -289,12 +306,29 @@ impl ImportJobs {
         Ok(CreateUpload {
             jobs: self.clone(),
             upload_id,
-            account_id: binding.account_id.clone(),
-            device_id: binding.device_id.clone(),
+            owner: binding.clone(),
             path,
             file: Some(file),
             bytes: 0,
+            space_checked_through: 0,
             hasher: Sha256::new(),
+        })
+    }
+
+    /// Time until a durable staging slot expires if all slots are published.
+    /// Active transfers may complete or disconnect earlier, with no fixed time.
+    pub fn create_upload_retry_after(&self) -> JobResult<Option<std::time::Duration>> {
+        let now = self.0.host.now_ms();
+        self.read(|c| {
+            let expiry: Option<i64> = c.query_row(
+                "SELECT CASE WHEN count(*) >= ?1 THEN min(expires_ms) END
+                 FROM machine_create_uploads WHERE expires_ms > ?2",
+                params![MAX_UPLOADS, now],
+                |row| row.get(0),
+            )?;
+            Ok(expiry.map(|expiry| {
+                std::time::Duration::from_millis(expiry.saturating_sub(now) as u64)
+            }))
         })
     }
 

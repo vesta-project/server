@@ -2,7 +2,7 @@
 //! Connection and authorization header. Never hold the PAKE lock over Mojang I/O.
 use crate::host_pake::{Capability, ClaimAuthority, Connection, HostPake};
 use serde::Serialize;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 use uuid::Uuid;
 use vesta_control::machine::{
     HostState,
@@ -96,12 +96,13 @@ impl SignInLimits {
             self.host = 0;
             self.peers.clear();
         }
+        let peer = peer.to_canonical();
         let used = self.peers.get(&peer).copied();
         if self.host >= Self::PER_HOST
             || used.unwrap_or(0) >= Self::PER_PEER
             || (used.is_none() && self.peers.len() >= 1024)
         {
-            return Err(IdentityFailure("rate_limited"));
+            return Err(IdentityFailure("sign_in_rate_limited"));
         }
         self.host += 1;
         *self.peers.entry(peer).or_default() += 1;
@@ -112,7 +113,7 @@ pub struct HostIdentity {
     pub state: HostState,
     pake: Mutex<HostPake>,
     accounts: Mutex<HostAccounts>,
-    sessions: Mutex<HostSessions>,
+    sessions: RwLock<HostSessions>,
     links: Mutex<HostLinks>,
     link_cap: Mutex<Option<Capability>>,
     sign_in_limits: Mutex<SignInLimits>,
@@ -123,7 +124,7 @@ impl HostIdentity {
         Ok(Self {
             pake: Mutex::new(HostPake::new(host)),
             accounts: Mutex::new(HostAccounts::new(state.clone())?),
-            sessions: Mutex::new(HostSessions::new(state.clone())),
+            sessions: RwLock::new(HostSessions::new(state.clone())?),
             links: Mutex::new(HostLinks::new(state.clone())),
             link_cap: Mutex::new(None),
             sign_in_limits: Mutex::new(SignInLimits {
@@ -264,7 +265,7 @@ impl HostIdentity {
         if std::time::Instant::now() >= cap.valid_until {
             return Err(FAILED);
         }
-        let s = lock(&self.sessions)?.claimed(&commit)?;
+        let s = self.write_sessions()?.claimed(&commit)?;
         Ok(ClaimResponse {
             host_id: s.host_id,
             fingerprint: connection.fingerprint.clone(),
@@ -340,7 +341,7 @@ impl HostIdentity {
             &connection.fingerprint,
             &request,
         )?;
-        let session = lock(&self.sessions)?.signed_in(&enrollment)?;
+        let session = self.write_sessions()?.signed_in(&enrollment)?;
         Ok(
             serde_json::json!({"hostId":session.host_id,"serverId":server,"role":role,"session":session.session,"expiresAt":session.expires_at,"authGeneration":session.auth_generation}),
         )
@@ -367,7 +368,7 @@ impl HostIdentity {
             &request,
         )?;
         drop(accounts);
-        let s = lock(&self.sessions)?.signed_in(&signed)?;
+        let s = self.write_sessions()?.signed_in(&signed)?;
         Ok(SignInResponse {
             state: "enrolled",
             host_id: s.host_id,
@@ -380,23 +381,36 @@ impl HostIdentity {
             auth_generation: s.auth_generation,
         })
     }
+    fn write_sessions(&self) -> Result<RwLockWriteGuard<'_, HostSessions>> {
+        self.sessions.write().map_err(|_| IdentityFailure("identity_unavailable"))
+    }
+
     pub fn session_challenge(&self, request: SessionChallengeRequest) -> Result<SessionChallenge> {
-        lock(&self.sessions)?.challenge(request)
+        self.write_sessions()?.challenge(request)
     }
     pub fn session_key_challenge(
         &self,
         request: SessionKeyChallengeRequest,
     ) -> Result<SessionKeyChallenge> {
-        lock(&self.sessions)?.challenge_key(request)
+        self.write_sessions()?.challenge_key(request)
     }
     pub fn session_complete(&self, request: SessionRequest) -> Result<SessionResponse> {
-        lock(&self.sessions)?.complete(request)
+        self.write_sessions()?.complete(request)
     }
     pub fn authenticate(&self, token: &str) -> Result<vesta_control::machine::owners::Device> {
-        lock(&self.sessions)?.authenticate(token)
+        self.sessions.read().map_err(|_| IdentityFailure("identity_unavailable"))?
+            .authenticate(token)
+    }
+    pub(crate) fn retry_after(&self, session_endpoint: bool) -> std::time::Duration {
+        let window = std::time::Duration::from_secs(60);
+        if session_endpoint {
+            self.sessions.read().map_or(window, |sessions| sessions.retry_after())
+        } else {
+            lock(&self.sign_in_limits).map_or(window, |limits| window.saturating_sub(limits.window.elapsed()))
+        }
     }
     pub fn logout(&self, token: &str) -> Result<()> {
-        lock(&self.sessions)?.logout(token)
+        self.write_sessions()?.logout(token)
     }
     /// Health/claim state for the privileged OS-local installer, without secrets.
     pub fn local_status(&self, _local: LocalPrivilege) -> Result<serde_json::Value> {

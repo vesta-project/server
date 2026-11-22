@@ -113,6 +113,7 @@ struct FakeEnv {
     /// Milliseconds to pause before each copied entry (slow copy for cancel).
     delay_ms: AtomicU64,
     java: PathBuf,
+    space_limit: Option<u64>,
     /// While set, making Java available waits (restore cancel/restart tests).
     java_gate: std::sync::atomic::AtomicBool,
 }
@@ -124,7 +125,7 @@ impl ImportEnvironment for FakeEnv {
         if std::net::TcpListener::bind(("0.0.0.0", port)).is_ok() { "free" } else { "occupied" }
     }
     fn free_bytes(&self, _: &Path) -> Option<u64> {
-        Some(100 * GIB)
+        Some(self.space_limit.unwrap_or(100 * GIB))
     }
     fn memory_total_bytes(&self) -> Option<u64> {
         Some(16 * GIB)

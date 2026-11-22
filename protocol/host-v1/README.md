@@ -111,8 +111,35 @@ only at `/v1/servers/{serverId}/resource-packs/{digest}.zip`, gated by the exist
 published exposure policy. New worker resource-pack builds store that prefixed URL.
 
 First-slice limits: host JSON 64KiB; mapped bodies 4MiB (the H05 adapter bound);
-32 realtime streams/host, bounded HTTP connection/body/download admission. Host
-lists currently return the small complete set and `nextCursor:null`; cursors and
+32 realtime streams per Host, eight per account and twelve per observed source
+IP. Limits include upgrades in progress. Before TLS, connection and handshake
+admission may close the socket without an HTTP response. One IP can hold up to
+half of the configured TCP slots (minimum two where available) and four of the
+eight simultaneous TLS handshakes. Host HTTP request admission uses the
+configured per-peer budget and, for authenticated requests, the configured
+session budget keyed by device across its tokens. Session challenge and
+completion routes share an additional 30 requests per minute per source IP.
+Host request bodies may wait up to 250 ms for buffer space and blocking
+requests up to 500 ms for an execution slot. Discovery, server list and access reads,
+enrollment and server-pack upload streaming have separate execution budgets.
+
+`Retry-After` is a positive integer in seconds. For a known rate-limit
+window or token refill, the Host rounds up the remaining wait. For other
+503/429 responses it supplies a backoff hint (normally two seconds).
+Capacity may still be unavailable after the hint. A 409 `server_busy`
+still means an incompatible job or action already holds admission. Retry
+a write only when its specific contract makes replay safe.
+
+Successful GET responses for Host management capabilities, people, a
+person's memberships and role presets, and for per-server roles,
+role capabilities, file listings and content inventory, include a weak
+`ETag`. Send the returned value in `If-None-Match` with the same URL,
+query and authorization. The Host checks current permissions and responds
+with 304, the validator, and no body when the data matches. The management
+envelope's per-request ID is excluded from the validator. Other endpoints
+retain their existing validators and range/write semantics.
+
+Host lists currently return the small complete set and `nextCursor:null`; cursors and
 100-item host pagination are deferred. Host mutation replay uses existing claim,
 link and session receipts/challenges; the blanket 24h HTTP `Idempotency-Key`
 receipt cache above is **not implemented** for new host/device/owner/browse calls.

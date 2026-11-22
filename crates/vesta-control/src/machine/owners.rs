@@ -438,16 +438,7 @@ impl HostState {
         server: Uuid,
     ) -> Result<Vec<(Uuid, EffectiveRole, Option<String>)>> {
         self.read(|c| {
-            super::registry::require_server(c, server)?;
-            let allowed = match actor {
-                Actor::LocalRecovery => true,
-                Actor::Account(id) => {
-                    super::roles::can_view(c, id, server)?
-                }
-            };
-            if !allowed {
-                return Err(reject(Code::Forbidden));
-            }
+            require_server_access_view(c, actor, server)?;
             let mut q = c.prepare("SELECT account_id FROM machine_accounts ORDER BY account_id")?;
             let ids = q
                 .query_map([], |r| r.get::<_, String>(0))?
@@ -487,6 +478,16 @@ impl HostState {
             changed(c,true,"server_role_change",&actor.audit(),&format!("{server}/{target}"),self.now_ms())
         })
     }
+}
+
+pub(super) fn require_server_access_view(c: &Connection, actor: Actor, server: Uuid) -> Result<()> {
+    super::registry::require_server(c, server)?;
+    if let Actor::Account(id) = actor
+        && !super::roles::can_view(c, id, server)?
+    {
+        return Err(reject(Code::Forbidden));
+    }
+    Ok(())
 }
 
 pub(crate) fn enroll_device_in(

@@ -153,8 +153,9 @@ console/metrics accept no query or `installed=0`. Connections close within 29s:
 reconnect with a current session and refetch snapshots/reconcile cursors. Initial
 worker subjects expire after 30s. Device/session revocation is checked at 250ms
 intervals; the H07 full role-revocation/queued-action barrier remains deferred.
-Cap is 32 host streams. Pack channels use an internal single-use ticket; launchers
-only supply the host session. No `/realtime/ticket` call is needed.
+The cap is 32 streams per Host, eight per account, and twelve per source IP.
+Pack channels use an internal single-use ticket. Launchers supply the Host
+session to the stream route.
 
 ## Import wizard (owner only)
 

@@ -1595,6 +1595,67 @@ fn oversized_uploads_are_refused_before_reading_the_body() {
 }
 
 #[test]
+fn interrupted_create_upload_releases_staging_and_leaves_host_reads_available() {
+    use std::io::Write;
+
+    let host = create_host(Arc::new(FakeInstaller::default()));
+    let mut upload = host.wire();
+    let mut reads = host.wire();
+    write!(
+        upload.0.get_mut(),
+        "POST /v1/host/creates/uploads HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/octet-stream\r\nX-Upload-Kind: modpack\r\nAuthorization: {}\r\nContent-Length: 1024\r\n\r\npartial",
+        host.owner,
+    ).unwrap();
+    upload.0.get_mut().flush().unwrap();
+
+    let staged = host.temp.path().join("servers/.create-uploads");
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    while std::fs::read_dir(&staged).map_or(true, |entries| entries.count() == 0) {
+        assert!(std::time::Instant::now() < until, "upload never staged");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(reads.request("GET", "/v1/host/discovery", Value::Null, None).0, 200);
+    drop(upload);
+
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    while std::fs::read_dir(&staged).unwrap().count() != 0 {
+        assert!(std::time::Instant::now() < until, "cancelled upload left an artifact");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(host.upload(&host.owner, "modpack", b"pack").0, 201);
+}
+
+#[test]
+fn create_upload_respects_disk_headroom_and_reports_durable_slot_expiry() {
+    let low_disk = Host::start(
+        tempfile::tempdir().unwrap(),
+        Arc::new(FakeEnv {
+            space_limit: Some(vesta_control::machine::imports::inspection::SPACE_MARGIN_BYTES),
+            ..FakeEnv::default()
+        }),
+        Some(Arc::new(FakeInstaller::default())),
+        None,
+        None,
+    );
+    let (status, error) = low_disk.upload(&low_disk.owner, "modpack", b"pack");
+    assert_eq!(status, 503);
+    assert_eq!(error["error"]["code"], "insufficient_space");
+    assert_eq!(std::fs::read_dir(low_disk.temp.path().join("servers/.create-uploads"))
+        .unwrap().count(), 0);
+
+    let host = create_host(Arc::new(FakeInstaller::default()));
+    for _ in 0..16 {
+        assert_eq!(host.upload(&host.owner, "modpack", b"pack").0, 201);
+    }
+    let mut wire = host.wire();
+    let (status, _, _) = wire.raw("POST", "/v1/host/creates/uploads",
+        &format!("Authorization: {}\r\nContent-Type: application/octet-stream\r\nX-Upload-Kind: modpack\r\n", host.owner),
+        b"pack");
+    assert_eq!(status, 503);
+    assert!((86_300..=86_400).contains(&wire.2.unwrap()));
+}
+
+#[test]
 fn modpack_routes_are_owner_only() {
     let host = create_host(Arc::new(FakeInstaller::default()));
     let (status, value) = host.call(

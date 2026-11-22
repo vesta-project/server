@@ -183,6 +183,7 @@ struct Bearer {
 }
 pub struct HostSessions {
     state: HostState,
+    host_id: Uuid,
     challenges: HashMap<String, Challenge>,
     bearers: HashMap<[u8; 32], Bearer>,
     attempts: u32,
@@ -213,14 +214,16 @@ impl HostSessions {
     pub fn signed_in(&mut self, enrollment: &super::signin::SignedIn) -> Result<SessionResponse> {
         self.issue(enrollment.device())
     }
-    pub fn new(state: HostState) -> Self {
-        Self {
+    pub fn new(state: HostState) -> Result<Self> {
+        let host_id = state.snapshot().map_err(|_| UNAVAILABLE)?.host_id;
+        Ok(Self {
             state,
+            host_id,
             challenges: HashMap::new(),
             bearers: HashMap::new(),
             attempts: 0,
             window: Instant::now(),
-        }
+        })
     }
     fn reap(&mut self) {
         let now = self.state.now_ms();
@@ -237,6 +240,9 @@ impl HostSessions {
         }
         self.attempts += 1;
         Ok(())
+    }
+    pub fn retry_after(&self) -> Duration {
+        Duration::from_secs(60).saturating_sub(self.window.elapsed())
     }
     pub fn challenge(&mut self, request: SessionChallengeRequest) -> Result<SessionChallenge> {
         self.charge()?;
@@ -273,7 +279,7 @@ impl HostSessions {
             .active_device(request.device_id)
             .map_err(|_| UNAVAILABLE)?
             .ok_or(INVALID)?;
-        let host = self.state.snapshot().map_err(|_| UNAVAILABLE)?.host_id;
+        let host = self.host_id;
         verify(&B64.encode(device.public_key),&request.signature,"vesta.host.session.v1",&json!({"hostId":host,"deviceId":request.device_id,"challengeId":request.challenge_id,"nonce":pending.response.nonce,"expiresAt":pending.response.expires_at})).map_err(|_|INVALID)?;
         self.issue(&device)
     }
@@ -314,19 +320,13 @@ impl HostSessions {
     fn hash(&self, token: &str) -> Result<[u8; 32]> {
         let mut h = Sha256::new();
         h.update(b"vesta.host.session.v1\0");
-        h.update(
-            self.state
-                .snapshot()
-                .map_err(|_| UNAVAILABLE)?
-                .host_id
-                .as_bytes(),
-        );
+        h.update(self.host_id.as_bytes());
         h.update(decode::<32>(token).map_err(|_| INVALID)?);
         Ok(h.finalize().into())
     }
-    pub fn authenticate(&mut self, token: &str) -> Result<Device> {
-        self.reap();
-        let b = self.bearers.get(&self.hash(token)?).ok_or(INVALID)?;
+    pub fn authenticate(&self, token: &str) -> Result<Device> {
+        let b = self.bearers.get(&self.hash(token)?)
+            .filter(|b| b.deadline.live(self.state.now_ms())).ok_or(INVALID)?;
         let d = self
             .state
             .active_device(b.device)
@@ -365,7 +365,7 @@ mod tests {
                 key.public_key().as_ref().try_into().unwrap(),
             )
             .unwrap();
-        let sessions = HostSessions::new(state.clone());
+        let sessions = HostSessions::new(state.clone()).unwrap();
         (dir, state, key, device, sessions)
     }
     fn request(
@@ -408,7 +408,7 @@ mod tests {
                 .complete(request(&state, &key, device.device_id, &c))
                 .is_err()
         );
-        let mut restarted = HostSessions::new(state.clone());
+        let mut restarted = HostSessions::new(state.clone()).unwrap();
         assert!(restarted.authenticate(&response.session).is_err());
         assert!(
             restarted

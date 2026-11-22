@@ -1,9 +1,9 @@
 //! Host-owned custom roles and effective capability overrides.
 use super::{
     HostSnapshot, HostState,
-    owners::{Actor, EffectiveRole, ServerRole},
+    owners::{Actor, EffectiveRole, ServerRole, require_server_access_view},
     registry::{effective_role_in, require_server},
-    state::{account_exists, changed, expect_revision, reject},
+    state::{account_exists, changed, expect_revision, reject, snapshot_in},
 };
 use crate::{IdentityErrorCode as Code, Result, identity::Capability};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -11,6 +11,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use uuid::Uuid;
+
+fn server_roles_in(c: &Connection, server: Uuid) -> Result<Vec<Value>> {
+    let mut roles = vec![role_summary(c, server, "owner")?];
+    for role in ServerRole::ALL {
+        roles.push(role_summary(c, server, role.id())?);
+    }
+    let mut q = c.prepare("SELECT id FROM machine_roles WHERE server_id=? ORDER BY id")?;
+    let mut rows = q.query([server.to_string()])?;
+    while let Some(row) = rows.next()? {
+        let id: String = row.get(0)?;
+        if Uuid::parse_str(&id).is_ok() {
+            roles.push(role_summary(c, server, &id)?);
+        }
+    }
+    Ok(roles)
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -488,20 +504,18 @@ impl HostState {
     }
 
     pub fn server_roles(&self, server: Uuid) -> Result<Vec<Value>> {
+        self.read(|c| server_roles_in(c, server))
+    }
+
+    pub fn check_server_access_view(&self, actor: Actor, server: Uuid) -> Result<()> {
+        self.read(|c| require_server_access_view(c, actor, server))
+    }
+
+    pub fn server_role_list(&self, actor: Actor, server: Uuid) -> Result<Value> {
         self.read(|c| {
-            let mut roles = vec![role_summary(c, server, "owner")?];
-            for role in ServerRole::ALL {
-                roles.push(role_summary(c, server, role.id())?);
-            }
-            let mut q = c.prepare("SELECT id FROM machine_roles WHERE server_id=? ORDER BY id")?;
-            let mut rows = q.query([server.to_string()])?;
-            while let Some(row) = rows.next()? {
-                let id: String = row.get(0)?;
-                if Uuid::parse_str(&id).is_ok() {
-                    roles.push(role_summary(c, server, &id)?);
-                }
-            }
-            Ok(roles)
+            require_server_access_view(c, actor, server)?;
+            let roles = server_roles_in(c, server)?;
+            Ok(json!({"roles":roles,"version":snapshot_in(c)?.revision.to_string()}))
         })
     }
 

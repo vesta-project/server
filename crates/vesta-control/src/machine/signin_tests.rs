@@ -118,7 +118,7 @@ fn machine_sign_in_enrolls_role_holder_without_code_and_session_follows_revocati
         sign_in(&f.state, &mut f.accounts, &scope, FP, &r).err(),
         Some(IdentityFailure("pairing_failed"))
     );
-    let mut sessions = HostSessions::new(f.state.clone());
+    let mut sessions = HostSessions::new(f.state.clone()).unwrap();
     let session = sessions.signed_in(&signed).unwrap();
     assert_eq!(session.account_id, f.owner);
     assert_eq!(

@@ -337,9 +337,15 @@ struct Application {
     router: HostRouter,
     tls: Arc<tls::Material>,
     timeout: Duration,
+    host_bodies: Arc<Semaphore>,
     bodies: Arc<Semaphore>,
     jobs: BlockingJobs,
+    read_jobs: BlockingJobs,
+    enrollment_jobs: BlockingJobs,
+    upload_jobs: BlockingJobs,
     limiter: Mutex<PeerRateLimiter>,
+    device_limiter: Mutex<RateLimiter<Uuid>>,
+    session_peer_limiter: Mutex<PeerRateLimiter>,
     tickets: Mutex<
         std::collections::HashMap<
             String,
@@ -348,11 +354,21 @@ struct Application {
     >,
     downloads: Arc<Downloads<vesta_control::pack_access::RealtimeSession>>,
     ownership: owners::Challenges,
-    streams: Mutex<Vec<(watch::Sender<bool>, Arc<Shared>)>>,
+    streams: Mutex<Vec<HostStream>>,
+}
+
+struct HostStream {
+    stop: watch::Sender<bool>,
+    shared: Arc<Shared>,
+    account: Uuid,
+    peer: std::net::IpAddr,
+    reservation: std::sync::Weak<()>,
 }
 impl Transport {
     pub fn start_host(router: HostRouter, listener: &TlsListener) -> Result<Self, TransportError> {
         pending::start_small_application(listener, None, move |tls, config| {
+            let cpus = thread::available_parallelism().map_or(1, |n| n.get());
+            let runtime = tokio::runtime::Handle::current();
             let app = Arc::new(Application {
                 downloads: Arc::new(Downloads::new(DOWNLOADS)),
                 tickets: Default::default(),
@@ -361,8 +377,12 @@ impl Transport {
                 router,
                 tls,
                 timeout: Duration::from_secs(config.request_timeout_seconds().into()),
+                host_bodies: Arc::new(Semaphore::new(256 * 1024)),
                 bodies: Arc::new(Semaphore::new(REQUEST_BODY_BUDGET)),
-                jobs: BlockingJobs::with_workers(tokio::runtime::Handle::current(), 2),
+                jobs: BlockingJobs::with_workers(runtime.clone(), cpus.clamp(2, 4)),
+                read_jobs: BlockingJobs::with_workers(runtime.clone(), cpus.clamp(1, 2)),
+                enrollment_jobs: BlockingJobs::with_workers(runtime.clone(), 1),
+                upload_jobs: BlockingJobs::with_workers(runtime, (cpus / 4).clamp(1, 2)),
                 limiter: Mutex::new(PeerRateLimiter::new(
                     RatePolicy::new(
                         config.peer_requests_per_minute(),
@@ -371,6 +391,19 @@ impl Transport {
                         Duration::from_secs(120),
                     )
                     .expect("validated policy"),
+                )),
+                device_limiter: Mutex::new(RateLimiter::new(
+                    RatePolicy::new(
+                        config.session_requests_per_minute(),
+                        Duration::from_secs(60),
+                        4096,
+                        Duration::from_secs(120),
+                    )
+                    .expect("validated policy"),
+                )),
+                session_peer_limiter: Mutex::new(PeerRateLimiter::new(
+                    RatePolicy::new(30, Duration::from_secs(60), 1024, Duration::from_secs(120))
+                        .expect("fixed policy"),
                 )),
             });
             // Registry state follows observed worker state while the host runs.
@@ -399,22 +432,31 @@ impl HttpApplication for Application {
     fn timeout(&self) -> Duration {
         self.timeout
     }
+    fn active_upgrades(&self) -> usize {
+        self.streams.lock().map_or(0, |streams| {
+            streams.iter().map(|stream| stream.shared.realtime.active()).sum()
+        })
+    }
     async fn reap(&self, all: bool) {
         let streams = {
             let mut streams = self.streams.lock().unwrap();
             if all {
-                for (stop, _) in streams.iter() {
-                    let _ = stop.send(true);
+                for stream in streams.iter() {
+                    let _ = stream.stop.send(true);
                 }
                 std::mem::take(&mut *streams)
             } else {
+                streams.retain(|stream| stream.reservation.strong_count() != 0);
                 Vec::new()
             }
         };
-        for (_, s) in streams {
-            s.reap(true).await;
+        for stream in streams {
+            stream.shared.reap(true).await;
         }
         self.jobs.reap(all).await;
+        self.read_jobs.reap(all).await;
+        self.enrollment_jobs.reap(all).await;
+        self.upload_jobs.reap(all).await;
     }
     async fn dispatch(
         self: Arc<Self>,
@@ -474,6 +516,60 @@ fn host_role_name(role: HostRole) -> &'static str {
         HostRole::Owner => "owner",
     }
 }
+
+fn is_enrollment_path(path: &str) -> bool {
+    matches!(path,
+        "/v1/host/sessions" | "/v1/host/sessions/challenge" | "/v1/host/sessions/key-challenge"
+        | "/v1/host/pake/start" | "/v1/host/pake/finish" | "/v1/host/accounts/challenge"
+        | "/v1/host/accounts/complete" | "/v1/host/claim" | "/v1/host/links"
+        | "/v1/host/invites/redeem" | "/v1/host/sign-in")
+}
+
+fn server_suffix(path: &str) -> Option<&str> {
+    path.strip_prefix("/v1/servers/")?.split_once('/').map(|(_, suffix)| suffix)
+}
+
+fn is_server_role_read(path: &str) -> bool {
+    matches!(server_suffix(path), Some("manage/roles" | "manage/roles/capabilities"))
+}
+
+fn conditional_worker_read(method: &Method, suffix: &str) -> bool {
+    *method == Method::GET && matches!(suffix, "manage/content" | "manage/files")
+}
+
+fn conditional_read(method: &Method, path: &str, headers: &http::HeaderMap, mut reply: Reply) -> Reply {
+    use sha2::{Digest, Sha256};
+    use http::header::{ETAG, IF_NONE_MATCH, CONTENT_LENGTH};
+
+    if *method != Method::GET || reply.status() != StatusCode::OK ||
+        !(matches!(path, "/v1/host/manage/capabilities" | "/v1/host/manage/people"
+                       | "/v1/host/manage/role-presets")
+            || (path.starts_with("/v1/host/manage/people/") && path.ends_with("/memberships"))
+            || is_server_role_read(path)
+            || server_suffix(path).is_some_and(|suffix| conditional_worker_read(method, suffix)))
+    {
+        return reply;
+    }
+
+    // The inherited envelope carries a fresh request ID. Compare only the
+    // resource data, after worker URLs and server IDs have been translated.
+    let ReplyBody::Bytes(bytes) = reply.body() else { return reply; };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else { return reply; };
+    let Some(data) = value.get("data") else { return reply; };
+    let digest = Sha256::digest(serde_json::to_vec(data).expect("JSON value"));
+    let tag = format!("\"{digest:x}\"");
+    if headers.get_all(IF_NONE_MATCH).iter().filter_map(|v| v.to_str().ok()).any(|value| {
+        value.trim() == "*" || value.split(',').map(str::trim).any(|given| {
+            given.strip_prefix("W/").unwrap_or(given) == tag
+        })
+    }) {
+        *reply.status_mut() = StatusCode::NOT_MODIFIED;
+        *reply.body_mut() = ReplyBody::Bytes(Bytes::new());
+        reply.headers_mut().remove(CONTENT_LENGTH);
+    }
+    reply.headers_mut().insert(ETAG, format!("W/{tag}").parse().expect("SHA-256 validator"));
+    reply
+}
 /// Build the complete snapshot, including every active device, in stable order.
 fn subject(
     router: &HostRouter,
@@ -502,19 +598,51 @@ fn subject(
     })
 }
 impl Application {
+    fn identity_output<T: Serialize>(
+        &self,
+        result: vesta_control::machine::sessions::Result<T>,
+        session_endpoint: bool,
+    ) -> Reply {
+        if result.as_ref().err().is_some_and(|err| {
+            err.0 == "sign_in_rate_limited" || session_endpoint && err.0 == "rate_limited"
+        }) {
+            return with_retry_after(
+                failure(StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+                self.router.identity.retry_after(session_endpoint),
+            );
+        }
+        output(result)
+    }
+
+    fn check_device_rate(&self, device: Uuid) -> Result<(), Reply> {
+        let decision = self.device_limiter.lock().map_or(AdmissionDecision::ClockUnavailable,
+            |mut l| l.try_acquire_key(device));
+        Self::check_rate(decision)
+    }
+
+    fn check_rate(decision: AdmissionDecision) -> Result<(), Reply> {
+        match decision {
+            AdmissionDecision::Allowed => Ok(()),
+            AdmissionDecision::RateLimited { retry_after } => Err(with_retry_after(
+                failure(StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+                retry_after,
+            )),
+            AdmissionDecision::ClockUnavailable | AdmissionDecision::Saturated => {
+                Err(failure(StatusCode::SERVICE_UNAVAILABLE, "host_busy"))
+            }
+        }
+    }
+
     async fn route(self: &Arc<Self>, request: Request<Incoming>, peer: SocketAddr) -> Reply {
         if self.router.is_stopping() {
             return failure(StatusCode::SERVICE_UNAVAILABLE, "host_stopping");
         }
-        if !self
+        let decision = self
             .limiter
             .lock()
-            .is_ok_and(|mut l| matches!(l.try_acquire(peer.ip()), AdmissionDecision::Allowed))
-        {
-            return with_retry_after(
-                failure(StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
-                Duration::from_secs(1),
-            );
+            .map_or(AdmissionDecision::ClockUnavailable, |mut l| l.try_acquire(peer.ip()));
+        if let Err(reply) = Self::check_rate(decision) {
+            return reply;
         }
         if request.headers().contains_key("cookie") {
             return failure(StatusCode::BAD_REQUEST, "invalid_request");
@@ -542,33 +670,61 @@ impl Application {
         }
         let method = request.method().clone();
         let path = request.uri().path().to_owned();
+        let jobs = if method == Method::GET
+            && (matches!(path.as_str(), "/v1/host" | "/v1/host/discovery" | "/v1/host/servers")
+                || is_server_role_read(&path)
+                || path.starts_with("/v1/host/manage/"))
+        {
+            &self.read_jobs
+        } else if method == Method::POST && is_enrollment_path(&path) {
+            if path.starts_with("/v1/host/sessions") {
+                let decision = self.session_peer_limiter.lock().map_or(
+                    AdmissionDecision::ClockUnavailable, |mut l| l.try_acquire(peer.ip()));
+                if let Err(reply) = Self::check_rate(decision) {
+                    return reply;
+                }
+            }
+            &self.enrollment_jobs
+        } else {
+            &self.jobs
+        };
         let query = request.uri().query().map(str::to_owned);
         let headers = request.headers().clone();
         let connection = request
             .extensions()
             .get::<Arc<host_pake::Connection>>()
             .cloned();
-        let maximum = if path.starts_with("/v1/servers/") {
-            4 * 1024 * 1024
+        let (budget, maximum) = if path.starts_with("/v1/servers/") {
+            (&self.bodies, 4 * 1024 * 1024)
         } else {
-            64 * 1024
+            (&self.host_bodies, 64 * 1024)
         };
-        let reserve = if request.body().is_end_stream() {
-            0
+        let reserve = match hyper::body::Body::size_hint(request.body()).exact() {
+            Some(size) if size > u64::from(maximum) => {
+                return failure(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large");
+            }
+            Some(size) => size as u32,
+            None => maximum,
+        };
+        let permit = if reserve == 0 {
+            None
         } else {
-            maximum
-        };
-        let Ok(permit) = self.bodies.clone().try_acquire_many_owned(reserve) else {
-            return failure(StatusCode::SERVICE_UNAVAILABLE, "transport_busy");
+            match tokio::time::timeout(
+                Duration::from_millis(250),
+                budget.clone().acquire_many_owned(reserve),
+            ).await {
+                Ok(Ok(permit)) => Some(permit),
+                _ => return failure(StatusCode::SERVICE_UNAVAILABLE, "transport_busy"),
+            }
         };
         let mut body = request.into_body();
-        let mut bytes = zeroize::Zeroizing::new(Vec::new());
+        let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(reserve as usize));
         while let Some(frame) = body.frame().await {
             let Ok(frame) = frame else {
                 return failure(StatusCode::BAD_REQUEST, "invalid_request");
             };
             if let Ok(data) = frame.into_data() {
-                if data.len() > maximum as usize - bytes.len() {
+                if data.len() > reserve as usize - bytes.len() {
                     return failure(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large");
                 }
                 bytes.extend_from_slice(&data);
@@ -577,10 +733,10 @@ impl Application {
             }
         }
         let app = self.clone();
-        self.jobs
+        jobs
             .execute_for(false, move || {
                 let _permit = permit;
-                app.dispatch_sync(
+                let reply = app.dispatch_sync(
                     &method,
                     &path,
                     query.as_deref(),
@@ -588,7 +744,8 @@ impl Application {
                     connection,
                     peer,
                     &bytes,
-                )
+                );
+                conditional_read(&method, &path, &headers, reply)
             })
             .await
     }
@@ -601,10 +758,52 @@ impl Application {
         let Some(token) = routes::bearer(headers) else {
             return failure(StatusCode::UNAUTHORIZED, "invalid_session");
         };
+        let token = zeroize::Zeroizing::new(token.to_owned());
+        let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+        let valid_type = header("content-type") == Some("application/octet-stream");
+        let kind = header("x-upload-kind").map(str::to_owned);
+        let too_large = hyper::body::Body::size_hint(request.body()).lower()
+            > vesta_control::machine::imports::jobs::UPLOAD_MAX_BYTES;
+        let (send, receive) = tokio::sync::mpsc::channel(2);
+        let app = self.clone();
+        let job = self.upload_jobs.run(move || {
+            app.create_upload_sync(&token, valid_type, kind.as_deref(), too_large, receive)
+        });
+        tokio::pin!(job);
+        let feed = async move {
+            let mut body = request.into_body();
+            while let Some(frame) = body.frame().await {
+                let Ok(frame) = frame else { return; };
+                if let Ok(data) = frame.into_data()
+                    && send.send(Some(data)).await.is_err()
+                {
+                    return;
+                }
+            }
+            let _ = send.send(None).await;
+        };
+        let result = tokio::select! {
+            reply = &mut job => reply,
+            () = feed => job.await,
+        };
+        result.unwrap_or_else(|_| failure(StatusCode::SERVICE_UNAVAILABLE, "transport_busy"))
+    }
+
+    fn create_upload_sync(
+        &self,
+        token: &str,
+        valid_type: bool,
+        kind: Option<&str>,
+        too_large: bool,
+        mut chunks: tokio::sync::mpsc::Receiver<Option<Bytes>>,
+    ) -> Reply {
         let identity = &self.router.identity;
         let Ok(device) = identity.authenticate(token) else {
             return failure(StatusCode::UNAUTHORIZED, "invalid_session");
         };
+        if let Err(reply) = self.check_device_rate(device.device_id) {
+            return reply;
+        }
         if identity
             .state
             .host_role(device.account_id)
@@ -614,17 +813,13 @@ impl Application {
         {
             return failure(StatusCode::FORBIDDEN, "forbidden");
         }
-        let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
-        if header("content-type") != Some("application/octet-stream") {
+        if !valid_type {
             return failure(StatusCode::BAD_REQUEST, "invalid_request");
         }
-        let Some(kind) = header("x-upload-kind").map(str::to_owned) else {
+        let Some(kind) = kind else {
             return failure(StatusCode::BAD_REQUEST, "invalid_request");
         };
-        if header("content-length")
-            .and_then(|v| v.parse::<u64>().ok())
-            .is_some_and(|n| n > vesta_control::machine::imports::jobs::UPLOAD_MAX_BYTES)
-        {
+        if too_large {
             return failure(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large");
         }
         let (Some(jobs), Some(_)) = (self.router.imports(), self.router.creator.as_ref()) else {
@@ -638,8 +833,15 @@ impl Application {
             account_id: device.account_id.to_string(),
             device_id: device.device_id.to_string(),
         };
-        let mut upload = match jobs.begin_create_upload(&binding, &kind) {
+        let mut upload = match jobs.begin_create_upload(&binding, kind) {
             Ok(upload) => upload,
+            Err(e) if e.code() == "create_jobs_saturated" => {
+                let reply = failure(StatusCode::SERVICE_UNAVAILABLE, e.code());
+                return match jobs.create_upload_retry_after().ok().flatten() {
+                    Some(wait) => with_retry_after(reply, wait),
+                    None => reply,
+                };
+            }
             Err(e) => {
                 return failure(
                     match e.code() {
@@ -652,19 +854,17 @@ impl Application {
                 );
             }
         };
-        let mut body = request.into_body();
-        while let Some(frame) = body.frame().await {
-            let Ok(frame) = frame else {
-                return failure(StatusCode::BAD_REQUEST, "invalid_request");
-            };
-            let Ok(data) = frame.into_data() else {
-                continue;
+        loop {
+            let data = match chunks.blocking_recv() {
+                Some(Some(data)) => data,
+                Some(None) => break,
+                None => return failure(StatusCode::BAD_REQUEST, "invalid_request"),
             };
             if let Err(e) = upload.write(&data) {
-                return if e.code() == "request_too_large" {
-                    failure(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large")
-                } else {
-                    failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable")
+                return match e.code() {
+                    "request_too_large" => failure(StatusCode::PAYLOAD_TOO_LARGE, e.code()),
+                    "insufficient_space" => failure(StatusCode::SERVICE_UNAVAILABLE, e.code()),
+                    _ => failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
                 };
             }
         }
@@ -679,6 +879,7 @@ impl Application {
                 reply
             }
             Err(e) if e == JobError::INVALID => failure(StatusCode::BAD_REQUEST, "invalid_request"),
+            Err(e) if e == JobError::FORBIDDEN => failure(StatusCode::FORBIDDEN, "forbidden"),
             Err(_) => failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         }
     }
@@ -781,14 +982,14 @@ impl Application {
                         Key(vesta_control::machine::sessions::SessionKeyChallengeRequest),
                     }
                     return match input!() {
-                        Challenge::Id(r) => output(identity.session_challenge(r)),
-                        Challenge::Key(r) => output(identity.session_key_challenge(r)),
+                        Challenge::Id(r) => self.identity_output(identity.session_challenge(r), true),
+                        Challenge::Key(r) => self.identity_output(identity.session_key_challenge(r), true),
                     };
                 }
                 "/v1/host/sessions/key-challenge" => {
-                    return output(identity.session_key_challenge(input!()));
+                    return self.identity_output(identity.session_key_challenge(input!()), true);
                 }
-                "/v1/host/sessions" => return output(identity.session_complete(input!())),
+                "/v1/host/sessions" => return self.identity_output(identity.session_complete(input!()), true),
                 _ => {}
             }
             if matches!(
@@ -807,15 +1008,15 @@ impl Application {
                 };
                 return match (path, pake) {
                     ("/v1/host/pake/start", _) => {
-                        output(identity.pake_start(c, peer.ip(), input!()))
+                        output(identity.pake_start(c, peer.ip().to_canonical(), input!()))
                     }
                     ("/v1/host/pake/finish", _) => output(identity.pake_finish(c, input!())),
                     ("/v1/host/invites/redeem", None) => {
-                        output(identity.redeem_invite(c, peer.ip(), input!()))
+                        self.identity_output(identity.redeem_invite(c, peer.ip(), input!()), false)
                     }
                     ("/v1/host/sign-in", None) => output(identity.sign_in(c, input!())),
                     ("/v1/host/accounts/challenge", None) => {
-                        output(identity.sign_in_challenge(c, peer.ip(), input!()))
+                        self.identity_output(identity.sign_in_challenge(c, peer.ip(), input!()), false)
                     }
                     ("/v1/host/accounts/complete", None) => {
                         output(identity.sign_in_complete(c, input!()))
@@ -874,6 +1075,9 @@ impl Application {
             Ok(d) => d,
             Err(_) => return failure(StatusCode::UNAUTHORIZED, "invalid_session"),
         };
+        if let Err(reply) = self.check_device_rate(device.device_id) {
+            return reply;
+        }
         if method == Method::GET && path == "/v1/host/realtime" {
             return failure(StatusCode::NOT_IMPLEMENTED, "realtime_multiplexer_deferred");
         }
@@ -901,9 +1105,14 @@ impl Application {
         if let Some(rest) = path.strip_prefix("/v1/servers/") {
             // Serialize admission with removal: no request can re-expand worker
             // grants or enqueue a new job while its worker is being stopped.
-            let _removal = match self.router.removal_lock.lock() {
-                Ok(lock) => lock,
-                Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+            let role_read = method == Method::GET && query.is_none() && is_server_role_read(path);
+            let _removal = if role_read {
+                None
+            } else {
+                match self.router.removal_lock.lock() {
+                    Ok(lock) => Some(lock),
+                    Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+                }
             };
             let Some((id, suffix)) = rest.split_once('/') else {
                 return failure(StatusCode::NOT_FOUND, "not_found");
@@ -1042,7 +1251,11 @@ impl Application {
                     body: bytes,
                     idempotency_key: h("idempotency-key"),
                     if_match: h("if-match"),
-                    if_none_match: h("if-none-match"),
+                    if_none_match: if conditional_worker_read(method, suffix) {
+                        None
+                    } else {
+                        h("if-none-match")
+                    },
                     range: h("range"),
                     if_range: h("if-range"),
                 },
@@ -1062,18 +1275,21 @@ impl Application {
         }
         use vesta_control::identity::Capability;
         let actor = Actor::Account(device.account_id);
-        let owner = state.host_role(device.account_id).ok().flatten();
-        let host_caps = match state.host_capabilities(actor) {
-            Ok(caps) => caps,
-            Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable"),
-        };
         if let Some(suffix) = path.strip_prefix("/v1/host/manage/") {
+            if method == Method::GET {
+                return host_access::dispatch(&self.router, actor, method, suffix, query, bytes);
+            }
             let _admission = match self.router.removal_lock.lock() {
                 Ok(lock) => lock,
                 Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
             };
             return host_access::dispatch(&self.router, actor, method, suffix, query, bytes);
         }
+        let owner = state.host_role(device.account_id).ok().flatten();
+        let host_caps = match state.host_capabilities(actor) {
+            Ok(caps) => caps,
+            Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable"),
+        };
         if method == Method::GET && path == "/v1/host" {
             if !host_caps.contains(&Capability::HostView) {
                 return failure(StatusCode::FORBIDDEN, "forbidden");
@@ -1202,7 +1418,10 @@ fn lan(ip: std::net::IpAddr) -> bool {
 }
 
 impl Application {
-    async fn stream(self: &Arc<Self>, mut request: Request<Incoming>, _peer: SocketAddr) -> Reply {
+    async fn stream(self: &Arc<Self>, mut request: Request<Incoming>, peer: SocketAddr) -> Reply {
+        if request.headers().get_all("authorization").iter().count() != 1 {
+            return failure(StatusCode::UNAUTHORIZED, "invalid_session");
+        }
         let token = match routes::bearer(request.headers()) {
             Some(t) => t.to_owned(),
             None => return failure(StatusCode::UNAUTHORIZED, "invalid_session"),
@@ -1224,15 +1443,17 @@ impl Application {
         let Ok(id) = Uuid::parse_str(id) else {
             return failure(StatusCode::NOT_FOUND, "not_found");
         };
-        let router = self.router.clone();
+        let app = self.clone();
         let session = token.clone();
         let admitted = self
             .jobs
             .run(move || {
+                let router = &app.router;
                 let d = router
                     .identity
                     .authenticate(&session)
                     .map_err(|_| failure(StatusCode::UNAUTHORIZED, "invalid_session"))?;
+                app.check_device_rate(d.device_id)?;
                 if !router
                     .identity
                     .state
@@ -1254,14 +1475,14 @@ impl Application {
                     .ok_or_else(|| {
                         failure(StatusCode::SERVICE_UNAVAILABLE, "worker_unavailable")
                     })?;
-                let s = subject(&router, w.as_ref(), &d)?;
+                let s = subject(router, w.as_ref(), &d)?;
                 let generation = s.generation;
                 w.authorize(s)
-                    .map(|host| (host, generation))
+                    .map(|host| (host, generation, d.account_id))
                     .map_err(|_| failure(StatusCode::SERVICE_UNAVAILABLE, "worker_unavailable"))
             })
             .await;
-        let (host, generation) = match admitted {
+        let (host, generation, account) = match admitted {
             Ok(Ok(h)) => h,
             Ok(Err(e)) => return e,
             _ => return failure(StatusCode::SERVICE_UNAVAILABLE, "host_busy"),
@@ -1311,13 +1532,26 @@ impl Application {
             realtime: realtime::Sockets::new(),
             stop: stopped,
         });
+        let reservation = Arc::new(());
         {
             let mut streams = self.streams.lock().unwrap();
-            streams.retain(|(_, s)| s.realtime.active() > 0);
+            streams.retain(|stream| stream.reservation.strong_count() != 0);
             if streams.len() >= 32 {
                 return failure(StatusCode::SERVICE_UNAVAILABLE, "realtime_busy");
             }
-            streams.push((stop.clone(), shared.clone()));
+            let peer = peer.ip().to_canonical();
+            if streams.iter().filter(|stream| stream.account == account).count() >= 8
+                || streams.iter().filter(|stream| stream.peer == peer).count() >= 12
+            {
+                return failure(StatusCode::SERVICE_UNAVAILABLE, "realtime_busy");
+            }
+            streams.push(HostStream {
+                stop: stop.clone(),
+                shared: shared.clone(),
+                account,
+                peer,
+                reservation: Arc::downgrade(&reservation),
+            });
         }
         if pack {
             let ticket = shared.host.with_policy(|p| {
@@ -1336,7 +1570,10 @@ impl Application {
                 format!("Bearer {}", ticket.expose()).parse().unwrap(),
             );
         }
-        let reply = realtime::upgrade(request, shared).await;
+        let reply = realtime::upgrade(request, shared, Some(reservation)).await;
+        if reply.status() != StatusCode::SWITCHING_PROTOCOLS {
+            return reply;
+        }
         // Host revocation closes streams; short worker subject expiry also bounds
         // them. H07 replaces this polling seam with the revocation barrier.
         let identity = self.router.identity.clone();

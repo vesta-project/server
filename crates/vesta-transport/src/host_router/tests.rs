@@ -16,6 +16,7 @@ use vesta_host_client::{Client, Finished, Purpose, SetupCode, Started, encode};
 struct Wire(
     BufReader<StreamOwned<ClientConnection, TcpStream>>,
     Option<String>,
+    Option<u64>,
 );
 impl Wire {
     fn connect(address: SocketAddr) -> Self {
@@ -47,7 +48,7 @@ impl Wire {
         while stream.conn.is_handshaking() {
             stream.conn.complete_io(&mut stream.sock).unwrap();
         }
-        Self(BufReader::new(stream), None)
+        Self(BufReader::new(stream), None, None)
     }
     fn request(
         &mut self,
@@ -72,6 +73,7 @@ impl Wire {
         let status = line.split_whitespace().nth(1).unwrap().parse().unwrap();
         let mut len = 0;
         self.1 = None;
+        self.2 = None;
         loop {
             line.clear();
             self.0.read_line(&mut line).unwrap();
@@ -84,6 +86,9 @@ impl Wire {
                 }
                 if k.eq_ignore_ascii_case("content-length") {
                     len = v.trim().parse().unwrap();
+                }
+                if k.eq_ignore_ascii_case("retry-after") {
+                    self.2 = Some(v.trim().parse().unwrap());
                 }
             }
         }
@@ -112,6 +117,7 @@ impl Wire {
         self.0.read_line(&mut line).unwrap();
         let status = line.split_whitespace().nth(1).unwrap().parse().unwrap();
         let (mut len, mut etag) = (0, None);
+        self.2 = None;
         loop {
             line.clear();
             self.0.read_line(&mut line).unwrap();
@@ -124,6 +130,9 @@ impl Wire {
                 }
                 if k.eq_ignore_ascii_case("content-length") {
                     len = v.trim().parse().unwrap();
+                }
+                if k.eq_ignore_ascii_case("retry-after") {
+                    self.2 = Some(v.trim().parse().unwrap());
                 }
             }
         }
@@ -389,6 +398,64 @@ fn host_end_to_end_claim_sessions_and_registry_mapping() {
             .0,
         503 // this router has no import service configured
     );
+    assert_eq!(wire.2, Some(2));
+
+    let mut conditional = Wire::connect(transport.local_addr());
+    let role_path = format!("/v1/servers/{server}/manage/roles");
+    let owner_header = format!("Authorization: {owner}\r\n");
+    let paths = [
+        "/v1/host/manage/capabilities".to_owned(),
+        "/v1/host/manage/people".to_owned(),
+        format!("/v1/host/manage/people/{stranger_account}/memberships"),
+        "/v1/host/manage/role-presets".to_owned(),
+        role_path.clone(),
+        format!("{role_path}/capabilities"),
+    ];
+    // A removal or enablement request may hold this lock through worker
+    // shutdown. These reads use their own database authorization.
+    let removal = router.removal_lock.lock().unwrap();
+    for path in &paths {
+        let (status, data, tag) = conditional.raw("GET", path, &owner_header, b"");
+        assert_eq!(status, 200, "{path}");
+        assert!(!data.is_empty(), "{path}");
+        let tag = tag.unwrap();
+        let check = format!("{owner_header}If-None-Match: \"other\", {tag}\r\n");
+        assert_eq!(
+            conditional.raw("GET", path, &check, b""),
+            (304, Vec::new(), Some(tag.clone())),
+            "{path}"
+        );
+        let unauthorized = format!("Authorization: {stranger_token}\r\nIf-None-Match: {tag}\r\n");
+        let (status, _, tag) = conditional.raw("GET", path, &unauthorized, b"");
+        assert!(matches!(status, 403 | 404), "{path}: {status}");
+        assert!(tag.is_none(), "{path}");
+    }
+    drop(removal);
+    let (_, _, previous) = conditional.raw("GET", &role_path, &owner_header, b"");
+    state.set_server_role(
+        Actor::Account(account),
+        server,
+        stranger_account,
+        Some(ServerRole::PackUser),
+        state.snapshot().unwrap().revision,
+    ).unwrap();
+    let check = format!("{owner_header}If-None-Match: {}\r\n", previous.as_deref().unwrap());
+    let (status, _, changed) = conditional.raw("GET", &role_path, &check, b"");
+    assert_eq!(status, 200);
+    assert_ne!(changed, previous);
+    for suffix in ["manage/files?path=config", "manage/content?view=summary"] {
+        let path = format!("/v1/servers/{server}/{suffix}");
+        let (status, _, tag) = conditional.raw("GET", &path, &owner_header, b"");
+        assert_eq!(status, 200, "{suffix}");
+        let tag = tag.unwrap();
+        let check = format!("{owner_header}If-None-Match: {tag}\r\n");
+        assert_eq!(
+            conditional.raw("GET", &path, &check, b""),
+            (304, Vec::new(), Some(tag)),
+            "{suffix}"
+        );
+    }
+    drop(conditional);
     drop(wire);
     let mut wire = Wire::connect(transport.local_addr());
     let (status, pack) = wire.request(
@@ -481,12 +548,13 @@ fn host_end_to_end_claim_sessions_and_registry_mapping() {
         304
     );
     drop(file_wire);
+    let mut streams = Vec::new();
     for suffix in [
         "manage/console/stream",
         "manage/files/follow?path=config/test.json",
         "manage/metrics/stream",
         "realtime?installed=0",
-    ] {
+    ].into_iter().chain(std::iter::repeat_n("manage/console/stream", 5)) {
         let mut stream = Wire::connect(transport.local_addr());
         let upgrade = format!(
             "{owner}\r\nConnection: upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="
@@ -497,9 +565,15 @@ fn host_end_to_end_claim_sessions_and_registry_mapping() {
             Value::Null,
             Some(&upgrade),
         );
-        assert_eq!(status, 101, "{suffix}: {reply}");
-        drop(stream);
+        if streams.len() == 8 {
+            assert_eq!(status, 503, "{reply}");
+            assert_eq!(stream.2, Some(2));
+        } else {
+            assert_eq!(status, 101, "{suffix}: {reply}");
+        }
+        streams.push(stream);
     }
+    drop(streams);
     let mut wire = Wire::connect(transport.local_addr());
     assert_eq!(
         wire.request(
@@ -788,6 +862,7 @@ fn host_account_sign_in_enrolls_new_device_without_code() {
     let mut limited = 0;
     for _ in 0..6 {
         if device.challenge(&mut wire, &fingerprint).0 == 429 {
+            assert!((1..=60).contains(&wire.2.unwrap()));
             limited += 1;
         }
     }

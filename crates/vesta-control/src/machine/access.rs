@@ -21,10 +21,14 @@ fn stored(c: &Connection, account: Uuid) -> Result<BTreeSet<Capability>> {
             |row| row.get(0),
         )
         .optional()?;
+    decode_grants(document.as_deref())
+}
+
+fn decode_grants(document: Option<&str>) -> Result<BTreeSet<Capability>> {
     let Some(document) = document else {
         return Ok(BTreeSet::new());
     };
-    let ids: Vec<String> = super::roles::decode(&document)?;
+    let ids: Vec<String> = super::roles::decode(document)?;
     ids.iter()
         .map(|id| {
             Capability::from_id(id)
@@ -125,17 +129,41 @@ impl HostState {
 
     pub fn host_people(&self, actor: Actor) -> Result<Value> {
         self.read(|c| {
-            require(c, actor, Capability::HostAccessManage)
-                .or_else(|_| require(c, actor, Capability::HostMembershipsManage))?;
-            let mut q = c.prepare("SELECT account_id FROM machine_accounts ORDER BY account_id")?;
-            let accounts = q
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            let people = accounts
-                .into_iter()
-                .map(|id| people_row(c, uuid(id)?))
-                .collect::<Result<Vec<_>>>()?;
-            Ok(json!({"version":snapshot_in(c)?.revision.to_string(),"people":people}))
+            let caps = capabilities_in(c, actor)?;
+            if !caps.contains(&Capability::HostAccessManage)
+                && !caps.contains(&Capability::HostMembershipsManage)
+            {
+                return Err(reject(Code::Forbidden));
+            }
+            let snapshot = snapshot_in(c)?;
+            let mut q = c.prepare(
+                "SELECT a.account_id,n.name,a.disabled,o.account_id IS NOT NULL,g.document
+                 FROM machine_accounts a
+                 LEFT JOIN machine_account_names n ON n.account_id=a.account_id
+                 LEFT JOIN machine_owners o ON o.account_id=a.account_id
+                 LEFT JOIN machine_host_capabilities g ON g.account_id=a.account_id AND a.disabled=0
+                 ORDER BY a.account_id",
+            )?;
+            let mut rows = q.query([])?;
+            let mut people = Vec::new();
+            while let Some(row) = rows.next()? {
+                let account = uuid(row.get(0)?)?;
+                let name: Option<String> = row.get(1)?;
+                let disabled: bool = row.get(2)?;
+                let owner: bool = row.get(3)?;
+                let role = if disabled {
+                    None
+                } else if snapshot.primary_account_id == Some(account) {
+                    Some("primary_owner")
+                } else {
+                    owner.then_some("owner")
+                };
+                let grants: Option<String> = row.get(4)?;
+                let ids: Vec<_> = decode_grants(grants.as_deref())?
+                    .iter().map(|cap| cap.id()).collect();
+                people.push(json!({"account_id":account,"name":name,"role":role,"capabilities":ids}));
+            }
+            Ok(json!({"version":snapshot.revision.to_string(),"people":people}))
         })
     }
 

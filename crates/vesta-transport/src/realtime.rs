@@ -147,7 +147,11 @@ impl Sockets {
     }
 }
 
-pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) -> Reply {
+pub(super) async fn upgrade(
+    mut request: Request<Incoming>,
+    state: Arc<Shared>,
+    host_reservation: Option<Arc<()>>,
+) -> Reply {
     let console = request.uri().path() == "/api/v3/manage/console/stream";
     let follow = request.uri().path() == "/api/v3/manage/files/follow";
     let metrics = request.uri().path() == "/api/v3/manage/metrics/stream";
@@ -356,6 +360,7 @@ pub(super) async fn upgrade(mut request: Request<Incoming>, state: Arc<Shared>) 
     }
     let owned = state.clone();
     handles.push(tokio::spawn(async move {
+        let _host_reservation = host_reservation;
         let _permit = permit;
         let mut stop = owned.stop.clone();
         let upgraded = tokio::select! {
