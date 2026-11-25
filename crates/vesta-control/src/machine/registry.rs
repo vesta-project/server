@@ -5,6 +5,7 @@ use super::{
 };
 use crate::{IdentityErrorCode as Code, Result};
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,13 +45,14 @@ impl ServerState {
         }
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Visibility {
     Private,
     Public,
 }
 impl Visibility {
-    fn as_str(self) -> &'static str {
+    pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::Private => "private",
             Self::Public => "public",
@@ -77,7 +79,7 @@ impl HostState {
     ) -> Result<HostSnapshot> {
         self.write(|c| {
             super::access::require(c,actor,crate::identity::Capability::HostServersCreate)?; expect_revision(c,revision)?; validate(entry)?;
-            if entry.server_id==snapshot_in(c)?.host_id || entry.state==ServerState::Deleted { return Err(reject(Code::InvalidRequest)); }
+            if entry.server_id==snapshot_in(c)?.host_id || entry.state==ServerState::Deleted || entry.visibility==Visibility::Public { return Err(reject(Code::InvalidRequest)); }
             let conflict: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM machine_servers WHERE state!='deleted' AND (lower(name)=lower(?1) OR game_port=?2))", params![entry.name, entry.game_port], |r|r.get(0))?;
             let used=server_in(c,entry.server_id)?.is_some();
             if conflict || used { return Err(reject(Code::Conflict)); }
@@ -95,6 +97,9 @@ impl HostState {
     ) -> Result<HostSnapshot> {
         self.write(|c| {
             require_owner(c,actor)?; expect_revision(c,revision)?; validate(entry)?; require_server(c,entry.server_id)?;
+            if entry.visibility == Visibility::Public && super::default_access::configured_role(c, entry.server_id)?.is_none() {
+                return Err(reject(Code::InvalidRequest));
+            }
             let conflict: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM machine_servers WHERE state!='deleted' AND server_id!=?1 AND (lower(name)=lower(?2) OR game_port=?3))", params![entry.server_id.to_string(),entry.name,entry.game_port], |r|r.get(0))?;
             if entry.state != ServerState::Deleted && conflict { return Err(reject(Code::Conflict)); }
             c.execute("UPDATE machine_servers SET name=?1,game_port=?2,state=?3,visibility=?4 WHERE server_id=?5",params![entry.name,entry.game_port,entry.state.as_str(),entry.visibility.as_str(),entry.server_id.to_string()])?;
@@ -211,6 +216,18 @@ impl HostState {
     pub fn effective_role(&self, account: Uuid, server: Uuid) -> Result<Option<EffectiveRole>> {
         self.read(|c| effective_role_in(c, account, server))
     }
+    pub fn public_server_at_port(&self, port: u16) -> Result<Option<(Uuid, Uuid)>> {
+        self.read(|c| {
+            let entry = c.query_row(
+                "SELECT h.host_id,s.server_id FROM machine_servers s CROSS JOIN machine_host h
+                 WHERE s.game_port=? AND s.state!='deleted' AND s.enabled=1
+                   AND s.visibility='public' AND s.default_role_id IS NOT NULL",
+                [port],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            ).optional()?;
+            entry.map(|(host, server)| Ok((uuid(host)?, uuid(server)?))).transpose()
+        })
+    }
     pub fn visible_servers(&self, account: Uuid) -> Result<Vec<(ServerEntry, EffectiveRole)>> {
         self.read(|c| {
             let mut stmt = c.prepare(
@@ -254,6 +271,23 @@ pub fn effective_role_in(
     account: Uuid,
     server: Uuid,
 ) -> Result<Option<EffectiveRole>> {
+    resolve_access_in(c, account, server, true)
+}
+
+pub(super) fn explicit_role_in(
+    c: &Connection,
+    account: Uuid,
+    server: Uuid,
+) -> Result<Option<EffectiveRole>> {
+    resolve_access_in(c, account, server, false)
+}
+
+fn resolve_access_in(
+    c: &Connection,
+    account: Uuid,
+    server: Uuid,
+    inherit_default: bool,
+) -> Result<Option<EffectiveRole>> {
     if server_in(c, server)?.is_none_or(|s| s.state == ServerState::Deleted)
         || !super::state::account_exists(c, account)?
     {
@@ -264,16 +298,26 @@ pub fn effective_role_in(
         Some(HostRole::Owner) => return Ok(Some(EffectiveRole::Owner)),
         None => {}
     }
-    let role: Option<String> = c
-        .query_row(
-            "SELECT role FROM machine_server_grants WHERE server_id=?1 AND account_id=?2",
-            params![server.to_string(), account.to_string()],
-            |r| r.get(0),
-        )
-        .optional()?;
-    role.map(|s| super::roles::resolve_role(c, server, &s))
-        .transpose()
+    if let Some(role) = server_grant_in(c, server, account)? {
+        return Ok(Some(super::roles::resolve_role(c, server, &role)?));
+    }
+    if inherit_default
+        && let Some(role) = super::default_access::configured_role(c, server)?
+        && !super::default_access::excluded_in(c, server, account)?
+    {
+        return Ok(Some(super::roles::resolve_role(c, server, &role)?));
+    }
+    Ok(None)
 }
+
+pub(super) fn server_grant_in(c: &Connection, server: Uuid, account: Uuid) -> Result<Option<String>> {
+    Ok(c.query_row(
+        "SELECT role FROM machine_server_grants WHERE server_id=? AND account_id=?",
+        params![server.to_string(), account.to_string()],
+        |row| row.get(0),
+    ).optional()?)
+}
+
 pub(super) fn server_in(c: &Connection, id: Uuid) -> Result<Option<ServerEntry>> {
     let row: Option<(String, u16, String, String, bool)> = c
         .query_row(

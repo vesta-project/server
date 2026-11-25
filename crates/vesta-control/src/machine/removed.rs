@@ -124,7 +124,7 @@ pub fn prepare(
             Some(record)
         } else { None };
         if !super::access::is_owner(c, Actor::Account(account))?
-            && (req.permanently || super::registry::effective_role_in(c, account, server)?.is_none())
+            && (req.permanently || super::registry::explicit_role_in(c, account, server)?.is_none())
         {
             return Err(super::state::reject(crate::IdentityErrorCode::Forbidden));
         }
@@ -188,7 +188,8 @@ pub fn finish(
     let result = host.write(|c| {
         super::access::require(c, Actor::Account(record.removed_by), crate::identity::Capability::HostServersRemove)?;
         let updated = c.execute(
-            "UPDATE machine_servers SET state='deleted' WHERE server_id=? AND name=? AND state!='deleted'",
+            "UPDATE machine_servers SET state='deleted',visibility='private',default_role_id=NULL
+             WHERE server_id=? AND name=? AND state!='deleted'",
             params![record.server_id.to_string(), record.name],
         )?;
         if updated != 1 {

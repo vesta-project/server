@@ -32,6 +32,312 @@ fn register(state: &HostState, owner: Uuid, port: u16) -> ServerEntry {
         .unwrap();
     server
 }
+
+#[test]
+fn default_access_projects_only_safe_capabilities_and_keeps_revocations() {
+    use crate::identity::Capability;
+
+    let dir = tempfile::tempdir().unwrap();
+    let state = open(dir.path());
+    let owner = Uuid::new_v4();
+    let linked = Uuid::new_v4();
+    let unknown = Uuid::new_v4();
+    state.claim(owner, "Owner", [1; 32]).unwrap();
+    let device = enroll(&state, linked, 2);
+    let actor = Actor::Account(owner);
+    let server = register(&state, owner, 25565).server_id;
+    let rev = || state.snapshot().unwrap().revision;
+    let set = |role_id, visibility| {
+        state.set_server_default_access(actor, server, rev(), role_id, visibility)
+    };
+    assert!(state.effective_role(linked, server).unwrap().is_none());
+    assert!(set(None, Visibility::Public).is_err());
+    for unsafe_role in [
+        "owner",
+        "administrator",
+        "maintainer",
+        "moderator",
+        "viewer",
+    ] {
+        assert!(set(Some(unsafe_role), Visibility::Private).is_err());
+    }
+    state
+        .set_host_capabilities(
+            actor,
+            linked,
+            rev(),
+            &["access-sources.manage".into(), "host.servers.remove".into()],
+        )
+        .unwrap();
+
+    let old_generation = state.snapshot().unwrap().auth_generation;
+    let set_reply = set(Some("pack-user"), Visibility::Private).unwrap();
+    assert_eq!(set_reply["default_role_id"], "pack-user");
+    assert_eq!(set_reply["eligible_roles"][0]["id"], "pack-user");
+    assert_eq!(set_reply["eligible_roles"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        state.snapshot().unwrap().auth_generation,
+        old_generation + 1
+    );
+    assert_eq!(state.public_server_at_port(25565).unwrap(), None);
+    assert_eq!(state.effective_role(unknown, server).unwrap(), None);
+    let role = state.effective_role(linked, server).unwrap().unwrap();
+    assert_eq!(role, EffectiveRole::Server(ServerRole::PackUser));
+    assert_eq!(state.visible_servers(linked).unwrap().len(), 1);
+    assert!(
+        !state
+            .server_access(actor, server)
+            .unwrap()
+            .iter()
+            .any(|(id, _, _)| *id == linked)
+    );
+    let caps = state.server_capabilities(server, linked, role).unwrap();
+    assert_eq!(
+        caps,
+        [
+            Capability::PublicInfo,
+            Capability::PackDownload,
+            Capability::PackRealtime,
+            Capability::PackAccess
+        ]
+        .into()
+    );
+    let policy = state.worker_policy(server).unwrap();
+    let grant = policy
+        .grants
+        .iter()
+        .find(|g| g.device_id == device.device_id)
+        .unwrap();
+    assert_eq!(grant.capabilities.len(), caps.len());
+    assert!(
+        caps.iter()
+            .all(|cap| grant.capabilities.iter().any(|id| id == cap.id()))
+    );
+    assert!(
+        state
+            .server_default_access(Actor::Account(linked), server)
+            .is_err()
+    );
+    let removal = super::removed::RemoveRequest {
+        confirm_name: "Survival".into(),
+        idempotency_key: Uuid::new_v4(),
+        permanently: false,
+        keep_backups: None,
+    };
+    assert!(matches!(
+        super::removed::prepare(&state, linked, server, &removal, None),
+        Err(error) if error.code() == "forbidden"
+    ));
+
+    state
+        .assign_role(actor, server, linked, Some("viewer"), None, rev())
+        .unwrap();
+    let role = state.effective_role(linked, server).unwrap().unwrap();
+    assert_eq!(role, EffectiveRole::Server(ServerRole::Viewer));
+    let caps = state.server_capabilities(server, linked, role).unwrap();
+    assert!(caps.contains(&Capability::StatusView));
+    assert!(!caps.contains(&Capability::PackDownload));
+    let delegated = Actor::Account(linked);
+    let settings = state.server_default_access(delegated, server).unwrap();
+    assert_eq!(settings["can_manage_visibility"], false);
+    assert!(
+        state
+            .set_server_default_access(
+                delegated,
+                server,
+                rev(),
+                Some("pack-user"),
+                Visibility::Public
+            )
+            .is_err()
+    );
+    assert!(
+        state
+            .set_server_default_access(delegated, server, rev(), None, Visibility::Private)
+            .is_ok()
+    );
+    set(Some("pack-user"), Visibility::Public).unwrap();
+    assert_eq!(
+        state.public_server_at_port(25565).unwrap(),
+        Some((state.snapshot().unwrap().host_id, server))
+    );
+    state
+        .set_server_enabled(actor, server, false, Some(rev()))
+        .unwrap();
+    assert_eq!(state.public_server_at_port(25565).unwrap(), None);
+    state
+        .set_server_enabled(actor, server, true, Some(rev()))
+        .unwrap();
+
+    state
+        .set_host_membership(actor, linked, server, rev(), None)
+        .unwrap();
+    assert_eq!(state.effective_role(linked, server).unwrap(), None);
+    assert!(
+        !state
+            .worker_policy(server)
+            .unwrap()
+            .grants
+            .iter()
+            .any(|g| g.device_id == device.device_id)
+    );
+    assert_eq!(
+        set(None, Visibility::Private).unwrap()["default_role_id"],
+        serde_json::Value::Null
+    );
+    set(Some("pack-user"), Visibility::Public).unwrap();
+    assert_eq!(state.effective_role(linked, server).unwrap(), None);
+    state
+        .set_server_role(actor, server, linked, Some(ServerRole::PackUser), rev())
+        .unwrap();
+    let explicit = state.effective_role(linked, server).unwrap().unwrap();
+    assert!(
+        state
+            .server_capabilities(server, linked, explicit)
+            .unwrap()
+            .contains(&Capability::StatusView)
+    );
+}
+
+#[test]
+fn default_access_fences_unsafe_changes_to_the_selected_role() {
+    use super::roles::{Grant, RoleFields};
+    use crate::{ControlError, IdentityErrorCode};
+
+    let dir = tempfile::tempdir().unwrap();
+    let state = open(dir.path());
+    let owner = Uuid::new_v4();
+    state.claim(owner, "Owner", [1; 32]).unwrap();
+    let actor = Actor::Account(owner);
+    let server = register(&state, owner, 25565).server_id;
+    let rev = || state.snapshot().unwrap().revision;
+    let capabilities = |id: &str| {
+        Some(vec![Grant {
+            capability: id.into(),
+            scope: "*".into(),
+        }])
+    };
+    let (_, role) = state
+        .write_custom_role(
+            actor,
+            server,
+            None,
+            rev(),
+            RoleFields {
+                name: Some("Pack metadata".into()),
+                rank: Some(5),
+                capabilities: capabilities("public.info"),
+            },
+        )
+        .unwrap();
+    let role_id = role["id"].as_str().unwrap();
+    let id = Uuid::parse_str(role_id).unwrap();
+    state
+        .set_server_default_access(actor, server, rev(), Some(role_id), Visibility::Public)
+        .unwrap();
+    let unsafe_edit = || RoleFields {
+        capabilities: capabilities("console.read"),
+        ..RoleFields::default()
+    };
+    assert!(matches!(
+        state.write_custom_role(actor, server, Some(id), rev(), unsafe_edit()),
+        Err(ControlError::Rejected {
+            code: IdentityErrorCode::Forbidden,
+            ..
+        })
+    ));
+    assert!(matches!(
+        state.delete_custom_role(actor, server, id, rev()),
+        Err(ControlError::Rejected {
+            code: IdentityErrorCode::RoleInUse,
+            ..
+        })
+    ));
+    state
+        .set_server_default_access(actor, server, rev(), Some("pack-user"), Visibility::Public)
+        .unwrap();
+    assert!(
+        state
+            .write_builtin_role(actor, server, "pack-user", rev(), Some(unsafe_edit()))
+            .is_err()
+    );
+    state.delete_custom_role(actor, server, id, rev()).unwrap();
+}
+
+#[test]
+fn default_access_host_schema_v4_migration_preserves_memberships_and_removals() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = open(dir.path());
+    let owner = Uuid::new_v4();
+    let player = Uuid::new_v4();
+    let removed = Uuid::new_v4();
+    let other = Uuid::new_v4();
+    state.claim(owner, "Owner", [1; 32]).unwrap();
+    for (account, key) in [(player, 2), (removed, 3), (other, 4)] {
+        enroll(&state, account, key);
+    }
+    let actor = Actor::Account(owner);
+    let server = register(&state, owner, 25565).server_id;
+    for (account, role) in [
+        (player, Some(ServerRole::Viewer)),
+        (removed, Some(ServerRole::PackUser)),
+        (removed, None),
+    ] {
+        state
+            .set_server_role(
+                actor,
+                server,
+                account,
+                role,
+                state.snapshot().unwrap().revision,
+            )
+            .unwrap();
+    }
+    state
+        .write(|c| {
+            c.execute_batch(
+                "DROP TABLE machine_server_access_exclusions;
+             ALTER TABLE machine_servers DROP COLUMN default_role_id;
+             UPDATE machine_servers SET visibility='public';
+             UPDATE machine_host SET schema_version=4;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let before = state.snapshot().unwrap();
+    let migrated = HostState::from_database(state.database().clone()).unwrap();
+    let snapshot = migrated.snapshot().unwrap();
+    assert_eq!(snapshot.schema_version, super::state::HOST_SCHEMA_VERSION);
+    assert_eq!(snapshot.host_id, before.host_id);
+    assert_eq!(snapshot.auth_generation, before.auth_generation + 1);
+    assert_eq!(
+        migrated.server(server).unwrap().unwrap().visibility,
+        Visibility::Private
+    );
+    assert_eq!(
+        migrated.server_default_access(actor, server).unwrap()["default_role_id"],
+        serde_json::Value::Null
+    );
+    migrated
+        .set_server_default_access(
+            actor,
+            server,
+            snapshot.revision,
+            Some("pack-user"),
+            Visibility::Public,
+        )
+        .unwrap();
+    assert_eq!(
+        migrated.effective_role(player, server).unwrap(),
+        Some(EffectiveRole::Server(ServerRole::Viewer))
+    );
+    assert_eq!(migrated.effective_role(removed, server).unwrap(), None);
+    assert_eq!(
+        migrated.effective_role(other, server).unwrap(),
+        Some(EffectiveRole::Server(ServerRole::PackUser))
+    );
+}
+
 #[test]
 fn machine_concurrent_claims_have_exactly_one_primary() {
     let dir = tempfile::tempdir().unwrap();

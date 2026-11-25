@@ -35,8 +35,9 @@ All binary signatures and public keys use `vesta_host_client::encode`.
 
 ## Sign in on a new device (no code)
 
-For a claimed machine the user already has a role on (owner or any server
-role). Permissions follow the Minecraft account; no link code or approval.
+For a claimed machine where the account already has access through ownership,
+a Host grant, a server membership or a default role for linked accounts.
+Permissions follow the Minecraft account.
 Generate a fresh Ed25519 key for this machine (never reuse one across hosts).
 Use one dedicated TLS 1.3 connection (resumption and early data disabled) for
 steps 1-5; no Authorization header until the session.
@@ -292,6 +293,10 @@ Provider transfers use a 3s connect timeout, 120s idle read timeout, and a bound
 ### Server access / Vesta Server access
 
 Use per-server manage/users, manage/roles and manage/invitations for the Access tab. Owners listed there cannot be demoted or removed there. Manage users with PUT users/{accountId}/roles using {add:[roleId],remove:[oldRoleId],expected_version:user.version}. Read built-in and custom role IDs from manage/roles. Read labels and descriptions from manage/roles/capabilities. Use host device routes in Vesta Server access. If the server projects access-sources.manage, expose only the owner whitelist sync toggle. Read and update it through manage/access-sources with sync_whitelist and the current expected_version. Invite proof and redemption details are in README. Generated invites currently need an out-of-band host address (endpoints are empty).
+
+Gate **Everyone who joins gets** on `public-access` in GET `/v1/host`. GET `/v1/servers/{serverId}/manage/default-access` returns `data.version`, `default_role_id`, `eligible_roles` with IDs and names, `visibility` and `can_manage_visibility`. Show the setting when the read succeeds. Use the returned choices and an option to clear the default. PUT to the same path with `{"expected_version":"42","default_role_id":"pack-user","visibility":"public"}`. Use `default_role_id:null` and `visibility:"private"` to clear a public default in one save. Keep the current visibility when the caller cannot manage it. Refresh on 412 before retrying. [Default access API](management.md#default-access-and-public-visibility)
+
+Use public visibility to make the server discoverable by game port. GET `/v1/here?port=25565` without a session returns `{hostId,fingerprint,serverId,gamePort,pack:null}` for a public server. Apply the existing Host trust rules to the fingerprint. A player needs a linked Host device to use the pack routes. For players who are new to the Host, use invite redemption or the approved link flow. Explicit memberships take precedence over the default, and revoked memberships remain excluded until an explicit role is assigned.
 
 A server grant change synchronizes its worker policy before returning success. Interim streams also close when the host authorization generation changes (within the existing 250ms polling interval), including removal/demotion of a server grant.
 

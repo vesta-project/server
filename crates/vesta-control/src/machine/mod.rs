@@ -3,6 +3,7 @@
 //! never directly from request bodies. Workers cannot mint these authorities.
 pub mod owners;
 pub mod access;
+mod default_access;
 pub mod presets;
 pub mod registry;
 pub mod roles;

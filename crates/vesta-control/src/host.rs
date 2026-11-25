@@ -41,7 +41,7 @@ use vesta_state::{Clock, StateDatabase, StateError};
 
 const WHITELIST_FILE: &str = "whitelist.json";
 const PROPERTIES_FILE: &str = "server.properties";
-const BANS_FILE: &str = "banned-players.json";
+pub(crate) const BANS_FILE: &str = "banned-players.json";
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum HostError {

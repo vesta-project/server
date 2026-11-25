@@ -5,7 +5,9 @@ use rustls_pki_types::{ServerName, pem::PemObject};
 use std::{
     io::{BufRead, BufReader, Read, Write},
     net::TcpStream,
+    path::Path,
 };
+use vesta_control::config::{HostConfiguration, ListenerDescription};
 use vesta_control::machine::{
     HostState,
     recovery::LocalPrivilege,
@@ -172,6 +174,291 @@ fn session(wire: &mut Wire, host: Uuid, device: Uuid, key: &Ed25519KeyPair) -> S
     assert_eq!(status, 200, "{s}");
     s["session"].as_str().unwrap().into()
 }
+const FIXTURE_CONFIG: &str = "schema-version = 1
+[paths]
+state = 'worker-state'
+game = 'game'
+scan-roots = ['game/config']
+launch-definition = 'private/launch.toml'
+[pack]
+name = 'Worker'
+version = '1.0.0'
+revision = 1
+minimum-revision = 1
+minecraft-version = '1.21.1'
+unresolved-disposition = 'embed-public'
+[pack-access]
+mode = 'minecraft'
+";
+
+fn fixture_listener(base: &Path) -> TlsListener {
+    std::fs::write(
+        base.join("cert.pem"),
+        include_bytes!("../../tests/fixtures/test-only-server.pem"),
+    )
+    .unwrap();
+    std::fs::write(
+        base.join("key.pem"),
+        include_bytes!("../../tests/fixtures/test-only-server-key.pem"),
+    )
+    .unwrap();
+    // The registry end-to-end scenario sends over 60 requests from one
+    // loopback peer. Give it enough permits to run without timed refills.
+    let document = format!(
+        "{FIXTURE_CONFIG}[listener]
+mode = 'tls'
+bind = '127.0.0.1'
+port = 25500
+certificate = 'cert.pem'
+private-key = 'key.pem'
+max-connections = 64
+max-request-bytes = 1048576
+request-timeout-seconds = 30
+peer-requests-per-minute = 120
+"
+    );
+    let config =
+        HostConfiguration::parse_toml(document.as_bytes(), base, Path::new("server.toml")).unwrap();
+    let ListenerDescription::Tls(listener) = config.listener() else {
+        panic!("expected TLS fixture listener");
+    };
+    listener.on_ephemeral_port()
+}
+
+fn fixture_worker(base: &Path, host: Uuid, server: Uuid) -> Worker {
+    for dir in ["game/config", "private", "bin"] {
+        std::fs::create_dir_all(base.join(dir)).unwrap();
+    }
+    std::fs::write(base.join("bin/inert"), b"").unwrap();
+    std::fs::write(base.join("private/launch.toml"),"[minecraft]\nworking-directory = 'game'\n[launch]\nkind = 'native'\nexecutable = '../bin/inert'\nstop = 'console-stop'\n").unwrap();
+    std::fs::write(
+        base.join("game/config/test.json"),
+        br#"{"server_id":"original","url":"/api/v3/manage/unchanged"}"#,
+    )
+    .unwrap();
+    let document = format!("{FIXTURE_CONFIG}[listener]\nmode = 'disabled'\n");
+    let config =
+        HostConfiguration::parse_toml(document.as_bytes(), base, Path::new("server.toml")).unwrap();
+    std::fs::write(base.join("server.toml"), document).unwrap();
+    Worker::open(
+        config,
+        Arc::new(vesta_state::SystemClock),
+        None,
+        host,
+        server,
+    )
+    .unwrap()
+}
+
+#[test]
+fn host_default_access_discovery_and_pack_bans() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path();
+    let state =
+        HostState::open(base.join("host-state"), Arc::new(vesta_state::SystemClock)).unwrap();
+    let host = state.snapshot().unwrap().host_id;
+    let account = Uuid::new_v4();
+    let key = Ed25519KeyPair::from_seed_unchecked(&[61; 32]).unwrap();
+    let owner_device = state
+        .claim(
+            account,
+            "Owner",
+            key.public_key().as_ref().try_into().unwrap(),
+        )
+        .unwrap();
+    let stranger_account = Uuid::new_v4();
+    let stranger_key = Ed25519KeyPair::from_seed_unchecked(&[62; 32]).unwrap();
+    let stranger = state
+        .write(|c| {
+            HostState::enroll_device_in(
+                c,
+                stranger_account,
+                "Linked",
+                stranger_key.public_key().as_ref().try_into().unwrap(),
+                state.now_ms(),
+            )
+        })
+        .unwrap();
+    let server = Uuid::new_v4();
+    state
+        .register_server(
+            Actor::Account(account),
+            &ServerEntry {
+                server_id: server,
+                name: "Fixture".into(),
+                game_port: 25565,
+                state: ServerState::Stopped,
+                visibility: Visibility::Private,
+            },
+            state.snapshot().unwrap().revision,
+        )
+        .unwrap();
+    let identity = Arc::new(HostIdentity::new(state.clone()).unwrap());
+    let router = HostRouter::new(
+        identity,
+        "Test machine".into(),
+        Arc::new(FolderBrowser::new(vec![], vec![base.join("host-state")]).unwrap()),
+    );
+    let worker = fixture_worker(base, host, server);
+    router.add_worker(Arc::new(worker.handle()));
+    let transport = Transport::start_host(router, &fixture_listener(base)).unwrap();
+    let mut wire = Wire::connect(transport.local_addr());
+    let owner = format!(
+        "Bearer {}",
+        session(&mut wire, host, owner_device.device_id, &key)
+    );
+    let stranger_token = format!(
+        "Bearer {}",
+        session(&mut wire, host, stranger.device_id, &stranger_key)
+    );
+    let (_, info) = wire.request("GET", "/v1/host", Value::Null, Some(&owner));
+    assert!(
+        info["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("public-access"))
+    );
+    let access_path = format!("/v1/servers/{server}/manage/default-access");
+    let (status, access) = wire.request("GET", &access_path, Value::Null, Some(&owner));
+    assert_eq!(status, 200);
+    let starting = &access["data"];
+    assert_eq!(starting["default_role_id"], Value::Null);
+    assert_eq!(starting["visibility"], "private");
+    assert_eq!(
+        starting["eligible_roles"],
+        json!([{"id":"pack-user","name":"Pack User"}])
+    );
+    assert_eq!(starting["can_manage_visibility"], true);
+    let here = "/v1/here?port=25565";
+    assert_eq!(wire.request("GET", here, Value::Null, None).0, 404);
+    assert_eq!(
+        wire.request("GET", "/v1/here?port=25565&port=25566", Value::Null, None)
+            .0,
+        400
+    );
+    let put = |role_id: Value, visibility, expected_version: &Value| json!({"default_role_id":role_id,"visibility":visibility,"expected_version":expected_version});
+    let (status, error) = wire.request(
+        "PUT",
+        &access_path,
+        put(json!("administrator"), "public", &starting["version"]),
+        Some(&owner),
+    );
+    assert_eq!(
+        (status, &error["error"]["code"]),
+        (403, &json!("management_forbidden"))
+    );
+    assert_eq!(
+        wire.request(
+            "PUT",
+            &access_path,
+            put(Value::Null, "public", &starting["version"]),
+            Some(&owner)
+        )
+        .0,
+        400
+    );
+    assert_eq!(
+        wire.request(
+            "PUT",
+            &access_path,
+            json!({"visibility":"private","expected_version":starting["version"]}),
+            Some(&owner)
+        )
+        .0,
+        400
+    );
+    let (status, public) = wire.request(
+        "PUT",
+        &access_path,
+        put(json!("pack-user"), "public", &starting["version"]),
+        Some(&owner),
+    );
+    assert_eq!(status, 200);
+    assert_eq!(public["data"]["visibility"], "public");
+    assert_eq!(public["data"]["default_role_id"], "pack-user");
+    assert_eq!(
+        wire.request(
+            "PUT",
+            &access_path,
+            put(Value::Null, "private", &starting["version"]),
+            Some(&owner)
+        )
+        .0,
+        412
+    );
+    let (status, discovery) = wire.request("GET", here, Value::Null, None);
+    assert_eq!(status, 200);
+    assert_eq!(
+        discovery,
+        json!({"hostId":host,"fingerprint":info["fingerprint"],"serverId":server,"gamePort":25565,"pack":null})
+    );
+    state.observe_game_port(server, 25566).unwrap();
+    assert_eq!(wire.request("GET", here, Value::Null, None).0, 404);
+    assert_eq!(
+        wire.request("GET", "/v1/here?port=25566", Value::Null, None)
+            .0,
+        200
+    );
+    state.observe_game_port(server, 25565).unwrap();
+    let (_, servers) = wire.request(
+        "GET",
+        "/v1/host/servers",
+        Value::Null,
+        Some(&stranger_token),
+    );
+    assert_eq!(servers["servers"][0]["role"], "pack-user");
+    assert_eq!(
+        wire.request("GET", &access_path, Value::Null, Some(&stranger_token))
+            .0,
+        403
+    );
+    drop(wire);
+    let mut wire = Wire::connect(transport.local_addr());
+    let status_path = format!("/v1/servers/{server}/pack/status?installed=0");
+    let ticket_path = format!("/v1/servers/{server}/pack/ticket");
+    assert_eq!(wire.request("GET", &status_path, Value::Null, None).0, 401);
+    assert_eq!(
+        wire.request("GET", &status_path, Value::Null, Some(&stranger_token))
+            .0,
+        200
+    );
+    assert_eq!(
+        wire.request("POST", &ticket_path, Value::Null, Some(&stranger_token))
+            .0,
+        200
+    );
+    let bans_path = base.join("game/banned-players.json");
+    std::fs::write(&bans_path, json!([{"uuid":stranger_account}]).to_string()).unwrap();
+    assert_eq!(
+        wire.request("POST", &ticket_path, Value::Null, Some(&stranger_token))
+            .0,
+        403
+    );
+    assert_eq!(
+        wire.request("GET", &status_path, Value::Null, Some(&stranger_token))
+            .0,
+        401
+    );
+    std::fs::remove_file(bans_path).unwrap();
+    drop(wire);
+    let mut wire = Wire::connect(transport.local_addr());
+    let (_, access) = wire.request("GET", &access_path, Value::Null, Some(&owner));
+    let (status, cleared) = wire.request(
+        "PUT",
+        &access_path,
+        put(Value::Null, "private", &access["data"]["version"]),
+        Some(&owner),
+    );
+    assert_eq!(status, 200);
+    assert_eq!(cleared["data"]["default_role_id"], Value::Null);
+    assert_eq!(wire.request("GET", here, Value::Null, None).0, 404);
+    assert_eq!(
+        wire.request("GET", &status_path, Value::Null, Some(&stranger_token))
+            .0,
+        404
+    );
+}
+
 #[test]
 fn host_end_to_end_claim_sessions_and_registry_mapping() {
     let temp = tempfile::tempdir().unwrap();
@@ -188,24 +475,7 @@ fn host_end_to_end_claim_sessions_and_registry_mapping() {
         .setup_code(LocalPrivilege::from_privileged_local_channel())
         .unwrap();
     let code = issued["code"].as_str().unwrap();
-    std::fs::write(
-        base.join("cert.pem"),
-        include_bytes!("../../tests/fixtures/test-only-server.pem"),
-    )
-    .unwrap();
-    std::fs::write(
-        base.join("key.pem"),
-        include_bytes!("../../tests/fixtures/test-only-server-key.pem"),
-    )
-    .unwrap();
-    let listener = TlsListener::host(
-        "127.0.0.1".parse().unwrap(),
-        25500,
-        base.join("cert.pem"),
-        base.join("key.pem"),
-    )
-    .unwrap()
-    .on_ephemeral_port();
+    let listener = fixture_listener(base);
     let router = HostRouter::new(
         identity.clone(),
         "Test machine".into(),
@@ -332,32 +602,7 @@ fn host_end_to_end_claim_sessions_and_registry_mapping() {
             state.snapshot().unwrap().revision,
         )
         .unwrap();
-    for dir in ["game/config", "private", "bin"] {
-        std::fs::create_dir_all(base.join(dir)).unwrap();
-    }
-    std::fs::write(base.join("bin/inert"), b"").unwrap();
-    std::fs::write(base.join("private/launch.toml"),"[minecraft]\nworking-directory = 'game'\n[launch]\nkind = 'native'\nexecutable = '../bin/inert'\nstop = 'console-stop'\n").unwrap();
-    std::fs::write(
-        base.join("game/config/test.json"),
-        br#"{"server_id":"original","url":"/api/v3/manage/unchanged"}"#,
-    )
-    .unwrap();
-    let document = "schema-version = 1\n[paths]\nstate = 'worker-state'\ngame = 'game'\nscan-roots = ['game/config']\nlaunch-definition = 'private/launch.toml'\n[pack]\nname = 'Worker'\nversion = '1.0.0'\nrevision = 1\nminimum-revision = 1\nminecraft-version = '1.21.1'\nunresolved-disposition = 'embed-public'\n[pack-access]\nmode = 'minecraft'\n[listener]\nmode = 'disabled'\n";
-    let config = vesta_control::config::HostConfiguration::parse_toml(
-        document.as_bytes(),
-        base,
-        std::path::Path::new("server.toml"),
-    )
-    .unwrap();
-    std::fs::write(base.join("server.toml"), document).unwrap();
-    let worker = Worker::open(
-        config,
-        Arc::new(vesta_state::SystemClock),
-        None,
-        host,
-        server,
-    )
-    .unwrap();
+    let worker = fixture_worker(base, host, server);
     router.add_worker(Arc::new(worker.handle()));
     let (status, list) = wire.request("GET", "/v1/host/servers", Value::Null, Some(&owner));
     assert_eq!(status, 200);
@@ -585,16 +830,14 @@ fn host_end_to_end_claim_sessions_and_registry_mapping() {
         .0,
         204
     );
-    assert_eq!(
-        wire.request(
-            "GET",
-            "/v1/host/servers",
-            Value::Null,
-            Some(&stranger_token)
-        )
-        .0,
-        401
+    let (status, reply) = wire.request(
+        "GET",
+        "/v1/host/servers",
+        Value::Null,
+        Some(&stranger_token),
     );
+    assert_eq!(status, 401, "{reply}");
+    assert_eq!(reply["error"]["code"], "invalid_session");
     drop(wire);
     assert!(matches!(
         transport.shutdown(Duration::from_secs(5)).unwrap(),

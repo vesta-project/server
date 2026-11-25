@@ -188,6 +188,7 @@ pub fn redeem(
   let row:Option<(String,String,i64,u32,u32,bool)>=c.query_row("SELECT id,role,expires,max_uses,uses,revoked FROM machine_invites WHERE payload_hash=?1 AND server=?2",params![hash,server.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
   let (id,grant,expires,max,used,revoked)=row.ok_or_else(||reject(Code::CodeInvalid))?;
   if revoked || expires<=state.now_ms(){return Err(reject(Code::CodeInvalid))}
+  if super::default_access::excluded_in(c,server,account)? {return Err(reject(Code::Forbidden))}
   let existing=device_by_key_in(c,&key)?;
   if existing.as_ref().is_some_and(|d|d.account_id!=account || d.revoked_at_ms.is_some()){return Err(reject(Code::Forbidden))}
   let replay=if let Some(d)=&existing { c.query_row("SELECT EXISTS(SELECT 1 FROM machine_invite_receipts WHERE invite=?1 AND account=?2 AND device=?3)",params![id,account.to_string(),d.device_id.to_string()],|r|r.get::<_,bool>(0))? } else {false};
@@ -197,9 +198,9 @@ pub fn redeem(
    let desired=super::roles::resolve_role(c,server,&grant)?;
    // Invite redemption never downgrades existing authority or changes owners.
    if host_role_in(c,account)?.is_none() {
-    let current=super::registry::effective_role_in(c,account,server)?;
+    let current=super::registry::explicit_role_in(c,account,server)?;
     let keeps_current = current.is_some_and(|role| role.rank() >= desired.rank());
-    if !keeps_current {super::roles::clear_overrides(c,server,account)?;c.execute("INSERT INTO machine_server_grants(server_id,account_id,role) VALUES(?1,?2,?3) ON CONFLICT(server_id,account_id) DO UPDATE SET role=excluded.role",params![server.to_string(),account.to_string(),grant])?;}
+    if !keeps_current {super::roles::clear_overrides(c,server,account)?;super::roles::store_assignment(c,server,account,&grant)?;}
    }
    c.execute("UPDATE machine_invites SET uses=uses+1 WHERE id=?1",[&id])?;
    c.execute("INSERT INTO machine_invite_receipts VALUES(?1,?2,?3)",params![id,account.to_string(),device.device_id.to_string()])?;

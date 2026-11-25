@@ -163,14 +163,18 @@ pub struct OwnerEntry {
     pub name: Option<String>,
 }
 
-/// Primary owner, owner, or a grant on any server that is not deleted.
+/// Host authority or access to any server that is not deleted.
 pub(crate) fn holds_any_role_in(c: &Connection, account: Uuid) -> Result<bool> {
     if host_role_in(c, account)?.is_some() || super::access::has_grants_in(c, account)? {
         return Ok(true);
     }
     Ok(account_exists(c, account)?
         && c.query_row(
-            "SELECT 1 FROM machine_server_grants g JOIN machine_servers s USING(server_id) WHERE g.account_id=?1 AND s.state!='deleted' LIMIT 1",
+            "SELECT 1 FROM machine_servers s WHERE s.state!='deleted' AND (
+                 EXISTS(SELECT 1 FROM machine_server_grants g WHERE g.server_id=s.server_id AND g.account_id=?1)
+                 OR (s.default_role_id IS NOT NULL AND NOT EXISTS(
+                     SELECT 1 FROM machine_server_access_exclusions e WHERE e.server_id=s.server_id AND e.account_id=?1))
+             ) LIMIT 1",
             [account.to_string()],
             |_| Ok(()),
         )
@@ -446,7 +450,7 @@ impl HostState {
             let mut out = Vec::new();
             for id in ids {
                 let id = uuid(id)?;
-                if let Some(role) = super::registry::effective_role_in(c, id, server)? {
+                if let Some(role) = super::registry::explicit_role_in(c, id, server)? {
                     out.push((id, role, account_name_in(c, id)?));
                 }
             }
@@ -473,8 +477,8 @@ impl HostState {
             if !owner && (role == Some(ServerRole::Admin) || super::registry::effective_role_in(c,target,server)? == Some(EffectiveRole::Server(ServerRole::Admin))) {
                 return Err(reject(Code::Forbidden));
             }
-            if let Some(role)=role { c.execute("INSERT INTO machine_server_grants(server_id,account_id,role) VALUES(?1,?2,?3) ON CONFLICT(server_id,account_id) DO UPDATE SET role=excluded.role",params![server.to_string(),target.to_string(),role.as_str()])?; }
-            else { c.execute("DELETE FROM machine_server_grants WHERE server_id=?1 AND account_id=?2",params![server.to_string(),target.to_string()])?; }
+            if let Some(role)=role { super::roles::store_assignment(c,server,target,role.as_str())?; }
+            else { super::default_access::exclude_in(c,server,target)?; }
             changed(c,true,"server_role_change",&actor.audit(),&format!("{server}/{target}"),self.now_ms())
         })
     }

@@ -23,6 +23,7 @@ mod startup;
 mod creates;
 mod imports;
 mod owners;
+mod public_access;
 mod removed;
 mod storage;
 
@@ -346,6 +347,8 @@ struct Application {
     limiter: Mutex<PeerRateLimiter>,
     device_limiter: Mutex<RateLimiter<Uuid>>,
     session_peer_limiter: Mutex<PeerRateLimiter>,
+    here_peer_limiter: Mutex<PeerRateLimiter>,
+    here_host_limiter: Mutex<RateLimiter<()>>,
     tickets: Mutex<
         std::collections::HashMap<
             String,
@@ -403,6 +406,14 @@ impl Transport {
                 )),
                 session_peer_limiter: Mutex::new(PeerRateLimiter::new(
                     RatePolicy::new(30, Duration::from_secs(60), 1024, Duration::from_secs(120))
+                        .expect("fixed policy"),
+                )),
+                here_peer_limiter: Mutex::new(PeerRateLimiter::new(
+                    RatePolicy::new(60, Duration::from_secs(60), 1024, Duration::from_secs(120))
+                        .expect("fixed policy"),
+                )),
+                here_host_limiter: Mutex::new(RateLimiter::new(
+                    RatePolicy::new(600, Duration::from_secs(60), 1, Duration::from_secs(120))
                         .expect("fixed policy"),
                 )),
             });
@@ -529,8 +540,8 @@ fn server_suffix(path: &str) -> Option<&str> {
     path.strip_prefix("/v1/servers/")?.split_once('/').map(|(_, suffix)| suffix)
 }
 
-fn is_server_role_read(path: &str) -> bool {
-    matches!(server_suffix(path), Some("manage/roles" | "manage/roles/capabilities"))
+fn is_server_access_read(path: &str) -> bool {
+    matches!(server_suffix(path), Some("manage/roles" | "manage/roles/capabilities" | "manage/default-access"))
 }
 
 fn conditional_worker_read(method: &Method, suffix: &str) -> bool {
@@ -545,7 +556,7 @@ fn conditional_read(method: &Method, path: &str, headers: &http::HeaderMap, mut 
         !(matches!(path, "/v1/host/manage/capabilities" | "/v1/host/manage/people"
                        | "/v1/host/manage/role-presets")
             || (path.starts_with("/v1/host/manage/people/") && path.ends_with("/memberships"))
-            || is_server_role_read(path)
+            || is_server_access_read(path)
             || server_suffix(path).is_some_and(|suffix| conditional_worker_read(method, suffix)))
     {
         return reply;
@@ -672,7 +683,7 @@ impl Application {
         let path = request.uri().path().to_owned();
         let jobs = if method == Method::GET
             && (matches!(path.as_str(), "/v1/host" | "/v1/host/discovery" | "/v1/host/servers")
-                || is_server_role_read(&path)
+                || is_server_access_read(&path)
                 || path.starts_with("/v1/host/manage/"))
         {
             &self.read_jobs
@@ -899,12 +910,15 @@ impl Application {
         if query.is_some()
             && !path.starts_with("/v1/servers/")
             && path != "/v1/host/catalogue/software"
-            && !(method == Method::GET && path == "/v1/host/servers/removed")
+            && !(method == Method::GET && matches!(path, "/v1/host/servers/removed" | "/v1/here"))
         {
             return failure(StatusCode::BAD_REQUEST, "invalid_request");
         }
         if matches!(*method, Method::GET | Method::HEAD) && !bytes.is_empty() {
             return failure(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        if method == Method::GET && path == "/v1/here" {
+            return public_access::here(self, query, peer);
         }
         let identity = &self.router.identity;
         let state = &identity.state;
@@ -1105,8 +1119,8 @@ impl Application {
         if let Some(rest) = path.strip_prefix("/v1/servers/") {
             // Serialize admission with removal: no request can re-expand worker
             // grants or enqueue a new job while its worker is being stopped.
-            let role_read = method == Method::GET && query.is_none() && is_server_role_read(path);
-            let _removal = if role_read {
+            let access_read = method == Method::GET && query.is_none() && is_server_access_read(path);
+            let _removal = if access_read {
                 None
             } else {
                 match self.router.removal_lock.lock() {
@@ -1128,6 +1142,9 @@ impl Application {
             }
             if suffix == "manage/enabled" {
                 return enablement::dispatch(&self.router, &device, id, method, query, bytes);
+            }
+            if suffix == "manage/default-access" {
+                return public_access::settings(&self.router, &device, id, method, query, bytes);
             }
             if let Some(reply) = access::dispatch(
                 &self.router,
@@ -1187,6 +1204,16 @@ impl Application {
                 return self.router.storage.server_details(id);
             }
             if suffix == "pack/ticket" && *method == Method::POST {
+                let host = match worker.authorize(subject.clone()) {
+                    Ok(host) => host,
+                    Err(error) => return crate::manage::management_error(error),
+                };
+                let allowed = host.with_policy(|policy| {
+                    host.sessions().authenticate("trusted-worker", std::time::Instant::now(), policy)
+                });
+                if !matches!(allowed, Ok(Ok(_))) {
+                    return failure(StatusCode::FORBIDDEN, "pack_access_denied");
+                }
                 use vesta_host_client::rand_core::RngCore;
                 let mut random = [0; 32];
                 vesta_host_client::rand_core::OsRng.fill_bytes(&mut random);
@@ -1297,7 +1324,7 @@ impl Application {
             let Ok(s) = state.snapshot() else {
                 return failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable");
             };
-            let mut capabilities = vec!["host-access", "role-presets", "server-enablement", "folders", "import-inspect", "resource-plan", "removed-server-retention", "console-history"];
+            let mut capabilities = vec!["host-access", "role-presets", "server-enablement", "public-access", "folders", "import-inspect", "resource-plan", "removed-server-retention", "console-history"];
             if self.router.imports.is_some() {
                 capabilities.extend(["removed-servers", "server-purge", "storage"]);
                 capabilities.push("import-jobs");

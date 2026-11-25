@@ -59,7 +59,7 @@ Host realtime multiplexing is deferred. The implemented per-server WebSocket pat
 
 ## Anonymous exact-port lookup
 
-GET `/v1/here?port=25565`: exactly one decimal port 1..65535, no body. Lookup only the committed registry's effective game-port binding (including sleeping/wake binding), never MOTD/name or a stale import plan. If exactly one server is explicitly public, return `{hostId,fingerprint,serverId,gamePort,pack}`. `pack` is null or `{provider:"modrinth"|"curseforge",projectId,versionId,name}`; no URLs, custom archive, credentials or executable metadata. Distinct multiple-address bindings sharing a port are ambiguous: return the same 404 `not_found` as private/unknown ports. Port or visibility changes invalidate cached lookup atomically. 60 requests/min/IP, 600/min/host; bounded response, no enumeration route, `Cache-Control: no-store`. Launcher caches misses locally 60s and caps discovery attempts at 3s. Result is a hint until pin/PAKE/invite trust is established; pack install always explicit.
+GET `/v1/here?port=25565` accepts exactly one decimal port from 1 to 65535 and an empty body. It looks up the port in the committed Host registry. An enabled public server with a default role returns `{hostId,fingerprint,serverId,gamePort,pack:null}`. Other ports return 404 `not_found`. Provider pack metadata is reserved for a future response. Lookups use the current port and visibility, with `Cache-Control: no-store`. The route has a budget of 60 requests per minute per IP and 600 per minute per Host, in addition to the Host listener limit. Launcher caches misses locally for 60 seconds and caps discovery attempts at 3 seconds. Treat the result as a hint until Host trust is established. Pack access requires a linked device, and installation requires player confirmation. [Default access and visibility](management.md#default-access-and-public-visibility)
 
 ## Invites
 
@@ -145,9 +145,9 @@ link and session receipts/challenges; the blanket 24h HTTP `Idempotency-Key`
 receipt cache above is **not implemented** for new host/device/owner/browse calls.
 Inherited management idempotency is unchanged. Owner mutations require a fresh
 single-use signed confirmation and matching revision, so callers refetch after
-an ambiguous response. The host response advertises only implemented import
-capabilities. Invites, `/v1/here`, endpoint editing and host barrier operations
-remain their separate work packages and are not advertised by this router.
+an ambiguous response. The Host response advertises implemented capabilities.
+The `public-access` capability covers default access and exact-port discovery.
+Endpoint editing and host barrier operations remain separate work packages.
 
 Owner PUT/DELETE and transfer bodies contain
 `{targetAccountId,nonce,expiresAt,revision,signature}`; PUT additionally contains

@@ -2,7 +2,7 @@
 use super::{
     HostSnapshot, HostState,
     owners::{Actor, EffectiveRole, ServerRole, require_server_access_view},
-    registry::{effective_role_in, require_server},
+    registry::{effective_role_in, explicit_role_in, require_server, server_grant_in},
     state::{account_exists, changed, expect_revision, reject, snapshot_in},
 };
 use crate::{IdentityErrorCode as Code, Result, identity::Capability};
@@ -13,19 +13,24 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 fn server_roles_in(c: &Connection, server: Uuid) -> Result<Vec<Value>> {
-    let mut roles = vec![role_summary(c, server, "owner")?];
-    for role in ServerRole::ALL {
-        roles.push(role_summary(c, server, role.id())?);
-    }
+    role_ids_in(c, server)?
+        .iter()
+        .map(|id| role_summary(c, server, id))
+        .collect()
+}
+
+pub(super) fn role_ids_in(c: &Connection, server: Uuid) -> Result<Vec<String>> {
+    let mut ids = vec!["owner".into()];
+    ids.extend(ServerRole::ALL.iter().map(|role| role.id().to_owned()));
     let mut q = c.prepare("SELECT id FROM machine_roles WHERE server_id=? ORDER BY id")?;
     let mut rows = q.query([server.to_string()])?;
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
         if Uuid::parse_str(&id).is_ok() {
-            roles.push(role_summary(c, server, &id)?);
+            ids.push(id);
         }
     }
-    Ok(roles)
+    Ok(ids)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -199,6 +204,11 @@ pub(super) fn check_role_edit(
     } else {
         auth.require(Capability::RolesCreate)?;
     }
+    if super::default_access::configured_role(c, server)?.as_deref() == Some(id)
+        && !super::default_access::eligible(id, next)
+    {
+        return Err(reject(Code::Forbidden));
+    }
     auth.delegate(next.rank, next.capabilities())
 }
 
@@ -257,6 +267,12 @@ fn effective(
     role: EffectiveRole,
 ) -> Result<BTreeSet<Capability>> {
     let mut caps = base(c, server, role)?;
+    if !matches!(role, EffectiveRole::Owner | EffectiveRole::PrimaryOwner)
+        && server_grant_in(c, server, account)?.is_none()
+    {
+        caps.retain(|&cap| super::default_access::inherited_capability(cap));
+        return Ok(caps);
+    }
     if super::access::host_access_sources_in(c, account)? {
         caps.insert(Capability::AccessSourcesManage);
     }
@@ -375,7 +391,7 @@ fn target(
     if !account_exists(c, account)? {
         return Err(reject(Code::NotFound));
     }
-    let role = effective_role_in(c, account, server)?;
+    let role = explicit_role_in(c, account, server)?;
     if let Some(role) = role {
         // Include latent base authority and overrides even if a deny is active.
         auth.delegate(
@@ -571,7 +587,7 @@ impl HostState {
                 params![server.to_string(), id],
                 |row| row.get(0),
             )?;
-            if in_use {
+            if in_use || super::default_access::configured_role(c, server)?.as_deref() == Some(&id) {
                 return Err(reject(Code::RoleInUse));
             }
             c.execute(
@@ -651,10 +667,7 @@ impl HostState {
                     store_assignment(c, server, account, &id.to_string())?
                 }
                 None => {
-                    c.execute(
-                        "DELETE FROM machine_server_grants WHERE server_id=? AND account_id=?",
-                        params![server.to_string(), account.to_string()],
-                    )?;
+                    super::default_access::exclude_in(c, server, account)?;
                 }
                 _ => return Err(reject(Code::Forbidden)),
             }
@@ -699,7 +712,8 @@ impl HostState {
     }
 }
 
-fn store_assignment(c: &Connection, server: Uuid, account: Uuid, role: &str) -> Result<()> {
+pub(super) fn store_assignment(c: &Connection, server: Uuid, account: Uuid, role: &str) -> Result<()> {
+    super::default_access::clear_exclusion(c, server, account)?;
     c.execute("INSERT INTO machine_server_grants VALUES(?,?,?) ON CONFLICT(server_id,account_id) DO UPDATE SET role=excluded.role",
         params![server.to_string(), account.to_string(), role])?;
     Ok(())

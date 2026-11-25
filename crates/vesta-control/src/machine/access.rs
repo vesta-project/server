@@ -221,7 +221,7 @@ impl HostState {
                         continue;
                     }
                 }
-                let role = super::registry::effective_role_in(c, account, server)?;
+                let role = super::registry::explicit_role_in(c, account, server)?;
                 if let Some(role) = role {
                     memberships.push(json!({"server_id":server,"name":row.get::<_, String>(1)?,
                         "role_id":role.id(),"inherited":matches!(role, super::owners::EffectiveRole::Owner | super::owners::EffectiveRole::PrimaryOwner)}));

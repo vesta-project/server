@@ -339,6 +339,7 @@ impl ServerWorker for WorkerHandle {
             host_id: self.host_id,
             server_id: self.server_id,
             active_generation: self.active_generation.clone(),
+            bans_path: self.network.configuration().game().join(crate::host::BANS_FILE),
             subject,
         };
         trusted.authenticate()?;
@@ -350,6 +351,7 @@ pub(crate) struct TrustedAuthorization {
     host_id: Uuid,
     server_id: Uuid,
     active_generation: Arc<AtomicU64>,
+    bans_path: std::path::PathBuf,
     subject: ServerSubject,
 }
 impl TrustedAuthorization {
@@ -358,6 +360,16 @@ impl TrustedAuthorization {
     }
     pub(crate) fn expires_at_ms(&self) -> i64 {
         self.subject.expires_at_ms
+    }
+    pub(crate) fn check_pack_ban(&self) -> Result<(), ManagementError> {
+        let player = crate::identity::minecraft::MinecraftUuid::parse(&self.subject.account_id.to_string())
+            .map_err(|_| ManagementError::SessionInvalid)?;
+        let bans = crate::minecraft_admission::BanList::load(&self.bans_path)
+            .map_err(|_| ManagementError::Unavailable)?;
+        if bans.contains(player) {
+            return Err(ManagementError::Forbidden);
+        }
+        Ok(())
     }
     pub(crate) fn authenticate(&self) -> Result<Subject, ManagementError> {
         let s = &self.subject;

@@ -4,7 +4,7 @@ use std::{path::Path, sync::Arc};
 use uuid::Uuid;
 use vesta_state::{Clock, StateDatabase, StateDirectory, StateError};
 
-pub const HOST_SCHEMA_VERSION: u32 = 4;
+pub const HOST_SCHEMA_VERSION: u32 = 5;
 
 /// A separate protected state directory is required, outside every game tree.
 /// The underlying vesta-state identity is storage infrastructure, never a host id
@@ -52,6 +52,9 @@ impl HostState {
                      UPDATE machine_host SET schema_version=4, auth_generation=auth_generation+1 WHERE singleton=1;"
                 )?;
             }
+            if snapshot_in(c)?.schema_version == 4 {
+                migrate_default_access(c)?;
+            }
             if snapshot_in(c)?.schema_version != HOST_SCHEMA_VERSION {
                 return Err(StateError::new("state_host_schema_unsupported").into());
             }
@@ -82,6 +85,29 @@ impl HostState {
             .read_with(|tx| work(tx.connection()))
             .map_err(ControlError::from)
     }
+}
+
+fn migrate_default_access(c: &Connection) -> Result<()> {
+    // Older role removals left an audit record and no grant. Carry those
+    // exclusions forward before an owner can enable fallback access.
+    c.execute_batch(
+        "ALTER TABLE machine_servers ADD COLUMN default_role_id TEXT;
+         CREATE TABLE machine_server_access_exclusions(
+             server_id TEXT NOT NULL REFERENCES machine_servers(server_id),
+             account_id TEXT NOT NULL REFERENCES machine_accounts(account_id),
+             PRIMARY KEY(server_id,account_id));
+         INSERT OR IGNORE INTO machine_server_access_exclusions(server_id,account_id)
+             SELECT s.server_id,a.account_id FROM machine_audit log
+             JOIN machine_servers s ON s.server_id=substr(log.target,1,36)
+             JOIN machine_accounts a ON a.account_id=substr(log.target,38)
+             WHERE log.action='server_role_change' AND substr(log.target,37,1)='/'
+               AND s.state!='deleted' AND NOT EXISTS (
+                   SELECT 1 FROM machine_server_grants g
+                   WHERE g.server_id=s.server_id AND g.account_id=a.account_id);
+         UPDATE machine_servers SET visibility='private' WHERE visibility='public';
+         UPDATE machine_host SET schema_version=5, auth_generation=auth_generation+1 WHERE singleton=1;",
+    )?;
+    Ok(())
 }
 
 fn migrate_server_roles(c: &Connection) -> Result<()> {

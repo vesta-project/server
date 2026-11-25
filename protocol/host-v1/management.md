@@ -4,7 +4,7 @@ The server paths below are relative to `/v1/servers/{serverId}/manage`. Successf
 
 ## Host access
 
-GET `/v1/host` adds `hostCapabilities` with the caller's effective Host ability IDs. Its existing `capabilities` feature list adds `host-access`, `role-presets` and `server-enablement`. Owners have every Host ability. Linked accounts with any Host grant or a server membership have `host.view`. An authenticated account without either receives 403 `forbidden` from GET `/v1/host`. Discovery continues to expose public discovery metadata.
+GET `/v1/host` adds `hostCapabilities` with the caller's effective Host ability IDs. Its `capabilities` feature list includes `host-access`, `role-presets`, `server-enablement` and `public-access`. Owners have every Host ability. Linked accounts with a Host grant, a server membership or an applicable default server role have `host.view`. An authenticated account without any of these receives 403 `forbidden` from GET `/v1/host`.
 
 These paths start at `/v1/host/manage`. Responses use the management envelope and the same decimal-string Host version as server management.
 
@@ -20,9 +20,9 @@ Host grants carry no server membership. Delegated Host access managers can chang
 
 - `host.servers.create` permits the creation catalogue, defaults, and the caller's own `new` create jobs. Starting a created server requires a membership with `lifecycle.start`. Import, restore and modpack setup retain their existing owner authority.
 - `host.settings.edit` permits reading and changing Host settings on `/v1/host`.
-- `host.servers.remove` permits reversible removal of a server the caller can access. Gracefully stopping a running server for removal also uses the caller's `lifecycle.stop` authority. Permanent removal, removed-server browsing, restore and purge require an owner.
+- `host.servers.remove` permits reversible removal of a server where the caller holds an explicit membership. Gracefully stopping a running server for removal also uses the caller's `lifecycle.stop` authority. Permanent removal, removed-server browsing, restore and purge require an owner.
 - `host.access.manage` also permits device listing. `devices.revoke` permits listing devices and revoking another non-owner's device subject to the Host grant authority check. Ownership and primary-owner protection still apply.
-- `access-sources.manage` permits editing access sources through the existing server endpoint when the caller holds a membership on that server.
+- `access-sources.manage` permits editing whitelist sync and default access when the caller holds an explicit membership on that server.
 - `host.presets.manage` permits Host presets. Ownership, owner recovery and agent installation keep their existing protections.
 
 Unknown accounts and role IDs return 404 `not_found`. Unknown capability IDs and malformed fields return 400 `invalid_request`. Disallowed delegation or use of a capability from the wrong layer returns 403 `management_forbidden`.
@@ -39,6 +39,38 @@ Unknown accounts and role IDs return 404 `not_found`. Unknown capability IDs and
 - PUT `/users/{accountId}/overrides` accepts `{expected_version,overrides:[{capability,effect:"allow"|"deny"}]}` and replaces the override set. User rows expose `overrides` as an array of permanent grants. Deny takes precedence over role grants.
 
 Role editors need `roles.create` for creation and either `roles.create` or `roles.manage` to edit, reset or delete. Overrides require `roles.manage`. Delegation checks the current and proposed rank and capabilities, including the authority of existing assignees. Grants of Owner and Administrator remain reserved. Invalid fields return 400 `invalid_request`, unknown IDs return 404 `not_found`, and disallowed changes return 403 `management_forbidden`.
+
+## Default access and public visibility
+
+When GET `/v1/host` advertises `public-access`, GET `/default-access` reads the settings and PUT `/default-access` replaces them together. Both require a Host owner or a caller with the Host ability `access-sources.manage` and an explicit membership on that server. Only Host owners can change visibility.
+
+PUT requires all three fields. Use a role ID from `eligible_roles` or explicit null to clear the default.
+
+```json
+{"expected_version":"42","default_role_id":"pack-user","visibility":"public"}
+```
+
+GET and PUT return 200 with the following envelope. The two visibility values are `private` and `public`. Clearing a public server's default requires an owner to send `"visibility":"private"` in the same PUT.
+
+```json
+{
+  "api_version": "3",
+  "request_id": "request-1",
+  "data": {
+    "version": "43",
+    "default_role_id": "pack-user",
+    "visibility": "public",
+    "can_manage_visibility": true,
+    "eligible_roles": [{"id":"pack-user","name":"Pack User"}]
+  }
+}
+```
+
+Defaults can project only `public.info`, `pack.download`, `pack.realtime` and `pack.access`. Pack User is eligible and its bundled `status.view` applies only to explicit memberships. A selected role is in use. Deleting it returns 409 `role_in_use`, and editing it, resetting it or applying a preset that would introduce unsafe abilities returns 403 `management_forbidden`. PUT returns 403 for an unsafe role or insufficient authority, 404 for an unknown role or inaccessible server, 400 for malformed fields or public visibility with a null role, and 412 for a stale version.
+
+A default applies to linked accounts on both private and public servers. Owners and explicit memberships take precedence. Inherited roles appear in the caller's server list and worker session abilities. Membership lists show explicit grants and Host ownership. Revoking a server membership through either access route records an exclusion that also blocks fallback and invite redemption for that account. Assigning an explicit role clears the exclusion. Minecraft account bans block Host pack access. Changing the default advances the Host authorization generation and synchronizes the worker.
+
+Public visibility enables anonymous exact-port discovery with GET `/v1/here?port=25565`. Disabled, private, removed and unknown servers return 404. Pack status, tickets, artifacts and realtime require a linked Host device. New and restored servers start private with a null default.
 
 ## Host role presets
 
