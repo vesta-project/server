@@ -180,11 +180,7 @@ impl Document {
         }
         let plain_text = plain(&text)?;
         let selected = p.icon_png.as_ref().or(self.normal_icon_png.as_ref());
-        let icon = selected
-            .and_then(|s| STANDARD.decode(s).ok())
-            .and_then(|b| normalize_icon(&b))
-            .filter(|b| b.len() <= 4096)
-            .unwrap_or_else(fallback_icon);
+        let icon = decode_icon(selected).unwrap_or_else(fallback_icon);
         Ok(Rendered {
             state,
             description,
@@ -194,12 +190,19 @@ impl Document {
             favicon_data_uri: format!("data:image/png;base64,{}", STANDARD.encode(icon)),
         })
     }
+    pub(crate) fn normal_icon(&self) -> Option<Vec<u8>> {
+        decode_icon(self.normal_icon_png.as_ref())
+    }
     pub fn disconnect(&self, state: State, inputs: &PublicInputs<'_>) -> Result<Value, Invalid> {
         if !self.valid() {
             return Err(Invalid);
         }
         component(&expand(&self.login_message, state, inputs, 0)?)
     }
+}
+fn decode_icon(encoded: Option<&String>) -> Option<Vec<u8>> {
+    let bytes = STANDARD.decode(encoded?).ok()?;
+    normalize_icon(&bytes)
 }
 #[derive(Default)]
 pub struct PublicInputs<'a> {
@@ -444,7 +447,10 @@ pub fn fallback_icon() -> Vec<u8> {
 }
 /// Re-encode validated pixels to strip private text/metadata from selected icons.
 pub fn normalize_icon(bytes: &[u8]) -> Option<Vec<u8>> {
-    normalize_png(bytes, 65536, 64, 64)
+    // A full 64×64 RGBA image has 16,448 filtered scanline bytes. Allow
+    // zlib and PNG framing overhead without reducing pixel or alpha precision.
+    normalize_png(bytes, 64 * 1024, 64, 64)
+        .filter(|png| png.len() <= vesta_state::server_icon::MAX_PNG_BYTES)
 }
 /// Bounded RGB/RGBA 8-bit, non-interlaced PNG branding image; strip ancillary metadata.
 pub fn normalize_branding_icon(bytes: &[u8]) -> Option<Vec<u8>> {

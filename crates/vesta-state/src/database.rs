@@ -523,7 +523,7 @@ fn rollback<T, E>(
     }
 }
 
-fn connect(directory: &StateDirectory, query_only: bool) -> Result<Connection> {
+pub(crate) fn connect(directory: &StateDirectory, query_only: bool) -> Result<Connection> {
     #[cfg(feature = "latency-probe")]
     let _latency_state_connect = crate::latency_probe::Span::new("state_connect");
     directory.verify_database_files()?;

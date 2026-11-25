@@ -1,6 +1,75 @@
 use super::*;
 
 #[test]
+fn full_color_icon_fits_the_java_response_and_supervisor_request() {
+    let header = [0, 0, 0, 64, 0, 0, 0, 64, 8, 6, 0, 0, 0];
+    let mut pixels = vec![0; 64 * (1 + 64 * 4)];
+    let mut rng = 0x1234_abcd_u32;
+    for row in pixels.chunks_exact_mut(257) {
+        for byte in &mut row[1..] {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            *byte = rng as u8;
+        }
+    }
+    let png = encode_icon(&header, &pixels);
+    assert!(png.len() > 16 * 1024);
+    let normal = STANDARD.encode(&png);
+    let mut document = Document {
+        normal_icon_png: Some(normal.clone()),
+        ..Document::default()
+    };
+    let sleeping = document.states.get_mut(&State::Sleeping).unwrap();
+    sleeping.template = "🟣".repeat(245);
+    sleeping.version_name = r"\".repeat(128);
+    let render = document
+        .render(State::Sleeping, &PublicInputs::default())
+        .unwrap();
+    let favicon = format!("data:image/png;base64,{normal}");
+    assert_eq!(render.favicon_data_uri, favicon);
+    assert_eq!(document.normal_icon(), Some(png));
+
+    let status_json = json!({
+        "version":{"name":render.version_name,"protocol":-1},
+        "players":{"online":0,"max":render.maximum_players},
+        "description":render.description,"favicon":favicon,
+    })
+    .to_string();
+    assert!(status_json.len() > 16 * 1024);
+    assert!(status_json.len() < 32_767);
+    let config = vesta_game_runtime::offline::Configuration {
+        address: "127.0.0.1:25565".parse().unwrap(),
+        status_json,
+        disconnect: "Starting".into(),
+        wake: true,
+    };
+    config.validate().unwrap();
+    let op = vesta_supervisor::wire::Op::Offline {
+        expected_generation: None,
+        configuration: Some(config),
+    };
+    let frame = vesta_supervisor::wire::encode_request(op.clone()).unwrap();
+    assert_eq!(
+        vesta_supervisor::wire::decode_request(&frame[4..])
+            .unwrap()
+            .op,
+        op
+    );
+
+    let state_icon = document.states.get_mut(&State::Sleeping).unwrap();
+    state_icon.icon_png = Some(normal);
+    document.normal_icon_png = None;
+    assert_eq!(
+        document
+            .render(State::Sleeping, &PublicInputs::default())
+            .unwrap()
+            .favicon_data_uri,
+        favicon
+    );
+}
+
+#[test]
 fn templates_cover_all_states_truthful_offline_counts_and_safe_unknowns() {
     let mut document = Document::default();
     let input = PublicInputs {

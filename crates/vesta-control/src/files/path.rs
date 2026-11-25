@@ -62,4 +62,9 @@ impl fmt::Debug for RelativePath {
 }
 pub(super) fn protected(name: &str) -> bool {
     PROTECTED_NAMES.iter().any(|p| p.eq_ignore_ascii_case(name))
+        || name
+            .get(..vesta_state::server_icon::STAGE_PREFIX.len())
+            .is_some_and(|prefix| {
+                prefix.eq_ignore_ascii_case(vesta_state::server_icon::STAGE_PREFIX)
+            })
 }

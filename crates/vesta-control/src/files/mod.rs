@@ -279,6 +279,29 @@ impl fmt::Debug for FileBrowser {
     }
 }
 impl FileBrowser {
+    pub(crate) fn server_icon_root(&self) -> Result<Option<std::path::PathBuf>> {
+        let root = self.root.resolve(None)?.path;
+        match self
+            .root
+            .resource(&root.join(vesta_state::server_icon::FILE_NAME))
+        {
+            Ok(_) => Ok(Some(root)),
+            Err(FileError::ProtectedPath) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) fn reconcile_server_icon(&self, game: &Path) -> Result<()> {
+        let admission = mutation::mutation_admission(self.db.directory().path())?;
+        let Ok(_guard) = admission.try_lock() else {
+            return Ok(());
+        };
+        if self.server_icon_root()?.is_some() {
+            vesta_state::server_icon::reconcile(self.db.directory().path(), game)?;
+        }
+        Ok(())
+    }
+
     /// Trusted host composition only. This opens no listener and grants no authority.
     /// The canonical state root is always excluded even if the host omits it.
     pub fn open(db: StateDatabase, root: &Path, protected: &[&Path]) -> Result<Self> {

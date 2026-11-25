@@ -12,7 +12,8 @@ use vesta_game_runtime::{
 };
 
 pub const VERSION: u8 = 1;
-pub const MAX_REQUEST_FRAME: usize = 16 * 1024;
+// Offline presentation embeds the status and disconnect JSON as escaped strings.
+pub const MAX_REQUEST_FRAME: usize = 40 * 1024;
 pub const MAX_RESPONSE_FRAME: usize = 4 * 1024 * 1024;
 /// Console text per sync response; JSON escaping stays within the response frame.
 pub const MAX_SYNC_TEXT_BYTES: usize = 512 * 1024;

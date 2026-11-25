@@ -1709,9 +1709,9 @@ same authority as other presentation configuration. GETs retain `status.view`,
 matching existing server identity visibility. The settings and normalized icon
 survive restart and are included in credential-free recovery export. They do not
 change pack name/version, discovery manifests, live server.properties, Minecraft
-`server-icon.png`, or the separately configured sleep/MOTD policy icons. Existing
-Minecraft presentation uses state-specific MOTD icons; it has no shared live
-server-icon setting to update safely from this route.
+`server-icon.png`, or the separately configured sleep/MOTD policy icons.
+Configure Minecraft's game-root icon through the MOTD policy's
+`normal_icon_png` field.
 
 - `GET /server` retains all fields and adds `description` and `revision`:
   `{ "server_id":"id","name":"Hosted","description":null,"revision":"0","agent_version":"0.1.0","minecraft_version":"1.21.1","pack_version":"1.0.0","configured_mode":"same_account" }`.

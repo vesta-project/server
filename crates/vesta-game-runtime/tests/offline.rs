@@ -97,6 +97,30 @@ fn offline_ping_echoes_payload_never_wakes_and_does_not_consume_join_wake_budget
     assert!(TcpListener::bind(c.address).is_ok());
 }
 #[test]
+fn offline_status_writes_large_favicon_json_and_keeps_ping_framing() {
+    let mut c = config(true);
+    let mut status: serde_json::Value = serde_json::from_str(&c.status_json).unwrap();
+    status["favicon"] = format!("data:image/png;base64,{}", "a".repeat(22_000)).into();
+    c.status_json = status.to_string();
+    let mut responder = Responder::bind(c.clone()).unwrap();
+    let mut client = peer(c.address, 1);
+    send(&mut client, &[0]);
+    let reply = read(&mut client);
+    let mut expected = vec![0];
+    expected.extend(varint(c.status_json.len()));
+    expected.extend(c.status_json.as_bytes());
+    assert_eq!(reply, expected);
+    let ping = [1, 0, 1, 2, 3, 4, 5, 6, 7];
+    send(&mut client, &ping);
+    assert_eq!(read(&mut client), ping);
+    responder.close().unwrap();
+
+    status["favicon"] = "a".repeat(28 * 1024).into();
+    c.status_json = status.to_string();
+    assert!(c.validate().is_err());
+}
+
+#[test]
 fn offline_malformed_or_incomplete_login_never_requests_wake() {
     let c = config(true);
     let mut r = Responder::bind(c.clone()).unwrap();

@@ -104,6 +104,7 @@ struct Core {
     /// Last exited generation already classified as a stop or a crash.
     handled_exit: Option<GenerationId>,
     offline: Option<vesta_game_runtime::offline::Responder>,
+    icon_checked: Option<Instant>,
 }
 impl Core {
     /// Observe, classify exits and fire a due automatic restart.
@@ -119,6 +120,19 @@ impl Core {
             if self.launch().is_err() {
                 self.restarts.on_crash(Instant::now(), restart::now_ms());
             }
+        } else if !self.stopping
+            && self.hold.is_none()
+            && self.orphan.is_none()
+            && !self.unresolved
+            && self.intent_for.is_none()
+            && !self.observation_failed
+            && self.recorded.is_none()
+            && self.process.snapshot().phase == vesta_game_runtime::process::ProcessPhase::Stopped
+            && self
+                .icon_checked
+                .is_none_or(|at| at.elapsed() >= Duration::from_secs(1))
+        {
+            self.reconcile_icon();
         }
     }
     /// Observation only: never launches.
@@ -425,6 +439,7 @@ pub async fn run_with_shutdown(
         lease_stranded,
         handled_exit: None,
         offline: None,
+        icon_checked: None,
     }));
     let result = serve(&endpoint, core, stop).await;
     drop(lock_file);
@@ -1073,6 +1088,14 @@ fn start(core: &Shared, launch_identity: &str) -> std::result::Result<Reply, Rep
 }
 
 impl Core {
+    fn reconcile_icon(&mut self) {
+        self.icon_checked = Some(Instant::now());
+        let _ = vesta_state::server_icon::reconcile(
+            std::path::Path::new(&self.state),
+            self.launch.working_directory(),
+        );
+    }
+
     fn content_pending(&self) -> bool {
         // Protected agent-owned barrier, also respected after agent disconnect.
         std::fs::symlink_metadata(std::path::Path::new(&self.state).join("content-pending")).is_ok()
@@ -1098,6 +1121,7 @@ impl Core {
         if self.recorded.is_some() || self.process.snapshot().generation.is_some() {
             return Err(refused(RuntimeError::AlreadyOwned.code()));
         }
+        self.reconcile_icon();
         // Every launch, including autonomous crash restart, relinquishes the
         // responder before a game process can bind. A failed join is sticky.
         if let Some(mut responder) = self.offline.take()
@@ -1713,6 +1737,7 @@ mod lease_tests {
                 lease_stranded: false,
                 handled_exit: None,
                 offline: None,
+                icon_checked: None,
             }));
             Self {
                 core,
@@ -1790,6 +1815,41 @@ mod lease_tests {
         );
         assert!(matches!(barrier.try_result(), Some(Ok(()))));
     }
+    #[test]
+    fn automatic_restart_reconciles_latest_icon_before_launch() {
+        let fixture = Fixture::new();
+        let mut core = lock(&fixture.core);
+        let game = std::fs::canonicalize(core.launch.working_directory()).unwrap();
+        let state = StateDirectory::new(fixture._temp.path().join("state"), Some(&game)).unwrap();
+        core.state = state.path().to_str().unwrap().into();
+        core.launch_identity = "aa".repeat(32);
+        let db =
+            vesta_state::StateDatabase::open(state, Arc::new(vesta_state::SystemClock)).unwrap();
+        let icon = game.join(vesta_state::server_icon::FILE_NAME);
+        db.write(|c| vesta_state::server_icon::store(c, Some(&game), Some(b"updated icon")))
+            .unwrap();
+        core.observe();
+        assert!(!icon.exists());
+        core.process
+            .stop(fixture.id, Duration::from_secs(5))
+            .unwrap();
+        assert!(core.process.snapshot().generation.is_none());
+
+        let policy = RestartPolicy::new(
+            3,
+            Duration::from_secs(60),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        core.restarts = Restarts::load(core.directory.clone(), Some(policy)).unwrap();
+        core.restarts
+            .on_crash(Instant::now() - Duration::from_secs(2), restart::now_ms());
+        core.observe();
+        assert!(core.process.snapshot().generation.is_some());
+        assert_eq!(std::fs::read(&icon).unwrap(), b"updated icon");
+    }
+
     #[test]
     fn explicit_supervisor_start_cannot_bypass_a_suspended_crash_loop() {
         let fixture = Fixture::new();

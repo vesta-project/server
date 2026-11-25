@@ -150,14 +150,20 @@ Templates: at most two lines, 1024 source bytes, 512 rendered UTF-16 units, plus
 rendered-component byte limit. Standard `§0`–`§f`, `§k`–`§o`, `§r` colors/styles
 produce structured text with no arbitrary click/hover actions or raw JSON.
 Icons: noninterlaced 64×64 RGB/RGBA 8-bit PNG; CRC, decompressed size and filters
-are checked and metadata stripped. Invalid/oversized assets use a generated
-fallback, including normalized images over the 4 KiB public icon budget.
+are checked and metadata stripped. Invalid assets and normalized PNGs above
+17 KiB use the generated fallback in temporary status and previews. The status
+responder allows 28 KiB of outgoing JSON, leaving room for base64 and text.
 Maximum players/version labels are configurable; offline online players/names
 are never fabricated.
 
-The online/app template is a presentation preview: it does not alter Minecraft's
-live response, even after restart. Edit the ordinary live MOTD through the existing
-authorized `server.properties` route. That editor now preserves two-line colors
+The normal icon applies to Minecraft through `server-icon.png` in the game
+root. The stopped process owner reconciles the file and checks it before each
+launch, including a Supervisor crash restart. User-supplied files take
+precedence. Vesta keeps the file identity and SHA-256 of its own icon in
+private state and replaces or removes the file only while both still match.
+The normal icon is loaded when Minecraft starts. The online/app template is
+a preview. Edit live MOTD text through the authorized `server.properties`
+route. That editor preserves two-line colors
 and Unicode through Java-properties escapes and reports `restart_needed`.
 Existing file authority, optimistic hash, confirmation and authorized raw-file
 access still apply. No broad plugin reload is issued. Dynamic live templates

@@ -208,7 +208,7 @@ fn open_inspection(path: &Path, change_permissions: bool) -> Result<File> {
         .map_err(|_| permissions_failed())
 }
 
-fn verify_handle(file: &File, directory: bool) -> Result<()> {
+fn file_information(file: &File, directory: bool) -> Result<BY_HANDLE_FILE_INFORMATION> {
     // SAFETY: zero is a valid initial value for this POD output, and File owns a live handle.
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
     let result = unsafe { GetFileInformationByHandle(handle(file), &mut info) };
@@ -222,7 +222,19 @@ fn verify_handle(file: &File, directory: bool) -> Result<()> {
     {
         return Err(StateError::new("state_file_linked"));
     }
-    Ok(())
+    Ok(info)
+}
+
+fn verify_handle(file: &File, directory: bool) -> Result<()> {
+    file_information(file, directory).map(|_| ())
+}
+
+pub(crate) fn regular_file_id(file: &File) -> Result<String> {
+    let info = file_information(file, false)?;
+    Ok(format!(
+        "{}:{}:{}",
+        info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow
+    ))
 }
 
 pub(crate) fn verify_regular(path: &Path) -> Result<()> {

@@ -571,6 +571,7 @@ impl OperationRuntime {
         // Kernel owner is from this exact DB, acquires one OS lock, reconciles,
         // and retains a runtime DB lease before any native or driver work.
         let owner = operations.open_owner()?;
+        let _ = operations.prepare_server_icon();
         game.content_files = operations.content_files.clone();
         let operations = owner.operations().clone();
         let start_block = game.start_block.clone();
@@ -788,6 +789,7 @@ impl Driver {
 
     fn run(&mut self) -> OperationsResult<()> {
         let mut offline_tick: Option<Instant> = None;
+        let mut icon_tick: Option<Instant> = None;
         let mut last_queue_probe = Instant::now();
         let mut first_failure: Option<OperationError> =
             self.observation_uncertain.map(OperationError::from);
@@ -808,6 +810,13 @@ impl Driver {
             }
             // Observation only: readiness failures never stop dispatch or effects.
             let _ = self.game.track_readiness();
+            if self.observation_uncertain.is_none()
+                && !self.shared.stopping.load(Ordering::Acquire)
+                && icon_tick.is_none_or(|at| at.elapsed() >= Duration::from_secs(1))
+            {
+                icon_tick = Some(Instant::now());
+                self.game.refresh_stopped_icon();
+            }
             if offline_tick.is_none_or(|at| at.elapsed() >= Duration::from_millis(250)) {
                 offline_tick = Some(Instant::now());
                 let configuration = self
