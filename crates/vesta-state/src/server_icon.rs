@@ -1,4 +1,4 @@
-//! Projection of the authorized MOTD icon onto Minecraft's fixed game-root leaf.
+//! Projection of the authorized branding icon onto Minecraft's fixed game-root leaf.
 //! Only the stopped process owner reconciles it, including on autonomous restart.
 use crate::{
     Result, StateDirectory, StateError,
@@ -14,33 +14,99 @@ use std::{
 };
 
 pub const FILE_NAME: &str = "server-icon.png";
+pub const BACKUP_NAME: &str = "server-icon.vesta-backup.png";
 pub const MAX_PNG_BYTES: usize = 17 * 1024;
+pub const MAX_GAME_ICON_BYTES: usize = 256 * 1024;
 pub const STAGE_PREFIX: &str = ".vesta-stage-icon-";
 
 /// The caller derives this from a validated document and canonical FileBrowser root
 /// in the same transaction as the document and its audit.
 pub fn store(c: &Connection, game: Option<&Path>, png: Option<&[u8]>) -> Result<()> {
+    store_projection(c, game, png, false)
+}
+
+/// An explicit launcher upload may replace a user icon once, after preserving it.
+pub fn store_branding(c: &Connection, game: &Path, png: Option<&[u8]>, explicit: bool) -> Result<()> {
+    store_projection(c, Some(game), png, explicit)
+}
+
+fn store_projection(c: &Connection, game: Option<&Path>, png: Option<&[u8]>, replace: bool) -> Result<()> {
+    ensure_table(c)?;
+    let game = game
+        .map(|path| path.to_str().ok_or_else(unavailable))
+        .transpose()?;
+    c.execute(
+        "INSERT INTO server_icon(singleton,game,enabled,png,replace_user) VALUES(1,?,?,?,?)
+         ON CONFLICT(singleton) DO UPDATE SET
+         game=coalesce(excluded.game,game),enabled=excluded.enabled,png=excluded.png,
+         replace_user=CASE WHEN excluded.png IS NULL THEN 0
+             WHEN excluded.replace_user=1 THEN 1
+             WHEN game=excluded.game AND png IS excluded.png THEN replace_user ELSE 0 END,
+         owner=CASE WHEN excluded.game IS NULL OR game=excluded.game THEN owner END,
+         next_owner=CASE WHEN excluded.game IS NULL OR game=excluded.game THEN next_owner END,
+         stage=CASE WHEN excluded.game IS NULL OR game=excluded.game THEN stage END",
+        params![game, game.is_some(), png, replace && png.is_some()],
+    )?;
+    Ok(())
+}
+
+fn ensure_table(c: &Connection) -> Result<()> {
     c.execute_batch(
         "CREATE TABLE IF NOT EXISTS server_icon (
             singleton INTEGER PRIMARY KEY CHECK(singleton=1),
             game TEXT, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
             png BLOB CHECK(length(png)<=17408),
-            owner TEXT, next_owner TEXT, stage TEXT
+            owner TEXT, next_owner TEXT, stage TEXT,
+            replace_user INTEGER NOT NULL DEFAULT 0 CHECK(replace_user IN (0,1))
         ) STRICT;",
     )?;
-    let game = game
-        .map(|path| path.to_str().ok_or_else(unavailable))
-        .transpose()?;
-    c.execute(
-        "INSERT INTO server_icon(singleton,game,enabled,png) VALUES(1,?,?,?)
-         ON CONFLICT(singleton) DO UPDATE SET
-         game=coalesce(excluded.game,game),enabled=excluded.enabled,png=excluded.png,
-         owner=CASE WHEN excluded.game IS NULL OR game=excluded.game THEN owner END,
-         next_owner=CASE WHEN excluded.game IS NULL OR game=excluded.game THEN next_owner END,
-         stage=CASE WHEN excluded.game IS NULL OR game=excluded.game THEN stage END",
-        params![game, game.is_some(), png],
-    )?;
     Ok(())
+}
+
+pub(crate) fn migrate(c: &Connection) -> Result<()> {
+    let needs_column: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='server_icon')
+         AND NOT EXISTS(SELECT 1 FROM pragma_table_info('server_icon') WHERE name='replace_user')",
+        [],
+        |row| row.get(0),
+    )?;
+    if needs_column {
+        c.execute_batch("ALTER TABLE server_icon ADD COLUMN replace_user INTEGER NOT NULL DEFAULT 0 CHECK(replace_user IN (0,1))")?;
+    }
+    Ok(())
+}
+
+/// Read a user-supplied icon, excluding both possible projected file identities.
+pub fn user_icon(db: &crate::StateDatabase, game: &Path) -> Result<Option<Vec<u8>>> {
+    reject_linked_directories(game, "state_server_icon_unavailable")?;
+    require_directory(game)?;
+    let game = fs::canonicalize(game)?;
+    let game_path = game.to_str().ok_or_else(unavailable)?;
+    db.read(|c| {
+        let exists: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='server_icon' AND type='table')",
+            [],
+            |row| row.get(0),
+        )?;
+        let owned = if exists {
+            c.query_row(
+                "SELECT owner,next_owner,replace_user FROM server_icon WHERE singleton=1 AND game=?",
+                [game_path],
+                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, bool>(2)?)),
+            ).optional()?.unwrap_or_default()
+        } else {
+            (None, None, false)
+        };
+        let Current::Present(icon) = read_icon_bounded(&game.join(FILE_NAME), MAX_GAME_ICON_BYTES)? else {
+            return Ok(None);
+        };
+        if owned.2 || owned.0.as_ref() == Some(&icon.id) || owned.1.as_ref() == Some(&icon.id) {
+            return Ok(None);
+        }
+        // Check the signature and dimensions without excluding indexed or interlaced PNGs.
+        let header = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR\0\0\0\x40\0\0\0\x40";
+        Ok((icon.bytes.len() >= 45 && icon.bytes.starts_with(header)).then_some(icon.bytes))
+    })
 }
 
 struct Projection {
@@ -49,6 +115,7 @@ struct Projection {
     owner: Option<String>,
     next_owner: Option<String>,
     stage: Option<String>,
+    replace_user: bool,
 }
 
 /// Caller holds stopped ownership. Failures leave the presentation retryable.
@@ -69,12 +136,12 @@ pub fn reconcile(state: &Path, game: &Path) -> Result<()> {
         return Ok(());
     }
     let Some(row) = c.query_row(
-        "SELECT game,png,owner,next_owner,stage FROM server_icon
+        "SELECT game,png,owner,next_owner,stage,replace_user FROM server_icon
          WHERE singleton=1 AND enabled=1 AND (png IS NOT NULL OR owner IS NOT NULL OR stage IS NOT NULL)",
         [],
         |row| Ok(Projection {
             game: row.get(0)?, png: row.get(1)?, owner: row.get(2)?,
-            next_owner: row.get(3)?, stage: row.get(4)?,
+            next_owner: row.get(3)?, stage: row.get(4)?, replace_user: row.get(5)?,
         }),
     ).optional()? else {
         return Ok(());
@@ -98,15 +165,18 @@ pub fn reconcile(state: &Path, game: &Path) -> Result<()> {
             fs::remove_file(stage)?;
         }
     }
-    let current = match read_icon(&target)? {
+    let current = read_icon_bounded(&target, MAX_GAME_ICON_BYTES)?;
+    let manual = match &current {
         Current::Other => return Ok(()),
         Current::Present(icon)
             if Some(&icon.id) != row.owner.as_ref()
-                && Some(&icon.id) != row.next_owner.as_ref() =>
-        {
-            return Ok(());
+                && Some(&icon.id) != row.next_owner.as_ref() => {
+            if !row.replace_user {
+                return Ok(());
+            }
+            Some(icon)
         }
-        current => current,
+        _ => None,
     };
     let current_id = match &current {
         Current::Present(icon) => Some(icon.id.as_str()),
@@ -114,23 +184,25 @@ pub fn reconcile(state: &Path, game: &Path) -> Result<()> {
         Current::Other => unreachable!("checked above"),
     };
     if let Some(png) = row.png.as_ref() {
-        if !matches!(&current, Current::Present(icon) if icon.bytes == *png) {
-            install(&c, &game, &target, current_id, png)?;
+        if manual.is_some() || !matches!(&current, Current::Present(icon) if icon.bytes == *png) {
+            install(&c, &game, &target, current_id, row.owner.as_deref(), manual, png)?;
             return Ok(());
         }
     } else if current_id.is_some() {
         return apply(&c, &game, None, || {
             if !unchanged(&target, current_id)? {
-                return Ok(current_id);
+                return Ok((current_id, false));
             }
             fs::remove_file(&target)?;
             sync_game(&game)?;
-            Ok(None)
+            Ok((None, true))
         });
     }
     let owner = row.png.as_ref().and(current_id);
-    if owner != row.owner.as_deref() || row.stage.is_some() {
-        record(&c, &game, owner, None, None)?;
+    if owner != row.owner.as_deref() || row.stage.is_some() || row.replace_user {
+        apply(&c, &game, row.png.as_deref(), || {
+            Ok((owner, unchanged(&target, current_id)?))
+        })?;
     }
     Ok(())
 }
@@ -140,6 +212,8 @@ fn install(
     game: &Path,
     target: &Path,
     old: Option<&str>,
+    owner: Option<&str>,
+    manual: Option<&Icon>,
     png: &[u8],
 ) -> Result<()> {
     let stage_id = uuid::Uuid::new_v4();
@@ -158,10 +232,16 @@ fn install(
         let next = staged.id;
         // Record both file identities before the atomic move. A crash either
         // side of the move leaves it possible to recognize the owned file.
-        record(c, game, old, Some(&next), Some(&stage_id.to_string()))?;
+        record(c, game, owner, Some(&next), Some(&stage_id.to_string()))?;
         apply(c, game, Some(png), || {
             if !unchanged(target, old)? {
-                return Ok(old);
+                return Ok((owner, false));
+            }
+            if let Some(manual) = manual {
+                backup(game, &manual.bytes)?;
+                if !unchanged(target, old)? {
+                    return Ok((owner, false));
+                }
             }
             if old.is_some() {
                 fs::rename(&stage, target)?;
@@ -169,7 +249,7 @@ fn install(
                 rename_absent(&stage, target)?;
             }
             sync_game(game)?;
-            Ok(Some(next.as_str()))
+            Ok((Some(next.as_str()), true))
         })
     })();
     if fs::symlink_metadata(&stage).is_ok() {
@@ -184,7 +264,7 @@ fn apply<'a>(
     c: &Connection,
     game: &Path,
     png: Option<&[u8]>,
-    effect: impl FnOnce() -> Result<Option<&'a str>>,
+    effect: impl FnOnce() -> Result<(Option<&'a str>, bool)>,
 ) -> Result<()> {
     let tx = Transaction::new_unchecked(c, TransactionBehavior::Immediate)?;
     let allowed: bool = tx.query_row(
@@ -198,8 +278,11 @@ fn apply<'a>(
     if allowed {
         reject_linked_directories(game, "state_server_icon_unavailable")?;
         require_directory(game)?;
-        let owner = effect()?;
+        let (owner, applied) = effect()?;
         record(&tx, game, owner, None, None)?;
+        if applied {
+            tx.execute("UPDATE server_icon SET replace_user=0 WHERE singleton=1", [])?;
+        }
     }
     tx.commit()?;
     Ok(())
@@ -227,12 +310,35 @@ fn record(
     Ok(())
 }
 
+fn backup(game: &Path, bytes: &[u8]) -> Result<()> {
+    let id = uuid::Uuid::new_v4();
+    let stage = stage_path(game, id);
+    let result = (|| {
+        let mut file = open_regular(&stage, true, false)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        match rename_absent(&stage, &game.join(BACKUP_NAME)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                rename_absent(&stage, &game.join(format!("server-icon.vesta-backup-{id}.png")))?;
+            }
+            Err(e) => return Err(e.into()),
+        }
+        sync_game(game)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&stage);
+    }
+    result
+}
+
 fn stage_path(game: &Path, id: uuid::Uuid) -> std::path::PathBuf {
     game.join(format!("{STAGE_PREFIX}{id}.tmp"))
 }
 
 fn unchanged(target: &Path, expected: Option<&str>) -> Result<bool> {
-    Ok(match read_icon(target)? {
+    Ok(match read_icon_bounded(target, MAX_GAME_ICON_BYTES)? {
         Current::Absent => expected.is_none(),
         Current::Present(icon) => Some(icon.id.as_str()) == expected,
         Current::Other => false,
@@ -250,10 +356,14 @@ enum Current {
 }
 
 fn read_icon(path: &Path) -> Result<Current> {
+    read_icon_bounded(path, MAX_PNG_BYTES)
+}
+
+fn read_icon_bounded(path: &Path, limit: usize) -> Result<Current> {
     match fs::symlink_metadata(path) {
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Current::Absent),
         Err(err) => return Err(err.into()),
-        Ok(metadata) if metadata.len() > MAX_PNG_BYTES as u64 => return Ok(Current::Other),
+        Ok(metadata) if metadata.len() > limit as u64 => return Ok(Current::Other),
         Ok(_) => {}
     }
     let Ok(file) = open_execution_file(path) else {
@@ -261,9 +371,9 @@ fn read_icon(path: &Path) -> Result<Current> {
     };
     let mut bytes = Vec::new();
     (&file)
-        .take(MAX_PNG_BYTES as u64 + 1)
+        .take(limit as u64 + 1)
         .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_PNG_BYTES {
+    if bytes.len() > limit {
         return Ok(Current::Other);
     }
     let id = fingerprint(&file, &bytes)?;
@@ -417,6 +527,31 @@ mod tests {
         f.set(None);
         f.reconcile();
         assert_eq!(fs::read(&target).unwrap(), b"same bytes");
+    }
+
+    #[test]
+    fn explicit_branding_preserves_manual_icons_before_replacing_them() {
+        let f = Fixture::new();
+        fs::write(f.target(), b"manual first").unwrap();
+        let upload = |bytes: &[u8]| {
+            f.db.write(|c| store_branding(c, &f.game, Some(bytes), true)).unwrap();
+        };
+        upload(b"branding first");
+        f.reconcile();
+        assert_eq!(fs::read(f.target()).unwrap(), b"branding first");
+        assert_eq!(fs::read(f.game.join(BACKUP_NAME)).unwrap(), b"manual first");
+
+        fs::write(f.target(), b"manual second").unwrap();
+        f.reconcile();
+        assert_eq!(fs::read(f.target()).unwrap(), b"manual second");
+        upload(b"branding second");
+        f.reconcile();
+        assert_eq!(fs::read(f.target()).unwrap(), b"branding second");
+        assert_eq!(fs::read(f.game.join(BACKUP_NAME)).unwrap(), b"manual first");
+        assert!(fs::read_dir(&f.game).unwrap().flatten().any(|entry| {
+            entry.file_name().to_string_lossy().starts_with("server-icon.vesta-backup-")
+                && fs::read(entry.path()).unwrap() == b"manual second"
+        }));
     }
 
     #[test]

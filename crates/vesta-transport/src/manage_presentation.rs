@@ -30,7 +30,10 @@ struct Preview {
     state: State,
     document: Document,
 }
-pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
+pub(crate) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
+    dispatch_with_name(host, request, None)
+}
+pub(crate) fn dispatch_with_name(host: &NetworkHost, request: Request<'_>, server_name: Option<&str>) -> Reply {
     let preview = request.path.ends_with("/preview");
     let mutation = request.method == Method::PUT;
     if request.query.is_some()
@@ -112,11 +115,15 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         // Preview uses public configuration examples, never administrative errors,
         // private paths or caller-supplied diagnostic/operation text.
         let pack = host.configuration().pack();
+        let branding = host.management().permission_query(token,
+            vesta_control::identity::management::permissions::PermissionQuery::Server).ok();
+        let name = branding.as_ref().and_then(|data| data["name"].as_str());
         let inputs = PublicInputs {
-            server_name: pack.name(),
+            server_name: name.or(server_name).unwrap_or_else(|| pack.name()),
             minecraft_version: pack.minecraft_version(),
             pack_name: pack.name(),
             pack_version: pack.version(),
+            loader_version: pack.loader().map_or("vanilla", |loader| loader.version()),
             ..PublicInputs::default()
         };
         return match value.document.render(value.state, &inputs) {

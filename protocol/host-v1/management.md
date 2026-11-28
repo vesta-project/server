@@ -22,7 +22,7 @@ Host grants carry no server membership. Delegated Host access managers can chang
 - `host.settings.edit` permits reading and changing Host settings on `/v1/host`.
 - `host.servers.remove` permits reversible removal of a server where the caller holds an explicit membership. Gracefully stopping a running server for removal also uses the caller's `lifecycle.stop` authority. Permanent removal, removed-server browsing, restore and purge require an owner.
 - `host.access.manage` also permits device listing. `devices.revoke` permits listing devices and revoking another non-owner's device subject to the Host grant authority check. Ownership and primary-owner protection still apply.
-- `access-sources.manage` permits editing whitelist sync and default access when the caller holds an explicit membership on that server.
+- `access-sources.manage` permits editing automatic whitelist rules and default access when the caller holds an explicit membership on that server.
 - `host.presets.manage` permits Host presets. Ownership, owner recovery and agent installation keep their existing protections.
 
 Unknown accounts and role IDs return 404 `not_found`. Unknown capability IDs and malformed fields return 400 `invalid_request`. Disallowed delegation or use of a capability from the wrong layer returns 403 `management_forbidden`.
@@ -39,6 +39,37 @@ Unknown accounts and role IDs return 404 `not_found`. Unknown capability IDs and
 - PUT `/users/{accountId}/overrides` accepts `{expected_version,overrides:[{capability,effect:"allow"|"deny"}]}` and replaces the override set. User rows expose `overrides` as an array of permanent grants. Deny takes precedence over role grants.
 
 Role editors need `roles.create` for creation and either `roles.create` or `roles.manage` to edit, reset or delete. Overrides require `roles.manage`. Delegation checks the current and proposed rank and capabilities, including the authority of existing assignees. Grants of Owner and Administrator remain reserved. Invalid fields return 400 `invalid_request`, unknown IDs return 404 `not_found`, and disallowed changes return 403 `management_forbidden`.
+
+## Automatic whitelist rules
+
+GET /access-sources returns the current version and settings. PATCH accepts
+expected_version and auto_whitelist_roles. The array replaces the complete
+selection. An empty array clears the selection. Role IDs come from GET /roles
+and include built-in roles (including owner) and custom role UUIDs. Reads
+require access-sources.manage. Writes also require players.moderate. As with
+other worker management endpoints, api_version is the string "3".
+
+```json
+{"expected_version":"<current access-sources version>","auto_whitelist_roles":["owner","viewer"]}
+```
+
+On online-mode servers Vesta Server adds verified Minecraft profiles whose
+effective role is selected, subject to Minecraft bans. Losing the role or
+clearing the selection removes entries Vesta Server added. Existing manual entries
+are retained. This setting does not toggle whitelist enforcement.
+
+Use `["*"]` to select all roles. An enabled legacy `sync_whitelist` setting migrates to this selection on Host-managed and standalone servers. Only verified linked profiles are eligible.
+
+The legacy boolean is still accepted for older launchers. True selects all roles. False clears the all-roles or Owner selection. Send either the array or the boolean in one PATCH.
+
+## Image previews
+
+GET /files/image-preview?path=<encoded game-relative path> requires files.read.
+It returns the original bytes with a signature-sniffed image/png, image/jpeg,
+image/gif or image/webp Content-Type and x-vesta-api-version: 3. Responses use
+Cache-Control: no-store. Other formats return 415 unsupported_media_type.
+Files over 8 MiB return 413. The usual Files scope and protected-path rules
+apply.
 
 ## Default access and public visibility
 

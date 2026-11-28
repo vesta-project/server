@@ -18,7 +18,7 @@ pub(super) fn implemented(path: &str) -> bool {
     };
     matches!(
         action,
-        "users" | "roles" | "access-sources" | "invitations" | "devices" | "server" | "server/icon"
+        "users" | "roles" | "access-sources" | "invitations" | "devices" | "server" | "server/icon" | "server/game-icon"
     ) || resource(action, "users").is_some()
         || resource(action, "roles").is_some()
         || resource(action, "devices").is_some()
@@ -101,6 +101,9 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     let action = path
         .strip_prefix("/api/v3/manage/")
         .expect("management route");
+    if action == "server/game-icon" {
+        return game_icon(host, request, token);
+    }
     if action == "server/icon" {
         return icon(host, request, token);
     }
@@ -289,6 +292,36 @@ fn strong_etag(value: &str) -> bool {
             .iter()
             .all(|v| matches!(v,b'0'..=b'9'|b'a'..=b'f'))
 }
+fn game_icon(host: &NetworkHost, request: Request<'_>, token: &str) -> Reply {
+    use vesta_control::identity::Capability;
+    if request.method != Method::GET || request.query.is_some() || !request.bytes.is_empty()
+        || request.if_match.is_some() || request.range.is_some() || request.if_range.is_some()
+    {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if let Err(e) = host.management().authorize(token, Capability::StatusView, None) {
+        return super::management_error(e);
+    }
+    let bytes = match host.files().game_icon() {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return failure(PermissionError::NotFound),
+        Err(_) => return failure(PermissionError::Unavailable),
+    };
+    let etag = icon_etag(&bytes);
+    let not_modified = request.if_none_match.is_some_and(|value| {
+        value.split(',').map(str::trim).any(|tag| tag == "*" || tag.strip_prefix("W/").unwrap_or(tag) == etag)
+    });
+    let mut reply = if not_modified {
+        super::response(StatusCode::NOT_MODIFIED, Vec::new(), "image/png")
+    } else {
+        super::response(StatusCode::OK, bytes, "image/png")
+    };
+    reply.headers_mut().insert("etag", etag.parse().expect("hex ETag"));
+    reply.headers_mut().insert("cache-control", http::HeaderValue::from_static("private, no-cache"));
+    reply.headers_mut().insert("x-content-type-options", http::HeaderValue::from_static("nosniff"));
+    reply
+}
+
 fn icon(host: &NetworkHost, request: Request<'_>, token: &str) -> Reply {
     if request.query.is_some() || request.range.is_some() || request.if_range.is_some() {
         return error(StatusCode::BAD_REQUEST, "invalid_request");

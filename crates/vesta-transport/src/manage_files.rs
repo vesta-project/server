@@ -21,6 +21,7 @@ pub(super) fn implemented(path: &str) -> bool {
         "/api/v3/manage/files"
             | "/api/v3/manage/files/content"
             | "/api/v3/manage/files/download"
+            | "/api/v3/manage/files/image-preview"
             | "/api/v3/manage/files/tail"
             | "/api/v3/manage/files/lines"
             | "/api/v3/manage/files/follow"
@@ -215,7 +216,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     let capabilities: &[Capability] = match action {
         "files" if request.method == Method::GET => &[Capability::FilesList],
         "files" | "files/delete" => &[Capability::FilesDelete],
-        "files/content" | "files/download" | "files/tail" | "files/lines" | "files/follow"
+        "files/content" | "files/download" | "files/image-preview" | "files/tail" | "files/lines" | "files/follow"
             if request.method == Method::GET =>
         {
             &[Capability::FilesRead]
@@ -253,6 +254,24 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         }
         if action == "files/download" {
             return download(host, &request, &subject);
+        }
+        if action == "files/image-preview" {
+            let Some(path) = query(request.query, &["path"])
+                .and_then(|params| params.get("path").and_then(|s| relative(s)))
+            else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            return match host.files().image_preview(&subject, &path) {
+                Ok(Some((bytes, mime))) => {
+                    let mut reply = response(StatusCode::OK, bytes, mime);
+                    reply.headers_mut().insert("x-vesta-api-version", http::HeaderValue::from_static("3"));
+                    reply.headers_mut().insert("x-content-type-options", http::HeaderValue::from_static("nosniff"));
+                    reply.headers_mut().insert("cache-control", http::HeaderValue::from_static("no-store"));
+                    reply
+                }
+                Ok(None) => error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type"),
+                Err(e) => file_error(e),
+            };
         }
         if action == "files/content" {
             let Some(query) = query(request.query, &["path", "decompress"]) else {

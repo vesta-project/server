@@ -1,5 +1,6 @@
 //! Reserved, validated presentation settings; no file or console authority.
 use super::*;
+use crate::identity::management::permissions::branding::prepare_game_projection;
 use crate::motd::Document;
 use rusqlite::OptionalExtension;
 use serde::Serialize;
@@ -49,6 +50,11 @@ impl Operations {
         let root = files.server_icon_root().ok().flatten();
         self.db.write(|c| {
             let policy = effective(c, self.db.server_id())?;
+            if let Some(root) = &root {
+                if prepare_game_projection(c, self.db.server_id(), root)? {
+                    return Ok(());
+                }
+            }
             if policy.revision.is_some() {
                 let png = policy.document.normal_icon();
                 vesta_state::server_icon::store(c, root.as_deref(), png.as_deref())?;
@@ -98,7 +104,11 @@ impl Operations {
             if current!=expected{return Err(OperationError::rejected(OperationErrorCode::SourceRevisionUnavailable));}
             let revision=current.unwrap_or(0).checked_add(1).ok_or_else(invalid)?;
             c.execute("INSERT INTO settings(server_id,key,desired_value,desired_revision,apply_mode,effective_value,effective_revision,updated_at) VALUES(?,?,?,?,'immediate',?,?,?) ON CONFLICT(server_id,key) DO UPDATE SET desired_value=excluded.desired_value,desired_revision=excluded.desired_revision,effective_value=excluded.effective_value,effective_revision=excluded.effective_revision,updated_at=excluded.updated_at",rusqlite::params![self.db.server_id(),KEY,json,revision,json,revision,self.db.clock().millis()])?;
-            vesta_state::server_icon::store(c, root.as_deref(), png.as_deref())?;
+            if let Some(root) = &root {
+                if !prepare_game_projection(c, self.db.server_id(), root)? {
+                    vesta_state::server_icon::store(c, Some(root), png.as_deref())?;
+                }
+            }
             self.audit.append(c,&AuditRecord::new(request_actor(subject)?,"motd.policy.update".into(),"motd-policy".into(),"accepted".into(),None,[("revision".into(),Some(revision.to_string()))])?)?;
             Ok(revision)
         });

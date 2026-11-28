@@ -72,6 +72,8 @@ const MUST_BE_EMPTY: &[&str] = &[
     "management_owner_links",
     "whitelist_sync_actor",
     "whitelist_sync_members",
+    "whitelist_sync_pending",
+    "worker_activity_identities",
     "confirmations",
     "management_permission_receipts",
     "local_authority_uses",
@@ -197,7 +199,7 @@ fn fresh(c: &Connection) -> Result<()> {
         || access[0][0] != 1
         || serde_json::from_str::<Value>(access[0][1].as_str().ok_or_else(nonempty)?)
             .map_err(|_| nonempty())?
-            != serde_json::json!({"anonymous":"public","new_user":"public","whitelist":"player","whitelist_enabled":true,"password":"player"})
+            != serde_json::json!({"anonymous":"public","new_user":"public","whitelist":"player","whitelist_enabled":true,"password":"player","auto_whitelist_roles":[]})
     {
         return Err(nonempty());
     }

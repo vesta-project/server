@@ -456,12 +456,70 @@ pub fn normalize_icon(bytes: &[u8]) -> Option<Vec<u8>> {
 pub fn normalize_branding_icon(bytes: &[u8]) -> Option<Vec<u8>> {
     normalize_png(bytes, 256 * 1024, 64, 512)
 }
+/// Project a validated square branding PNG to Minecraft's 64px format.
+pub(crate) fn branding_game_icon(bytes: &[u8]) -> Option<Vec<u8>> {
+    let (header, mut rows) = decode_png(bytes, 256 * 1024, 64, 512)?;
+    let side = u32::from_be_bytes(header[..4].try_into().ok()?) as usize;
+    let channels = if header[9] == 6 { 4 } else { 3 };
+    let stride = 1 + side * channels;
+    for y in 0..side {
+        let start = y * stride;
+        let filter = rows[start];
+        for x in 1..stride {
+            let left = if x > channels { rows[start + x - channels] } else { 0 };
+            let up = if y > 0 { rows[start + x - stride] } else { 0 };
+            let upper_left = if y > 0 && x > channels { rows[start + x - stride - channels] } else { 0 };
+            let prediction = match filter {
+                0 => 0,
+                1 => left,
+                2 => up,
+                3 => ((u16::from(left) + u16::from(up)) / 2) as u8,
+                4 => paeth(left, up, upper_left),
+                _ => return None,
+            };
+            rows[start + x] = rows[start + x].wrapping_add(prediction);
+        }
+    }
+    let mut output = Vec::with_capacity(64 * (1 + 64 * channels));
+    for y in 0..64 {
+        output.push(0);
+        for x in 0..64 {
+            let start = ((y * 2 + 1) * side / 128) * stride
+                + 1 + ((x * 2 + 1) * side / 128) * channels;
+            output.extend_from_slice(&rows[start..start + channels]);
+        }
+    }
+    let mut small: [u8; 13] = header.try_into().ok()?;
+    small[..4].copy_from_slice(&64u32.to_be_bytes());
+    small[4..8].copy_from_slice(&64u32.to_be_bytes());
+    let png = encode_icon(&small, &output);
+    (png.len() <= vesta_state::server_icon::MAX_PNG_BYTES).then_some(png)
+}
+
+fn paeth(a: u8, b: u8, c: u8) -> u8 {
+    let (a, b, c) = (i16::from(a), i16::from(b), i16::from(c));
+    let p = a + b - c;
+    let (pa, pb, pc) = ((p - a).abs(), (p - b).abs(), (p - c).abs());
+    if pa <= pb && pa <= pc { a as u8 } else if pb <= pc { b as u8 } else { c as u8 }
+}
+
 fn normalize_png(
     bytes: &[u8],
     maximum: usize,
     minimum_side: u32,
     maximum_side: u32,
 ) -> Option<Vec<u8>> {
+    let (header, raw) = decode_png(bytes, maximum, minimum_side, maximum_side)?;
+    let normalized = encode_icon(header, &raw);
+    (normalized.len() <= maximum).then_some(normalized)
+}
+
+fn decode_png(
+    bytes: &[u8],
+    maximum: usize,
+    minimum_side: u32,
+    maximum_side: u32,
+) -> Option<(&[u8], Vec<u8>)> {
     if bytes.len() > maximum || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return None;
     }
@@ -526,8 +584,7 @@ fn normalize_png(
     {
         return None;
     }
-    let normalized = encode_icon(header, &raw);
-    (normalized.len() <= maximum).then_some(normalized)
+    Some((header, raw))
 }
 
 #[cfg(test)]

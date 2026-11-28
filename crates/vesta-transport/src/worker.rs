@@ -29,11 +29,18 @@ fn dispatch_inner(
     subject: ServerSubject,
     request: WorkerRequest<'_>,
 ) -> crate::Reply {
-    use http::StatusCode;
     let host = match worker.authorize(subject) {
         Ok(host) => host,
         Err(e) => return crate::manage::management_error(e),
     };
+    dispatch_authorized(&host, request, None)
+}
+fn dispatch_authorized(
+    host: &vesta_control::host::NetworkHost,
+    request: WorkerRequest<'_>,
+    server_name: Option<&str>,
+) -> crate::Reply {
+    use http::StatusCode;
     let suffix = request.path.trim_start_matches('/');
     if suffix.is_empty()
         || suffix.contains('?')
@@ -83,9 +90,7 @@ fn dispatch_inner(
     if request.body.len() > 4 * 1024 * 1024 {
         return crate::manage::error(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large");
     }
-    crate::manage::dispatch(
-        &host,
-        crate::manage::Request {
+    let request = crate::manage::Request {
             tls_fingerprint: None,
             method: request.method,
             path: &path,
@@ -99,8 +104,12 @@ fn dispatch_inner(
             if_none_match: request.if_none_match,
             range: request.range,
             if_range: request.if_range,
-        },
-    )
+    };
+    if suffix == "motd/preview" {
+        crate::manage::presentation::dispatch_with_name(host, request, server_name)
+    } else {
+        crate::manage::dispatch(host, request)
+    }
 }
 
 #[cfg(test)]
@@ -167,6 +176,8 @@ mod tests {
                     capabilities: subject.capabilities.clone(),
                 }],
                 whitelist_owners: Default::default(),
+                whitelist_roles: Default::default(),
+                activity_identities: Default::default(),
                 access_sources_accounts: Default::default(),
             };
             assert!(handle.authorize(subject.clone()).is_err());
@@ -298,6 +309,87 @@ mod tests {
         assert!(f._temp.path().join("game/created-by-worker").is_dir());
     }
     #[test]
+    fn launcher_whitelist_activity_names_the_authenticated_host_member() {
+        use vesta_control::{
+            moderation::ModerationAction,
+            operations::{Admission, GameCommand, GenerationId, Operations},
+        };
+        let f = Fixture::new();
+        let mut policy = f.policy.clone();
+        policy.activity_identities.insert(f.subject.device_id, WorkerActivityIdentity {
+            display_name: "VerifiedAlex".into(),
+            device_name: "Alex's launcher".into(),
+        });
+        f.handle.sync_policy(policy).unwrap();
+        let host = f.handle.authorize(f.subject.clone()).unwrap();
+        let actor = host.management().authenticate("trusted-worker").unwrap();
+        let ops = Operations::new(host.database().clone()).unwrap();
+        let Admission::Created(operation) = ops.submit_game(
+            &actor,
+            GameCommand::Moderate {
+                expected_generation: GenerationId::parse_hex("11111111111111111111111111111111").unwrap(),
+                action: ModerationAction::WhitelistAdd { player: "Steve".into() },
+            },
+            Some("launcher-whitelist-activity"),
+        ).unwrap() else { panic!("expected a new operation"); };
+        let (_, activity) = ops.activity_get(&actor, &operation.id).unwrap().unwrap();
+        let activity = serde_json::to_value(activity).unwrap();
+        assert_eq!(activity["actor"], serde_json::json!({
+            "principal_id": f.subject.account_id.to_string(),
+            "display_name": "VerifiedAlex",
+            "device_name": "Alex's launcher",
+        }));
+    }
+
+    #[test]
+    fn game_icon_read_distinguishes_projected_icons_and_honors_etags() {
+        let f = Fixture::new();
+        assert_eq!(f.request(f.subject.clone(), "server/game-icon", None).status(), 404);
+        let host = f.handle.authorize(f.subject.clone()).unwrap();
+        let game = std::fs::canonicalize(f._temp.path().join("game")).unwrap();
+        let png = vesta_control::motd::fallback_icon();
+        let db = host.database();
+        db.write(|c| vesta_state::server_icon::store(c, Some(&game), Some(&png))).unwrap();
+        vesta_state::server_icon::reconcile(db.directory().path(), &game).unwrap();
+        assert_eq!(f.request(f.subject.clone(), "server/game-icon", None).status(), 404);
+        let path = game.join("server-icon.png");
+        let manual = game.join("manual.png");
+        std::fs::write(&manual, &png).unwrap();
+        std::fs::rename(&manual, &path).unwrap();
+        let response = f.request(f.subject.clone(), "server/game-icon", None);
+        assert_eq!(response.status(), 200);
+        let tag = response.headers()["etag"].to_str().unwrap();
+        assert_eq!(f.handle.game_icon_etag().as_deref(), Some(tag));
+        let response = dispatch_inner(&f.handle, f.subject.clone(), WorkerRequest {
+            method: &Method::GET,
+            path: "server/game-icon",
+            query: None,
+            body: b"",
+            idempotency_key: None,
+            if_match: None, if_none_match: Some(tag), range: None, if_range: None,
+        });
+        assert_eq!(response.status(), 304);
+        db.write(|c| vesta_state::server_icon::store(c, Some(&game), None)).unwrap();
+        vesta_state::server_icon::reconcile(db.directory().path(), &game).unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), png);
+    }
+
+    #[test]
+    fn image_preview_sniffs_content_and_enforces_the_byte_limit() {
+        let f = Fixture::new();
+        let preview = |path| f.request(f.subject.clone(), "files/image-preview", Some(path));
+        let game = f._temp.path().join("game");
+        std::fs::write(game.join("preview.bin"), vesta_control::motd::fallback_icon()).unwrap();
+        let response = preview("path=preview.bin");
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()["content-type"], "image/png");
+        std::fs::write(game.join("active.png"), "<svg onload='alert(1)'/>").unwrap();
+        assert_eq!(preview("path=active.png").status(), 415);
+        std::fs::File::create(game.join("large.png")).unwrap().set_len(8 * 1024 * 1024 + 1).unwrap();
+        assert_eq!(preview("path=large.png").status(), 413);
+    }
+
+    #[test]
     fn host_owner_can_toggle_whitelist_sync_without_changing_access_sources() {
         let f = Fixture::new();
         assert_eq!(f.request(f.subject.clone(), "access-sources", None).status(), 403);
@@ -342,6 +434,74 @@ mod tests {
         let crate::ReplyBody::Bytes(bytes) = changed.body() else { panic!("expected JSON"); };
         let response: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         assert_eq!(response["data"]["settings"]["sync_whitelist"], true, "{response}");
+        assert_eq!(response["data"]["settings"]["auto_whitelist_roles"], serde_json::json!(["*"]));
+        let version = &response["data"]["version"];
+        let invalid = patch("whitelist-worker-invalid", serde_json::json!({
+            "expected_version":version,"auto_whitelist_roles":["unknown"]
+        }));
+        assert_eq!(invalid.status(), 400);
+        let changed = patch("whitelist-worker-roles", serde_json::json!({
+            "expected_version":version,"auto_whitelist_roles":["owner","viewer"]
+        }));
+        assert_eq!(changed.status(), 200);
+    }
+
+    #[test]
+    fn role_sync_removes_only_the_stopped_server_entry_it_added() {
+        let f = Fixture::new();
+        let game = f._temp.path().join("game");
+        std::fs::write(game.join("server.properties"), "online-mode=true\n").unwrap();
+        let whitelist = game.join("whitelist.json");
+        let manual = Uuid::new_v4();
+        let automatic = Uuid::new_v4();
+        std::fs::write(&whitelist, serde_json::to_vec(&serde_json::json!([
+            {"uuid":manual,"name":"Manual"}
+        ])).unwrap()).unwrap();
+
+        let mut policy = f.policy.clone();
+        policy.generation += 1;
+        policy.grants[0].role = ServerRole::Owner;
+        policy.grants[0].capabilities = ServerRole::Owner.capabilities().map(|c| c.id().into()).collect();
+        policy.whitelist_roles.entry("viewer".into()).or_default().extend([
+            (manual, "Manual".into()),
+            (automatic, "Automatic".into()),
+        ]);
+        f.handle.sync_policy(policy.clone()).unwrap();
+        let mut subject = f.subject.clone();
+        subject.generation = policy.generation;
+        subject.capabilities = policy.grants[0].capabilities.clone();
+        let response = f.request(subject.clone(), "access-sources", None);
+        let crate::ReplyBody::Bytes(bytes) = response.body() else { panic!("expected JSON"); };
+        let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        let body = serde_json::to_vec(&serde_json::json!({
+            "expected_version":value["data"]["version"],"auto_whitelist_roles":["viewer"],
+        })).unwrap();
+        let response = dispatch_inner(&f.handle, subject, WorkerRequest {
+            method: &Method::PATCH,
+            path: "access-sources",
+            query: None,
+            body: &body,
+            idempotency_key: Some("whitelist-worker-select-viewer"),
+            if_match: None, if_none_match: None, range: None, if_range: None,
+        });
+        assert_eq!(response.status(), 200);
+        let wait_for_list = |expected: &[&str]| {
+            let until = std::time::Instant::now() + Duration::from_secs(8);
+            loop {
+                let names: Vec<_> = vesta_control::moderation::whitelist(&game).unwrap()
+                    .into_iter().map(|entry| entry.name).collect();
+                if names == expected {
+                    break;
+                }
+                assert!(std::time::Instant::now() < until, "observed {names:?}, expected {expected:?}");
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        };
+        wait_for_list(&["Manual", "Automatic"]);
+        policy.generation += 1;
+        policy.whitelist_roles.get_mut("viewer").unwrap().clear();
+        f.handle.sync_policy(policy).unwrap();
+        wait_for_list(&["Manual"]);
     }
 
     #[test]
@@ -484,6 +644,7 @@ pub(crate) fn dispatch_host(
     worker: &dyn ServerWorker,
     subject: ServerSubject,
     mut request: WorkerRequest<'_>,
+    server_name: &str,
     tls: std::sync::Arc<crate::tls::Material>,
     peer: std::net::IpAddr,
     downloads: std::sync::Arc<crate::Downloads<vesta_control::pack_access::RealtimeSession>>,
@@ -500,7 +661,7 @@ pub(crate) fn dispatch_host(
     let mut reply=if let Some(suffix)=path.strip_prefix("manage/") {
         if matches!(suffix,"pack/sync"|"pack/artifact") {
             crate::pack_sync::dispatch(&host,request.method,&format!("/api/v3/manage/{suffix}"),request.query,Some("trusted-worker"),crate::routes::Requester {downloads:downloads.clone(),peer},&tls)
-        }else {request.path=suffix;dispatch_inner(worker,subject,request)}
+        }else {request.path=suffix;dispatch_authorized(&host,request,Some(server_name))}
     } else if (path.starts_with("pack/") || path=="status") && *request.method==Method::GET {
         let mapped=if path=="status"{"/api/v3/status".to_owned()}else{format!("/api/v2/{path}")};
         crate::routes::dispatch(&host,&mapped,request.query,Some("trusted-worker"),request.body,crate::routes::Requester{downloads:downloads.clone(),peer},tls.clone())

@@ -26,6 +26,19 @@ pub(super) fn actor(
     device: &str,
     source: &str,
 ) -> OperationsResult<ActivityActor> {
+    if source == super::WHITELIST_SYNC_SOURCE {
+        return Ok(ActivityActor::Automation { kind: "system", name: "Vesta Server" });
+    }
+    let projected = c.query_row(
+        "SELECT display_name,device_name FROM worker_activity_identities WHERE account_id=? AND device_id=?",
+        params![principal,device],
+        |row| Ok(ActivityActor::Principal {
+            principal_id: principal.into(), display_name: row.get(0)?, device_name: row.get(1)?,
+        }),
+    ).optional()?;
+    if let Some(actor) = projected {
+        return Ok(actor);
+    }
     let automation: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM devices WHERE server_id=? AND principal_id=? AND id=? AND public_key_sha256=?)",params![server,principal,device,format!("{:x}",Sha256::digest(format!("vesta-automation-device:{principal}")))],|r| r.get(0))?;
     if automation {
         return Ok(ActivityActor::Automation {
@@ -193,9 +206,9 @@ impl Operations {
         self.db.read_with(|snapshot| {
             let repo = Repository::new(snapshot.connection(), self.db.server_id(), self.db.clock().millis());
             let policy = self.activity_policy(&repo,subject)?;
-            let sql = format!("SELECT {} FROM operations WHERE server_id=?1 AND seq>?2 AND (?3 IS NULL OR {KIND_SQL}=?3) AND (?4=0 OR actor_principal_id=?5) ORDER BY seq LIMIT ?6",repository::bounded("id",64));
+            let sql = format!("SELECT {} FROM operations WHERE server_id=?1 AND seq>?2 AND (?3 IS NULL OR {KIND_SQL}=?3) AND (?4=0 OR (actor_principal_id=?5 AND source<>?7)) ORDER BY seq LIMIT ?6",repository::bounded("id",64));
             let mut statement = repo.connection().prepare(&sql)?;
-            let ids = statement.query_map(params![repo.server,after,filter_kind,actor_me,subject.principal.as_str(),limit as i64], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let ids = statement.query_map(params![repo.server,after,filter_kind,actor_me,subject.principal.as_str(),limit as i64,super::WHITELIST_SYNC_SOURCE], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
             ids.into_iter().map(|id| Self::activity_in(&repo,subject,&policy,repo.require(&OperationId::parse(&id)?)?)).collect()
         }).map_err(OperationError::from)
     }

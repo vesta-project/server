@@ -20,7 +20,7 @@ pub struct AccessSettings {
     pub whitelist: String,
     pub whitelist_enabled: bool,
     #[serde(default)]
-    pub sync_whitelist: bool,
+    pub auto_whitelist_roles: std::collections::BTreeSet<String>,
     pub password: String,
 }
 impl Default for AccessSettings {
@@ -30,7 +30,7 @@ impl Default for AccessSettings {
             new_user: "public".into(),
             whitelist: "player".into(),
             whitelist_enabled: true,
-            sync_whitelist: false,
+            auto_whitelist_roles: Default::default(),
             password: "player".into(),
         }
     }

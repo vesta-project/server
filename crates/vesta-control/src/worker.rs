@@ -99,6 +99,15 @@ pub struct WorkerGrant {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct WorkerActivityIdentity {
+    pub display_name: String,
+    pub device_name: String,
+}
+
+pub type WhitelistRoles = std::collections::BTreeMap<String, std::collections::BTreeMap<Uuid, String>>;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkerPolicy {
     pub host_id: Uuid,
     pub server_id: Uuid,
@@ -107,6 +116,12 @@ pub struct WorkerPolicy {
     /// Verified profiles of machine owners, independent of the devices they use.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub whitelist_owners: std::collections::BTreeMap<Uuid, String>,
+    /// Verified profiles by effective role. Empty roles are included for settings validation.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub whitelist_roles: WhitelistRoles,
+    /// Display labels keyed by the grant's device, separate from authorization.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub activity_identities: std::collections::BTreeMap<Uuid, WorkerActivityIdentity>,
     /// Corroborates this Host-layer ability independently of server grants.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub access_sources_accounts: std::collections::BTreeSet<Uuid>,
@@ -149,6 +164,12 @@ pub trait ServerWorker: Send + Sync {
     /// icon, `None` when there is none or the worker cannot report it.
     fn icon_etag(&self) -> Option<String> {
         None
+    }
+    fn game_icon_etag(&self) -> Option<String> {
+        None
+    }
+    fn icon_source(&self) -> crate::identity::management::permissions::branding::IconSource {
+        Default::default()
     }
     fn startup_report(&self) -> Option<crate::machine::startup::StartupReport> {
         None
@@ -306,6 +327,14 @@ impl ServerWorker for WorkerHandle {
     }
     fn public_resource_packs(&self) -> Option<crate::resource_packs::hosting::Handle> {
         Some(self.network.resource_packs().clone())
+    }
+    fn game_icon_etag(&self) -> Option<String> {
+        self.network.files().game_icon().ok()?.map(|bytes| {
+            crate::identity::management::permissions::branding::icon_etag(&bytes)
+        })
+    }
+    fn icon_source(&self) -> crate::identity::management::permissions::branding::IconSource {
+        crate::identity::management::permissions::branding::stored_icon_source(self.network.database())
     }
     fn server_id(&self) -> Uuid {
         self.server_id

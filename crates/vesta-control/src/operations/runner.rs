@@ -360,7 +360,34 @@ impl RuntimeHandle {
             &command.canonical_input()?,
             Some(idempotency_key),
             Some(&self.shared.view),
-            None,
+            super::ModerationOrigin::Request,
+        );
+        if result.is_ok() {
+            self.shared.notify_queue();
+        }
+        result
+    }
+
+    pub(crate) fn submit_whitelist_sync(
+        &self,
+        subject: &crate::identity::Subject,
+        generation: GenerationId,
+        change: &super::WhitelistSyncChange,
+    ) -> OperationsResult<super::Admission> {
+        if self.shared.system_admission_closed.load(Ordering::Acquire) {
+            return Err(OperationError::rejected(OperationErrorCode::OwnerStopping));
+        }
+        use crate::moderation::ModerationAction;
+        let action = if change.add {
+            ModerationAction::WhitelistAdd { player: change.name.clone() }
+        } else {
+            ModerationAction::WhitelistRemove { player: change.name.clone() }
+        };
+        let command = GameCommand::Moderate { expected_generation: generation, action };
+        let key = format!("whitelist-sync:{}", uuid::Uuid::new_v4());
+        let result = self.operations.admit_with_view(
+            subject, command.operation_type(), &command.canonical_input()?,
+            Some(&key), Some(&self.shared.view), super::ModerationOrigin::WhitelistSync(change),
         );
         if result.is_ok() {
             self.shared.notify_queue();
@@ -388,7 +415,7 @@ impl RuntimeHandle {
             &command.canonical_input()?,
             Some(&format!("moderation-expiry:{id}:{}", generation.to_hex())),
             Some(&self.shared.view),
-            Some(id),
+            super::ModerationOrigin::Expiry(id),
         );
         if result.is_ok() {
             self.shared.notify_queue();

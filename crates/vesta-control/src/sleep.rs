@@ -129,6 +129,7 @@ pub struct Sleep {
     address: Option<SocketAddr>,
     probe: Option<SocketAddr>,
     server_name: String,
+    icon_files: Option<crate::files::FileBrowser>,
     minecraft_version: String,
     pack_version: String,
     loader_version: String,
@@ -154,6 +155,7 @@ impl Sleep {
             address,
             probe,
             server_name,
+            icon_files: None,
             minecraft_version: "unknown".into(),
             pack_version: "unknown".into(),
             loader_version: "unknown".into(),
@@ -165,6 +167,10 @@ impl Sleep {
         self.minecraft_version = minecraft.into();
         self.pack_version = pack.into();
         self.loader_version = loader.into();
+        self
+    }
+    pub(crate) fn with_icon_files(mut self, files: crate::files::FileBrowser) -> Self {
+        self.icon_files = Some(files);
         self
     }
     pub fn policy(&self, subject: &Subject) -> Result<PolicyView, &'static str> {
@@ -526,10 +532,25 @@ impl Sleep {
             .map_err(|_| "motd_invalid")
     }
     fn document(&self) -> Result<motd::Document, &'static str> {
-        self.db
-            .read(|c| load::<motd::Document>(c, &self.db, "motd-policy"))
-            .map_err(|_| "motd_state_unavailable")
-            .map(|row| row.map(|(_, d)| d).unwrap_or_default())
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let (mut document, branding) = self.db
+            .read(|c| {
+                let document = load::<motd::Document>(c, &self.db, "motd-policy")?
+                    .map(|(_, document)| document).unwrap_or_default();
+                let branding = crate::identity::management::permissions::branding::game_projection(c, self.db.server_id())?;
+                Ok((document, branding))
+            })
+            .map_err(|_| "motd_state_unavailable")?;
+        if let Some(branding) = branding {
+            document.normal_icon_png = branding.map(|png| STANDARD.encode(png));
+        }
+        if let Some(manual) = self.icon_files.as_ref()
+            .and_then(|files| files.game_icon().ok().flatten())
+            .and_then(|bytes| motd::normalize_icon(&bytes))
+        {
+            document.normal_icon_png = Some(STANDARD.encode(manual));
+        }
+        Ok(document)
     }
     fn public_inputs<'a>(
         &'a self,

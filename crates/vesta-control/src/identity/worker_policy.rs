@@ -37,6 +37,18 @@ pub(crate) fn sync(
     {
         return Err(ManagementError::InvalidRequest);
     }
+    if policy.whitelist_roles.len() > 128
+        || policy.whitelist_roles.keys().any(|id| RoleId::parse(id).is_err())
+        || policy.whitelist_roles.values().map(|members| members.len()).sum::<usize>() > 4096
+        || policy.whitelist_roles.values().flat_map(|members| members.iter()).any(|(id, name)| id.is_nil() || !crate::moderation::valid_player(name))
+        || policy.activity_identities.len() > policy.grants.len()
+        || policy.activity_identities.values().any(|labels| {
+            DisplayName::parse(&labels.display_name).is_err()
+                || DeviceLabel::parse(&labels.device_name).is_err()
+        })
+    {
+        return Err(ManagementError::InvalidRequest);
+    }
     for g in &policy.grants {
         if g.account_id.is_nil()
             || g.device_id.is_nil()
@@ -68,6 +80,20 @@ pub(crate) fn sync(
         {
             return Err(ManagementError::Forbidden);
         }
+        if previous == document {
+            return Ok(());
+        }
+        for grant in &policy.grants {
+            if let Some(labels) = policy.activity_identities.get(&grant.device_id) {
+                c.execute(
+                    "INSERT INTO worker_activity_identities VALUES(?,?,?,?)
+                     ON CONFLICT(account_id,device_id) DO UPDATE SET
+                        display_name=excluded.display_name,device_name=excluded.device_name",
+                    params![grant.account_id.to_string(), grant.device_id.to_string(),
+                        labels.display_name, labels.device_name],
+                )?;
+            }
+        }
         c.execute(
             "UPDATE worker_policy SET generation=?,document=? WHERE singleton=1",
             params![policy.generation as i64, document],
@@ -77,20 +103,53 @@ pub(crate) fn sync(
     .map_err(|_| ManagementError::Forbidden)
 }
 
-pub(crate) fn whitelist_owners(
-    c: &Connection,
-) -> vesta_state::Result<Option<std::collections::BTreeMap<uuid::Uuid, String>>> {
+fn policy_document(c: &Connection) -> vesta_state::Result<Option<String>> {
     let exists: bool = c.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='worker_policy')",
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='worker_policy')",
         [],
         |row| row.get(0),
     )?;
     if !exists {
         return Ok(None);
     }
-    let document: String = c.query_row("SELECT document FROM worker_policy WHERE singleton=1", [], |row| row.get(0))?;
-    let owners = serde_json::from_str::<WorkerPolicy>(&document).map(|policy| policy.whitelist_owners).unwrap_or_default();
-    Ok(Some(owners))
+    Ok(Some(c.query_row(
+        "SELECT document FROM worker_policy WHERE singleton=1",
+        [],
+        |row| row.get(0),
+    )?))
+}
+
+pub(crate) fn whitelist_sync_owner(c: &Connection) -> vesta_state::Result<Option<Subject>> {
+    let Some(document) = policy_document(c)? else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_str::<WorkerPolicy>(&document).ok().and_then(|policy| {
+        let grant = policy.grants.iter().find(|grant| {
+            grant.role == crate::worker::ServerRole::Owner
+                && grant.capabilities.iter().any(|cap| cap == Capability::PlayersModerate.id())
+        })?;
+        Some(Subject {
+            principal: PrincipalId::parse(&grant.account_id.to_string()).ok()?,
+            device: DeviceId::parse(&grant.device_id.to_string()).ok()?,
+        })
+    }))
+}
+
+pub(crate) fn whitelist_roles(
+    c: &Connection,
+) -> vesta_state::Result<Option<crate::worker::WhitelistRoles>> {
+    let Some(document) = policy_document(c)? else {
+        return Ok(None);
+    };
+    let policy: WorkerPolicy = serde_json::from_str(&document)
+        .map_err(|_| vesta_state::StateError::new("worker_policy_unavailable"))?;
+    let mut roles = policy.whitelist_roles;
+    roles.entry("owner".into()).or_insert(policy.whitelist_owners);
+    // Older snapshots did not enumerate valid role IDs.
+    for role in crate::machine::owners::ServerRole::ALL {
+        roles.entry(role.id().into()).or_default();
+    }
+    Ok(Some(roles))
 }
 /// Old removals could persist an empty policy one generation ahead of the
 /// Host before committing the deletion. A new worker for a registered server
@@ -223,6 +282,8 @@ mod tests {
             generation: 4,
             grants: vec![],
             whitelist_owners: Default::default(),
+            whitelist_roles: Default::default(),
+            activity_identities: Default::default(),
             access_sources_accounts: Default::default(),
         };
         initialize(&db, policy.host_id, policy.server_id).unwrap();

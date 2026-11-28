@@ -88,7 +88,7 @@ pub(crate) fn prepare_properties_confirmation(
                 repo.insert(subject,&PreparedOperation {
                     operation_type: "config.server_properties".into(),canonical_input: "{}".into(),payload_hash: payload_hash.into(),
                     target: "config:server-properties".into(),requirements: vec![],resources: vec![],effect_idempotent: false,requires_confirmation: true,command: None,
-                },Some(key)).map_err(mapped)?
+                },Some(key),super::REQUEST_SOURCE).map_err(mapped)?
             }
         };
         let expires_at_ms = now.checked_add(120_000).ok_or(FileError::Unavailable)?;

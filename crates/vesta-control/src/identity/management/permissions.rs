@@ -85,6 +85,8 @@ pub struct AccessPatch {
     pub whitelist: Option<String>,
     pub whitelist_enabled: Option<bool>,
     pub sync_whitelist: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_whitelist_roles: Option<std::collections::BTreeSet<String>>,
     pub password: Option<String>,
 }
 #[derive(Clone, Deserialize, Serialize)]
@@ -437,6 +439,13 @@ fn session_current(now: i64, expires: i64, monotonic: std::time::Instant) -> Adm
     }
     Ok(())
 }
+fn access_document(settings: &access::AccessSettings) -> Value {
+    let mut value = json!({"settings":settings});
+    // Keep the deprecated owner toggle readable for older launchers.
+    value["settings"]["sync_whitelist"] = json!((settings.auto_whitelist_roles.contains("*") || settings.auto_whitelist_roles.contains("owner")));
+    value
+}
+
 impl ManagementAccess {
     /// First-server setup uses current account-bound Owner authority in the same
     /// transaction as its effect. Captured bearer data never substitutes for a
@@ -526,7 +535,7 @@ impl ManagementAccess {
                 PermissionQuery::Server=>branding::projection(repo),
                 PermissionQuery::User(id)=>user_value(repo,&id).map(with_version),
                 PermissionQuery::Roles=>Ok(json!({"roles":role_values(repo)?})),
-                PermissionQuery::Access=>Ok(with_version(json!({"settings":access::source_settings(repo)?}))),
+                PermissionQuery::Access=>Ok(with_version(access_document(&access::source_settings(repo)?))),
                 PermissionQuery::Devices(id)=> {
                     let principal=principal_id(&id)?;
                     if policy.principal()!=Some(&principal) { lower(&policy,&principal,repo.rank(&principal)?)?; }
@@ -629,9 +638,9 @@ impl ManagementAccess {
         match command {
             PermissionMutation::Server(input) => branding::patch(repo, input),
             PermissionMutation::PutIcon(expected, bytes) => {
-                branding::put_icon(repo, expected.as_deref(), bytes)
+                branding::put_icon(repo, self.icon_game.as_deref(), expected.as_deref(), bytes)
             }
-            PermissionMutation::DeleteIcon(expected) => branding::delete_icon(repo, expected),
+            PermissionMutation::DeleteIcon(expected) => branding::delete_icon(repo, self.icon_game.as_deref(), expected),
             PermissionMutation::UserRoles(id, input) => {
                 if input.add.len() + input.remove.len() > 64
                     || input.add.is_empty() && input.remove.is_empty()
@@ -793,7 +802,7 @@ impl ManagementAccess {
                     &settings.whitelist,
                     &settings.password,
                 ]
-                .contains(&id)
+                .contains(&id) || settings.auto_whitelist_roles.contains(id)
                 {
                     return Err(PermissionError::Conflict);
                 }
@@ -810,7 +819,7 @@ impl ManagementAccess {
             }
             PermissionMutation::Access(input) => {
                 let mut settings = access::source_settings(repo)?;
-                expected(&input.expected_version, &json!({"settings":settings}))?;
+                expected(&input.expected_version, &access_document(&settings))?;
                 let worker: bool = repo.connection().query_row(
                     "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='worker_policy')",
                     [],
@@ -829,6 +838,7 @@ impl ManagementAccess {
                     && input.whitelist.is_none()
                     && input.whitelist_enabled.is_none()
                     && input.sync_whitelist.is_none()
+                    && input.auto_whitelist_roles.is_none()
                     && input.password.is_none()
                 {
                     return Err(PermissionError::InvalidRequest);
@@ -842,9 +852,32 @@ impl ManagementAccess {
                 if let Some(v) = &input.whitelist {
                     settings.whitelist = v.clone();
                 }
-                if let Some(v) = input.sync_whitelist {
+                if input.sync_whitelist.is_some() || input.auto_whitelist_roles.is_some() {
                     require(policy, Capability::PlayersModerate)?;
-                    settings.sync_whitelist = v;
+                    if let Some(roles) = &input.auto_whitelist_roles {
+                        if input.sync_whitelist.is_some() || roles.len() > 64 {
+                            return Err(PermissionError::InvalidRequest);
+                        }
+                        if roles.contains("*") {
+                            settings.auto_whitelist_roles = ["*".into()].into();
+                        } else if let Some(available) = crate::identity::worker_policy::whitelist_roles(repo.connection()).map_err(|_| PermissionError::Unavailable)? {
+                            if roles.iter().any(|role| !available.contains_key(role)) {
+                                return Err(PermissionError::InvalidRequest);
+                            }
+                        } else {
+                            for id in roles {
+                                role(repo, id)?;
+                            }
+                        }
+                        if !roles.contains("*") {
+                            settings.auto_whitelist_roles = roles.clone();
+                        }
+                    } else if input.sync_whitelist == Some(true) {
+                        settings.auto_whitelist_roles = ["*".into()].into();
+                    } else {
+                        settings.auto_whitelist_roles.remove("*");
+                        settings.auto_whitelist_roles.remove("owner");
+                    }
                     repo.connection().execute("INSERT INTO whitelist_sync_actor VALUES(1,?,?) ON CONFLICT(singleton) DO UPDATE SET principal_id=excluded.principal_id,device_id=excluded.device_id",params![subject.principal.as_str(),subject.device.as_str()])?;
                 }
                 if let Some(v) = input.whitelist_enabled {
@@ -873,7 +906,7 @@ impl ManagementAccess {
                     "UPDATE access_role_sources SET settings_json=? WHERE singleton=1",
                     [json],
                 )?;
-                Ok(with_version(json!({"settings":settings})))
+                Ok(with_version(access_document(&settings)))
             }
             PermissionMutation::Invitation(input) => {
                 if !(1..=MAX_PAIR_MINUTES).contains(&input.expires_minutes)

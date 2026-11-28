@@ -227,126 +227,118 @@ impl HostActions {
         Ok(())
     }
 
-    /// Reconcile only entries this opt-in service added; manual entries stay operator-owned.
+    /// Add verified members and remove only entries this service has confirmed it added.
     pub(crate) fn sync_whitelist(&self, directory: &std::path::Path) -> Result<(), ()> {
         use crate::identity::minecraft::MinecraftUuid;
+        use crate::operations::{ProcessPhase, WhitelistSyncChange};
         let runtime = self.runtime().map_err(|_| ())?;
         let properties = crate::minecraft_admission::ServerProperties::load(
             &directory.join("server.properties"),
-        )
-        .map_err(|_| ())?;
-        // Synchronize the list even while whitelist enforcement is disabled,
-        // so enabling Minecraft's whitelist does not start with an empty list.
+        ).map_err(|_| ())?;
         if !properties.online_mode() {
             return Ok(());
         }
-        let bans =
-            crate::minecraft_admission::BanList::load(&directory.join("banned-players.json"))
-                .map_err(|_| ())?;
+        let bans = crate::minecraft_admission::BanList::load(&directory.join("banned-players.json"))
+            .map_err(|_| ())?;
         let current = crate::moderation::whitelist(directory).map_err(|_| ())?;
+        if self.observe_whitelist_sync(runtime, &current)? {
+            return Ok(());
+        }
         let now = self.db.clock().millis();
-        let (actor, desired, managed) = self.db.read(|c| {
-            let settings: String = c.query_row("SELECT settings_json FROM access_role_sources WHERE singleton=1",[],|r|r.get(0))?;
-            let enabled = serde_json::from_str::<serde_json::Value>(&settings).ok().is_some_and(|v|v["sync_whitelist"]==true);
-            let actor: Option<(String,String)> = c.query_row("SELECT principal_id,device_id FROM whitelist_sync_actor WHERE singleton=1",[],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-            let desired = if !enabled {
-                Vec::new()
-            } else if let Some(owners) = crate::identity::worker_policy::whitelist_owners(c)? {
-                owners.into_iter().map(|(uuid, name)| (uuid.to_string(), name)).collect()
-            } else {
-                let mut q = c.prepare("SELECT m.minecraft_uuid,n.name,d.id,m.principal_id FROM user_minecraft_accounts m JOIN user_minecraft_names n ON n.principal_id=m.principal_id JOIN devices d ON d.principal_id=m.principal_id WHERE d.revoked_at IS NULL GROUP BY m.minecraft_uuid")?;
-                let rows=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-                rows.into_iter().filter(|(_,_,d,p)| {
-                    let Ok(subject) = (|| -> Result<Subject,()> {Ok(Subject{principal:PrincipalId::parse(p).map_err(|_| ())?,device:DeviceId::parse(d).map_err(|_| ())?})})() else {return false};
-                    crate::identity::policy_in(c,self.db.server_id(),now,Some(&subject)).is_ok_and(|p| p.check(Capability::PackDownload,None).allowed() || p.check(Capability::PackAccess,None).allowed())
-                }).map(|(u,n,_,_)|(u,n)).collect::<Vec<_>>()
-            };
-            let mut q=c.prepare("SELECT uuid,name FROM whitelist_sync_members")?;
-            let managed=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok((actor,desired,managed))
+        let (subject, mut desired, managed) = self.db.read(|c| {
+            let desired = desired_whitelist(c, self.db.server_id(), now)?;
+            let actor: Option<(String,String)> = c.query_row(
+                "SELECT principal_id,device_id FROM whitelist_sync_actor WHERE singleton=1",[],
+                |r|Ok((r.get(0)?,r.get(1)?)),
+            ).optional()?;
+            let subject = actor.and_then(|(principal, device)| Some(Subject {
+                principal: PrincipalId::parse(&principal).ok()?,
+                device: DeviceId::parse(&device).ok()?,
+            }));
+            let subject = crate::identity::worker_policy::whitelist_sync_owner(c)?
+                .or_else(|| subject.filter(|subject| actor_is_current(c, self.db.server_id(), now, subject)));
+            let mut q = c.prepare("SELECT uuid,name FROM whitelist_sync_members")?;
+            let managed = q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((subject, desired, managed))
         }).map_err(|_| ())?;
-        let Some((p, d)) = actor else { return Ok(()) };
-        let subject = Subject {
-            principal: PrincipalId::parse(&p).map_err(|_| ())?,
-            device: DeviceId::parse(&d).map_err(|_| ())?,
-        };
-        let desired = desired
-            .into_iter()
-            .filter(|(u, _)| MinecraftUuid::parse(u).is_ok_and(|u| !bans.contains(u)))
-            .collect::<Vec<_>>();
+        let Some(subject) = subject else { return Ok(()) };
+        desired.retain(|uuid, _| MinecraftUuid::parse(uuid).is_ok_and(|id| !bans.contains(id)));
         let snapshot = runtime.game_snapshot().map_err(|_| ())?;
-        for (uuid, name) in desired.iter().chain(managed.iter()) {
-            let add = desired.iter().any(|(u, _)| u == uuid);
-            let owns = managed.iter().any(|(u, _)| u == uuid);
-            let present = current.iter().any(|e| e.uuid == *uuid);
-            if !add && !owns {
-                continue;
+        let lookup = |uuid: &str| current.iter().find(|entry| entry.uuid.eq_ignore_ascii_case(uuid));
+        // Process removals first. If an operator replaced the managed entry with
+        // a different name, release ownership instead of removing their entry.
+        let change = managed.into_iter().find_map(|(uuid, name)| {
+            if desired.contains_key(&uuid) {
+                return None;
             }
-            if add == present {
-                if !add {
-                    self.db
-                        .write(|c| {
-                            c.execute("DELETE FROM whitelist_sync_members WHERE uuid=?", [uuid])?;
-                            Ok(())
-                        })
-                        .map_err(|_| ())?;
-                }
-                continue;
+            Some((lookup(&uuid).is_some_and(|entry| entry.name.eq_ignore_ascii_case(&name)),
+                WhitelistSyncChange { uuid, name, add: false }))
+        }).or_else(|| {
+            desired.into_iter().find_map(|(uuid, name)| {
+                (lookup(&uuid).is_none() && !current.iter().any(|entry| entry.name.eq_ignore_ascii_case(&name)))
+                    .then_some((true, WhitelistSyncChange { uuid, name, add: true }))
+            })
+        });
+        let Some((needs_edit, change)) = change else { return Ok(()) };
+        if !needs_edit {
+            return self.db.write(|c| Ok(change.record(c)?)).map_err(|_| ());
+        }
+        if snapshot.phase == ProcessPhase::Running {
+            let generation = snapshot.generation.ok_or(())?;
+            runtime.submit_whitelist_sync(&subject, generation, &change).map_err(|_| ())?;
+        } else if snapshot.phase == ProcessPhase::Stopped && snapshot.generation.is_none() {
+            let value = self.files.offline_whitelist(&subject).map_err(|_| ())?;
+            let items: Vec<crate::moderation::WhitelistEntry> = serde_json::from_value(value["items"].clone()).map_err(|_| ())?;
+            let entry = items.iter().find(|entry| entry.uuid.eq_ignore_ascii_case(&change.uuid));
+            if change.add == entry.is_some()
+                || entry.is_some_and(|entry| !entry.name.eq_ignore_ascii_case(&change.name))
+            {
+                return Ok(());
             }
-            let key = format!("whitelist-sync:{}:{}:{}", uuid, add, now / 30000);
-            if let Some(generation) = snapshot.generation {
-                if snapshot.phase != crate::operations::ProcessPhase::Running {
-                    continue;
-                }
-                let action = if add {
-                    crate::moderation::ModerationAction::WhitelistAdd {
-                        player: name.clone(),
-                    }
-                } else {
-                    crate::moderation::ModerationAction::WhitelistRemove {
-                        player: name.clone(),
-                    }
-                };
-                runtime
-                    .submit_game(
-                        &subject,
-                        GameCommand::Moderate {
-                            expected_generation: generation,
-                            action,
-                        },
-                        &key,
-                    )
-                    .map_err(|_| ())?;
-            } else {
-                let value = self.files.offline_whitelist(&subject).map_err(|_| ())?;
-                let hash = value["sha256"].as_str().map(str::to_owned);
-                self.files
-                    .patch_offline_whitelist(
-                        runtime,
-                        &subject,
-                        &key,
-                        crate::files::OfflineWhitelistPatch {
-                            player: name.clone(),
-                            add,
-                            expected_sha256: hash,
-                        },
-                    )
-                    .map_err(|_| ())?;
-            }
-            if add {
-                self.db
-                    .write(|c| {
-                        c.execute(
-                            "INSERT OR IGNORE INTO whitelist_sync_members VALUES(?,?)",
-                            params![uuid, name],
-                        )?;
-                        Ok(())
-                    })
-                    .map_err(|_| ())?;
-            }
-            break; // Bound work and let the game's file observation confirm before the next change.
+            let hash = value["sha256"].as_str().map(str::to_owned);
+            self.files.sync_offline_whitelist(runtime, &subject, &change, hash).map_err(|_| ())?;
         }
         Ok(())
+    }
+
+    /// Wait for the generation-bound command and its persisted game-file effect.
+    /// An uncertain or failed write does not establish ownership.
+    fn observe_whitelist_sync(
+        &self,
+        runtime: &RuntimeHandle,
+        current: &[crate::moderation::WhitelistEntry],
+    ) -> Result<bool, ()> {
+        use crate::operations::WhitelistSyncChange;
+        let pending = self.db.read(|c| {
+            Ok(c.query_row(
+                "SELECT operation_id,uuid,name,add_entry FROM whitelist_sync_pending WHERE singleton=1",
+                [], |r| Ok((r.get::<_,String>(0)?, WhitelistSyncChange { uuid:r.get(1)?, name:r.get(2)?, add:r.get(3)? })),
+            ).optional()?)
+        }).map_err(|_| ())?;
+        let Some((id, change)) = pending else { return Ok(false) };
+        let operation = runtime.operations_service()
+            .summary_trusted(&OperationId::parse(&id).map_err(|_| ())?).map_err(|_| ())?;
+        let present = current.iter().any(|entry| entry.uuid.eq_ignore_ascii_case(&change.uuid)
+            && entry.name.eq_ignore_ascii_case(&change.name));
+        let mut confirmed = false;
+        if let Some(operation) = operation {
+            if operation.state == OperationState::Succeeded {
+                confirmed = change.add == present;
+                if !confirmed && self.db.clock().millis().saturating_sub(operation.updated_at_ms) < 30_000 {
+                    return Ok(true);
+                }
+            } else if !operation.state.is_terminal() && operation.state != OperationState::RecoveryRequired {
+                return Ok(true);
+            }
+        }
+        self.db.write(|c| {
+            if c.execute("DELETE FROM whitelist_sync_pending WHERE operation_id=?", [&id])? != 0 && confirmed {
+                change.record(c)?;
+            }
+            Ok(())
+        }).map_err(|_| ())?;
+        Ok(true)
     }
     fn required(action: &Action) -> Result<Option<Capability>, ActionError> {
         Ok(Some(match action {
@@ -373,6 +365,55 @@ impl HostActions {
             .generation
             .ok_or(ActionError::Invalid)
     }
+}
+
+fn actor_is_current(c: &rusqlite::Connection, server: &str, now: i64, subject: &Subject) -> bool {
+    crate::identity::policy_in(c, server, now, Some(subject)).is_ok_and(|policy| {
+        policy.check(Capability::PlayersModerate, None).allowed()
+    })
+}
+
+pub(crate) fn desired_whitelist(
+    c: &rusqlite::Connection,
+    server: &str,
+    now: i64,
+) -> vesta_state::Result<std::collections::BTreeMap<String, String>> {
+    let json: String = c.query_row("SELECT settings_json FROM access_role_sources WHERE singleton=1", [], |row| row.get(0))?;
+    let settings: crate::identity::management::AccessSettings = serde_json::from_str(&json)
+        .map_err(|_| vesta_state::StateError::new("access_settings_invalid"))?;
+    let roles = &settings.auto_whitelist_roles;
+    let mut desired = std::collections::BTreeMap::new();
+    if roles.is_empty() {
+        return Ok(desired);
+    }
+    let all_roles = roles.contains("*");
+    if let Some(available) = crate::identity::worker_policy::whitelist_roles(c)? {
+        for (role, profiles) in available {
+            if all_roles || roles.contains(&role) {
+                desired.extend(profiles.into_iter().map(|(id, name)| (id.to_string(), name)));
+            }
+        }
+        return Ok(desired);
+    }
+    let mut q = c.prepare(
+        "SELECT m.minecraft_uuid,n.name,d.id,m.principal_id FROM user_minecraft_accounts m
+         JOIN user_minecraft_names n ON n.principal_id=m.principal_id
+         JOIN devices d ON d.principal_id=m.principal_id
+         WHERE d.revoked_at IS NULL GROUP BY m.minecraft_uuid",
+    )?;
+    let mut rows = q.query([])?;
+    while let Some(row) = rows.next()? {
+        let (device, principal): (String, String) = (row.get(2)?, row.get(3)?);
+        let (Ok(device), Ok(principal)) = (DeviceId::parse(&device), PrincipalId::parse(&principal)) else {
+            continue;
+        };
+        if crate::identity::policy_in(c, server, now, Some(&Subject { principal, device }))
+            .is_ok_and(|policy| policy.roles().iter().any(|role| all_roles || roles.contains(role.as_str())))
+        {
+            desired.insert(row.get(0)?, row.get(1)?);
+        }
+    }
+    Ok(desired)
 }
 
 impl ActionPort for HostActions {

@@ -453,6 +453,14 @@ impl FileBrowser {
             }
             self.authorize(connection, subject, path, capability)?;
             self.before_remote_write(connection, subject)?;
+            if let Some(change) = &self.whitelist_sync
+                && change.add
+                && crate::automation_host::desired_whitelist(
+                    connection, self.db.server_id(), self.db.clock().millis(),
+                )?.get(&change.uuid) != Some(&change.name)
+            {
+                return Err(FileError::Conflict(None));
+            }
             crash_point("before")?;
             match precondition {
                 WritePrecondition::Absent => stage.link_absent(&target)?,
@@ -466,6 +474,9 @@ impl FileBrowser {
             #[cfg(test)]
             journal::run_after_write_for_test();
             self.finish_intent(connection, &intent)?;
+            if let Some(change) = &self.whitelist_sync {
+                change.record(connection)?;
+            }
             complete(connection, self.db.server_id(), trash.as_deref())?;
             if let Some(id) = upload {
                 let removed = connection.execute(
@@ -1122,11 +1133,16 @@ impl FileBrowser {
         path: &RelativePath,
         metadata: [(&str, Option<String>); N],
     ) -> Result<()> {
-        let actor = AuditActor::new(
-            subject.principal.as_str().to_owned(),
-            subject.device.as_str().to_owned(),
-            SOURCE.to_owned(),
-        )?;
+        let actor = if self.whitelist_sync.is_some() {
+            let source = crate::operations::WHITELIST_SYNC_SOURCE;
+            AuditActor::new("vesta-server".into(), source.into(), source.into())?
+        } else {
+            AuditActor::new(
+                subject.principal.as_str().to_owned(),
+                subject.device.as_str().to_owned(),
+                SOURCE.to_owned(),
+            )?
+        };
         let mut fields = path_fields("path", path.as_str());
         for (key, value) in metadata {
             if key == "to" {

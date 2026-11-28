@@ -166,6 +166,7 @@ impl Stores {
 pub struct ManagementAccess {
     db: StateDatabase,
     trusted: Option<Arc<crate::worker::TrustedAuthorization>>,
+    icon_game: Option<std::path::PathBuf>,
     session_limit: usize,
     session_ttl_ms: i64,
     audit: AuditLog,
@@ -211,6 +212,7 @@ impl ManagementAccess {
         }
         Ok(Self {
             trusted: None,
+            icon_game: None,
             session_limit: capacity,
             session_ttl_ms: ttl_ms,
             audit: AuditLog::new(db.clone())?,
@@ -218,6 +220,10 @@ impl ManagementAccess {
             db,
             stores: Arc::new(Mutex::new(Stores::new()?)),
         })
+    }
+    pub(crate) fn with_icon_game(mut self, game: Option<std::path::PathBuf>) -> Self {
+        self.icon_game = game;
+        self
     }
     pub fn server_id(&self) -> &str {
         self.db.server_id()

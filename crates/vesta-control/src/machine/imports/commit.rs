@@ -155,6 +155,8 @@ pub fn owner_policy(host: &HostState, server_id: Uuid) -> JobResult<WorkerPolicy
             generation: snapshot.auth_generation,
             grants,
             whitelist_owners,
+            whitelist_roles: Default::default(),
+            activity_identities: Default::default(),
             access_sources_accounts: Default::default(),
         });
         Ok(())

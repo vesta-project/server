@@ -49,6 +49,28 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
             ) STRICT;")?;
             Ok(())
         }
+        35 => {
+            c.execute_batch(
+                r#"CREATE TABLE IF NOT EXISTS worker_activity_identities (
+                    account_id TEXT NOT NULL, device_id TEXT NOT NULL,
+                    display_name TEXT NOT NULL, device_name TEXT NOT NULL,
+                    PRIMARY KEY(account_id,device_id)
+                ) STRICT;
+                CREATE TABLE IF NOT EXISTS whitelist_sync_pending (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                    operation_id TEXT NOT NULL, uuid TEXT NOT NULL, name TEXT NOT NULL,
+                    add_entry INTEGER NOT NULL CHECK(add_entry IN (0,1))
+                ) STRICT;
+                UPDATE access_role_sources SET settings_json =
+                    json_remove(json_set(settings_json, '$.auto_whitelist_roles',
+                        json(CASE WHEN json_extract(settings_json, '$.sync_whitelist') = 1
+                            THEN '["*"]' ELSE '[]' END)), '$.sync_whitelist')
+                WHERE CASE WHEN json_valid(settings_json)
+                    THEN json_type(settings_json, '$.auto_whitelist_roles') IS NULL END;"#,
+            )?;
+            Ok(())
+        }
+        36 => crate::server_icon::migrate(c),
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }

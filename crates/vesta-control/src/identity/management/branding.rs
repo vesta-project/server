@@ -4,6 +4,14 @@ use serde::Deserializer;
 
 const BRANDING: &str = "server.branding";
 const ICON: &str = "server.branding.icon";
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IconSource {
+    #[default]
+    Launcher,
+    Game,
+}
+
 pub const MAX_ICON_BYTES: usize = 256 * 1024;
 fn present_string<'de, D: Deserializer<'de>>(
     d: D,
@@ -18,6 +26,8 @@ pub struct ServerPatch {
     pub name: Option<String>,
     #[serde(default, deserialize_with = "present_string")]
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_source: Option<IconSource>,
 }
 fn setting(repo: &Repository<'_>, key: &str) -> AdminResult<Option<(String, i64)>> {
     Ok(repo
@@ -35,15 +45,18 @@ fn save(repo: &Repository<'_>, key: &str, value: &str) -> AdminResult<()> {
 }
 pub(super) fn projection(repo: &Repository<'_>) -> AdminResult<Value> {
     let Some((value, revision)) = setting(repo, BRANDING)? else {
-        return Ok(json!({"name":null,"description":null,"revision":"0"}));
+        return Ok(json!({"name":null,"description":null,"revision":"0","icon_source":"launcher"}));
     };
     let mut value: Value =
         serde_json::from_str(&value).map_err(|_| PermissionError::Unavailable)?;
     value["revision"] = json!(revision.to_string());
+    if value.get("icon_source").is_none() {
+        value["icon_source"] = json!(IconSource::Launcher);
+    }
     Ok(value)
 }
 pub(super) fn patch(repo: &Repository<'_>, input: &ServerPatch) -> AdminResult<Value> {
-    if input.name.is_none() && input.description.is_none() {
+    if input.name.is_none() && input.description.is_none() && input.icon_source.is_none() {
         return Err(PermissionError::InvalidRequest);
     }
     if input.name.as_ref().is_some_and(|v| {
@@ -80,11 +93,15 @@ pub(super) fn patch(repo: &Repository<'_>, input: &ServerPatch) -> AdminResult<V
     if let Some(description) = &input.description {
         value["description"] = json!(description);
     }
+    if let Some(source) = input.icon_source {
+        value["icon_source"] = json!(source);
+    }
     save(repo, BRANDING, &value.to_string())?;
     projection(repo)
 }
 pub(super) fn icon(repo: &Repository<'_>) -> AdminResult<Option<Vec<u8>>> {
     setting(repo, ICON)?
+        .filter(|(value, _)| !value.is_empty())
         .map(|(value, _)| {
             URL_SAFE_NO_PAD
                 .decode(value)
@@ -105,8 +122,23 @@ pub fn stored_icon_etag(db: &vesta_state::StateDatabase) -> Option<String> {
             .optional()?)
         })
         .ok()??;
-    URL_SAFE_NO_PAD.decode(encoded).ok().map(|b| icon_etag(&b))
+    (!encoded.is_empty()).then(|| URL_SAFE_NO_PAD.decode(encoded).ok()).flatten().map(|b| icon_etag(&b))
 }
+pub(crate) fn stored_icon_source(db: &vesta_state::StateDatabase) -> IconSource {
+    db.read(|c| {
+        Ok(c.query_row(
+            "SELECT s.desired_value FROM settings s JOIN server_identity i ON i.server_id=s.server_id WHERE i.singleton=1 AND s.key=?1",
+            [BRANDING],
+            |r| r.get::<_, String>(0),
+        ).optional()?)
+    })
+    .ok()
+    .flatten()
+    .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+    .and_then(|value| serde_json::from_value(value["icon_source"].clone()).ok())
+    .unwrap_or_default()
+}
+
 pub fn icon_etag(bytes: &[u8]) -> String {
     format!(
         "\"{}\"",
@@ -120,23 +152,53 @@ fn condition(current: Option<&[u8]>, expected: Option<&str>) -> AdminResult<()> 
         _ => Err(PermissionError::PreconditionFailed),
     }
 }
+/// Apply branding already saved before icon synchronization was introduced.
+pub(crate) fn prepare_game_projection(
+    c: &rusqlite::Connection,
+    server: &str,
+    game: &std::path::Path,
+) -> vesta_state::Result<bool> {
+    let Some(png) = game_projection(c, server)? else { return Ok(false) };
+    vesta_state::server_icon::store_branding(c, game, png.as_deref(), false)?;
+    Ok(true)
+}
+
+/// Outer None means the server still uses the legacy presentation icon.
+pub(crate) fn game_projection(c: &rusqlite::Connection, server: &str) -> vesta_state::Result<Option<Option<Vec<u8>>>> {
+    let setting: Option<String> = c.query_row(
+        "SELECT desired_value FROM settings WHERE server_id=? AND key=?",
+        params![server, ICON],
+        |row| row.get(0),
+    ).optional()?;
+    Ok(setting.map(|encoded| URL_SAFE_NO_PAD.decode(encoded).ok()
+        .and_then(|bytes| crate::motd::branding_game_icon(&bytes))))
+}
+
 pub(super) fn put_icon(
     repo: &Repository<'_>,
+    game: Option<&std::path::Path>,
     expected: Option<&str>,
     bytes: &[u8],
 ) -> AdminResult<Value> {
     let normalized =
         crate::motd::normalize_branding_icon(bytes).ok_or(PermissionError::InvalidRequest)?;
     condition(icon(repo)?.as_deref(), expected)?;
+    if let Some(game) = game {
+        let game_icon = crate::motd::branding_game_icon(&normalized).ok_or(PermissionError::InvalidRequest)?;
+        vesta_state::server_icon::store_branding(repo.connection(), game, Some(&game_icon), true)
+            .map_err(|_| PermissionError::Unavailable)?;
+    }
     save(repo, ICON, &URL_SAFE_NO_PAD.encode(&normalized))?;
     Ok(json!({"etag":icon_etag(&normalized)}))
 }
-pub(super) fn delete_icon(repo: &Repository<'_>, expected: &str) -> AdminResult<Value> {
+pub(super) fn delete_icon(repo: &Repository<'_>, game: Option<&std::path::Path>, expected: &str) -> AdminResult<Value> {
     let current = icon(repo)?.ok_or(PermissionError::NotFound)?;
     condition(Some(&current), Some(expected))?;
-    repo.connection().execute(
-        "DELETE FROM settings WHERE server_id=? AND key=?",
-        params![repo_server(repo)?, ICON],
-    )?;
+    if let Some(game) = game {
+        vesta_state::server_icon::store_branding(repo.connection(), game, None, false)
+            .map_err(|_| PermissionError::Unavailable)?;
+    }
+    // Keep a tombstone so an old MOTD icon cannot reappear on restart.
+    save(repo, ICON, "")?;
     Ok(json!({"deleted":true}))
 }

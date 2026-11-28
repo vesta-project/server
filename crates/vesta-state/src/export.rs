@@ -209,6 +209,9 @@ const EXCLUDED: &[&str] = &[
     // Live authority and game-file ownership are not portable control-plane data.
     "whitelist_sync_actor",
     "whitelist_sync_members",
+    "whitelist_sync_pending",
+    // Host-owned display labels are reconstructed from the current policy.
+    "worker_activity_identities",
     "confirmations",
     "management_permission_receipts",
     "local_authority_uses",

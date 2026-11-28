@@ -733,12 +733,14 @@ fn compose(
         .iter()
         .map(|path| path.as_path())
         .collect();
+    let files =
+        FileBrowser::open(db.clone(), config.game(), &protected).map_err(HostError::Files)?;
     let identity = IdentityService::new(db.clone()).map_err(HostError::Identity)?;
     let management = ManagementAccess::new(db.clone()).map_err(|_| {
         HostError::Identity(crate::ControlError::State(vesta_state::StateError::new(
             "management_unavailable",
         )))
-    })?;
+    })?.with_icon_game(files.server_icon_root().map_err(HostError::Files)?);
     let passwords = match config.pack_access() {
         PackAccessMode::Minecraft => None,
         PackAccessMode::MinecraftOrPassword => {
@@ -752,8 +754,6 @@ fn compose(
         management.clone(),
         SessionLimits::default(),
     ));
-    let files =
-        FileBrowser::open(db.clone(), config.game(), &protected).map_err(HostError::Files)?;
     files.reconcile_pending().map_err(HostError::Files)?;
     files.purge_expired_uploads().map_err(HostError::Files)?;
     let limits = SnapshotLimits::new(
@@ -829,7 +829,8 @@ fn compose(
         config.pack().minecraft_version(),
         config.pack().version(),
         config.pack().loader().map_or("vanilla", |l| l.version()),
-    );
+    )
+    .with_icon_files(files.clone());
     let sleep_driver = sleep
         .start_driver(cell.clone())
         .map_err(HostError::Supervisor)?;

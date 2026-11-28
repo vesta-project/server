@@ -251,14 +251,14 @@ impl HostRouter {
             .into_iter()
             .map(|(e, r)| {
                 let fact = facts.get(&e.server_id).cloned().unwrap_or_default();
-                let icon = workers
-                    .iter()
-                    .find(|w| w.server_id() == e.server_id)
-                    .and_then(|w| w.icon_etag());
+                let worker = workers.iter().find(|w| w.server_id() == e.server_id);
+                let icon = worker.and_then(|w| w.icon_etag());
+                let game_icon = worker.and_then(|w| w.game_icon_etag());
+                let icon_source = worker.map(|w| w.icon_source()).unwrap_or_default();
                 json!({"serverId":e.server_id,"name":e.name,"gamePort":e.game_port,
                     "state":format!("{:?}",e.state).to_lowercase(),"enabled":e.state != vesta_control::machine::registry::ServerState::Disabled,"role":role_name(r),
                     "software":fact.software.map(|(kind,version)|json!({"kind":kind,"version":version})),
-                    "minecraftVersion":fact.minecraft_version,"iconEtag":icon})
+                    "minecraftVersion":fact.minecraft_version,"iconEtag":icon,"gameIconEtag":game_icon,"iconSource":icon_source})
             })
             .collect()
     }
@@ -421,13 +421,26 @@ impl Transport {
             let weak = Arc::downgrade(&app);
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(Duration::from_secs(2));
+                let mut projected_generation = None;
                 loop {
                     tick.tick().await;
                     let Some(router) = weak.upgrade().map(|a| a.router.clone()) else {
                         break;
                     };
-                    let _ =
-                        tokio::task::spawn_blocking(move || router.refresh_server_states()).await;
+                    if let Ok(generation) = tokio::task::spawn_blocking(move || {
+                        router.refresh_server_states();
+                        let Ok(snapshot) = router.identity.state.snapshot() else {
+                            return projected_generation;
+                        };
+                        if projected_generation != Some(snapshot.auth_generation)
+                            && router.refresh_worker_policies(None).is_ok()
+                        {
+                            return Some(snapshot.auth_generation);
+                        }
+                        projected_generation
+                    }).await {
+                        projected_generation = generation;
+                    }
                 }
             });
             removed::start_janitor(Arc::downgrade(&app));
@@ -1026,9 +1039,19 @@ impl Application {
                     }
                     ("/v1/host/pake/finish", _) => output(identity.pake_finish(c, input!())),
                     ("/v1/host/invites/redeem", None) => {
-                        self.identity_output(identity.redeem_invite(c, peer.ip(), input!()), false)
+                        let result = identity.redeem_invite(c, peer.ip(), input!());
+                        if result.is_ok() {
+                            let _ = self.router.refresh_worker_policies(None);
+                        }
+                        self.identity_output(result, false)
                     }
-                    ("/v1/host/sign-in", None) => output(identity.sign_in(c, input!())),
+                    ("/v1/host/sign-in", None) => {
+                        let result = identity.sign_in(c, input!());
+                        if result.is_ok() {
+                            let _ = self.router.refresh_worker_policies(None);
+                        }
+                        output(result)
+                    },
                     ("/v1/host/accounts/challenge", None) => {
                         self.identity_output(identity.sign_in_challenge(c, peer.ip(), input!()), false)
                     }
@@ -1164,10 +1187,11 @@ impl Application {
                 .lock()
                 .ok()
                 .and_then(|w| w.iter().find(|w| w.server_id() == id).cloned());
-            let disabled = match state.server(id) {
-                Ok(Some(entry)) => entry.state == vesta_control::machine::registry::ServerState::Disabled,
+            let entry = match state.server(id) {
+                Ok(Some(entry)) => entry,
                 _ => return failure(StatusCode::SERVICE_UNAVAILABLE, "host_unavailable"),
             };
+            let disabled = entry.state == vesta_control::machine::registry::ServerState::Disabled;
             let worker = worker.filter(|_| !disabled).or_else(|| {
                 self.router
                     .import_worker(id)
@@ -1268,7 +1292,7 @@ impl Application {
                 },
                 None => None,
             };
-            let reply = crate::worker::dispatch_host(
+            let mut reply = crate::worker::dispatch_host(
                 worker.as_ref(),
                 subject,
                 crate::worker::WorkerRequest {
@@ -1286,10 +1310,23 @@ impl Application {
                     range: h("range"),
                     if_range: h("if-range"),
                 },
+                &entry.name,
                 self.tls.clone(),
                 peer.ip(),
                 self.downloads.clone(),
             );
+            // A source-only branding change also works before a custom name is set.
+            if suffix == "manage/server" && reply.status() == StatusCode::OK
+                && let ReplyBody::Bytes(bytes) = reply.body_mut()
+                && let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes)
+                && let Some(branding) = value["data"].as_object_mut()
+                && branding.get("name").is_some_and(serde_json::Value::is_null)
+            {
+                branding.insert("name".into(), json!(entry.name));
+                *bytes = serde_json::to_vec(&value).expect("JSON value").into();
+                let size = bytes.len();
+                reply.headers_mut().insert("content-length", size.into());
+            }
             if let Some(port) = new_port {
                 // 202 means the edit still awaits confirmation; only a finished edit moves the port.
                 if reply.status() == StatusCode::OK {

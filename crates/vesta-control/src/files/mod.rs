@@ -66,6 +66,7 @@ use std::{error::Error, fmt, fs, io::Read, path::Path, time::SystemTime};
 use vesta_state::{StateDatabase, StateError, TransactionError};
 
 pub const MAX_READ_BYTES: usize = 1_048_576;
+const MAX_IMAGE_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_DIRECTORY_ENTRIES: usize = vesta_protocol::pack::catalogue::MAX_FILES;
 /// Work bound includes hidden/unreadable entries, not just returned entries.
 pub const MAX_DIRECTORY_SCAN: usize = MAX_DIRECTORY_ENTRIES + 4_096;
@@ -272,6 +273,7 @@ pub struct FileBrowser {
     stopped_guard: Option<std::sync::Arc<offline_whitelist::StoppedGuard>>,
     remote_deadline: Option<std::time::Instant>,
     properties_approval: Option<crate::operations::PropertiesApproval>,
+    whitelist_sync: Option<crate::operations::WhitelistSyncChange>,
 }
 impl fmt::Debug for FileBrowser {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -289,6 +291,14 @@ impl FileBrowser {
             Err(FileError::ProtectedPath) => Ok(None),
             Err(error) => Err(error),
         }
+    }
+
+    /// The transport must authorize status access before calling this fixed-leaf read.
+    pub fn game_icon(&self) -> Result<Option<Vec<u8>>> {
+        let Some(root) = self.server_icon_root()? else {
+            return Ok(None);
+        };
+        Ok(vesta_state::server_icon::user_icon(&self.db, &root)?)
     }
 
     pub(crate) fn reconcile_server_icon(&self, game: &Path) -> Result<()> {
@@ -329,6 +339,7 @@ impl FileBrowser {
             stopped_guard: None,
             remote_deadline: None,
             properties_approval: None,
+            whitelist_sync: None,
         })
     }
 
@@ -554,6 +565,21 @@ impl FileBrowser {
         if limit == 0 || limit > MAX_READ_BYTES {
             return Err(FileError::InvalidLimit);
         }
+        self.read_bounded(subject, path, limit, extra)
+    }
+
+    pub fn image_preview(&self, subject: &Subject, path: &RelativePath) -> Result<Option<(Vec<u8>, &'static str)>> {
+        let file = self.read_bounded(subject, path, MAX_IMAGE_PREVIEW_BYTES, None)?;
+        Ok(image_mime(&file.bytes).map(|mime| (file.bytes, mime)))
+    }
+
+    fn read_bounded(
+        &self,
+        subject: &Subject,
+        path: &RelativePath,
+        limit: usize,
+        extra: Option<Capability>,
+    ) -> Result<FileRead> {
         self.db
             .read_with(|snapshot| {
                 let policy = identity::policy_in(
@@ -598,6 +624,16 @@ impl FileBrowser {
             .map_err(FileError::from)
     }
 }
+fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+    match bytes {
+        [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', ..] => Some("image/png"),
+        [0xff, 0xd8, 0xff, ..] => Some("image/jpeg"),
+        [b'G', b'I', b'F', b'8', b'7' | b'9', b'a', ..] => Some("image/gif"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("image/webp"),
+        _ => None,
+    }
+}
+
 fn authorize(policy: &PolicySnapshot, capability: Capability, resource: &Resource) -> Result<()> {
     match policy.check(capability, Some(resource)) {
         identity::Decision::Allow => Ok(()),

@@ -202,3 +202,21 @@ fn branding_png_validator_accepts_bounded_dimensions_and_rejects_bombs() {
     }
     assert!(normalize_branding_icon(&vec![0; 256 * 1024 + 1]).is_none());
 }
+
+#[test]
+fn branding_projection_resizes_filtered_pixels_to_minecraft_dimensions() {
+    let mut rows = Vec::new();
+    for _ in 0..128 {
+        rows.push(1);
+        rows.extend([9, 19, 29]);
+        rows.extend([0; 127 * 3]);
+    }
+    let large = encode_icon(&[0, 0, 0, 128, 0, 0, 0, 128, 8, 2, 0, 0, 0], &rows);
+    let small = branding_game_icon(&large).unwrap();
+    let (_, pixels) = decode_png(&small, 17 * 1024, 64, 64).unwrap();
+    assert_eq!(pixels.len(), 64 * (1 + 64 * 3));
+    for row in pixels.chunks_exact(193) {
+        assert_eq!(row[0], 0);
+        assert!(row[1..].chunks_exact(3).all(|pixel| pixel == [9, 19, 29]));
+    }
+}

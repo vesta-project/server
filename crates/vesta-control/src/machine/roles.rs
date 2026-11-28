@@ -9,7 +9,7 @@ use crate::{IdentityErrorCode as Code, Result, identity::Capability};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 fn server_roles_in(c: &Connection, server: Uuid) -> Result<Vec<Value>> {
@@ -421,16 +421,18 @@ impl HostState {
     /// Build a complete policy from one Host snapshot. Device enrollment,
     /// membership, role edits and Host access grants share its generation.
     pub fn worker_policy(&self, server: Uuid) -> Result<crate::worker::WorkerPolicy> {
-        use crate::worker::{ServerRole as WorkerRole, WorkerGrant, WorkerPolicy};
+        use crate::worker::{ServerRole as WorkerRole, WhitelistRoles, WorkerActivityIdentity, WorkerGrant, WorkerPolicy};
         self.read(|c| {
             require_server(c, server)?;
             let snapshot = super::state::snapshot_in(c)?;
             let mut q = c.prepare(
-                "SELECT d.account_id,d.device_id FROM machine_devices d JOIN machine_accounts a USING(account_id)
+                "SELECT d.account_id,d.device_id,d.name,n.name FROM machine_devices d
+                 JOIN machine_accounts a USING(account_id) LEFT JOIN machine_account_names n USING(account_id)
                  WHERE d.revoked_at_ms IS NULL AND a.disabled=0 ORDER BY d.device_id",
             )?;
             let mut rows = q.query([])?;
             let mut grants = Vec::new();
+            let mut activity_identities = BTreeMap::new();
             let mut access_sources_accounts = BTreeSet::new();
             while let Some(row) = rows.next()? {
                 let account_id = super::state::uuid(row.get(0)?)?;
@@ -445,21 +447,29 @@ impl HostState {
                         .filter(|cap| effective.remove(cap)).map(|cap| cap.id().into()).collect();
                     capabilities.extend(effective.into_iter().filter(|&cap| role.permits_projection(cap))
                         .map(|cap| cap.id().into()));
+                    let device_name: String = row.get(2)?;
+                    let display_name = row.get::<_, Option<String>>(3)?.unwrap_or_else(|| device_name.clone());
+                    activity_identities.insert(device_id, WorkerActivityIdentity { display_name, device_name });
                     grants.push(WorkerGrant { account_id, device_id, role, capabilities });
                 }
             }
-            let mut whitelist_owners = std::collections::BTreeMap::new();
+            let mut whitelist_roles: WhitelistRoles = role_ids_in(c, server)?
+                .into_iter().map(|id| (id, BTreeMap::new())).collect();
             let mut q = c.prepare(
                 "SELECT n.account_id,n.name FROM machine_account_names n JOIN machine_accounts a USING(account_id)
-                 WHERE a.disabled=0 AND (n.account_id IN (SELECT account_id FROM machine_owners)
-                   OR n.account_id=(SELECT primary_account_id FROM machine_host WHERE singleton=1))",
+                 WHERE a.disabled=0 ORDER BY n.account_id",
             )?;
             let mut rows = q.query([])?;
             while let Some(row) = rows.next()? {
-                whitelist_owners.insert(super::state::uuid(row.get(0)?)?, row.get(1)?);
+                let account = super::state::uuid(row.get(0)?)?;
+                if let Some(role) = effective_role_in(c, account, server)?
+                    && let Some(profiles) = whitelist_roles.get_mut(&role.id())
+                {
+                    profiles.insert(account, row.get(1)?);
+                }
             }
             Ok(WorkerPolicy { host_id:snapshot.host_id, server_id:server, generation:snapshot.auth_generation,
-                grants, whitelist_owners, access_sources_accounts })
+                grants, whitelist_owners: Default::default(), whitelist_roles, activity_identities, access_sources_accounts })
         })
     }
 
