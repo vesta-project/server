@@ -14,16 +14,21 @@ on:
 permissions:
   contents: read
 
+env:
+  CI_LAUNCHER_REVISION: 930f21dd465453e90af16548eee4db3d53828986
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    timeout-minutes: 10
+  scope:
+    timeout-minutes: 5
     runs-on: ubuntu-latest
     outputs:
       rust_scope: ${{ steps.scope.outputs.rust_scope }}
+      pr_rust_platform: ${{ steps.scope.outputs.pr_rust_platform }}
+      pr_rust_packages: ${{ steps.scope.outputs.pr_rust_packages }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,6 +51,21 @@ jobs:
           CI_RELEASE_SCOPE: ${{ inputs.release_rust_scope }}
         run: node scripts/change-scope.mjs
 
+  test:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
       - name: Check protocol conformance and requirement ledger
         run: |
           node --test scripts/*.test.mjs
@@ -55,7 +75,8 @@ jobs:
           node scripts/build-roadmap-html.mjs --check
 
   rust:
-    needs: test
+    needs: scope
+    if: ${{ !cancelled() }}
     timeout-minutes: 45
     name: Rust (${{ matrix.os }})
     strategy:
@@ -72,6 +93,11 @@ jobs:
         shell: bash
         working-directory: server
     steps:
+      - name: Require successful scope calculation
+        if: needs.scope.result != 'success'
+        working-directory: .
+        run: exit 1
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -79,20 +105,29 @@ jobs:
           persist-credentials: false
 
       - name: Checkout pinned shared sandbox source
-        if: needs.test.outputs.rust_scope != 'none'
+        if: needs.scope.outputs.rust_scope != 'none'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: vesta-project/launcher
-          ref: 930f21dd465453e90af16548eee4db3d53828986
+          ref: ${{ env.CI_LAUNCHER_REVISION }}
           path: launcher
           persist-credentials: false
 
       - name: Select verified development toolchain
-        if: needs.test.outputs.rust_scope != 'none'
+        if: needs.scope.outputs.rust_scope != 'none'
         run: rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
 
+      - name: Identify Rust cache profile
+        if: needs.scope.outputs.rust_scope != 'none'
+        id: cache-profile
+        env:
+          PLATFORM: ${{ matrix.os }}-${{ runner.arch }}
+          CARGO_INPUTS: ${{ hashFiles('server/Cargo.lock', 'server/**/Cargo.toml', 'server/.cargo/**', 'server/rust-toolchain.toml') }}
+        run: |
+          echo "prefix=trusted-ci-v2-$PLATFORM-rust-1.96.0-debug-${CARGO_PROFILE_DEV_DEBUG}-${CARGO_PROFILE_TEST_DEBUG}-incremental-$CARGO_INCREMENTAL-$CI_LAUNCHER_REVISION-$CARGO_INPUTS-" >> "$GITHUB_OUTPUT"
+
       - name: Restore trusted main Rust cache
-        if: needs.test.outputs.rust_scope != 'none'
+        if: needs.scope.outputs.rust_scope != 'none'
         id: rust-cache
         continue-on-error: true
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -101,30 +136,41 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             server/target
-          key: trusted-ci-${{ runner.os }}-rust-1.96.0-${{ hashFiles('server/Cargo.lock', 'server/rust-toolchain.toml', 'server/.github/workflows/ci.yml') }}-${{ github.sha }}
+          key: ${{ steps.cache-profile.outputs.prefix }}${{ github.sha }}
           restore-keys: |
-            trusted-ci-${{ runner.os }}-rust-1.96.0-${{ hashFiles('server/Cargo.lock', 'server/rust-toolchain.toml', 'server/.github/workflows/ci.yml') }}-
+            ${{ steps.cache-profile.outputs.prefix }}
 
       - name: Select Rust scope
-        if: needs.test.outputs.rust_scope != 'none'
+        if: needs.scope.outputs.rust_scope != 'none'
         id: packages
         env:
-          SCOPE: ${{ needs.test.outputs.rust_scope }}
+          SCOPE: ${{ needs.scope.outputs.rust_scope }}
+          PR_PACKAGES: ${{ needs.scope.outputs.pr_rust_packages }}
         run: |
-          echo "args=$(node scripts/change-scope.mjs --cargo-args "$SCOPE")" >> "$GITHUB_OUTPUT"
+          args=$(node scripts/change-scope.mjs --cargo-args "$SCOPE" "$PR_PACKAGES")
+          echo "Selected Cargo arguments: $args"
+          echo "args=$args" >> "$GITHUB_OUTPUT"
 
       - name: Check formatting
-        if: needs.test.outputs.rust_scope != 'none'
+        if: needs.scope.outputs.rust_scope != 'none'
         run: rustup run 1.96.0 cargo fmt --all -- --check
 
       - name: Check all targets
-        if: needs.test.outputs.rust_scope != 'none'
+        if: needs.scope.outputs.rust_scope != 'none' && github.event_name != 'pull_request'
         env:
           CARGO_INCREMENTAL: "0"
         run: rustup run 1.96.0 cargo check ${{ steps.packages.outputs.args }} --all-targets --locked
 
+      - name: Run strict all-target Clippy
+        if: needs.scope.outputs.rust_scope != 'none'
+        run: rustup run 1.96.0 cargo clippy ${{ steps.packages.outputs.args }} --all-targets --locked -- -D warnings
+
       - name: Run Rust tests
-        if: needs.test.outputs.rust_scope != 'none'
+        if: >-
+          needs.scope.outputs.rust_scope != 'none' &&
+          (github.event_name != 'pull_request' ||
+          (runner.os == 'Linux' && needs.scope.outputs.pr_rust_platform != 'windows') ||
+          (runner.os == 'Windows' && needs.scope.outputs.pr_rust_platform != 'linux'))
         env:
           CARGO_INCREMENTAL: "0"
           # Native onboarding fixtures package the real setup executable. Embedded
@@ -132,14 +178,17 @@ jobs:
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: rustup run 1.96.0 cargo test ${{ steps.packages.outputs.args }} --locked -- --test-threads=1
 
-      - name: Run strict all-target Clippy
-        if: needs.test.outputs.rust_scope != 'none'
+      - name: Report tests routed to the other platform
+        if: >-
+          needs.scope.outputs.rust_scope != 'none' && github.event_name == 'pull_request' &&
+          ((runner.os == 'Linux' && needs.scope.outputs.pr_rust_platform == 'windows') ||
+          (runner.os == 'Windows' && needs.scope.outputs.pr_rust_platform == 'linux'))
         env:
-          CARGO_INCREMENTAL: "0"
-        run: rustup run 1.96.0 cargo clippy ${{ steps.packages.outputs.args }} --all-targets --locked -- -D warnings
+          TEST_PLATFORM: ${{ needs.scope.outputs.pr_rust_platform }}
+        run: echo "Rust tests run on $TEST_PLATFORM. This runner checked formatting and compiled all selected targets with strict Clippy."
 
       - name: Save cache only from successful protected main
-        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.test.outputs.rust_scope != 'none' && steps.rust-cache.outputs.cache-hit != 'true'
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected && needs.scope.outputs.rust_scope != 'none' && steps.rust-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -147,8 +196,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             server/target
-          key: trusted-ci-${{ runner.os }}-rust-1.96.0-${{ hashFiles('server/Cargo.lock', 'server/rust-toolchain.toml', 'server/.github/workflows/ci.yml') }}-${{ github.sha }}
+          key: ${{ steps.cache-profile.outputs.prefix }}${{ github.sha }}
 
       - name: Rust checks not applicable to this revision
-        if: needs.test.outputs.rust_scope == 'none'
+        if: needs.scope.outputs.rust_scope == 'none'
         run: echo 'No Rust or build-contract changes. Node and bootstrap checks ran in the required test job.'

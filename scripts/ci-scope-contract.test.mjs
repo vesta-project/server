@@ -17,23 +17,42 @@ test('main uses the same CI once and cannot omit pending release validation',asy
 });
 test('required job names remain; no Rust change is explicit, classifier failure cannot skip checks', () => {
   assert.match(ci, /name: Rust \(\$\{\{ matrix.os \}\}\)/);
-  assert.match(ci, /needs: test/);
+  assert.match(ci, /needs: scope/);
+  assert.doesNotMatch(ci, /needs: test/);
+  assert.match(ci, /needs: scope\n    if: \$\{\{ !cancelled\(\) \}\}/);
+  assert.match(ci, /name: Require successful scope calculation\n\s+if: needs\.scope\.result != 'success'\n\s+working-directory: \.\n\s+run: exit 1/);
   assert.match(ci, /rust_scope: \$\{\{ steps.scope.outputs.rust_scope \}\}/);
   assert.match(ci, /fetch-depth: 0/);
   for (const name of ['Checkout pinned shared sandbox source', 'Select verified development toolchain', 'Check formatting', 'Check all targets', 'Run Rust tests', 'Run strict all-target Clippy']) {
     const step = ci.split(`      - name: ${name}\n`)[1].split('\n      - name:')[0];
-    assert.match(step, /if: needs.test.outputs.rust_scope != 'none'/, name);
+    assert.match(step, /needs\.scope\.outputs\.rust_scope != 'none'/, name);
   }
   assert.match(ci, /name: Rust checks not applicable to this revision/);
   assert.doesNotMatch(ci, /secrets\.CURSEFORGE_API_KEY/);
 });
+test('platform routing affects PR test execution only; both runners keep strict all-target Clippy', () => {
+  const tests = ci.split('      - name: Run Rust tests\n')[1].split('\n      - name:')[0];
+  assert.match(tests, /github\.event_name != 'pull_request' \|\|/);
+  assert.match(tests, /runner\.os == 'Linux' && needs\.scope\.outputs\.pr_rust_platform != 'windows'/);
+  assert.match(tests, /runner\.os == 'Windows' && needs\.scope\.outputs\.pr_rust_platform != 'linux'/);
+  assert.match(tests, /--test-threads=1/);
+  const lint = ci.split('      - name: Run strict all-target Clippy\n')[1].split('\n      - name:')[0];
+  assert.doesNotMatch(lint, /pr_rust_platform/);
+  assert.match(lint, /--all-targets --locked -- -D warnings/);
+  const check = ci.split('      - name: Check all targets\n')[1].split('\n      - name:')[0];
+  assert.match(check, /github\.event_name != 'pull_request'/);
+});
 test('cache writes require successful protected main, never PR writes, cache errors cannot skip tests', () => {
   const save = ci.split('      - name: Save cache only from successful protected main')[1];
   assert.match(save, /if: success\(\).*github.event_name == 'push'.*github.ref == 'refs\/heads\/main'/);
+  assert.match(save, /&& github\.ref_protected/);
   assert.match(save, /continue-on-error: true/);
   assert.match(ci, /uses: actions\/cache\/restore@[0-9a-f]{40}/);
   assert.match(ci, /uses: actions\/cache\/save@[0-9a-f]{40}/);
-  assert.match(ci, /key: trusted-ci-\$\{\{ runner.os \}\}-rust-1.96.0-/);
+  assert.match(ci, /PLATFORM: \$\{\{ matrix.os \}\}-\$\{\{ runner.arch \}\}/);
+  assert.match(ci, /prefix=trusted-ci-v2-\$PLATFORM-rust-1\.96\.0-debug-.*\$CI_LAUNCHER_REVISION-\$CARGO_INPUTS-/);
+  assert.equal((ci.match(/key: \$\{\{ steps.cache-profile.outputs.prefix \}\}\$\{\{ github.sha \}\}/g) || []).length, 2);
+  assert.match(ci, /ref: \$\{\{ env.CI_LAUNCHER_REVISION \}\}/);
 });
 test('actual scope shell selects bounded package arguments, unknown values fall back to workspace', async t => {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'vesta-ci-scope-'));
