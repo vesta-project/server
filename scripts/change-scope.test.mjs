@@ -3,6 +3,83 @@ import test from 'node:test';
 import { classifyChanges, changedFiles, planPublications, mergeRustScopes } from './change-scope.mjs';
 import * as scopeModule from './change-scope.mjs';
 
+test('PR routing defaults portable tests to Linux and selects native adapters by OS', () => {
+  const cases = [
+    [['crates/vesta-protocol/tests/discovery.rs', 'README.md'], 'linux', 'vesta-protocol'],
+    [['crates/vesta-protocol/src/framing.rs'], 'linux', 'vesta-protocol+'],
+    [['apps/vesta-setup/src/linux-service.sh'], 'linux', 'vesta-setup+'],
+    [['apps/vesta-setup/src/platform/windows_detach.rs'], 'windows', 'vesta-setup+'],
+    [['apps/vesta-agent/src/host_local_windows.rs'], 'windows', 'vesta-agent+'],
+    [['crates/vesta-control/src/shutdown_signal_windows.rs'], 'windows', 'vesta-control+'],
+    [['crates/vesta-state/src/windows_security.rs'], 'windows', 'vesta-state+'],
+    [['apps/vesta-setup/src/linux_acl.rs', 'apps/vesta-agent/src/host_local_windows.rs'], 'both', 'vesta-agent+,vesta-setup+'],
+    [['crates/vesta-control/src/files/native.rs', 'crates/vesta-protocol/tests/discovery.rs'], 'both', 'vesta-control+,vesta-protocol'],
+    [['apps/vesta-setup/tests/setup.rs'], 'both', 'vesta-setup'],
+  ];
+  for (const [files, platform, packages] of cases) {
+    assert.deepEqual(scopeModule.prRustSelection(files), {pr_rust_platform: platform, pr_rust_packages: packages});
+  }
+});
+
+test('shared, unknown, or build-contract edits fall back even in a portable PR', () => {
+  for (const file of ['Cargo.lock', 'crates/vesta-protocol/Cargo.toml', 'protocol/v1/fixtures/request.json',
+    'crates/vesta-control/build.rs', 'apps/vesta-setup/src/install-profile.toml',
+    'scripts/change-scope.mjs', '.github/workflows/ci.yml', 'crates/unknown/src/lib.rs', 'unknown.file']) {
+    assert.deepEqual(scopeModule.prRustSelection(['crates/vesta-protocol/src/framing.rs', file]),
+      {pr_rust_platform: 'both', pr_rust_packages: ''}, file);
+  }
+});
+
+test('editing test sharding logic or timings exercises the full two-platform PR gate', () => {
+  for (const file of ['scripts/rust-test-shards.mjs', 'scripts/fixtures/ci-rust-test-timings.json']) {
+    assert.deepEqual(classifyChanges([file]), {rust_scope: 'full', server_release: false, installer_release: false});
+    assert.deepEqual(scopeModule.prRustSelection([file]), {pr_rust_platform: 'both', pr_rust_packages: ''});
+  }
+});
+
+test('shards cover whole-workspace and slow affected suites on the selected platforms', () => {
+  const plan = files => scopeModule.prRustShards(classifyChanges(files).rust_scope, scopeModule.prRustSelection(files));
+  const indexes = count => Array.from({length: count}, (_, index) => index);
+  const whole = plan(['.github/workflows/ci.yml']);
+  assert.deepEqual(whole.filter(shard => shard.os === 'ubuntu-24.04').map(shard => shard.shard), indexes(8));
+  assert.deepEqual(whole.filter(shard => shard.os === 'windows-2025').map(shard => shard.shard), indexes(12));
+  assert.ok(plan(['crates/vesta-protocol/src/framing.rs']).every(shard => shard.os === 'ubuntu-24.04'));
+  assert.equal(plan(['crates/vesta-protocol/src/framing.rs']).length, 8);
+  assert.ok(plan(['crates/vesta-control/src/shutdown_signal_windows.rs']).every(shard => shard.os === 'windows-2025'));
+  assert.equal(plan(['crates/vesta-control/src/shutdown_signal_windows.rs']).length, 12);
+  assert.equal(plan(['crates/vesta-transport/tests/https.rs']).length, 20);
+  assert.deepEqual(plan(['apps/vesta-setup/src/linux_acl.rs']), []);
+  assert.deepEqual(plan(['crates/vesta-protocol/tests/discovery.rs']), []);
+  assert.deepEqual(plan(['README.md']), []);
+});
+
+test('legacy cache restores require the known main baseline and matching Cargo inputs', () => {
+  const base = '5739d92b50d5050758c404503d117726eabfebd0';
+  const keys = scopeModule.legacyRustCacheKeys(base, ['.github/workflows/ci.yml']);
+  assert.match(keys.legacy_linux_cache, /^trusted-ci-Linux-rust-1\.96\.0-/);
+  assert.match(keys.legacy_windows_cache, /^trusted-ci-Windows-rust-1\.96\.0-/);
+  assert.ok(Object.values(keys).every(key => key.endsWith(base)));
+  assert.deepEqual(scopeModule.legacyRustCacheKeys('a'.repeat(40), []), {});
+  for (const file of ['Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'crates/vesta-protocol/Cargo.toml']) {
+    assert.deepEqual(scopeModule.legacyRustCacheKeys(base, [file]), {}, file);
+  }
+});
+
+test('source changes include downstream target-specific, development and build dependencies', () => {
+  const pkg = (name, dir, dependencies = []) => ({name, manifest_path: `/workspace/${dir}/Cargo.toml`, dependencies});
+  const dependency = (dir, kind, target = null) => ({path: `/workspace/${dir}`, kind, target});
+  const workspace = { packages: [
+    pkg('vesta-protocol', 'crates/protocol'),
+    pkg('vesta-control', 'crates/control', [dependency('crates/protocol', 'dev', 'cfg(windows)')]),
+    pkg('vesta-agent', 'apps/agent', [dependency('crates/control', 'build')]),
+    pkg('vesta-state', 'crates/state'),
+  ] };
+  assert.equal(scopeModule.affectedCargoArgs('vesta-protocol', workspace), '-p vesta-protocol');
+  assert.equal(scopeModule.affectedCargoArgs('vesta-protocol+,vesta-state', workspace),
+    '-p vesta-agent -p vesta-control -p vesta-protocol -p vesta-state');
+  assert.throws(() => scopeModule.affectedCargoArgs('unknown+', workspace), /Unknown Rust package/);
+});
+
 test('one CI matrix includes both current push and unpublished release scope',()=>{
   assert.equal(mergeRustScopes('none','full'),'full');
   assert.equal(mergeRustScopes('setup','update'),'setup-update');

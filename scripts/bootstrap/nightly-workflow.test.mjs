@@ -34,8 +34,11 @@ test('nightly publishes only new main pushes, never schedules, manual dispatch o
 });
 
 test('Rust jobs check out the shared dependency beside the server at an immutable revision', () => {
+  const pin = ci.match(/\n  CI_LAUNCHER_REVISION: ([0-9a-f]{40})\n/)?.[1];
+  assert.ok(pin);
+  assert.match(ci,/repository: vesta-project\/launcher\n\s+ref: \$\{\{ env.CI_LAUNCHER_REVISION \}\}\n\s+path: launcher/);
+  assert.match(nightly,new RegExp(`repository: vesta-project/launcher\\n\\s+ref: ${pin}\\n\\s+path: launcher`));
   for(const workflow of [ci,nightly]){
-    assert.match(workflow,/repository: vesta-project\/launcher\n\s+ref: [0-9a-f]{40}\n\s+path: launcher/);
     assert.match(workflow,/working-directory: server/);
     assert.match(workflow,/path: server\n\s+persist-credentials: false/);
   }

@@ -3,7 +3,9 @@ use super::*;
 
 fn owned_child() -> bool {
     let a: Vec<_> = std::env::args().collect();
-    a.iter().any(|v| v == "--exact") && a.iter().any(|v| v.contains("tests::runtime::child_"))
+    a.iter().any(|v| v == "--nocapture")
+        && a.windows(2)
+            .any(|pair| pair[0] == "--exact" && pair[1].starts_with("tests::runtime::child_"))
 }
 #[test]
 fn child_good() {

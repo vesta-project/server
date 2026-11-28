@@ -230,14 +230,14 @@ mod tests {
 
     #[test]
     fn exited_child_is_not_alive() {
-        let mut child = std::process::Command::new(env!("CARGO"))
-            .arg("--version")
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--list", "--format=terse"])
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
         let pid = child.id();
         let start = process_start(pid);
-        child.wait().unwrap();
+        assert!(child.wait().unwrap().success());
         assert!(start.is_none_or(|start| liveness(pid, start, None) == Liveness::Gone));
         assert_ne!(process_state(pid), ProcessState::Unknown);
     }
