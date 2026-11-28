@@ -11,6 +11,52 @@ use vesta_state::{Clock, StateDatabase, StateDirectory, audit::AuditLog};
 
 const START: i64 = 1_791_115_200_000;
 
+#[test]
+fn directory_trash_recovery_distinguishes_delete_restore_and_legacy_intents() {
+    for (restoring, moved, expected) in [
+        (Some(false), false, None),
+        (Some(false), true, Some("complete")),
+        (Some(true), false, Some("complete")),
+        (Some(true), true, Some("restored")),
+        (None, true, Some("recovery-required")),
+    ] {
+        let f = Fixture::open();
+        f.put("config/example.txt", b"retain this");
+        let entry = f
+            .files
+            .delete_directory(&f.owner, &Fixture::path("config"))
+            .unwrap();
+        let copy =
+            f.db.directory()
+                .path()
+                .join("trash-folders")
+                .join(&entry.id);
+        let at_original = match restoring {
+            Some(false) => !moved,
+            _ => moved,
+        };
+        if at_original {
+            fs::rename(copy, f.game.join("config")).unwrap();
+        }
+        f.db.write(|c| {
+            c.execute(
+                "UPDATE file_trash SET status='pending',directory_restore_pending=? WHERE id=?",
+                params![restoring, entry.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(f.files.reconcile_pending().unwrap(), 1);
+        assert_eq!(f.files.reconcile_pending().unwrap(), 0);
+        assert_eq!(f.get("config/example.txt").is_some(), at_original);
+        if let Some(expected) = expected {
+            assert_eq!(status(&f, &entry.id), expected);
+        } else {
+            assert_eq!(f.trash_rows(), 0);
+        }
+    }
+}
+
 struct SteppedClock(AtomicI64);
 impl Clock for SteppedClock {
     fn millis(&self) -> i64 {

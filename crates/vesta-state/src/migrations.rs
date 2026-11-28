@@ -74,6 +74,10 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         }
         36 => crate::server_icon::migrate(c),
         37 => crate::server_icon::migrate_user_observation(c),
+        38 => {
+            c.execute_batch("ALTER TABLE file_trash ADD COLUMN directory_restore_pending INTEGER CHECK(directory_restore_pending IN (0,1));")?;
+            Ok(())
+        }
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
 }

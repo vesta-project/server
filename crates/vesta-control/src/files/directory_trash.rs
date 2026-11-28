@@ -148,8 +148,8 @@ impl FileBrowser {
             let expires_at = now.saturating_add(i64::try_from(self.trash_policy.retention.as_millis()).map_err(|_| FileError::InvalidLimit)?);
             let identity = native::directory_identity(&source.path)?;
             c.execute("INSERT INTO file_trash
-                (id,server_id,path,sha256,size,reason,principal_id,device_id,status,readonly,trashed_at,expires_at,directory,batch_id,directory_identity)
-                VALUES (?,?,?,?,?,'delete',?,?,'pending',0,?,?,1,?,?)",
+                (id,server_id,path,sha256,size,reason,principal_id,device_id,status,readonly,trashed_at,expires_at,directory,batch_id,directory_identity,directory_restore_pending)
+                VALUES (?,?,?,?,?,'delete',?,?,'pending',0,?,?,1,?,?,0)",
                 params![id,self.db.server_id(),source.resource.as_str(),sha256,i64::try_from(size).map_err(|_| FileError::TooLarge)?,subject.principal.as_str(),subject.device.as_str(),now,expires_at,self.trash_batch,identity])?;
             load_entry(c, self.db.server_id(), &id)?.ok_or(FileError::Unavailable)
         }).map_err(FileError::from)?;
@@ -178,7 +178,7 @@ impl FileBrowser {
                     path,
                     [("trash", Some(id.clone()))],
                 )?;
-                c.execute("UPDATE file_trash SET status='complete' WHERE id=?", [&id])?;
+                c.execute("UPDATE file_trash SET status='complete',directory_restore_pending=NULL WHERE id=?", [&id])?;
                 Ok(entry)
             })
             .map_err(FileError::from);
@@ -213,7 +213,7 @@ impl FileBrowser {
                 self.authorize_destination(c, subject, path, Capability::FilesCreate)?;
                 require_absent(&self.parent(path)?.join(leaf(path)))?;
                 if c.execute(
-                    "UPDATE file_trash SET status='pending' WHERE id=? AND status='complete'",
+                    "UPDATE file_trash SET status='pending',directory_restore_pending=1 WHERE id=? AND status='complete'",
                     [id],
                 )? != 1
                 {
@@ -239,7 +239,7 @@ impl FileBrowser {
             moved = true;
             sync_move(&copy, &target)?;
             self.audit(c, subject, "file.restore", path, [("trash", Some(id.clone()))])?;
-            c.execute("UPDATE file_trash SET status='restored' WHERE id=?", [id])?;
+            c.execute("UPDATE file_trash SET status='restored',directory_restore_pending=NULL WHERE id=?", [id])?;
             let change = FileChange { sha256: entry.sha256.clone(), size: entry.size, trash: None };
             self.remote_complete(c, subject, json!({"outcome":"succeeded","sha256":change.sha256,"size":change.size.to_string(),"trash_id":null}))?;
             Ok(change)
@@ -247,7 +247,7 @@ impl FileBrowser {
         if result.is_err() && !moved {
             self.db.write(|c| {
                 c.execute(
-                    "UPDATE file_trash SET status='complete' WHERE id=? AND status='pending'",
+                    "UPDATE file_trash SET status='complete',directory_restore_pending=NULL WHERE id=? AND status='pending'",
                     [id],
                 )?;
                 Ok(())
@@ -263,10 +263,10 @@ impl FileBrowser {
     pub(super) fn reconcile_directory_trash(&self) -> Result<usize> {
         self.db.write_with(|tx| {
             let c = tx.connection();
-            let mut query = c.prepare("SELECT id,path FROM file_trash WHERE server_id=? AND directory=1 AND status='pending' ORDER BY id")?;
-            let rows = query.query_map([self.db.server_id()], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?)))?
+            let mut query = c.prepare("SELECT id,path,directory_restore_pending FROM file_trash WHERE server_id=? AND directory=1 AND status='pending' ORDER BY id")?;
+            let rows = query.query_map([self.db.server_id()], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, Option<bool>>(2)?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
-            for (id, path) in &rows {
+            for (id, path, restoring) in &rows {
                 let location = self.directory_copy(id, false)?;
                 let original = RelativePath::parse(path)?;
                 let original = self.root.resolve(Some(&original)).is_ok_and(|path| {
@@ -274,10 +274,19 @@ impl FileBrowser {
                 });
                 let status = match fs::symlink_metadata(&location) {
                     Ok(meta) if meta.is_dir() && self.check_trash_directory(c, id, &location).is_ok() => "complete",
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound && original => "restored",
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound && original => {
+                        match restoring {
+                            Some(false) => {
+                                c.execute("DELETE FROM file_trash WHERE id=?", [id])?;
+                                continue;
+                            }
+                            Some(true) => "restored",
+                            None => "recovery-required",
+                        }
+                    }
                     _ => "recovery-required",
                 };
-                c.execute("UPDATE file_trash SET status=? WHERE id=?", params![status,id])?;
+                c.execute("UPDATE file_trash SET status=?,directory_restore_pending=NULL WHERE id=?", params![status,id])?;
             }
             Ok(rows.len())
         }).map_err(FileError::from)
