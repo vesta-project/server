@@ -19,8 +19,13 @@ are inspected without loading classes or executing the JAR.
 Datapacks reuse world details and their saved `level.dat` enabled/disabled selection.
 Folders get a bounded tree digest and byte count; ZIPs get a file digest. Built-in
 and missing datapacks remain available through the existing world API, rather than
-being reported as installed files. File/tree hashing is bounded; a null validator
-means that the observation did not hash the complete content.
+being reported as installed files. For standalone files, a full inventory verifies
+up to 128 files and 64 MiB of new file bytes per request. Refreshing the full inventory
+continues the work, including for a file that spans several requests. A
+server-private cache reuses validators while the open file's ID, size, modification
+time and settled filesystem change time agree. The mutation still verifies the bytes
+against the supplied validator before it acts. A null validator means the
+inventory has no verified digest for that row.
 
 Inventory has no provider network IO. `POST content/identify {path}` optionally
 identifies one existing mod/plugin JAR (up to 16 MiB) through Modrinth's

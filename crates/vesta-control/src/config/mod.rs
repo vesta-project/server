@@ -201,6 +201,8 @@ pub struct BackupProfile {
     /// Most restore points this profile may hold after retention; a backup that would
     /// exceed it is refused (nothing is deleted to make room).
     pub max_snapshots: Option<u32>,
+    pub max_snapshot_bytes: Option<u64>,
+    pub max_collection_bytes: Option<u64>,
     /// Literal game-relative roots; empty includes worlds, configs and other game files.
     pub include: Vec<String>,
     pub exclude: Vec<String>,
@@ -326,6 +328,8 @@ pub fn validate_backup_policy(profiles: &[BackupProfile], limits: &BackupLimits)
             .any(|&k| k > MAX_RETENTION)
             || p.warn_seconds > MAX_WARN_SECONDS
             || p.max_snapshots == Some(0)
+            || p.max_snapshot_bytes == Some(0)
+            || p.max_collection_bytes == Some(0)
         {
             return Err(ConfigError::InvalidDocument);
         }
@@ -513,6 +517,20 @@ pub struct TlsListener {
     session_requests_per_minute: u32,
 }
 impl TlsListener {
+    /// Machine listener: explicit TLS paths, LAN binds allowed, bounded defaults.
+    pub fn host(
+        bind: IpAddr,
+        port: u16,
+        certificate: PathBuf,
+        private_key: PathBuf,
+    ) -> Result<Self> {
+        let mut listener = Self::pending_local(port, certificate, private_key)?;
+        listener.bind = bind;
+        listener.max_connections = 64;
+        listener.max_request_bytes = 4 * 1024 * 1024;
+        listener.request_timeout_seconds = 30;
+        Ok(listener)
+    }
     /// Bounded loopback-only pending setup; no game configuration is invented.
     pub fn pending_local(port: u16, certificate: PathBuf, private_key: PathBuf) -> Result<Self> {
         check_absolute(&certificate)?;
@@ -641,6 +659,9 @@ pub struct HostConfiguration {
     isolation: Option<IsolationSettings>,
     downloads: DownloadSettings,
     on_agent_start: OnAgentStart,
+    /// Whether `[process]` names the startup policy; otherwise the server
+    /// resumes the state it was left in (see [`Self::on_agent_start_explicit`]).
+    on_agent_start_explicit: bool,
     java_allowlist: Vec<PathBuf>,
 }
 impl fmt::Debug for HostConfiguration {
@@ -844,6 +865,8 @@ impl HostConfiguration {
                         on_mutation: p.on_mutation,
                         warn_seconds: p.warn_seconds.unwrap_or(DEFAULT_WARN_SECONDS),
                         max_snapshots: p.max_snapshots,
+                        max_snapshot_bytes: p.max_snapshot_bytes,
+                        max_collection_bytes: p.max_collection_bytes,
                         include: p.include,
                         exclude: p.exclude,
                     })
@@ -872,6 +895,10 @@ impl HostConfiguration {
                 })
             })
             .transpose()?;
+        let on_agent_start_explicit = document
+            .process
+            .as_ref()
+            .is_some_and(|Table(p)| p.on_agent_start.is_some() || p.start_on_agent_start.is_some());
         let on_agent_start = document
             .process
             .as_ref()
@@ -981,6 +1008,7 @@ impl HostConfiguration {
                 .unwrap_or_default()
                 .validated()?,
             on_agent_start,
+            on_agent_start_explicit,
             java_allowlist: document
                 .java
                 .map(|t| {
@@ -1063,6 +1091,12 @@ impl HostConfiguration {
     }
     pub fn on_agent_start(&self) -> OnAgentStart {
         self.on_agent_start
+    }
+    /// The startup policy `[process]` sets explicitly, `None` when it is not
+    /// set: then a server that was running (or starting) when Vesta stopped is
+    /// started again and one the owner stopped stays stopped.
+    pub fn on_agent_start_explicit(&self) -> Option<OnAgentStart> {
+        self.on_agent_start_explicit.then_some(self.on_agent_start)
     }
     pub fn start_on_agent_start(&self) -> bool {
         self.on_agent_start == OnAgentStart::Start
@@ -1430,6 +1464,8 @@ struct WireBackupProfile {
     on_mutation: MutationPolicy,
     warn_seconds: Option<u32>,
     max_snapshots: Option<u32>,
+    max_snapshot_bytes: Option<u64>,
+    max_collection_bytes: Option<u64>,
     #[serde(default)]
     include: Vec<String>,
     #[serde(default)]

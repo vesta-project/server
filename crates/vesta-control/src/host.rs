@@ -5,7 +5,8 @@
 //! never binds a listener, bootstraps an owner, mints credentials or starts Minecraft:
 //! the operation runtime only executes Start operations that were already admitted
 //! and are still authorized. Failures before the runtime starts release everything
-//! opened so far; shutdown is observation-only and keeps ownership on timeout.
+//! opened so far; ordinary shutdown is observation-only. Explicit system shutdown
+//! quiesces jobs and gracefully stops the game, retaining ownership on timeout.
 use crate::ControlError;
 use crate::automation::{Automation, AutomationEvent, Severity};
 use crate::automation_host::HostActions;
@@ -40,7 +41,7 @@ use vesta_state::{Clock, StateDatabase, StateError};
 
 const WHITELIST_FILE: &str = "whitelist.json";
 const PROPERTIES_FILE: &str = "server.properties";
-const BANS_FILE: &str = "banned-players.json";
+pub(crate) const BANS_FILE: &str = "banned-players.json";
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum HostError {
@@ -148,7 +149,11 @@ impl AutomationDriver {
         automation: Arc<Automation>,
         runtime: Arc<std::sync::OnceLock<crate::operations::RuntimeHandle>>,
         backup_events: mpsc::Receiver<BackupEvent>,
-        startup: (crate::config::OnAgentStart, crate::sleep::Sleep),
+        startup: (
+            Option<crate::config::OnAgentStart>,
+            crate::sleep::Sleep,
+            crate::machine::startup::StartupMode,
+        ),
         actions: Arc<HostActions>,
         telemetry: DriverTelemetry,
     ) -> Result<Self, HostError> {
@@ -180,24 +185,32 @@ impl AutomationDriver {
                 let _ = automation.publish(AutomationEvent::AgentStarted);
                 let mut joins = crate::automation::joins::JoinTracker::new(game_directory.clone(), &runtime);
                 let mut generation = runtime.game_snapshot().ok().and_then(|s| s.generation);
-                let startup_policy = startup.1.on_agent_start(startup.0).unwrap_or(crate::config::OnAgentStart::StayStopped);
-                let mut startup_allowed = true;
-                if generation.is_none() && let Err(code) = startup.1.initialize(startup_policy) {
-                    startup_allowed = false;
-                    let _ = startup.1.initialize(crate::config::OnAgentStart::StayStopped);
-                    let _ = automation.notify(Severity::Warning, "Agent startup policy refused", code, "agent");
-                }
-                if startup_allowed && startup_policy == crate::config::OnAgentStart::Start && generation.is_none() {
-                    // The runtime's own start path refuses duplicates, orphans,
-                    // unresolved launches and maintenance blocks; its outcome is audited.
-                    if let Err(code) = local.request(crate::operations::LocalAction::Start) {
-                        let _ = automation.notify(
-                            Severity::Warning,
-                            "Start on agent start refused",
-                            code,
-                            "agent",
-                        );
-                    }
+                use crate::{config::OnAgentStart, machine::startup::{StartupMode, StartupOutcome, StartupReport}};
+                let (config, sleep, mode) = &startup;
+                let configured = match mode {
+                    StartupMode::Configured => sleep.on_agent_start_explicit(*config),
+                    StartupMode::Deferred => Ok(Some(OnAgentStart::StayStopped)),
+                    StartupMode::Managed(settings) => Ok(if std::env::var_os("VESTA_AGENT_STAY_STOPPED").as_deref() == Some(std::ffi::OsStr::new("1")) {
+                        Some(OnAgentStart::StayStopped)
+                    } else {
+                        settings.on_agent_start.explicit()
+                    }),
+                };
+                let resolved = configured.and_then(|action| action.map_or_else(|| sleep.resume_on_agent_start(), Ok));
+                let delay = match (mode, resolved) {
+                    (StartupMode::Managed(settings), Ok(OnAgentStart::Start)) => settings.start_delay_seconds,
+                    _ => 0,
+                };
+                let mut report = StartupReport {
+                    at_ms: automation.database_for_alerts().clock().millis(),
+                    applied_action: resolved.unwrap_or(OnAgentStart::StayStopped),
+                    outcome: StartupOutcome::Pending,
+                    error_code: resolved.err().map(str::to_owned),
+                };
+                let mut startup_at = (!matches!(mode, StartupMode::Deferred))
+                    .then(|| std::time::Instant::now() + Duration::from_secs(u64::from(delay)));
+                if delay > 0 {
+                    let _ = sleep.record_startup(&report);
                 }
                 let mut crash_loop = false;
                 while !flag.load(Ordering::Acquire) {
@@ -205,6 +218,33 @@ impl AutomationDriver {
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_millis() as i64)
                         .unwrap_or(0);
+                    if startup_at.is_some_and(|due| due <= std::time::Instant::now()) {
+                        startup_at = None;
+                        let result = runtime.game_snapshot().map(|snapshot| snapshot.generation)
+                            .map_err(|_| "startup_state_unavailable").and_then(|generation| {
+                                if generation.is_some() {
+                                    report.outcome = StartupOutcome::AlreadyRunning;
+                                } else {
+                                    if let Err(code) = sleep.initialize_startup(report.applied_action, matches!(mode, StartupMode::Managed(_))) {
+                                        let _ = sleep.initialize_startup(OnAgentStart::StayStopped, true);
+                                        return Err(code);
+                                    }
+                                    if report.applied_action == OnAgentStart::Start {
+                                        local.request(crate::operations::LocalAction::Start)?;
+                                    }
+                                    report.outcome = StartupOutcome::Applied;
+                                }
+                                Ok(())
+                            });
+                        if let Err(code) = result {
+                            report.error_code = Some(code.into());
+                        }
+                        if let Some(code) = &report.error_code {
+                            report.outcome = StartupOutcome::Failed;
+                            let _ = automation.notify(Severity::Warning, "Agent startup policy refused", code, "agent");
+                        }
+                        let _ = sleep.record_startup(&report);
+                    }
                     metrics.tick(&runtime, now);
                     joins.tick(&runtime, &automation);
                     let _ = automation.tick(now);
@@ -216,17 +256,15 @@ impl AutomationDriver {
                         }
                     }
                     while let Ok(event) = backup_events.try_recv() {
-                        let _ = automation.publish(match event {
-                            BackupEvent::Completed { profile, .. } => {
-                                AutomationEvent::BackupCompleted { profile }
-                            }
-                            BackupEvent::Failed { profile, .. } => {
-                                AutomationEvent::BackupFailed { profile }
-                            }
-                        });
+                        if let BackupEvent::Completed { profile, .. } = event {
+                            let _ = automation.publish(AutomationEvent::BackupCompleted { profile });
+                        }
                     }
+                    let _ = automation.consume_backup_failures();
                     if let Ok(Some(health)) = runtime.supervision() {
                         if health.crash_loop && !crash_loop {
+                            // Never brought back by a later Vesta restart either.
+                            let _ = startup.1.crash_loop_observed();
                             let _ = automation.notify(
                                 Severity::Critical,
                                 "Crash loop: automatic restarts suspended",
@@ -256,7 +294,7 @@ impl AutomationDriver {
                         }
                         generation = snapshot.generation;
                     }
-                    thread::sleep(Duration::from_secs(1));
+                    thread::park_timeout(Duration::from_secs(1));
                 }
             })
             .map_err(|_| HostError::Supervisor("host_automation_unavailable"))?;
@@ -269,6 +307,24 @@ impl AutomationDriver {
     }
     fn attach(&self, local: crate::operations::LocalRuntime) {
         let _ = self.local.set(local);
+    }
+    fn request_shutdown(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(thread) = &self.thread {
+            thread.thread().unpark();
+        }
+        if let Some(alerts) = &self.alerts {
+            alerts.request_shutdown();
+        }
+    }
+    fn is_shutdown_complete(&self) -> bool {
+        self.thread
+            .as_ref()
+            .is_none_or(thread::JoinHandle::is_finished)
+            && self
+                .alerts
+                .as_ref()
+                .is_none_or(|worker| worker.is_shutdown_complete())
     }
     fn stop(mut self) {
         self.halt();
@@ -318,6 +374,16 @@ impl Host {
         clock: Arc<dyn Clock>,
         supervisor: Option<vesta_supervisor::RemoteProcess>,
     ) -> Result<Self, HostError> {
+        Self::open_bound(config, clock, supervisor, None, Default::default())
+    }
+
+    pub(crate) fn open_bound(
+        config: HostConfiguration,
+        clock: Arc<dyn Clock>,
+        supervisor: Option<vesta_supervisor::RemoteProcess>,
+        worker: Option<(uuid::Uuid, uuid::Uuid, Option<crate::worker::WorkerPolicy>)>,
+        startup_mode: crate::machine::startup::StartupMode,
+    ) -> Result<Self, HostError> {
         let checked = check_launch(&config)?;
         let owner = match (config.supervision(), supervisor) {
             (Supervision::InProcess, None) => {
@@ -363,7 +429,19 @@ impl Host {
             }
         };
         let db = StateDatabase::open(checked.state, clock).map_err(HostError::State)?;
-        match compose(config, &db, checked.launch, owner) {
+        if let Some((host, server, policy)) = worker {
+            let initialized = crate::identity::worker_policy::initialize(&db, host, server)
+                .and_then(|()| {
+                    policy.map_or(Ok(()), |policy| {
+                        crate::identity::worker_policy::sync(&db, &policy)
+                    })
+                });
+            if initialized.is_err() {
+                let _ = db.close();
+                return Err(HostError::Supervisor("worker_policy_unavailable"));
+            }
+        }
+        match compose(config, &db, checked.launch, owner, startup_mode) {
             Ok(host) => Ok(host),
             Err(error) => {
                 // Nothing owned live work yet; closing cannot discard a running child.
@@ -530,6 +608,94 @@ impl Host {
         &self.automation
     }
 
+    /// Begin an explicit machine/service stop without joining background work.
+    /// All admission closes immediately; native stop waits for job safe points.
+    pub fn request_system_shutdown(&self) -> Result<(), HostError> {
+        self.runtime.request_system_quiescence();
+        if let Some(driver) = &self.sleep_driver {
+            driver.request_shutdown();
+        }
+        if let Some(driver) = &self.driver {
+            driver.request_shutdown();
+        }
+        if let Some(backups) = &self.backups {
+            backups.request_shutdown();
+        }
+        if let Some(software) = &self.software {
+            software.request_shutdown();
+        }
+        if let Some(packs) = &self.resource_packs {
+            packs.request_shutdown();
+        }
+        Ok(())
+    }
+
+    /// Advance native stopping without closing state still used by in-flight HTTP
+    /// requests. Coordinators poll this while transport drains so an unrelated
+    /// slow request cannot postpone every idle server's Minecraft save.
+    pub fn advance_system_shutdown(&self) -> bool {
+        let ready = self
+            .sleep_driver
+            .as_ref()
+            .is_none_or(|w| w.is_shutdown_complete())
+            && self
+                .driver
+                .as_ref()
+                .is_none_or(|w| w.is_shutdown_complete())
+            && self
+                .backups
+                .as_ref()
+                .is_none_or(|w| w.is_shutdown_complete())
+            && self
+                .software
+                .as_ref()
+                .is_none_or(|w| w.is_shutdown_complete())
+            && self
+                .resource_packs
+                .as_ref()
+                .is_none_or(|w| w.is_shutdown_complete());
+        if ready {
+            self.runtime.request_system_shutdown();
+        }
+        ready
+    }
+
+    /// Observe explicit machine/service stop. A timeout retains the same native
+    /// owner and workers; it is never proof of a clean stop or permission to
+    /// detach them. Callers use one process-wide OS deadline, not one per host.
+    pub fn shutdown_system(mut self, timeout: Duration) -> Result<HostShutdown, HostError> {
+        self.request_system_shutdown()?;
+        let until = std::time::Instant::now() + timeout.min(Duration::from_secs(300));
+        loop {
+            let background_finished = self.advance_system_shutdown();
+            if background_finished {
+                // Each join below is of a worker already observed finished.
+                drop(self.sleep_driver.take());
+                drop(self.driver.take());
+                drop(self.resource_packs.take());
+                drop(self.software.take());
+                self.runtime.request_system_shutdown();
+                if self.runtime.is_shutdown_complete() {
+                    match self.runtime.shutdown(Duration::ZERO) {
+                        Ok(ShutdownOutcome::Complete) => {
+                            self.db.close().map_err(HostError::State)?;
+                            return Ok(HostShutdown::Complete);
+                        }
+                        // An error after actual driver completion owns no local
+                        // native child; returning it cannot abandon a live owner.
+                        Err(error) => return Err(HostError::Operation(error)),
+                        Ok(ShutdownOutcome::TimedOut(_)) => (),
+                    }
+                }
+            }
+            let now = std::time::Instant::now();
+            if now >= until {
+                return Ok(HostShutdown::TimedOut(Box::new(self)));
+            }
+            thread::sleep(Duration::from_millis(5).min(until.saturating_duration_since(now)));
+        }
+    }
+
     /// Stop dispatch and wait up to `timeout` for the runtime to finish. The database
     /// is closed only after the runtime has really completed.
     pub fn shutdown(mut self, timeout: Duration) -> Result<HostShutdown, HostError> {
@@ -568,18 +734,23 @@ fn compose(
     db: &StateDatabase,
     launch: LaunchConfiguration,
     supervisor: Option<vesta_supervisor::RemoteProcess>,
+    startup_mode: crate::machine::startup::StartupMode,
 ) -> Result<Host, HostError> {
     let protected: Vec<&Path> = config
         .host_protected_paths()
         .iter()
         .map(|path| path.as_path())
         .collect();
+    let files =
+        FileBrowser::open(db.clone(), config.game(), &protected).map_err(HostError::Files)?;
     let identity = IdentityService::new(db.clone()).map_err(HostError::Identity)?;
-    let management = ManagementAccess::new(db.clone()).map_err(|_| {
-        HostError::Identity(crate::ControlError::State(vesta_state::StateError::new(
-            "management_unavailable",
-        )))
-    })?;
+    let management = ManagementAccess::new(db.clone())
+        .map_err(|_| {
+            HostError::Identity(crate::ControlError::State(vesta_state::StateError::new(
+                "management_unavailable",
+            )))
+        })?
+        .with_icon_game(files.server_icon_root().map_err(HostError::Files)?);
     let passwords = match config.pack_access() {
         PackAccessMode::Minecraft => None,
         PackAccessMode::MinecraftOrPassword => {
@@ -593,8 +764,6 @@ fn compose(
         management.clone(),
         SessionLimits::default(),
     ));
-    let files =
-        FileBrowser::open(db.clone(), config.game(), &protected).map_err(HostError::Files)?;
     files.reconcile_pending().map_err(HostError::Files)?;
     files.purge_expired_uploads().map_err(HostError::Files)?;
     let limits = SnapshotLimits::new(
@@ -670,7 +839,8 @@ fn compose(
         config.pack().minecraft_version(),
         config.pack().version(),
         config.pack().loader().map_or("vanilla", |l| l.version()),
-    );
+    )
+    .with_icon_files(files.clone());
     let sleep_driver = sleep
         .start_driver(cell.clone())
         .map_err(HostError::Supervisor)?;
@@ -728,11 +898,19 @@ fn compose(
     ));
     let automation =
         Arc::new(Automation::new(db.clone(), actions.clone()).map_err(HostError::Identity)?);
+    // Recover the disabled interval before any startup event or schedule can run.
+    automation
+        .resume_after_disable()
+        .map_err(HostError::Identity)?;
     let driver = AutomationDriver::start(
         automation.clone(),
         cell.clone(),
         backup_events,
-        (config.on_agent_start(), sleep.clone()),
+        (
+            config.on_agent_start_explicit(),
+            sleep.clone(),
+            startup_mode,
+        ),
         actions,
         DriverTelemetry {
             game_directory: config.game().to_path_buf(),
@@ -1019,6 +1197,14 @@ impl Drop for AdmissionRefresh {
     }
 }
 impl NetworkHost {
+    pub(crate) fn with_trusted(mut self, trusted: crate::worker::TrustedAuthorization) -> Self {
+        self.management = self.management.with_trusted(trusted);
+        self.sessions = Arc::new(PackSessions::new(
+            self.management.clone(),
+            Default::default(),
+        ));
+        self
+    }
     pub fn resource_packs(&self) -> &crate::resource_packs::hosting::Handle {
         &self.resource_packs
     }

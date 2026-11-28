@@ -16,6 +16,7 @@ use std::{
 pub(crate) mod buildtools;
 pub(crate) mod forge;
 pub(super) mod loaders;
+pub(crate) mod mojang;
 pub(crate) mod releases;
 
 const MAX_ENTRIES: usize = 10_000;
@@ -710,4 +711,30 @@ pub(crate) async fn resolve(
     } else {
         resolve_single(http, software, selection, job, reporter).await
     }
+}
+
+pub(super) async fn minecraft_catalogue(
+    http: &Transport,
+    job: &mut Job,
+    reporter: &dyn ProgressReporter,
+) -> Result<Vec<crate::MinecraftVersion>> {
+    let catalogue = catalogue(http, Software::Vanilla, job, reporter, &mut Vec::new()).await?;
+    let manifest = catalogue.vanilla.ok_or(InstallError::InvalidMetadata)?;
+    let latest = manifest.latest.release;
+    let versions: Vec<_> = manifest
+        .versions
+        .0
+        .into_iter()
+        .filter(|v| identifier(&v.id))
+        .map(|v| crate::MinecraftVersion {
+            recommended: v.id == latest && v.kind == "release",
+            stable: v.kind == "release",
+            experimental: v.kind != "release",
+            id: v.id,
+        })
+        .collect();
+    if versions.iter().filter(|v| v.recommended).count() != 1 {
+        return Err(InstallError::InvalidMetadata);
+    }
+    Ok(versions)
 }

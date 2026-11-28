@@ -203,7 +203,7 @@ impl SoftwareHandle {
             .queue
             .lock()
             .map_err(|_| SoftwareError::StateUnavailable)?;
-        if queue.stop {
+        if queue.stop || self.inner.cancel.load(std::sync::atomic::Ordering::Acquire) {
             return Err(SoftwareError::RuntimeUnavailable);
         }
         if let Some(job) = self.inner.db.read_with(|tx| {

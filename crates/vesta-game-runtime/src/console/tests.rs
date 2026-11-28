@@ -159,3 +159,33 @@ fn blocking_reader_does_not_hold_storage_lock_or_block_a_snapshot() {
     );
     observer_outcome.expect("observer did not panic");
 }
+
+#[test]
+fn backwards_console_pages_end_before_the_boundary() {
+    let capture = ConsoleCapture::new();
+    for text in ["one", "two", "three", "four"] {
+        capture.ingest(ConsoleStream::Stdout, text, false).unwrap();
+    }
+    let (tail, oldest) = capture.snapshot_before(None, 2).unwrap();
+    assert_eq!(
+        tail.lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>(),
+        ["three", "four"]
+    );
+    assert_eq!(oldest.unwrap().text, "one");
+    let (prior, _) = capture
+        .snapshot_before(Some(tail.lines[0].cursor), 2)
+        .unwrap();
+    assert_eq!(
+        prior
+            .lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>(),
+        ["one", "two"]
+    );
+    assert!(!prior.gap);
+    assert!(capture.snapshot_before(Some(0), 2).unwrap().0.gap);
+}

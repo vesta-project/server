@@ -34,6 +34,21 @@ impl MetadataCache {
 }
 include!(concat!(env!("OUT_DIR"), "/provider_key.rs"));
 
+fn modrinth_update_url(project: &str, minecraft: &str, software: Option<&str>) -> Result<url::Url> {
+    validate_id(project)?;
+    let mut url = url::Url::parse(&format!(
+        "https://api.modrinth.com/v2/project/{project}/version"
+    ))
+    .map_err(|_| ContentError::InvalidRequest)?;
+    let mut query = url.query_pairs_mut();
+    query.append_pair("game_versions", &serde_json::json!([minecraft]).to_string());
+    if let Some(software) = software {
+        query.append_pair("loaders", &serde_json::json!([software]).to_string());
+    }
+    drop(query);
+    Ok(url)
+}
+
 fn bundled_curseforge_key() -> Option<String> {
     (!BUNDLED_CURSEFORGE_KEY.is_empty()).then(|| {
         BUNDLED_CURSEFORGE_KEY
@@ -284,11 +299,40 @@ impl UreqProviderClient {
             }
         }
     }
+    /// Limit update discovery to compatible versions before reading the bounded body.
+    /// Every candidate is still bound and checked locally before it is offered.
+    pub(crate) fn pack_update_versions(
+        &self,
+        provider: Provider,
+        project: &str,
+        minecraft: &str,
+        software: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        match provider {
+            Provider::Modrinth => {
+                let url = modrinth_update_url(project, minecraft, software)?;
+                self.metadata(url.as_str(), None)
+            }
+            Provider::Curseforge => self.pack_document(provider, project, None, true),
+        }
+    }
     /// One optional bounded lookup; successful negative results are cacheable.
     pub fn identify_sha512(&self, hash: &str) -> Result<Option<super::ContentProvider>> {
-        ExpectedHash::Sha512(hash.into()).validate()?;
+        Ok(self.identify_sha512_batch(&[hash])?.remove(hash))
+    }
+
+    pub(crate) fn identify_sha512_batch(
+        &self,
+        hashes: &[&str],
+    ) -> Result<std::collections::BTreeMap<String, super::ContentProvider>> {
+        if hashes.is_empty() || hashes.len() > 32 {
+            return Err(ContentError::InvalidMetadata);
+        }
+        for hash in hashes {
+            ExpectedHash::Sha512((*hash).into()).validate()?;
+        }
         let client = http::agent_with_timeout(std::time::Duration::from_secs(5));
-        let body = serde_json::json!({"hashes":[hash],"algorithm":"sha512"}).to_string();
+        let body = serde_json::json!({"hashes":hashes,"algorithm":"sha512"}).to_string();
         let mut response = client
             .post("https://api.modrinth.com/v2/version_files")
             .header("Content-Type", "application/json")
@@ -317,23 +361,30 @@ impl UreqProviderClient {
         }
         let versions: std::collections::BTreeMap<String, ModrinthVersion> =
             serde_json::from_slice(&bytes).map_err(|_| ContentError::InvalidMetadata)?;
-        let Some(version) = versions.get(hash) else {
-            return Ok(None);
-        };
-        if !version
-            .files
-            .iter()
-            .any(|f| f.hashes.sha512.eq_ignore_ascii_case(hash))
-        {
-            return Err(ContentError::InvalidMetadata);
+        let mut found = std::collections::BTreeMap::new();
+        for &hash in hashes {
+            let Some(version) = versions.get(hash) else {
+                continue;
+            };
+            if !version
+                .files
+                .iter()
+                .any(|f| f.hashes.sha512.eq_ignore_ascii_case(hash))
+            {
+                return Err(ContentError::InvalidMetadata);
+            }
+            validate_id(&version.id)?;
+            validate_id(&version.project_id)?;
+            found.insert(
+                hash.to_owned(),
+                super::ContentProvider {
+                    provider: "modrinth".into(),
+                    project_id: version.project_id.clone(),
+                    version_id: version.id.clone(),
+                },
+            );
         }
-        validate_id(&version.id)?;
-        validate_id(&version.project_id)?;
-        Ok(Some(super::ContentProvider {
-            provider: "modrinth".into(),
-            project_id: version.project_id.clone(),
-            version_id: version.id.clone(),
-        }))
+        Ok(found)
     }
     /// API key is trusted server configuration, not a request field.
     pub fn new(curseforge_api_key: Option<String>) -> Self {
@@ -387,29 +438,56 @@ impl UreqProviderClient {
         if let Some(bytes) = cached {
             return serde_json::from_slice(&bytes).map_err(|_| ContentError::InvalidMetadata);
         }
-        let mut request = self
-            .agent
-            .get(url)
-            .header("Accept", "application/json")
-            .header("Accept-Encoding", "identity")
-            .header("User-Agent", "vesta-control/content-installer")
-            .config()
-            .timeout_global(Some(
-                self.deadline
-                    .map_or(std::time::Duration::from_secs(60), |deadline| {
-                        deadline.saturating_duration_since(Instant::now())
-                    }),
-            ))
-            .build();
-        if let Some(key) = key {
-            request = request.header("x-api-key", key);
+        // Idempotent GET retries share a single metadata budget.
+        let deadline = self
+            .deadline
+            .unwrap_or_else(|| Instant::now() + std::time::Duration::from_secs(60));
+        let mut bytes = None;
+        for attempt in 0..3 {
+            super::deadline_check(deadline)?;
+            let mut request = self
+                .agent
+                .get(url)
+                .header("Accept", "application/json")
+                .header("Accept-Encoding", "identity")
+                .header("User-Agent", "vesta-control/content-installer")
+                .config()
+                .timeout_global(Some(deadline.saturating_duration_since(Instant::now())))
+                .build();
+            if let Some(key) = key {
+                request = request.header("x-api-key", key);
+            }
+            #[cfg(test)]
+            self.count_request(false);
+            match request.call() {
+                Ok(response) if response.status().is_success() => {
+                    match self.read_metadata(response) {
+                        Ok(body) => {
+                            bytes = Some(body);
+                            break;
+                        }
+                        Err(ContentError::DownloadFailed) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(response)
+                    if response.status().as_u16() == 429 || response.status().is_server_error() => {
+                }
+                Ok(response) => {
+                    return self.read_metadata(response).and_then(|body| {
+                        serde_json::from_slice(&body).map_err(|_| ContentError::InvalidMetadata)
+                    });
+                }
+                Err(_) => {}
+            }
+            if attempt < 2 {
+                std::thread::sleep(
+                    std::time::Duration::from_millis(250 << attempt)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
         }
-        #[cfg(test)]
-        self.count_request(false);
-        let response = request.call().map_err(|_| ContentError::DownloadFailed)?;
-        // Metadata redirects are refused entirely; download redirects are separately
-        // validated against the corresponding provider's CDN allowlist.
-        let bytes = self.read_metadata(response)?;
+        let bytes = bytes.ok_or(ContentError::DownloadFailed)?;
         let value = serde_json::from_slice(&bytes).map_err(|_| ContentError::InvalidMetadata)?;
         if let Some(cache) = &self.metadata_cache
             && let Ok(mut cache) = cache.lock()
@@ -675,6 +753,18 @@ pub(crate) fn curseforge_document_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modrinth_update_request_filters_the_version_list_at_the_provider() {
+        let url = modrinth_update_url("Jkb29YJU", "26.3", Some("fabric")).unwrap();
+        assert_eq!(url.host_str(), Some("api.modrinth.com"));
+        assert_eq!(url.path(), "/v2/project/Jkb29YJU/version");
+        let filters: BTreeMap<_, _> = url.query_pairs().collect();
+        assert_eq!(filters["game_versions"], r#"["26.3"]"#);
+        assert_eq!(filters["loaders"], r#"["fabric"]"#);
+        let no_loader = modrinth_update_url("Jkb29YJU", "26.3", None).unwrap();
+        assert_eq!(no_loader.query_pairs().count(), 1);
+    }
     #[test]
     fn batch_rows_bind_by_file_and_project_not_response_order() {
         let requested = BTreeMap::from([(2, 1), (3, 9)]);
@@ -977,5 +1067,52 @@ mod artifact_binding_tests {
         assert!(
             UreqProviderClient::select_modrinth_artifact(&mut ambiguous, &"b".repeat(128)).is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod timeout_regressions {
+    use super::*;
+    #[test]
+    fn metadata_get_retries_transient_failure_and_allows_a_slow_body() {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+            time::Duration,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/metadata", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for attempt in 0..2 {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                let _ = socket.read(&mut request).unwrap();
+                if attempt == 0 {
+                    socket.write_all(b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                } else {
+                    socket
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+                        )
+                        .unwrap();
+                    socket.flush().unwrap();
+                    std::thread::sleep(Duration::from_secs(11));
+                    socket.write_all(b"{}").unwrap();
+                }
+            }
+        });
+        let mut client = UreqProviderClient::new(None);
+        client.agent = ureq::Agent::config_builder()
+            .https_only(false)
+            .http_status_as_error(false)
+            .timeout_connect(Some(Duration::from_secs(3)))
+            .timeout_recv_body(Some(Duration::from_secs(120)))
+            .build()
+            .into();
+        assert_eq!(
+            client.metadata::<serde_json::Value>(&url, None).unwrap(),
+            serde_json::json!({})
+        );
+        server.join().unwrap();
     }
 }

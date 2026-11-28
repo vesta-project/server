@@ -6,10 +6,7 @@ use super::domain::{
     OperationId, OperationState, OperationSummary, OperationsResult, corrupt, identifier, lock_key,
     text,
 };
-use super::{
-    domain::{MAX_PAGE, REQUEST_SOURCE},
-    input::PreparedOperation,
-};
+use super::{domain::MAX_PAGE, input::PreparedOperation};
 use crate::identity::{DeviceId, PrincipalId, Subject};
 use rusqlite::params_from_iter;
 use rusqlite::{Connection, OptionalExtension, Row, params};
@@ -235,6 +232,7 @@ impl<'a> Repository<'a> {
         subject: &Subject,
         plan: &PreparedOperation,
         key: Option<&str>,
+        source: &str,
     ) -> OperationsResult<StoredOperation> {
         let id = OperationId::fresh();
         let state = if plan.requires_confirmation {
@@ -247,7 +245,7 @@ impl<'a> Repository<'a> {
              idempotency_key,state,requires_confirmation,external_effect_idempotent,created_at,updated_at,input_json,input_status) \
              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'available')",
             params![id.as_str(), self.server, subject.principal.as_str(), subject.device.as_str(),
-                REQUEST_SOURCE, plan.operation_type, plan.target, plan.payload_hash, key, state.as_str(),
+                source, plan.operation_type, plan.target, plan.payload_hash, key, state.as_str(),
                 plan.requires_confirmation, plan.effect_idempotent, self.now, self.now, plan.canonical_input],
         )?;
         for resource in &plan.resources {

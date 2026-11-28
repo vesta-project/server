@@ -139,6 +139,38 @@ impl FileBrowser {
         key: &str,
         patch: OfflineWhitelistPatch,
     ) -> Result<Value> {
+        self.patch_whitelist(runtime, subject, key, patch, None)
+    }
+
+    pub(crate) fn sync_offline_whitelist(
+        &self,
+        runtime: &RuntimeHandle,
+        subject: &Subject,
+        change: &crate::operations::WhitelistSyncChange,
+        expected_sha256: Option<String>,
+    ) -> Result<Value> {
+        let patch = OfflineWhitelistPatch {
+            player: change.name.clone(),
+            add: change.add,
+            expected_sha256,
+        };
+        self.patch_whitelist(
+            runtime,
+            subject,
+            &format!("whitelist-sync:{}", uuid::Uuid::new_v4()),
+            patch,
+            Some(change),
+        )
+    }
+
+    fn patch_whitelist(
+        &self,
+        runtime: &RuntimeHandle,
+        subject: &Subject,
+        key: &str,
+        patch: OfflineWhitelistPatch,
+        sync: Option<&crate::operations::WhitelistSyncChange>,
+    ) -> Result<Value> {
         if !moderation::valid_player(&patch.player)
             || patch.expected_sha256.as_ref().is_some_and(|h| {
                 h.len() != 64
@@ -191,7 +223,14 @@ impl FileBrowser {
             .online_mode();
         // Replays avoid lookup; fresh external IO holds neither admission nor a
         // stopped-state exclusion. Admission rechecks both the receipt and mode.
-        let identity = if patch.add {
+        let identity = if let Some(change) = sync {
+            if !online {
+                return Err(FileError::Conflict(None));
+            }
+            change
+                .add
+                .then(|| (change.name.clone(), change.uuid.clone()))
+        } else if patch.add {
             Some(resolve_bounded(
                 &patch.player,
                 online,
@@ -210,11 +249,27 @@ impl FileBrowser {
             Arc::get_mut(&mut guard).ok_or(FileError::Unavailable)?.properties=Some((properties_path.clone(),properties.clone()));
             // Mode changes during lookup require a fresh explicit edit.
             if read_local_document(&properties_path, crate::minecraft_admission::MAX_SERVER_PROPERTIES_BYTES)? != properties { return Err(FileError::Conflict(None)); }
-            edit(&mut entries,&patch,identity)?;
+            if let Some(change) = sync {
+                let uuid = uuid::Uuid::parse_str(&change.uuid).map_err(|_| FileError::Corrupt)?;
+                let matches_uuid = |entry: &Value| {
+                    entry["uuid"].as_str().and_then(|id| uuid::Uuid::parse_str(id).ok()) == Some(uuid)
+                };
+                if entries.iter().any(matches_uuid) == change.add {
+                    return Err(FileError::Conflict(hash));
+                }
+                if !change.add {
+                    entries.retain(|entry| !matches_uuid(entry));
+                } else {
+                    edit(&mut entries, &patch, identity)?;
+                }
+            } else {
+                edit(&mut entries, &patch, identity)?;
+            }
             let bytes = serde_json::to_vec_pretty(&entries).map_err(|_| FileError::Corrupt)?;
             if bytes.len()>LIMIT { return Err(FileError::TooLarge); }
             let mut files = files.clone();
             files.stopped_guard = Some(guard.clone());
+            files.whitelist_sync = sync.cloned();
             let precondition = patch.expected_sha256.clone().map_or(WritePrecondition::Absent,WritePrecondition::Matches);
             let change = files.write(subject,&RelativePath::parse("whitelist.json")?,&precondition,&bytes)?;
             // finish_intent checks hold continuity after the write, in the same

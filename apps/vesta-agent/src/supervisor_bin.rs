@@ -1,6 +1,8 @@
 //! Per-server process supervisor entrypoint. Started detached by `vesta-agent serve`
 //! when `[process] supervision = "separate"`; it has no network listener and launches
 //! only the launch definition named by the validated host configuration.
+mod shutdown;
+mod shutdown_signal;
 use std::{path::PathBuf, process::ExitCode};
 use vesta_control::{config::HostConfiguration, host::supervised_launch};
 use vesta_supervisor::SupervisorConfig;
@@ -64,19 +66,39 @@ fn main() -> ExitCode {
         launch_identity: launch.identity,
         restart: launch.restart,
     };
-    // Ctrl+C only ends an idle supervisor; a running game keeps it alive.
-    // A detached supervisor has no console; if Ctrl+C cannot be registered, never
-    // treat that as a stop request.
-    let stop = async {
-        if tokio::signal::ctrl_c().await.is_err() {
-            std::future::pending::<()>().await;
+    runtime.block_on(async {
+        let mut signals = match shutdown_signal::ShutdownSignal::register() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let watchdog = match shutdown::ExitWatchdog::arm(signals.observer()) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let stop = async {
+            match signals.wait().await {
+                Ok(request) => {
+                    watchdog.begin(request);
+                    request.reason.is_system()
+                }
+                Err(_) => std::future::pending::<bool>().await,
+            }
+        };
+        let result = vesta_supervisor::run_with_shutdown(config, stop).await;
+        signals.complete();
+        watchdog.finish();
+        match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(code) => {
+                eprintln!("{code}");
+                ExitCode::FAILURE
+            }
         }
-    };
-    match runtime.block_on(vesta_supervisor::run(config, stop)) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(code) => {
-            eprintln!("{code}");
-            ExitCode::FAILURE
-        }
-    }
+    })
 }

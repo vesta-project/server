@@ -101,17 +101,84 @@ pub(super) fn open_growing(path: &Path) -> Result<File> {
     open_regular(path)
 }
 #[cfg(windows)]
-pub(super) fn file_identity(file: &File) -> Result<String> {
+pub(crate) fn file_identity(file: &File) -> Result<String> {
     windows::identity(file)
 }
 #[cfg(unix)]
-pub(super) fn file_identity(file: &File) -> Result<String> {
+pub(crate) fn file_identity(file: &File) -> Result<String> {
     use std::os::unix::fs::MetadataExt;
     let metadata = file.metadata().map_err(io_error)?;
     Ok(format!("{}:{}", metadata.dev(), metadata.ino()))
 }
 #[cfg(not(any(windows, unix)))]
-pub(super) fn file_identity(_file: &File) -> Result<String> {
+pub(crate) fn file_identity(_file: &File) -> Result<String> {
+    Err(FileError::Unavailable)
+}
+
+pub(super) struct FileVersion {
+    pub(super) key: String,
+    pub(super) reusable: bool,
+}
+
+fn settled_change_time(unix_ns: i128) -> bool {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // Coarse clocks can assign the same change time to consecutive writes.
+    // Only reuse an observation made after its timestamp bucket has passed.
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .is_ok_and(|now| (now.as_nanos() as i128) - unix_ns >= 2_000_000_000)
+}
+
+/// Bind the opened file ID, size and both data modification and change times.
+#[cfg(unix)]
+pub(super) fn file_version(file: &File) -> Result<FileVersion> {
+    use std::os::unix::fs::MetadataExt;
+    let m = file.metadata().map_err(io_error)?;
+    Ok(FileVersion {
+        key: format!(
+            "{}:{}:{}:{}:{}:{}:{}",
+            m.dev(),
+            m.ino(),
+            m.len(),
+            m.mtime(),
+            m.mtime_nsec(),
+            m.ctime(),
+            m.ctime_nsec()
+        ),
+        reusable: settled_change_time(
+            i128::from(m.ctime()) * 1_000_000_000 + i128::from(m.ctime_nsec()),
+        ),
+    })
+}
+#[cfg(windows)]
+pub(super) fn file_version(file: &File) -> Result<FileVersion> {
+    windows::version(file)
+}
+#[cfg(not(any(windows, unix)))]
+pub(super) fn file_version(_file: &File) -> Result<FileVersion> {
+    Err(FileError::Unavailable)
+}
+
+/// Directory identity observed without following a final link or reparse point.
+/// Host import browsing binds opaque folder tokens to this identity.
+#[cfg(unix)]
+pub(crate) fn directory_identity(path: &Path) -> Result<String> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path).map_err(io_error)?;
+    if metadata.file_type().is_symlink() {
+        return Err(FileError::LinkedPath);
+    }
+    if !metadata.is_dir() {
+        return Err(FileError::NotDirectory);
+    }
+    Ok(format!("{}:{}", metadata.dev(), metadata.ino()))
+}
+#[cfg(windows)]
+pub(crate) fn directory_identity(path: &Path) -> Result<String> {
+    windows::directory_identity(path)
+}
+#[cfg(not(any(windows, unix)))]
+pub(crate) fn directory_identity(_path: &Path) -> Result<String> {
     Err(FileError::Unavailable)
 }
 
@@ -213,8 +280,8 @@ mod windows {
     };
     use windows_sys::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
-        FILE_TYPE_DISK, GetFileInformationByHandle, GetFileType, GetFinalPathNameByHandleW,
-        GetLongPathNameW,
+        FILE_BASIC_INFO, FILE_TYPE_DISK, FileBasicInfo, GetFileInformationByHandle,
+        GetFileInformationByHandleEx, GetFileType, GetFinalPathNameByHandleW, GetLongPathNameW,
     };
     pub(super) fn long_path(path: &Path) -> Option<PathBuf> {
         use std::os::windows::ffi::OsStrExt;
@@ -253,11 +320,65 @@ mod windows {
         Ok(())
     }
     pub(super) fn identity(file: &File) -> Result<String> {
-        check(file)?;
         // SAFETY: the owned handle and initialized output remain live for the call.
         let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
         if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &mut info) } == 0 {
             return Err(FileError::Unavailable);
+        }
+        Ok(format!(
+            "{}:{}:{}",
+            info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow
+        ))
+    }
+    pub(super) fn version(file: &File) -> Result<FileVersion> {
+        let identity = identity(file)?;
+        let size = file.metadata().map_err(io_error)?.len();
+        let mut info = FILE_BASIC_INFO::default();
+        // SAFETY: the file owns the live handle and the output is a writable
+        // FILE_BASIC_INFO of the supplied size.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle().cast(),
+                FileBasicInfo,
+                (&mut info as *mut FILE_BASIC_INFO).cast(),
+                std::mem::size_of::<FILE_BASIC_INFO>() as u32,
+            )
+        };
+        if ok == 0 || info.ChangeTime == 0 {
+            return Err(FileError::Unavailable);
+        }
+        // FILE_BASIC_INFO timestamps are in 100 ns units since 1601.
+        let unix_ns = (i128::from(info.ChangeTime) - 116_444_736_000_000_000) * 100;
+        Ok(FileVersion {
+            key: format!(
+                "{identity}:{size}:{}:{}",
+                info.LastWriteTime, info.ChangeTime
+            ),
+            reusable: settled_change_time(unix_ns),
+        })
+    }
+    pub(super) fn directory_identity(path: &Path) -> Result<String> {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+            FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(io_error)?;
+        // SAFETY: the owned handle and initialized output remain live for the call.
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &mut info) } == 0 {
+            return Err(FileError::Unavailable);
+        }
+        if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(FileError::LinkedPath);
+        }
+        if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+            return Err(FileError::NotDirectory);
         }
         Ok(format!(
             "{}:{}:{}",
@@ -289,7 +410,7 @@ mod windows {
 /// silently overwrite a target that appeared after the absence check.
 #[cfg(windows)]
 #[allow(unsafe_code)]
-pub(super) fn rename_absent(from: &Path, to: &Path) -> Result<()> {
+pub(crate) fn rename_absent(from: &Path, to: &Path) -> Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
     let from: Vec<u16> = from.as_os_str().encode_wide().chain([0]).collect();
@@ -305,13 +426,15 @@ pub(super) fn rename_absent(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 #[cfg(target_os = "linux")]
+pub(crate) fn rename_absent(from: &Path, to: &Path) -> Result<()> {
+    rename_absent_io(from, to).map_err(super::mutation::no_replace_error)
+}
+#[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
-pub(super) fn rename_absent(from: &Path, to: &Path) -> Result<()> {
+pub(crate) fn rename_absent_io(from: &Path, to: &Path) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
-    let from =
-        std::ffi::CString::new(from.as_os_str().as_bytes()).map_err(|_| FileError::InvalidPath)?;
-    let to =
-        std::ffi::CString::new(to.as_os_str().as_bytes()).map_err(|_| FileError::InvalidPath)?;
+    let from = std::ffi::CString::new(from.as_os_str().as_bytes())?;
+    let to = std::ffi::CString::new(to.as_os_str().as_bytes())?;
     // SAFETY: stable NUL-terminated path buffers; AT_FDCWD accepts absolute paths.
     // Unsupported kernels/filesystems fail closed rather than falling back to replace.
     if unsafe {
@@ -324,21 +447,31 @@ pub(super) fn rename_absent(from: &Path, to: &Path) -> Result<()> {
         )
     } != 0
     {
-        return Err(super::mutation::no_replace_error(
-            std::io::Error::last_os_error(),
-        ));
+        return Err(std::io::Error::last_os_error());
     }
     Ok(())
 }
 #[cfg(not(any(windows, target_os = "linux")))]
-pub(super) fn rename_absent(_from: &Path, _to: &Path) -> Result<()> {
+pub(crate) fn rename_absent(_from: &Path, _to: &Path) -> Result<()> {
     Err(FileError::Unavailable)
+}
+
+#[cfg(unix)]
+pub(crate) fn sync_directory(path: &Path) -> Result<()> {
+    File::open(path)
+        .and_then(|dir| dir.sync_all())
+        .map_err(io_error)
+}
+#[cfg(not(unix))]
+pub(crate) fn sync_directory(_path: &Path) -> Result<()> {
+    // Windows does not expose a directory flush through a regular File handle.
+    Ok(())
 }
 
 /// Available and total bytes on the volume holding `path`.
 #[cfg(windows)]
 #[allow(unsafe_code)]
-pub(super) fn volume_space(path: &Path) -> Result<(u64, u64)> {
+pub(crate) fn volume_space(path: &Path) -> Result<(u64, u64)> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
@@ -360,7 +493,7 @@ pub(super) fn volume_space(path: &Path) -> Result<(u64, u64)> {
 }
 #[cfg(unix)]
 #[allow(unsafe_code)]
-pub(super) fn volume_space(path: &Path) -> Result<(u64, u64)> {
+pub(crate) fn volume_space(path: &Path) -> Result<(u64, u64)> {
     use std::os::unix::ffi::OsStrExt;
     let text =
         std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| FileError::InvalidPath)?;
@@ -377,19 +510,19 @@ pub(super) fn volume_space(path: &Path) -> Result<(u64, u64)> {
     ))
 }
 #[cfg(not(any(windows, unix)))]
-pub(super) fn volume_space(_path: &Path) -> Result<(u64, u64)> {
+pub(crate) fn volume_space(_path: &Path) -> Result<(u64, u64)> {
     Err(FileError::Unavailable)
 }
 
 #[cfg(unix)]
-pub(super) fn same_volume(a: &Path, b: &Path) -> Result<bool> {
+pub(crate) fn same_volume(a: &Path, b: &Path) -> Result<bool> {
     use std::os::unix::fs::MetadataExt;
     Ok(std::fs::metadata(a).map_err(io_error)?.dev()
         == std::fs::metadata(b).map_err(io_error)?.dev())
 }
 #[cfg(windows)]
 #[allow(unsafe_code)]
-pub(super) fn same_volume(a: &Path, b: &Path) -> Result<bool> {
+pub(crate) fn same_volume(a: &Path, b: &Path) -> Result<bool> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::GetVolumePathNameW;
     fn volume(path: &Path) -> Result<Vec<u16>> {
@@ -412,7 +545,7 @@ pub(super) fn same_volume(a: &Path, b: &Path) -> Result<bool> {
     Ok(volume(a)? == volume(b)?)
 }
 #[cfg(not(any(unix, windows)))]
-pub(super) fn same_volume(_a: &Path, _b: &Path) -> Result<bool> {
+pub(crate) fn same_volume(_a: &Path, _b: &Path) -> Result<bool> {
     Err(FileError::Unavailable)
 }
 
@@ -454,4 +587,111 @@ pub(super) fn remove_private_stage(path: &Path) -> Result<()> {
 #[cfg(not(windows))]
 pub(super) fn remove_private_stage(path: &Path) -> Result<()> {
     std::fs::remove_file(path).map_err(io_error)
+}
+
+/// Pin every ancestor; openat never follows a source-controlled link.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+pub(crate) fn import_open(path: &Path, directory: bool) -> Result<File> {
+    use std::os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::ffi::OsStrExt,
+    };
+    let mut held = File::open("/").map_err(io_error)?;
+    let components: Vec<_> = path.components().collect();
+    for (i, part) in components.iter().enumerate() {
+        let std::path::Component::Normal(name) = part else {
+            if matches!(part, std::path::Component::RootDir) {
+                continue;
+            }
+            return Err(FileError::InvalidPath);
+        };
+        let name = std::ffi::CString::new(name.as_bytes()).map_err(|_| FileError::InvalidPath)?;
+        let is_dir = directory || i + 1 < components.len();
+        // SAFETY: owned parent descriptor and stable NUL-terminated component.
+        #[cfg(target_os = "linux")]
+        let access = if is_dir {
+            libc::O_PATH | libc::O_DIRECTORY
+        } else {
+            libc::O_RDONLY
+        };
+        #[cfg(not(target_os = "linux"))]
+        let access = libc::O_RDONLY | if is_dir { libc::O_DIRECTORY } else { 0 };
+        let fd = unsafe {
+            libc::openat(
+                held.as_raw_fd(),
+                name.as_ptr(),
+                access | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+            )
+        };
+        if fd < 0 {
+            return Err(io_error(std::io::Error::last_os_error()));
+        }
+        // SAFETY: fresh successful descriptor transferred exactly once.
+        held = unsafe { File::from_raw_fd(fd) };
+    }
+    let m = held.metadata().map_err(io_error)?;
+    if directory && !m.is_dir() {
+        return Err(FileError::NotDirectory);
+    }
+    if !directory && !m.is_file() {
+        return Err(FileError::NotRegular);
+    }
+    Ok(held)
+}
+#[cfg(windows)]
+pub(crate) fn import_open(path: &Path, directory: bool) -> Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    let mut ancestors = Vec::new();
+    let mut current = PathBuf::new();
+    let components: Vec<_> = path.components().collect();
+    for (i, part) in components.iter().enumerate() {
+        current.push(part.as_os_str());
+        if matches!(part, std::path::Component::Prefix(_)) {
+            continue;
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(&current)
+            .map_err(io_error)?;
+        let m = file.metadata().map_err(io_error)?;
+        use std::os::windows::fs::MetadataExt;
+        if m.file_attributes() & 0x400 != 0 {
+            return Err(FileError::LinkedPath);
+        }
+        if i + 1 == components.len() {
+            if directory && !m.is_dir() {
+                return Err(FileError::NotDirectory);
+            }
+            if !directory && !m.is_file() {
+                return Err(FileError::NotRegular);
+            }
+            return Ok(file);
+        }
+        ancestors.push(file);
+    }
+    Err(FileError::InvalidPath)
+}
+
+#[cfg(unix)]
+#[allow(unsafe_code)]
+pub(crate) fn import_locked(file: &File) -> bool {
+    use std::os::fd::AsRawFd;
+    // Java FileChannel locks use POSIX record locks rather than flock.
+    let mut lock: libc::flock = unsafe { std::mem::zeroed() };
+    lock.l_type = libc::F_WRLCK as _;
+    lock.l_whence = libc::SEEK_SET as _;
+    unsafe {
+        libc::fcntl(file.as_raw_fd(), libc::F_GETLK, &mut lock) < 0
+            || lock.l_type != libc::F_UNLCK as libc::c_short
+    }
+}
+#[cfg(not(unix))]
+pub(crate) fn import_locked(file: &File) -> bool {
+    fs2::FileExt::try_lock_exclusive(file).is_err()
 }

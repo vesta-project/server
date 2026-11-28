@@ -42,6 +42,15 @@ const MAX_OUTCOMES: i64 = 10_000;
 const OUTCOME_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const OUTCOME_PURGE_BATCH: i64 = 128;
 
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BulkDeleteItem {
+    pub path: String,
+    pub expected_sha256: Option<String>,
+    #[serde(default)]
+    pub recursive: bool,
+}
+
 pub enum RemoteFileMutation<'a> {
     Write {
         path: &'a RelativePath,
@@ -251,6 +260,57 @@ impl FileBrowser {
                 RemoteFileMutation::Abort { id } => files
                     .abort(subject, id)
                     .map(|()| json!({"outcome":"succeeded"})),
+            },
+        )
+    }
+
+    pub fn delete_remote_batch(
+        &self,
+        subject: &Subject,
+        key: &str,
+        items: &[BulkDeleteItem],
+    ) -> Result<Value> {
+        if !(1..=100).contains(&items.len()) || items.iter().any(|item| item.path.len() > 4096) {
+            return Err(FileError::InvalidLimit);
+        }
+        let remote = self.for_remote();
+        remote.check_remote_surface(subject, &[Capability::FilesDelete])?;
+        remote.execute_remote(
+            subject,
+            key,
+            json!(["delete_batch", items]),
+            || Ok(Vec::new()),
+            |files| {
+                let batch_id = super::mutation::random_id()?;
+                let mut item_files = files.clone();
+                item_files.remote_key = None;
+                item_files.trash_batch = Some(batch_id.clone());
+                let mut results = Vec::with_capacity(items.len());
+                for item in items {
+                    let result = RelativePath::parse(&item.path).and_then(|path| {
+                        match (item.recursive, item.expected_sha256.as_deref()) {
+                            (true, None) => item_files.delete_directory(subject, &path),
+                            (false, Some(expected)) => item_files.delete(subject, &path, expected),
+                            _ => Err(FileError::InvalidPath),
+                        }
+                    });
+                    let row = match result {
+                        Ok(entry) => {
+                            json!({"path":item.path,"trash_id":entry.id,"error_code":null})
+                        }
+                        Err(e @ FileError::RecoveryRequired(_)) => return Err(e),
+                        Err(e) => json!({"path":item.path,"trash_id":null,"error_code":e.code()}),
+                    };
+                    results.push(row);
+                }
+                let result = json!({"batch_id":batch_id,"results":results});
+                files
+                    .db
+                    .write_with(|tx| {
+                        files.remote_complete(tx.connection(), subject, result.clone())
+                    })
+                    .map_err(|e| FileError::RecoveryRequired(Box::new(FileError::from(e))))?;
+                Ok(result)
             },
         )
     }

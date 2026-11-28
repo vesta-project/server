@@ -57,6 +57,31 @@ fn user(f: &Fixture, token: &str, id: &str) -> serde_json::Value {
     r.json()["data"].clone()
 }
 #[test]
+fn management_storage_over_tls_is_cached_and_role_gated() {
+    let f = Fixture::new("minecraft", 8, 16384, 5);
+    let (_, _, owner) = actor(&f, BuiltinRole::Owner);
+    let (_, _, admin) = actor(&f, BuiltinRole::Administrator);
+    let (_, _, viewer) = actor(&f, BuiltinRole::Viewer);
+    let get = |token| send(&f, "GET", "storage", &serde_json::Value::Null, token, None);
+    assert_eq!(get(None).status, 401);
+    assert_eq!(get(Some(&viewer)).status, 403);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let reply = get(Some(&owner));
+        assert_eq!(reply.status, 200);
+        if reply.json()["data"]["measuredAt"].is_string() {
+            let admin_reply = get(Some(&admin));
+            assert_eq!(admin_reply.status, 200);
+            assert_eq!(admin_reply.json()["data"], reply.json()["data"]);
+            assert!(reply.json()["data"]["volume"]["totalBytes"].is_number());
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+#[test]
 fn permission_tls_users_roles_devices_and_pagination() {
     let f = Fixture::new("minecraft", 8, 16384, 5);
     let (id, device, token) = actor(&f, BuiltinRole::Owner);

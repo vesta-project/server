@@ -19,7 +19,7 @@ fn original_v11_upgrades_access_defaults_without_weakening_builtin_protection() 
     upgraded.read(|c| {
         let version:u32=c.query_row("PRAGMA user_version",[],|r|r.get(0))?;assert_eq!(version,vesta_state::CURRENT_SCHEMA_VERSION);
         let settings:String=c.query_row("SELECT settings_json FROM access_role_sources",[],|r|r.get(0))?;
-        assert_eq!(settings,"{\"anonymous\":\"public\",\"new_user\":\"public\",\"whitelist\":\"player\",\"whitelist_enabled\":true,\"password\":\"player\"}");
+        assert_eq!(settings,"{\"anonymous\":\"public\",\"new_user\":\"public\",\"whitelist\":\"player\",\"whitelist_enabled\":true,\"password\":\"player\",\"auto_whitelist_roles\":[]}");
         let grants:u32=c.query_row("SELECT count(*) FROM role_capabilities WHERE role_id='owner' AND capability IN ('public.info','pack.download','pack.realtime')",[],|r|r.get(0))?;assert_eq!(grants,3);
         Ok(())
     }).unwrap();
@@ -43,6 +43,42 @@ fn original_v11_upgrades_access_defaults_without_weakening_builtin_protection() 
             .is_err()
     );
     upgraded.close().unwrap();
+}
+
+#[test]
+fn legacy_whitelist_toggle_migrates_to_the_owner_role() {
+    for (enabled, expected) in [
+        (true, serde_json::json!(["*"])),
+        (false, serde_json::json!([])),
+    ] {
+        let f = Fixture::open();
+        let directory = f.db.directory().clone();
+        f.db.write(|c| {
+            c.execute(
+                "UPDATE access_role_sources SET settings_json=json_set(
+                    json_remove(settings_json,'$.auto_whitelist_roles'),'$.sync_whitelist',json(?))",
+                [if enabled { "true" } else { "false" }],
+            )?;
+            c.execute_batch(support::REMOVE_V38_SCHEMA)?;
+            c.execute_batch("PRAGMA user_version=34;")?;
+            Ok(())
+        }).unwrap();
+        f.db.close().unwrap();
+        let upgraded = StateDatabase::open(directory, f.clock.clone()).unwrap();
+        upgraded
+            .read(|c| {
+                let settings: String =
+                    c.query_row("SELECT settings_json FROM access_role_sources", [], |r| {
+                        r.get(0)
+                    })?;
+                let settings: serde_json::Value = serde_json::from_str(&settings).unwrap();
+                assert_eq!(settings["auto_whitelist_roles"], expected);
+                assert!(settings.get("sync_whitelist").is_none());
+                Ok(())
+            })
+            .unwrap();
+        upgraded.close().unwrap();
+    }
 }
 
 #[test]

@@ -248,10 +248,10 @@ pub(super) async fn route(
             | "/api/v3/manage/metrics/stream"
     ) && method == Method::GET
     {
-        return super::realtime::upgrade(request, state).await;
+        return super::realtime::upgrade(request, state, None).await;
     }
     if path == "/api/v2/realtime" {
-        return super::realtime::upgrade(request, state).await;
+        return super::realtime::upgrade(request, state, None).await;
     }
     let error = |status, code| {
         if operational || path == "/api/v3/status" {
@@ -296,7 +296,10 @@ pub(super) async fn route(
                 || (method == Method::DELETE && path.starts_with("/api/v3/manage/roles/"))))
         || ((super::manage::automation_endpoint(&path)
             || super::manage::presentation::implemented(&path))
-            && matches!(method, Method::POST | Method::PUT | Method::DELETE)))
+            && matches!(
+                method,
+                Method::POST | Method::PUT | Method::DELETE | Method::PATCH
+            )))
         && (request.headers().get_all("content-type").iter().count() != 1
             || request
                 .headers()
@@ -423,6 +426,7 @@ pub(super) async fn route(
     } else {
         &state.jobs
     };
+    let storage = state.storage.clone();
     let version3 = operational || path == "/api/v3/status";
     jobs.execute_for(version3, move || {
         // Blocking work outlives a cancelled HTTP waiter: its bytes and permit
@@ -440,6 +444,14 @@ pub(super) async fn route(
                 authorization.as_ref().map(|s| s.as_str()),
                 downloads,
                 &tls,
+            );
+        }
+        if path == "/api/v3/manage/storage" {
+            return storage.reply(
+                &host,
+                &method,
+                query.as_deref(),
+                authorization.as_deref().map(String::as_str),
             );
         }
         if operational {
@@ -500,7 +512,7 @@ pub(crate) fn json(value: serde_json::Value) -> Reply {
         "application/json",
     )
 }
-fn dispatch(
+pub(crate) fn dispatch(
     host: &NetworkHost,
     path: &str,
     query: Option<&str>,

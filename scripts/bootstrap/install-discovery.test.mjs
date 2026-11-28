@@ -19,7 +19,7 @@ const base = tag => `https://github.com/vesta-project/server/releases/download/$
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 
-async function fixture(t, { tag = first, target = 'linux-x86_64', changeManifest, changeBytes, changeSignature, changePayload, releases, feed, arch = 'x86_64', oversizeManifest = false, independent = false, failFeed = false } = {}) {
+async function fixture(t, { tag = first, target = 'linux-x86_64', changeManifest, changeBytes, changeSignature, changePayload, releases, feed, arch = 'x86_64', oversizeManifest = false, independent = false, failFeed = false, uid = 0 } = {}) {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'vesta-discovery-test-'));
   t.after(() => rm(temp, { recursive: true, force: true }));
   const bin = path.join(temp, 'bin');
@@ -61,6 +61,7 @@ process.stdout.write(Buffer.from(responses[url], 'base64'));
   for (const dependency of ['python3', 'python', 'jq', 'node']) {
     await writeFile(path.join(bin, dependency), '#!/usr/bin/env bash\necho unexpected > "$VESTA_TEST_DEPENDENCY"\nexit 97\n', { mode: 0o700 });
   }
+  await writeFile(path.join(bin, 'id'), `#!/usr/bin/env bash\nprintf '%s\n' ${quote(String(uid))}\n`, { mode: 0o700 });
   await writeFile(path.join(bin, 'uname'), `#!/usr/bin/env bash\ncase "$1" in -s) echo Linux;; -m) echo ${quote(arch)};; *) exit 1;; esac\n`, { mode: 0o700 });
   const capture = path.join(temp, 'capture');
   const requests = path.join(temp, 'requests');
@@ -72,6 +73,14 @@ process.stdout.write(Buffer.from(responses[url], 'base64'));
     requests: async () => (await readFile(requests, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line)),
   };
 }
+
+test('the unprivileged shell exits before requesting a release', options, async t => {
+  const f = await fixture(t, { uid: 1000 });
+  const result = f.run(['--tag', first]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /requires root/);
+  assert.deepEqual(await f.requests(), []);
+});
 
 test('exact release verifies signature and setup bytes, forwards options, cleans private workspace', options, async t => {
   const f = await fixture(t);

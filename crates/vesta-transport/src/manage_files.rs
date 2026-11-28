@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, time::UNIX_EPOCH};
 use vesta_control::{
     files::{
-        EntryKind, FileError, MAX_READ_BYTES, MAX_UPLOAD_CHUNK_BYTES, RelativePath,
+        BulkDeleteItem, EntryKind, FileError, MAX_READ_BYTES, MAX_UPLOAD_CHUNK_BYTES, RelativePath,
         RemoteFileMutation, UploadId, WritePrecondition,
     },
     host::NetworkHost,
@@ -21,10 +21,12 @@ pub(super) fn implemented(path: &str) -> bool {
         "/api/v3/manage/files"
             | "/api/v3/manage/files/content"
             | "/api/v3/manage/files/download"
+            | "/api/v3/manage/files/image-preview"
             | "/api/v3/manage/files/tail"
             | "/api/v3/manage/files/lines"
             | "/api/v3/manage/files/follow"
             | "/api/v3/manage/files/mkdir"
+            | "/api/v3/manage/files/delete"
             | "/api/v3/manage/files/rename"
             | "/api/v3/manage/files/uploads"
             | "/api/v3/manage/trash"
@@ -185,6 +187,12 @@ struct Begin {
 #[serde(deny_unknown_fields)]
 struct Empty {}
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BulkDelete {
+    items: Vec<BulkDeleteItem>,
+}
+
 pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     if request.path == "/api/v3/manage/content"
         || request.path.starts_with("/api/v3/manage/content/")
@@ -207,8 +215,13 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     }
     let capabilities: &[Capability] = match action {
         "files" if request.method == Method::GET => &[Capability::FilesList],
-        "files" => &[Capability::FilesDelete],
-        "files/content" | "files/download" | "files/tail" | "files/lines" | "files/follow"
+        "files" | "files/delete" => &[Capability::FilesDelete],
+        "files/content"
+        | "files/download"
+        | "files/image-preview"
+        | "files/tail"
+        | "files/lines"
+        | "files/follow"
             if request.method == Method::GET =>
         {
             &[Capability::FilesRead]
@@ -246,6 +259,31 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
         }
         if action == "files/download" {
             return download(host, &request, &subject);
+        }
+        if action == "files/image-preview" {
+            let Some(path) = query(request.query, &["path"])
+                .and_then(|params| params.get("path").and_then(|s| relative(s)))
+            else {
+                return error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+            return match host.files().image_preview(&subject, &path) {
+                Ok(Some((bytes, mime))) => {
+                    let mut reply = response(StatusCode::OK, bytes, mime);
+                    reply
+                        .headers_mut()
+                        .insert("x-vesta-api-version", http::HeaderValue::from_static("3"));
+                    reply.headers_mut().insert(
+                        "x-content-type-options",
+                        http::HeaderValue::from_static("nosniff"),
+                    );
+                    reply
+                        .headers_mut()
+                        .insert("cache-control", http::HeaderValue::from_static("no-store"));
+                    reply
+                }
+                Ok(None) => error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type"),
+                Err(e) => file_error(e),
+            };
         }
         if action == "files/content" {
             let Some(query) = query(request.query, &["path", "decompress"]) else {
@@ -347,7 +385,7 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                 }
             } else {
                 match host.files().trash_entries(&subject) {
-                    Ok(entries) => entries.into_iter().map(|e| json!({"id":e.id,"path":e.path.as_str(),"sha256":e.sha256,"size":e.size.to_string(),"trashed_at_ms":e.trashed_at,"expires_at_ms":e.expires_at})).collect(),
+                    Ok(entries) => entries.into_iter().map(|e| json!({"id":e.id,"path":e.path.as_str(),"sha256":e.sha256,"size":e.size.to_string(),"trashed_at_ms":e.trashed_at,"expires_at_ms":e.expires_at,"directory":e.directory,"batch_id":e.batch_id})).collect(),
                     Err(e) => return file_error(e),
                 }
             };
@@ -452,6 +490,19 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
                     expected_sha256: &expected,
                 },
             )
+        }
+        ("POST", "files/delete") => {
+            if request.query.is_some()
+                || request.if_match.is_some()
+                || request.if_none_match.is_some()
+            {
+                return invalid();
+            }
+            let Some(input) = decode::<BulkDelete>(request.bytes) else {
+                return invalid();
+            };
+            host.files()
+                .delete_remote_batch(&subject, &key, &input.items)
         }
         ("POST", "files/mkdir") => {
             if request.query.is_some()

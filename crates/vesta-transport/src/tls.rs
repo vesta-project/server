@@ -93,8 +93,14 @@ impl Material {
             }),
         })
     }
-    pub(crate) fn config(&self) -> Result<Arc<rustls::ServerConfig>, TransportError> {
-        Ok(self.lock()?.current.config.clone())
+    pub(crate) fn accept_config(
+        &self,
+    ) -> Result<(Arc<rustls::ServerConfig>, String), TransportError> {
+        let state = self.lock()?;
+        Ok((
+            state.current.config.clone(),
+            state.current.fingerprint.clone(),
+        ))
     }
     pub(crate) fn fingerprint(&self) -> Result<String, TransportError> {
         Ok(self.lock()?.current.fingerprint.clone())
@@ -226,4 +232,14 @@ fn complete_pem(bytes: &[u8], label: &str, multiple: bool) -> bool {
         }
     }
     count != 0
+}
+
+/// Export once after a full TLS 1.3 handshake. TLS 1.2 connections keep serving
+/// existing routes but have no bootstrap capability in their request extensions.
+pub(crate) fn connection_context(
+    connection: &rustls::ServerConnection,
+    fingerprint: String,
+) -> Result<Option<Arc<crate::host_pake::Connection>>, TransportError> {
+    crate::host_pake::Connection::from_tls(connection, fingerprint)
+        .map_err(|_| TransportError::TlsMaterial)
 }

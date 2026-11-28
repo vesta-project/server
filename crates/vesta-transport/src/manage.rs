@@ -19,6 +19,8 @@ use vesta_control::{
 
 #[path = "manage_automation.rs"]
 mod automation;
+#[path = "manage_console_history.rs"]
+mod console_history;
 #[path = "manage_content.rs"]
 pub(super) mod content;
 #[path = "manage_files.rs"]
@@ -66,6 +68,7 @@ pub(super) fn implemented(path: &str) -> bool {
         || matches!(
             path,
             "/api/v3/manage/server"
+                | "/api/v3/manage/storage"
                 | "/api/v3/manage/server/status"
                 | "/api/v3/manage/lifecycle/start"
                 | "/api/v3/manage/lifecycle/sleep"
@@ -956,36 +959,10 @@ fn dispatch_inner(host: &NetworkHost, request: Request<'_>) -> Reply {
             }
         }
         "console" => {
-            let Some((after, limit)) = page(query, "console", host.management().server_id(), 200)
-            else {
+            if !bytes.is_empty() {
                 return error(StatusCode::BAD_REQUEST, "invalid_request");
-            };
-            let after = if query
-                .is_none_or(|q| !q.split('&').any(|field| field.starts_with("cursor=")))
-            {
-                match runtime.console_snapshot(0, 1) {
-                    Ok(page) => page.latest_cursor.saturating_sub(limit as u64),
-                    Err(_) => {
-                        return error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable");
-                    }
-                }
-            } else {
-                after
-            };
-            match runtime.console_snapshot(after, limit) {
-                Ok(page) if !page.gap => {
-                    let items = page.lines.iter().map(|v| Ok(json!({"cursor":cursor(host.management().server_id(), "console", v.cursor), "text":redact_console(host,&v.text)?, "truncated":v.truncated}))).collect::<Result<Vec<_>,ManagementError>>();
-                    let items = match items {
-                        Ok(items) => items,
-                        Err(e) => return management_error(e),
-                    };
-                    ok(
-                        json!({"items":items,"next_cursor":cursor(host.management().server_id(), "console", page.next_cursor),"latest_cursor":cursor(host.management().server_id(), "console", page.latest_cursor)}),
-                    )
-                }
-                Ok(_) => error(StatusCode::CONFLICT, "cursor_gap"),
-                Err(_) => error(StatusCode::BAD_REQUEST, "invalid_request"),
             }
+            console_history::dispatch(host, query)
         }
         "players" => {
             let snapshot = match runtime.game_snapshot() {

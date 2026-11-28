@@ -8,7 +8,8 @@
 //!   sector, so unchanged regions and unchanged parts of changed regions are reused.
 //! - `snapshots/<id>`: compressed JSON manifest (paths, sizes, modification times and
 //!   chunk hashes). Written only after every chunk it references.
-//! - `tags/<id>`: small mutable JSON (time and tags); the snapshot listing.
+//! - `tags/<id>`: mutable time, tags, parent, label and keep metadata.
+//! - `head.json`: the restore point the live world descends from.
 //!
 //! No encryption: repositories are meant for owner-controlled disks or buckets. Data
 //! integrity is checked by hash on restore and by `check`. A repository has a single
@@ -38,11 +39,13 @@ const PRUNE_GRACE_MS: i64 = 60 * 60 * 1000;
 /// Snapshots never promoted into a profile are removed after this long.
 const UNPROMOTED_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 const PROFILE_PREFIX: &str = "profile=";
-/// Pre-restore safety snapshots, kept by their own count retention rather than a profile.
+/// Pre-restore safety snapshots; kept by default, with separate count retention once unkept.
 pub const SAFETY_PREFIX: &str = "safety=";
 
 mod apply;
+mod lineage;
 pub use apply::{ApplyError, ApplySummary};
+pub use lineage::{BackupHistory, BackupPoint, PointUpdate};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EngineError {
@@ -66,6 +69,7 @@ pub enum EngineError {
     /// A backup would store more than its byte budget (repository size limit or the
     /// repository disk's free-space reserve).
     LimitReached,
+    CollectionLimitReached,
     /// The disk receiving restored files would drop below its free-space reserve.
     DiskSpaceLow,
 }
@@ -82,6 +86,7 @@ impl EngineError {
             Self::NotInSnapshot => "backup_restore_path_not_in_snapshot",
             Self::TargetUnsafe => "backup_restore_target_unsafe",
             Self::LimitReached => "backup_storage_limit_reached",
+            Self::CollectionLimitReached => "backup_collection_limit_reached",
             Self::DiskSpaceLow => "backup_disk_space_low",
         }
     }
@@ -198,6 +203,12 @@ struct Manifest {
 struct TagRecord {
     time_ms: i64,
     tags: Vec<String>,
+    #[serde(default)]
+    parent_id: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    kept: bool,
 }
 
 fn now_ms() -> i64 {
@@ -370,6 +381,84 @@ impl Engine {
             .collect())
     }
 
+    /// Restore points: snapshots promoted into a profile or kept as pre-restore
+    /// safety snapshots (never unpromoted candidates or rejected ones), oldest
+    /// first, with their time in milliseconds.
+    pub fn restore_points(&self) -> Result<Vec<(Snapshot, i64)>> {
+        self.require_initialized()?;
+        Ok(self
+            .all()?
+            .into_iter()
+            .filter(|(_, record)| {
+                record
+                    .tags
+                    .iter()
+                    .any(|t| t.starts_with(PROFILE_PREFIX) || t.starts_with(SAFETY_PREFIX))
+            })
+            .map(|(id, record)| {
+                (
+                    Snapshot {
+                        id,
+                        time: rfc3339(record.time_ms),
+                        tags: record.tags,
+                    },
+                    record.time_ms,
+                )
+            })
+            .collect())
+    }
+
+    /// Every file of a snapshot (`/`-separated path and size) from its manifest.
+    pub fn snapshot_files(&self, snapshot: &str) -> Result<Vec<(String, u64)>> {
+        Ok(self
+            .manifest(snapshot)?
+            .files
+            .into_iter()
+            .map(|f| (f.path, f.size))
+            .collect())
+    }
+
+    /// [`Self::restore`] of a whole snapshot into an empty `target`, stopping
+    /// cooperatively before any file once `stop` answers true (`Ok(false)`),
+    /// and reporting restored bytes. Every chunk is re-hashed and every size
+    /// checked: a corrupt or incomplete repository is `Corrupt`.
+    pub fn restore_cancellable(
+        &self,
+        snapshot: &str,
+        target: &Path,
+        stop: &dyn Fn() -> bool,
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<bool> {
+        let manifest = self.manifest(snapshot)?;
+        let total = manifest
+            .files
+            .iter()
+            .fold(0u64, |sum, f| sum.saturating_add(f.size));
+        for dir in &manifest.dirs {
+            fs::create_dir_all(safe_join(target, dir)?).map_err(|_| EngineError::Failed)?;
+        }
+        let mut done = 0u64;
+        for file in &manifest.files {
+            if stop() {
+                return Ok(false);
+            }
+            let path = safe_join(target, &file.path)?;
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|_| EngineError::Failed)?;
+            }
+            let mut out = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map_err(|_| EngineError::Failed)?;
+            self.write_restored_file(file, &mut out)?;
+            out.sync_all().map_err(|_| EngineError::Failed)?;
+            done = done.saturating_add(file.size);
+            progress(done, total);
+        }
+        Ok(true)
+    }
+
     /// Back up `root`. Files unchanged since the newest snapshot tagged `parent_tag`
     /// (same size and modification time) reuse its chunks without being read.
     pub fn backup(
@@ -392,12 +481,30 @@ impl Engine {
         parent_tag: Option<&str>,
         budget: Option<u64>,
     ) -> Result<BackupSummary> {
+        self.backup_within_cancellable(root, ignore, tags, parent_tag, budget, &|| false)
+    }
+
+    /// Cooperative interruption before publication. Stored chunks remain
+    /// unreferenced and can be pruned; no snapshot is listed for an aborted read.
+    pub fn backup_within_cancellable(
+        &self,
+        root: &Path,
+        ignore: &Ignore,
+        tags: &[String],
+        parent_tag: Option<&str>,
+        budget: Option<u64>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<BackupSummary> {
+        if cancelled() {
+            return Err(EngineError::Failed);
+        }
         let within =
             |added: u64, next: usize| budget.is_none_or(|b| added.saturating_add(next as u64) <= b);
         if tags.iter().any(|t| !valid_tag(t)) {
             return Err(EngineError::Invalid);
         }
         self.require_initialized()?;
+        let lineage_parent = self.head()?;
         let parent: BTreeMap<String, FileEntry> = match parent_tag {
             Some(tag) => match self.snapshots(tag)?.last() {
                 Some(latest) => self
@@ -428,6 +535,9 @@ impl Engine {
         let mut entries = Vec::with_capacity(files.len());
         let mut buffer = vec![0u8; CHUNK_SIZE];
         for (relative, size, modified_ms) in files {
+            if cancelled() {
+                return Err(EngineError::Failed);
+            }
             summary.total_bytes_processed += size;
             if let Some(previous) = parent.get(&relative)
                 && previous.size == size
@@ -448,8 +558,14 @@ impl Engine {
             let mut chunks = Vec::new();
             let mut read_size = 0u64;
             loop {
+                if cancelled() {
+                    return Err(EngineError::Failed);
+                }
                 let mut filled = 0;
                 while filled < CHUNK_SIZE {
+                    if cancelled() {
+                        return Err(EngineError::Failed);
+                    }
                     match file.read(&mut buffer[filled..]) {
                         Ok(0) => break,
                         Ok(n) => filled += n,
@@ -483,6 +599,9 @@ impl Engine {
                 chunks,
             });
         }
+        if cancelled() {
+            return Err(EngineError::Failed);
+        }
         let mut id_bytes = [0u8; 16];
         getrandom::fill(&mut id_bytes).map_err(|_| EngineError::Failed)?;
         let id = hex::encode(id_bytes);
@@ -494,11 +613,18 @@ impl Engine {
             dirs,
             files: entries,
         };
-        summary.data_added = self.write_snapshot(&manifest, tags, summary.data_added, budget)?;
+        summary.data_added = self.write_snapshot_parent(
+            &manifest,
+            tags,
+            summary.data_added,
+            budget,
+            lineage_parent,
+        )?;
         summary.snapshot_id = id;
         Ok(summary)
     }
 
+    #[cfg(test)]
     fn write_snapshot(
         &self,
         manifest: &Manifest,
@@ -506,11 +632,25 @@ impl Engine {
         added: u64,
         budget: Option<u64>,
     ) -> Result<u64> {
+        self.write_snapshot_parent(manifest, tags, added, budget, None)
+    }
+
+    fn write_snapshot_parent(
+        &self,
+        manifest: &Manifest,
+        tags: &[String],
+        added: u64,
+        budget: Option<u64>,
+        parent_id: Option<String>,
+    ) -> Result<u64> {
         let json = serde_json::to_vec(manifest).map_err(|_| EngineError::Failed)?;
         let object = compress(&json);
         let listing = serde_json::to_vec(&TagRecord {
             time_ms: manifest.time_ms,
             tags: tags.to_vec(),
+            parent_id,
+            label: None,
+            kept: false,
         })
         .map_err(|_| EngineError::Failed)?;
         let total = added
@@ -523,6 +663,9 @@ impl Engine {
         self.store
             .put(&format!("snapshots/{}", manifest.id), &object)?;
         self.store.put(&format!("tags/{}", manifest.id), &listing)?;
+        if tags.iter().any(|t| t.starts_with(PROFILE_PREFIX)) {
+            self.set_head(Some(&manifest.id))?;
+        }
         Ok(total)
     }
 
@@ -576,6 +719,9 @@ impl Engine {
             return Err(EngineError::DiskSpaceLow);
         }
         self.store.put(&key, &bytes)?;
+        if tags.iter().any(|t| t.starts_with(PROFILE_PREFIX)) {
+            self.set_head(Some(snapshot))?;
+        }
         Ok(growth)
     }
 
@@ -590,6 +736,148 @@ impl Engine {
             }
         }
         Ok(total)
+    }
+
+    fn object_sizes(&self) -> Result<BTreeMap<String, u64>> {
+        let mut sizes = BTreeMap::new();
+        for prefix in ["chunks/", "snapshots/", "tags/"] {
+            for object in self.store.list(prefix, MAX_CHUNKS_LISTED)? {
+                sizes.insert(object.key, object.size);
+            }
+        }
+        Ok(sizes)
+    }
+
+    fn snapshot_objects(&self, id: &str) -> Result<BTreeSet<String>> {
+        let mut objects = BTreeSet::from([format!("snapshots/{id}"), format!("tags/{id}")]);
+        for hash in self
+            .manifest(id)?
+            .files
+            .into_iter()
+            .flat_map(|file| file.chunks)
+        {
+            if !valid_hash(&hash) {
+                return Err(EngineError::Corrupt);
+            }
+            objects.insert(chunk_key(&hash));
+        }
+        Ok(objects)
+    }
+
+    pub fn collection_usage(&self, tags: &[String]) -> Result<BTreeMap<String, u64>> {
+        if tags.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let sizes = self.object_sizes()?;
+        let records = self.all()?;
+        tags.iter()
+            .map(|tag| {
+                let mut objects = BTreeSet::new();
+                for (id, record) in &records {
+                    if record.tags.contains(tag) {
+                        objects.extend(self.snapshot_objects(id)?);
+                    }
+                }
+                let bytes = objects.iter().try_fold(0u64, |total, key| {
+                    sizes
+                        .get(key)
+                        .map(|size| total.saturating_add(*size))
+                        .ok_or(EngineError::Corrupt)
+                })?;
+                Ok((tag.clone(), bytes))
+            })
+            .collect()
+    }
+
+    /// Plan before writing the new profile tag or deleting existing restore points.
+    pub(super) fn collection_prune_plan(
+        &self,
+        tag: &str,
+        candidate: &str,
+        retention: Retention,
+        max: u64,
+    ) -> Result<Vec<String>> {
+        let sizes = self.object_sizes()?;
+        let mut records = self
+            .all()?
+            .into_iter()
+            .filter(|(id, record)| id == candidate || record.tags.iter().any(|t| t == tag))
+            .collect::<Vec<_>>();
+        records
+            .sort_by(|(a_id, a), (b_id, b)| a.time_ms.cmp(&b.time_ms).then_with(|| a_id.cmp(b_id)));
+        let newest = records
+            .last()
+            .map_or(0, |(_, record)| record.time_ms)
+            .saturating_add(1);
+        let ordering = records
+            .iter()
+            .map(|(id, record)| {
+                (
+                    id.clone(),
+                    if id == candidate {
+                        newest
+                    } else {
+                        record.time_ms
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let keep = keep_set(&ordering, retention);
+        let mut refs = BTreeMap::<String, usize>::new();
+        let mut bytes = 0u64;
+        let mut removable = Vec::new();
+        for (id, record) in records {
+            let protected = id == candidate
+                || record.kept
+                || keep.contains(&id)
+                || record.tags.iter().any(|t| {
+                    (t.starts_with(PROFILE_PREFIX) && t != tag) || t.starts_with(SAFETY_PREFIX)
+                });
+            let objects = self.snapshot_objects(&id)?;
+            for object in &objects {
+                let count = refs.entry(object.clone()).or_default();
+                if *count == 0 {
+                    bytes = bytes.saturating_add(*sizes.get(object).ok_or(EngineError::Corrupt)?);
+                }
+                *count += 1;
+            }
+            if protected {
+                if id == candidate {
+                    // The new profile tag grows the tag object by two quotes and a comma.
+                    bytes = bytes.saturating_add(tag.len() as u64 + 3);
+                }
+            } else {
+                removable.push((id, objects));
+            }
+        }
+        let mut plan = Vec::new();
+        for (id, objects) in removable {
+            if bytes <= max && retention.is_empty() {
+                break;
+            }
+            for object in objects {
+                let count = refs.get_mut(&object).ok_or(EngineError::Corrupt)?;
+                *count -= 1;
+                if *count == 0 {
+                    bytes -= sizes[&object];
+                }
+            }
+            plan.push(id);
+        }
+        if bytes > max {
+            return Err(EngineError::CollectionLimitReached);
+        }
+        Ok(plan)
+    }
+
+    pub(super) fn apply_collection_prune(&self, ids: &[String]) -> Result<()> {
+        for id in ids {
+            self.remove_snapshot(id)?;
+        }
+        if !ids.is_empty() {
+            self.prune()?;
+        }
+        Ok(())
     }
 
     /// How many snapshots carry each tag.
@@ -623,7 +911,14 @@ impl Engine {
         Ok(if retention.is_empty() {
             snapshots.len()
         } else {
-            keep_set(&snapshots, retention).len()
+            let mut keep = keep_set(&snapshots, retention);
+            keep.extend(
+                self.all()?
+                    .into_iter()
+                    .filter(|(_, r)| r.kept && r.tags.iter().any(|t| t == tag))
+                    .map(|(id, _)| id),
+            );
+            keep.len()
         })
     }
 
@@ -639,7 +934,13 @@ impl Engine {
             .filter(|(_, r)| r.tags.iter().any(|t| t == tag))
             .map(|(id, r)| (id, r.time_ms))
             .collect();
-        let keep = keep_set(&snapshots, retention);
+        let mut keep = keep_set(&snapshots, retention);
+        keep.extend(
+            self.all()?
+                .into_iter()
+                .filter(|(_, r)| r.kept)
+                .map(|(id, _)| id),
+        );
         for (id, _) in &snapshots {
             if !keep.contains(id) {
                 self.remove_snapshot(id)?;
@@ -649,6 +950,7 @@ impl Engine {
     }
 
     fn remove_snapshot(&self, id: &str) -> Result<()> {
+        self.reparent_before_remove(id)?;
         // Listing record first, so a crash never leaves a listed snapshot without data.
         self.store.delete(&format!("tags/{id}"))?;
         self.store.delete(&format!("snapshots/{id}"))?;
@@ -670,9 +972,10 @@ impl Engine {
                 continue;
             }
             let promoted = records.get(&id).is_some_and(|r| {
-                r.tags
-                    .iter()
-                    .any(|t| t.starts_with(PROFILE_PREFIX) || t.starts_with(SAFETY_PREFIX))
+                r.kept
+                    || r.tags
+                        .iter()
+                        .any(|t| t.starts_with(PROFILE_PREFIX) || t.starts_with(SAFETY_PREFIX))
             });
             // The store's clock, like the chunk grace period below.
             if !promoted && now - object.modified_ms > UNPROMOTED_TTL_MS {

@@ -341,6 +341,26 @@ impl Provisioning {
         }
         Ok(())
     }
+    /// Reject new work and cooperatively cancel at existing installer boundaries.
+    pub fn request_shutdown(&self) {
+        self.0.stop.store(true, Ordering::Release);
+    }
+    /// Observe without consuming a live worker or entering an unbounded join.
+    pub fn shutdown_poll(&self) -> Result<bool> {
+        self.request_shutdown();
+        let mut worker = match self.0.worker.try_lock() {
+            Ok(worker) => worker,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(false),
+            Err(_) => return Err(Error::Unavailable),
+        };
+        if worker.as_ref().is_some_and(|worker| !worker.is_finished()) {
+            return Ok(false);
+        }
+        if let Some(worker) = worker.take() {
+            worker.join().map_err(unavailable)?;
+        }
+        Ok(true)
+    }
     pub fn shutdown(&self) -> Result<()> {
         self.0.stop.store(true, Ordering::Release);
         let handle = self.0.worker.lock().map_err(unavailable)?.take();
@@ -714,15 +734,7 @@ impl Provisioning {
         {
             value["pack"]["loader"] = serde_json::json!({"kind":software.id(),"version":loader});
         }
-        let table = toml::Value::try_from(value).map_err(unavailable)?;
-        let document = toml::to_string(&table).map_err(unavailable)?;
-        crate::config::HostConfiguration::parse_toml(
-            document.as_bytes(),
-            &self.0.root,
-            Path::new("host.toml"),
-        )
-        .map_err(unavailable)?;
-        Ok(document)
+        host_document_toml(value, &self.0.root)
     }
     fn audit(
         &self,
@@ -749,6 +761,19 @@ impl Provisioning {
         self.0.setup.audit.append(c, &record).map_err(unavailable)?;
         Ok(())
     }
+}
+/// Serialize a generated host document through TOML (values are never
+/// interpolated into text) and validate it against its installation base.
+/// Shared by first-server setup and host imports.
+pub(crate) fn host_document_toml(
+    value: serde_json::Value,
+    base: &Path,
+) -> std::result::Result<String, Error> {
+    let table = toml::Value::try_from(value).map_err(unavailable)?;
+    let document = toml::to_string(&table).map_err(unavailable)?;
+    crate::config::HostConfiguration::parse_toml(document.as_bytes(), base, Path::new("host.toml"))
+        .map_err(unavailable)?;
+    Ok(document)
 }
 fn job(c: &rusqlite::Connection, id: &str) -> Result<Job> {
     let row = c

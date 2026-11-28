@@ -242,6 +242,57 @@ impl ConsoleCapture {
         })
     }
 
+    /// Return up to `limit` lines strictly before a retained cursor, or the
+    /// newest page. The oldest retained line anchors the handoff to game logs.
+    pub fn snapshot_before(
+        &self,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<(ConsolePage, Option<ConsoleLine>), ConsoleError> {
+        if !(1..=MAX_PAGE_LINES).contains(&limit) {
+            return Err(ConsoleError::InvalidPage);
+        }
+        let inner = self.inner.lock().map_err(|_| ConsoleError::Unavailable)?;
+        if before.is_some_and(|cursor| cursor > inner.latest) {
+            return Err(ConsoleError::InvalidPage);
+        }
+        let end = before.map_or(inner.lines.len(), |cursor| {
+            inner.lines.partition_point(|line| line.cursor < cursor)
+        });
+        let oldest = inner.lines.front();
+        let gap = before.is_some_and(|cursor| {
+            oldest.is_none_or(|line| cursor < line.cursor)
+                || inner
+                    .lines
+                    .get(end)
+                    .is_none_or(|line| line.cursor != cursor)
+        });
+        let mut bytes = 0;
+        let mut lines: Vec<_> = inner
+            .lines
+            .iter()
+            .take(end)
+            .rev()
+            .take(limit)
+            .take_while(|line| {
+                bytes += line.text.len();
+                bytes <= MAX_PAGE_BYTES
+            })
+            .cloned()
+            .collect();
+        lines.reverse();
+        let next_cursor = lines.last().map_or(inner.latest, |line| line.cursor);
+        Ok((
+            ConsolePage {
+                lines,
+                next_cursor,
+                latest_cursor: inner.latest,
+                gap,
+            },
+            oldest.cloned(),
+        ))
+    }
+
     fn publish(
         &self,
         stream: ConsoleStream,

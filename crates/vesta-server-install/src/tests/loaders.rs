@@ -1484,6 +1484,104 @@ async fn installed_bundle_files_have_one_link_and_extra_links_fail_verification(
 }
 
 #[tokio::test]
+async fn loader_releases_are_newest_first_whatever_the_manifest_order() {
+    for software in [Software::Fabric, Software::Quilt] {
+        let libs = if software == Software::Fabric {
+            fabric_libs()
+        } else {
+            quilt_libs()
+        };
+        let f = Fixture::new(Software::Vanilla).await;
+        f.artifact().await;
+        let mut d = docs(software, &libs);
+        let profile = |id: &str| {
+            if software == Software::Quilt {
+                format!(
+                    "https://launcher-meta.modrinth.com/quilt/v1/version-group/v2/loader-version/{id}"
+                )
+            } else {
+                format!("https://launcher-meta.modrinth.com/fabric/v0/versions/{id}.json")
+            }
+        };
+        // Oldest first and unsorted, with a two-digit patch that a string
+        // comparison would misplace.
+        let loaders = json!(["0.1.0", "0.16.9", "0.16.10", "0.2.0"]
+            .iter()
+            .map(|id| json!({"id":id,"url":profile(id),"stable":true}))
+            .collect::<Vec<_>>());
+        if software == Software::Quilt {
+            d.manifest["versionGroups"][0]["loaders"] = loaders;
+        } else {
+            d.manifest["gameVersions"][2]["loaders"] = loaders;
+        }
+        mount_docs(&f, software, &libs, &d).await;
+        let ids: Vec<_> = f
+            .installer
+            .releases(software, GAME, &SilentProgressReporter)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, ["0.16.10", "0.16.9", "0.2.0", "0.1.0"], "{software:?}");
+    }
+}
+
+#[tokio::test]
+async fn preview_without_java_pins_exactly_the_planned_artifacts() {
+    let libs = fabric_libs();
+    let f = loader_fixture(Software::Fabric, &libs).await;
+    let preview = f
+        .installer
+        .resolve_preview(Software::Fabric, &selection(), &SilentProgressReporter)
+        .await
+        .unwrap();
+    assert_eq!(artifact_gets(&f, &libs).await, 0);
+    let plan = plan_with(&f, Software::Fabric, &selection()).await.unwrap();
+    assert_eq!(preview.artifacts_sha256, plan.artifacts_sha256());
+    assert_eq!(preview.version, plan.version());
+    assert_eq!(preview.loader_version.as_deref(), plan.loader_version());
+    assert_eq!(&preview.required_java, plan.java_requirement());
+    assert_eq!(preview.warnings, plan.warnings());
+    // Fabric's only legacy digest is the Vanilla jar from Mojang's objects host.
+    assert!(preview.legacy_checksum_mojang_only);
+    // ...and it is the one object a host must confirm against Mojang.
+    let mojang: Vec<_> = plan
+        .artifacts()
+        .iter()
+        .filter(|a| a.family == Some(SourceFamily::MojangObjects))
+        .map(|a| (a.url.to_owned(), a.digest.hex().to_owned()))
+        .collect();
+    assert_eq!(mojang.len(), 1);
+    assert_eq!(
+        preview
+            .mojang_objects
+            .iter()
+            .map(|o| (o.url.clone(), o.sha1.clone()))
+            .collect::<Vec<_>>(),
+        mojang
+    );
+    assert_eq!(
+        preview.legacy_checksum,
+        plan.artifacts()
+            .iter()
+            .any(|a| a.digest.algorithm().legacy())
+    );
+    // A different exact loader pins different artifacts.
+    let other = Selection {
+        loader_version: Some("0.1.0".into()),
+        ..selection()
+    };
+    if let Ok(other) = f
+        .installer
+        .resolve_preview(Software::Fabric, &other, &SilentProgressReporter)
+        .await
+    {
+        assert_ne!(other.artifacts_sha256, preview.artifacts_sha256);
+    }
+}
+
+#[tokio::test]
 async fn loader_releases_are_stable_choices_without_artifact_downloads() {
     for software in [Software::Fabric, Software::Quilt] {
         let libs = if software == Software::Fabric {

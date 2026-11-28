@@ -59,7 +59,7 @@ pub(crate) fn dispatch(
             ArtifactFormat::Zip => "zip",
             ArtifactFormat::Catalogue => "catalogue",
         };
-        let mut value = serde_json::json!({"server_id":host.management().server_id(),"revision":release.revision().to_string(),"minimum_revision":release.minimum_revision().to_string(),"sha256":artifact.sha256().to_hex(),"size":artifact.size().to_string(),"format":format,"installed_revision":installed.to_string(),"status":release.status_for(installed).wire(),"nonce":nonce});
+        let mut value = serde_json::json!({"server_id":host.management().protocol_server_id(),"revision":release.revision().to_string(),"minimum_revision":release.minimum_revision().to_string(),"sha256":artifact.sha256().to_hex(),"size":artifact.size().to_string(),"format":format,"installed_revision":installed.to_string(),"status":release.status_for(installed).wire(),"nonce":nonce});
         value["allow_custom_content"] =
             serde_json::json!(host.releases().allow_custom_content().unwrap_or(false));
         return match tls.sign_pack(&mut value) {

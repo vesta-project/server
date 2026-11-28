@@ -10,6 +10,7 @@ pub mod artifacts;
 pub mod audit;
 pub mod events;
 pub mod export;
+pub mod server_icon;
 pub mod settings;
 
 mod clock;

@@ -1415,3 +1415,171 @@ fn local_owner_links_are_bounded_and_update_does_not_spend_new_capacity() {
         .unwrap();
     assert_eq!(service.links_local().unwrap().len(), 32);
 }
+
+#[test]
+fn host_accounts_bind_key_uuid_purpose_connection_and_consume_proofs() {
+    use crate::machine::{
+        HostState,
+        accounts::*,
+        sessions::{canonical, signed_bytes},
+    };
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let state = HostState::open(dir.path(), Arc::new(vesta_state::SystemClock)).unwrap();
+    let host = state.snapshot().unwrap().host_id;
+    let key = Ed25519KeyPair::from_seed_unchecked(&[41; 32]).unwrap();
+    let device_key = B64.encode(key.public_key().as_ref());
+    let scope = AccountScope {
+        connection_id: Uuid::new_v4(),
+        device_key: device_key.clone(),
+        purpose: AccountPurpose::Claim,
+        binding: Uuid::new_v4().to_string(),
+    };
+    let verifier = compose(
+        ServerUuid::from_uuid(host).unwrap(),
+        FnProvider(|_: &MinecraftName, _: &ServerHash| Ok(Some(joined(TEST_PROFILE, "PlayerOne")))),
+        MutableClock::at(Instant::now()),
+        TestLimits::default(),
+    );
+    let mut accounts = HostAccounts::with_test_verifier(state.clone(), verifier);
+    let issue = |accounts: &mut HostAccounts, account: Uuid| {
+        accounts
+            .challenge(
+                &scope,
+                AccountChallengeRequest {
+                    account_id: account,
+                    name: "PlayerOne".into(),
+                    device_key: device_key.clone(),
+                    purpose: scope.purpose,
+                    binding: scope.binding.clone(),
+                },
+            )
+            .unwrap()
+    };
+    let complete = |c: &AccountChallengeResponse| {
+        AccountCompleteRequest{challenge_id:c.challenge_id.clone(),signature:B64.encode(key.sign(&signed_bytes("vesta.host.account.v1",&json!({"hostId":host,"deviceKey":device_key,"challengeId":c.challenge_id,"serverHash":c.server_hash,"purpose":scope.purpose,"binding":scope.binding}))).as_ref())}
+    };
+    let c = issue(&mut accounts, Uuid::parse_str(TEST_PROFILE).unwrap());
+    assert_eq!(c.server_hash.len(), 40);
+    let nonce = B64.encode(hex::decode(&c.challenge_id).unwrap());
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(b"vesta.host.account.v1\0");
+    digest.update(canonical(&json!({"hostId":host,"deviceKey":device_key,"purpose":scope.purpose,"binding":scope.binding,"accountId":Uuid::parse_str(TEST_PROFILE).unwrap(),"nonce":nonce})));
+    assert_eq!(c.server_hash, hex::encode(&digest.finalize()[..20]));
+    let proof = accounts.complete(&scope, complete(&c)).unwrap();
+    assert!(accounts.complete(&scope, complete(&c)).is_err());
+    for mode in 0..3 {
+        let mut wrong = scope.clone();
+        if mode == 0 {
+            wrong.purpose = AccountPurpose::Link
+        }
+        if mode == 1 {
+            wrong.device_key = B64.encode([9; 32])
+        }
+        if mode == 2 {
+            wrong.connection_id = Uuid::new_v4()
+        }
+        assert!(
+            accounts
+                .consume(&proof.account_proof_id, &wrong, |_| Ok(()))
+                .is_err()
+        );
+    }
+    assert!(
+        accounts
+            .consume(&proof.account_proof_id, &scope, |_| Err::<(), _>(
+                crate::machine::sessions::IdentityFailure("transaction_failed")
+            ))
+            .is_err()
+    );
+    assert_eq!(
+        accounts
+            .consume(&proof.account_proof_id, &scope, Ok)
+            .unwrap(),
+        Uuid::parse_str(TEST_PROFILE).unwrap()
+    );
+    assert!(
+        accounts
+            .consume(&proof.account_proof_id, &scope, Ok)
+            .is_err()
+    );
+    let c = issue(&mut accounts, Uuid::new_v4());
+    assert!(accounts.complete(&scope, complete(&c)).is_err());
+    let c = issue(&mut accounts, Uuid::parse_str(TEST_PROFILE).unwrap());
+    let mut wrong = scope.clone();
+    wrong.purpose = AccountPurpose::Link;
+    assert!(accounts.complete(&wrong, complete(&c)).is_err());
+    assert!(accounts.complete(&scope, complete(&c)).is_err());
+    let c = issue(&mut accounts, Uuid::parse_str(TEST_PROFILE).unwrap());
+    let mut wrong = complete(&c);
+    wrong.signature = B64.encode([0; 64]);
+    assert!(accounts.complete(&scope, wrong).is_err());
+    assert!(accounts.complete(&scope, complete(&c)).is_err());
+    let mut restarted = HostAccounts::new(state).unwrap();
+    assert!(restarted.complete(&scope, complete(&c)).is_err());
+}
+#[test]
+fn host_accounts_provider_outage_is_unavailable_and_challenge_is_spent() {
+    use crate::machine::{HostState, accounts::*, sessions::signed_bytes};
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let state = HostState::open(dir.path(), Arc::new(vesta_state::SystemClock)).unwrap();
+    let host = state.snapshot().unwrap().host_id;
+    let verifier = compose(
+        ServerUuid::from_uuid(host).unwrap(),
+        FnProvider(|_: &MinecraftName, _: &ServerHash| Err(MinecraftError::unavailable())),
+        MutableClock::at(Instant::now()),
+        TestLimits::default(),
+    );
+    let mut accounts = HostAccounts::with_test_verifier(state, verifier);
+    let key = Ed25519KeyPair::from_seed_unchecked(&[40; 32]).unwrap();
+    let scope = AccountScope {
+        connection_id: Uuid::new_v4(),
+        device_key: B64.encode(key.public_key().as_ref()),
+        purpose: AccountPurpose::Link,
+        binding: "link-exchange".into(),
+    };
+    let c = accounts
+        .challenge(
+            &scope,
+            AccountChallengeRequest {
+                account_id: Uuid::parse_str(TEST_PROFILE).unwrap(),
+                name: "PlayerOne".into(),
+                device_key: scope.device_key.clone(),
+                purpose: scope.purpose,
+                binding: scope.binding.clone(),
+            },
+        )
+        .unwrap();
+    let signature=B64.encode(key.sign(&signed_bytes("vesta.host.account.v1",&json!({"hostId":host,"deviceKey":scope.device_key,"challengeId":c.challenge_id,"serverHash":c.server_hash,"purpose":scope.purpose,"binding":scope.binding}))).as_ref());
+    assert_eq!(
+        accounts
+            .complete(
+                &scope,
+                AccountCompleteRequest {
+                    challenge_id: c.challenge_id.clone(),
+                    signature: signature.clone()
+                }
+            )
+            .err()
+            .unwrap()
+            .0,
+        "account_verification_unavailable"
+    );
+    assert!(
+        accounts
+            .complete(
+                &scope,
+                AccountCompleteRequest {
+                    challenge_id: c.challenge_id,
+                    signature
+                }
+            )
+            .is_err()
+    );
+}

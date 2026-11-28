@@ -16,7 +16,9 @@ use std::{
 
 const WAIT: Duration = Duration::from_millis(750);
 const MAX_FRAME: usize = 4096;
-const MAX_STATUS: usize = 12_000;
+// This outgoing JSON budget stays below Java Edition's 32,767-unit string
+// limit. The 4 KiB inbound frame limit still applies to client requests.
+const MAX_STATUS: usize = 28 * 1024;
 const MAX_CONNECTIONS: usize = 8;
 const SOURCE_COOLDOWN: Duration = Duration::from_secs(10);
 
@@ -226,7 +228,11 @@ fn serve(
             if status.pointer("/version/protocol").and_then(|v| v.as_i64()) == Some(-1) {
                 status["version"]["protocol"] = protocol.into();
             }
-            write_text(&mut stream, &status.to_string(), deadline)?;
+            let status = status.to_string();
+            if status.len() > MAX_STATUS {
+                return Err(invalid());
+            }
+            write_text(&mut stream, &status, deadline)?;
             let ping = frame(&mut stream, deadline)?;
             if ping.len() != 9 || ping[0] != 1 {
                 return Err(invalid());

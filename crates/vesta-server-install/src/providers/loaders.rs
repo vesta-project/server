@@ -40,6 +40,16 @@ fn numeric_release(id: &str) -> bool {
             .iter()
             .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
 }
+/// Descending by dotted numeric components (`0.16.10` before `0.16.9`), then by
+/// identifier so the order is total and deterministic.
+fn newest_first(a: &str, b: &str) -> std::cmp::Ordering {
+    let key = |s: &str| {
+        s.split(['.', '-', '+'])
+            .map(|p| p.parse::<u64>().unwrap_or(0))
+            .collect::<Vec<_>>()
+    };
+    key(b).cmp(&key(a)).then_with(|| b.cmp(a))
+}
 impl Loader {
     fn release(&self) -> bool {
         // Fabric marks only its currently recommended loader stable. Older
@@ -274,9 +284,12 @@ pub(super) async fn releases(
     if !versions.iter().any(|v| v == version) {
         return Err(InstallError::Unavailable);
     }
+    let mut loaders: Vec<_> = loaders.into_iter().filter(Loader::release).collect();
+    // The mirror manifest's order is not a contract; callers treat the first
+    // choice as the newest, so order explicitly (newest numeric release first).
+    loaders.sort_by(|a, b| newest_first(&a.id, &b.id));
     Ok(loaders
         .into_iter()
-        .filter(Loader::release)
         .map(|l| releases::SoftwareRelease {
             id: l.id.clone(),
             build: None,

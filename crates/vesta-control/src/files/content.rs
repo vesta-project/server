@@ -11,6 +11,41 @@ use std::{collections::BTreeMap, io::Seek};
 
 const MAX_PENDING: i64 = vesta_protocol::pack::catalogue::MAX_FILES as i64;
 static CONTENT_ADMISSION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+const IDENTIFICATION_BATCH: usize = 32;
+const IDENTIFICATION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+const INVENTORY_HASH_BYTES: u64 = 64 * 1024 * 1024;
+const INVENTORY_HASH_FILES: usize = 128;
+
+pub(super) struct HashWork {
+    path: String,
+    version: String,
+    offset: u64,
+    digest: Sha256,
+}
+
+#[derive(Default)]
+pub(super) struct IdentificationState {
+    running: bool,
+    completed: Option<std::time::Instant>,
+}
+
+struct ContentObservation {
+    path: RelativePath,
+    identity: String,
+    modified: SystemTime,
+    size: u64,
+    sha256: String,
+    sha512: String,
+}
+
+impl ContentObservation {
+    fn matches(&self, file: &std::fs::File) -> Result<bool> {
+        let metadata = file.metadata().map_err(io_error)?;
+        Ok(metadata.len() == self.size
+            && metadata.modified().map_err(io_error)? == self.modified
+            && native::file_identity(file)? == self.identity)
+    }
+}
 const MAX_STAGED: i64 = 128 * 1024 * 1024;
 #[cfg(test)]
 thread_local! {
@@ -22,7 +57,8 @@ pub(super) fn initialize(db: &StateDatabase) -> Result<()> {
         request_hash TEXT NOT NULL, change_json TEXT NOT NULL, bytes BLOB NOT NULL,
         state TEXT NOT NULL, error TEXT, UNIQUE(principal,device,request_key));
         CREATE TABLE IF NOT EXISTS server_content_provenance(path TEXT PRIMARY KEY, sha256 TEXT NOT NULL, provider_json TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS server_content_hashes(hash TEXT PRIMARY KEY, provider_json TEXT NOT NULL);").map_err(Into::into))?;
+        CREATE TABLE IF NOT EXISTS server_content_hashes(hash TEXT PRIMARY KEY, provider_json TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS server_content_validators(path TEXT PRIMARY KEY, version TEXT NOT NULL, sha256 TEXT NOT NULL);").map_err(Into::into))?;
     Ok(())
 }
 
@@ -303,7 +339,7 @@ impl FileBrowser {
         path: &str,
     ) -> Result<Option<ContentProvider>> {
         self.check_global_authority(subject, Capability::ContentInstall)?;
-        if !is_jar(path) || !(path.starts_with("mods/") || path.starts_with("plugins/")) {
+        if content_path_kind(path).is_none() {
             return Err(FileError::InvalidPath);
         }
         let relative = RelativePath::parse(path)?;
@@ -325,29 +361,77 @@ impl FileBrowser {
         }
         let hash = hex::encode(sha512.finalize());
         let digest = hex::encode(sha256.finalize());
-        let cached = self.db.read(|c| {
-            c.query_row(
-                "SELECT provider_json FROM server_content_hashes WHERE hash=?",
-                [&hash],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(Into::into)
-        })?;
-        let provider: Option<ContentProvider> = if let Some(raw) = cached {
-            serde_json::from_str(&raw).map_err(|_| FileError::Unavailable)?
-        } else {
-            let found = UreqProviderClient::new(None)
-                .identify_sha512(&hash)
-                .map_err(|_| FileError::Unavailable)?;
-            self.db.write(|c|{c.execute("DELETE FROM server_content_hashes WHERE rowid IN (SELECT rowid FROM server_content_hashes ORDER BY rowid LIMIT max(0,(SELECT count(*) FROM server_content_hashes)-1023))",[])?;c.execute("INSERT OR REPLACE INTO server_content_hashes VALUES(?,?)",params![hash,serde_json::to_string(&found).map_err(|_|vesta_state::StateError::new("content_metadata_invalid"))?])?;Ok(())})?;
-            found
-        };
+        let provider = self
+            .providers_for_hashes([hash.as_str()])?
+            .remove(hash.as_str());
         self.reauthorize_stream(subject, &stream)?;
         if !stream.unchanged()? {
             return Err(FileError::Conflict(None));
         }
-        if let Some(provider) = &provider {
+        self.record_provenance(path, &digest, provider.as_ref())?;
+        Ok(provider)
+    }
+
+    /// Look up only uncached hashes. A stored null is a completed catalogue miss.
+    fn providers_for_hashes<'a>(
+        &self,
+        hashes: impl IntoIterator<Item = &'a str>,
+    ) -> Result<BTreeMap<String, ContentProvider>> {
+        let hashes = hashes
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        let cached = self.db.read(|c| {
+            let mut query =
+                c.prepare("SELECT provider_json FROM server_content_hashes WHERE hash=?")?;
+            hashes
+                .iter()
+                .map(|&hash| {
+                    query
+                        .query_row([hash], |row| row.get::<_, String>(0))
+                        .optional()
+                        .map(|raw| (hash, raw))
+                        .map_err(Into::into)
+                })
+                .collect::<vesta_state::Result<Vec<_>>>()
+        })?;
+        let mut found = BTreeMap::new();
+        let mut uncached = Vec::new();
+        for (hash, stored) in cached {
+            if let Some(stored) = stored {
+                if let Some(provider) =
+                    serde_json::from_str(&stored).map_err(|_| FileError::Unavailable)?
+                {
+                    found.insert(hash.to_owned(), provider);
+                }
+            } else {
+                uncached.push(hash);
+            }
+        }
+        if !uncached.is_empty() {
+            let checked = UreqProviderClient::new(None)
+                .identify_sha512_batch(&uncached)
+                .map_err(|_| FileError::Unavailable)?;
+            self.db.write(|c| {
+                for hash in uncached {
+                    let raw = serde_json::to_string(&checked.get(hash))
+                        .map_err(|_| vesta_state::StateError::new("content_metadata_invalid"))?;
+                    c.execute("INSERT OR IGNORE INTO server_content_hashes VALUES(?,?)", params![hash, raw])?;
+                }
+                c.execute("DELETE FROM server_content_hashes WHERE rowid IN (SELECT rowid FROM server_content_hashes ORDER BY rowid LIMIT max(0,(SELECT count(*) FROM server_content_hashes)-1024))", [])?;
+                Ok(())
+            })?;
+            found.extend(checked);
+        }
+        Ok(found)
+    }
+
+    fn record_provenance(
+        &self,
+        path: &str,
+        digest: &str,
+        provider: Option<&ContentProvider>,
+    ) -> Result<()> {
+        if let Some(provider) = provider {
             self.db.write(|c| {
                 c.execute(
                     "INSERT OR REPLACE INTO server_content_provenance VALUES(?,?,?)",
@@ -362,7 +446,142 @@ impl FileBrowser {
                 Ok(())
             })?;
         }
-        Ok(provider)
+        Ok(())
+    }
+
+    /// Start a server-owned identification pass for entries from the full inventory.
+    pub fn identify_unknown_in_background(&self, inventory: &ContentInventory) {
+        let Ok(mut state) = self.content_identification.lock() else {
+            return;
+        };
+        if state.running
+            || state
+                .completed
+                .is_some_and(|at| at.elapsed() < IDENTIFICATION_INTERVAL)
+        {
+            return;
+        }
+        let paths: Vec<_> = inventory
+            .items
+            .iter()
+            .filter(|item| {
+                content_path_kind(&item.path) == Some(item.kind)
+                    && item.provider.is_none()
+                    && item.display_provider.is_none()
+                    && item.pending.is_none()
+                    && item
+                        .size
+                        .parse::<u64>()
+                        .is_ok_and(|size| size <= MAX_WRITE_BYTES as u64)
+            })
+            .map(|item| item.path.clone())
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        state.running = true;
+        let files = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("content-identify".into())
+            .spawn(move || {
+                for batch in paths.chunks(IDENTIFICATION_BATCH) {
+                    if files.identify_inventory_batch(batch).is_err() {
+                        break;
+                    }
+                }
+                if let Ok(mut state) = files.content_identification.lock() {
+                    state.running = false;
+                    state.completed = Some(std::time::Instant::now());
+                }
+            });
+        if spawned.is_err() {
+            state.running = false;
+        }
+    }
+
+    fn identify_inventory_batch(&self, paths: &[String]) -> Result<()> {
+        let observed = paths
+            .iter()
+            .filter_map(|path| self.observe_content(path).ok())
+            .collect::<Vec<_>>();
+        let found =
+            self.providers_for_hashes(observed.iter().map(|entry| entry.sha512.as_str()))?;
+        let matches = observed
+            .into_iter()
+            .filter_map(|entry| {
+                let provider = found.get(&entry.sha512)?;
+                let file = self.open_identification_file(&entry.path).ok()?;
+                entry.matches(&file).ok()?.then_some((entry, provider))
+            })
+            .collect::<Vec<_>>();
+        if matches.is_empty() {
+            return Ok(());
+        }
+        self.db.write_with(|tx| -> Result<()> {
+            for (entry, provider) in matches {
+                tx.connection().execute(
+                    "INSERT INTO server_content_provenance VALUES(?,?,?)
+                     ON CONFLICT(path) DO UPDATE SET sha256=excluded.sha256, provider_json=excluded.provider_json
+                     WHERE server_content_provenance.sha256<>excluded.sha256",
+                    params![entry.path.as_str(), entry.sha256,
+                        serde_json::to_string(provider).map_err(|_| FileError::Unavailable)?],
+                )?;
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    fn open_identification_file(&self, path: &RelativePath) -> Result<std::fs::File> {
+        if content_path_kind(path.as_str()).is_none() {
+            return Err(FileError::InvalidPath);
+        }
+        let root = self.root.clone().remote(false);
+        let checked = root.resolve(Some(path))?;
+        let file = native::open_regular(&checked.path)?;
+        let actual = native::actual_path(&file, &checked.path)?;
+        if root.resource(&actual)? != path.resource() {
+            return Err(FileError::LinkedPath);
+        }
+        #[cfg(target_os = "linux")]
+        if !native::same_volume(root.raw_path(), &actual).unwrap_or(false) {
+            return Err(FileError::LinkedPath);
+        }
+        Ok(file)
+    }
+
+    fn observe_content(&self, path: &str) -> Result<ContentObservation> {
+        let relative = RelativePath::parse(path)?;
+        let mut file = self.open_identification_file(&relative)?;
+        let before = file.metadata().map_err(io_error)?;
+        if before.len() > MAX_WRITE_BYTES as u64 {
+            return Err(FileError::TooLarge);
+        }
+        let mut observed = ContentObservation {
+            path: relative,
+            identity: native::file_identity(&file)?,
+            modified: before.modified().map_err(io_error)?,
+            size: before.len(),
+            sha256: String::new(),
+            sha512: String::new(),
+        };
+        let mut sha512 = sha2::Sha512::new();
+        let mut sha256 = Sha256::new();
+        let mut buffer = vec![0u8; FILE_CHUNK_BYTES];
+        let mut remaining = observed.size;
+        while remaining > 0 {
+            let length = remaining.min(buffer.len() as u64) as usize;
+            file.read_exact(&mut buffer[..length]).map_err(io_error)?;
+            sha512.update(&buffer[..length]);
+            sha256.update(&buffer[..length]);
+            remaining -= length as u64;
+        }
+        if !observed.matches(&file)? {
+            return Err(FileError::Conflict(None));
+        }
+        observed.sha512 = hex::encode(sha512.finalize());
+        observed.sha256 = hex::encode(sha256.finalize());
+        Ok(observed)
     }
     pub fn content_inventory(
         &self,
@@ -373,6 +592,140 @@ impl FileBrowser {
     ) -> Result<ContentInventory> {
         self.content_inventory_view(subject, software, minecraft_version, world, false)
     }
+
+    fn inventory_validators(&self, subject: &Subject, items: &mut [ContentEntry]) -> Result<()> {
+        let cached = self.db.read(|c| {
+            let mut query =
+                c.prepare("SELECT path,version,sha256 FROM server_content_validators")?;
+            query
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        (row.get::<_, String>(1)?, row.get::<_, String>(2)?),
+                    ))
+                })?
+                .collect::<rusqlite::Result<BTreeMap<_, _>>>()
+                .map_err(Into::into)
+        })?;
+        let mut work = self.content_hash_work.try_lock().ok();
+        let mut updated = Vec::new();
+        let mut bytes_left = INVENTORY_HASH_BYTES;
+        let mut files_left = INVENTORY_HASH_FILES;
+        let pending = work
+            .as_ref()
+            .and_then(|slot| slot.as_ref())
+            .and_then(|partial| items.iter().position(|item| item.path == partial.path));
+        if pending.is_none()
+            && let Some(slot) = &mut work
+        {
+            **slot = None;
+        }
+        // A large file can span requests. Resume it first, then spend the
+        // remaining budget on misses in inventory order.
+        let indices = pending
+            .into_iter()
+            .chain((0..items.len()).filter(|i| Some(*i) != pending));
+        for index in indices {
+            let item = &mut items[index];
+            if item.sha256.is_some() {
+                continue;
+            }
+            let relative = RelativePath::parse(&item.path)?;
+            let can_hash = work.is_some() && bytes_left != 0 && files_left != 0;
+            if !can_hash && !cached.contains_key(&item.path) {
+                continue;
+            }
+            let Ok(mut stream) = self.open_content_stream(subject, &relative) else {
+                continue;
+            };
+            if stream.size().to_string() != item.size {
+                continue;
+            }
+            let observed = stream.content_version().ok();
+            let Some(version) = observed.as_ref().filter(|version| version.reusable) else {
+                // Recent change times and unavailable change times can still
+                // serve a fresh digest within the request budget.
+                if can_hash && stream.size() <= bytes_left {
+                    bytes_left -= stream.size();
+                    files_left -= 1;
+                    item.sha256 = stream
+                        .snapshot_digest(0, stream.size())
+                        .ok()
+                        .filter(|_| {
+                            observed.as_ref().is_none_or(|before| {
+                                stream
+                                    .content_version()
+                                    .is_ok_and(|after| after.key == before.key)
+                            })
+                        })
+                        .map(hex::encode);
+                }
+                continue;
+            };
+            let version = &version.key;
+            if let Some((known_version, hash)) = cached.get(&item.path)
+                && known_version == version
+            {
+                item.sha256 = Some(hash.clone());
+                continue;
+            }
+            if !can_hash {
+                continue;
+            }
+            let Some(slot) = &mut work else { continue };
+            let mut partial = slot
+                .take()
+                .filter(|partial| partial.path == item.path && &partial.version == version)
+                .unwrap_or_else(|| HashWork {
+                    path: item.path.clone(),
+                    version: version.clone(),
+                    offset: 0,
+                    digest: Sha256::new(),
+                });
+            files_left -= 1;
+            let end = partial.offset + bytes_left.min(stream.size() - partial.offset);
+            let result = (|| -> Result<()> {
+                while partial.offset < end {
+                    let count = (end - partial.offset).min(FILE_CHUNK_BYTES as u64) as usize;
+                    bytes_left -= count as u64;
+                    let bytes = stream.read_chunk(partial.offset, count)?;
+                    partial.digest.update(bytes);
+                    partial.offset += count as u64;
+                }
+                Ok(())
+            })();
+            if result.is_err()
+                || !stream
+                    .content_version()
+                    .is_ok_and(|current| &current.key == version)
+            {
+                continue;
+            }
+            if partial.offset == stream.size() {
+                let hash = hex::encode(partial.digest.finalize());
+                item.sha256 = Some(hash.clone());
+                updated.push((item.path.clone(), version.clone(), hash));
+            } else {
+                **slot = Some(partial);
+            }
+        }
+        if !updated.is_empty() {
+            self.db.write(|c| {
+                let mut insert = c.prepare("INSERT OR REPLACE INTO server_content_validators(path,version,sha256) VALUES (?1,?2,?3)")?;
+                for (path, version, hash) in &updated {
+                    insert.execute(params![path, version, hash])?;
+                }
+                c.execute(
+                    "DELETE FROM server_content_validators WHERE rowid IN
+                     (SELECT rowid FROM server_content_validators ORDER BY rowid DESC LIMIT -1 OFFSET ?1)",
+                    [2 * vesta_protocol::pack::catalogue::MAX_FILES as i64],
+                )?;
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
     /// Display-only listing: omit byte verification and JAR parsing on first paint.
     pub fn content_inventory_view(
         &self,
@@ -385,7 +738,6 @@ impl FileBrowser {
         self.check_remote_surface(subject, &[Capability::FilesList, Capability::FilesRead])?;
         let mut items = Vec::new();
         let mut truncated = false;
-        let mut hash_budget = 64 * 1024 * 1024u64;
         for (kind, dir) in [
             (ContentKind::Mod, "mods"),
             (ContentKind::Plugin, "plugins"),
@@ -409,19 +761,6 @@ impl FileBrowser {
                 }
                 let path = format!("{dir}/{}", entry.name);
                 let relative = RelativePath::parse(&path)?;
-                // Hash only a bounded amount per inventory; provenance is never attached
-                // to bytes which have not been verified in this observation.
-                let hash = if !summary
-                    && entry.size <= MAX_WRITE_BYTES as u64
-                    && entry.size <= hash_budget
-                    && items.len() < 128
-                {
-                    hash_budget -= entry.size;
-                    let mut stream = self.open_stream(subject, &relative)?;
-                    Some(hex::encode(stream.snapshot_digest(0, stream.size())?))
-                } else {
-                    None
-                };
                 let provider = None;
                 // Declared side/name come from a bounded ZIP metadata read, independently
                 // of the full-file hash budget used for provider provenance.
@@ -437,7 +776,7 @@ impl FileBrowser {
                     filename: entry.name.clone(),
                     size: entry.size.to_string(),
                     enabled: Some(!entry.name.ends_with(".disabled")),
-                    sha256: hash,
+                    sha256: None,
                     provider,
                     display_provider: None,
                     declared,
@@ -465,10 +804,6 @@ impl FileBrowser {
                     Err(FileError::TooLarge) => None,
                     Err(e) => return Err(e),
                 }
-            } else if checked.metadata.is_file() && checked.metadata.len() <= MAX_WRITE_BYTES as u64
-            {
-                let mut stream = self.open_stream(subject, &relative)?;
-                Some(hex::encode(stream.snapshot_digest(0, stream.size())?))
             } else {
                 None
             };
@@ -488,6 +823,9 @@ impl FileBrowser {
                 pending_id: None,
                 pending_error: None,
             });
+        }
+        if !summary {
+            self.inventory_validators(subject, &mut items)?;
         }
         // Reuse one read transaction and prepared statement for all verified
         // files. Never hold the database read while hashing or reading ZIPs.

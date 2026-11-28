@@ -210,6 +210,14 @@ pub(crate) struct Worker {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 impl Worker {
+    pub(crate) fn request_shutdown(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+    }
+    pub(crate) fn is_shutdown_complete(&self) -> bool {
+        self.thread
+            .as_ref()
+            .is_none_or(std::thread::JoinHandle::is_finished)
+    }
     pub(crate) fn start(
         db: StateDatabase,
         settings: Settings,
@@ -248,7 +256,7 @@ impl Worker {
 }
 impl Drop for Worker {
     fn drop(&mut self) {
-        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        self.request_shutdown();
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }

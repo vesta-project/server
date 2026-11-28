@@ -1086,3 +1086,77 @@ fn archive_refusal_context_retains_path_and_excludes_url_descriptions() {
 
 #[path = "recovery_assurance.rs"]
 mod recovery_assurance;
+
+#[test]
+fn shutdown_request_retains_active_activation_and_closes_admission() {
+    let f = Fixture::new();
+    let service = f.open();
+    let h = service.handle();
+    f.previous("shutdown-safe previous");
+    let (entered, wait) = std::sync::mpsc::sync_channel(1);
+    let (release, blocked) = std::sync::mpsc::sync_channel(1);
+    *f.native.activation_action.lock().unwrap() = Some(Box::new(move || {
+        entered.send(()).unwrap();
+        let _ = blocked.recv_timeout(Duration::from_secs(5));
+    }));
+    let plan = h.prepare_rollback(&owner(), 0).unwrap();
+    let job = h
+        .rollback(&owner(), request(&plan, "shutdown-activation"))
+        .unwrap();
+    wait.recv_timeout(Duration::from_secs(5)).unwrap();
+    service.request_shutdown();
+    service.request_shutdown();
+    let retained = !service.is_shutdown_complete();
+    let rejected = h
+        .java_job(
+            &owner(),
+            Some(std::env::current_exe().unwrap()),
+            None,
+            "shutdown-java",
+        )
+        .err();
+    release.send(()).unwrap();
+    assert!(retained, "active activation must remain owned");
+    assert!(matches!(rejected, Some(SoftwareError::RuntimeUnavailable)));
+    let until = Instant::now() + Duration::from_secs(5);
+    while !service.is_shutdown_complete() {
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        h.jobs(&owner())
+            .unwrap()
+            .into_iter()
+            .find(|j| j.id == job.id)
+            .unwrap()
+            .state,
+        "succeeded"
+    );
+    assert_eq!(*f.native.document.lock().unwrap(), "shutdown-safe previous");
+}
+
+#[test]
+fn shutdown_signal_does_not_wait_for_software_admission_lock() {
+    let f = Fixture::new();
+    let service = f.open();
+    let h = service.handle();
+    let guard = h.inner.queue.lock().unwrap();
+    let (sent, received) = std::sync::mpsc::sync_channel(1);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            service.request_shutdown();
+            sent.send(()).unwrap();
+        });
+        let signalled = received.recv_timeout(Duration::from_secs(1)).is_ok();
+        drop(guard);
+        assert!(
+            signalled,
+            "shutdown signal waited for a queue/database owner"
+        );
+    });
+    let until = Instant::now() + Duration::from_secs(5);
+    while !service.is_shutdown_complete() {
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}

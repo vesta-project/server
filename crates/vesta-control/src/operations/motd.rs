@@ -1,5 +1,6 @@
 //! Reserved, validated presentation settings; no file or console authority.
 use super::*;
+use crate::identity::management::permissions::branding::prepare_game_projection;
 use crate::motd::Document;
 use rusqlite::OptionalExtension;
 use serde::Serialize;
@@ -41,6 +42,28 @@ pub(crate) fn effective(c: &rusqlite::Connection, server: &str) -> vesta_state::
     })
 }
 impl Operations {
+    /// Rebuild the local projection after an upgrade or a recovery import.
+    pub(super) fn prepare_server_icon(&self) -> OperationsResult<()> {
+        let Some(files) = &self.content_files else {
+            return Ok(());
+        };
+        let root = files.server_icon_root().ok().flatten();
+        self.db.write(|c| {
+            let policy = effective(c, self.db.server_id())?;
+            if let Some(root) = &root
+                && prepare_game_projection(c, self.db.server_id(), root)?
+            {
+                return Ok(());
+            }
+            if policy.revision.is_some() {
+                let png = policy.document.normal_icon();
+                vesta_state::server_icon::store(c, root.as_deref(), png.as_deref())?;
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+
     pub fn motd_policy(&self, subject: &Subject) -> OperationsResult<MotdPolicy> {
         self.db
             .read_with(|snapshot| {
@@ -69,6 +92,11 @@ impl Operations {
         if json.len() > MAX_POLICY_BYTES {
             return Err(invalid());
         }
+        let root = self
+            .content_files
+            .as_ref()
+            .and_then(|files| files.server_icon_root().ok().flatten());
+        let png = document.normal_icon();
         let result=self.db.write_with(|transaction|{
             let c=transaction.connection();let repo=Repository::new(c,self.db.server_id(),self.db.clock().millis());
             if let identity::Decision::Deny(reason)=self.policy(&repo,subject)?.check(Capability::ConfigEdit,None){return Err(OperationError::forbidden(reason));}
@@ -76,6 +104,10 @@ impl Operations {
             if current!=expected{return Err(OperationError::rejected(OperationErrorCode::SourceRevisionUnavailable));}
             let revision=current.unwrap_or(0).checked_add(1).ok_or_else(invalid)?;
             c.execute("INSERT INTO settings(server_id,key,desired_value,desired_revision,apply_mode,effective_value,effective_revision,updated_at) VALUES(?,?,?,?,'immediate',?,?,?) ON CONFLICT(server_id,key) DO UPDATE SET desired_value=excluded.desired_value,desired_revision=excluded.desired_revision,effective_value=excluded.effective_value,effective_revision=excluded.effective_revision,updated_at=excluded.updated_at",rusqlite::params![self.db.server_id(),KEY,json,revision,json,revision,self.db.clock().millis()])?;
+            if let Some(root) = &root
+                && !prepare_game_projection(c, self.db.server_id(), root)? {
+                    vesta_state::server_icon::store(c, Some(root), png.as_deref())?;
+                }
             self.audit.append(c,&AuditRecord::new(request_actor(subject)?,"motd.policy.update".into(),"motd-policy".into(),"accepted".into(),None,[("revision".into(),Some(revision.to_string()))])?)?;
             Ok(revision)
         });

@@ -1568,3 +1568,34 @@ fn download_limits_are_optional_and_strictly_bounded() {
         );
     }
 }
+
+#[test]
+fn startup_policy_is_explicit_only_when_process_names_it() {
+    let base = std::env::temp_dir();
+    let cfg = parse(GOLDEN, &base).unwrap();
+    assert_eq!(cfg.on_agent_start_explicit(), None);
+    let cfg = parse(
+        &format!("{GOLDEN}\n[process]\nsupervision='in-process'\n"),
+        &base,
+    )
+    .unwrap();
+    assert_eq!(cfg.on_agent_start_explicit(), None);
+    let cfg = parse(
+        &format!("{GOLDEN}\n[process]\nsupervision='in-process'\non-agent-start='stay_stopped'\n"),
+        &base,
+    )
+    .unwrap();
+    assert_eq!(
+        cfg.on_agent_start_explicit(),
+        Some(OnAgentStart::StayStopped)
+    );
+    let cfg = parse(
+        &format!("{GOLDEN}\n[process]\nsupervision='in-process'\nstart-on-agent-start=false\n"),
+        &base,
+    )
+    .unwrap();
+    assert_eq!(
+        cfg.on_agent_start_explicit(),
+        Some(OnAgentStart::StayStopped)
+    );
+}

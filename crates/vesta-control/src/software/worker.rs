@@ -26,10 +26,22 @@ pub(super) fn run(inner: Arc<Inner>) {
     loop {
         let mut work = {
             let mut q = inner.queue.lock().unwrap_or_else(|p| p.into_inner());
-            while q.work.is_empty() && !q.stop {
-                q = inner.wake.wait(q).unwrap_or_else(|p| p.into_inner());
+            while q.work.is_empty()
+                && !q.stop
+                && !inner.cancel.load(std::sync::atomic::Ordering::Acquire)
+            {
+                // Cancellation is atomic and shutdown must not wait for this
+                // queue lock. A timed wait closes the notify-before-wait race.
+                q = inner
+                    .wake
+                    .wait_timeout(q, std::time::Duration::from_millis(100))
+                    .unwrap_or_else(|p| p.into_inner())
+                    .0;
             }
-            if q.work.is_empty() {
+            if q.work.is_empty()
+                || q.stop
+                || inner.cancel.load(std::sync::atomic::Ordering::Acquire)
+            {
                 return;
             }
             q.work.pop_front().expect("queued software work")

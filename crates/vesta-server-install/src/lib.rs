@@ -30,8 +30,8 @@ pub use install::{InstallOutcome, InstallRoots, Receipt};
 pub use managed::{verify_managed_artifacts, ManagedArtifact, ManagedLaunch};
 pub use model::{
     Acknowledgments, Approval, ArtifactReview, DigestAlgorithm, GeneratedFile, InstallError,
-    InstallPlan, JavaRequirement, LaunchRecipe, Limits, PublishedDigest, Result, Software,
-    SoftwareDescriptor, SourceFamily, Warning,
+    InstallPlan, JavaRequirement, LaunchRecipe, Limits, MojangObject, PublishedDigest,
+    ResolvedPreview, Result, Software, SoftwareDescriptor, SourceFamily, Warning,
 };
 pub use progress::{ProgressReporter, SilentProgressReporter};
 pub use providers::buildtools::{BuiltReceipt, SourceRefs};
@@ -65,6 +65,39 @@ pub struct ServerInstaller {
 const CATALOGUE_TOTAL_MS: u64 = 12_000;
 
 impl ServerInstaller {
+    /// Minecraft manifest classifications, preserving upstream newest-first order.
+    /// Unlike `versions`, this keeps release/snapshot evidence for host defaults.
+    pub async fn minecraft_catalogue(
+        &self,
+        reporter: &dyn ProgressReporter,
+    ) -> Result<Vec<MinecraftVersion>> {
+        if reporter.is_dry_run() {
+            return Err(InstallError::InvalidInput);
+        }
+        let mut job = self.catalogue_job();
+        let key = self
+            .http
+            .catalogue_key(&format!("minecraft-manifest:{:?}", self.limits));
+        let guard = self.http.catalogues.query(&key, &job, reporter).await?;
+        if let Some(versions) = self
+            .cached_result::<MinecraftVersion>(&key, &job, reporter)
+            .await?
+        {
+            if versions
+                .iter()
+                .all(|v| model::identifier(&v.id) && v.stable != v.experimental)
+                && versions.iter().filter(|v| v.recommended).count() == 1
+                && versions.iter().any(|v| v.recommended && v.stable)
+            {
+                return Ok(versions);
+            }
+        }
+        let versions = providers::minecraft_catalogue(&self.http, &mut job, reporter)
+            .await
+            .inspect_err(|e| guard.failed(*e))?;
+        self.cache_result(key, &versions, job);
+        Ok(versions)
+    }
     fn catalogue_job(&self) -> transfer::Job {
         let mut limits = self.limits;
         limits.total_ms = limits.total_ms.min(CATALOGUE_TOTAL_MS);
@@ -203,6 +236,56 @@ impl ServerInstaller {
         }
         self.http.catalogues.commit(job.pending_cache);
     }
+    /// Fresh provider resolution of the exact artifacts for a selection, without
+    /// a Java runtime: no artifact download, install write or execution. Hosts
+    /// review this before Java exists, then bind a later [`Self::plan`] to it
+    /// through [`InstallPlan::artifacts_sha256`].
+    pub async fn resolve_preview(
+        &self,
+        software: Software,
+        selection: &Selection,
+        reporter: &dyn ProgressReporter,
+    ) -> Result<ResolvedPreview> {
+        if reporter.is_dry_run() {
+            return Err(InstallError::InvalidInput);
+        }
+        let mut job = transfer::Job::new(self.limits, 0);
+        let resolved =
+            providers::resolve(&self.http, software, selection, &mut job, reporter).await?;
+        job.ready(reporter).await?;
+        Ok(ResolvedPreview::from_resolved(software, &resolved))
+    }
+    /// Confirms against Mojang's own version manifest (cached briefly, like the
+    /// other catalogues) that every SHA-1-only Mojang object in `preview` is
+    /// exactly the `url` and `sha1` Mojang publishes for that version. Only then
+    /// may a host accept those legacy digests on the owner's behalf.
+    /// `IntegrityConflict` on any difference; transport errors when Mojang is
+    /// unreachable; `InvalidInput` when the preview has no such objects.
+    pub async fn verify_mojang_objects(
+        &self,
+        preview: &ResolvedPreview,
+        reporter: &dyn ProgressReporter,
+    ) -> Result<()> {
+        if reporter.is_dry_run()
+            || !preview.legacy_checksum
+            || !preview.legacy_checksum_mojang_only
+            || preview.mojang_objects.is_empty()
+        {
+            return Err(InstallError::InvalidInput);
+        }
+        let mut job = self.catalogue_job();
+        job.ready(reporter).await?;
+        providers::mojang::verify(
+            &self.http,
+            &preview.version,
+            &preview.mojang_objects,
+            &mut job,
+            reporter,
+        )
+        .await?;
+        self.http.catalogues.commit(job.pending_cache);
+        Ok(())
+    }
     /// Resolves an exact artifact and probes the caller-selected existing Java; no install writes.
     pub async fn plan(
         &self,
@@ -323,6 +406,26 @@ impl ServerInstaller {
         }
         install::disk_space(&self.roots.base)
     }
+}
+/// Whether this process can run a CraftBukkit/Spigot source build: git and a
+/// POSIX shell found on its own PATH, exactly as installation looks them up.
+/// The JDK (`javac` beside the selected Java) is the caller's to provide.
+pub fn source_build_tools_available() -> bool {
+    providers::buildtools::host_tools().is_ok()
+}
+/// Whether `java` has the `javac` compiler BuildTools needs beside it.
+pub fn source_build_compiler_available(java: &Path) -> bool {
+    java.parent()
+        .map(|bin| bin.join(if cfg!(windows) { "javac.exe" } else { "javac" }))
+        .is_some_and(|javac| javac.is_file())
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct MinecraftVersion {
+    pub id: String,
+    pub stable: bool,
+    pub experimental: bool,
+    pub recommended: bool,
 }
 fn now() -> Result<u64> {
     SystemTime::now()

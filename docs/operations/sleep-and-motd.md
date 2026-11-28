@@ -150,14 +150,20 @@ Templates: at most two lines, 1024 source bytes, 512 rendered UTF-16 units, plus
 rendered-component byte limit. Standard `§0`–`§f`, `§k`–`§o`, `§r` colors/styles
 produce structured text with no arbitrary click/hover actions or raw JSON.
 Icons: noninterlaced 64×64 RGB/RGBA 8-bit PNG; CRC, decompressed size and filters
-are checked and metadata stripped. Invalid/oversized assets use a generated
-fallback, including normalized images over the 4 KiB public icon budget.
+are checked and metadata stripped. Invalid assets and normalized PNGs above
+17 KiB use the generated fallback in temporary status and previews. The status
+responder allows 28 KiB of outgoing JSON, leaving room for base64 and text.
 Maximum players/version labels are configurable; offline online players/names
 are never fabricated.
 
-The online/app template is a presentation preview: it does not alter Minecraft's
-live response, even after restart. Edit the ordinary live MOTD through the existing
-authorized `server.properties` route. That editor now preserves two-line colors
+The normal icon applies to Minecraft through `server-icon.png` in the game
+root. The stopped process owner reconciles the file and checks it before each
+launch, including a Supervisor crash restart. User-supplied files take
+precedence. Vesta keeps the file identity and SHA-256 of its own icon in
+private state and replaces or removes the file only while both still match.
+The normal icon is loaded when Minecraft starts. The online/app template is
+a preview. Edit live MOTD text through the authorized `server.properties`
+route. That editor preserves two-line colors
 and Unicode through Java-properties escapes and reports `restart_needed`.
 Existing file authority, optimistic hash, confirmation and authorized raw-file
 access still apply. No broad plugin reload is issued. Dynamic live templates
@@ -208,3 +214,14 @@ is rechecked against the policy actor on agent startup; refusal leaves it stoppe
 and raises a notification. `sleep` requires offline_status. The trusted local
 environment override `VESTA_AGENT_STAY_STOPPED=1` forces stay-stopped at startup;
 the dev shell sets it for staged agents so a restart never boots Minecraft.
+
+When no startup policy is chosen (sleep policy `on_agent_start` null, no
+`[process]` `on-agent-start`/`start-on-agent-start`, no
+`VESTA_AGENT_STAY_STOPPED=1`), the agent resumes the state the server was left
+in: the persisted sleep runtime record also keeps `resume`, set by a successful
+`game.start`/`game.restart` (including wakes and local starts) and cleared by
+`game.stop`, `game.sleep`, `game.manual_sleep`, `game.force_kill` and an
+observed crash loop. On agent start with nothing running: sleeping and able to
+sleep -> sleep; `resume` -> start through the normal start path; otherwise stay
+stopped. `on_agent_start` in status still reports the explicit or configured
+value (`stay_stopped` by default).

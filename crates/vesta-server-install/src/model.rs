@@ -296,8 +296,8 @@ impl Default for Limits {
             max_entries: 10_000,
             attempts: 3,
             redirects: 3,
-            connect_ms: 15_000,
-            idle_ms: 30_000,
+            connect_ms: 3_000,
+            idle_ms: 120_000,
             total_ms: 600_000,
         }
     }
@@ -408,10 +408,125 @@ impl InstallPlan {
     }
     /// Ordered review evidence; schema 2 begins with the Vanilla game JAR.
     pub fn artifacts(&self) -> Vec<ArtifactReview<'_>> {
-        if let Some(build) = &self.source_build {
+        review_artifacts(
+            self.software,
+            self.source_build.as_ref(),
+            self.processed.as_ref(),
+            self.bundle.as_ref(),
+            self.artifact.as_ref(),
+        )
+    }
+    /// Digest of the ordered artifact pins (destination, digest, size, URL).
+    /// Equal to [`ResolvedPreview::artifacts_sha256`] when a later plan pins
+    /// exactly the artifacts that were reviewed.
+    pub fn artifacts_sha256(&self) -> String {
+        artifacts_sha256(&self.artifacts())
+    }
+}
+
+/// Metadata-only resolution for a host review taken before any Java runtime
+/// exists. It grants nothing: installation still requires a full [`InstallPlan`]
+/// (fresh provider evidence plus a probed runtime) and an [`Approval`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedPreview {
+    pub software: Software,
+    pub version: String,
+    pub build: Option<u32>,
+    pub loader_version: Option<String>,
+    pub required_java: JavaRequirement,
+    pub warnings: Vec<Warning>,
+    /// Some artifact is pinned only by a SHA-1 or MD5 digest.
+    pub legacy_checksum: bool,
+    /// Every legacy-digest artifact is an official Mojang object
+    /// (`piston-data.mojang.com/v1/objects/`, for which Mojang publishes
+    /// SHA-1 only). True when nothing is legacy.
+    pub legacy_checksum_mojang_only: bool,
+    /// Sum of published artifact sizes when every size is known.
+    pub download_bytes: Option<u64>,
+    pub artifacts_sha256: String,
+    /// Every SHA-1-only artifact from Mojang's objects host, exactly as
+    /// reviewed, for [`crate::ServerInstaller::verify_mojang_objects`].
+    #[serde(default)]
+    pub mojang_objects: Vec<MojangObject>,
+}
+/// One reviewed artifact that Mojang's objects host pins only by SHA-1.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MojangObject {
+    pub url: String,
+    pub sha1: String,
+}
+impl ResolvedPreview {
+    pub(crate) fn from_resolved(software: Software, r: &super::providers::Resolved) -> Self {
+        let artifacts = review_artifacts(
+            software,
+            r.source_build.as_ref(),
+            r.processed.as_ref(),
+            r.bundle.as_ref(),
+            r.artifact.as_ref(),
+        );
+        Self {
+            software,
+            version: r.version.clone(),
+            build: r.build,
+            loader_version: r
+                .processed
+                .as_ref()
+                .map(|p| p.loader_version.clone())
+                .or_else(|| r.bundle.as_ref().map(|b| b.loader_version.clone())),
+            required_java: r.java.clone(),
+            warnings: r.warnings.clone(),
+            legacy_checksum: artifacts.iter().any(|a| a.digest.algorithm.legacy()),
+            legacy_checksum_mojang_only: artifacts
+                .iter()
+                .filter(|a| a.digest.algorithm.legacy())
+                .all(|a| match a.family {
+                    Some(family) => family == SourceFamily::MojangObjects,
+                    // A single Vanilla jar is only accepted from Mojang's objects host.
+                    None => software == Software::Vanilla,
+                }),
+            download_bytes: artifacts
+                .iter()
+                .map(|a| a.size)
+                .try_fold(0_u64, |sum, size| sum.checked_add(size?)),
+            artifacts_sha256: artifacts_sha256(&artifacts),
+            mojang_objects: artifacts
+                .iter()
+                .filter(|a| {
+                    a.digest.algorithm == DigestAlgorithm::Sha1
+                        && match a.family {
+                            Some(family) => family == SourceFamily::MojangObjects,
+                            None => software == Software::Vanilla,
+                        }
+                })
+                .map(|a| MojangObject {
+                    url: a.url.to_owned(),
+                    sha1: a.digest.hex.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+fn artifacts_sha256(artifacts: &[ArtifactReview<'_>]) -> String {
+    let bytes = serde_json::to_vec(artifacts).expect("artifact review is serializable");
+    let mut h = Sha256::new();
+    h.update(b"vesta.server-install.artifacts.v1\0");
+    h.update(bytes);
+    format!("{:x}", h.finalize())
+}
+fn review_artifacts<'a>(
+    software: Software,
+    source_build: Option<&'a super::providers::buildtools::BuildPlan>,
+    processed: Option<&'a super::providers::forge::ProcessorPlan>,
+    bundle: Option<&'a DownloadBundle>,
+    artifact: Option<&'a ArtifactPin>,
+) -> Vec<ArtifactReview<'a>> {
+    {
+        if let Some(build) = source_build {
             return vec![build.tool_review()];
         }
-        if let Some(plan) = &self.processed {
+        if let Some(plan) = processed {
             return plan
                 .artifacts
                 .iter()
@@ -425,7 +540,7 @@ impl InstallPlan {
                 })
                 .collect();
         }
-        if let Some(bundle) = &self.bundle {
+        if let Some(bundle) = bundle {
             bundle
                 .artifacts
                 .iter()
@@ -438,9 +553,9 @@ impl InstallPlan {
                 })
                 .collect()
         } else {
-            let a = self.primary_pin();
+            let a = artifact.expect("backend validated single artifact");
             vec![ArtifactReview {
-                destination: self.software.jar_path(),
+                destination: software.jar_path(),
                 digest: &a.digest,
                 size: a.size,
                 url: &a.url,
@@ -448,6 +563,8 @@ impl InstallPlan {
             }]
         }
     }
+}
+impl InstallPlan {
     pub fn software(&self) -> Software {
         self.software
     }
@@ -625,6 +742,9 @@ pub enum SourceFamily {
     SpigotVersions,
     SpigotBuildTools,
     MojangObjects,
+    /// Mojang's own launcher metadata (`piston-meta.mojang.com`), read only to
+    /// confirm SHA-1-only Mojang objects resolved through a mirror.
+    MojangMeta,
     ModrinthFabric,
     ModrinthQuilt,
     FabricMeta,

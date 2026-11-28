@@ -7,6 +7,11 @@ mod control;
 #[cfg(test)]
 mod control_tests;
 mod editor;
+mod host_local;
+#[cfg(windows)]
+mod host_local_windows;
+mod host_mode;
+mod host_output;
 mod local_files;
 mod manage;
 mod output;
@@ -16,6 +21,8 @@ use vesta_supervisor::pipe_security;
 mod serve;
 mod servers;
 mod sessions;
+mod shutdown;
+mod shutdown_signal;
 mod status;
 mod supervision;
 mod uninstall;
@@ -55,6 +62,58 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
         Ok(None) => (),
+    }
+    #[cfg(target_os = "linux")]
+    if dispatch_args.first().is_some_and(|arg| arg == "import") {
+        return match vesta_setup::linux_import::run(&dispatch_args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("Vesta import: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    #[cfg(target_os = "linux")]
+    if dispatch_args
+        .first()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| {
+            s == "import-root"
+                || s == "uninstall"
+                    && (dispatch_args
+                        .iter()
+                        .any(|a| a == "--keep-data" || a == "--remove-data")
+                        || std::path::Path::new(vesta_setup::linux_install::DATA_ROOT_RECORD)
+                            .exists())
+        })
+    {
+        return vesta_setup::linux_install::admin(&dispatch_args);
+    }
+    if dispatch_args
+        .first()
+        .and_then(|a| a.to_str())
+        .is_some_and(|a| matches!(a, "setup-code" | "link" | "host-status" | "servers"))
+    {
+        let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            eprintln!("host_local_runtime_unavailable");
+            return ExitCode::FAILURE;
+        };
+        return runtime.block_on(host_local::run(dispatch_args));
+    }
+    if dispatch_args.first().and_then(|s| s.to_str()) == Some("host") {
+        if dispatch_args.len() != 2 {
+            eprintln!("usage: vesta-agent host <host.toml>");
+            return ExitCode::from(2);
+        }
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("host runtime");
+        return runtime.block_on(host_mode::run(std::path::Path::new(&dispatch_args[1])));
     }
     let command = match cli::parse(std::env::args_os().skip(1)) {
         Ok(command) => command,

@@ -673,3 +673,125 @@ fn snapshot_list_and_detail_strict_wire_queries() {
         401
     );
 }
+#[test]
+fn backup_history_routes_auth_capabilities_and_idempotent_patch() {
+    let f = Fixture::new("minecraft", 8, 16384, 5);
+    let (_, _, owner, _) = actor(&f, BuiltinRole::Owner);
+    let (_, _, viewer, _) = actor(&f, BuiltinRole::Viewer);
+    let (_, _, maintainer, _) = actor(&f, BuiltinRole::Maintainer);
+    let doc = serde_json::json!({"expected_revision":null,"initialize_repository":true,"profiles":[{"name":"daily","mode":"stopped","keep_last":7}]});
+    assert_eq!(
+        call(
+            &f,
+            "PUT",
+            "backups/config",
+            &doc,
+            &owner,
+            "lineage-setup-0000001"
+        )
+        .status,
+        200
+    );
+    let network = f.host().network_handle();
+    let backups = network.backups().unwrap();
+    let vesta_control::config::BackupRepository::Local(path) = &backups.settings().repository
+    else {
+        panic!("local fixture");
+    };
+    let engine = vesta_control::backups::engine::Engine::new(Box::new(
+        vesta_control::backups::store::LocalStore::new(path.clone()),
+    ));
+    let id = engine
+        .backup(
+            &f.temp.path().join("game"),
+            &vesta_control::backups::ignore::Ignore::parse("").unwrap(),
+            &["profile=daily".into()],
+            None,
+        )
+        .unwrap()
+        .snapshot_id;
+    let route = format!("backups/points/{id}");
+    assert_eq!(
+        send(&f, "GET", "backups/history", b"", None, None).status,
+        401
+    );
+    assert_eq!(
+        send(
+            &f,
+            "PATCH",
+            &route,
+            b"{}",
+            None,
+            Some("lineage-anon-00000001")
+        )
+        .status,
+        401
+    );
+    let history = send(&f, "GET", "backups/history", b"", Some(&owner), None);
+    assert_eq!(history.status, 200);
+    assert_eq!(history.json()["data"]["head"], id);
+    assert_eq!(
+        call(
+            &f,
+            "PATCH",
+            &route,
+            &serde_json::json!({"kept":true}),
+            &viewer,
+            "lineage-viewer-000001"
+        )
+        .status,
+        403
+    );
+    assert_eq!(
+        send(&f, "GET", "backups/history", b"", Some(&viewer), None).status,
+        403
+    );
+    assert_eq!(
+        send(&f, "GET", "backups/history", b"", Some(&maintainer), None).status,
+        200
+    );
+    let body = serde_json::json!({"label":"  Branch  ","kept":true});
+    let saved = call(&f, "PATCH", &route, &body, &owner, "lineage-update-000001");
+    assert_eq!(saved.status, 200, "{}", saved.json());
+    assert_eq!(saved.json()["data"]["label"], "Branch");
+    assert_eq!(
+        call(&f, "PATCH", &route, &body, &owner, "lineage-update-000001").json()["data"],
+        saved.json()["data"]
+    );
+    assert_eq!(
+        call(
+            &f,
+            "PATCH",
+            &route,
+            &serde_json::json!({"kept":false}),
+            &owner,
+            "lineage-update-000001"
+        )
+        .status,
+        409
+    );
+    assert_eq!(
+        call(
+            &f,
+            "PATCH",
+            "backups/points/ffffffffffffffffffffffffffffffff",
+            &body,
+            &owner,
+            "lineage-missing-00001"
+        )
+        .json()["error"]["code"],
+        "not_found"
+    );
+    assert_eq!(
+        call(
+            &f,
+            "PATCH",
+            &route,
+            &serde_json::json!({"label":" "}),
+            &owner,
+            "lineage-invalid-00001"
+        )
+        .json()["error"]["code"],
+        "invalid_input"
+    );
+}

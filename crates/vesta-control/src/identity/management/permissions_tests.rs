@@ -262,6 +262,7 @@ fn automatic_sources_refuse_management_and_edits_of_captured_defaults() {
         whitelist: None,
         whitelist_enabled: None,
         sync_whitelist: None,
+        auto_whitelist_roles: None,
         password: None,
     };
     assert_eq!(
@@ -316,6 +317,7 @@ fn safe_access_patch_is_versioned_audited_and_idempotent() {
         whitelist: None,
         whitelist_enabled: Some(false),
         sync_whitelist: None,
+        auto_whitelist_roles: None,
         password: None,
     });
     let first = run(&f, &s, "safe-access-patch-0001", c.clone()).unwrap();
@@ -943,6 +945,7 @@ fn branding_audit_failure_rolls_back_setting_and_receipt() {
         expected_revision: "0".into(),
         name: Some("Brand".into()),
         description: None,
+        icon_source: None,
     });
     assert_eq!(
         run(&f, &session, "branding-rollback-00001", command.clone()),
@@ -1205,7 +1208,13 @@ fn whitelist_sync_toggle_persists_authority_and_requires_current_version() {
         PermissionMutation::Access(patch),
     )
     .unwrap();
-    assert!(f.service.access_local().unwrap().sync_whitelist);
+    assert!(
+        f.service
+            .access_local()
+            .unwrap()
+            .auto_whitelist_roles
+            .contains("*")
+    );
     let actor: String =
         f.db.read(|c| {
             Ok(

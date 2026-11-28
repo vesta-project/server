@@ -4,6 +4,7 @@ members = ["crates/modpack-engine",
     "crates/vesta-state",
     "crates/vesta-control",
     "crates/vesta-transport",
+    "crates/vesta-host-client",
     "crates/vesta-game-runtime",
     "crates/vesta-server-install",
     "crates/vesta-supervisor",
@@ -13,6 +14,11 @@ members = ["crates/modpack-engine",
     "tools/vesta-dev",
 ]
 resolver = "3"
+
+[profile.test]
+# The setup integration tests sign and install the Cargo-built setup executable.
+# Keep its embedded debug data out of the signed artifact's size budget.
+strip = "debuginfo"
 
 [workspace.package]
 version = "0.1.0"
@@ -62,3 +68,5 @@ unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = "warn"
+
+

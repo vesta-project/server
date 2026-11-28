@@ -8,7 +8,10 @@ mod audit_view;
 pub use audit_view::AuditNotice;
 mod activity;
 pub use activity::{ActivityActor, ActivitySummary, OperationActivity, valid_activity_kind};
-pub use vesta_game_runtime::console::{ConsoleStream, MAX_LINE_BYTES as MAX_CONSOLE_LINE_BYTES};
+pub use vesta_game_runtime::console::{
+    ConsoleLine, ConsoleStream, MAX_LINE_BYTES as MAX_CONSOLE_LINE_BYTES,
+    MAX_PAGE_BYTES as MAX_CONSOLE_PAGE_BYTES, MAX_PAGE_LINES as MAX_CONSOLE_PAGE_LINES,
+};
 pub use vesta_game_runtime::process::{GenerationId, ProcessPhase};
 mod bindings;
 mod confirmation;
@@ -62,6 +65,39 @@ pub use runner::{
 use crate::identity::{self, Capability, PolicySnapshot, Subject};
 use domain::{ENGINE_SOURCE, text};
 use domain::{MAX_REQUIREMENTS, REQUEST_SOURCE, hash_text, invalid};
+
+pub(crate) const WHITELIST_SYNC_SOURCE: &str = "whitelist-sync";
+
+#[derive(Clone, Debug)]
+pub(crate) struct WhitelistSyncChange {
+    pub uuid: String,
+    pub name: String,
+    pub add: bool,
+}
+
+impl WhitelistSyncChange {
+    pub(crate) fn record(&self, c: &rusqlite::Connection) -> rusqlite::Result<()> {
+        if self.add {
+            c.execute(
+                "INSERT OR REPLACE INTO whitelist_sync_members VALUES(?,?)",
+                rusqlite::params![self.uuid, self.name],
+            )?;
+        } else {
+            c.execute(
+                "DELETE FROM whitelist_sync_members WHERE uuid=?",
+                [&self.uuid],
+            )?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ModerationOrigin<'a> {
+    Request,
+    Expiry(i64),
+    WhitelistSync(&'a WhitelistSyncChange),
+}
 use input::PreparedOperation;
 use repository::{Repository, StoredOperation};
 use serde::Serialize;
@@ -279,7 +315,7 @@ impl Operations {
             raw_input,
             idempotency_key,
             None,
-            None,
+            ModerationOrigin::Request,
         )
     }
     fn admit_with_view(
@@ -289,8 +325,12 @@ impl Operations {
         raw_input: &str,
         idempotency_key: Option<&str>,
         view: Option<&game::LiveGameView>,
-        expiry: Option<i64>,
+        origin: ModerationOrigin<'_>,
     ) -> OperationsResult<Admission> {
+        let source = match origin {
+            ModerationOrigin::WhitelistSync(_) => WHITELIST_SYNC_SOURCE,
+            _ => REQUEST_SOURCE,
+        };
         if idempotency_key.is_some_and(|key| !text(key, 128)) {
             let error = invalid();
             return Err(self.refusal(subject, "operation.submit", None, error));
@@ -316,7 +356,7 @@ impl Operations {
             {
                 let resources = repo.check_locks(&existing)?;
                 if existing.subject.device != subject.device
-                    || existing.source != REQUEST_SOURCE
+                    || existing.source != source
                     || existing.operation_type != plan.operation_type
                     || existing.target != plan.target
                     || existing.payload_hash != plan.payload_hash
@@ -351,9 +391,19 @@ impl Operations {
                     ));
                 }
             }
-            let op = repo.insert(subject, &plan, idempotency_key)?;
+            let op = repo.insert(subject, &plan, idempotency_key, source)?;
             if let Some(GameCommand::Moderate { action, .. }) = &plan.command {
+                let expiry = match origin {
+                    ModerationOrigin::Expiry(id) => Some(id),
+                    _ => None,
+                };
                 moderation::insert(&repo, subject, &op, action, expiry)?;
+            }
+            if let ModerationOrigin::WhitelistSync(change) = origin {
+                repo.connection().execute(
+                    "INSERT INTO whitelist_sync_pending VALUES(1,?,?,?,?)",
+                    rusqlite::params![op.summary.id.as_str(), change.uuid, change.name, change.add],
+                )?;
             }
             let mut metadata = vec![
                 (
@@ -375,7 +425,15 @@ impl Operations {
             self.audit.append(
                 repo.connection(),
                 &AuditRecord::new(
-                    request_actor(subject)?,
+                    if source == WHITELIST_SYNC_SOURCE {
+                        AuditActor::new(
+                            "vesta-server".into(),
+                            WHITELIST_SYNC_SOURCE.into(),
+                            source.into(),
+                        )?
+                    } else {
+                        request_actor(subject)?
+                    },
                     "operation.submit".to_owned(),
                     operation_target(&op.summary.id),
                     "accepted".to_owned(),
@@ -485,6 +543,9 @@ impl Operations {
     ) -> OperationsResult<PreparedOperation> {
         let plan = self.verified_plan(repo, op)?;
         moderation::check_expiry(repo, op)?;
+        if op.source == WHITELIST_SYNC_SOURCE {
+            moderation::check_whitelist_sync(repo, op, &plan)?;
+        }
         self.authorize_plan(repo, &op.subject, &plan)?;
         Ok(plan)
     }
@@ -507,7 +568,7 @@ impl Operations {
         let plan = input::derive(&op.operation_type, &canonical)?;
         if plan.canonical_input != canonical
             || plan.payload_hash != op.payload_hash
-            || op.source != REQUEST_SOURCE
+            || !matches!(op.source.as_str(), REQUEST_SOURCE | WHITELIST_SYNC_SOURCE)
             || plan.target != op.target
             || plan.resources != repo.resources(&op.summary.id)?
             || plan.effect_idempotent != op.effect_idempotent

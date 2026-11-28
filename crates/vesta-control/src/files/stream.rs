@@ -25,6 +25,23 @@ impl FileBrowser {
     /// All three resources (submitted, canonical, handle) pass live policy and
     /// remote document exclusions. The handle allows writers/rotation on Windows.
     pub fn open_stream(&self, subject: &Subject, path: &RelativePath) -> Result<FileStream> {
+        self.open_stream_with(subject, path, native::open_growing)
+    }
+
+    pub(super) fn open_content_stream(
+        &self,
+        subject: &Subject,
+        path: &RelativePath,
+    ) -> Result<FileStream> {
+        self.open_stream_with(subject, path, native::open_regular)
+    }
+
+    fn open_stream_with(
+        &self,
+        subject: &Subject,
+        path: &RelativePath,
+        open: fn(&std::path::Path) -> Result<File>,
+    ) -> Result<FileStream> {
         #[cfg(feature = "latency-probe")]
         let _latency_file_admission = vesta_state::latency_probe::Span::new("file_admission");
         self.db
@@ -39,7 +56,7 @@ impl FileBrowser {
                 authorize(&policy, Capability::FilesRead, &path.resource())?;
                 let checked = root.resolve(Some(path))?;
                 authorize(&policy, Capability::FilesRead, &checked.resource)?;
-                let file = native::open_growing(&checked.path)?;
+                let file = open(&checked.path)?;
                 let actual = native::actual_path(&file, &checked.path)?;
                 let actual_resource = root.resource(&actual)?;
                 authorize(&policy, Capability::FilesRead, &actual_resource)?;
@@ -85,7 +102,84 @@ impl FileBrowser {
             .map_err(FileError::from)
     }
 }
+impl FileBrowser {
+    /// Names from the fixed Minecraft log directory, newest first. The caller
+    /// must authorize ConsoleRead before observing history.
+    pub fn console_history_names(&self) -> Result<Vec<String>> {
+        let logs = RelativePath::parse("logs")?;
+        let path = match self.root.resolve(Some(&logs)) {
+            Ok(path) => path.path,
+            Err(FileError::NotFound) => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(path).map_err(io_error)?.take(4096) {
+            let entry = entry.map_err(io_error)?;
+            let name = entry.file_name();
+            if let Some(name) = name
+                .to_str()
+                .filter(|name| super::cleanup::rotated_log_name(name))
+            {
+                let (date, index) = name
+                    .trim_end_matches(".log.gz")
+                    .rsplit_once('-')
+                    .expect("validated log name");
+                if let Ok(index) = index.parse::<u32>() {
+                    names.push((date.to_owned(), index, name.to_owned()));
+                }
+            }
+        }
+        names.sort_unstable_by(|a, b| b.cmp(a));
+        Ok(std::iter::once("latest.log".to_owned())
+            .chain(names.into_iter().take(128).map(|(_, _, name)| name))
+            .collect())
+    }
+
+    /// Open only the standard log files under the checked game root. No
+    /// caller-controlled filesystem path or FilesRead grant crosses this seam.
+    pub fn open_console_history(&self, name: &str) -> Result<FileStream> {
+        if name != "latest.log" && !super::cleanup::rotated_log_name(name) {
+            return Err(FileError::InvalidPath);
+        }
+        let path = RelativePath::parse(&format!("logs/{name}"))?;
+        let checked = self.root.resolve(Some(&path))?;
+        let file = native::open_growing(&checked.path)?;
+        let actual = native::actual_path(&file, &checked.path)?;
+        if self.root.resource(&actual)? != path.resource() {
+            return Err(FileError::LinkedPath);
+        }
+        #[cfg(target_os = "linux")]
+        if !native::same_volume(self.root.raw_path(), &actual).unwrap_or(false) {
+            return Err(FileError::LinkedPath);
+        }
+        let metadata = file.metadata().map_err(io_error)?;
+        let identity = native::file_identity(&file)?;
+        let modified = metadata.modified().map_err(io_error)?;
+        let etag = format!(
+            "{:x}",
+            Sha256::digest(format!("{identity}:{}:{modified:?}", metadata.len()).as_bytes())
+        );
+        let stream = FileStream {
+            file,
+            size: metadata.len(),
+            etag,
+            identity,
+            modified,
+            resources: Vec::new(),
+        };
+        if name == "latest.log" {
+            Ok(stream)
+        } else {
+            self.decompressed_view(stream)
+        }
+    }
+}
+
 impl FileStream {
+    pub(super) fn content_version(&self) -> Result<native::FileVersion> {
+        native::file_version(&self.file)
+    }
+
     /// Consume the already authorized handle for bounded declaration parsing.
     /// Do not resolve/open the pathname again after admission: it may be replaced.
     pub(super) fn into_metadata_reader(self) -> File {
@@ -280,7 +374,10 @@ impl FileBrowser {
         if !path.as_str().to_ascii_lowercase().ends_with(".gz") {
             return Err(FileError::NotCompressed);
         }
-        let mut source = self.open_stream(subject, path)?;
+        self.decompressed_view(self.open_stream(subject, path)?)
+    }
+
+    fn decompressed_view(&self, mut source: FileStream) -> Result<FileStream> {
         if source.size < 2 || source.read_chunk(0, 2)? != [0x1f, 0x8b] {
             return Err(FileError::NotCompressed);
         }

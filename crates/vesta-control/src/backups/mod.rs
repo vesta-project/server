@@ -24,13 +24,17 @@
 pub mod engine;
 pub mod ignore;
 mod limits;
+mod lineage;
 mod policy;
 mod restore;
 pub mod s3;
 pub mod space;
 pub mod store;
 
-pub use limits::{DISK_SPACE_LOW, SNAPSHOT_LIMIT, STORAGE_LIMIT, StorageStatus};
+pub use limits::{
+    COLLECTION_SIZE_LIMIT, DISK_SPACE_LOW, ProfileStorage, SNAPSHOT_LIMIT, SNAPSHOT_SIZE_LIMIT,
+    STORAGE_LIMIT, StorageStatus,
+};
 pub use policy::{BackupPolicy, LimitsDocument, PolicyDocument, ProfileDocument};
 pub use restore::{PreparedRestore, recovery_jobs, resolve_recovery_locally};
 
@@ -77,6 +81,7 @@ pub enum BackupError {
     Disabled,
     UnknownProfile,
     UnknownJob,
+    UnknownSnapshot,
     Invalid,
     Busy,
     Unavailable,
@@ -95,6 +100,7 @@ impl BackupError {
         match self {
             Self::Disabled => "backups_not_configured",
             Self::UnknownProfile => "backup_profile_unknown",
+            Self::UnknownSnapshot => "backup_snapshot_unknown",
             Self::UnknownJob => "backup_job_unknown",
             Self::Invalid => "backup_invalid_request",
             Self::Busy => "backup_busy",
@@ -217,8 +223,15 @@ impl Job {
 /// Finished-job notifications for automation triggers and audit.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BackupEvent {
-    Completed { profile: String, job: String },
-    Failed { profile: String, job: String },
+    Completed {
+        profile: String,
+        job: String,
+    },
+    Failed {
+        profile: String,
+        job: String,
+        error_code: String,
+    },
 }
 
 /// Facts the service needs from the rest of the host, supplied by composition.
@@ -245,6 +258,7 @@ struct Inner {
     policy: std::sync::RwLock<Arc<policy::BackupPolicy>>,
     /// Serializes policy saves with their in-memory swap.
     policy_write: Mutex<()>,
+    repository: Mutex<()>,
     engine: Engine,
     /// Short-timeout engine for interactive observation (snapshot listing).
     listing: Mutex<()>,
@@ -432,6 +446,10 @@ impl Backups {
                 params![now],
             )?;
             // Agent died mid-job: the snapshot may or may not exist.
+            c.execute_batch("CREATE TABLE IF NOT EXISTS backup_failure_events(job TEXT PRIMARY KEY, profile TEXT NOT NULL, error_code TEXT NOT NULL)")?;
+            c.execute("INSERT OR IGNORE INTO backup_failure_events
+                SELECT id,profile,'backup_interrupted' FROM backup_jobs WHERE kind='backup' AND state='running'
+                AND coalesce(idempotency_key,'') NOT LIKE 'automation-failure.%'", [])?;
             c.execute(
                 "UPDATE backup_jobs SET state='uncertain',error_code='backup_interrupted',finished_at=? WHERE state='running'",
                 params![now],
@@ -449,6 +467,7 @@ impl Backups {
             policy_write: Mutex::new(()),
             engine,
             listing: Mutex::new(()),
+            repository: Mutex::new(()),
             game: game.to_owned(),
             env,
             stopping: AtomicBool::new(false),
@@ -492,6 +511,9 @@ impl Backups {
         kind: JobKind,
         idempotency_key: Option<&str>,
     ) -> Result<String> {
+        if self.inner.stopping.load(Ordering::Acquire) {
+            return Err(BackupError::Busy);
+        }
         if self.inner.policy().profile(profile).is_none() {
             return Err(BackupError::UnknownProfile);
         }
@@ -522,6 +544,7 @@ impl Backups {
         let principal = subject.principal.as_str();
         let device = subject.device.as_str();
         let id = self.inner.db.write(|c| {
+            if self.inner.stopping.load(Ordering::Acquire) { return Ok(Err(BackupError::Busy)); }
             if !allowed(c, &self.inner.db, subject, required)? {
                 return Ok(Err(BackupError::Forbidden));
             }
@@ -602,6 +625,20 @@ impl Backups {
 
     /// Stop claiming queued jobs (they stay queued for the next start). A job already
     /// running continues; `busy` reports it until it finishes.
+    /// Stop admitting/claiming new jobs. Active writes retain their consistency
+    /// leases and journal until they reach a safe boundary or actually finish.
+    pub fn request_shutdown(&self) {
+        self.inner.stopping.store(true, Ordering::Release);
+        let (lock, condvar) = &self.inner.wake;
+        if let Ok(mut woken) = lock.try_lock() {
+            *woken = true;
+        }
+        condvar.notify_all();
+    }
+    pub fn is_shutdown_complete(&self) -> bool {
+        !self.busy()
+    }
+
     pub fn stop_claiming(&self) {
         self.inner.stopping.store(true, Ordering::Release);
         self.inner.notify();
@@ -797,6 +834,12 @@ impl Inner {
                     // Never advance past an uncommitted outcome: the backup is not rerun.
                     let mut delay = Duration::from_millis(200);
                     while self.finish(&job, &outcome).is_err() {
+                        // A failed outcome write remains durably running/uncertain;
+                        // startup reconciliation owns it. Do not hold OS shutdown
+                        // indefinitely just to retry a failed database write.
+                        if self.stopping.load(Ordering::Acquire) {
+                            return;
+                        }
                         std::thread::sleep(delay);
                         delay = (delay * 2).min(Duration::from_secs(30));
                     }
@@ -848,8 +891,12 @@ impl Inner {
     }
 
     fn claim(&self) -> Result<Option<Claimed>> {
+        if self.stopping.load(Ordering::Acquire) {
+            return Ok(None);
+        }
         let now = self.db.clock().millis();
         Ok(self.db.write(|c| {
+            if self.stopping.load(Ordering::Acquire) { return Ok(None); }
             let next = c
                 .query_row(
                     "SELECT id,profile,kind,target,requested_by,requested_device FROM backup_jobs WHERE state='queued' ORDER BY created_at,id LIMIT 1",
@@ -887,6 +934,11 @@ impl Inner {
                 "UPDATE backup_jobs SET state=?,snapshot_id=?,result_json=?,error_code=?,finished_at=? WHERE id=?",
                 params![outcome.state.wire(), outcome.snapshot, result, outcome.error, now, job.id],
             )?;
+            if job.kind == "backup" && outcome.state != JobState::Succeeded {
+                c.execute("INSERT OR IGNORE INTO backup_failure_events
+                    SELECT id,profile,coalesce(error_code,'backup_failed') FROM backup_jobs WHERE id=?
+                    AND coalesce(idempotency_key,'') NOT LIKE 'automation-failure.%'", [&job.id])?;
+            }
             // Bounded history: drop old finished jobs, then cap the finished count.
             c.execute(
                 "DELETE FROM backup_jobs WHERE state IN ('succeeded','failed','uncertain') AND finished_at < ?",
@@ -908,6 +960,7 @@ impl Inner {
                 BackupEvent::Failed {
                     profile: job.profile.clone(),
                     job: job.id.clone(),
+                    error_code: outcome.error.unwrap_or("backup_failed").into(),
                 }
             };
             (self.env.events)(event);
@@ -931,6 +984,7 @@ impl Inner {
     }
 
     fn execute(&self, job: &Claimed) -> Outcome {
+        let _repository = self.repository.lock().unwrap_or_else(|p| p.into_inner());
         let Some(profile) = self.policy().profile(&job.profile).cloned() else {
             return Outcome::failed(BackupError::UnknownProfile.code());
         };
@@ -1052,23 +1106,45 @@ impl Inner {
             };
             let before = scan(&self.game);
             let tags = ["vesta".to_owned(), format!("{CANDIDATE}={}", profile.name)];
-            let result = self.engine.backup_within(
+            let result = self.engine.backup_within_cancellable(
                 &self.game,
                 &ignore,
                 &tags,
                 Some(&profile_tag(&profile.name)),
                 budget.bytes,
+                &|| self.stopping.load(Ordering::Acquire),
             );
-            let after = scan(&self.game);
+            let after = if self.stopping.load(Ordering::Acquire) {
+                Scan {
+                    files: Files::new(),
+                    complete: false,
+                }
+            } else {
+                scan(&self.game)
+            };
             let kept = consistency.release();
             (result, before, after, kept)
         };
         // Phase 2: judge the snapshot; repository maintenance holds nothing else.
+        if self.stopping.load(Ordering::Acquire) {
+            return Outcome::failed("backup_shutdown_interrupted");
+        }
         let mut summary = match result {
             Ok(summary) => summary,
             Err(EngineError::LimitReached) => return Outcome::failed(budget.exceeded()),
             Err(error) => return Outcome::failed(error.code()),
         };
+        // The consistent read released its game/file leases above. A shutdown
+        // leaves this candidate unpublished; never promote a partial shutdown job.
+        if self.stopping.load(Ordering::Acquire) {
+            return Outcome::failed("backup_shutdown_interrupted");
+        }
+        if profile
+            .max_snapshot_bytes
+            .is_some_and(|max| summary.total_bytes_processed > max)
+        {
+            return Outcome::failed(SNAPSHOT_SIZE_LIMIT);
+        }
         // Read every chunk of the new snapshot before promotion or retention.
         if let Err(error) = self.engine.verify_snapshot(&summary.snapshot_id) {
             return Outcome::failed(error.code());
@@ -1081,12 +1157,37 @@ impl Inner {
             MutationPolicy::FailWorld => world_changed,
             MutationPolicy::FailAny => !changes.is_empty() || !kept || !complete,
         };
+        if self.stopping.load(Ordering::Acquire) {
+            return Outcome::failed("backup_shutdown_interrupted");
+        }
         // Promotion/rejection replaces the listing after the bounded backup.
         // Charge its growth too, and preserve room for the atomic local write.
+        let profile_tag = profile_tag(&profile.name);
+        let retention = Retention {
+            keep_total: profile.keep_total,
+            keep_hourly: profile.keep_hourly,
+            keep_last: profile.keep_last,
+            keep_daily: profile.keep_daily,
+            keep_weekly: profile.keep_weekly,
+            keep_monthly: profile.keep_monthly,
+        };
+        let plan = if let Some(max) = profile.max_collection_bytes.filter(|_| !fail) {
+            match self.engine.collection_prune_plan(
+                &profile_tag,
+                &summary.snapshot_id,
+                retention,
+                max,
+            ) {
+                Ok(plan) => Some(plan),
+                Err(error) => return Outcome::failed(error.code()),
+            }
+        } else {
+            None
+        };
         let tag = if fail {
             REJECTED.to_owned()
         } else {
-            profile_tag(&profile.name)
+            profile_tag.clone()
         };
         let tagging = self
             .disk_budget()
@@ -1104,20 +1205,20 @@ impl Inner {
         }
         let promoted = !fail && tagging.is_ok();
         let mut retention_error = None;
-        let retention = Retention {
-            keep_total: profile.keep_total,
-            keep_hourly: profile.keep_hourly,
-            keep_last: profile.keep_last,
-            keep_daily: profile.keep_daily,
-            keep_weekly: profile.keep_weekly,
-            keep_monthly: profile.keep_monthly,
-        };
-        if promoted && !retention.is_empty() {
-            retention_error = self
-                .engine
-                .forget(&profile_tag(&profile.name), retention)
-                .err()
-                .map(EngineError::code);
+        if promoted {
+            if let Some(plan) = &plan {
+                retention_error = self
+                    .engine
+                    .apply_collection_prune(plan)
+                    .err()
+                    .map(EngineError::code);
+            } else if !retention.is_empty() {
+                retention_error = self
+                    .engine
+                    .forget(&profile_tag, retention)
+                    .err()
+                    .map(EngineError::code);
+            }
         }
         let consistency = match (online, kept) {
             (_, false) => "unproven",
@@ -1150,6 +1251,8 @@ impl Inner {
             } else {
                 error.code()
             })
+        } else if plan.is_some() {
+            retention_error
         } else {
             None
         };

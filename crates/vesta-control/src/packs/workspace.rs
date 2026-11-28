@@ -12,9 +12,11 @@ mod provider_pack;
 pub use provider_pack::ProviderPackPublish;
 mod import;
 pub use files::*;
+mod create_pack;
 mod providers;
 mod publication;
 mod uploads;
+pub use create_pack::*;
 pub use uploads::{UploadBegin, UploadChunk, UploadReceipt};
 mod suggestions;
 use super::ReleaseError;
@@ -215,11 +217,33 @@ pub struct PackWorkspace {
     db: StateDatabase,
     audit: AuditLog,
     download_settings: crate::config::DownloadSettings,
+    /// Cooperative cancellation for a host-owned install (a server being
+    /// created); checked only between downloads and between written files.
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 impl PackWorkspace {
     pub fn with_download_settings(mut self, settings: crate::config::DownloadSettings) -> Self {
         self.download_settings = settings;
         self
+    }
+    /// Stop an install at its next safe boundary once `flag` is set: before the
+    /// next provider download or archive read, or before the next file written.
+    pub fn with_cancel(mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.cancel = Some(flag);
+        self
+    }
+    pub(crate) fn cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|f| f.load(std::sync::atomic::Ordering::Acquire))
+    }
+    /// `pack_unavailable` at a safe boundary once cancellation was requested.
+    pub(crate) fn check_cancelled(&self) -> Result<()> {
+        if self.cancelled() {
+            Err(super::PackError::Unavailable.into())
+        } else {
+            Ok(())
+        }
     }
     pub fn icon(&self, subject: &Subject, mc: &str) -> Result<Option<PackIcon>> {
         let draft = self.read(subject, mc)?;
@@ -346,6 +370,7 @@ impl PackWorkspace {
             db: db.clone(),
             audit: AuditLog::new(db.clone())?,
             download_settings: Default::default(),
+            cancel: None,
         })
     }
     pub fn authorize_in(

@@ -583,6 +583,7 @@ fn managed_server_file(name: &str) -> bool {
             && (matches!(
                 lower.as_str(),
                 "server.properties"
+                    | vesta_state::server_icon::FILE_NAME
                     | "eula.txt"
                     | "ops.json"
                     | "whitelist.json"
@@ -1269,6 +1270,7 @@ mod tests {
     fn dedicated_server_folder_preserves_managed_files_and_installs_game_data() {
         let bytes = archive(&[
             ("server.properties", b"server-port=1234"),
+            ("server-icon.png", b"server-owned presentation"),
             ("start.bat", b"untrusted"),
             ("forge.jar", b"software"),
             ("libraries/example.jar", b"software"),
@@ -1285,7 +1287,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(skipped.len(), 4);
+        assert_eq!(skipped.len(), 5);
         assert_eq!(manifest.entries.len(), 2);
         assert!(
             manifest

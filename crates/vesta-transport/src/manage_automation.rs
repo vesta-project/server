@@ -38,6 +38,8 @@ enum Route<'a> {
     Acknowledge,
     Backups,
     BackupJob(&'a str),
+    History,
+    Point(&'a str),
     Snapshots,
     Snapshot(&'a str),
     SafetySnapshots,
@@ -67,6 +69,7 @@ fn route(path: &str) -> Option<Route<'_>> {
         "notifications/unread" => Route::Unread,
         "notifications/read" => Route::Read,
         "notifications/acknowledge" => Route::Acknowledge,
+        "backups/history" => Route::History,
         "backups" => Route::Backups,
         "backups/snapshots" => Route::Snapshots,
         "backups/safety-snapshots" => Route::SafetySnapshots,
@@ -121,6 +124,8 @@ fn route(path: &str) -> Option<Route<'_>> {
                 Route::ResolveRecovery(id)
             } else if let Some(id) = resource(action, "backups/snapshots/") {
                 Route::Snapshot(id)
+            } else if let Some(id) = resource(action, "backups/points/") {
+                Route::Point(id)
             } else if let Some(id) = resource(action, "backups/jobs/") {
                 Route::BackupJob(id)
             } else {
@@ -173,9 +178,10 @@ fn mutation_failure(value: MutationError, precondition: bool) -> Reply {
 }
 fn backup_failure(value: BackupError) -> Reply {
     let status = match value {
-        BackupError::Disabled | BackupError::UnknownProfile | BackupError::UnknownJob => {
-            StatusCode::NOT_FOUND
-        }
+        BackupError::Disabled
+        | BackupError::UnknownProfile
+        | BackupError::UnknownJob
+        | BackupError::UnknownSnapshot => StatusCode::NOT_FOUND,
         BackupError::Forbidden => StatusCode::FORBIDDEN,
         BackupError::Invalid => StatusCode::BAD_REQUEST,
         BackupError::Busy
@@ -255,6 +261,7 @@ fn backup_read_failure(value: BackupError, snapshot_listing: bool) -> Reply {
 }
 fn capability(route: Route<'_>, method: &Method) -> Capability {
     match route {
+        Route::Point(_) => Capability::BackupsRestore,
         Route::BackupConfig => Capability::BackupsConfigure,
         Route::Policy if *method == Method::GET => Capability::BackupsView,
         Route::Policy | Route::PolicyReset => Capability::BackupsConfigure,
@@ -264,7 +271,8 @@ fn capability(route: Route<'_>, method: &Method) -> Capability {
         | Route::Unread
         | Route::Read
         | Route::Acknowledge => Capability::NotificationsView,
-        Route::Backups
+        Route::History
+        | Route::Backups
         | Route::BackupJob(_)
         | Route::Snapshots
         | Route::Snapshot(_)
@@ -422,7 +430,7 @@ fn workflow(value: &Workflow, detailed: bool) -> Value {
     result
 }
 fn run(value: &Run, detailed: bool) -> Value {
-    let mut result = json!({"id":value.id,"workflow_id":value.workflow_id,"workflow_revision":value.revision,"execution_principal_id":value.execution_principal.as_str(),"trigger":value.trigger,"state":value.state,"current_step":value.current_step,"attempt":value.attempt,"next_wake_at_ms":value.next_wake_at,"started_at_ms":value.started_at,"finished_at_ms":value.finished_at,"outcome_code":value.outcome_code});
+    let mut result = json!({"id":value.id,"workflow_id":value.workflow_id,"workflow_revision":value.revision,"execution_principal_id":value.execution_principal.as_str(),"trigger":value.trigger,"trigger_event":value.trigger.get("event"),"state":value.state,"current_step":value.current_step,"attempt":value.attempt,"next_wake_at_ms":value.next_wake_at,"started_at_ms":value.started_at,"finished_at_ms":value.finished_at,"outcome_code":value.outcome_code});
     if detailed {
         result["definition"] = json!(value.definition);
     }
@@ -475,6 +483,8 @@ fn safe_backup_code(value: &str) -> &'static str {
         "backup_repository_unavailable" => "backup_repository_unavailable",
         "backup_snapshot_limit_reached" => "backup_snapshot_limit_reached",
         "backup_storage_limit_reached" => "backup_storage_limit_reached",
+        "backup_snapshot_size_limit_reached" => "backup_snapshot_size_limit_reached",
+        "backup_collection_limit_reached" => "backup_collection_limit_reached",
         "backup_storage_unavailable" => "backup_storage_unavailable",
         "backup_tag_failed" => "backup_tag_failed",
         "backup_too_large" => "backup_too_large",
@@ -711,6 +721,23 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
     let Some(key) = scoped_key(host, &subject, &request) else {
         return invalid();
     };
+    if let Route::Point(id) = route {
+        if request.method != Method::PATCH {
+            return invalid();
+        }
+        let Some(value) = decode::<engine::PointUpdate>(request.bytes) else {
+            return error(StatusCode::BAD_REQUEST, "invalid_input");
+        };
+        let Some(backups) = host.backups() else {
+            return backup_failure(BackupError::Disabled);
+        };
+        return match backups.point_update(&subject, id, &value, &key) {
+            Ok(point) => ok(json!(point)),
+            Err(BackupError::UnknownSnapshot) => error(StatusCode::NOT_FOUND, "not_found"),
+            Err(BackupError::Invalid) => error(StatusCode::BAD_REQUEST, "invalid_input"),
+            Err(e) => backup_failure(e),
+        };
+    }
     if matches!(route, Route::BackupConfig) {
         if request.method != Method::PUT {
             return invalid();
@@ -914,7 +941,8 @@ fn get(
         Route::Delivery if query.is_none() => automation
             .external_delivery_status(subject)
             .map(|s| json!({"sinks":s})),
-        Route::Backups
+        Route::History
+        | Route::Backups
         | Route::BackupJob(_)
         | Route::Snapshots
         | Route::Snapshot(_)
@@ -1035,6 +1063,7 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
         Job(&'a str),
         Snapshots(&'a str, bool, Option<(String, String)>, usize),
         Snapshot(&'a str, &'a str),
+        History,
         Storage,
         Policy,
         Config,
@@ -1074,6 +1103,7 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
             }
             Query::Snapshot(value, id)
         }
+        Route::History if query.is_none() => Query::History,
         Route::Storage if query.is_none() => Query::Storage,
         Route::Policy if query.is_none() => Query::Policy,
         Route::BackupConfig if query.is_none() => Query::Config,
@@ -1083,7 +1113,9 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
         return backup_failure(BackupError::Disabled);
     };
     // Both list the repository under the same single-listing bound.
-    if backups.policy().profiles.is_empty() && !matches!(query, Query::Policy | Query::Config) {
+    if backups.policy().profiles.is_empty()
+        && !matches!(query, Query::Policy | Query::Config | Query::History)
+    {
         return backup_failure(BackupError::Disabled);
     }
     let snapshot_listing = matches!(
@@ -1092,7 +1124,7 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
     );
     let result=match query {
         Query::Jobs(before,limit)=>backups.jobs(before.as_ref().map(|(timestamp,id)|(*timestamp,id.as_str())),limit).map(|jobs| {
-            let profiles=backups.policy().profiles.iter().map(|p|json!({"name":p.name,"mode":match p.mode {BackupMode::Online=>"online",BackupMode::Stopped=>"stopped"},"keep_total":p.keep_total,"keep_hourly":p.keep_hourly,"keep_last":p.keep_last,"keep_daily":p.keep_daily,"keep_weekly":p.keep_weekly,"keep_monthly":p.keep_monthly,"on_mutation":match p.on_mutation {MutationPolicy::Warn=>"warn",MutationPolicy::FailWorld=>"fail-world",MutationPolicy::FailAny=>"fail-any"},"warn_seconds":p.warn_seconds,"max_snapshots":p.max_snapshots})).collect::<Vec<_>>();
+            let profiles=backups.policy().profiles.iter().map(|p|json!({"name":p.name,"mode":match p.mode {BackupMode::Online=>"online",BackupMode::Stopped=>"stopped"},"keep_total":p.keep_total,"keep_hourly":p.keep_hourly,"keep_last":p.keep_last,"keep_daily":p.keep_daily,"keep_weekly":p.keep_weekly,"keep_monthly":p.keep_monthly,"on_mutation":match p.on_mutation {MutationPolicy::Warn=>"warn",MutationPolicy::FailWorld=>"fail-world",MutationPolicy::FailAny=>"fail-any"},"warn_seconds":p.warn_seconds,"max_snapshots":p.max_snapshots,"max_snapshot_bytes":p.max_snapshot_bytes,"max_collection_bytes":p.max_collection_bytes})).collect::<Vec<_>>();
             json!({"profiles":profiles,"jobs":jobs.iter().map(|v|backup_job(host,token,v)).collect::<Vec<_>>(),"next_before":if jobs.len()==limit {jobs.last().map(|v|backup_cursor(v.created_at,&v.id))} else {None},"restore_mode":"inspection_only","recovery_required":backups.recovery_required()})
         }),
         Query::Job(id)=>match backups.job(id) {Ok(Some(job))=> {
@@ -1104,6 +1136,7 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
             snapshot_projection(host.management().server_id(),profile,safety,snapshots,before.as_ref(),limit)
         }),
         Query::Snapshot(profile,id)=>backups.snapshots(profile).and_then(|snapshots|snapshot_detail(profile,id,snapshots)),
+        Query::History => backups.history().map(|history| json!(history)),
         Query::Storage => backups.storage().map(|status| storage_json(&status)),
         Query::Policy => Ok(policy_json(&backups.policy())),
         Query::Config => {
@@ -1126,11 +1159,19 @@ fn get_backups(host: &NetworkHost, token: &str, route: Route<'_>, query: Option<
 }
 /// Usage against budgets. `backups_stopped` carries only fixed limit codes.
 fn storage_json(status: &vesta_control::backups::StorageStatus) -> serde_json::Value {
-    use vesta_control::backups::{DISK_SPACE_LOW, SNAPSHOT_LIMIT, STORAGE_LIMIT};
+    use vesta_control::backups::{
+        COLLECTION_SIZE_LIMIT, DISK_SPACE_LOW, SNAPSHOT_LIMIT, SNAPSHOT_SIZE_LIMIT, STORAGE_LIMIT,
+    };
     let stopped = status.backups_stopped.as_deref().and_then(|code| {
-        [SNAPSHOT_LIMIT, STORAGE_LIMIT, DISK_SPACE_LOW]
-            .into_iter()
-            .find(|c| *c == code)
+        [
+            SNAPSHOT_LIMIT,
+            SNAPSHOT_SIZE_LIMIT,
+            COLLECTION_SIZE_LIMIT,
+            STORAGE_LIMIT,
+            DISK_SPACE_LOW,
+        ]
+        .into_iter()
+        .find(|c| *c == code)
     });
     json!({
         "repository_bytes": status.repository_bytes,
@@ -1143,6 +1184,7 @@ fn storage_json(status: &vesta_control::backups::StorageStatus) -> serde_json::V
             "min_free_bytes": status.limits.min_free_bytes,
         },
         "backups_stopped": stopped,
+        "profiles": status.profiles,
     })
 }
 
@@ -1785,6 +1827,7 @@ mod tests {
             Capability::BackupsView
         );
         let mut status = vesta_control::backups::StorageStatus {
+            profiles: vec![],
             repository_bytes: 10,
             restore_points: 2,
             safety_snapshots: 1,

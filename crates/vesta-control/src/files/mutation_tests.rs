@@ -11,6 +11,52 @@ use vesta_state::{Clock, StateDatabase, StateDirectory, audit::AuditLog};
 
 const START: i64 = 1_791_115_200_000;
 
+#[test]
+fn directory_trash_recovery_distinguishes_delete_restore_and_legacy_intents() {
+    for (restoring, moved, expected) in [
+        (Some(false), false, None),
+        (Some(false), true, Some("complete")),
+        (Some(true), false, Some("complete")),
+        (Some(true), true, Some("restored")),
+        (None, true, Some("recovery-required")),
+    ] {
+        let f = Fixture::open();
+        f.put("config/example.txt", b"retain this");
+        let entry = f
+            .files
+            .delete_directory(&f.owner, &Fixture::path("config"))
+            .unwrap();
+        let copy =
+            f.db.directory()
+                .path()
+                .join("trash-folders")
+                .join(&entry.id);
+        let at_original = match restoring {
+            Some(false) => !moved,
+            _ => moved,
+        };
+        if at_original {
+            fs::rename(copy, f.game.join("config")).unwrap();
+        }
+        f.db.write(|c| {
+            c.execute(
+                "UPDATE file_trash SET status='pending',directory_restore_pending=? WHERE id=?",
+                params![restoring, entry.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(f.files.reconcile_pending().unwrap(), 1);
+        assert_eq!(f.files.reconcile_pending().unwrap(), 0);
+        assert_eq!(f.get("config/example.txt").is_some(), at_original);
+        if let Some(expected) = expected {
+            assert_eq!(status(&f, &entry.id), expected);
+        } else {
+            assert_eq!(f.trash_rows(), 0);
+        }
+    }
+}
+
 struct SteppedClock(AtomicI64);
 impl Clock for SteppedClock {
     fn millis(&self) -> i64 {
@@ -2669,3 +2715,300 @@ fn external_preparation_and_admission_share_the_original_mutation_deadline() {
 
 #[path = "recovery_assurance.rs"]
 mod recovery_assurance;
+
+#[test]
+fn cleanup_previews_and_clears_only_unowned_log_archives_and_trash() {
+    use crate::files::CleanupFiles;
+    use std::time::{Duration, SystemTime};
+
+    let f = Fixture::open();
+    fs::create_dir(f.game.join("logs")).unwrap();
+    fs::create_dir(f.game.join("world")).unwrap();
+    f.put("logs/2000-01-01-1.log.gz", b"old");
+    f.put("logs/latest.log", b"live");
+    f.put("world/2000-01-01-1.log.gz", b"world");
+    f.put("config/old.json", b"trash");
+    f.files
+        .delete(&f.owner, &Fixture::path("config/old.json"), &sha(b"trash"))
+        .unwrap();
+    f.put("config/old.json", b"active config");
+
+    let logs = || CleanupFiles::Logs {
+        cutoff: SystemTime::now() + Duration::from_secs(2),
+    };
+    assert_eq!(
+        f.files.cleanup_files(logs(), false, || false).unwrap(),
+        None
+    );
+    assert_eq!(
+        f.files.cleanup_files(logs(), true, || true).unwrap(),
+        Some(3)
+    );
+    assert_eq!(f.get("logs/2000-01-01-1.log.gz").unwrap(), b"old");
+    assert_eq!(
+        f.files.cleanup_files(logs(), false, || true).unwrap(),
+        Some(3)
+    );
+    assert!(f.get("logs/2000-01-01-1.log.gz").is_none());
+    assert_eq!(f.get("logs/latest.log").unwrap(), b"live");
+    assert_eq!(f.get("world/2000-01-01-1.log.gz").unwrap(), b"world");
+    assert_eq!(
+        f.files
+            .cleanup_files(CleanupFiles::Trash, true, || true)
+            .unwrap(),
+        Some(5)
+    );
+    assert_eq!(f.trash_rows(), 1);
+    assert_eq!(
+        f.files
+            .cleanup_files(CleanupFiles::Trash, false, || true)
+            .unwrap(),
+        Some(5)
+    );
+    assert_eq!((f.trash_rows(), f.trash_files()), (0, 0));
+    assert_eq!(f.get("config/old.json").unwrap(), b"active config");
+}
+
+#[test]
+fn bulk_delete_moves_tree_and_files_to_one_restorable_batch() {
+    use crate::files::{BulkDeleteItem, RemoteFileMutation};
+
+    let f = Fixture::open();
+    fs::create_dir_all(f.game.join("config/nested/empty")).unwrap();
+    f.put("config/nested/value.json", b"inside");
+    f.put("config/other.json", b"outside");
+    let items = [
+        BulkDeleteItem {
+            path: "config/nested".into(),
+            expected_sha256: None,
+            recursive: true,
+        },
+        BulkDeleteItem {
+            path: "config/missing.json".into(),
+            expected_sha256: Some(sha(b"missing")),
+            recursive: false,
+        },
+        BulkDeleteItem {
+            path: "config/other.json".into(),
+            expected_sha256: Some(sha(b"outside")),
+            recursive: false,
+        },
+    ];
+    let key = "bulk-delete-batch-fixture";
+    let batch = f.files.delete_remote_batch(&f.owner, key, &items).unwrap();
+    assert!(!f.game.join("config/nested").exists());
+    assert!(f.get("config/other.json").is_none());
+    assert_eq!(batch["results"][1]["error_code"], "file_not_found");
+    assert_eq!(
+        f.files.delete_remote_batch(&f.owner, key, &items).unwrap(),
+        batch
+    );
+    let rows = f.files.trash_entries(&f.owner).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows.iter()
+            .all(|row| row.batch_id.as_deref() == batch["batch_id"].as_str())
+    );
+    let folder = batch["results"][0]["trash_id"].as_str().unwrap();
+    f.files
+        .mutate_remote(
+            &f.owner,
+            "restore-bulk-folder",
+            RemoteFileMutation::Restore { id: folder },
+        )
+        .unwrap();
+    assert_eq!(f.get("config/nested/value.json").unwrap(), b"inside");
+    assert!(f.game.join("config/nested/empty").is_dir());
+}
+
+#[test]
+fn bulk_delete_refuses_protected_descendants_without_moving_parent() {
+    use crate::files::BulkDeleteItem;
+
+    let f = Fixture::open();
+    f.put("config/server.properties", b"protected");
+    let result = f
+        .files
+        .delete_remote_batch(
+            &f.owner,
+            "protected-subtree-fixture",
+            &[BulkDeleteItem {
+                path: "config".into(),
+                expected_sha256: None,
+                recursive: true,
+            }],
+        )
+        .unwrap();
+    assert_eq!(result["results"][0]["error_code"], "file_path_protected");
+    assert_eq!(f.get("config/server.properties").unwrap(), b"protected");
+    assert_eq!(f.trash_rows(), 0);
+}
+
+// ---- Requirement tests: folder and bulk delete (protocol/host-v1/management.md) ----
+
+fn bulk(path: &str, sha256: Option<&[u8]>, recursive: bool) -> crate::files::BulkDeleteItem {
+    crate::files::BulkDeleteItem {
+        path: path.into(),
+        expected_sha256: sha256.map(sha),
+        recursive,
+    }
+}
+
+// REQ files: a non-empty folder goes to the trash as one restorable entry.
+#[test]
+fn req_non_empty_folder_moves_to_trash_and_restores_whole() {
+    use crate::files::RemoteFileMutation;
+    let f = Fixture::open();
+    fs::create_dir_all(f.game.join("plugins/Essentials/userdata")).unwrap();
+    f.put("plugins/Essentials/config.yml", b"cfg");
+    f.put("plugins/Essentials/userdata/a.yml", b"a");
+    let result = f
+        .files
+        .delete_remote_batch(
+            &f.owner,
+            "req-folder",
+            &[bulk("plugins/Essentials", None, true)],
+        )
+        .unwrap();
+    assert!(result["results"][0]["error_code"].is_null());
+    assert!(!f.game.join("plugins/Essentials").exists());
+    assert!(f.game.join("plugins").is_dir());
+    let rows = f.files.trash_entries(&f.owner).unwrap();
+    assert_eq!(rows.len(), 1);
+    let id = result["results"][0]["trash_id"].as_str().unwrap();
+    f.files
+        .mutate_remote(
+            &f.owner,
+            "req-folder-restore",
+            RemoteFileMutation::Restore { id },
+        )
+        .unwrap();
+    assert_eq!(f.get("plugins/Essentials/config.yml").unwrap(), b"cfg");
+    assert_eq!(f.get("plugins/Essentials/userdata/a.yml").unwrap(), b"a");
+}
+
+// REQ files: bulk delete reports per item, in request order, and partial failure
+// leaves the failed items untouched.
+#[test]
+fn req_bulk_delete_reports_each_item_in_order() {
+    let f = Fixture::open();
+    fs::create_dir_all(f.game.join("logs/old")).unwrap();
+    f.put("logs/old/1.log", b"1");
+    f.put("logs/a.log", b"a");
+    f.put("logs/b.log", b"b");
+    let result = f
+        .files
+        .delete_remote_batch(
+            &f.owner,
+            "req-bulk",
+            &[
+                bulk("logs/a.log", Some(b"a"), false),
+                bulk("logs/b.log", Some(b"stale"), false),
+                bulk("logs/old", None, true),
+                bulk("logs/a.log", Some(b"a"), false),
+            ],
+        )
+        .unwrap();
+    let results = result["results"].as_array().unwrap();
+    let paths: Vec<_> = results
+        .iter()
+        .map(|r| r["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        paths,
+        ["logs/a.log", "logs/b.log", "logs/old", "logs/a.log"]
+    );
+    assert!(results[0]["error_code"].is_null());
+    assert!(!results[1]["error_code"].is_null());
+    assert!(results[2]["error_code"].is_null());
+    assert!(!results[3]["error_code"].is_null());
+    assert_eq!(f.get("logs/b.log").unwrap(), b"b");
+    assert!(f.get("logs/a.log").is_none());
+    assert!(!f.game.join("logs/old").exists());
+}
+
+// REQ files: request bounds and the recursive flag must match the target kind.
+#[test]
+fn req_bulk_delete_validates_bounds_and_kinds() {
+    let f = Fixture::open();
+    refused(
+        f.files.delete_remote_batch(&f.owner, "req-empty", &[]),
+        "file_limit_invalid",
+    );
+    let many: Vec<_> = (0..101)
+        .map(|i| bulk(&format!("x{i}.txt"), Some(b"x"), false))
+        .collect();
+    refused(
+        f.files.delete_remote_batch(&f.owner, "req-many", &many),
+        "file_limit_invalid",
+    );
+
+    fs::create_dir_all(f.game.join("world/data")).unwrap();
+    f.put("world/data/x.dat", b"x");
+    f.put("notes.txt", b"n");
+    let result = f
+        .files
+        .delete_remote_batch(
+            &f.owner,
+            "req-kinds",
+            &[
+                bulk("world/data", Some(b""), false),
+                bulk("notes.txt", None, true),
+                bulk("notes.txt", None, false),
+                bulk("", None, true),
+                bulk("../outside", None, true),
+            ],
+        )
+        .unwrap();
+    for row in result["results"].as_array().unwrap() {
+        assert!(!row["error_code"].is_null(), "{row}");
+    }
+    assert_eq!(f.get("world/data/x.dat").unwrap(), b"x");
+    assert_eq!(f.get("notes.txt").unwrap(), b"n");
+    assert_eq!(f.trash_rows(), 0);
+}
+
+// REQ files: deleting needs files.delete, and a folder needs it on every
+// descendant; a refused folder is left whole.
+#[test]
+fn req_folder_delete_needs_delete_rights_on_everything_inside() {
+    let f = Fixture::open();
+    fs::create_dir_all(f.game.join("config/mod")).unwrap();
+    f.put("config/mod/a.toml", b"a");
+    let helper = seed(&f.db, false);
+    refused(
+        f.files
+            .delete_remote_batch(&helper, "req-perm-none", &[bulk("config/mod", None, true)]),
+        "forbidden",
+    );
+    f.grant(&helper, Capability::FilesDelete, "config/other/**");
+    let result = f
+        .files
+        .delete_remote_batch(&helper, "req-perm-scope", &[bulk("config/mod", None, true)])
+        .unwrap();
+    assert!(!result["results"][0]["error_code"].is_null());
+    assert_eq!(f.get("config/mod/a.toml").unwrap(), b"a");
+    assert_eq!(f.trash_rows(), 0);
+}
+
+// REQ files: a folder holding a link that points outside the server is refused
+// without moving anything or touching the link target.
+#[cfg(unix)]
+#[test]
+fn req_folder_with_escaping_link_is_refused_whole() {
+    let f = Fixture::open();
+    let outside = f._temp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("secret.txt"), b"keep").unwrap();
+    fs::create_dir_all(f.game.join("mods/pack")).unwrap();
+    f.put("mods/pack/a.jar", b"a");
+    std::os::unix::fs::symlink(&outside, f.game.join("mods/pack/escape")).unwrap();
+    let result = f
+        .files
+        .delete_remote_batch(&f.owner, "req-link", &[bulk("mods/pack", None, true)])
+        .unwrap();
+    assert_eq!(result["results"][0]["error_code"], "file_path_linked");
+    assert_eq!(f.get("mods/pack/a.jar").unwrap(), b"a");
+    assert_eq!(fs::read(outside.join("secret.txt")).unwrap(), b"keep");
+    assert_eq!(f.trash_rows(), 0);
+}

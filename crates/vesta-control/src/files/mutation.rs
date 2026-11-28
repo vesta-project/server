@@ -49,6 +49,8 @@ mod journal;
 use journal::{Intent, crash_point, interrupted};
 #[path = "directory.rs"]
 mod directory;
+#[path = "directory_trash.rs"]
+mod directory_trash;
 
 /// Trash ceiling: the lower of an absolute byte limit and a share of the state volume.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -118,6 +120,8 @@ pub struct TrashEntry {
     pub size: u64,
     pub trashed_at: i64,
     pub expires_at: i64,
+    pub directory: bool,
+    pub batch_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -449,6 +453,14 @@ impl FileBrowser {
             }
             self.authorize(connection, subject, path, capability)?;
             self.before_remote_write(connection, subject)?;
+            if let Some(change) = &self.whitelist_sync
+                && change.add
+                && crate::automation_host::desired_whitelist(
+                    connection, self.db.server_id(), self.db.clock().millis(),
+                )?.get(&change.uuid) != Some(&change.name)
+            {
+                return Err(FileError::Conflict(None));
+            }
             crash_point("before")?;
             match precondition {
                 WritePrecondition::Absent => stage.link_absent(&target)?,
@@ -462,6 +474,9 @@ impl FileBrowser {
             #[cfg(test)]
             journal::run_after_write_for_test();
             self.finish_intent(connection, &intent)?;
+            if let Some(change) = &self.whitelist_sync {
+                change.record(connection)?;
+            }
             complete(connection, self.db.server_id(), trash.as_deref())?;
             if let Some(id) = upload {
                 let removed = connection.execute(
@@ -594,6 +609,9 @@ impl FileBrowser {
             })
             .map_err(FileError::from)?
             .ok_or(FileError::NotFound)?;
+        if entry.directory {
+            return self.restore_directory(subject, &entry);
+        }
         let parent = self.authorized_parent(subject, &entry.path, Capability::FilesCreate)?;
         require_space(&parent, entry.size)?;
         let trash = self.trash_dir()?;
@@ -778,10 +796,11 @@ impl FileBrowser {
         let admission = mutation_admission(self.db.directory().path())?;
         let _guard = self.mutation_guard(&admission)?;
         let mut total = self.reconcile_intents()?;
+        total += self.reconcile_directory_trash()?;
         for _ in 0..MAX_RECONCILE_BATCHES {
             let count = self.db.write_with(|transaction| {
             let connection = transaction.connection();
-            let mut statement = connection.prepare("SELECT id,path,effect_sha256,principal_id,device_id,reason FROM file_trash WHERE server_id=? AND status='pending' AND NOT EXISTS (SELECT 1 FROM file_intents WHERE json_extract(details_json,'$.trash')=file_trash.id) ORDER BY id LIMIT ?")?;
+            let mut statement = connection.prepare("SELECT id,path,effect_sha256,principal_id,device_id,reason FROM file_trash WHERE server_id=? AND directory=0 AND status='pending' AND NOT EXISTS (SELECT 1 FROM file_intents WHERE json_extract(details_json,'$.trash')=file_trash.id) ORDER BY id LIMIT ?")?;
             let rows = statement.query_map(params![self.db.server_id(), RECONCILE_BATCH_SIZE as i64], |row| Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?,row.get::<_, Option<String>>(2)?,row.get::<_, String>(3)?,row.get::<_, String>(4)?,row.get::<_, String>(5)?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             for (id, text, effect, principal, device, reason) in &rows {
@@ -815,7 +834,22 @@ impl FileBrowser {
         trash: &ArtifactDirectory,
         name: &ArtifactName,
     ) -> Result<()> {
-        trash.remove(name).map_err(state_io)?;
+        let directory = self.db.read(|c| {
+            Ok(c.query_row(
+                "SELECT directory FROM file_trash WHERE server_id=? AND id=?",
+                params![self.db.server_id(), id],
+                |row| row.get::<_, bool>(0),
+            )
+            .optional()?
+            .unwrap_or(false))
+        })?;
+        if directory {
+            self.db
+                .read_with(|tx| self.remove_directory_copy(tx.connection(), id))
+                .map_err(FileError::from)?;
+        } else {
+            trash.remove(name).map_err(state_io)?;
+        }
         self.db
             .write_with(|transaction| {
                 transaction.connection().execute(
@@ -1001,8 +1035,8 @@ impl FileBrowser {
             drop(copy);
             trash.sync().map_err(state_io)?;
             let retention = i64::try_from(self.trash_policy.retention.as_millis()).map_err(|_| FileError::InvalidLimit)?;
-            connection.execute("INSERT INTO file_trash (id,server_id,path,sha256,size,reason,principal_id,device_id,status,effect_sha256,unix_mode,readonly,trashed_at,expires_at) VALUES (?,?,?,?,?,?,?,?,'pending',?,?,?,?,?)", params![
-                id,self.db.server_id(),resource.as_str(),current,i64::try_from(size).map_err(|_| FileError::TooLarge)?,reason.wire(),subject.principal.as_str(),subject.device.as_str(),effect,unix_mode(&metadata.permissions()),i64::from(metadata.permissions().readonly()),now,now.saturating_add(retention)
+            connection.execute("INSERT INTO file_trash (id,server_id,path,sha256,size,reason,principal_id,device_id,status,effect_sha256,unix_mode,readonly,trashed_at,expires_at,batch_id) VALUES (?,?,?,?,?,?,?,?,'pending',?,?,?,?,?,?)", params![
+                id,self.db.server_id(),resource.as_str(),current,i64::try_from(size).map_err(|_| FileError::TooLarge)?,reason.wire(),subject.principal.as_str(),subject.device.as_str(),effect,unix_mode(&metadata.permissions()),i64::from(metadata.permissions().readonly()),now,now.saturating_add(retention),self.trash_batch
             ])?;
             Ok(id.to_owned())
         }).map_err(FileError::from);
@@ -1093,7 +1127,7 @@ impl FileBrowser {
         Ok(())
     }
 
-    fn trash_dir(&self) -> Result<ArtifactDirectory> {
+    pub(super) fn trash_dir(&self) -> Result<ArtifactDirectory> {
         self.db.directory().trash().map_err(state_io)
     }
 
@@ -1105,11 +1139,16 @@ impl FileBrowser {
         path: &RelativePath,
         metadata: [(&str, Option<String>); N],
     ) -> Result<()> {
-        let actor = AuditActor::new(
-            subject.principal.as_str().to_owned(),
-            subject.device.as_str().to_owned(),
-            SOURCE.to_owned(),
-        )?;
+        let actor = if self.whitelist_sync.is_some() {
+            let source = crate::operations::WHITELIST_SYNC_SOURCE;
+            AuditActor::new("vesta-server".into(), source.into(), source.into())?
+        } else {
+            AuditActor::new(
+                subject.principal.as_str().to_owned(),
+                subject.device.as_str().to_owned(),
+                SOURCE.to_owned(),
+            )?
+        };
         let mut fields = path_fields("path", path.as_str());
         for (key, value) in metadata {
             if key == "to" {
@@ -1441,7 +1480,7 @@ fn hash_file(mut file: File) -> Result<String> {
 fn load_entry(connection: &Connection, server: &str, id: &str) -> Result<Option<TrashEntry>> {
     let row = connection
         .query_row(
-            "SELECT path,sha256,size,trashed_at,expires_at FROM file_trash WHERE server_id=? AND id=?",
+            "SELECT path,sha256,size,trashed_at,expires_at,directory,batch_id FROM file_trash WHERE server_id=? AND id=?",
             params![server, id],
             |row| {
                 Ok((
@@ -1450,20 +1489,26 @@ fn load_entry(connection: &Connection, server: &str, id: &str) -> Result<Option<
                     row.get::<_, i64>(2)?,
                     row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
+                    row.get::<_, bool>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 ))
             },
         )
         .optional()?;
-    row.map(|(path, sha256, size, trashed_at, expires_at)| {
-        Ok(TrashEntry {
-            id: id.to_owned(),
-            path: RelativePath::parse(&path).map_err(|_| FileError::Unavailable)?,
-            sha256,
-            size: u64::try_from(size).map_err(|_| FileError::Unavailable)?,
-            trashed_at,
-            expires_at,
-        })
-    })
+    row.map(
+        |(path, sha256, size, trashed_at, expires_at, directory, batch_id)| {
+            Ok(TrashEntry {
+                id: id.to_owned(),
+                path: RelativePath::parse(&path).map_err(|_| FileError::Unavailable)?,
+                sha256,
+                size: u64::try_from(size).map_err(|_| FileError::Unavailable)?,
+                trashed_at,
+                expires_at,
+                directory,
+                batch_id,
+            })
+        },
+    )
     .transpose()
 }
 
@@ -1497,7 +1542,7 @@ pub(super) fn random_id() -> Result<String> {
     Ok(hex::encode(random))
 }
 
-fn trash_name(id: &str) -> Result<ArtifactName> {
+pub(super) fn trash_name(id: &str) -> Result<ArtifactName> {
     if id.len() != 32
         || !id
             .bytes()

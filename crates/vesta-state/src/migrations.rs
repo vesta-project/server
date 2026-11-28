@@ -35,8 +35,65 @@ pub(crate) fn apply(c: &Connection, version: u32, now_ms: i64) -> crate::Result<
         29 => apply_v29(c),
         30 => apply_v30(c),
         31 => apply_v31(c),
+        32 => apply_v32(c),
+        33 => {
+            c.execute_batch("ALTER TABLE file_trash ADD COLUMN directory INTEGER NOT NULL DEFAULT 0 CHECK(directory IN (0,1));
+                ALTER TABLE file_trash ADD COLUMN directory_identity TEXT;
+                ALTER TABLE file_trash ADD COLUMN batch_id TEXT;")?;
+            Ok(())
+        }
+        34 => {
+            c.execute_batch(
+                "CREATE TABLE server_automation_disabled (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                since_ms INTEGER NOT NULL CHECK(since_ms>=0)
+            ) STRICT;",
+            )?;
+            Ok(())
+        }
+        35 => {
+            c.execute_batch(
+                r#"CREATE TABLE IF NOT EXISTS worker_activity_identities (
+                    account_id TEXT NOT NULL, device_id TEXT NOT NULL,
+                    display_name TEXT NOT NULL, device_name TEXT NOT NULL,
+                    PRIMARY KEY(account_id,device_id)
+                ) STRICT;
+                CREATE TABLE IF NOT EXISTS whitelist_sync_pending (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                    operation_id TEXT NOT NULL, uuid TEXT NOT NULL, name TEXT NOT NULL,
+                    add_entry INTEGER NOT NULL CHECK(add_entry IN (0,1))
+                ) STRICT;
+                UPDATE access_role_sources SET settings_json =
+                    json_remove(json_set(settings_json, '$.auto_whitelist_roles',
+                        json(CASE WHEN json_extract(settings_json, '$.sync_whitelist') = 1
+                            THEN '["*"]' ELSE '[]' END)), '$.sync_whitelist')
+                WHERE CASE WHEN json_valid(settings_json)
+                    THEN json_type(settings_json, '$.auto_whitelist_roles') IS NULL END;"#,
+            )?;
+            Ok(())
+        }
+        36 => crate::server_icon::migrate(c),
+        37 => crate::server_icon::migrate_user_observation(c),
+        38 => {
+            c.execute_batch("ALTER TABLE file_trash ADD COLUMN directory_restore_pending INTEGER CHECK(directory_restore_pending IN (0,1));")?;
+            Ok(())
+        }
         _ => Err(crate::StateError::new("state_migration_unknown")),
     }
+}
+
+fn apply_v32(c: &Connection) -> crate::Result<()> {
+    c.execute_batch(
+        r#"
+        DROP TRIGGER role_capabilities_builtin_no_insert;
+        INSERT OR IGNORE INTO role_capabilities(role_id,capability,scope)
+            SELECT id,'storage.view','*' FROM roles WHERE id IN ('owner','administrator');
+        CREATE TRIGGER role_capabilities_builtin_no_insert BEFORE INSERT ON role_capabilities
+        WHEN (SELECT builtin FROM roles WHERE id=NEW.role_id)=1
+        BEGIN SELECT RAISE(ABORT, 'builtin roles are immutable'); END;
+        "#,
+    )?;
+    Ok(())
 }
 
 fn apply_v27(c: &Connection) -> crate::Result<()> {

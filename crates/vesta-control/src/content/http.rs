@@ -31,12 +31,12 @@ pub struct UreqDownloadHttp {
 impl Default for UreqDownloadHttp {
     fn default() -> Self {
         Self {
-            agent: artifact_agent(Duration::from_secs(60), 0),
+            agent: artifact_agent(Duration::from_secs(600), 0),
         }
     }
 }
 pub(super) fn agent() -> ureq::Agent {
-    agent_with_timeout(Duration::from_secs(60))
+    agent_with_timeout(Duration::from_secs(600))
 }
 pub(super) fn agent_with_timeout(timeout: Duration) -> ureq::Agent {
     configured_agent(timeout, 0)
@@ -55,8 +55,8 @@ fn configuration(timeout: Duration, idle: usize) -> ureq::config::Config {
         .max_redirects(0)
         .http_status_as_error(false)
         .timeout_global(Some(timeout))
-        .timeout_connect(Some(Duration::from_secs(10)))
-        .timeout_recv_body(Some(Duration::from_secs(10)))
+        .timeout_connect(Some(Duration::from_secs(3)))
+        .timeout_recv_body(Some(Duration::from_secs(120)))
         .max_response_header_size(16 * 1_024)
         .max_idle_connections(idle)
         .max_idle_connections_per_host(idle)
@@ -74,13 +74,13 @@ impl DownloadHttp for UreqDownloadHttp {
         Ok(response)
     }
     fn get(&self, url: &Url) -> Result<HttpResponse> {
-        self.request(url, Duration::from_secs(60))
+        self.request(url, Duration::from_secs(600))
     }
 }
 impl UreqDownloadHttp {
     pub(crate) fn for_job() -> Self {
         Self {
-            agent: artifact_agent(Duration::from_secs(60), 2),
+            agent: artifact_agent(Duration::from_secs(600), 2),
         }
     }
     fn request(&self, url: &Url, timeout: Duration) -> Result<HttpResponse> {

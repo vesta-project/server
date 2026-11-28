@@ -87,6 +87,10 @@ pub(super) fn dispatch(host: &NetworkHost, request: Request<'_>) -> Reply {
             &world,
             summary,
         );
+        // The machine identifies newly observed content in the background.
+        if !summary && let Ok(inventory) = &result {
+            host.files().identify_unknown_in_background(inventory);
+        }
         #[cfg(feature = "latency-probe")]
         let inventory_ns = inventory_start.elapsed().as_nanos();
         #[allow(unused_mut)]

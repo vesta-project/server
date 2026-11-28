@@ -21,6 +21,7 @@ mod execution;
 mod execution_workspace;
 mod installation;
 mod loaders;
+mod mojang;
 mod plans;
 mod providers;
 mod runtime;

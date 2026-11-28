@@ -165,6 +165,8 @@ impl Stores {
 #[derive(Clone)]
 pub struct ManagementAccess {
     db: StateDatabase,
+    trusted: Option<Arc<crate::worker::TrustedAuthorization>>,
+    icon_game: Option<std::path::PathBuf>,
     session_limit: usize,
     session_ttl_ms: i64,
     audit: AuditLog,
@@ -209,6 +211,8 @@ impl ManagementAccess {
             return Err(ManagementError::InvalidRequest);
         }
         Ok(Self {
+            trusted: None,
+            icon_game: None,
             session_limit: capacity,
             session_ttl_ms: ttl_ms,
             audit: AuditLog::new(db.clone())?,
@@ -216,6 +220,10 @@ impl ManagementAccess {
             db,
             stores: Arc::new(Mutex::new(Stores::new()?)),
         })
+    }
+    pub(crate) fn with_icon_game(mut self, game: Option<std::path::PathBuf>) -> Self {
+        self.icon_game = game;
+        self
     }
     pub fn server_id(&self) -> &str {
         self.db.server_id()
@@ -461,6 +469,9 @@ impl ManagementAccess {
         resource: Option<&super::Resource>,
     ) -> Result<Subject> {
         let subject = self.authenticate(token)?;
+        if let Some(trusted) = &self.trusted {
+            return trusted.authorize(capability, resource);
+        }
         self.read(|repo| {
             let (current, _) = self.subject_in(repo, &subject.device)?;
             if current != subject {
@@ -639,7 +650,14 @@ impl ManagementAccess {
             .map_err(|_| ManagementError::Unavailable)?;
         Ok(stores.console_credentials.redact(text))
     }
+    pub(crate) fn with_trusted(mut self, trusted: crate::worker::TrustedAuthorization) -> Self {
+        self.trusted = Some(Arc::new(trusted));
+        self
+    }
     pub fn authenticate(&self, token: &str) -> Result<Subject> {
+        if let Some(trusted) = &self.trusted {
+            return trusted.authenticate();
+        }
         decode::<32>(token).map_err(|_| ManagementError::SessionInvalid)?;
         let mut stores = self
             .stores
@@ -804,4 +822,14 @@ pub fn pairing_link(
         .append_pair("fp", fingerprint)
         .append_pair("sid", server);
     Some(link.into())
+}
+
+impl ManagementAccess {
+    /// Public registry identity when serving through a host worker facade.
+    pub fn protocol_server_id(&self) -> String {
+        self.trusted
+            .as_ref()
+            .map(|t| t.server_id().to_string())
+            .unwrap_or_else(|| self.server_id().to_owned())
+    }
 }

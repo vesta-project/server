@@ -25,6 +25,16 @@ pub fn accepts_action(action: &str) -> bool {
 }
 pub const HELP: &str = "vesta-setup update <init|status|check|stage|verify|configure|activate|recover> --root <installation>\n  init: --release-key <trusted public key hex> --channel stable|nightly\n  init/check/stage/configure: --bundle-dir <directory> OR --bundle-url <https-directory>\n                             [--asset-prefix <target->]\n  configure: --startup-check on|off --interval-seconds <positive integer>\n  verify: --manifest-sha256 <staged manifest hash> (offline fresh verification)\nInit requires update metadata for the exact installed release. Startup checks are opt-in, metadata-only and nonblocking. Stage/verify never activate or restart.\n  activate: --manifest-sha256 <hash> --idempotency-key <key> --restart on|off\n            requires a stopped, clean, registered first-server installation.\n  recover: --activation-id <id> (exact previous healthy build; stopped only)";
 pub fn run(args: &[String]) -> Result<(), String> {
+    // A machine has no legacy first-server consumer; never trial it as one.
+    if let Some(i) = args.iter().position(|a| a == "--root")
+        && args.get(i + 1).is_some_and(|r| {
+            std::path::Path::new(r).join("host").is_dir()
+                && !std::path::Path::new(r).join("private/setup.json").exists()
+        })
+    {
+        return Err("Host-mode signed update trials are not yet supported. Reinstall a verified release to upgrade; host state is preserved.".into());
+    }
+
     if args == ["capabilities"] {
         println!(
             "{}",

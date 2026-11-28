@@ -3,6 +3,10 @@ mod fetch;
 pub(crate) use fetch::fetch;
 pub use fetch::{Columnar, Fetch, Fetched, MAX_SERIES};
 mod native;
+/// Physical host memory in bytes, when the platform reports it.
+pub(crate) fn host_memory_total_bytes() -> Option<u64> {
+    native::host().memory_total
+}
 mod network;
 mod policy;
 pub(crate) mod ticks;

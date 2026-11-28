@@ -3,7 +3,7 @@ use crate::{control::Op, local_files};
 use serde_json::Value;
 use std::fmt::Write;
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Format {
     Human,
     Json,

@@ -10,6 +10,8 @@
 //! Unix replacement/restore preserves permission mode bits (not ownership, ACLs, xattrs or
 //! timestamps). Windows preserves the read-only attribute and refuses read-only replacement
 //! or deletion; it does not copy custom ACLs or other attributes. Stages start private on Unix.
+mod cleanup;
+pub use cleanup::CleanupFiles;
 pub(crate) mod content;
 pub(crate) mod copied_export;
 mod custom_jar;
@@ -23,7 +25,7 @@ pub use startup_whitelist::StartupWhitelistPatch;
 mod mutation;
 pub(crate) use mutation::mutation_admission;
 pub(crate) use mutation::require_space;
-mod native;
+pub(crate) mod native;
 mod pack_root;
 mod path;
 mod protected;
@@ -36,7 +38,7 @@ pub(crate) use sftp::SftpWrite;
 mod upload;
 mod world;
 mod world_details;
-pub use remote::RemoteFileMutation;
+pub use remote::{BulkDeleteItem, RemoteFileMutation};
 pub use stream::{
     FILE_CHUNK_BYTES, FileStream, LinePage, MAX_RANGE_BYTES, MAX_TEXT_LINES, encoding_hint,
 };
@@ -64,6 +66,7 @@ use std::{error::Error, fmt, fs, io::Read, path::Path, time::SystemTime};
 use vesta_state::{StateDatabase, StateError, TransactionError};
 
 pub const MAX_READ_BYTES: usize = 1_048_576;
+const MAX_IMAGE_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_DIRECTORY_ENTRIES: usize = vesta_protocol::pack::catalogue::MAX_FILES;
 /// Work bound includes hidden/unreadable entries, not just returned entries.
 pub const MAX_DIRECTORY_SCAN: usize = MAX_DIRECTORY_ENTRIES + 4_096;
@@ -248,12 +251,15 @@ impl fmt::Debug for FileRead {
 #[derive(Clone)]
 pub struct FileBrowser {
     startup_whitelist: std::sync::Arc<startup_whitelist::StartupState>,
+    content_identification: std::sync::Arc<std::sync::Mutex<content::IdentificationState>>,
+    content_hash_work: std::sync::Arc<std::sync::Mutex<Option<content::HashWork>>>,
     db: StateDatabase,
     root: root::Root,
     audit: vesta_state::audit::AuditLog,
     trash_policy: TrashPolicy,
     upload_policy: UploadPolicy,
     remote_key: Option<String>,
+    trash_batch: Option<String>,
     pack_effect: bool,
     remote_outcome: Option<serde_json::Value>,
     world_write: bool,
@@ -267,6 +273,7 @@ pub struct FileBrowser {
     stopped_guard: Option<std::sync::Arc<offline_whitelist::StoppedGuard>>,
     remote_deadline: Option<std::time::Instant>,
     properties_approval: Option<crate::operations::PropertiesApproval>,
+    whitelist_sync: Option<crate::operations::WhitelistSyncChange>,
 }
 impl fmt::Debug for FileBrowser {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -274,6 +281,37 @@ impl fmt::Debug for FileBrowser {
     }
 }
 impl FileBrowser {
+    pub(crate) fn server_icon_root(&self) -> Result<Option<std::path::PathBuf>> {
+        let root = self.root.resolve(None)?.path;
+        match self
+            .root
+            .resource(&root.join(vesta_state::server_icon::FILE_NAME))
+        {
+            Ok(_) => Ok(Some(root)),
+            Err(FileError::ProtectedPath) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// The transport must authorize status access before calling this fixed-leaf read.
+    pub fn game_icon(&self) -> Result<Option<Vec<u8>>> {
+        let Some(root) = self.server_icon_root()? else {
+            return Ok(None);
+        };
+        Ok(vesta_state::server_icon::user_icon(&self.db, &root)?)
+    }
+
+    pub(crate) fn reconcile_server_icon(&self, game: &Path) -> Result<()> {
+        let admission = mutation::mutation_admission(self.db.directory().path())?;
+        let Ok(_guard) = admission.try_lock() else {
+            return Ok(());
+        };
+        if self.server_icon_root()?.is_some() {
+            vesta_state::server_icon::reconcile(self.db.directory().path(), game)?;
+        }
+        Ok(())
+    }
+
     /// Trusted host composition only. This opens no listener and grants no authority.
     /// The canonical state root is always excluded even if the host omits it.
     pub fn open(db: StateDatabase, root: &Path, protected: &[&Path]) -> Result<Self> {
@@ -283,12 +321,15 @@ impl FileBrowser {
         let root = root::Root::open(root, &protected)?;
         Ok(Self {
             startup_whitelist: std::sync::Arc::new(startup_whitelist::StartupState::open(&db)?),
+            content_identification: Default::default(),
+            content_hash_work: Default::default(),
             audit: vesta_state::audit::AuditLog::new(db.clone())?,
             db,
             root,
             trash_policy: TrashPolicy::default(),
             upload_policy: UploadPolicy::default(),
             remote_key: None,
+            trash_batch: None,
             pack_effect: false,
             remote_outcome: None,
             world_write: false,
@@ -298,6 +339,7 @@ impl FileBrowser {
             stopped_guard: None,
             remote_deadline: None,
             properties_approval: None,
+            whitelist_sync: None,
         })
     }
 
@@ -523,6 +565,25 @@ impl FileBrowser {
         if limit == 0 || limit > MAX_READ_BYTES {
             return Err(FileError::InvalidLimit);
         }
+        self.read_bounded(subject, path, limit, extra)
+    }
+
+    pub fn image_preview(
+        &self,
+        subject: &Subject,
+        path: &RelativePath,
+    ) -> Result<Option<(Vec<u8>, &'static str)>> {
+        let file = self.read_bounded(subject, path, MAX_IMAGE_PREVIEW_BYTES, None)?;
+        Ok(image_mime(&file.bytes).map(|mime| (file.bytes, mime)))
+    }
+
+    fn read_bounded(
+        &self,
+        subject: &Subject,
+        path: &RelativePath,
+        limit: usize,
+        extra: Option<Capability>,
+    ) -> Result<FileRead> {
         self.db
             .read_with(|snapshot| {
                 let policy = identity::policy_in(
@@ -567,6 +628,30 @@ impl FileBrowser {
             .map_err(FileError::from)
     }
 }
+fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+    match bytes {
+        [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', ..] => Some("image/png"),
+        [0xff, 0xd8, 0xff, ..] => Some("image/jpeg"),
+        [b'G', b'I', b'F', b'8', b'7' | b'9', b'a', ..] => Some("image/gif"),
+        [
+            b'R',
+            b'I',
+            b'F',
+            b'F',
+            _,
+            _,
+            _,
+            _,
+            b'W',
+            b'E',
+            b'B',
+            b'P',
+            ..,
+        ] => Some("image/webp"),
+        _ => None,
+    }
+}
+
 fn authorize(policy: &PolicySnapshot, capability: Capability, resource: &Resource) -> Result<()> {
     match policy.check(capability, Some(resource)) {
         identity::Decision::Allow => Ok(()),

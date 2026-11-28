@@ -26,6 +26,7 @@ use vesta_state::{
 
 const POLICY_KEY: &str = "sleep-policy";
 const RUNTIME_KEY: &str = "sleep-runtime";
+const STARTUP_REPORT_KEY: &str = "startup-report";
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
@@ -114,6 +115,12 @@ struct Record {
     wake_key: Option<String>,
     cooldown_until_ms: i64,
     sequence: u64,
+    /// The game was left running (or starting): the last successful lifecycle
+    /// operation was a start or restart, not a stop, sleep or kill, and no
+    /// crash loop was observed since. Survives Vesta restarts; drives the
+    /// default startup policy (see [`Sleep::resume_on_agent_start`]).
+    #[serde(default)]
+    resume: bool,
 }
 #[derive(Clone)]
 pub struct Sleep {
@@ -122,6 +129,7 @@ pub struct Sleep {
     address: Option<SocketAddr>,
     probe: Option<SocketAddr>,
     server_name: String,
+    icon_files: Option<crate::files::FileBrowser>,
     minecraft_version: String,
     pack_version: String,
     loader_version: String,
@@ -147,6 +155,7 @@ impl Sleep {
             address,
             probe,
             server_name,
+            icon_files: None,
             minecraft_version: "unknown".into(),
             pack_version: "unknown".into(),
             loader_version: "unknown".into(),
@@ -158,6 +167,10 @@ impl Sleep {
         self.minecraft_version = minecraft.into();
         self.pack_version = pack.into();
         self.loader_version = loader.into();
+        self
+    }
+    pub(crate) fn with_icon_files(mut self, files: crate::files::FileBrowser) -> Self {
+        self.icon_files = Some(files);
         self
     }
     pub fn policy(&self, subject: &Subject) -> Result<PolicyView, &'static str> {
@@ -276,13 +289,91 @@ impl Sleep {
             .map(|(_, p)| p.and_then(|p| p.policy.on_agent_start).unwrap_or(fallback))
             .map_err(|_| "sleep_state_unavailable")
     }
+    /// The explicitly chosen startup policy: the trusted local stay-stopped
+    /// override, else the stored policy's `on_agent_start`, else `config`
+    /// (host.toml `[process]`). `None` when nothing chose one: the server then
+    /// resumes the state it was left in ([`Self::resume_on_agent_start`]).
+    pub fn on_agent_start_explicit(
+        &self,
+        config: Option<crate::config::OnAgentStart>,
+    ) -> Result<Option<crate::config::OnAgentStart>, &'static str> {
+        if std::env::var_os("VESTA_AGENT_STAY_STOPPED").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            return Ok(Some(crate::config::OnAgentStart::StayStopped));
+        }
+        self.db
+            .read(|c| load_policy(c, &self.db))
+            .map(|(_, p)| p.and_then(|p| p.policy.on_agent_start).or(config))
+            .map_err(|_| "sleep_state_unavailable")
+    }
+    /// The default startup policy: what the server was left doing when this
+    /// Vesta Server stopped. `Sleep` when it was sleeping and can sleep again,
+    /// `Start` when it was running or starting (the last successful lifecycle
+    /// operation was a start, restart or wake, and no crash loop was seen
+    /// since), else `StayStopped` (the owner stopped it, or it never ran).
+    pub fn resume_on_agent_start(&self) -> Result<crate::config::OnAgentStart, &'static str> {
+        let record = self
+            .db
+            .read(|c| load_record(c, &self.db))
+            .map_err(|_| "sleep_state_unavailable")?;
+        Ok(if record.sleeping && self.available() {
+            crate::config::OnAgentStart::Sleep
+        } else if record.resume {
+            crate::config::OnAgentStart::Start
+        } else {
+            crate::config::OnAgentStart::StayStopped
+        })
+    }
+    /// A crash loop suspended automatic restarts: the server is left stopped,
+    /// and a later Vesta restart must not start it again either.
+    pub(crate) fn crash_loop_observed(&self) -> Result<(), &'static str> {
+        self.db
+            .write(|c| {
+                let mut record = load_record(c, &self.db)?;
+                if record.resume {
+                    record.resume = false;
+                    put(c, &self.db, RUNTIME_KEY, &record)?;
+                }
+                Ok(())
+            })
+            .map_err(|_| "sleep_state_unavailable")
+    }
+    pub fn startup_report(
+        &self,
+    ) -> Result<Option<crate::machine::startup::StartupReport>, &'static str> {
+        self.db
+            .read(|c| load(c, &self.db, STARTUP_REPORT_KEY))
+            .map(|row| row.map(|(_, report)| report))
+            .map_err(map_state_error)
+    }
+
+    pub(crate) fn record_startup(
+        &self,
+        report: &crate::machine::startup::StartupReport,
+    ) -> Result<(), &'static str> {
+        self.db
+            .write(|c| put(c, &self.db, STARTUP_REPORT_KEY, report))
+            .map_err(map_state_error)
+    }
+
+    #[cfg(test)]
     pub(crate) fn initialize(
         &self,
         policy: crate::config::OnAgentStart,
     ) -> Result<(), &'static str> {
+        self.initialize_startup(policy, false)
+    }
+
+    pub(crate) fn initialize_startup(
+        &self,
+        policy: crate::config::OnAgentStart,
+        host_managed: bool,
+    ) -> Result<(), &'static str> {
         self.db
             .read(|c| {
-                if let (_, Some(stored)) = load_policy(c, &self.db)?
+                if !host_managed
+                    && let (_, Some(stored)) = load_policy(c, &self.db)?
                     && stored.policy.on_agent_start.is_some()
                     && policy != crate::config::OnAgentStart::StayStopped
                 {
@@ -453,10 +544,42 @@ impl Sleep {
             .map_err(|_| "motd_invalid")
     }
     fn document(&self) -> Result<motd::Document, &'static str> {
-        self.db
-            .read(|c| load::<motd::Document>(c, &self.db, "motd-policy"))
-            .map_err(|_| "motd_state_unavailable")
-            .map(|row| row.map(|(_, d)| d).unwrap_or_default())
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let game = self
+            .icon_files
+            .as_ref()
+            .and_then(|files| files.server_icon_root().ok().flatten());
+        let (mut document, branding, deleted) = self
+            .db
+            .read(|c| {
+                let document = load::<motd::Document>(c, &self.db, "motd-policy")?
+                    .map(|(_, document)| document)
+                    .unwrap_or_default();
+                let branding = crate::identity::management::permissions::branding::game_projection(
+                    c,
+                    self.db.server_id(),
+                )?;
+                let deleted = match &game {
+                    Some(game) => vesta_state::server_icon::deleted_on_disk(c, game)?,
+                    None => false,
+                };
+                Ok((document, branding, deleted))
+            })
+            .map_err(|_| "motd_state_unavailable")?;
+        if deleted {
+            document.normal_icon_png = None;
+        } else if let Some(branding) = branding {
+            document.normal_icon_png = branding.map(|png| STANDARD.encode(png));
+        }
+        if let Some(manual) = self
+            .icon_files
+            .as_ref()
+            .and_then(|files| files.game_icon().ok().flatten())
+            .and_then(|bytes| motd::normalize_icon(&bytes))
+        {
+            document.normal_icon_png = Some(STANDARD.encode(manual));
+        }
+        Ok(document)
     }
     fn public_inputs<'a>(
         &'a self,
@@ -528,6 +651,17 @@ impl Sleep {
 pub(crate) struct Driver {
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
+}
+impl Driver {
+    pub(crate) fn request_shutdown(&self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = &self.worker {
+            worker.thread().unpark();
+        }
+    }
+    pub(crate) fn is_shutdown_complete(&self) -> bool {
+        self.worker.as_ref().is_none_or(JoinHandle::is_finished)
+    }
 }
 impl Drop for Driver {
     fn drop(&mut self) {
@@ -1197,11 +1331,13 @@ pub(crate) fn lifecycle_finished_in(
     now: i64,
     kind: &str,
 ) -> vesta_state::Result<()> {
-    let sleeping = match kind {
-        "game.sleep" | "game.manual_sleep" => true,
-        "game.stop" | "game.stop_sleeping" | "game.start" | "game.restart" | "game.force_kill" => {
-            false
-        }
+    // `game.stop_sleeping` only leaves the sleeping state (startup policy);
+    // it says nothing about whether the owner wants the game running.
+    let (sleeping, resume) = match kind {
+        "game.sleep" | "game.manual_sleep" => (true, Some(false)),
+        "game.stop" | "game.force_kill" => (false, Some(false)),
+        "game.start" | "game.restart" => (false, Some(true)),
+        "game.stop_sleeping" => (false, None),
         _ => return Ok(()),
     };
     let raw: Option<String> = c
@@ -1217,6 +1353,9 @@ pub(crate) fn lifecycle_finished_in(
         .map_err(|_| StateError::new("state_sleep_state_invalid"))?
         .unwrap_or_default();
     record.sleeping = sleeping;
+    if let Some(resume) = resume {
+        record.resume = resume;
+    }
     record.sleep_key = None;
     record.wake_key = None;
     let value =

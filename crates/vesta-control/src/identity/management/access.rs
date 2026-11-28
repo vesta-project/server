@@ -20,7 +20,7 @@ pub struct AccessSettings {
     pub whitelist: String,
     pub whitelist_enabled: bool,
     #[serde(default)]
-    pub sync_whitelist: bool,
+    pub auto_whitelist_roles: std::collections::BTreeSet<String>,
     pub password: String,
 }
 impl Default for AccessSettings {
@@ -30,7 +30,7 @@ impl Default for AccessSettings {
             new_user: "public".into(),
             whitelist: "player".into(),
             whitelist_enabled: true,
-            sync_whitelist: false,
+            auto_whitelist_roles: Default::default(),
             password: "player".into(),
         }
     }
@@ -570,6 +570,14 @@ impl ManagementAccess {
             || policy.server.as_uuid().to_string() != self.server_id()
         {
             return Err(ManagementError::SessionInvalid);
+        }
+        if let Some(trusted) = &self.trusted {
+            trusted.authorize(capability, None)?;
+            trusted.check_pack_ban()?;
+            return Ok(PackSession {
+                grant: PackGrant::Role,
+                expires_at: now + std::time::Duration::from_secs(29),
+            });
         }
         let observation = if reference.anonymous {
             None

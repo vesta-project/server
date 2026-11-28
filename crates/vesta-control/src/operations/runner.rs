@@ -1,7 +1,8 @@
 //! Trusted, closed, autonomously driven operation ownership.
 //!
-//! One driver owns the native process, exact claims and OS/DB owner. Shutdown is
-//! observation-only: it never automatically sends stop/kill/restart. A timeout
+//! One driver owns the native process, exact claims and OS/DB owner. Ordinary
+//! shutdown is observation-only; explicit system shutdown separately requests a
+//! graceful stop while preserving the owner's reboot startup intent. A timeout
 //! keeps the same JoinHandle and all native IO handles. Drop requests shutdown
 //! and joins to real completion; an uncooperative child/writer can block forever.
 use super::{
@@ -73,6 +74,8 @@ struct Observation {
 struct DriverState {
     // This is the kernel's exact shared stopping flag, not a delayed mirror.
     stopping: Arc<AtomicBool>,
+    system_shutdown: AtomicBool,
+    system_admission_closed: AtomicBool,
     queue_pending: AtomicBool,
     wake: Arc<WorkWake>,
     observation: Mutex<Observation>,
@@ -140,6 +143,8 @@ impl DriverState {
         (
             Arc::new(Self {
                 stopping,
+                system_shutdown: AtomicBool::new(false),
+                system_admission_closed: AtomicBool::new(false),
                 queue_pending: AtomicBool::new(true),
                 wake: Arc::default(),
                 observation: Mutex::new(Observation::default()),
@@ -346,13 +351,54 @@ impl RuntimeHandle {
         command: GameCommand,
         idempotency_key: &str,
     ) -> OperationsResult<super::Admission> {
+        if self.shared.system_admission_closed.load(Ordering::Acquire) {
+            return Err(OperationError::rejected(OperationErrorCode::OwnerStopping));
+        }
         let result = self.operations.admit_with_view(
             subject,
             command.operation_type(),
             &command.canonical_input()?,
             Some(idempotency_key),
             Some(&self.shared.view),
-            None,
+            super::ModerationOrigin::Request,
+        );
+        if result.is_ok() {
+            self.shared.notify_queue();
+        }
+        result
+    }
+
+    pub(crate) fn submit_whitelist_sync(
+        &self,
+        subject: &crate::identity::Subject,
+        generation: GenerationId,
+        change: &super::WhitelistSyncChange,
+    ) -> OperationsResult<super::Admission> {
+        if self.shared.system_admission_closed.load(Ordering::Acquire) {
+            return Err(OperationError::rejected(OperationErrorCode::OwnerStopping));
+        }
+        use crate::moderation::ModerationAction;
+        let action = if change.add {
+            ModerationAction::WhitelistAdd {
+                player: change.name.clone(),
+            }
+        } else {
+            ModerationAction::WhitelistRemove {
+                player: change.name.clone(),
+            }
+        };
+        let command = GameCommand::Moderate {
+            expected_generation: generation,
+            action,
+        };
+        let key = format!("whitelist-sync:{}", uuid::Uuid::new_v4());
+        let result = self.operations.admit_with_view(
+            subject,
+            command.operation_type(),
+            &command.canonical_input()?,
+            Some(&key),
+            Some(&self.shared.view),
+            super::ModerationOrigin::WhitelistSync(change),
         );
         if result.is_ok() {
             self.shared.notify_queue();
@@ -367,6 +413,9 @@ impl RuntimeHandle {
         player: String,
         id: i64,
     ) -> OperationsResult<super::Admission> {
+        if self.shared.system_admission_closed.load(Ordering::Acquire) {
+            return Err(OperationError::rejected(OperationErrorCode::OwnerStopping));
+        }
         let command = GameCommand::Moderate {
             expected_generation: generation,
             action: crate::moderation::ModerationAction::Pardon { player },
@@ -377,7 +426,7 @@ impl RuntimeHandle {
             &command.canonical_input()?,
             Some(&format!("moderation-expiry:{id}:{}", generation.to_hex())),
             Some(&self.shared.view),
-            Some(id),
+            super::ModerationOrigin::Expiry(id),
         );
         if result.is_ok() {
             self.shared.notify_queue();
@@ -479,6 +528,20 @@ impl RuntimeHandle {
     {
         self.shared.console.snapshot(after, limit)
     }
+
+    pub fn console_before(
+        &self,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<
+        (
+            vesta_game_runtime::console::ConsolePage,
+            Option<vesta_game_runtime::console::ConsoleLine>,
+        ),
+        vesta_game_runtime::console::ConsoleError,
+    > {
+        self.shared.console.snapshot_before(before, limit)
+    }
 }
 impl OperationRuntime {
     pub fn network_handle(&self) -> RuntimeHandle {
@@ -546,6 +609,7 @@ impl OperationRuntime {
         // Kernel owner is from this exact DB, acquires one OS lock, reconciles,
         // and retains a runtime DB lease before any native or driver work.
         let owner = operations.open_owner()?;
+        let _ = operations.prepare_server_icon();
         game.content_files = operations.content_files.clone();
         let operations = owner.operations().clone();
         let start_block = game.start_block.clone();
@@ -561,6 +625,7 @@ impl OperationRuntime {
             active: None,
             shared: shared.clone(),
             stop_wait,
+            system_stop: SystemStop::default(),
             observation_uncertain: None,
             #[cfg(test)]
             after_dispatch: None,
@@ -636,6 +701,26 @@ impl OperationRuntime {
         self.shared.stop();
     }
 
+    /// Explicit machine/service stop. Close admission now; the sole process
+    /// owner sends the fixed graceful stop once earlier native work returns.
+    /// Ordinary `shutdown` remains observation-only. This path never records an
+    /// owner's manual Stop, so the durable reboot-resume intent is preserved.
+    pub(crate) fn request_system_quiescence(&self) {
+        self.shared
+            .system_admission_closed
+            .store(true, Ordering::Release);
+        self.shared.stop();
+    }
+
+    pub fn request_system_shutdown(&self) {
+        self.shared.system_shutdown.store(true, Ordering::Release);
+        self.request_system_quiescence();
+    }
+
+    pub(crate) fn is_shutdown_complete(&self) -> bool {
+        self.driver.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+
     /// Bounded observation only. A timeout leaves the exact driver, owner lease,
     /// claims and native handles attached to this runtime for later observation.
     pub fn shutdown(&mut self, timeout: Duration) -> OperationsResult<ShutdownOutcome> {
@@ -703,6 +788,12 @@ impl Active {
         }
     }
 }
+#[derive(Default)]
+struct SystemStop {
+    attempted: bool,
+    receipt: Option<(GenerationId, GuardedInput<OperationError>)>,
+}
+
 struct Driver {
     local_receiver: mpsc::Receiver<LocalRequest>,
     owner: OwnerSession,
@@ -712,6 +803,7 @@ struct Driver {
     active: Option<Active>,
     shared: Arc<DriverState>,
     stop_wait: Duration,
+    system_stop: SystemStop,
     // Sticky loss of native observation proof. A later successful poll cannot
     // retroactively turn an uncertain effect into a known timeout/success.
     // Typed native classification, never a database error namespace.
@@ -735,6 +827,7 @@ impl Driver {
 
     fn run(&mut self) -> OperationsResult<()> {
         let mut offline_tick: Option<Instant> = None;
+        let mut icon_tick: Option<Instant> = None;
         let mut last_queue_probe = Instant::now();
         let mut first_failure: Option<OperationError> =
             self.observation_uncertain.map(OperationError::from);
@@ -755,6 +848,13 @@ impl Driver {
             }
             // Observation only: readiness failures never stop dispatch or effects.
             let _ = self.game.track_readiness();
+            if self.observation_uncertain.is_none()
+                && !self.shared.stopping.load(Ordering::Acquire)
+                && icon_tick.is_none_or(|at| at.elapsed() >= Duration::from_secs(1))
+            {
+                icon_tick = Some(Instant::now());
+                self.game.refresh_stopped_icon();
+            }
             if offline_tick.is_none_or(|at| at.elapsed() >= Duration::from_millis(250)) {
                 offline_tick = Some(Instant::now());
                 let configuration = self
@@ -857,7 +957,14 @@ impl Driver {
             }
             if self.shared.stopping.load(Ordering::Acquire) {
                 self.owner.stop_claiming();
+                if self.shared.system_shutdown.load(Ordering::Acquire)
+                    && let Err(error) = self.advance_system_shutdown()
+                {
+                    self.shared.error(error.code());
+                    first_failure.get_or_insert(error);
+                }
                 if !self.game.is_local()
+                    && !self.shared.system_admission_closed.load(Ordering::Acquire)
                     && let Some(Active::Exit { claim, .. }) = self.active.take()
                 {
                     // The supervisor, not this agent, owns the game. Waiting for its
@@ -872,7 +979,12 @@ impl Driver {
                     }
                 }
                 if self.active.is_none()
+                    && (!self.shared.system_admission_closed.load(Ordering::Acquire)
+                        || self.shared.system_shutdown.load(Ordering::Acquire))
                     && !self.game.retains_native_child()
+                    && self.system_stop.receipt.is_none()
+                    && (!self.shared.system_shutdown.load(Ordering::Acquire)
+                        || self.game.process.snapshot().generation.is_none())
                     && !self.ticks.writer_pending()
                 {
                     if self.game.configure_offline(None).is_err() {
@@ -947,6 +1059,57 @@ impl Driver {
         }
     }
 
+    fn advance_system_shutdown(&mut self) -> OperationsResult<()> {
+        if let Some((generation, mut receipt)) = self.system_stop.receipt.take() {
+            match receipt.try_result() {
+                None => self.system_stop.receipt = Some((generation, receipt)),
+                Some(Ok(())) => self.game.process.acknowledge_guarded_stop(generation)?,
+                Some(Err(GuardedError::Guard(error))) => return Err(error),
+                Some(Err(GuardedError::Runtime(error))) => {
+                    // The supervisor can independently receive the same OS
+                    // shutdown and refuse a duplicate request. Keep observing
+                    // the exact generation; no refusal is proof of its exit.
+                    self.shared.error(error.code());
+                }
+            }
+        }
+        if self.system_stop.attempted
+            || self.active.is_some()
+            || self.players.writer_pending()
+            || self.ticks.writer_pending()
+            || self.observation_uncertain.is_some()
+        {
+            return Ok(());
+        }
+        let snapshot = self.game.process.snapshot();
+        let Some(generation) = snapshot.generation else {
+            return Ok(());
+        };
+        self.system_stop.attempted = true;
+        // A prior completed native stop already owns delivery. Never send it a
+        // second time or reclassify a user-requested stop as a reboot resume.
+        if snapshot.phase != ProcessPhase::Running {
+            return Ok(());
+        }
+        let audit = self.owner.operations().audit.clone();
+        let guard = move || {
+            use vesta_state::audit::{AuditActor, AuditRecord};
+            audit.append_record(&AuditRecord::of(
+                AuditActor::system("machine-shutdown".into())?,
+                "system.game.stop".into(),
+                generation.to_hex(),
+                "admitted".into(),
+                None,
+            )?)?;
+            Ok::<(), OperationError>(())
+        };
+        match self.game.process.queue_stop_guarded(generation, guard) {
+            Ok(receipt) => self.system_stop.receipt = Some((generation, receipt)),
+            Err(error) => self.shared.error(error.code()),
+        }
+        Ok(())
+    }
+
     fn execute_local(&mut self, action: LocalAction) -> Result<(), &'static str> {
         use vesta_state::audit::{AuditActor, AuditRecord};
         let audit = |outcome: &str| {
@@ -979,7 +1142,13 @@ impl Driver {
                     c,
                     db.server_id(),
                     db.clock().millis(),
-                    "game.stop",
+                    // Every local action leaves sleep; a start or restart also
+                    // records that the game should come back after a restart.
+                    match action {
+                        LocalAction::Start => "game.start",
+                        LocalAction::Stop => "game.stop",
+                        LocalAction::Restart => "game.restart",
+                    },
                 )
             })
             .map_err(|_| "local_outcome_uncertain")?;

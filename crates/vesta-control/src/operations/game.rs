@@ -352,6 +352,21 @@ impl GameLifecycle {
     pub(super) fn retains_native_child(&self) -> bool {
         matches!(self.process, ProcessBackend::Local(_)) && self.has_owned_generation()
     }
+    pub(super) fn refresh_stopped_icon(&self) {
+        let Ok(blocked) = self.start_block.inner.try_lock() else {
+            return;
+        };
+        let snapshot = self.process.snapshot();
+        if *blocked == 0 && snapshot.phase == ProcessPhase::Stopped && snapshot.generation.is_none()
+        {
+            self.reconcile_local_icon();
+        }
+    }
+    fn reconcile_local_icon(&self) {
+        if let (Some(files), Some(launch)) = (&self.content_files, &self.launch) {
+            let _ = files.reconcile_server_icon(launch.working_directory());
+        }
+    }
     pub(super) fn start(
         &mut self,
         guard: impl FnOnce(&SourceRevision) -> OperationsResult<()>,
@@ -382,6 +397,7 @@ impl GameLifecycle {
             files
                 .apply_pending_content()
                 .map_err(|_| GuardedError::Runtime(RuntimeError::ObserveFailed))?;
+            self.reconcile_local_icon();
         }
         if self.offline_uncertain {
             return Err(RuntimeError::ObserveFailed.into());

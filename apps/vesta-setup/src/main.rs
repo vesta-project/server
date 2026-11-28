@@ -5,6 +5,26 @@ const HELP: &str = "Vesta host setup\n\n  vesta-setup --bundle-url <https-direct
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(target_os = "linux")]
+    {
+        if args.first().is_some_and(|s| s == "linux-acl") {
+            return vesta_setup::linux_acl::run(&args[1..]);
+        }
+        if args.first().is_some_and(|s| s == "linux-identity") {
+            return vesta_setup::linux_install::identity(std::path::Path::new(
+                args.get(1).ok_or("Missing root")?,
+            ));
+        }
+        if args.is_empty()
+            || args.first().is_some_and(|s| {
+                s == "install" || s.starts_with("--") && s != "--help" && s != "--version"
+            })
+        {
+            return vesta_setup::linux_install::run(
+                &args[usize::from(args.first().is_some_and(|s| s == "install"))..],
+            );
+        }
+    }
     if args.is_empty() || args.first().is_some_and(|a| a == "install") {
         return vesta_setup::installer::run(&args[usize::from(!args.is_empty())..]);
     }

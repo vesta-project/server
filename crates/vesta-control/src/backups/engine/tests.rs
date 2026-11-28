@@ -678,6 +678,9 @@ fn promotion_accounts_growth_and_reserves_the_atomic_replacement_before_publish(
             "candidate=quota".into(),
             "profile=quota".into(),
         ],
+        parent_id: None,
+        label: None,
+        kept: false,
     })
     .unwrap();
     let growth = (promoted.len() - original.len()) as u64;
@@ -882,5 +885,341 @@ fn snapshot_verification_detects_corrupt_chunks() {
     assert_eq!(
         engine.verify_snapshot(&backup.snapshot_id),
         Err(EngineError::Corrupt)
+    );
+}
+
+#[test]
+fn interrupted_backup_never_publishes_a_snapshot() {
+    let game = game();
+    let store = MemStore::default();
+    let engine = Engine::new(Box::new(store.clone()));
+    engine.init().unwrap();
+    let polls = std::cell::Cell::new(0);
+    let result = engine.backup_within_cancellable(
+        game.path(),
+        &Ignore::default(),
+        &tags("world"),
+        None,
+        None,
+        &|| {
+            let n = polls.get() + 1;
+            polls.set(n);
+            n > 5
+        },
+    );
+    assert!(result.is_err());
+    assert!(
+        store.keys("tags/") == 0 && store.keys("snapshots/") == 0,
+        "interrupted chunks must remain unpublished"
+    );
+    assert!(engine.snapshots("profile=world").unwrap().is_empty());
+    assert!(game.path().join("world/level.dat").is_file());
+}
+
+#[test]
+fn safety_retention_prunes_automatic_points_and_respects_a_manual_keep() {
+    let source = game();
+    let engine = Engine::new(Box::new(MemStore::default()));
+    engine.init().unwrap();
+    let ignore = Ignore::parse("").unwrap();
+    let tag = "safety=p".to_owned();
+    let manual = engine
+        .backup(source.path(), &ignore, std::slice::from_ref(&tag), None)
+        .unwrap()
+        .snapshot_id;
+    engine
+        .point_update(
+            &manual,
+            &PointUpdate {
+                label: None,
+                kept: Some(true),
+            },
+        )
+        .unwrap();
+    for _ in 0..7 {
+        engine
+            .backup(source.path(), &ignore, std::slice::from_ref(&tag), None)
+            .unwrap();
+    }
+    engine
+        .forget(
+            &tag,
+            Retention {
+                keep_last: 5,
+                ..Retention::default()
+            },
+        )
+        .unwrap();
+    let remaining = engine.snapshots(&tag).unwrap();
+    assert!((5..=6).contains(&remaining.len()));
+    assert!(remaining.iter().any(|point| point.id == manual));
+}
+
+#[test]
+fn lineage_branch_restore_keep_and_reparent() {
+    let source = game();
+    let store = MemStore::default();
+    let engine = Engine::new(Box::new(store.clone()));
+    engine.init().unwrap();
+    let ignore = Ignore::parse("").unwrap();
+    let a = engine
+        .backup(source.path(), &ignore, &tags("p"), None)
+        .unwrap()
+        .snapshot_id;
+    let b = engine
+        .backup(source.path(), &ignore, &tags("p"), None)
+        .unwrap()
+        .snapshot_id;
+    assert_eq!(
+        engine
+            .history()
+            .unwrap()
+            .points
+            .iter()
+            .find(|p| p.id == b)
+            .unwrap()
+            .parent_id
+            .as_deref(),
+        Some(a.as_str())
+    );
+    let safety = engine
+        .backup(source.path(), &ignore, &["safety=p".into()], None)
+        .unwrap()
+        .snapshot_id;
+    let history = engine.history().unwrap();
+    let tip = history.points.iter().find(|p| p.id == safety).unwrap();
+    // A safety point names the profile whose restore took it, so it can be restored again.
+    assert!(!tip.kept && tip.safety && tip.profile.as_deref() == Some("p"));
+    assert_eq!(tip.parent_id.as_deref(), Some(b.as_str()));
+    engine
+        .apply(&a, source.path(), &["world".into()], &ignore, &[], None)
+        .unwrap();
+    assert_eq!(engine.head().unwrap().as_deref(), Some(b.as_str()));
+    engine
+        .apply(&a, source.path(), &[], &ignore, &[], None)
+        .unwrap();
+    assert_eq!(engine.head().unwrap().as_deref(), Some(a.as_str()));
+    let c = engine
+        .backup(source.path(), &ignore, &tags("p"), None)
+        .unwrap()
+        .snapshot_id;
+    assert_eq!(
+        engine
+            .history()
+            .unwrap()
+            .points
+            .iter()
+            .find(|p| p.id == c)
+            .unwrap()
+            .parent_id
+            .as_deref(),
+        Some(a.as_str())
+    );
+    engine
+        .point_update(
+            &a,
+            &PointUpdate {
+                label: Some(Some("  Original  ".into())),
+                kept: Some(true),
+            },
+        )
+        .unwrap();
+    engine
+        .forget(
+            "profile=p",
+            Retention {
+                keep_last: 1,
+                ..Retention::default()
+            },
+        )
+        .unwrap();
+    let history = engine.history().unwrap();
+    assert!(
+        history
+            .points
+            .iter()
+            .any(|p| p.id == a && p.kept && p.label.as_deref() == Some("Original"))
+    );
+    assert!(!history.points.iter().any(|p| p.id == b));
+    assert_eq!(
+        history
+            .points
+            .iter()
+            .find(|p| p.id == safety)
+            .unwrap()
+            .parent_id
+            .as_deref(),
+        Some(a.as_str())
+    );
+    engine
+        .forget(
+            "safety=p",
+            Retention {
+                keep_last: 1,
+                ..Retention::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        engine
+            .history()
+            .unwrap()
+            .points
+            .iter()
+            .any(|p| p.id == safety)
+    );
+    engine
+        .point_update(
+            &safety,
+            &PointUpdate {
+                kept: Some(true),
+                ..PointUpdate::default()
+            },
+        )
+        .unwrap();
+    let newer_safety = engine
+        .backup(source.path(), &ignore, &["safety=p".into()], None)
+        .unwrap()
+        .snapshot_id;
+    let mut older = engine
+        .all()
+        .unwrap()
+        .into_iter()
+        .find(|(id, _)| id == &safety)
+        .unwrap()
+        .1;
+    older.time_ms = 0;
+    store
+        .put(
+            &format!("tags/{safety}"),
+            &serde_json::to_vec(&older).unwrap(),
+        )
+        .unwrap();
+    engine
+        .forget(
+            "safety=p",
+            Retention {
+                keep_last: 1,
+                ..Retention::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        engine
+            .history()
+            .unwrap()
+            .points
+            .iter()
+            .any(|p| p.id == safety)
+    );
+    engine
+        .point_update(
+            &safety,
+            &PointUpdate {
+                kept: Some(false),
+                ..PointUpdate::default()
+            },
+        )
+        .unwrap();
+    engine
+        .forget(
+            "safety=p",
+            Retention {
+                keep_last: 1,
+                ..Retention::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        !engine
+            .history()
+            .unwrap()
+            .points
+            .iter()
+            .any(|p| p.id == safety)
+    );
+    assert!(
+        engine
+            .history()
+            .unwrap()
+            .points
+            .iter()
+            .any(|p| p.id == newer_safety)
+    );
+}
+
+#[test]
+fn lineage_legacy_records_and_label_validation() {
+    let source = game();
+    let store = MemStore::default();
+    let engine = Engine::new(Box::new(store.clone()));
+    engine.init().unwrap();
+    let id = engine
+        .backup(source.path(), &Ignore::parse("").unwrap(), &tags("p"), None)
+        .unwrap()
+        .snapshot_id;
+    store
+        .put(
+            &format!("tags/{id}"),
+            br#"{"time_ms":1234,"tags":["profile=p"]}"#,
+        )
+        .unwrap();
+    let point = engine.history().unwrap().points.remove(0);
+    assert!(point.parent_id.is_none() && point.label.is_none() && !point.kept);
+    for label in [" ".to_owned(), "x".repeat(61)] {
+        assert_eq!(
+            engine
+                .point_update(
+                    &id,
+                    &PointUpdate {
+                        label: Some(Some(label)),
+                        kept: None
+                    }
+                )
+                .unwrap_err(),
+            EngineError::Invalid
+        );
+    }
+    let update: PointUpdate = serde_json::from_str(r#"{"label":null}"#).unwrap();
+    assert_eq!(update.label, Some(None));
+    assert_eq!(engine.point_update(&id, &update).unwrap().label, None);
+    assert_eq!(
+        engine
+            .point_update(&"f".repeat(32), &PointUpdate::default())
+            .unwrap_err(),
+        EngineError::Missing
+    );
+}
+#[test]
+fn lineage_candidate_captures_start_parent_and_advances_only_on_promotion() {
+    let source = game();
+    let engine = Engine::new(Box::new(MemStore::default()));
+    engine.init().unwrap();
+    let ignore = Ignore::parse("").unwrap();
+    let a = engine
+        .backup(source.path(), &ignore, &tags("p"), None)
+        .unwrap()
+        .snapshot_id;
+    assert!(engine.history().unwrap().points[0].parent_id.is_none());
+    let candidate = engine
+        .backup(source.path(), &ignore, &["candidate".into()], None)
+        .unwrap()
+        .snapshot_id;
+    assert_eq!(engine.head().unwrap().as_deref(), Some(a.as_str()));
+    assert_eq!(engine.history().unwrap().points.len(), 1);
+    engine.set_head(None).unwrap();
+    engine.tag_add(&candidate, &["profile=q".into()]).unwrap();
+    assert_eq!(engine.head().unwrap().as_deref(), Some(candidate.as_str()));
+    assert_eq!(
+        engine
+            .history()
+            .unwrap()
+            .points
+            .iter()
+            .find(|p| p.id == candidate)
+            .unwrap()
+            .parent_id
+            .as_deref(),
+        Some(a.as_str())
     );
 }

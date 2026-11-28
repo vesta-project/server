@@ -3,6 +3,7 @@
 //! Downloads never run on the urgent lifecycle worker. Activation never stops or
 //! starts Minecraft, and an ambiguous activation blocks starts until rollback.
 pub(crate) mod catalogue_store;
+pub(crate) mod created;
 mod custom;
 mod model;
 mod runtime;
@@ -172,6 +173,24 @@ impl SoftwareService {
             worker: Some(worker),
         })
     }
+    /// Close admission and request cancellation at installer safe boundaries.
+    /// Activation already in progress retains its normal transaction/recovery path.
+    pub fn request_shutdown(&self) {
+        self.inner.cancel.store(true, Ordering::Release);
+        self.inner.query_permit.close();
+        self.inner.query_waiters.close();
+        // Never wait behind a queue owner doing a database admission. The
+        // atomic cancellation gate also closes admission and wakes the worker.
+        if let Ok(mut queue) = self.inner.queue.try_lock() {
+            queue.stop = true;
+        }
+        self.inner.wake.notify_all();
+    }
+    /// Observation only; callers retain this owner until its thread has returned.
+    pub fn is_shutdown_complete(&self) -> bool {
+        self.worker.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+
     pub fn handle(&self) -> SoftwareHandle {
         SoftwareHandle {
             inner: self.inner.clone(),
@@ -180,11 +199,7 @@ impl SoftwareService {
 }
 impl Drop for SoftwareService {
     fn drop(&mut self) {
-        self.inner.cancel.store(true, Ordering::Release);
-        if let Ok(mut q) = self.inner.queue.lock() {
-            q.stop = true;
-            self.inner.wake.notify_all();
-        }
+        self.request_shutdown();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -270,7 +285,7 @@ impl SoftwareHandle {
             .queue
             .lock()
             .map_err(|_| SoftwareError::StateUnavailable)?;
-        if queue.stop {
+        if queue.stop || self.inner.cancel.load(Ordering::Acquire) {
             return Err(SoftwareError::RuntimeUnavailable);
         }
         let (job, created) = self.inner.db.write_with(|tx| -> Result<_> {
@@ -315,6 +330,74 @@ impl SoftwareHandle {
             self.inner.wake.notify_one();
         }
         Ok(job)
+    }
+
+    /// Record what a host server creation installed before this server's
+    /// software service first opened: the trusted launch document is already the
+    /// current one, so only the installation facts (software, versions and
+    /// verified artifacts) are filled in. Accepted only on a fresh service
+    /// (revision 0, no jobs, still the anonymous `original` installation) and
+    /// only for that exact document; anything else is a conflict.
+    pub(crate) fn record_created_installation(
+        &self,
+        subject: &Subject,
+        installation: Installation,
+        artifacts: Vec<vesta_server_install::ManagedArtifact>,
+    ) -> Result<()> {
+        if installation.software.is_none()
+            || installation.version.is_none()
+            || installation.custom_jar.is_some()
+            || installation.installation_id == "original"
+        {
+            return Err(SoftwareError::InvalidRequest);
+        }
+        let queue = self
+            .inner
+            .queue
+            .lock()
+            .map_err(|_| SoftwareError::StateUnavailable)?;
+        if queue.stop || self.inner.cancel.load(Ordering::Acquire) || !queue.work.is_empty() {
+            return Err(SoftwareError::RevisionConflict);
+        }
+        self.inner.db.write_with(|tx| -> Result<()> {
+            let c = tx.connection();
+            store::authorize(c, &self.inner.db, subject)?;
+            let state = store::state(c)?;
+            let jobs: i64 = c.query_row("SELECT count(*) FROM software_jobs", [], |r| r.get(0))?;
+            let current = &state.current.installation;
+            if current == &installation {
+                return Ok(());
+            }
+            if state.revision != 0
+                || state.recovery
+                || state.previous.is_some()
+                || jobs != 0
+                || current.installation_id != "original"
+                || current.software.is_some()
+            {
+                return Err(SoftwareError::RevisionConflict);
+            }
+            let recorded = model::StoredLaunch {
+                warnings: Vec::new(),
+                installation,
+                document: state.current.document.clone(),
+                artifacts,
+            };
+            c.execute(
+                "UPDATE software_state SET current_launch=? WHERE singleton=1 AND revision=0",
+                [store::encode(&recorded)?],
+            )?;
+            store::audit(
+                c,
+                &self.inner.audit,
+                subject,
+                "software.record_created",
+                &recorded.installation.installation_id,
+                "success",
+            )
+        })?;
+        drop(queue);
+        Ok(())
     }
 
     fn authorize(&self, subject: &Subject) -> Result<()> {
@@ -532,7 +615,7 @@ impl SoftwareHandle {
             .queue
             .lock()
             .map_err(|_| SoftwareError::StateUnavailable)?;
-        if queue.stop {
+        if queue.stop || self.inner.cancel.load(Ordering::Acquire) {
             return Err(SoftwareError::RuntimeUnavailable);
         }
         if let Some(existing) = self.inner.db.read_with(|tx| -> Result<_> {
@@ -648,7 +731,7 @@ impl SoftwareHandle {
                 .install_switch_review(subject, &pack.input)
                 .map_err(|_| SoftwareError::ConfirmationInvalid)?;
             if !target.software_switch_required {
-                if queue.stop {
+                if queue.stop || self.inner.cancel.load(Ordering::Acquire) {
                     return Err(SoftwareError::RuntimeUnavailable);
                 }
                 let job = self.inner.db.write_with(|tx| -> Result<Job> {
@@ -818,7 +901,7 @@ impl SoftwareHandle {
             .queue
             .lock()
             .map_err(|_| SoftwareError::StateUnavailable)?;
-        if queue.stop {
+        if queue.stop || self.inner.cancel.load(Ordering::Acquire) {
             return Err(SoftwareError::RuntimeUnavailable);
         }
         if let Some(existing) = self.inner.db.read_with(|tx| -> Result<_> {

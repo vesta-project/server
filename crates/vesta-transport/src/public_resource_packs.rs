@@ -14,6 +14,14 @@ pub(crate) fn dispatch(
     path: &str,
     downloads: Arc<Semaphore>,
 ) -> Reply {
+    dispatch_handle(host.resource_packs(), method, path, downloads)
+}
+pub(crate) fn dispatch_handle(
+    handle: &hosting::Handle,
+    method: &Method,
+    path: &str,
+    downloads: Arc<Semaphore>,
+) -> Reply {
     if !matches!(*method, Method::GET | Method::HEAD) {
         return error(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
     }
@@ -29,7 +37,7 @@ pub(crate) fn dispatch(
             std::time::Duration::from_secs(1),
         );
     };
-    let (file, release) = match host.resource_packs().open_public(sha) {
+    let (file, release) = match handle.open_public(sha) {
         Ok(v) => v,
         Err(hosting::Error::NotFound) => {
             return error(StatusCode::NOT_FOUND, "resource_pack_not_found");

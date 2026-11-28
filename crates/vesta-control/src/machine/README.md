@@ -1,0 +1,58 @@
+# Host state integration
+
+`HostState::open` uses a dedicated host-private directory and the existing
+`vesta_state::StateDatabase` for file protection, WAL, full synchronous writes,
+immediate transactions, snapshots and rollback. Do not point it at a server's
+state directory. The storage engine's legacy `server_identity` record is unused
+by host APIs; `machine_host.host_id` is the host identity. The host schema has its
+own version, independent of the storage engine's migration version.
+
+H02 should retain account/device ids in sessions and call `active_device` (or
+`owners::active_device_in` on an existing transaction) and resolve current roles
+for every operation. Stored generation values are counters, not authority.
+
+Account sign-in (`signin.rs`) enrolls a new key for a verified account that already
+holds a role, without PAKE or approval; its proof is bound to the connection's TLS
+fingerprint and the owner setting `newDeviceSignIn` (`settings.rs`) can require
+link approval instead.
+
+H04 must verify PAKE/account proof/signatures before enrollment. Use
+`HostState::write` with `HostState::claim_in` or `HostState::enroll_device_in` so
+code/proof consumption and enrollment share one transaction. Returning an error
+rolls everything back. These trusted repository APIs do not authenticate a UUID,
+an `Actor`, a device key, a local peer, or a signature. `LocalRecovery` may only
+come from the privileged local channel. Transfer requires the caller's fresh
+signed primary-device confirmation; the target is already an owner and the old
+primary remains an owner. All authority mutations write a durable audit record.
+
+H08 should use `visible_servers` and `effective_role`, with server ids selected
+before dispatch. `server` is a trusted lookup and does not authorize access.
+Anonymous public lookup is a separate later package; public visibility never
+grants management authority. Role and registry changes require the current
+revision. Device revocation is repeatable and protects all primary-account keys.
+Registry capacity is one active entry; deletion leaves an id tombstone. Owners
+resolve access dynamically, including future entries, rather than copying grants.
+
+Counters are positive signed SQLite integers exposed as `u64`; exhaustion fails
+and rolls back instead of wrapping. Transport should encode them as decimal
+strings. Every authority change advances the host-wide generation. Worker
+synchronization/barriers, wire idempotency, PAKE, online account proof and sessions
+belong to their respective packages and are not implemented here. Reserved module
+files are intentionally empty extension points.
+
+H02/H04 composition: construct one `vesta_transport::host_identity::HostIdentity`
+for the host process. H08 passes the actual TLS `Connection` into PAKE and account
+calls and uses its session methods; never deserialize `AccountScope`, `LinkApprover`
+or `LocalPrivilege`. Account completion performs Mojang I/O without holding the
+PAKE lock and reauthorizes afterward. Invite enrollment remains F02.
+
+H10 starts `apps/vesta-agent/src/host_local.rs::Server::start` with that SAME
+`Arc<HostIdentity>` and the protected host-state path. The CLI commands are wired
+in `main.rs`; they never open or modify the DB directly. The socket is separate
+from game control and HTTP. Linux admits the service uid and root, with 0700 parent,
+0600 socket and peer-credential checks. Windows uses a protected service-SID plus
+Administrators pipe DACL, rejects remote clients and checks the server process SID
+against the host-state directory owner. This first pass deliberately still trusts
+processes running as the service user. H11 must provision distinct game/worker
+identities and test that they cannot traverse host state or reach this channel.
+No H04 change starts a listener from `serve.rs`, which H05/H10 own.

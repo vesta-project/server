@@ -101,6 +101,52 @@ pub(super) fn insert(
     Ok(())
 }
 
+pub(super) fn check_whitelist_sync(
+    repo: &Repository<'_>,
+    op: &StoredOperation,
+    plan: &PreparedOperation,
+) -> OperationsResult<()> {
+    let pending: Option<(String, String, bool)> = repo
+        .connection()
+        .query_row(
+            "SELECT uuid,name,add_entry FROM whitelist_sync_pending WHERE operation_id=?",
+            [op.summary.id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let binding_mismatch = || OperationError::rejected(OperationErrorCode::BindingMismatch);
+    let Some((uuid, name, add)) = pending else {
+        return Err(binding_mismatch());
+    };
+    let Some(GameCommand::Moderate { action, .. }) = &plan.command else {
+        return Err(binding_mismatch());
+    };
+    match (action, add) {
+        (ModerationAction::WhitelistAdd { player }, true) if *player == name => {
+            let desired = crate::automation_host::desired_whitelist(
+                repo.connection(),
+                repo.server,
+                repo.now,
+            )?;
+            if desired.get(&uuid) != Some(&name) {
+                return Err(binding_mismatch());
+            }
+        }
+        (ModerationAction::WhitelistRemove { player }, false) if *player == name => {
+            let owned: bool = repo.connection().query_row(
+                "SELECT EXISTS(SELECT 1 FROM whitelist_sync_members WHERE uuid=? AND name=?)",
+                params![uuid, name],
+                |row| row.get(0),
+            )?;
+            if !owned {
+                return Err(binding_mismatch());
+            }
+        }
+        _ => return Err(binding_mismatch()),
+    }
+    Ok(())
+}
+
 pub(super) fn check_expiry(repo: &Repository<'_>, op: &StoredOperation) -> OperationsResult<()> {
     let state: Option<String> = repo.connection().query_row("SELECT expiry_state FROM moderation_actions WHERE server_id=? AND expiry_operation_id=?", params![repo.server, op.summary.id.as_str()], |r| r.get(0)).optional()?;
     if state.is_some_and(|v| v != "submitted") {

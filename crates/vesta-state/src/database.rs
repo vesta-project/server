@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 31;
+pub const CURRENT_SCHEMA_VERSION: u32 = 38;
 pub const BUSY_TIMEOUT_MS: u64 = 5_000;
 
 /// A callback-borrowed, already-established query-only snapshot.
@@ -523,7 +523,7 @@ fn rollback<T, E>(
     }
 }
 
-fn connect(directory: &StateDirectory, query_only: bool) -> Result<Connection> {
+pub(crate) fn connect(directory: &StateDirectory, query_only: bool) -> Result<Connection> {
     #[cfg(feature = "latency-probe")]
     let _latency_state_connect = crate::latency_probe::Span::new("state_connect");
     directory.verify_database_files()?;
