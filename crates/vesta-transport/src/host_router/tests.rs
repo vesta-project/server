@@ -550,7 +550,7 @@ fn host_end_to_end_claim_sessions_and_registry_mapping() {
     // A lost successful claim reply is an idempotent receipt; a fresh PAKE claim
     // with the already-consumed setup code must be refused.
     let (_, second) = Client::start(
-        &SetupCode::parse(&code).unwrap(),
+        &SetupCode::parse(code).unwrap(),
         Purpose::Claim,
         None,
         host.to_string(),

@@ -142,10 +142,10 @@ async fn run_inner(source: &Path) -> Result<(), &'static str> {
             c.launch_definition().to_owned(),
         ]);
     }
-    if let Some(p) = &config.worker_config {
-        if let Some(parent) = path(p).parent() {
-            protected.push(parent.to_owned());
-        }
+    if let Some(p) = &config.worker_config
+        && let Some(parent) = path(p).parent()
+    {
+        protected.push(parent.to_owned());
     }
     let servers_root = path(&config.servers);
     let java_root = path(&config.java_cache);

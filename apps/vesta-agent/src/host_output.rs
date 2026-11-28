@@ -213,7 +213,7 @@ fn validity(expires_at: &str, now: SystemTime) -> Result<String, &'static str> {
         .duration_since(now)
         .unwrap_or(Duration::ZERO)
         .as_secs();
-    let minutes = (secs + 59) / 60;
+    let minutes = secs.div_ceil(60);
     let label = if minutes <= 1 {
         "1 minute".into()
     } else {
@@ -350,10 +350,10 @@ pub fn management_port(state: &std::path::Path) -> u16 {
         let line = line.trim();
         if let Some(value) = line.strip_prefix("port") {
             let value = value.trim().trim_start_matches('=').trim();
-            if let Ok(port) = value.parse() {
-                if port > 0 {
-                    return port;
-                }
+            if let Ok(port) = value.parse()
+                && port > 0
+            {
+                return port;
             }
         }
     }

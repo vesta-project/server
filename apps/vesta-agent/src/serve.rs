@@ -261,10 +261,8 @@ pub async fn run(source: &Path, base: &Path, local_only: bool, allow_local: bool
         watchdog.begin_local();
     }
     let system = request.is_some_and(|r| r.reason.is_system()) || !supervised;
-    if system {
-        if let Err(e) = host.request_system_shutdown() {
-            eprintln!("system_shutdown_request_failed: {}", e.code());
-        }
+    if system && let Err(e) = host.request_system_shutdown() {
+        eprintln!("system_shutdown_request_failed: {}", e.code());
     }
     let stop_endpoints = async {
         let failed = control.shutdown().await.is_err();

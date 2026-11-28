@@ -24,7 +24,7 @@ fn tightening_sqlite_file_permissions_preserves_the_process_record_lock() {
     };
 
     let temp = tempfile::tempdir().unwrap();
-    let directory = StateDirectory::new(&temp.path().join("private state"), None).unwrap();
+    let directory = StateDirectory::new(temp.path().join("private state"), None).unwrap();
     let db = StateDatabase::open(
         directory.clone(),
         Arc::new(TestClock::new(DEFAULT_TEST_TIME_MS)),

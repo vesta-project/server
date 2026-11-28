@@ -399,13 +399,13 @@ impl Host {
 impl Drop for Host {
     fn drop(&mut self) {
         // Model the service cgroup ending owned fixture games before worker shutdown.
-        if let Some(jobs) = self.router.imports() {
-            if let Ok(entries) = std::fs::read_dir(jobs.servers_root()) {
-                for entry in entries.flatten() {
-                    let game = entry.path().join("game");
-                    if game.join("vesta-create-fixture").is_file() {
-                        let _ = std::fs::write(game.join("fixture-exit"), b"exit");
-                    }
+        if let Some(jobs) = self.router.imports()
+            && let Ok(entries) = std::fs::read_dir(jobs.servers_root())
+        {
+            for entry in entries.flatten() {
+                let game = entry.path().join("game");
+                if game.join("vesta-create-fixture").is_file() {
+                    let _ = std::fs::write(game.join("fixture-exit"), b"exit");
                 }
             }
         }
@@ -787,12 +787,11 @@ fn real_vanilla_import_reaches_online_and_is_managed_through_mapped_routes() {
             "launch.toml:\n{}",
             std::fs::read_to_string(dir.join("private/launch.toml")).unwrap_or_default()
         );
-        for log in ["game/logs/latest.log"] {
-            eprintln!(
-                "{log}:\n{}",
-                std::fs::read_to_string(dir.join(log)).unwrap_or_default()
-            );
-        }
+        let log = "game/logs/latest.log";
+        eprintln!(
+            "{log}:\n{}",
+            std::fs::read_to_string(dir.join(log)).unwrap_or_default()
+        );
     }
     assert_eq!(online["state"], "online", "{online}");
     let (_, list) = host.call("GET", "/v1/host/servers", Value::Null, &host.owner);

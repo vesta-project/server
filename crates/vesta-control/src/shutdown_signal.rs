@@ -117,10 +117,10 @@ impl ShutdownSignal {
         #[cfg(unix)]
         {
             let watcher = UnixRegistration::open(state.clone())?;
-            return Ok(Self {
+            Ok(Self {
                 state,
                 _watcher: watcher,
-            });
+            })
         }
         #[cfg(windows)]
         {
