@@ -171,8 +171,10 @@ PY
   exit
  fi
  # add
+ source_overlap=$(realpath -ms -- "$source_dir")
+ [[ $source_overlap != / ]] || fail 'Choose an existing import directory, not /.'
  for protected in "$root" /usr/local/lib/vesta; do
-  [[ $source_dir != "$protected" && $source_dir != "$protected"/* && $protected != "$source_dir"/* ]] || fail "Import directory overlaps Vesta Server files: $protected"
+  [[ $source_overlap != "$protected" && $source_overlap != "$protected"/* && $protected != "$source_overlap"/* ]] || fail "Import directory overlaps Vesta Server files: $protected"
  done
  command -v setfacl >/dev/null || fail 'Install ACL tools first: sudo apt install acl'
  echo "Will grant vesta read/traverse access recursively to: $source_dir"
@@ -255,16 +257,21 @@ exec /usr/local/lib/vesta/vesta "\$@"
 EOF
 chmod 755 /usr/local/bin/vesta
 if [[ $local_only == false ]]; then
+ networks=$(ip -o -4 addr show scope global | awk '$2 != "lo" {print $4}' | python3 -c 'import ipaddress,sys; [print(n) for n in sorted({str(ipaddress.ip_interface(l.strip()).network) for l in sys.stdin if l.strip()})]')
  if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then
   # Scope to the directly attached IPv4 networks rather than any source.
-  for net in $(ip -o -4 addr show scope global | awk '$2 != "lo" {print $4}' | python3 -c 'import ipaddress,sys; [print(n) for n in sorted({str(ipaddress.ip_interface(l.strip()).network) for l in sys.stdin if l.strip()})]'); do
+  for net in $networks; do
    ufw allow proto tcp from "$net" to any port "$port" comment 'Vesta management'
    ufw allow proto udp from "$net" to any port 5353 comment 'Vesta LAN discovery'
   done
  fi
  if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
-  firewall-cmd --permanent --add-port="$port/tcp"; firewall-cmd --add-port="$port/tcp"
-  firewall-cmd --permanent --add-service=mdns; firewall-cmd --add-service=mdns
+  for net in $networks; do
+   management="rule family=\"ipv4\" source address=\"$net\" port port=\"$port\" protocol=\"tcp\" accept"
+   discovery="rule family=\"ipv4\" source address=\"$net\" port port=\"5353\" protocol=\"udp\" accept"
+   firewall-cmd --permanent --add-rich-rule="$management"; firewall-cmd --add-rich-rule="$management"
+   firewall-cmd --permanent --add-rich-rule="$discovery"; firewall-cmd --add-rich-rule="$discovery"
+  done
  fi
 fi
 if [[ $service == true ]]; then

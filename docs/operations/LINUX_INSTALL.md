@@ -54,7 +54,7 @@ The initial service and game processes share one account, so mods/plugins can af
 
 ## Firewall
 
-If active, UFW gets allow rules for the chosen management TCP port and mDNS UDP 5353, each limited to the directly attached IPv4 networks (`from 192.168.1.0/24`, for example). Active firewalld gets the management port and mDNS service in its default zone, runtime and persistent; the zone is the scope there. `--local-only` changes no firewall. No firewall is disabled. Review that zone/network scope before exposing a public host. Game-port automation is deferred: explicitly allow the game TCP port chosen during creation/import (usually 25565). Existing rules are retained during uninstall to avoid removing administrator-managed rules.
+If active, UFW or firewalld gets allow rules for the chosen management TCP port and mDNS UDP 5353, each limited to the directly attached IPv4 networks (`192.168.1.0/24`, for example). Firewalld adds source-scoped rich rules to its default zone, both at runtime and permanently. `--local-only` changes no firewall. Review existing firewall rules before exposing a public host. Game-port automation is deferred: explicitly allow the game TCP port chosen during creation/import (usually 25565). Existing rules are retained during uninstall to avoid removing administrator-managed rules.
 
 ## Development package (unsigned)
 
