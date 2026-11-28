@@ -543,8 +543,9 @@ impl ImportJobs {
             }
             // Legacy digests from any source other than Mojang's own objects
             // host need the owner's acknowledgement.
-            if p.warnings.contains(&Warning::LegacyChecksum)
-                || (p.legacy_checksum && !p.legacy_checksum_mojang_only)
+            let verifies_with_mojang = p.legacy_checksum && p.legacy_checksum_mojang_only;
+            if !verifies_with_mojang
+                && (p.legacy_checksum || p.warnings.contains(&Warning::LegacyChecksum))
             {
                 warnings.insert("legacy_checksum");
             }
